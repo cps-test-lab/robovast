@@ -1,0 +1,3 @@
+[submodule "dependencies/scenery_builder"]
+	path = dependencies/scenery_builder
+	url = https://github.com/secorolab/scenery_builder.git

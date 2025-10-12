@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypeset="?" ?>
+<package format="3">
+  <name>robovast_common</name>
+  <version>1.0.0</version>
+  <description>Common components for RoboVast applications</description>
+
+  <maintainer email="fred-labs@mailbox.org">Frederik Pasch</maintainer>
+
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+
+</package>

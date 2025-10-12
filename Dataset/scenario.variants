@@ -1,0 +1,1798 @@
+settings:
+  floorplan_variation:
+    floorplan_variation_seed: 42
+    num_variations: 2
+    variation_files:
+    - /home/fred/git/robovast/Dataset/floorplans/rooms/rooms.variation
+  general_parameters:
+    robot_diameter: 0.3
+  obstacle_placement:
+    obstacle_configs:
+    - amount: 0
+      max_distance: 0.1
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - amount: 5
+      max_distance: 2.0
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - amount: 10
+      max_distance: 1.5
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - amount: 0
+      max_distance: 0.1
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - amount: 5
+      max_distance: 2.0
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - amount: 10
+      max_distance: 1.5
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      xacro_arguments: diameter:=0.5, height:=1.0
+    obstacle_placement_seed: 789012
+  path_generation:
+    min_distance: 1.0
+    num_paths: 1
+    path_generation_seed: 42
+    path_length: 10.0
+    path_length_tolerance: 0.5
+    robot_diameter: 0.3
+  sensor_noise:
+    noise_configs:
+    - drop_rate: 0.0
+      noise_std: 0.0
+    - drop_rate: 1.0
+      noise_std: 0.05
+    - drop_rate: 1.0
+      noise_std: 0.1
+    - drop_rate: 5.0
+      noise_std: 0.1
+    sensor_noise_seed: 123456
+    skip_sensor_noise: false
+---
+floorplan_variant_name: rooms_6734
+floorplan_variation: rooms
+name: rooms_6734-p1-o0-box-sd000n000
+variant:
+  nav_scenario:
+    goal_poses:
+    - orientation:
+        yaw: -0.1745787739813256
+      position:
+        x: -0.7372540415021991
+        y: 7.402659483998659
+    laserscan_gaussian_noise_std_deviation: '0.0'
+    laserscan_random_drop_percentage: '0.0'
+    map_file: maps/rooms.yaml
+    mesh_file: 3d-mesh/rooms.stl
+    start_pose:
+      orientation:
+        yaw: 2.432929414908286
+      position:
+        x: -7.916653182576392
+        y: 3.1387523456650976
+---
+floorplan_variant_name: rooms_6734
+floorplan_variation: rooms
+name: rooms_6734-p1-o0-box-sd100n005
+variant:
+  nav_scenario:
+    goal_poses:
+    - orientation:
+        yaw: -0.1745787739813256
+      position:
+        x: -0.7372540415021991
+        y: 7.402659483998659
+    laserscan_gaussian_noise_std_deviation: '0.05'
+    laserscan_random_drop_percentage: '1.0'
+    map_file: maps/rooms.yaml
+    mesh_file: 3d-mesh/rooms.stl
+    start_pose:
+      orientation:
+        yaw: 2.432929414908286
+      position:
+        x: -7.916653182576392
+        y: 3.1387523456650976
+---
+floorplan_variant_name: rooms_6734
+floorplan_variation: rooms
+name: rooms_6734-p1-o0-box-sd100n010
+variant:
+  nav_scenario:
+    goal_poses:
+    - orientation:
+        yaw: -0.1745787739813256
+      position:
+        x: -0.7372540415021991
+        y: 7.402659483998659
+    laserscan_gaussian_noise_std_deviation: '0.1'
+    laserscan_random_drop_percentage: '1.0'
+    map_file: maps/rooms.yaml
+    mesh_file: 3d-mesh/rooms.stl
+    start_pose:
+      orientation:
+        yaw: 2.432929414908286
+      position:
+        x: -7.916653182576392
+        y: 3.1387523456650976
+---
+floorplan_variant_name: rooms_6734
+floorplan_variation: rooms
+name: rooms_6734-p1-o0-box-sd500n010
+variant:
+  nav_scenario:
+    goal_poses:
+    - orientation:
+        yaw: -0.1745787739813256
+      position:
+        x: -0.7372540415021991
+        y: 7.402659483998659
+    laserscan_gaussian_noise_std_deviation: '0.1'
+    laserscan_random_drop_percentage: '5.0'
+    map_file: maps/rooms.yaml
+    mesh_file: 3d-mesh/rooms.stl
+    start_pose:
+      orientation:
+        yaw: 2.432929414908286
+      position:
+        x: -7.916653182576392
+        y: 3.1387523456650976
+---
+floorplan_variant_name: rooms_6734
+floorplan_variation: rooms
+name: rooms_6734-p1-o5-box-sd000n000
+variant:
+  nav_scenario:
+    goal_poses:
+    - orientation:
+        yaw: -0.1745787739813256
+      position:
+        x: -0.7372540415021991
+        y: 7.402659483998659
+    laserscan_gaussian_noise_std_deviation: '0.0'
+    laserscan_random_drop_percentage: '0.0'
+    map_file: maps/rooms.yaml
+    mesh_file: 3d-mesh/rooms.stl
+    start_pose:
+      orientation:
+        yaw: 2.432929414908286
+      position:
+        x: -7.916653182576392
+        y: 3.1387523456650976
+    static_objects:
+    - entity_name: obstacle_0
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -0.7889563787196292
+        position:
+          x: -6.576061539252826
+          y: 4.629913300261772
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - entity_name: obstacle_1
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -1.2782601220304926
+        position:
+          x: -5.341327071633399
+          y: 4.2143467268148544
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - entity_name: obstacle_2
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -0.5562226792567211
+        position:
+          x: -4.490637652611991
+          y: 4.657045103570084
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - entity_name: obstacle_3
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 2.6869806691632894
+        position:
+          x: -4.213219426812833
+          y: 2.579001739890952
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - entity_name: obstacle_4
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -1.0996371176349875
+        position:
+          x: -4.728102983212074
+          y: 3.445173392292096
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+---
+floorplan_variant_name: rooms_6734
+floorplan_variation: rooms
+name: rooms_6734-p1-o5-box-sd100n005
+variant:
+  nav_scenario:
+    goal_poses:
+    - orientation:
+        yaw: -0.1745787739813256
+      position:
+        x: -0.7372540415021991
+        y: 7.402659483998659
+    laserscan_gaussian_noise_std_deviation: '0.05'
+    laserscan_random_drop_percentage: '1.0'
+    map_file: maps/rooms.yaml
+    mesh_file: 3d-mesh/rooms.stl
+    start_pose:
+      orientation:
+        yaw: 2.432929414908286
+      position:
+        x: -7.916653182576392
+        y: 3.1387523456650976
+    static_objects:
+    - entity_name: obstacle_0
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -0.7889563787196292
+        position:
+          x: -6.576061539252826
+          y: 4.629913300261772
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - entity_name: obstacle_1
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -1.2782601220304926
+        position:
+          x: -5.341327071633399
+          y: 4.2143467268148544
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - entity_name: obstacle_2
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -0.5562226792567211
+        position:
+          x: -4.490637652611991
+          y: 4.657045103570084
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - entity_name: obstacle_3
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 2.6869806691632894
+        position:
+          x: -4.213219426812833
+          y: 2.579001739890952
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - entity_name: obstacle_4
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -1.0996371176349875
+        position:
+          x: -4.728102983212074
+          y: 3.445173392292096
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+---
+floorplan_variant_name: rooms_6734
+floorplan_variation: rooms
+name: rooms_6734-p1-o5-box-sd100n010
+variant:
+  nav_scenario:
+    goal_poses:
+    - orientation:
+        yaw: -0.1745787739813256
+      position:
+        x: -0.7372540415021991
+        y: 7.402659483998659
+    laserscan_gaussian_noise_std_deviation: '0.1'
+    laserscan_random_drop_percentage: '1.0'
+    map_file: maps/rooms.yaml
+    mesh_file: 3d-mesh/rooms.stl
+    start_pose:
+      orientation:
+        yaw: 2.432929414908286
+      position:
+        x: -7.916653182576392
+        y: 3.1387523456650976
+    static_objects:
+    - entity_name: obstacle_0
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -0.7889563787196292
+        position:
+          x: -6.576061539252826
+          y: 4.629913300261772
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - entity_name: obstacle_1
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -1.2782601220304926
+        position:
+          x: -5.341327071633399
+          y: 4.2143467268148544
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - entity_name: obstacle_2
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -0.5562226792567211
+        position:
+          x: -4.490637652611991
+          y: 4.657045103570084
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - entity_name: obstacle_3
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 2.6869806691632894
+        position:
+          x: -4.213219426812833
+          y: 2.579001739890952
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - entity_name: obstacle_4
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -1.0996371176349875
+        position:
+          x: -4.728102983212074
+          y: 3.445173392292096
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+---
+floorplan_variant_name: rooms_6734
+floorplan_variation: rooms
+name: rooms_6734-p1-o5-box-sd500n010
+variant:
+  nav_scenario:
+    goal_poses:
+    - orientation:
+        yaw: -0.1745787739813256
+      position:
+        x: -0.7372540415021991
+        y: 7.402659483998659
+    laserscan_gaussian_noise_std_deviation: '0.1'
+    laserscan_random_drop_percentage: '5.0'
+    map_file: maps/rooms.yaml
+    mesh_file: 3d-mesh/rooms.stl
+    start_pose:
+      orientation:
+        yaw: 2.432929414908286
+      position:
+        x: -7.916653182576392
+        y: 3.1387523456650976
+    static_objects:
+    - entity_name: obstacle_0
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -0.7889563787196292
+        position:
+          x: -6.576061539252826
+          y: 4.629913300261772
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - entity_name: obstacle_1
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -1.2782601220304926
+        position:
+          x: -5.341327071633399
+          y: 4.2143467268148544
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - entity_name: obstacle_2
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -0.5562226792567211
+        position:
+          x: -4.490637652611991
+          y: 4.657045103570084
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - entity_name: obstacle_3
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 2.6869806691632894
+        position:
+          x: -4.213219426812833
+          y: 2.579001739890952
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - entity_name: obstacle_4
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -1.0996371176349875
+        position:
+          x: -4.728102983212074
+          y: 3.445173392292096
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+---
+floorplan_variant_name: rooms_6734
+floorplan_variation: rooms
+name: rooms_6734-p1-o10-box-sd000n000
+variant:
+  nav_scenario:
+    goal_poses:
+    - orientation:
+        yaw: -0.1745787739813256
+      position:
+        x: -0.7372540415021991
+        y: 7.402659483998659
+    laserscan_gaussian_noise_std_deviation: '0.0'
+    laserscan_random_drop_percentage: '0.0'
+    map_file: maps/rooms.yaml
+    mesh_file: 3d-mesh/rooms.stl
+    start_pose:
+      orientation:
+        yaw: 2.432929414908286
+      position:
+        x: -7.916653182576392
+        y: 3.1387523456650976
+    static_objects:
+    - entity_name: obstacle_0
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 0.06728409364263088
+        position:
+          x: -4.656853158891832
+          y: 3.502867662579166
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_1
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 2.2278218215300525
+        position:
+          x: -4.368538949640078
+          y: 5.082119354696619
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_2
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -1.8853511418120108
+        position:
+          x: -5.612680663495102
+          y: 4.800668058295422
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_3
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -1.9796241745956835
+        position:
+          x: -5.678995367539362
+          y: 2.5637371183997044
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_4
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -0.6244046650569426
+        position:
+          x: -7.10421601160876
+          y: 3.1148558308935694
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_5
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 1.4894061965307115
+        position:
+          x: -4.011731474674161
+          y: 4.4623423576364605
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_6
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -2.640463293097221
+        position:
+          x: -6.022374794247333
+          y: 2.899568020599544
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_7
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -0.0606971387946551
+        position:
+          x: -2.738799903176021
+          y: 5.81531132915465
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_8
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -1.2169665931597928
+        position:
+          x: -1.4703952383564558
+          y: 5.567561479335471
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_9
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 1.9838686693656804
+        position:
+          x: -5.586395096633769
+          y: 4.189307559830535
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+---
+floorplan_variant_name: rooms_6734
+floorplan_variation: rooms
+name: rooms_6734-p1-o10-box-sd100n005
+variant:
+  nav_scenario:
+    goal_poses:
+    - orientation:
+        yaw: -0.1745787739813256
+      position:
+        x: -0.7372540415021991
+        y: 7.402659483998659
+    laserscan_gaussian_noise_std_deviation: '0.05'
+    laserscan_random_drop_percentage: '1.0'
+    map_file: maps/rooms.yaml
+    mesh_file: 3d-mesh/rooms.stl
+    start_pose:
+      orientation:
+        yaw: 2.432929414908286
+      position:
+        x: -7.916653182576392
+        y: 3.1387523456650976
+    static_objects:
+    - entity_name: obstacle_0
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 0.06728409364263088
+        position:
+          x: -4.656853158891832
+          y: 3.502867662579166
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_1
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 2.2278218215300525
+        position:
+          x: -4.368538949640078
+          y: 5.082119354696619
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_2
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -1.8853511418120108
+        position:
+          x: -5.612680663495102
+          y: 4.800668058295422
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_3
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -1.9796241745956835
+        position:
+          x: -5.678995367539362
+          y: 2.5637371183997044
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_4
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -0.6244046650569426
+        position:
+          x: -7.10421601160876
+          y: 3.1148558308935694
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_5
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 1.4894061965307115
+        position:
+          x: -4.011731474674161
+          y: 4.4623423576364605
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_6
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -2.640463293097221
+        position:
+          x: -6.022374794247333
+          y: 2.899568020599544
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_7
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -0.0606971387946551
+        position:
+          x: -2.738799903176021
+          y: 5.81531132915465
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_8
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -1.2169665931597928
+        position:
+          x: -1.4703952383564558
+          y: 5.567561479335471
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_9
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 1.9838686693656804
+        position:
+          x: -5.586395096633769
+          y: 4.189307559830535
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+---
+floorplan_variant_name: rooms_6734
+floorplan_variation: rooms
+name: rooms_6734-p1-o10-box-sd100n010
+variant:
+  nav_scenario:
+    goal_poses:
+    - orientation:
+        yaw: -0.1745787739813256
+      position:
+        x: -0.7372540415021991
+        y: 7.402659483998659
+    laserscan_gaussian_noise_std_deviation: '0.1'
+    laserscan_random_drop_percentage: '1.0'
+    map_file: maps/rooms.yaml
+    mesh_file: 3d-mesh/rooms.stl
+    start_pose:
+      orientation:
+        yaw: 2.432929414908286
+      position:
+        x: -7.916653182576392
+        y: 3.1387523456650976
+    static_objects:
+    - entity_name: obstacle_0
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 0.06728409364263088
+        position:
+          x: -4.656853158891832
+          y: 3.502867662579166
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_1
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 2.2278218215300525
+        position:
+          x: -4.368538949640078
+          y: 5.082119354696619
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_2
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -1.8853511418120108
+        position:
+          x: -5.612680663495102
+          y: 4.800668058295422
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_3
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -1.9796241745956835
+        position:
+          x: -5.678995367539362
+          y: 2.5637371183997044
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_4
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -0.6244046650569426
+        position:
+          x: -7.10421601160876
+          y: 3.1148558308935694
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_5
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 1.4894061965307115
+        position:
+          x: -4.011731474674161
+          y: 4.4623423576364605
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_6
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -2.640463293097221
+        position:
+          x: -6.022374794247333
+          y: 2.899568020599544
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_7
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -0.0606971387946551
+        position:
+          x: -2.738799903176021
+          y: 5.81531132915465
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_8
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -1.2169665931597928
+        position:
+          x: -1.4703952383564558
+          y: 5.567561479335471
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_9
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 1.9838686693656804
+        position:
+          x: -5.586395096633769
+          y: 4.189307559830535
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+---
+floorplan_variant_name: rooms_6734
+floorplan_variation: rooms
+name: rooms_6734-p1-o10-box-sd500n010
+variant:
+  nav_scenario:
+    goal_poses:
+    - orientation:
+        yaw: -0.1745787739813256
+      position:
+        x: -0.7372540415021991
+        y: 7.402659483998659
+    laserscan_gaussian_noise_std_deviation: '0.1'
+    laserscan_random_drop_percentage: '5.0'
+    map_file: maps/rooms.yaml
+    mesh_file: 3d-mesh/rooms.stl
+    start_pose:
+      orientation:
+        yaw: 2.432929414908286
+      position:
+        x: -7.916653182576392
+        y: 3.1387523456650976
+    static_objects:
+    - entity_name: obstacle_0
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 0.06728409364263088
+        position:
+          x: -4.656853158891832
+          y: 3.502867662579166
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_1
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 2.2278218215300525
+        position:
+          x: -4.368538949640078
+          y: 5.082119354696619
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_2
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -1.8853511418120108
+        position:
+          x: -5.612680663495102
+          y: 4.800668058295422
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_3
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -1.9796241745956835
+        position:
+          x: -5.678995367539362
+          y: 2.5637371183997044
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_4
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -0.6244046650569426
+        position:
+          x: -7.10421601160876
+          y: 3.1148558308935694
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_5
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 1.4894061965307115
+        position:
+          x: -4.011731474674161
+          y: 4.4623423576364605
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_6
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -2.640463293097221
+        position:
+          x: -6.022374794247333
+          y: 2.899568020599544
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_7
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -0.0606971387946551
+        position:
+          x: -2.738799903176021
+          y: 5.81531132915465
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_8
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -1.2169665931597928
+        position:
+          x: -1.4703952383564558
+          y: 5.567561479335471
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_9
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 1.9838686693656804
+        position:
+          x: -5.586395096633769
+          y: 4.189307559830535
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+---
+floorplan_variant_name: rooms_6734
+floorplan_variation: rooms
+name: rooms_6734-p1-o0-box-sd000n000
+variant:
+  nav_scenario:
+    goal_poses:
+    - orientation:
+        yaw: -0.1745787739813256
+      position:
+        x: -0.7372540415021991
+        y: 7.402659483998659
+    laserscan_gaussian_noise_std_deviation: '0.0'
+    laserscan_random_drop_percentage: '0.0'
+    map_file: maps/rooms.yaml
+    mesh_file: 3d-mesh/rooms.stl
+    start_pose:
+      orientation:
+        yaw: 2.432929414908286
+      position:
+        x: -7.916653182576392
+        y: 3.1387523456650976
+---
+floorplan_variant_name: rooms_6734
+floorplan_variation: rooms
+name: rooms_6734-p1-o0-box-sd100n005
+variant:
+  nav_scenario:
+    goal_poses:
+    - orientation:
+        yaw: -0.1745787739813256
+      position:
+        x: -0.7372540415021991
+        y: 7.402659483998659
+    laserscan_gaussian_noise_std_deviation: '0.05'
+    laserscan_random_drop_percentage: '1.0'
+    map_file: maps/rooms.yaml
+    mesh_file: 3d-mesh/rooms.stl
+    start_pose:
+      orientation:
+        yaw: 2.432929414908286
+      position:
+        x: -7.916653182576392
+        y: 3.1387523456650976
+---
+floorplan_variant_name: rooms_6734
+floorplan_variation: rooms
+name: rooms_6734-p1-o0-box-sd100n010
+variant:
+  nav_scenario:
+    goal_poses:
+    - orientation:
+        yaw: -0.1745787739813256
+      position:
+        x: -0.7372540415021991
+        y: 7.402659483998659
+    laserscan_gaussian_noise_std_deviation: '0.1'
+    laserscan_random_drop_percentage: '1.0'
+    map_file: maps/rooms.yaml
+    mesh_file: 3d-mesh/rooms.stl
+    start_pose:
+      orientation:
+        yaw: 2.432929414908286
+      position:
+        x: -7.916653182576392
+        y: 3.1387523456650976
+---
+floorplan_variant_name: rooms_6734
+floorplan_variation: rooms
+name: rooms_6734-p1-o0-box-sd500n010
+variant:
+  nav_scenario:
+    goal_poses:
+    - orientation:
+        yaw: -0.1745787739813256
+      position:
+        x: -0.7372540415021991
+        y: 7.402659483998659
+    laserscan_gaussian_noise_std_deviation: '0.1'
+    laserscan_random_drop_percentage: '5.0'
+    map_file: maps/rooms.yaml
+    mesh_file: 3d-mesh/rooms.stl
+    start_pose:
+      orientation:
+        yaw: 2.432929414908286
+      position:
+        x: -7.916653182576392
+        y: 3.1387523456650976
+---
+floorplan_variant_name: rooms_6734
+floorplan_variation: rooms
+name: rooms_6734-p1-o5-box-sd000n000
+variant:
+  nav_scenario:
+    goal_poses:
+    - orientation:
+        yaw: -0.1745787739813256
+      position:
+        x: -0.7372540415021991
+        y: 7.402659483998659
+    laserscan_gaussian_noise_std_deviation: '0.0'
+    laserscan_random_drop_percentage: '0.0'
+    map_file: maps/rooms.yaml
+    mesh_file: 3d-mesh/rooms.stl
+    start_pose:
+      orientation:
+        yaw: 2.432929414908286
+      position:
+        x: -7.916653182576392
+        y: 3.1387523456650976
+    static_objects:
+    - entity_name: obstacle_0
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -1.0703204849246033
+        position:
+          x: -3.484027393432767
+          y: 4.882678111074404
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - entity_name: obstacle_1
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 1.7409963824150463
+        position:
+          x: -2.9998436821192667
+          y: 6.269189053363572
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - entity_name: obstacle_2
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 2.847599944405526
+        position:
+          x: -2.6332423058458136
+          y: 8.369758447795382
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - entity_name: obstacle_3
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -1.9539853307966593
+        position:
+          x: -0.5460825322445007
+          y: 5.908783452577339
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - entity_name: obstacle_4
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 1.2963993729151815
+        position:
+          x: -5.942451365034982
+          y: 1.629931762732693
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+---
+floorplan_variant_name: rooms_6734
+floorplan_variation: rooms
+name: rooms_6734-p1-o5-box-sd100n005
+variant:
+  nav_scenario:
+    goal_poses:
+    - orientation:
+        yaw: -0.1745787739813256
+      position:
+        x: -0.7372540415021991
+        y: 7.402659483998659
+    laserscan_gaussian_noise_std_deviation: '0.05'
+    laserscan_random_drop_percentage: '1.0'
+    map_file: maps/rooms.yaml
+    mesh_file: 3d-mesh/rooms.stl
+    start_pose:
+      orientation:
+        yaw: 2.432929414908286
+      position:
+        x: -7.916653182576392
+        y: 3.1387523456650976
+    static_objects:
+    - entity_name: obstacle_0
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -1.0703204849246033
+        position:
+          x: -3.484027393432767
+          y: 4.882678111074404
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - entity_name: obstacle_1
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 1.7409963824150463
+        position:
+          x: -2.9998436821192667
+          y: 6.269189053363572
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - entity_name: obstacle_2
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 2.847599944405526
+        position:
+          x: -2.6332423058458136
+          y: 8.369758447795382
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - entity_name: obstacle_3
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -1.9539853307966593
+        position:
+          x: -0.5460825322445007
+          y: 5.908783452577339
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - entity_name: obstacle_4
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 1.2963993729151815
+        position:
+          x: -5.942451365034982
+          y: 1.629931762732693
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+---
+floorplan_variant_name: rooms_6734
+floorplan_variation: rooms
+name: rooms_6734-p1-o5-box-sd100n010
+variant:
+  nav_scenario:
+    goal_poses:
+    - orientation:
+        yaw: -0.1745787739813256
+      position:
+        x: -0.7372540415021991
+        y: 7.402659483998659
+    laserscan_gaussian_noise_std_deviation: '0.1'
+    laserscan_random_drop_percentage: '1.0'
+    map_file: maps/rooms.yaml
+    mesh_file: 3d-mesh/rooms.stl
+    start_pose:
+      orientation:
+        yaw: 2.432929414908286
+      position:
+        x: -7.916653182576392
+        y: 3.1387523456650976
+    static_objects:
+    - entity_name: obstacle_0
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -1.0703204849246033
+        position:
+          x: -3.484027393432767
+          y: 4.882678111074404
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - entity_name: obstacle_1
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 1.7409963824150463
+        position:
+          x: -2.9998436821192667
+          y: 6.269189053363572
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - entity_name: obstacle_2
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 2.847599944405526
+        position:
+          x: -2.6332423058458136
+          y: 8.369758447795382
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - entity_name: obstacle_3
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -1.9539853307966593
+        position:
+          x: -0.5460825322445007
+          y: 5.908783452577339
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - entity_name: obstacle_4
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 1.2963993729151815
+        position:
+          x: -5.942451365034982
+          y: 1.629931762732693
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+---
+floorplan_variant_name: rooms_6734
+floorplan_variation: rooms
+name: rooms_6734-p1-o5-box-sd500n010
+variant:
+  nav_scenario:
+    goal_poses:
+    - orientation:
+        yaw: -0.1745787739813256
+      position:
+        x: -0.7372540415021991
+        y: 7.402659483998659
+    laserscan_gaussian_noise_std_deviation: '0.1'
+    laserscan_random_drop_percentage: '5.0'
+    map_file: maps/rooms.yaml
+    mesh_file: 3d-mesh/rooms.stl
+    start_pose:
+      orientation:
+        yaw: 2.432929414908286
+      position:
+        x: -7.916653182576392
+        y: 3.1387523456650976
+    static_objects:
+    - entity_name: obstacle_0
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -1.0703204849246033
+        position:
+          x: -3.484027393432767
+          y: 4.882678111074404
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - entity_name: obstacle_1
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 1.7409963824150463
+        position:
+          x: -2.9998436821192667
+          y: 6.269189053363572
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - entity_name: obstacle_2
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 2.847599944405526
+        position:
+          x: -2.6332423058458136
+          y: 8.369758447795382
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - entity_name: obstacle_3
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -1.9539853307966593
+        position:
+          x: -0.5460825322445007
+          y: 5.908783452577339
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+    - entity_name: obstacle_4
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 1.2963993729151815
+        position:
+          x: -5.942451365034982
+          y: 1.629931762732693
+          z: 0.5
+      xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+---
+floorplan_variant_name: rooms_6734
+floorplan_variation: rooms
+name: rooms_6734-p1-o10-box-sd000n000
+variant:
+  nav_scenario:
+    goal_poses:
+    - orientation:
+        yaw: -0.1745787739813256
+      position:
+        x: -0.7372540415021991
+        y: 7.402659483998659
+    laserscan_gaussian_noise_std_deviation: '0.0'
+    laserscan_random_drop_percentage: '0.0'
+    map_file: maps/rooms.yaml
+    mesh_file: 3d-mesh/rooms.stl
+    start_pose:
+      orientation:
+        yaw: 2.432929414908286
+      position:
+        x: -7.916653182576392
+        y: 3.1387523456650976
+    static_objects:
+    - entity_name: obstacle_0
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -1.1682557151829838
+        position:
+          x: -3.404758158219067
+          y: 5.418933066611154
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_1
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -2.4901302894891897
+        position:
+          x: -2.7926619349715365
+          y: 5.981067345116851
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_2
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -2.9853977565194523
+        position:
+          x: -5.138157412712043
+          y: 6.845099495029149
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_3
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 2.7710716829784996
+        position:
+          x: -3.9800021727110786
+          y: 5.237165784008255
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_4
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 1.7104099571797757
+        position:
+          x: -1.944640848044107
+          y: 6.830436570396496
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_5
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 0.7694033247012975
+        position:
+          x: -5.115265524444565
+          y: 4.1517042040824315
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_6
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -0.27859106299071046
+        position:
+          x: -6.909251844130054
+          y: 3.4787655602512526
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_7
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -2.622175883516397
+        position:
+          x: -7.164280643971841
+          y: 2.9637156049378715
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_8
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -0.8474911227693362
+        position:
+          x: -4.3402671319539365
+          y: 4.8222327833358065
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_9
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 0.3204483540438128
+        position:
+          x: -6.137932514243686
+          y: 4.702419573116074
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+---
+floorplan_variant_name: rooms_6734
+floorplan_variation: rooms
+name: rooms_6734-p1-o10-box-sd100n005
+variant:
+  nav_scenario:
+    goal_poses:
+    - orientation:
+        yaw: -0.1745787739813256
+      position:
+        x: -0.7372540415021991
+        y: 7.402659483998659
+    laserscan_gaussian_noise_std_deviation: '0.05'
+    laserscan_random_drop_percentage: '1.0'
+    map_file: maps/rooms.yaml
+    mesh_file: 3d-mesh/rooms.stl
+    start_pose:
+      orientation:
+        yaw: 2.432929414908286
+      position:
+        x: -7.916653182576392
+        y: 3.1387523456650976
+    static_objects:
+    - entity_name: obstacle_0
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -1.1682557151829838
+        position:
+          x: -3.404758158219067
+          y: 5.418933066611154
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_1
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -2.4901302894891897
+        position:
+          x: -2.7926619349715365
+          y: 5.981067345116851
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_2
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -2.9853977565194523
+        position:
+          x: -5.138157412712043
+          y: 6.845099495029149
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_3
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 2.7710716829784996
+        position:
+          x: -3.9800021727110786
+          y: 5.237165784008255
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_4
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 1.7104099571797757
+        position:
+          x: -1.944640848044107
+          y: 6.830436570396496
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_5
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 0.7694033247012975
+        position:
+          x: -5.115265524444565
+          y: 4.1517042040824315
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_6
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -0.27859106299071046
+        position:
+          x: -6.909251844130054
+          y: 3.4787655602512526
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_7
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -2.622175883516397
+        position:
+          x: -7.164280643971841
+          y: 2.9637156049378715
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_8
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -0.8474911227693362
+        position:
+          x: -4.3402671319539365
+          y: 4.8222327833358065
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_9
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 0.3204483540438128
+        position:
+          x: -6.137932514243686
+          y: 4.702419573116074
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+---
+floorplan_variant_name: rooms_6734
+floorplan_variation: rooms
+name: rooms_6734-p1-o10-box-sd100n010
+variant:
+  nav_scenario:
+    goal_poses:
+    - orientation:
+        yaw: -0.1745787739813256
+      position:
+        x: -0.7372540415021991
+        y: 7.402659483998659
+    laserscan_gaussian_noise_std_deviation: '0.1'
+    laserscan_random_drop_percentage: '1.0'
+    map_file: maps/rooms.yaml
+    mesh_file: 3d-mesh/rooms.stl
+    start_pose:
+      orientation:
+        yaw: 2.432929414908286
+      position:
+        x: -7.916653182576392
+        y: 3.1387523456650976
+    static_objects:
+    - entity_name: obstacle_0
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -1.1682557151829838
+        position:
+          x: -3.404758158219067
+          y: 5.418933066611154
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_1
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -2.4901302894891897
+        position:
+          x: -2.7926619349715365
+          y: 5.981067345116851
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_2
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -2.9853977565194523
+        position:
+          x: -5.138157412712043
+          y: 6.845099495029149
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_3
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 2.7710716829784996
+        position:
+          x: -3.9800021727110786
+          y: 5.237165784008255
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_4
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 1.7104099571797757
+        position:
+          x: -1.944640848044107
+          y: 6.830436570396496
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_5
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 0.7694033247012975
+        position:
+          x: -5.115265524444565
+          y: 4.1517042040824315
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_6
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -0.27859106299071046
+        position:
+          x: -6.909251844130054
+          y: 3.4787655602512526
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_7
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -2.622175883516397
+        position:
+          x: -7.164280643971841
+          y: 2.9637156049378715
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_8
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -0.8474911227693362
+        position:
+          x: -4.3402671319539365
+          y: 4.8222327833358065
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_9
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 0.3204483540438128
+        position:
+          x: -6.137932514243686
+          y: 4.702419573116074
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+---
+floorplan_variant_name: rooms_6734
+floorplan_variation: rooms
+name: rooms_6734-p1-o10-box-sd500n010
+variant:
+  nav_scenario:
+    goal_poses:
+    - orientation:
+        yaw: -0.1745787739813256
+      position:
+        x: -0.7372540415021991
+        y: 7.402659483998659
+    laserscan_gaussian_noise_std_deviation: '0.1'
+    laserscan_random_drop_percentage: '5.0'
+    map_file: maps/rooms.yaml
+    mesh_file: 3d-mesh/rooms.stl
+    start_pose:
+      orientation:
+        yaw: 2.432929414908286
+      position:
+        x: -7.916653182576392
+        y: 3.1387523456650976
+    static_objects:
+    - entity_name: obstacle_0
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -1.1682557151829838
+        position:
+          x: -3.404758158219067
+          y: 5.418933066611154
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_1
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -2.4901302894891897
+        position:
+          x: -2.7926619349715365
+          y: 5.981067345116851
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_2
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -2.9853977565194523
+        position:
+          x: -5.138157412712043
+          y: 6.845099495029149
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_3
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 2.7710716829784996
+        position:
+          x: -3.9800021727110786
+          y: 5.237165784008255
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_4
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 1.7104099571797757
+        position:
+          x: -1.944640848044107
+          y: 6.830436570396496
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_5
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 0.7694033247012975
+        position:
+          x: -5.115265524444565
+          y: 4.1517042040824315
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_6
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -0.27859106299071046
+        position:
+          x: -6.909251844130054
+          y: 3.4787655602512526
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_7
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -2.622175883516397
+        position:
+          x: -7.164280643971841
+          y: 2.9637156049378715
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_8
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: -0.8474911227693362
+        position:
+          x: -4.3402671319539365
+          y: 4.8222327833358065
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
+    - entity_name: obstacle_9
+      model: gazebo_scenario_models://models/box.sdf.xacro
+      spawn_pose:
+        orientation:
+          yaw: 0.3204483540438128
+        position:
+          x: -6.137932514243686
+          y: 4.702419573116074
+          z: 0.5
+      xacro_arguments: diameter:=0.5, height:=1.0
