@@ -28,7 +28,7 @@ extlinks = {'repo_link': ('https://github.com/cps-test-lab/robovast/blob/main/%s
 templates_path = ['_templates']
 exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 
-language = 'english'
+language = 'en'
 
 linkcheck_ignore = [
     r'https://github.com/cps-test-lab/robovast/.*',
