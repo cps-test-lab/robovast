@@ -16,11 +16,11 @@ view_doc: doc
 	firefox build/html/index.html &
 
 checklinks: sphinx_setup
-	. venv/bin/activate && GITHUB_REF_NAME=local GITHUB_REPOSITORY=cps-test-lab/robovast python -m sphinx -b linkcheck -W docs $(ALLSPHINXOPTS) $(LINKCHECKDIR)
+	. venv/bin/activate && GITHUB_REF_NAME=local GITHUB_REPOSITORY=cps-test-lab/robovast python -m sphinx -b linkcheck -W docs $(LINKCHECKDIR)
 	@echo
 	@echo "Check finished. Report is in $(LINKCHECKDIR)."
 
 checkspelling: sphinx_setup
-	. venv/bin/activate && GITHUB_REF_NAME=local GITHUB_REPOSITORY=cps-test-lab/robovast python -m sphinx -b html -b spelling -W docs $(ALLSPHINXOPTS) $(LINKCHECKDIR)
+	. venv/bin/activate && GITHUB_REF_NAME=local GITHUB_REPOSITORY=cps-test-lab/robovast python -m sphinx -b html -b spelling -W docs $(LINKCHECKDIR)
 	@echo
 	@echo "Check finished. Report is in $(LINKCHECKDIR)."
