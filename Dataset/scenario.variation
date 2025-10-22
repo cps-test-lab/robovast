@@ -1,0 +1,49 @@
+settings:
+  execution:
+    kubernetes_manifest: kubernetes_tmpl.yaml
+    scenario: scenario.osc
+    scenario_file_filter:
+    - "**/common/*.sh"
+    - "**/common/*launch.py"
+    - "**/common/*.rviz"
+    - "**/common/*.sdf.xacro"
+    variant_filter_patterns:
+    - "**/maps/*.pgm"
+    - "**/3d-mesh/*.stl"
+    - "**/maps/*.yaml"
+  analysis:
+  - Overview:
+    single_test: analysis/overview_single_test.ipynb
+    variant: analysis/overview_variant.ipynb
+    run: analysis/overview_run.ipynb
+  - Details:
+    single_test: analysis/analysis_single_test.ipynb
+    variant: analysis/analysis_variant.ipynb
+    run: analysis/analysis_run.ipynb
+  general:
+    robot_diameter: 0.35
+  variation:
+    - FloorplanVariation:
+        variation_files:
+        - floorplans/rooms/rooms.variation
+        num_variations: 1
+        floorplan_variation_seed: 42
+    - PathVariation:
+        path_length: 10.0
+        num_paths: 1
+        path_length_tolerance: 0.5
+        min_distance: 1.0
+        path_generation_seed: 42
+    - ObstacleVariation:
+        obstacle_configs:
+        - amount: 1
+          max_distance: 0.1
+          model: gazebo_scenario_models://models/box.sdf.xacro
+          xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+        obstacle_placement_seed: 789012
+    - SensorNoise:
+        noise_configs:
+        - drop_rate: 0.12
+          noise_std: 0.34
+        sensor_noise_seed: 123456
+        skip_sensor_noise: true

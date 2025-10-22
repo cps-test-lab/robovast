@@ -1,0 +1,20 @@
+settings:
+  execution:
+    kubernetes_manifest: kubernetes_tmpl.yaml
+    scenario: scenario.osc
+    scenario_file_filter:
+    - "**/common/*.py"
+    - "**/common/*.sh"
+  analysis:
+  - Analysis:
+      single_test: analysis/analysis_single_test.ipynb
+      variant: analysis/analysis_variant.ipynb
+      run: analysis/analysis_run.ipynb
+  variation:
+  - ParameterVariationRandom:
+      name: req_timeout
+      num_variations: 3
+      min: 500
+      max: 1000
+      type: string
+      seed: 1

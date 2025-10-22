@@ -1,0 +1,7 @@
+import "hallways.fpm"
+
+door_width : uniform([0.5,1.0,2.0])
+hallway_width : uniform([0.5,1.0,2.0])
+hallway_length : normal(mean=10.0, std=2.0)
+wall_width : uniform([0.01,0.1,0.5])
+

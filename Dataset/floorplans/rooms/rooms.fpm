@@ -1,0 +1,216 @@
+Floor plan: rooms
+
+    Defaults:
+        walls: 
+            thickness: wall_width
+            height: wall_height
+
+    // variables
+    var wall_width = 0.1 m
+    var wall_height = 2.0 m
+    var room_width = 4.0 m
+    var room_length = 3.0 m
+    var hallway_width = 1.0 m
+    var door_width = 0.8 m
+    var right_angle_rotation = 90.0 deg
+    
+    Space big_room:
+        shape: Polygon points:[
+                (-12.0 m, 0.05 m),
+                (1.0 m, 0.05 m),
+                (1.37 m, 0.15 m),
+                (1.81 m, 0.37 m),
+                (2.18 m, 0.69 m),
+                (2.47 m, 1.08 m),
+                (2.66 m, 1.57 m),
+                (2.7 m, 2.05 m),
+                (2.7 m, 9.24 m),
+                (2.65 m, 9.76 m),
+                (2.45 m, 10.24 m),
+                (2.13 m, 10.66 m),
+                (1.72 m, 10.97 m),
+                (1.23 m, 11.17 m),
+                (0.7 m, 11.25 m),
+                (-12.0 m, 11.25 m)
+        ]
+        location:
+            translation: x: 0.0 m, y: 0.0 m
+            rotation: z: 0.0 deg
+            wrt: world
+            of: this
+         
+        walls:
+            thickness: wall_width
+            height: wall_height
+
+    Space lower_left_room:
+        shape: Rectangle width=room_width, length=room_length
+        location:
+            translation: x: -2.6 m, y: 3.2 m
+            rotation: z: 0.0 deg
+            wrt: big_room.walls[0]
+            of: this
+         
+        walls:
+            thickness: wall_width
+            height: wall_height
+
+    Space upper_left_room:
+        shape: Rectangle width=room_width, length=room_length
+        location:
+            translation: x: 0.0 m, y: 3.7 m
+            rotation: z: 0.0 deg
+            wrt: lower_left_room.walls[0]
+            of: this
+         
+        walls:
+            thickness: wall_width
+            height: wall_height
+
+    Space lower_right_room:
+        shape: Polygon points:[
+                (0.6 m, 0.0 m),
+                (5.6 m, 0.0 m),
+                (5.9 m, 0.03 m),
+                (6.13 m, 0.13 m),
+                (6.32 m, 0.29 m),
+                (6.47 m, 0.48 m),
+                (6.57 m, 0.71 m),
+                (6.6 m, 1.0 m),
+                (6.6 m, 3.2 m),
+                (0.6 m, 3.2 m)
+        ]
+        location:
+            translation: x: 2.8 m, y: -3.1 m
+            rotation: z: 0.0 deg
+            wrt: lower_left_room.walls[0]
+            of: this
+         
+        walls:
+            thickness: wall_width
+            height: wall_height
+
+    Space upper_right_room:
+        shape: Rectangle width=5.8 m, length=room_length
+        location:
+            translation: x: 0.5 m, y: 6.8 m
+            rotation: z: 0.0 deg
+            wrt: lower_right_room.walls[0]
+            of: this
+         
+        walls:
+            thickness: wall_width
+            height: wall_height
+
+    Entryway door_lower_left1:
+        shape: Rectangle width=door_width, height=wall_height
+        location:
+            in: lower_left_room.walls[0] and big_room.walls[14]
+            translation: x: 0.0 m, y: 0.0 m, z: 0.0 m
+            rotation: y: 0.0 deg
+
+    Entryway door_lower_left2:
+        shape: Rectangle width=door_width, height=wall_height
+        location:
+            in: lower_left_room.walls[1] and big_room.walls[14]
+            translation: x: 0.0 m, y: 0.0 m, z: 0.0 m
+            rotation: y: 0.0 deg
+
+    Entryway door_lower_left3:
+        shape: Rectangle width=door_width, height=wall_height
+        location:
+            in: lower_left_room.walls[2] and big_room.walls[14]
+            translation: x: 0.0 m, y: 0.0 m, z: 0.0 m
+            rotation: y: 0.0 deg
+
+    Entryway door_lower_left4:
+        shape: Rectangle width=door_width, height=wall_height
+        location:
+            in: lower_left_room.walls[3] and big_room.walls[14]
+            translation: x: 0.0 m, y: 0.0 m, z: 0.0 m
+            rotation: y: 0.0 deg
+
+    Entryway door_upper_left1:
+        shape: Rectangle width=door_width, height=wall_height
+        location:
+            in: upper_left_room.walls[0] and big_room.walls[14]
+            translation: x: 0.0 m, y: 0.0 m, z: 0.0 m
+            rotation: y: 0.0 deg
+
+    Entryway door_upper_left2:
+        shape: Rectangle width=door_width, height=wall_height
+        location:
+            in: upper_left_room.walls[1] and big_room.walls[14]
+            translation: x: 0.0 m, y: 0.0 m, z: 0.0 m
+            rotation: y: 0.0 deg
+
+    Entryway door_upper_left3:
+        shape: Rectangle width=door_width, height=wall_height
+        location:
+            in: upper_left_room.walls[2] and big_room.walls[14]
+            translation: x: 0.0 m, y: 0.0 m, z: 0.0 m
+            rotation: y: 0.0 deg
+
+    Entryway door_upper_left4:
+        shape: Rectangle width=door_width, height=wall_height
+        location:
+            in: upper_left_room.walls[3] and big_room.walls[14]
+            translation: x: 0.0 m, y: 0.0 m, z: 0.0 m
+            rotation: y: 0.0 deg
+
+    Entryway door_upper_right1:
+        shape: Rectangle width=door_width, height=wall_height
+        location:
+            in: upper_right_room.walls[0] and big_room.walls[14]
+            translation: x: 0.0 m, y: 0.0 m, z: 0.0 m
+            rotation: y: 0.0 deg
+
+    Entryway door_upper_right2:
+        shape: Rectangle width=door_width, height=wall_height
+        location:
+            in: upper_right_room.walls[1] and big_room.walls[14]
+            translation: x: 0.0 m, y: 0.0 m, z: 0.0 m
+            rotation: y: 0.0 deg
+
+    Entryway door_upper_right3:
+        shape: Rectangle width=door_width, height=wall_height
+        location:
+            in: upper_right_room.walls[2] and big_room.walls[14]
+            translation: x: 0.0 m, y: 0.0 m, z: 0.0 m
+            rotation: y: 0.0 deg
+
+    Entryway door_upper_right4:
+        shape: Rectangle width=door_width, height=wall_height
+        location:
+            in: upper_right_room.walls[3] and big_room.walls[14]
+            translation: x: 0.0 m, y: 0.0 m, z: 0.0 m
+            rotation: y: 0.0 deg
+
+    Entryway door_lower_right1:
+        shape: Rectangle width=door_width, height=wall_height
+        location:
+            in: lower_right_room.walls[0] and big_room.walls[14]
+            translation: x: 0.0 m, y: 0.0 m, z: 0.0 m
+            rotation: y: 0.0 deg
+
+    Entryway door_lower_right2:
+        shape: Rectangle width=door_width, height=wall_height
+        location:
+            in: lower_right_room.walls[7] and big_room.walls[14]
+            translation: x: -0.5 m, y: 0.0 m, z: 0.0 m
+            rotation: y: 0.0 deg
+
+    Entryway door_lower_right3:
+        shape: Rectangle width=door_width, height=wall_height
+        location:
+            in: lower_right_room.walls[8] and big_room.walls[14]
+            translation: x: 0.0 m, y: 0.0 m, z: 0.0 m
+            rotation: y: 0.0 deg
+
+    Entryway door_lower_right4:
+        shape: Rectangle width=door_width, height=wall_height
+        location:
+            in: lower_right_room.walls[9] and big_room.walls[14]
+            translation: x: 0.0 m, y: 0.0 m, z: 0.0 m
+            rotation: y: 0.0 deg
+

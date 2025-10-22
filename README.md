@@ -1,6 +1,22 @@
-# RoboVAST #
+# RoboVAST
 
-*Variation Automation and Scalable Testing for Robotic Systems*
+Variation Automation and Scalable Testing for Robotic Systems
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Framework Architecture](#framework-architecture)
+  - [1. Variation](#variation)
+  - [2. Execution](#execution)
+  - [3. Analysis](#analysis)
+- [Mobile Robot Reference Dataset](#mobile-robot-reference-dataset)
+- [How to Use](#how-to-use)
+  - [1. Preparation](#1-preparation)
+  - [2. Variation](#2-variation)
+  - [3. Execution](#3-execution)
+  - [4. Analysis](#4-analysis)
+
+## Overview
 
 > **Disclaimer:** The RoboVAST framework is currently under active development. The source code and additional resources will be published soon. Stay tuned for updates!
 
@@ -10,27 +26,66 @@
 
 RoboVAST provides a **comprehensive dataset** designed to test multiple aspects of **mobile robot software** like Nav2, including localization, path planning, obstacle avoidance, and dynamic re-planning. This reference dataset can be used out-of-the-box or adapted to specific user requirements, significantly lowering the barrier to robust robotics testing.
 
-
-## Framework Architecture ##
+## Framework Architecture
 
 ![Framework Overview](docs/images/overview.png)
 
-### Variation ###
+### Variation
 
 RoboVAST combines multiple variation dimensions to generate comprehensive test suites. Environment generation uses the floorplan-dsl to describe and generate diverse 3D indoor environments with parametric variation of room dimensions and connectivity. For systematic variation, it combines parameters specific to the use case, such as start/end poses, obstacle configurations, and sensor noise for mobile robot navigation. The modular architecture supports extensible addition of new variation dimensions based on specific application requirements. CLI- and GUI-based variant creation and selection tools are available.
 
-### Execution ###
+### Execution
 
 RoboVAST orchestrates test execution by creating Kubernetes jobs that run individual robot simulations using scenario-execution, including screen capturing and ROS bag data collection. The platform handles parallel deployment across available cluster nodes along with required input and output data management. This architecture enables execution of multiple tests in parallel depending on cluster size, significantly reducing validation time while ensuring reproducible execution across distributed computational environments.
 
-### Analysis ###
+### Analysis
 
 To support basic analysis of test results, the framework provides GUI and CLI tools with automated playback, trajectory visualization, and AI-assisted log analysis of each run. These tools offer fundamental analysis capabilities including performance metric extraction, failure detection, and visual inspection of robot behavior.
 
 For use case-specific analysis requirements, users can implement custom analysis workflows. The framework includes examples for further analysis workflows, enabling users to perform domain-specific evaluation using their preferred analysis tools and methodologies.
 
-## Mobile Robot Reference Dataset ##
+## Mobile Robot Reference Dataset
 
 The RoboVAST dataset for mobile robots comprises thousands of mobile robot navigation tests conducted in Gazebo with ROS2 across diverse indoor environments and conditions.
 
 The dataset serves as a comprehensive validation tool for navigation stacks such as Nav2, enabling developers to identify fundamental issues such as incorrect parametrization, setup problems, or software bugs. By testing their Nav2 configuration against the reference dataset, users can quickly assess system correctness and evaluate overall performance characteristics.
+
+## How to Use
+
+### 1. Preparation
+
+#### Build
+
+To build the RoboVAST framework, use the following command in the workspace root:
+
+```bash
+colcon build
+```
+
+### 2. Variation
+
+To create and manage test variations using the variant wizard GUI:
+
+```bash
+ros2 run variant_editor variant_wizard
+```
+
+This launches the interactive variant wizard that allows you to configure test scenarios with different parameters such as:
+
+- Map selection
+- Start and end poses
+- Obstacle placement
+- Path generation
+- Sensor noise settings
+
+### 3. Execution
+
+Coming soon
+
+Test execution details will be added in future updates.
+
+### 4. Analysis
+
+Coming soon
+
+Analysis workflow documentation will be added in future updates.

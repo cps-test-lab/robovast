@@ -1,0 +1,18 @@
+import osc.helpers
+
+scenario nav_scenario:
+    timeout(60s)
+    
+    #url: string = 'http://127.0.0.1:8000/call?delay_ms=200&jitter_ms=100&fail=0.7'
+    req_timeout: string = '1000'
+    max_tries: int = 4
+    backoff_time: time = 500ms
+    
+    do parallel:
+        run_process(common.get_scenario_file_directory() + '/common/server.py')
+        serial:
+            failure_is_success()
+            run_process(common.get_scenario_file_directory() + '/common/client.py' +
+                ' --timeout-ms ' + req_timeout + 
+                ' --output ' + common.get_output_directory() + "/out.csv")
+            emit end

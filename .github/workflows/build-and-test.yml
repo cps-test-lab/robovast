@@ -1,0 +1,81 @@
+name: Build and Test
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions: read-all
+jobs:
+  build-and-test:
+    name: 'Build with colcon and test commands'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup ROS2 Jazzy
+        uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: jazzy
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3-colcon-common-extensions \
+            python3-rosdep
+
+      - name: Initialize rosdep
+        run: |
+          sudo rosdep init || true
+          rosdep update
+
+      - name: Install ROS2 dependencies
+        run: |
+          rosdep install --from-paths . --ignore-src -r -y || true
+
+      - name: Build with colcon
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          colcon build --symlink-install
+
+      - name: Test generate_floorplans
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          ros2 run robovast_utils generate_floorplans --help
+          exit_code=$?
+          echo "generate_floorplans --help exit code: $exit_code"
+          if [ $exit_code -ne 0 ]; then
+            echo "Error: generate_floorplans --help failed with exit code $exit_code"
+            exit 1
+          fi
+
+      - name: Test generate_variants
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          ros2 run robovast_utils generate_variants --help
+          exit_code=$?
+          echo "generate_variants --help exit code: $exit_code"
+          if [ $exit_code -ne 0 ]; then
+            echo "Error: generate_variants --help failed with exit code $exit_code"
+            exit 1
+          fi
+
+      - name: Test variant_wizard
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          ros2 run variant_editor variant_wizard --help
+          exit_code=$?
+          echo "variant_wizard --help exit code: $exit_code"
+          if [ $exit_code -ne 0 ]; then
+            echo "Error: variant_wizard --help failed with exit code $exit_code"
+            exit 1
+          fi
