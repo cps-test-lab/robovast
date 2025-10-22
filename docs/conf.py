@@ -11,7 +11,7 @@ import os
 import datetime
 
 project = "roboVAST"
-copyright = f"{datetime.datetime.now()}, Frederik Pasch"
+copyright = f"{datetime.datetime.now().year}, Frederik Pasch"
 author = "Frederik Pasch"
 
 version = '0.1.0'
