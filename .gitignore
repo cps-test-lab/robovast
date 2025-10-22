@@ -4,3 +4,5 @@ log/
 **/__pycache__
 venv
 .venv
+.vscode/
+**/.cache

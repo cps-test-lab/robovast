@@ -1,0 +1,41 @@
+---
+name: Scan
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions: read-all
+jobs:
+  lint:
+    name: 'Super-linter'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+      # To report GitHub Actions status checks
+      statuses: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Super-linter
+        uses: super-linter/super-linter@v8.2.0
+        env:
+          DEFAULT_BRANCH: main
+          # To report GitHub Actions status checks
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VALIDATE_CLANG_FORMAT: true
+          VALIDATE_PYTHON_PYLINT: true
+          VALIDATE_YAML: true
+          VALIDATE_DOCKERFILE_HADOLINT: true
+          VALIDATE_MARKDOWN: true
+          VALIDATE_GITLEAKS: true
+          VALIDATE_GITHUB_ACTIONS: true
+          YAML_ERROR_ON_WARNING: false
+          PYTHON_PYLINT_CONFIG_FILE: .pylintrc
+          LOG_FILE: super-linter.log
+          CREATE_LOG_FILE: true

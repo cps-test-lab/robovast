@@ -1,0 +1,67 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: job-$SCENARIO_ID
+  labels:
+    jobgroup: scenario-runs
+spec:
+  backoffLimit: 0
+  #activeDeadlineSeconds: 10000000
+  template:
+    metadata:
+      name: scenario-runs
+      labels:
+        jobgroup: scenario-runs
+    spec:
+      restartPolicy: Never
+      privileged: true
+      securityContext:
+        privileged: true
+      containers:
+      - name: example-container
+        image: freeedlabs/scenario_execution_jazzy@sha256:6397dd25c79bb153468ae2c4813beacd4a83f024b95afa16016771e80111b8f4
+        # command: ["/bin/bash", "-c", "sleep 1000"]
+        command: ["/entrypoint.sh", "/config/common/run.sh"]
+        securityContext: # required for rke2
+          privileged: true
+        env:
+        - name: RUN_ID
+          value: "$RUN_ID"
+        - name: RUN_NUM
+          value: "$RUN_NUM"
+        - name: SCENARIO_ID
+          value: "$SCENARIO_ID"
+        - name: SCENARIO_CONFIG
+          value: "$SCENARIO_CONFIG"
+        - name: ROS_LOG_DIR
+          value: "/out/logs"
+        - name: SIZEW
+          value: "1920"
+        - name: SIZEH
+          value: "1080"
+        - name: RMW_IMPLEMENTATION
+          value: "rmw_cyclonedds_cpp"
+        # - name: NOVNC_ENABLE
+        #   value: "true"
+        resources:
+          requests:
+            cpu: "7"
+          limits:
+            cpu: "7"
+        volumeMounts:
+          - name: transfer-storage
+            mountPath: /config
+            subPath: config/$RUN_ID/$SCENARIO_CONFIG
+            readOnly: true
+          - name: transfer-storage
+            mountPath: /out
+            subPath: out/$RUN_ID/$SCENARIO_CONFIG/$RUN_NUM
+            readOnly: false
+      volumes:
+        - name: transfer-storage
+          hostPath: # for rke2
+            path: "/transfer"
+            type: Directory
+          # nfs: # for gcp
+          #   server: nfs-server.default.svc.cluster.local
+          #   path: "/"

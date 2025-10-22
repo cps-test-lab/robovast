@@ -1,0 +1,169 @@
+// Converted to v2 from /home/sam/Intel/FloorPlan-DSL/models/hallways.floorplan
+Floor plan: hallways
+
+    Defaults:
+        walls: 
+            thickness: wall_width
+            height: wall_height
+
+    // variables
+    var door_width = 2.0 m
+    var hallway_width = 2.0 m
+    var hallway_length = 10.0 m
+    var wall_width = 0.1 m
+    var hallway_x_offset = 2.2 m
+    var hallway_y_offset = -5.0 m
+    var door_offset = 4.0 m
+    var wall_height = 2.0 m
+    var right_angle_rotation = 90.0 deg
+    
+    Space hallway1:
+        shape: Rectangle width=hallway_width, length=hallway_length
+        location:
+            translation: x: 0.0 m, y: 0.0 m
+            rotation: z: 0.0 deg
+            wrt: world
+            of: this
+         
+        walls:
+            thickness: wall_width
+            height: wall_height
+
+    Space hallway2:
+        shape: Rectangle width=hallway_width, length=hallway_length
+        location:
+            translation: x: hallway_x_offset, y: hallway_y_offset
+            rotation: z: 0.0 deg
+            wrt: hallway1.walls[0]
+            of: this
+        //spaced 
+        walls:
+            thickness: wall_width
+            height: wall_height
+
+    Space hallway3:
+        shape: Rectangle width=hallway_width, length=hallway_length
+        location:
+            translation: x: hallway_x_offset, y: hallway_y_offset
+            rotation: z: 0.0 deg
+            wrt: hallway2.walls[0]
+            of: this
+        //spaced 
+        walls:
+            thickness: wall_width
+            height: wall_height
+
+    Space hallway4:
+        shape: Rectangle width=hallway_width, length=hallway_length
+        location:
+            translation: x: hallway_x_offset, y: hallway_y_offset
+            rotation: z: 0.0 deg
+            wrt: hallway3.walls[0]
+            of: this
+        //spaced 
+        walls:
+            thickness: wall_width
+            height: wall_height
+
+    Space hallway5:
+        shape: Rectangle width=hallway_width, length=hallway_length
+        location:
+            translation: x: hallway_x_offset, y: hallway_y_offset
+            rotation: z: 0.0 deg
+            wrt: hallway4.walls[0]
+            of: this
+        //spaced 
+        walls:
+            thickness: wall_width
+            height: wall_height
+
+    Space hallway6:
+        shape: Rectangle width=hallway_width, length=hallway_length
+        location:
+            translation: x: hallway_x_offset, y: hallway_y_offset
+            rotation: z: 0.0 deg
+            wrt: hallway5.walls[0]
+            of: this
+        //spaced 
+        walls:
+            thickness: wall_width
+            height: wall_height
+
+    Space angled_hallway_entry:
+        shape: Rectangle width=hallway_width, length=hallway_width
+        location:
+            translation: x: hallway_x_offset, y: -9.0 m
+            rotation: z: 0.0 deg
+            wrt: hallway6.walls[0]
+            of: this
+        //spaced 
+        walls:
+            thickness: wall_width
+            height: wall_height
+
+    Space angled_hallway:
+        shape: Polygon points:[
+                (-1.1 m, 0.0 m),
+                (1.1 m, 0.0 m),
+                (0.5 m, 8.0 m),
+                (-0.5 m, 8.0 m)
+        ]
+        location:
+            translation: x: 0.0 m, y: wall_width
+            rotation: z: 0.0 deg
+            wrt: angled_hallway_entry.walls[0]
+            of: this
+        //spaced 
+        walls:
+            thickness: wall_width
+            height: wall_height
+
+    Entryway door_1_2:
+        shape: Rectangle width=door_width, height=wall_height
+        location:
+            in: hallway1.walls[1] and hallway2.walls[3]
+            translation: x: door_offset, y: 0.0 m, z: 0.0 m
+            rotation: y: 0.0 deg
+
+    Entryway door_2_3:
+        shape: Rectangle width=door_width, height=wall_height
+        location:
+            in: hallway2.walls[1] and hallway3.walls[3]
+            translation: x: -door_offset, y: 0.0 m, z: 0.0 m
+            rotation: y: 0.0 deg
+
+    Entryway door_3_4:
+        shape: Rectangle width=door_width, height=wall_height
+        location:
+            in: hallway3.walls[1] and hallway4.walls[3]
+            translation: x: door_offset, y: 0.0 m, z: 0.0 m
+            rotation: y: 0.0 deg
+
+    Entryway door_4_5:
+        shape: Rectangle width=door_width, height=wall_height
+        location:
+            in: hallway4.walls[1] and hallway5.walls[3]
+            translation: x: -door_offset, y: 0.0 m, z: 0.0 m
+            rotation: y: 0.0 deg
+
+    Entryway door_5_6:
+        shape: Rectangle width=door_width, height=wall_height
+        location:
+            in: hallway5.walls[1] and hallway6.walls[3]
+            translation: x: door_offset, y: 0.0 m, z: 0.0 m
+            rotation: y: 0.0 deg
+
+    Entryway door_6_angled_hallway_entry:
+        shape: Rectangle width=door_width, height=wall_height
+        location:
+            in: hallway6.walls[1] and angled_hallway_entry.walls[3]
+            translation: x: door_offset, y: 0.0 m, z: 0.0 m
+            rotation: y: 0.0 deg
+
+    Entryway door_angled_hallway:
+        shape: Rectangle width=door_width, height=wall_height
+        location:
+            in: angled_hallway_entry.walls[0] and angled_hallway.walls[0]
+            translation: x: 0.0 m, y: 0.0 m, z: 0.0 m
+            rotation: y: 0.0 deg
+
