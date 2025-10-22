@@ -10,7 +10,7 @@
 import os
 import datetime
 
-project = "roboVAST"
+project = "RoboVAST"
 copyright = f"{datetime.datetime.now().year}, Frederik Pasch"
 author = "Frederik Pasch"
 
