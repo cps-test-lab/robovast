@@ -1,0 +1,28 @@
+import osc.helpers
+
+scenario nav_scenario:
+    timeout(60s)
+    
+    server_delay_ms: float
+    server_jitter_ms: float
+    server_fail: float
+    server_payload_kb: float
+
+    client_timeout_ms: float
+    requests: int = 1000
+    concurrency: int
+    
+    do parallel:
+        server: run_process(common.get_scenario_file_directory() + '/common/server.py' +
+                ' --delay-ms ' + server_delay_ms +
+                ' --server-jitter-ms ' + server_jitter_ms +
+                ' --server-fail ' + server_fail +
+                ' --server-payload-kb ' + server_payload_kb)
+        serial:
+            failure_is_success()
+            client: run_process(common.get_scenario_file_directory() + '/common/client.py' +
+                ' --timeout-ms ' + client_timeout_ms +
+                ' --requests ' + requests +
+                ' --concurrency ' + concurrency +
+                ' --output ' + common.get_output_directory() + "/out.csv")
+            emit end
