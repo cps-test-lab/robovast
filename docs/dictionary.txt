@@ -5,3 +5,5 @@ DSL
 floorplan
 parameterizable
 parameterization
+declaratively
+reproducibility

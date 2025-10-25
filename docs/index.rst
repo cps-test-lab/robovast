@@ -5,7 +5,7 @@ RoboVAST
 *Variation Automation and Scalable Testing for Robotic Systems*
 
 .. note::
-   **Disclaimer:** The RoboVAST framework is currently under active development. The source code and additional resources will be published soon. Stay tuned for updates!
+   **Disclaimer:** RoboVAST is currently being released. The source code and resources are being published progressively until our presentation at `ROSCon DE 2025 <https://roscon.ros.org/de/2025/>`__.
 
 **RoboVAST** is an open-source framework for automated, large-scale integration testing of robotic software in simulated environments. Built upon proven foundations including the Floorplan-DSL for parameterizable indoor environment generation, scenario-execution for single test execution, and Kubernetes for orchestration, RoboVAST enables developers to systematically validate their systems across thousands of varied test scenarios.
 
@@ -43,3 +43,13 @@ Mobile Robot Reference Dataset
 The RoboVAST dataset for mobile robots comprises thousands of mobile robot navigation tests conducted in Gazebo with ROS2 across diverse indoor environments and conditions.
 
 The dataset serves as a comprehensive validation tool for navigation stacks such as Nav2, enabling developers to identify fundamental issues such as incorrect parameterization, setup problems, or software bugs. By testing their Nav2 configuration against the reference dataset, users can quickly assess system correctness and evaluate overall performance characteristics.
+
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Contents:
+
+   setup
+   how_to_run
+   example
+   variation

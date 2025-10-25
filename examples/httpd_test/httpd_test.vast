@@ -1,0 +1,35 @@
+settings:
+  variation:
+  - ParameterVariationList:
+      name: server_delay_ms
+      values: [100]
+      #values: [100, 200, 500]
+  - ParameterVariationList:
+      name: server_jitter_ms
+      values: [50]
+      #values: [10, 50, 100]
+  - ParameterVariationList:
+      name: server_fail
+      values: [0.1, 0.2]
+  - ParameterVariationList:
+      name: server_payload_kb
+      values: [1, 10, 100]
+  - ParameterVariationList:
+      name: client_timeout_ms
+      values: [500]
+      #values: [500, 1000]
+  - ParameterVariationList:
+      name: client_concurrency
+      values: [10]
+      #values: [1, 10, 20, 50, 100]
+  execution:
+    kubernetes_manifest: kubernetes_tmpl.yaml
+    scenario: scenario.osc
+    scenario_file_filter:
+    - "**/common/*.py"
+    - "**/common/*.sh"
+  analysis:
+  - Analysis:
+      single_test: analysis/analysis_single_test.ipynb
+      variant: analysis/analysis_variant.ipynb
+      run: analysis/analysis_run.ipynb
