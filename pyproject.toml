@@ -1,0 +1,22 @@
+[tool.poetry]
+name = "robovast"
+version = "1.0.0"
+description = "RoboVast project"
+authors = ["Frederik Pasch <fred-labs@mailbox.org>"]
+license = "Apache-2.0"
+readme = "README.md"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = ">=3.12,<3.14"
+robovast-common = {path = "common/robovast_common", develop = true}
+result-analyzer = {path = "analysis/result_analyzer", develop = true}
+cluster-execution = {path = "execution/cluster_execution", develop = true}
+execution-utils = {path = "execution/execution_utils", develop = true}
+
+[tool.poetry.group.dev.dependencies]
+ipykernel = "^7.1.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

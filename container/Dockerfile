@@ -10,6 +10,7 @@ WORKDIR /ws
 ####                        VNC                           ####
 ##############################################################
 ARG NOVNC_VERSION=1.3.0
+# hadolint ignore=DL3008
 RUN apt-get update && apt-get install --no-install-recommends -y \
         x11vnc && \
     rm -rf /var/lib/apt/lists/* && \
@@ -23,8 +24,9 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
 ##############################################################
 ####             Setup Software Rendering                 ####
 ##############################################################
+# hadolint ignore=DL3008
 RUN apt-get update && \
-    apt install -y --no-install-recommends \
+    apt-get install -y --no-install-recommends \
     nano vim \
     xserver-xorg-core \
     xvfb \
@@ -77,6 +79,7 @@ RUN \
 
 RUN mkdir -p /ws/src
 
+# hadolint ignore=DL3003
 RUN  git clone "https://github.com/cps-test-lab/scenario-execution.git" /ws/src/scenario-execution && \
      . "/opt/ros/${ROS_DISTRO}/setup.bash" && \
      cd /ws && \

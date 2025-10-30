@@ -5,3 +5,11 @@ DSL
 floorplan
 parameterizable
 parameterization
+declaratively
+reproducibility
+jupyter
+nfs
+config
+Kubespray
+minikube
+ubuntu

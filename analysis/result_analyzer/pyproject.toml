@@ -1,0 +1,25 @@
+[tool.poetry]
+name = "result-analyzer"
+version = "1.0.0"
+description = "Result analyzer for RoboVast"
+authors = ["Frederik Pasch <fred-labs@mailbox.org>"]
+license = "Apache-2.0"
+packages = [{include = "result_analyzer"}]
+
+[tool.poetry.dependencies]
+python = ">=3.12,<3.14"
+robovast-common = {path = "../../common/robovast_common", develop = true}
+variation-utils = {path = "../../variation/variation_utils", develop = true}
+pyside6-essentials = "^6.6"
+pyside6-addons = "^6.6"
+nbformat = "^5.9"
+nbconvert = "^7.16"
+lxml-html-clean = "^0.1"
+matplotlib = "^3.8"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.scripts]
+result_analyzer = "result_analyzer.result_analyzer:main"
