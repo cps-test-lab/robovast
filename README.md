@@ -2,7 +2,8 @@
 
 *Variation Automation and Scalable Testing for Robotic Systems*
 
-> **Disclaimer:** The RoboVAST framework is currently under active development. The source code and additional resources will be published soon. Stay tuned for updates!
+> **Disclaimer:** RoboVAST is currently being released. The source code and resources are being published progressively until our presentation at (ROSCon DE 2025)[https://roscon.ros.org/de/2025/]
+
 
 **RoboVAST** is an open-source framework for automated, large-scale integration testing of robotic software in simulated environments. Built upon proven foundations including the floorplan-dsl for parameterizable indoor environment generation, scenario-execution for single test execution, and Kubernetes for orchestration, RoboVAST enables developers to systematically validate their systems across thousands of varied test scenarios.
 
