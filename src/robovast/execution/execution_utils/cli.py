@@ -25,7 +25,7 @@ from pprint import pprint
 
 from robovast.common import (load_config, get_execution_variants, prepare_run_configs)
 from .execute_local import execute_docker_container, get_docker_image_from_yaml
-
+from robovast.execution.cluster_execution.cluster_execution import JobRunner
 
 @click.group()
 def execution():
@@ -120,16 +120,6 @@ def cluster(config, variant):
     Deploys all variants (or a specific variant) as Kubernetes jobs
     for distributed parallel execution.
     """
-    try:
-        from cluster_execution.cluster_execution import JobRunner
-    except ImportError as e:
-        click.echo(
-            "Error: cluster_execution package not available. "
-            "Install cluster-execution dependencies.", 
-            err=True
-        )
-        sys.exit(1)
-
     try:
         job_runner = JobRunner(config, variant)
         job_runner.run()

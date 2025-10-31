@@ -27,11 +27,6 @@ def cli():
     
     A comprehensive tool for managing variations, executing scenarios,
     and analyzing results in the RoboVAST framework.
-    
-    Shell completion:
-      Bash:   eval "$(_VAST_COMPLETE=bash_source vast)"
-      Zsh:    eval "$(_VAST_COMPLETE=zsh_source vast)"
-      Fish:   _VAST_COMPLETE=fish_source vast | source
     """
     pass
 

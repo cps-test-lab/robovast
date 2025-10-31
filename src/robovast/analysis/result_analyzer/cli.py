@@ -30,7 +30,7 @@ def analysis():
     pass
 
 
-@analysis.command(name='result-analyzer')
+@analysis.command(name='gui')
 @click.option('--results-dir', '-r', required=True, type=click.Path(exists=True),
               help='Directory containing test results')
 @click.option('--config', '-c', required=True, type=click.Path(exists=True),
