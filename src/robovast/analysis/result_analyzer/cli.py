@@ -19,6 +19,7 @@
 
 import click
 import sys
+from robovast.common.cli.project_config import get_project_config
 
 
 @click.group()
@@ -31,19 +32,30 @@ def analysis():
 
 
 @analysis.command(name='gui')
-@click.option('--results-dir', '-r', required=True, type=click.Path(exists=True),
-              help='Directory containing test results')
-@click.option('--config', '-c', required=True, type=click.Path(exists=True),
-              help='Path to .vast configuration file')
-def result_analyzer_cmd(results_dir, config):
+@click.option('--output', '-o', default=None,
+              help='Directory containing test results (uses project results dir if not specified)')
+def result_analyzer_cmd(output):
     """Launch the graphical test results analyzer.
     
     Opens a GUI application for interactive exploration and
     visualization of test results.
+    
+    Requires project initialization with 'vast init' first (unless --output is specified).
+    
+    Examples:
+      vast analysis gui
+      vast analysis gui --output ./custom_results
     """
+    # Get project configuration
+    project_config = get_project_config()
+    config = project_config.config_path
+    
+    # Use provided output or fall back to project results dir
+    results_dir = output if output is not None else project_config.results_dir
+    
     try:
-        from PySide6.QtWidgets import QApplication
-        from .result_analyzer import TestResultsAnalyzer
+        from PySide6.QtWidgets import QApplication # pylint: disable=import-outside-toplevel
+        from .result_analyzer import TestResultsAnalyzer # pylint: disable=import-outside-toplevel
     except ImportError as e:
         click.echo(
             f"Error: Required dependencies not available: {e}\n"

@@ -11,16 +11,23 @@ echo ""
 
 # Array of commands to test
 commands=(
-    "list_variants"
-    "execute_local"
-    "cluster_execution"
-    "generate_variants"
+    "vast"
+    "vast init"
+    "vast variation"
+    "vast variation list"
+    "vast variation generate"
+    "vast execution"
+    "vast execution local"
+    "vast execution cluster"
+    "vast execution download"
+    "vast analysis"
+    "vast analysis gui"
 )
 
 # Test each command
 for cmd in "${commands[@]}"; do
-    echo "Testing: $cmd --help"
-    poetry run "$cmd" --help
+    echo "Testing: poetry run $cmd --help"
+    poetry run $cmd --help
     exit_code=$?
     
     if [ $exit_code -ne 0 ]; then

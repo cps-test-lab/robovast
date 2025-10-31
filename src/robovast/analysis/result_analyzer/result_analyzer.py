@@ -15,7 +15,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import argparse
 import math
 import os
 import sys
@@ -25,7 +24,7 @@ from pathlib import Path
 from PySide6.QtCore import QSettings, Qt, QThread, QTimer
 from PySide6.QtCore import Slot
 from PySide6.QtGui import QBrush, QColor, QPalette
-from PySide6.QtWidgets import (QApplication, QGroupBox, QHBoxLayout, QLabel,
+from PySide6.QtWidgets import (QGroupBox, QHBoxLayout, QLabel,
                                QLineEdit, QMainWindow, QProgressBar,
                                QPushButton, QSplitter, QStatusBar, QTabWidget,
                                QTreeWidget, QTreeWidgetItem, QVBoxLayout,

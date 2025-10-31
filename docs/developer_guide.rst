@@ -23,7 +23,7 @@ Command-line Plugin Development
 To create a plugin for the VAST CLI:
 
 1. Create a Click group or command in your package
-2. Register it in your `pyproject.toml` under `[tool.poetry.plugins."vast.plugins"]`
+2. Register it in your `pyproject.toml` under `[tool.poetry.plugins."robovast.cli_plugins"]`
 3. The plugin will be automatically discovered and added to the `vast` command
 
 Example plugin registration:

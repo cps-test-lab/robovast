@@ -15,11 +15,11 @@ jobs:
       - name: Install jupyter-nbconvert
         run: sudo apt install -y python3-nbconvert
       - name: Run cleanup script
-        run: python3 common/cleanup_notebooks.py
+        run: python3 tools/cleanup_notebooks.py
       - name: Check for uncommitted changes
         run: |
           if [[ $(git diff --stat) != '' ]]; then
-            echo 'Notebooks are not clean. Please run common/cleanup_notebooks.sh and commit the changes.'
+            echo 'Notebooks are not clean. Please run tools/cleanup_notebooks.sh and commit the changes.'
             exit 1
           fi
         shell: bash

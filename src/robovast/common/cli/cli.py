@@ -18,10 +18,13 @@
 """Main CLI entry point for RoboVAST."""
 
 import click
+import os
+import sys
 from importlib.metadata import entry_points
+from .project_config import ProjectConfig
 
 @click.group()
-@click.version_option(package_name="vast-cli")
+@click.version_option(package_name="robovast", prog_name="RoboVAST")
 def cli():
     """VAST - RoboVAST Command-Line Interface.
     
@@ -29,6 +32,61 @@ def cli():
     and analyzing results in the RoboVAST framework.
     """
     pass
+
+
+@cli.command()
+@click.option('--config', '-c', required=True, type=click.Path(exists=True),
+              help='Path to .vast configuration file')
+@click.option('--results-dir', '-r', default="results", type=click.Path(),
+              help='Directory for storing results')
+def init(config, results_dir):
+    """Initialize a VAST project.
+    
+    Creates a .vast_project file in the current directory that stores
+    the configuration file path and results directory. These settings
+    will be used by other VAST commands automatically.
+    
+    Examples:
+      vast init --config config.vast --results-dir ./results
+      vast init -c scenarios/test.vast -r /tmp/test_results
+    """
+    # Convert to absolute paths
+    project_file_dir = os.path.abspath(os.getcwd())
+    if not os.path.isabs(config):
+        config_path = os.path.abspath(os.path.join(project_file_dir, config))
+    else:
+        config_path = config
+    if not os.path.isabs(results_dir):
+        results_path = os.path.abspath(os.path.join(project_file_dir, results_dir))
+    else:
+        results_path = results_dir
+    
+    # Validate config file exists
+    if not os.path.isfile(config_path):
+        click.echo(f"✗ Error: Configuration file not found: {config_path}", err=True)
+        sys.exit(1)
+    
+    # Create ProjectConfig and save it
+    project_config = ProjectConfig(config_path=config_path, results_dir=results_path)
+    
+    # Validate the configuration
+    is_valid, error = project_config.validate()
+    if not is_valid:
+        click.echo(f"✗ Error: {error}", err=True)
+        sys.exit(1)
+    
+    # Check if .vast_project already exists
+    existing_file = ProjectConfig.find_project_file()
+    if existing_file:
+        click.echo(f"⚠ Warning: Overwriting existing project file: {existing_file}")
+    
+    # Save the project file
+    project_file = project_config.save()
+    
+    click.echo(f"✓ Project initialized successfully!")
+    click.echo(f"  Configuration: {config_path}")
+    click.echo(f"  Results directory: {results_path}")
+    click.echo(f"  Project file: {project_file}")
 
 
 @cli.command()
@@ -40,7 +98,6 @@ def install_completion():
     Examples:
       vast install-completion
     """
-    import os
     
     # Auto-detect shell from SHELL environment variable
     shell_env = os.environ.get('SHELL', '')
@@ -52,6 +109,7 @@ def install_completion():
         shell = 'bash'
     
     # Generate completion script based on shell
+    script = None
     if shell == 'bash':
         script = 'eval "$(_VAST_COMPLETE=bash_source vast)"'
         config_file = os.path.expanduser('~/.bashrc')
@@ -61,6 +119,8 @@ def install_completion():
     elif shell == 'fish':
         script = '_VAST_COMPLETE=fish_source vast | source'
         config_file = os.path.expanduser('~/.config/fish/config.fish')
+    else:
+        raise click.ClickException(f"Unsupported shell for completion installation: {shell}")
     
     # Install to the config file
     try:

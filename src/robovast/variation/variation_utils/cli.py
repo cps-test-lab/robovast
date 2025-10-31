@@ -21,8 +21,10 @@ import click
 import os
 import sys
 import tempfile
+from importlib.metadata import entry_points
 
 from robovast.common import generate_scenario_variations
+from robovast.common.cli.project_config import get_project_config
 
 
 @click.group()
@@ -35,14 +37,18 @@ def variation():
 
 
 @variation.command(name='list')
-@click.option('--config', '-c', required=True, type=click.Path(exists=True),
-              help='Path to .vast configuration file')
-def list_cmd(config):
+def list_cmd():
     """List scenario variants without generating files.
     
     This command shows all variants that would be generated from the
     configuration file without actually creating the output files.
+    
+    Requires project initialization with 'vast init' first.
     """
+    # Get project configuration
+    project_config = get_project_config()
+    config = project_config.config_path
+    
     def progress_callback(message):
         click.echo(message)
     
@@ -76,16 +82,20 @@ def list_cmd(config):
 
 
 @variation.command()
-@click.option('--config', '-c', required=True, type=click.Path(exists=True),
-              help='Path to .vast configuration file')
 @click.option('--output', '-o', required=True, type=click.Path(),
               help='Output directory for generated scenarios variants and files')
-def generate(config, output):
+def generate(output):
     """Generate scenario variants and output files.
     
     Creates all variant configurations and associated files in the
-    specified output directory.
+    configured results directory.
+    
+    Requires project initialization with 'vast init' first.
     """
+    # Get project configuration
+    project_config = get_project_config()
+    config = project_config.config_path
+    
     def progress_callback(message):
         click.echo(message)
     
@@ -109,4 +119,42 @@ def generate(config, output):
 
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@variation.command()
+def types():
+    """List available variation types.
+    
+    Shows all registered variation type entry points that can be used
+    in the variation section of .vast configuration files.
+    """
+    click.echo("Available variation types:")
+    click.echo("-" * 60)
+    
+    try:
+        eps = entry_points()
+        variation_eps = eps.select(group='robovast.variation_types')
+        
+        if not variation_eps:
+            click.echo("No variation types found.", err=True)
+            sys.exit(1)
+        
+        for ep in variation_eps:
+            try:
+                # Load the class to verify it's accessible
+                variation_class = ep.load()
+                click.echo(f"- {ep.name}")
+                # Try to get docstring if available
+                if variation_class.__doc__:
+                    doc_lines = variation_class.__doc__.strip().split('\n')
+                    if doc_lines:
+                        click.echo(f"  {doc_lines[0].strip()}")
+                click.echo()
+            except Exception as e:
+                click.echo(f"  {ep.name} (Failed to load: {e})", err=True)
+                click.echo()
+                
+    except Exception as e:
+        click.echo(f"Error loading variation types: {e}", err=True)
         sys.exit(1)

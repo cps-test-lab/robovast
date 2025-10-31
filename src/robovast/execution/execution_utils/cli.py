@@ -24,8 +24,10 @@ import tempfile
 from pprint import pprint
 
 from robovast.common import (load_config, get_execution_variants, prepare_run_configs)
+from robovast.common.cli.project_config import get_project_config
 from .execute_local import execute_docker_container, get_docker_image_from_yaml
 from robovast.execution.cluster_execution.cluster_execution import JobRunner
+from robovast.execution.cluster_execution.download_results import ResultDownloader
 
 @click.group()
 def execution():
@@ -38,22 +40,25 @@ def execution():
 
 
 @execution.command()
-@click.option('--config', '-c', required=True, type=click.Path(exists=True),
-              help='Path to .vast configuration file')
-@click.option('--output', '-o', required=True, type=click.Path(),
-              help='Output directory for execution results')
 @click.option('--variant', '-v', required=True,
               help='Variant to execute')
 @click.option('--debug', '-d', is_flag=True,
               help='Enable debug output')
 @click.option('--shell', '-s', is_flag=True,
               help='Instead of running the scenario, login with shell')
-def local(config, output, variant, debug, shell):
+def local(variant, debug, shell):
     """Execute a scenario variant locally using Docker.
     
     Runs a single variant in a Docker container with bind mounts
     for configuration and output data.
+    
+    Requires project initialization with 'vast init' first.
     """
+    # Get project configuration
+    project_config = get_project_config()
+    config = project_config.config_path
+    output = project_config.results_dir
+    
     execution_parameters = load_config(config, "execution")
     yaml_path = os.path.join(os.path.dirname(config), execution_parameters["kubernetes_manifest"])
     
@@ -110,19 +115,68 @@ def local(config, output, variant, debug, shell):
 
 
 @execution.command()
-@click.option('--config', '-c', required=True, type=click.Path(exists=True),
-              help='Path to .vast configuration file')
 @click.option('--variant', '-v', default=None,
               help='Run only a specific variant by name')
-def cluster(config, variant):
+def cluster(variant):
     """Execute scenarios on a Kubernetes cluster.
     
     Deploys all variants (or a specific variant) as Kubernetes jobs
     for distributed parallel execution.
+    
+    Requires project initialization with 'vast init' first.
     """
+    # Get project configuration
+    project_config = get_project_config()
+    config = project_config.config_path
+    
     try:
         job_runner = JobRunner(config, variant)
         job_runner.run()
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@execution.command()
+@click.option('--output', '-o', default=None,
+              help='Directory where all runs will be downloaded (uses project results dir if not specified)')
+@click.option('--force', '-f', is_flag=True,
+              help='Force re-download even if files already exist locally')
+def download(output, force):
+    """Download result files from cluster transfer PVC.
+    
+    Downloads all test run results from the Kubernetes cluster's transfer PVC
+    using HTTP server port-forwarding. Files are downloaded as compressed archives,
+    validated, and extracted locally.
+    
+    Downloads can be resumed if interrupted. Use --force to re-download existing files.
+    
+    Requires project initialization with 'vast init' first (unless --output is specified).
+    
+    Examples:
+      vast execution download
+      vast execution download --output ./custom_results
+      vast execution download --force
+    """
+    # Get output directory
+    if output is None:
+        # Get from project configuration
+        project_config = get_project_config()
+        output = project_config.results_dir
+    
+    # Validate output parameter
+    if not output:
+        click.echo("Error: --output parameter is required (or use 'vast init' to set default)", err=True)
+        click.echo("Use --help for usage information", err=True)
+        sys.exit(1)
+    
+    try:
+        downloader = ResultDownloader()
+        
+        # Download all runs
+        downloader.download_results(output, force)
+        click.echo("### Download completed successfully!")
+        
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
