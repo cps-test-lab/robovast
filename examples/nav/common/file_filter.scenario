@@ -1,0 +1,4 @@
+**/common/*.sh
+**/common/*launch.py
+**/common/*.rviz
+**/common/*.sdf.xacro

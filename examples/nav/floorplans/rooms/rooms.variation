@@ -1,0 +1,7 @@
+import "rooms.fpm"
+
+door_width : uniform([0.5,1.0,2.0])
+room_length : normal(mean=3.0, std=0.75)
+room_width : normal(mean=4.0, std=0.75)
+wall_width : uniform([0.01,0.1,0.5])
+
