@@ -1,0 +1,22 @@
+[tool.poetry]
+name = "cluster-execution"
+version = "1.0.0"
+description = "Cluster execution for RoboVast"
+authors = ["Frederik Pasch <fred-labs@mailbox.org>"]
+license = "Apache-2.0"
+packages = [{include = "cluster_execution"}]
+
+[tool.poetry.dependencies]
+python = ">=3.12,<3.14"
+robovast-common = {path = "../../common/robovast_common", develop = true}
+variation-utils = {path = "../../variation/variation_utils", develop = true}
+pyyaml = "^6.0"
+kubernetes = "^22.6"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.scripts]
+cluster_execution = "cluster_execution.cluster_execution:main"
+download_results = "cluster_execution.download_results:main"

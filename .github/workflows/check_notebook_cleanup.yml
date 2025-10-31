@@ -1,0 +1,25 @@
+name: Check notebook cleanup
+
+on:
+  pull_request:
+    branches:
+      - devel
+      - main
+
+jobs:
+  cleanup-notebooks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+      - name: Install jupyter-nbconvert
+        run: sudo apt install -y python3-nbconvert
+      - name: Run cleanup script
+        run: python3 common/cleanup_notebooks.py
+      - name: Check for uncommitted changes
+        run: |
+          if [[ $(git diff --stat) != '' ]]; then
+            echo 'Notebooks are not clean. Please run common/cleanup_notebooks.sh and commit the changes.'
+            exit 1
+          fi
+        shell: bash

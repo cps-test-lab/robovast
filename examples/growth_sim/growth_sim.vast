@@ -1,0 +1,26 @@
+settings:
+  analysis: 
+  - Analysis:
+      single_test: analysis/analysis_single_test.ipynb
+      variant: analysis/analysis_variant.ipynb
+      run: analysis/analysis_run.ipynb
+  execution:
+    kubernetes_manifest: kubernetes_tmpl.yaml
+    scenario: scenario.osc
+    runs: 10
+    test_files_filter: 
+    - "**/files/*.py"
+  variation:
+  - ParameterVariationList:
+      name: growth_rate
+      values:
+      - 0.05
+      - 0.1
+      - 0.3
+      - 0.5
+  - ParameterVariationList:
+      name: initial_population
+      values:
+      - 50
+      - 100
+      - 200

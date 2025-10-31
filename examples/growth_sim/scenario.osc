@@ -1,0 +1,16 @@
+import osc.helpers
+
+scenario nav_scenario:
+    timeout(10s)
+    
+    initial_population: string
+    growth_rate: string
+    carrying_capacity: string = "1000"
+    
+    do serial:
+        run_process(common.get_scenario_file_directory() + '/files/growth_sim.py' +
+            ' --initial-population ' + initial_population +
+            ' --growth-rate ' + growth_rate +
+            ' --carrying-capacity ' + carrying_capacity +
+            ' --output ' + common.get_output_directory() + "/out.csv")
+

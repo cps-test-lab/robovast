@@ -23,7 +23,7 @@ Framework Architecture
 Variation
 ---------
 
-RoboVAST combines multiple variation dimensions to generate comprehensive test suites. Environment generation uses the Floorplan-DSL to describe and generate diverse 3D indoor environments with parametric variation of room dimensions and connectivity. For systematic variation, it combines parameters specific to the use case, such as start/end poses, obstacle configurations, and sensor noise for mobile robot navigation. The modular architecture supports extensible addition of new variation dimensions based on specific application requirements. CLI- and GUI-based variant creation and selection tools are available.
+RoboVAST combines multiple variation dimensions to generate comprehensive test suites. Environment generation uses the Floorplan-DSL to describe and generate diverse 3D indoor environments with parametric variation of room dimensions and connectivity. For systematic variation, it combines parameters specific to the use case, such as start/end poses, obstacle configurations, and sensor noise for mobile robot navigation. The modular architecture supports extensible addition of new variation dimensions based on specific application requirements.
 
 Execution
 ---------
@@ -33,13 +33,24 @@ RoboVAST orchestrates test execution by creating Kubernetes jobs that run indivi
 Analysis
 --------
 
-To support basic analysis of test results, the framework provides GUI and CLI tools with automated playback, trajectory visualization, and AI-assisted log analysis of each run. These tools offer fundamental analysis capabilities including performance metric extraction, failure detection, and visual inspection of robot behavior.
+To support basic analysis of test results, the framework provides tools with automated playback, trajectory visualization, and log analysis of each run. These tools offer fundamental analysis capabilities including performance metric extraction, failure detection, and visual inspection of robot behavior.
 
 For use case-specific analysis requirements, users can implement custom analysis workflows. The framework includes examples for further analysis workflows, enabling users to perform domain-specific evaluation using their preferred analysis tools and methodologies.
 
 Mobile Robot Reference Dataset
-===============================
+==============================
 
 The RoboVAST dataset for mobile robots comprises thousands of mobile robot navigation tests conducted in Gazebo with ROS2 across diverse indoor environments and conditions.
 
 The dataset serves as a comprehensive validation tool for navigation stacks such as Nav2, enabling developers to identify fundamental issues such as incorrect parameterization, setup problems, or software bugs. By testing their Nav2 configuration against the reference dataset, users can quickly assess system correctness and evaluate overall performance characteristics.
+
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Contents:
+
+   setup
+   how_to_run
+   example
+   variation
+   developer_guide
