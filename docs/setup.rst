@@ -61,3 +61,25 @@ and install with
 .. code-block:: bash
 
    poetry install
+
+This will install the ``vast`` command and all its plugins.
+The ``vast`` command provides a unified interface to all RoboVAST functionality.
+
+.. code-block:: bash
+
+   vast --help
+
+   # enable shell completions
+   vast completion --install
+   
+The VAST CLI provides a convenient `completion` command:
+
+```bash
+# Get installation instructions
+vast completion --shell bash
+vast completion --shell zsh
+vast completion --shell fish
+
+# Show the completion script (for manual installation)
+vast completion --shell bash --show
+```

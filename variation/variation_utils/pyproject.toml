@@ -9,6 +9,7 @@ packages = [{include = "variation_utils"}]
 [tool.poetry.dependencies]
 python = ">=3.12,<3.14"
 robovast-common = {path = "../../common/robovast_common", develop = true}
+click = "^8.1"
 
 [build-system]
 requires = ["poetry-core"]
@@ -17,3 +18,6 @@ build-backend = "poetry.core.masonry.api"
 [tool.poetry.scripts]
 list_variants = "variation_utils.list_variants:main"
 generate_variants = "variation_utils.generate_variants:main"
+
+[tool.poetry.plugins."vast.plugins"]
+variation = "variation_utils.cli:variation"

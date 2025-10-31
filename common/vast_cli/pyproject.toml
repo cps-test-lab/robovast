@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "vast-cli"
+version = "1.0.0"
+description = "VAST Command-Line Interface for RoboVAST"
+authors = ["Frederik Pasch <fred-labs@mailbox.org>"]
+license = "Apache-2.0"
+readme = "README.md"
+packages = [{include = "vast_cli"}]
+
+[tool.poetry.dependencies]
+python = ">=3.12,<3.14"
+click = "^8.1"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.scripts]
+vast = "vast_cli.cli:main"
