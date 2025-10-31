@@ -5,17 +5,37 @@ description = "RoboVast project"
 authors = ["Frederik Pasch <fred-labs@mailbox.org>"]
 license = "Apache-2.0"
 readme = "README.md"
-package-mode = false
+packages = [{include = "robovast", from = "src"}]
 
 [tool.poetry.dependencies]
 python = ">=3.12,<3.14"
-robovast-common = {path = "common/robovast_common", develop = true}
-result-analyzer = {path = "analysis/result_analyzer", develop = true}
-cluster-execution = {path = "execution/cluster_execution", develop = true}
-execution-utils = {path = "execution/execution_utils", develop = true}
+click = "^8.1"
+pyyaml = "^6.0"
+numpy = "^1.26"
+pandas = "^2.2"
+pyside6-essentials = "^6.6"
+pyside6-addons = "^6.6"
+matplotlib = "^3.8"
+nbformat = "^5.9"
+nbconvert = "^7.16"
+lxml-html-clean = "^0.1"
+kubernetes = "^22.6"
 
 [tool.poetry.group.dev.dependencies]
 ipykernel = "^7.1.0"
+
+[tool.poetry.scripts]
+vast = "robovast.common.cli.cli:main"
+
+[tool.poetry.plugins."robovast.cli_plugins"]
+execution = "robovast.execution.execution_utils.cli:execution"
+variation = "robovast.variation.variation_utils.cli:variation"
+analysis = "robovast.analysis.result_analyzer.cli:analysis"
+
+[tool.poetry.plugins."robovast.variation_types"]
+"ParameterVariationList" = "robovast.common.variation.parameter_variation:ParameterVariationList"
+"ParameterVariationDistributionUniform" = "robovast.common.variation.parameter_variation:ParameterVariationDistributionUniform"
+"ParameterVariationDistributionGaussian" = "robovast.common.variation.parameter_variation:ParameterVariationDistributionGaussian"
 
 [build-system]
 requires = ["poetry-core"]

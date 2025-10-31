@@ -15,7 +15,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import argparse
 import copy
 import datetime
 import os
@@ -26,7 +25,7 @@ import time
 import yaml
 
 from kubernetes import client, config
-from robovast_common import (get_execution_env_variables,
+from robovast.common import (get_execution_env_variables,
                              get_execution_variants, load_config,
                              prepare_run_configs)
 
@@ -435,21 +434,3 @@ class JobRunner:
             except Exception as e:
                 print(f"### ERROR: Unexpected error during config file copy: {e}")
                 sys.exit(1)
-
-
-def main():
-    parser = argparse.ArgumentParser(description='Run all variants as jobs in Kubernetes.')
-    parser.add_argument('--config', type=str, required=True,
-                        help='Path to .vast configuration file')
-    parser.add_argument('--variant', type=str, default=None, help='Run only a specific variant by name')
-    args = parser.parse_args()
-
-    try:
-        job_runner = JobRunner(args.config, args.variant)
-        job_runner.run()
-    except Exception as e:
-        print(f"Error: {e}")
-
-
-if __name__ == '__main__':
-    main()

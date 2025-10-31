@@ -23,7 +23,7 @@ from PySide6.QtGui import QPalette
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (QApplication, QFrame, QLabel, QProgressBar,
                                QVBoxLayout, QWidget)
-from robovast_common import FileCache
+from robovast.common import FileCache
 
 from .common import RunType
 from .worker_thread import CancellableWorkload

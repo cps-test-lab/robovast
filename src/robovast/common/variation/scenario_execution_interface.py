@@ -19,7 +19,7 @@ import subprocess
 import tempfile
 
 import yaml
-from robovast_common.file_cache import FileCache
+from robovast.common.file_cache import FileCache
 
 
 def get_scenario_parameter_template(

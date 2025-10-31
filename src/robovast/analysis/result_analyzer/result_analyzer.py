@@ -15,7 +15,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import argparse
 import math
 import os
 import sys
@@ -25,12 +24,12 @@ from pathlib import Path
 from PySide6.QtCore import QSettings, Qt, QThread, QTimer
 from PySide6.QtCore import Slot
 from PySide6.QtGui import QBrush, QColor, QPalette
-from PySide6.QtWidgets import (QApplication, QGroupBox, QHBoxLayout, QLabel,
+from PySide6.QtWidgets import (QGroupBox, QHBoxLayout, QLabel,
                                QLineEdit, QMainWindow, QProgressBar,
                                QPushButton, QSplitter, QStatusBar, QTabWidget,
                                QTreeWidget, QTreeWidgetItem, QVBoxLayout,
                                QWidget)
-from robovast_common import load_config
+from robovast.common import load_config
 
 from .widgets.common import RunType
 from .widgets.jupyter_widget import DataAnalysisWidget, JupyterNotebookRunner
@@ -689,38 +688,3 @@ class TestResultsAnalyzer(QMainWindow):
                 event.accept()
             except Exception:
                 pass
-
-    
-
-
-def main():
-    """Main function"""
-    parser = argparse.ArgumentParser(description="Test Results Analyzer GUI")
-    parser.add_argument("--results-dir", type=str, required=True,
-                        help="Directory containing test results")
-    parser.add_argument("--config", type=str, required=True,
-                        help="Path to .vast configuration file")
-
-    args = parser.parse_args()
-
-    app = QApplication(sys.argv)
-    app.setStyle('Fusion')  # Modern look
-
-    try:
-        window = TestResultsAnalyzer(base_dir=args.results_dir, config_file=args.config)
-        window.show()
-
-        exit_code = app.exec_()
-
-        # Ensure proper cleanup
-        window.deleteLater()
-
-        sys.exit(exit_code)
-
-    except Exception as e:
-        print(f"Application error: {e}")
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()

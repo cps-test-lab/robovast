@@ -12,18 +12,20 @@ To run the example, execute the following commands in the base folder of the Rob
 
 .. code-block:: bash
 
-   # show the variants, that will later be executed according to configuration
-   poetry run list_variants --config examples/growth_sim/growth_sim.vast
+   # initialize project
+   vast init --config examples/growth_sim/growth_sim.vast
+
+   # show the variants that will be executed
+   vast variation list
     
    # execute the tests in the cluster (kubernetes required)
-   poetry run cluster_execution --config examples/growth_sim/growth_sim.vast
+   vast execution cluster
     
    # download results from the cluster
-   poetry run download_results --output ./growth_sim_results
+   vast execution download
 
    # analyze the results
-   poetry run result_analyzer --config examples/growth_sim/growth_sim.vast \
-       --results-dir ./growth_sim_results
+   vast analysis gui
 
 Introduction
 ------------
@@ -100,44 +102,38 @@ Before starting the execution in the cluster, it is recommended to first check t
 
 .. code-block:: bash
 
-   poetry run list_variants \
-        --config examples/growth_sim/growth_sim.vast
+   vast variation list
 
 
 Check Result of a Single Execution
 """"""""""""""""""""""""""""""""""
 
-To check, that the container image and the test are correctly set up, it is recommended to test the execution locally.
+To check that the container image and test are correctly set up, it is recommended to test the execution locally.
 
 The command runs the container using the ``docker`` command and the same parameters and test-files as the kubernetes execution. Afterwards the output can be analyzed manually.
 
 .. code-block:: bash
 
-   poetry run execute_local \
-        --config examples/growth_sim/growth_sim.vast \
-        --variant variant1 \
-        --output output_variant1
+   vast execution local --variant variant1 --output output_variant1
 
 
 Cluster Execution
 """""""""""""""""
 
-To execute all tests in the cluster, run ``cluster_execution``.
+To execute all tests in the cluster, run:
 
 .. code-block:: bash
 
-   poetry run cluster_execution \
-        --config examples/growth_sim/growth_sim.vast
+   vast execution cluster
 
 Download Results
 """"""""""""""""
 
-The output of an execution is stored within the cluster-internal NFS-server and can be downloaded with
+The output of an execution is stored within the cluster-internal NFS-server and can be downloaded with:
 
 .. code-block:: bash
 
-   poetry run download_results \
-        --output ./growth_sim_results
+   vast execution download
 
 The resulting folder structure looks like this:
 

@@ -5,81 +5,97 @@ The overall workflow in RoboVAST consists of three main steps:
 
 **Variation** → **Execution** → **Analysis**
 
-For each step, RoboVAST provides dedicated tools to facilitate the process, which are described below. For detailed overall workflow instructions, please refer to the :doc:`example`.
+All commands are accessed via the unified ``vast`` CLI. For detailed workflow instructions, refer to :doc:`example`.
 
-The complete configuration is defined within a single file with ending ``.vast``.
+Configuration is defined in a single ``.vast`` file.
+
+Getting Started
+---------------
+
+Initialize Project
+^^^^^^^^^^^^^^^^^^
+
+.. code-block:: bash
+
+    vast init --config <config.vast> --results-dir <results-dir>
+
+Initialize project with configuration and results directory. Creates a ``.vast_project`` file for subsequent commands.
+
+Shell Completion
+^^^^^^^^^^^^^^^^
+
+.. code-block:: bash
+
+    vast install-completion
+
+Install shell completion for the ``vast`` command.
 
 Variation
 ---------
+
+List Variants
+^^^^^^^^^^^^^
+
+.. code-block:: bash
+
+    vast variation list
+
+List all variants from configuration without generating files.
 
 Generate Variants
 ^^^^^^^^^^^^^^^^^
 
 .. code-block:: bash
 
-    usage: generate_variants [-h] --config CONFIG --output OUTPUT
+    vast variation generate --output <output-dir>
 
-    Generate test variants.
-
-    options:
-      -h, --help            show this help message and exit
-      --config CONFIG       Path to .vast configuration file
-      --output OUTPUT, -o OUTPUT
-                            Output directory for generated scenarios variants and files
-
+Generate variant configurations and files to output directory.
 
 Execution
 ---------
-
-Cluster Execution
-^^^^^^^^^^^^^^^^^
-
-.. code-block:: bash
-
-    usage: cluster_execution [-h] --config CONFIG [--variant VARIANT]
-
-    Run all variants as jobs in Kubernetes.
-
-    options:
-       -h, --help         show this help message and exit
-       --config CONFIG    Path to .vast configuration file
-       --variant VARIANT  Run only a specific variant by name
 
 Local Execution
 ^^^^^^^^^^^^^^^
 
 .. code-block:: bash
 
-    usage: execute_local [-h] --config CONFIG --output OUTPUT --variant VARIANT [--debug] [--shell]
+    vast execution local --variant <variant-name> [--debug] [--shell]
 
-    Execute scenario variant.
+Execute a single variant locally using Docker. Options:
 
-    options:
-      -h, --help            show this help message and exit
-      --config CONFIG       Path to .vast configuration file
-      --output OUTPUT, -o OUTPUT
-                            Output directory of the execution
-      --variant VARIANT, -v VARIANT
-                            Variant to execute
-      --debug, -d           Enable debug output
-      --shell, -s           Instead of running the scenario, login with shell
+- ``--debug``: Enable debug output
+- ``--shell``: Open shell instead of running scenario
 
+Cluster Execution
+^^^^^^^^^^^^^^^^^
+
+.. code-block:: bash
+
+    vast execution cluster [--variant <variant-name>]
+
+Execute all variants (or specific variant) as Kubernetes jobs.
+
+Download Results
+^^^^^^^^^^^^^^^^
+
+.. code-block:: bash
+
+    vast execution download [--output <output-dir>] [--force]
+
+Download results from cluster transfer PVC. Options:
+
+- ``--output``: Custom output directory (uses project results dir by default)
+- ``--force``: Re-download existing files
 
 Analysis
 --------
 
-Result Analyzer
-^^^^^^^^^^^^^^^
+Result Analyzer GUI
+^^^^^^^^^^^^^^^^^^^
 
 .. code-block:: bash
 
-   usage: result_analyzer [-h] --results-dir RESULTS_DIR --config CONFIG
+   vast analysis gui [--output <results-dir>]
 
-   Test Results Analyzer GUI
-
-   options:
-      -h, --help            show this help message and exit
-      --results-dir RESULTS_DIR
-                            Directory containing test results
-      --config CONFIG       Path to .vast configuration file
+Launch graphical analyzer. Uses project results directory by default.
 
