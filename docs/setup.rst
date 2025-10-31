@@ -72,14 +72,14 @@ The ``vast`` command provides a unified interface to all RoboVAST functionality.
    # enable shell completions
    vast completion --install
    
-The VAST CLI provides a convenient `completion` command:
+The VAST CLI provides a convenient ``completion`` command:
 
-```bash
-# Get installation instructions
-vast completion --shell bash
-vast completion --shell zsh
-vast completion --shell fish
+.. code-block:: bash
 
-# Show the completion script (for manual installation)
-vast completion --shell bash --show
-```
+   # Get installation instructions
+   vast completion --shell bash
+   vast completion --shell zsh
+   vast completion --shell fish
+
+   # Show the completion script (for manual installation)
+   vast completion --shell bash --show

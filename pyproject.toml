@@ -9,50 +9,33 @@ packages = [{include = "robovast", from = "src"}]
 
 [tool.poetry.dependencies]
 python = ">=3.12,<3.14"
-# Core dependencies
 click = "^8.1"
 pyyaml = "^6.0"
 numpy = "^1.26"
 pandas = "^2.2"
-# GUI and visualization
 pyside6-essentials = "^6.6"
 pyside6-addons = "^6.6"
 matplotlib = "^3.8"
-# Notebook processing
 nbformat = "^5.9"
 nbconvert = "^7.16"
 lxml-html-clean = "^0.1"
-# Cluster execution
 kubernetes = "^22.6"
 
 [tool.poetry.group.dev.dependencies]
 ipykernel = "^7.1.0"
 
-[tool.poetry.extras]
-cluster = ["kubernetes"]
-
 [tool.poetry.scripts]
-# CLI
-vast = "robovast.cli.vast_cli.cli:main"
-# Execution
-execute_local = "robovast.execution.execution_utils.execute_local:main"
-cluster_execution = "robovast.execution.cluster_execution.cluster_execution:main"
-download_results = "robovast.execution.cluster_execution.download_results:main"
-# Variation
-list_variants = "robovast.variation.variation_utils.list_variants:main"
-generate_variants = "robovast.variation.variation_utils.generate_variants:main"
-# Analysis
-result_analyzer = "robovast.analysis.result_analyzer.result_analyzer:main"
+vast = "robovast.common.cli.cli:main"
 
-[tool.poetry.plugins."vast.plugins"]
-execution = "robovast.execution.execution_utils.cli:execution"
-variation = "robovast.variation.variation_utils.cli:variation"
-analysis = "robovast.analysis.result_analyzer.cli:analysis"
+[tool.poetry.plugins."robovast.cli_plugins"]
+execution = "robovast.execution.execution_utils.execution_utils.cli:execution"
+variation = "robovast.variation.variation_utils.variation_utils.cli:variation"
+analysis = "robovast.analysis.result_analyzer.result_analyzer.cli:analysis"
 
 [tool.poetry.plugins."robovast.variation_types"]
-"ParameterVariationList" = "robovast.common.robovast_common.variation.parameter_variation:ParameterVariationList"
-"ParameterVariationDistributionUniform" = "robovast.common.robovast_common.variation.parameter_variation:ParameterVariationDistributionUniform"
-"ParameterVariationDistributionGaussian" = "robovast.common.robovast_common.variation.parameter_variation:ParameterVariationDistributionGaussian"
+"ParameterVariationList" = "robovast.common.variation.parameter_variation:ParameterVariationList"
+"ParameterVariationDistributionUniform" = "robovast.common.variation.parameter_variation:ParameterVariationDistributionUniform"
+"ParameterVariationDistributionGaussian" = "robovast.common.variation.parameter_variation:ParameterVariationDistributionGaussian"
 
 [build-system]
 requires = ["poetry-core"]

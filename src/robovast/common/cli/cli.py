@@ -18,8 +18,7 @@
 """Main CLI entry point for VAST."""
 
 import click
-import sys
-
+from importlib.metadata import entry_points
 
 @click.group()
 @click.version_option(package_name="vast-cli")
@@ -80,15 +79,9 @@ def completion(shell, show):
 
 def load_plugins():
     """Dynamically load all VAST CLI plugins from entry points."""
-    try:
-        from importlib.metadata import entry_points
-        
-        # Python 3.10+ compatible
-        if sys.version_info >= (3, 10):
-            eps = entry_points(group='vast.plugins')
-        else:
-            eps = entry_points().get('vast.plugins', [])
-        
+    try:        
+        eps = entry_points(group='robovast.cli_plugins')
+
         for ep in eps:
             try:
                 # Load the entry point (should return a Click group or command)
