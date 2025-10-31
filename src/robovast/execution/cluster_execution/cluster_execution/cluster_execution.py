@@ -26,7 +26,7 @@ import time
 import yaml
 
 from kubernetes import client, config
-from robovast_common import (get_execution_env_variables,
+from robovast.common import (get_execution_env_variables,
                              get_execution_variants, load_config,
                              prepare_run_configs)
 

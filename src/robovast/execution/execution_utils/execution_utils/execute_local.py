@@ -21,7 +21,7 @@ import sys
 import tempfile
 from pprint import pprint
 import yaml
-from robovast_common import (load_config, get_execution_env_variables,
+from robovast.common import (load_config, get_execution_env_variables,
                              get_execution_variants, prepare_run_configs)
 
 

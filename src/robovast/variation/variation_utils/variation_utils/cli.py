@@ -22,7 +22,7 @@ import os
 import sys
 import tempfile
 
-from robovast_common import generate_scenario_variations
+from robovast.common import generate_scenario_variations
 
 
 @click.group()

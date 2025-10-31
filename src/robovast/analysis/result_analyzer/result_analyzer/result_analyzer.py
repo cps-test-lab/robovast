@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (QApplication, QGroupBox, QHBoxLayout, QLabel,
                                QPushButton, QSplitter, QStatusBar, QTabWidget,
                                QTreeWidget, QTreeWidgetItem, QVBoxLayout,
                                QWidget)
-from robovast_common import load_config
+from robovast.common import load_config
 
 from .widgets.common import RunType
 from .widgets.jupyter_widget import DataAnalysisWidget, JupyterNotebookRunner

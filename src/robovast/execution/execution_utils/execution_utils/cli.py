@@ -23,7 +23,7 @@ import sys
 import tempfile
 from pprint import pprint
 
-from robovast_common import (load_config, get_execution_variants, prepare_run_configs)
+from robovast.common import (load_config, get_execution_variants, prepare_run_configs)
 from .execute_local import execute_docker_container, get_docker_image_from_yaml
 
 
