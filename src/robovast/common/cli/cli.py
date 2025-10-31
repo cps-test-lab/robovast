@@ -15,7 +15,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Main CLI entry point for VAST."""
+"""Main CLI entry point for RoboVAST."""
 
 import click
 from importlib.metadata import entry_points
@@ -37,44 +37,62 @@ def cli():
 
 
 @cli.command()
-@click.option('--shell', type=click.Choice(['bash', 'zsh', 'fish'], case_sensitive=False),
-              required=True, help='Shell type for completion')
-@click.option('--show', is_flag=True, help='Show completion script instead of installing')
-def completion(shell, show):
-    """Install or show shell completion script.
+def install_completion():
+    """Install shell completion for the vast command.
+    
+    Auto-detects your shell and installs completion to the appropriate config file.
     
     Examples:
-      vast completion --shell bash          # Install bash completion
-      vast completion --shell zsh --show    # Show zsh completion script
+      vast install-completion
     """
-    shell_lower = shell.lower()
+    import os
     
-    # Generate completion script
-    if shell_lower == 'bash':
-        script = 'eval "$(_VAST_COMPLETE=bash_source vast)"'
-        install_cmd = 'echo \'eval "$(_VAST_COMPLETE=bash_source vast)"\' >> ~/.bashrc'
-    elif shell_lower == 'zsh':
-        script = 'eval "$(_VAST_COMPLETE=zsh_source vast)"'
-        install_cmd = 'echo \'eval "$(_VAST_COMPLETE=zsh_source vast)"\' >> ~/.zshrc'
-    elif shell_lower == 'fish':
-        script = '_VAST_COMPLETE=fish_source vast | source'
-        install_cmd = 'echo \'_VAST_COMPLETE=fish_source vast | source\' >> ~/.config/fish/config.fish'
-    
-    if show:
-        # Just show the script
-        click.echo(script)
+    # Auto-detect shell from SHELL environment variable
+    shell_env = os.environ.get('SHELL', '')
+    if 'zsh' in shell_env:
+        shell = 'zsh'
+    elif 'fish' in shell_env:
+        shell = 'fish'
     else:
-        # Provide installation instructions
-        click.echo(f"To enable {shell} completion for the vast command, add this to your shell config:")
+        shell = 'bash'
+    
+    # Generate completion script based on shell
+    if shell == 'bash':
+        script = 'eval "$(_VAST_COMPLETE=bash_source vast)"'
+        config_file = os.path.expanduser('~/.bashrc')
+    elif shell == 'zsh':
+        script = 'eval "$(_VAST_COMPLETE=zsh_source vast)"'
+        config_file = os.path.expanduser('~/.zshrc')
+    elif shell == 'fish':
+        script = '_VAST_COMPLETE=fish_source vast | source'
+        config_file = os.path.expanduser('~/.config/fish/config.fish')
+    
+    # Install to the config file
+    try:
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(config_file), exist_ok=True)
+        
+        # Check if completion is already installed
+        if os.path.exists(config_file):
+            with open(config_file, 'r') as f:
+                content = f.read()
+                if script in content:
+                    click.echo(f"✓ Completion already installed in {config_file}")
+                    return
+        
+        # Append completion script to config file
+        with open(config_file, 'a') as f:
+            f.write(f"\n# VAST CLI completion\n{script}\n")
+        
+        click.echo(f"✓ Completion installed successfully!")
+        click.echo(f"  Shell: {shell}")
+        click.echo(f"  Added to: {config_file}")
         click.echo()
-        click.echo(f"  {script}")
-        click.echo()
-        click.echo("You can do this automatically by running:")
-        click.echo()
-        click.echo(f"  {install_cmd}")
-        click.echo()
-        click.echo("Then restart your shell or run:")
-        click.echo(f"  source ~/.{shell_lower}rc")
+        click.echo("Restart your shell or run:")
+        click.echo(f"  source {config_file}")
+    except Exception as e:
+        click.echo(f"✗ Failed to install completion: {e}", err=True)
+        raise click.Exit(1)
 
 
 def load_plugins():

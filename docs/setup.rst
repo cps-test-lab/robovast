@@ -70,16 +70,5 @@ The ``vast`` command provides a unified interface to all RoboVAST functionality.
    vast --help
 
    # enable shell completions
-   vast completion --install
-   
-The VAST CLI provides a convenient ``completion`` command:
-
-.. code-block:: bash
-
-   # Get installation instructions
-   vast completion --shell bash
-   vast completion --shell zsh
-   vast completion --shell fish
-
-   # Show the completion script (for manual installation)
-   vast completion --shell bash --show
+   vast install-completion
+   source ~/.bashrc  # or source the appropriate file for your shell
