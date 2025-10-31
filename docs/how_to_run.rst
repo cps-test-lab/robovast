@@ -51,6 +51,24 @@ Generate Variants
 
 Generate variant configurations and files to output directory.
 
+List Variation Types
+^^^^^^^^^^^^^^^^^^^^
+
+.. code-block:: bash
+
+    vast variation types
+
+List all available variation types from the config file. Shows the variation types defined under ``variation.variations`` that can be used to create variants.
+
+List Variation Points
+^^^^^^^^^^^^^^^^^^^^^
+
+.. code-block:: bash
+
+    vast variation points
+
+List all possible variation points from the scenario file. Shows the parameters that can be varied according to the scenario configuration.
+
 Execution
 ---------
 

@@ -23,8 +23,9 @@ import sys
 import tempfile
 from importlib.metadata import entry_points
 
-from robovast.common import generate_scenario_variations
+from robovast.common import generate_scenario_variations, load_config
 from robovast.common.cli.project_config import get_project_config
+from robovast.common.variation import get_scenario_parameter_template
 
 
 @click.group()
@@ -157,4 +158,68 @@ def types():
                 
     except Exception as e:
         click.echo(f"Error loading variation types: {e}", err=True)
+        sys.exit(1)
+
+
+@variation.command()
+def points():
+    """List possible variation points from the scenario file.
+    
+    Shows all available variation points (scenario parameters) that can be
+    varied in the scenario as defined in the scenario configuration file.
+    
+    Requires project initialization with 'vast init' first.
+    """
+    # Get project configuration
+    project_config = get_project_config()
+    config = project_config.config_path
+    
+    click.echo("Loading scenario parameter template...")
+    click.echo("-" * 60)
+    
+    try:
+        # Load the execution section to get the scenario file
+        execution_config = load_config(config, subsection="execution")
+        scenario_file = execution_config.get("scenario")
+        
+        if not scenario_file:
+            click.echo("Error: No 'scenario' field found in execution section", err=True)
+            sys.exit(1)
+        
+        # Make scenario path absolute relative to config file
+        if not os.path.isabs(scenario_file):
+            scenario_file = os.path.join(os.path.dirname(config), scenario_file)
+        
+        if not os.path.exists(scenario_file):
+            click.echo(f"Error: Scenario file does not exist: {scenario_file}", err=True)
+            sys.exit(1)
+        
+        # Get the scenario parameter template
+        scenario_template = get_scenario_parameter_template(scenario_file)
+        
+        if scenario_template:
+            scenario_parameters = next(iter(scenario_template.values()))
+        else:
+            scenario_parameters = None
+        
+        if not scenario_parameters:
+            click.echo("No variation points found in scenario", err=True)
+            sys.exit(1)
+        
+        click.echo(f"Available variation points from: {scenario_file}")
+        click.echo("-" * 60)
+        
+        # Display the parameters in a readable format
+        for param_name, param_value in scenario_parameters.items():
+            click.echo(f"  {param_name}:")
+            if isinstance(param_value, dict):
+                for key, val in param_value.items():
+                    click.echo(f"    {key}: {val}")
+            else:
+                click.echo(f"    {param_value}")
+        
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        import traceback # pylint: disable=import-outside-toplevel
+        traceback.print_exc()
         sys.exit(1)

@@ -16,6 +16,8 @@ commands=(
     "vast variation"
     "vast variation list"
     "vast variation generate"
+    "vast variation types"
+    "vast variation points"
     "vast execution"
     "vast execution local"
     "vast execution cluster"
