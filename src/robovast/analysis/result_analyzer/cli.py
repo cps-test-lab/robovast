@@ -19,7 +19,7 @@
 
 import click
 import sys
-from robovast.common.cli.project_config import get_project_config
+from robovast.common.cli import get_project_config
 
 
 @click.group()

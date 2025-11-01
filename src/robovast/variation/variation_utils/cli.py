@@ -24,7 +24,7 @@ import tempfile
 from importlib.metadata import entry_points
 
 from robovast.common import generate_scenario_variations, load_config
-from robovast.common.cli.project_config import get_project_config
+from robovast.common.cli import get_project_config
 from robovast.common.variation import get_scenario_parameter_template
 
 

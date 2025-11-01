@@ -1,12 +1,12 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: job-$SCENARIO_ID
+  name: $SCENARIO_ID
   labels:
     jobgroup: scenario-runs
 spec:
   backoffLimit: 0
-  #activeDeadlineSeconds: 10000000
+  # activeDeadlineSeconds: 10000000
   template:
     metadata:
       name: scenario-runs
@@ -18,35 +18,22 @@ spec:
       securityContext:
         privileged: true
       containers:
-      - name: example-container
-        image: freeedlabs/scenario_execution_jazzy@sha256:6397dd25c79bb153468ae2c4813beacd4a83f024b95afa16016771e80111b8f4
-        # command: ["/bin/bash", "-c", "sleep 1000"]
-        command: ["/entrypoint.sh", "/config/common/run.sh"]
-        securityContext: # required for rke2
-          privileged: true
-        env:
-        - name: SIZEW
-          value: "1920"
-        - name: SIZEH
-          value: "1080"
-        - name: RMW_IMPLEMENTATION
-          value: "rmw_cyclonedds_cpp"
-        # - name: NOVNC_ENABLE
-        #   value: "true"
-        resources:
-          requests:
-            cpu: "7"
-          limits:
-            cpu: "7"
-        volumeMounts:
-          - name: transfer-storage
-            mountPath: /config
-            subPath: config/$RUN_ID/$SCENARIO_CONFIG
-            readOnly: true
-          - name: transfer-storage
-            mountPath: /out
-            subPath: out/$RUN_ID/$SCENARIO_CONFIG/$RUN_NUM
-            readOnly: false
+        - name: example-container
+          # image: freeedlabs/scenario_execution_jazzy@sha256:53c128913bc373f93a70fe6b4c3e879c2bcd6b9129a93be8328bcd4265b038ff
+          #image: ghcr.io/cps-test-lab/robovast:latest
+          image: robovast:latest
+          # command: ["/bin/bash", "-c", "sleep 1000"]
+          # command: ["/entrypoint.sh", "/config/common/run.sh"]
+          securityContext: # required for rke2
+            privileged: true
+          # - name: NOVNC_ENABLE
+          #   value: "true"
+          resources:
+            requests:
+              cpu: "1"
+            limits:
+              cpu: "1"
+
       volumes:
         - name: transfer-storage
           hostPath: # for rke2

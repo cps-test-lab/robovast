@@ -23,7 +23,7 @@ from pprint import pprint
 import yaml
 from robovast.common import (load_config, get_execution_env_variables,
                              get_execution_variants, prepare_run_configs)
-
+from robovast.common.cli import get_project_config
 
 def get_docker_image_from_yaml(yaml_path):
     """Parse the Kubernetes YAML template to extract the Docker image name."""
@@ -45,15 +45,61 @@ def get_docker_image_from_yaml(yaml_path):
         return None
     return None
 
+def initialize_local_execution(variant, debug=False):
+    """Initialize common setup for local execution commands.
+    
+    Args:
+        variant: The variant name to execute
+        debug: Enable debug output
+        
+    Returns:
+        Tuple of (config, output, docker_image, variant_configs)
+        
+    Raises:
+        SystemExit: If initialization fails
+    """
+    # Get project configuration
+    project_config = get_project_config()
+    config = project_config.config_path
+    output = project_config.results_dir
+    
+    execution_parameters = load_config(config, "execution")
+    yaml_path = os.path.join(os.path.dirname(config), execution_parameters["kubernetes_manifest"])
+    
+    if not os.path.exists(yaml_path):
+        print(f"Error: Kubernetes template not found: {yaml_path}", err=True)
+        sys.exit(1)
+    
+    docker_image = get_docker_image_from_yaml(yaml_path)
+    if not docker_image:
+        print("Error: Could not extract Docker image from YAML file", err=True)
+        sys.exit(1)
+    
+    print(f"Docker image: {docker_image}")
+    print("-" * 60)
 
-def execute_docker_container(image, config_path, temp_path, output_path, variant_name, run_num=0, shell=False):
-    """Execute Docker container with the specified bind mounts."""
+    variants = get_execution_variants(config)
+
+    if variant not in variants:
+        print(f"Error: variant '{variant}' not found in config.", err=True)
+        print("Available variants:")
+        for v in variants:
+            print(f"  - {v}")
+        sys.exit(1)
+
+    variant_configs = {variant: variants[variant]}
     
+    if debug:
+        print("Variants:")
+        pprint(variant_configs)
     
+    return config, output, docker_image, variant_configs
+
+def get_commandline(image, config_path, output_path, variant_name, run_num=0, shell=False):
+
     # Get the current user and group IDs to run docker with the same permissions
     uid = os.getuid()
     gid = os.getgid()
-    
 
     docker_cmd = [
         'docker', 'run',
@@ -75,8 +121,13 @@ def execute_docker_container(image, config_path, temp_path, output_path, variant
         # Normal execution mode
         docker_cmd.append(image)
         print(f"Executing Docker container: {image}")
-    
-    print(f"Docker command: {' '.join(docker_cmd)}")
+
+    return docker_cmd
+
+def execute_docker_container(image, config_path, temp_path, output_path, variant_name, run_num=0, shell=False):
+    """Execute Docker container with the specified bind mounts."""
+    docker_cmd = get_commandline(image, config_path, output_path, variant_name, run_num, shell)
+    print(f"Docker command:\n{' '.join(docker_cmd)}")
     print("-" * 60)
     sys.stdout.flush()  # Ensure all output is flushed before starting docker
     
@@ -168,7 +219,6 @@ def main():  # pylint: disable=too-many-return-statements
         # Execute the Docker container with bind mounts
 
         config_path = os.path.join(temp_path.name, "config", args.variant, args.variant)
-        print(config_path)
         return_code = execute_docker_container(docker_image, config_path, temp_path.name, args.output, args.variant, shell=args.shell)
         return return_code
 

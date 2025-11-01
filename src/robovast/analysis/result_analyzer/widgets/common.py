@@ -85,7 +85,7 @@ def get_variant_value(test_file_path, key):
 
     if not variant_data:
         return None
-    path = ["nav_scenario"]
+    path = ["test_scenario"]
     path.append(key)
 
     # Navigate through the variant data using path

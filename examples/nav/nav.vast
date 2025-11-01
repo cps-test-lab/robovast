@@ -2,30 +2,15 @@ settings:
   general:
     robot_diameter: 0.35
   variation:
-  - FloorplanVariation:
-      variation_files:
-      - floorplans/rooms/rooms.variation
-      num_variations: 1
-      floorplan_variation_seed: 42
-  - PathVariation:
-      path_length: 10.0
-      num_paths: 1
-      path_length_tolerance: 0.5
-      min_distance: 1.0
-      path_generation_seed: 42
-  - ObstacleVariation:
-      obstacle_configs:
-      - amount: 1
-        max_distance: 0.1
-        model: gazebo_scenario_models://models/box.sdf.xacro
-        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
-      obstacle_placement_seed: 789012
-  - SensorNoise:
-      noise_configs:
-      - drop_rate: 0.12
-        noise_std: 0.34
-      sensor_noise_seed: 123456
-      skip_sensor_noise: true
+  - ParameterVariationList:
+      name: goal_pose
+      values:
+      - position:
+          x: 3.0
+          y: 3.0
+      - position:
+          x: 3.0
+          y: -3.0
   execution:
     kubernetes_manifest: kubernetes_tmpl.yaml
     scenario: scenario.osc

@@ -96,7 +96,7 @@ def get_filtered_files(variation_file, scenario_file, test_files_filter, variant
             'original_scenario_path': scenario_file,
             'variant_file_path': variant_file_path,
             'variant_data': {
-                'nav_scenario': convert_dataclasses_to_dict(variant_data)
+                'test_scenario': convert_dataclasses_to_dict(variant_data)
             }
         }
         print(f"### Created {variant_name}")
