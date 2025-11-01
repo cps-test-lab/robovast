@@ -21,7 +21,10 @@ settings:
     - "**/common/*.sdf.xacro"
     runs: 10
   analysis:
-  - Analysis:
-      single_test: analysis/analysis_single_test.ipynb
-      variant: analysis/analysis_variant.ipynb
-      run: analysis/analysis_run.ipynb
+    preprocessing:
+    - ../../tools/rosbags_to_csv.sh
+    visualization:
+    - Analysis:
+        single_test: analysis/analysis_single_test.ipynb
+        variant: analysis/analysis_variant.ipynb
+        run: analysis/analysis_run.ipynb

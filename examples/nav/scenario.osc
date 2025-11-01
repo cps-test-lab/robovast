@@ -20,4 +20,17 @@ scenario test_scenario:
         )
         wait_for_sim(world_name: 'depot')
         robot.init_nav2(pose_3d())
+        bag_record([
+                '/tf',
+                '/tf_static', 
+                '/scenario_execution/snapshots', 
+                '/map', 
+                '/local_costmap/costmap',
+                '/amcl_pose',
+                '/navigate_to_pose/_action/feedback',
+                '/navigate_to_pose/_action/status'
+            ],
+            hidden_topics: true,
+            use_sim_time: true,
+            timestamp_suffix: false)
         robot.nav_to_pose(goal_pose)
