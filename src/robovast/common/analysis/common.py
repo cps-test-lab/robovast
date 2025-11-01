@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Callable
 import pandas as pd
 import yaml
-from .ros2 import process_rosbag
 
 def read_output_files(data_dir: str, reader_func: Callable[[Path], pd.DataFrame], debug: bool = False) -> pd.DataFrame:
     """
@@ -55,6 +54,8 @@ def read_output_files(data_dir: str, reader_func: Callable[[Path], pd.DataFrame]
     
     category_names = set({'test', 'variant'})
     for run_yaml in run_yaml_files:
+        if debug:
+            print(f"Reading data from: {run_yaml}")
         test_dir = run_yaml.parent
         test_name = test_dir.name
         
@@ -124,19 +125,3 @@ def read_output_csv(test_dir: Path, filename: str, skiprows: int = 0) -> pd.Data
     # Read CSV, skipping the first line (comment)
     df = pd.read_csv(csv_path, skiprows=skiprows)
     return df
-
-def read_rosbag(test_dir: Path, rel_rosbag2_path: "rosbag2", skipped_topics: list[str]) -> pd.DataFrame:
-    """
-    Read data from a ROS2 bag in the test directory for specified topics.
-    
-    Args:
-        test_dir: Path to the test directory
-        topics: List of ROS topics to read from the bag
-
-    Returns:
-        DataFrame with the combined data from the specified topics
-    """ 
-
-    process_rosbag(os.path.join(test_dir, rel_rosbag2_path), skipped_topics, "")
-    
-    return pd.DataFrame()

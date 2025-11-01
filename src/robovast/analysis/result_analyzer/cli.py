@@ -20,10 +20,9 @@
 import argparse
 import sys
 from pathlib import Path
+from robovast.common import FileCache
 
-from .preprocessing import (
-    is_preprocessing_needed,
-)
+from .preprocessing import is_preprocessing_needed, get_cached_file, get_hash_file_name
 
 import click
 import sys
@@ -32,9 +31,6 @@ import subprocess
 from robovast.common.cli import get_project_config
 from robovast.analysis.result_analyzer.preprocessing import (
     get_preprocessing_commands,
-    compute_preprocessing_hash,
-    get_flag_file_path,
-    is_preprocessing_needed,
 )
 
 
@@ -48,9 +44,11 @@ def analysis():
 
 
 @analysis.command(name='preprocess')
-@click.option('--output', '-o', default=None,
+@click.option('--results-dir', '-r', default=None,
               help='Directory containing test results (uses project results dir if not specified)')
-def preprocess_cmd(output):
+@click.option('--force', '-f', is_flag=True,
+              help='Force preprocessing by skipping cache check')
+def preprocess_cmd(results_dir, force):
     """Run preprocessing commands on test results.
     
     Executes preprocessing commands defined in the configuration file's
@@ -61,15 +59,16 @@ def preprocess_cmd(output):
     
     Examples:
       vast analysis preprocess
-      vast analysis preprocess --output ./custom_results
+      vast analysis preprocess --results-dir ./custom_results
+      vast analysis preprocess --force
     """
     # Get project configuration
     project_config = get_project_config()
     config_path = project_config.config_path
-    
-    # Use provided output or fall back to project results dir
-    results_dir = output if output is not None else project_config.results_dir
-    
+
+    # Use provided results_dir or fall back to project results dir
+    results_dir = results_dir if results_dir is not None else project_config.results_dir
+
     # Get preprocessing commands
     commands = get_preprocessing_commands(config_path)
     
@@ -77,34 +76,54 @@ def preprocess_cmd(output):
         click.echo("No preprocessing commands defined in configuration.")
         return
     
+    command_files = []
+    command_paths = []
+    for command in commands:
+        splitted = command.split()
+        if splitted:
+            if os.path.isabs(splitted[0]):
+                command_path = splitted[0]
+            else:
+                command_path = os.path.join(os.path.dirname(config_path), splitted[0])
+
+            if os.path.exists(command_path):
+                command_paths.append(splitted)
+                command_files.append(command_path)
+            else:
+                click.echo(f"✗ Error: Preprocessing command not found: {command_path}", err=True)
+                sys.exit(1)
+        else:
+            click.echo(f"✗ Error: Invalid preprocessing command: {command}", err=True)
+            sys.exit(1)
+
+    cached_file = get_cached_file(os.path.dirname(config_path), results_dir, commands, command_files)
+
+    if cached_file and not force:
+        click.echo("✓ Preprocessing is already up to date. No action needed.")
+        return
+
+    if force:
+        click.echo("Force mode enabled: skipping cache check")
+    
     click.echo("Starting preprocessing...")
     click.echo(f"Results directory: {results_dir}")
     click.echo("-" * 60)
     
-    # Make results directory if it doesn't exist
-    os.makedirs(results_dir, exist_ok=True)
+    if not os.path.exists(results_dir):
+        click.echo(f"✗ Error: Results directory does not exist: {results_dir}", err=True)
+        sys.exit(1)
     
     # Execute each preprocessing command
     config_dir = os.path.dirname(config_path)
     success = True
-    
-    for i, command in enumerate(commands, 1):        
-        # Make command path absolute relative to config file
-        if not os.path.isabs(command):
-            command_path = os.path.join(config_dir, command)
-        else:
-            command_path = command
-        
-        if not os.path.exists(command_path):
-            click.echo(f"✗ Error: Command not found: {command_path}", err=True)
-            success = False
-            break
-        
-        click.echo(f"\n[{i}/{len(commands)}] Executing: {command_path} {results_dir}")
+
+    for i, command in enumerate(command_paths, 1):
+        command.append(os.path.abspath(results_dir))
+        click.echo(f"\n[{i}/{len(command_paths)}] Executing: {' '.join(command)}")
         try:
             # Run the command with results directory as argument
             result = subprocess.run(
-                [command_path, results_dir],
+                command,
                 cwd=config_dir,
                 capture_output=True,
                 text=True,
@@ -129,21 +148,13 @@ def preprocess_cmd(output):
             success = False
             break
     
-    if success:
-        # Create flag file with hash
-        flag_file = get_flag_file_path(results_dir)
-        command_hash = compute_preprocessing_hash(commands)
-        
-        try:
-            with open(flag_file, 'w') as f:
-                f.write(command_hash)
-            
-            click.echo("\n" + "=" * 60)
-            click.echo("✓ Preprocessing completed successfully!")
-            click.echo(f"  Flag file created: {flag_file}")
-        except IOError as e:
-            click.echo(f"\n✗ Error creating flag file: {e}", err=True)
-            sys.exit(1)
+    if success: 
+        file_cache = FileCache()
+        file_cache.set_current_data_directory(os.path.dirname(config_path))
+        file_cache.save_file_to_cache(command_files, get_hash_file_name(results_dir), None, content=False, strings_for_hash=commands)
+           
+        click.echo("\n" + "=" * 60)
+        click.echo("✓ Preprocessing completed successfully!")
     else:
         click.echo("\n" + "=" * 60)
         click.echo("✗ Preprocessing failed!", err=True)
@@ -151,9 +162,9 @@ def preprocess_cmd(output):
 
 
 @analysis.command(name='gui')
-@click.option('--output', '-o', default=None,
+@click.option('--results-dir', '-r', default=None,
               help='Directory containing test results (uses project results dir if not specified)')
-def result_analyzer_cmd(output):
+def result_analyzer_cmd(results_dir):
     """Launch the graphical test results analyzer.
     
     Opens a GUI application for interactive exploration and
@@ -168,14 +179,14 @@ def result_analyzer_cmd(output):
     # Get project configuration
     project_config = get_project_config()
     config = project_config.config_path
-    
-    # Use provided output or fall back to project results dir
-    results_dir = output if output is not None else project_config.results_dir
-    
+
+    # Use provided results_dir or fall back to project results dir
+    results_dir = results_dir if results_dir is not None else project_config.results_dir
+
     # Check if preprocessing is needed
-    is_needed, reason = is_preprocessing_needed(config, results_dir)
+    is_needed = is_preprocessing_needed(config, results_dir)
     if is_needed:
-        click.echo(f"⚠ Warning: {reason}", err=True)
+        click.echo(f"⚠ Warning: Preprocessing is needed", err=True)
         click.echo("Please run 'vast analysis preprocess' before launching the GUI.", err=True)
         sys.exit(1)
     

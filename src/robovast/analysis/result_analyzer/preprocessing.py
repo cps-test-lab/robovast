@@ -16,7 +16,7 @@
 
 """Preprocessing functionality for analysis data."""
 
-import hashlib
+from robovast.common import FileCache
 import os
 from typing import List, Tuple
 
@@ -39,62 +39,42 @@ def get_preprocessing_commands(config_path: str) -> List[str]:
         return []
 
 
-def compute_preprocessing_hash(commands: List[str]) -> str:
-    """Compute hash of preprocessing commands.
-    
-    Args:
-        commands: List of preprocessing command strings
-        
-    Returns:
-        Hash string of the commands
-    """
-    content = "\n".join(commands)
-    return hashlib.sha256(content.encode()).hexdigest()
-
-
-def get_flag_file_path(results_dir: str) -> str:
-    """Get path to preprocessing flag file.
-    
-    Args:
-        results_dir: Results directory path
-        
-    Returns:
-        Path to .robovast_preprocessed flag file
-    """
-    return os.path.join(results_dir, ".robovast_preprocessed")
-
-
-def is_preprocessing_needed(config_path: str, results_dir: str) -> Tuple[bool, str]:
+def is_preprocessing_needed(config_path: str, results_dir: str) -> bool:
     """Check if preprocessing is needed.
-    
+
     Args:
         config_path: Path to .vast configuration file
-        results_dir: Results directory path
-        
+        results_dir: Path to the results directory
+
     Returns:
-        Tuple of (is_needed, reason) where is_needed is bool and reason is string
+        bool indicating if preprocessing is needed
     """
     commands = get_preprocessing_commands(config_path)
     
     if not commands:
-        return False, "No preprocessing commands defined"
+        return False
     
-    flag_file = get_flag_file_path(results_dir)
-    
-    if not os.path.exists(flag_file):
-        return True, "Preprocessing has not been run yet"
-    
-    # Read existing hash
-    try:
-        with open(flag_file, 'r') as f:
-            stored_hash = f.read().strip()
-    except IOError:
-        return True, "Cannot read preprocessing flag file"
-    
-    # Compute current hash
-    current_hash = compute_preprocessing_hash(commands)
-    
-    if stored_hash != current_hash:
-        return True, "Preprocessing commands have changed"
-    
-    return False, "Preprocessing is up to date"
+    command_files = []
+    for command in commands:
+        splitted = command.split()
+        if splitted:
+            if os.path.isabs(splitted[0]):
+                command_path = splitted[0]
+            else:
+                command_path = os.path.join(os.path.dirname(config_path), splitted[0])
+            if os.path.exists(command_path):
+                command_files.append(command_path)
+
+    cached_file = get_cached_file(os.path.dirname(config_path), results_dir, commands, command_files)
+
+    return not bool(cached_file)
+
+def get_hash_file_name(results_dir: str) -> str:
+    file_name = "preprocess_" + results_dir
+    return file_name.replace(os.sep, "_")
+
+def get_cached_file(config_path, results_dir, commands, command_files):
+    file_cache = FileCache()
+    file_cache.set_current_data_directory(config_path)
+
+    return file_cache.get_cached_file(command_files, get_hash_file_name(results_dir), content=False, strings_for_hash=commands, hash_only=True)

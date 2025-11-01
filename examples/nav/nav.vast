@@ -6,11 +6,26 @@ settings:
       name: goal_pose
       values:
       - position:
-          x: 3.0
-          y: 3.0
+          x: 21.0
+          y: 6.0
       - position:
-          x: 3.0
-          y: -3.0
+          x: 21.0
+          y: 4.0
+      - position:
+          x: 21.0
+          y: 2.0
+      - position:
+          x: 21.0
+          y: 0.0
+      - position:
+          x: 21.0
+          y: -2.0
+      - position:
+          x: 21.0
+          y: -4.0
+      - position:
+          x: 21.0
+          y: -6.0
   execution:
     kubernetes_manifest: kubernetes_tmpl.yaml
     scenario: scenario.osc
@@ -19,10 +34,12 @@ settings:
     - "**/common/*launch.py"
     - "**/common/*.rviz"
     - "**/common/*.sdf.xacro"
-    runs: 10
+    runs: 1
   analysis:
     preprocessing:
-    - ../../tools/rosbags_to_csv.sh
+    - ../../tools/ros2_exec.sh rosbags_to_csv.py
+    - ../../tools/ros2_exec.sh rosbags_tf_to_csv.py --frame base_link
+    - ../../tools/ros2_exec.sh rosbags_tf_to_csv.py --frame turtlebot4_base_link_gt
     visualization:
     - Analysis:
         single_test: analysis/analysis_single_test.ipynb
