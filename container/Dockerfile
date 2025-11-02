@@ -60,6 +60,7 @@ RUN \
         ros-jazzy-py-trees-ros \
         ros-jazzy-py-trees-ros-interfaces \
         ros-jazzy-nav2-bringup \
+        ros-jazzy-nav2-route \
         python3-autopep8 \
         python3-transforms3d \
         python3-antlr4 \
