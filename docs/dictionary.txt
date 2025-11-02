@@ -15,3 +15,5 @@ minikube
 ubuntu
 preprocessing
 preprocess
+preprocessed
+tf

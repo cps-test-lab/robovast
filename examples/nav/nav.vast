@@ -29,11 +29,6 @@ settings:
   execution:
     kubernetes_manifest: kubernetes_tmpl.yaml
     scenario: scenario.osc
-    test_files_filter:
-    - "**/common/*.sh"
-    - "**/common/*launch.py"
-    - "**/common/*.rviz"
-    - "**/common/*.sdf.xacro"
     runs: 50
   analysis:
     preprocessing:

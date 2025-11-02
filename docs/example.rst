@@ -167,13 +167,21 @@ Analysis
 ^^^^^^^^
 As result analysis is tailored to each test, users are expected to implement their own analysis routines.
 
+There are two steps invokes to analyze results.
+First, the downloaded results can optionally be preprocessed to simplify later analysis. The user might specify preprocessing commands in ``analysis.preprocessing`` section of the ``.vast`` configuration. Common scripts including converting ROS bags to CSV files or extracting poses from tf-data are available to improve usability.
+
+.. code-block:: bash
+
+   vast analysis preprocess
+
+After preprocessing, the actual analysis can be performed.
 To simplify this process, RoboVAST provides the ``result_analyzer`` tool, which enables users to execute Jupyter notebooks directly from a graphical interface.
 
-Analysis configuration is specified in the ``analysis`` section of the ``.vast`` configuration file.
+Analysis configuration is specified in the ``analysis.visualization`` section of the ``.vast`` configuration file.
 
 .. literalinclude:: ../examples/growth_sim/growth_sim.vast
    :language: yaml
-   :lines: 2-6
+   :lines: 2-7
    :caption: Analysis section of RoboVAST Configuration File
 
 Although this example includes only one entry in the analysis list, you can add more. Each additional entry will appear as a separate tab in the ``result_analyzer`` interface.

@@ -41,26 +41,27 @@ For debugging and monitoring, we recommend installing `k9s <https://k9scli.io/>`
 Installation
 ------------
 
-RoboVAST uses `Poetry <https://python-poetry.org/docs/>`_ for dependency management and packaging.
-
-Install poetry, e.g. in ubuntu with
+RoboVAST is best installed within a virtual environment.
 
 .. code-block:: bash
 
-   sudo apt install python3-poetry
+   sudo apt install python3-venv
+   python3 -m venv venv
+   . venv/bin/activate
 
-
-Then clone the RoboVAST repository
+Clone the RoboVAST repository:
 
 .. code-block:: bash
 
    git clone https://github.com/cps-test-lab/robovast.git
+   cd robovast
 
-and install with
+Install RoboVAST and the navigation extension in editable mode:
 
 .. code-block:: bash
 
-   poetry install
+   pip install -e .
+   pip install -e src/robovast_nav
 
 This will install the ``vast`` command and all its plugins.
 The ``vast`` command provides a unified interface to all RoboVAST functionality.

@@ -1,9 +1,25 @@
 #!/usr/bin/env python3
+# Copyright (C) 2025 Frederik Pasch
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions
+# and limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
 
 """script that reads ROS2 messages using the rosbag2_py API."""
 import argparse
 import os
 import sys
+import time
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
 
@@ -33,7 +49,7 @@ def gen_msg_values(msg, prefix=""):
 def find_rosbags(directory):
     """Find all rosbag directories in subdirectories."""
     rosbag_dirs = []
-    for root, dirs, files in os.walk(directory):
+    for root, _, files in os.walk(directory):
         # Check if this directory contains .mcap files or metadata.yaml (rosbag indicators)
         has_mcap = any(f.endswith('.mcap') for f in files)
         has_metadata = 'metadata.yaml' in files
@@ -100,8 +116,6 @@ def process_rosbag(bag_path, skipped_topics):
 
 
 def main():
-    import time
-
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--skip-topic",

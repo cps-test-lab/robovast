@@ -25,6 +25,9 @@ scipy = "^1.13"
 [tool.poetry.group.dev.dependencies]
 ipykernel = "^7.1.0"
 
+[tool.poetry.extras]
+nav = ["robovast-nav"]
+
 [tool.poetry.scripts]
 vast = "robovast.common.cli.cli:main"
 

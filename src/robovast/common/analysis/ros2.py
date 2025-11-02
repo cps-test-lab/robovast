@@ -39,7 +39,7 @@ def print_bag_topics(bag_path: str, bag_dir_name: str = "rosbag2"):
     """
     bag_info = get_bag_info(os.path.join(bag_path, bag_dir_name))
     if not bag_info:
-          raise ValueError(f"Could not retrieve bag info for path: {bag_path}")
+        raise ValueError(f"Could not retrieve bag info for path: {bag_path}")
     if 'rosbag2_bagfile_information' not in bag_info and 'topics_with_message_count' not in bag_info['rosbag2_bagfile_information']:
         raise ValueError(f"Invalid bag info format for path: {bag_path}")
     
@@ -122,7 +122,7 @@ def calculate_speeds_from_poses(df_groundtruth):
     
     result_dfs = []
     
-    for group_keys, group in df_groundtruth.groupby(group_cols, observed=False):
+    for _, group in df_groundtruth.groupby(group_cols, observed=False):
         df_gt_speeds = group[['test', 'variant', 'position.x', 'position.y',
                               'orientation.yaw', 'timestamp']].copy()
         

@@ -1,9 +1,0 @@
-#!/usr/bin/env python3
-
-from .nav_variation import FloorplanVariation, ObstacleVariation, PathVariation
-
-__all__ = [
-    'FloorplanVariation',
-    'PathVariation',
-    'ObstacleVariation',
-]

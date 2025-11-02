@@ -146,7 +146,7 @@ Result Analyzer GUI
 
 .. code-block:: bash
 
-   vast analysis gui [--output <results-dir>]
+   vast analysis gui [--results-dir <results-dir>]
 
 Launch graphical analyzer. Uses project results directory by default.
 

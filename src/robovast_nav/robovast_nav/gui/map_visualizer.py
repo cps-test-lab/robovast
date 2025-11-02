@@ -1,17 +1,31 @@
 #!/usr/bin/env python3
+# Copyright (C) 2025 Frederik Pasch
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions
+# and limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """
 Map Visualizer Module for ROS Map Files
 
 This module provides functionality to load and visualize ROS map files (map.yaml + .pgm)
 in Jupyter notebooks with support for drawing paths on top of the map.
 
-Author: Generated for intel_collaboration project
 """
 
 import os
 from typing import List, Tuple
-
-import matplotlib.patches as patches
+from matplotlib import patches
 import matplotlib.pyplot as plt
 import numpy as np
 import yaml

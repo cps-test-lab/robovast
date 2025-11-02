@@ -19,7 +19,7 @@ spec:
         privileged: true
       containers:
         - name: example-container
-          image: ghcr.io/cps-test-lab/robovast@sha256:bf50cc4fb3359fcbf6a55e73163a94633deebb6442ef91be1de8325568a59c7b
+          image: ghcr.io/cps-test-lab/robovast:latest
           # command: ["/bin/bash", "-c", "sleep 1000"]
           securityContext: # required for rke2
             privileged: true

@@ -1,9 +1,10 @@
 settings:
   analysis: 
-  - Analysis:
-      single_test: analysis/analysis_single_test.ipynb
-      variant: analysis/analysis_variant.ipynb
-      run: analysis/analysis_run.ipynb
+    visualization:
+    - Analysis:
+        single_test: analysis/analysis_single_test.ipynb
+        variant: analysis/analysis_variant.ipynb
+        run: analysis/analysis_run.ipynb
   execution:
     kubernetes_manifest: kubernetes_tmpl.yaml
     scenario: scenario.osc

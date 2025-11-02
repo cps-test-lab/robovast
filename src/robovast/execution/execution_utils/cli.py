@@ -104,7 +104,7 @@ def prepare_run(variant, output_dir, debug):
     and prints the Docker command that can be used to execute it manually.
     Files are written to OUTPUT-DIR for inspection or manual execution.
     """
-    config, output, docker_image, variant_configs = initialize_local_execution(variant, debug)
+    config, _, docker_image, variant_configs = initialize_local_execution(variant, debug)
     
     click.echo(f"Preparing variant '{variant}' from {config}...")
     click.echo(f"Output directory: {output_dir}")

@@ -1,6 +1,4 @@
 #!/bin/bash
-# This script converts ROS bag files to CSV format using the rosbag_to_csv Python script.
-# Usage: ./rosbags_to_csv.sh [--skip-topic TOPIC ...] <input_dir>
 
 # Detect ROS distro by checking /opt/ros/<distro> directories
 ros_distros=$(ls /opt/ros 2>/dev/null)
