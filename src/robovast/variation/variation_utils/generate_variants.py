@@ -20,6 +20,7 @@ import sys
 
 from robovast.common import generate_scenario_variations
 
+
 def progress_callback(message):
     """Callback function to print progress updates."""
     print(message)

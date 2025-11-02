@@ -17,9 +17,10 @@ Initialize Project
 
 .. code-block:: bash
 
-    vast init --config <config.vast> --results-dir <results-dir>
+    vast init <config.vast>
 
-Initialize project with configuration and results directory. Creates a ``.vast_project`` file for subsequent commands.
+Initialize project with configuration and results directory. Creates a ``.vast_project`` file for subsequent commands. The optional ``--results-dir`` option defaults to ``results`` if not specified.
+
 
 Shell Completion
 ^^^^^^^^^^^^^^^^
@@ -77,7 +78,7 @@ Local Execution
 
 .. code-block:: bash
 
-    vast execution local --variant <variant-name> [--debug] [--shell]
+    vast execution local <variant-name> [--debug] [--shell]
 
 Execute a single variant locally using Docker. Options:
 
@@ -107,6 +108,38 @@ Download results from cluster transfer PVC. Options:
 
 Analysis
 --------
+
+Preprocess Results
+^^^^^^^^^^^^^^^^^^
+
+.. code-block:: bash
+
+   vast analysis preprocess [--results-dir <results-dir>] [--force]
+
+Run preprocessing commands on test results before analysis. Preprocessing commands are defined in the configuration file's ``analysis.preprocessing`` section and are used to transform raw test data (e.g., converting ROS bags to CSV files).
+
+The command:
+
+- Executes preprocessing scripts/commands defined in the ``.vast`` configuration
+- Passes the results directory as an argument to each command
+- Tracks preprocessing state with a hash-based cache to avoid redundant processing
+- Skips execution if preprocessing is already up to date (unless ``--force`` is used)
+
+Options:
+
+- ``--results-dir``: Custom results directory (uses project results dir by default)
+- ``--force``: Force preprocessing by skipping cache check and re-running all commands
+
+Example configuration in ``.vast`` file:
+
+.. code-block:: yaml
+
+   analysis:
+     preprocessing:
+       - tools/rosbags_to_csv.py
+       - tools/process_data.sh
+
+Each command receives the results directory path as its final argument.
 
 Result Analyzer GUI
 ^^^^^^^^^^^^^^^^^^^

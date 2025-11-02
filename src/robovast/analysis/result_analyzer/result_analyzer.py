@@ -21,14 +21,13 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, Qt, QThread, QTimer
-from PySide6.QtCore import Slot
+from PySide6.QtCore import QSettings, Qt, QThread, QTimer, Slot
 from PySide6.QtGui import QBrush, QColor, QPalette
-from PySide6.QtWidgets import (QGroupBox, QHBoxLayout, QLabel,
-                               QLineEdit, QMainWindow, QProgressBar,
-                               QPushButton, QSplitter, QStatusBar, QTabWidget,
-                               QTreeWidget, QTreeWidgetItem, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (QGroupBox, QHBoxLayout, QLabel, QLineEdit,
+                               QMainWindow, QProgressBar, QPushButton,
+                               QSplitter, QStatusBar, QTabWidget, QTreeWidget,
+                               QTreeWidgetItem, QVBoxLayout, QWidget)
+
 from robovast.common import load_config
 
 from .widgets.common import RunType
@@ -36,6 +35,7 @@ from .widgets.jupyter_widget import DataAnalysisWidget, JupyterNotebookRunner
 from .widgets.local_execution_widget import LocalExecutionWidget
 from .widgets.log_viewer_widget import LogViewerWidget
 from .widgets.worker_thread import LatestOnlyWorker
+
 
 class TestResultsAnalyzer(QMainWindow):
     def __init__(self, base_dir=None, config_file=None):
@@ -61,23 +61,24 @@ class TestResultsAnalyzer(QMainWindow):
         self.worker_thread = QThread()
 
         workloads = []
-        for view in self.parameters:
-            for name, values in view.items():
-                try:
-                    if not isinstance(values, dict):
-                        continue
-                    single_nb = os.path.join(os.path.dirname(config_file), values.get("single_test"))
-                    variant_nb = os.path.join(os.path.dirname(config_file), values.get("variant"))
-                    run_nb = os.path.join(os.path.dirname(config_file), values.get("run"))
-                    workloads.append(
-                        JupyterNotebookRunner(name,
-                                              single_test_nb=single_nb,
-                                              variant_nb=variant_nb,
-                                              run_nb=run_nb)
-                    )
-                except Exception as e:
-                    print(f"Error adding notebook workload for {name}: {e}")
-                    sys.exit(1)
+        if "visualization" in self.parameters:
+            for view in self.parameters["visualization"]:
+                for name, values in view.items():
+                    try:
+                        if not isinstance(values, dict):
+                            continue
+                        single_nb = os.path.join(os.path.dirname(config_file), values.get("single_test"))
+                        variant_nb = os.path.join(os.path.dirname(config_file), values.get("variant"))
+                        run_nb = os.path.join(os.path.dirname(config_file), values.get("run"))
+                        workloads.append(
+                            JupyterNotebookRunner(name,
+                                                single_test_nb=single_nb,
+                                                variant_nb=variant_nb,
+                                                run_nb=run_nb)
+                        )
+                    except Exception as e:
+                        print(f"Error adding notebook workload for {name}: {e}")
+                        sys.exit(1)
 
         self.worker = LatestOnlyWorker(workloads)
         self.worker.moveToThread(self.worker_thread)
@@ -292,15 +293,16 @@ class TestResultsAnalyzer(QMainWindow):
         self.details_tabs = QTabWidget()
         details_layout.addWidget(self.details_tabs)
 
-        for view in self.parameters:
-            for name, _ in view.items():
-                try:
-                    analysis_tab = DataAnalysisWidget()
-                    self.analysis_tabs[name] = analysis_tab
-                    self.details_tabs.addTab(analysis_tab, name)
-                except Exception as e:
-                    print(f"Error adding notebook workload for {name}: {e}")
-                    sys.exit(1)
+        if "visualization" in self.parameters:
+            for view in self.parameters["visualization"]:
+                for name, _ in view.items():
+                    try:
+                        analysis_tab = DataAnalysisWidget()
+                        self.analysis_tabs[name] = analysis_tab
+                        self.details_tabs.addTab(analysis_tab, name)
+                    except Exception as e:
+                        print(f"Error adding notebook workload for {name}: {e}")
+                        sys.exit(1)
 
         # Log content tab
         self.log_viewer = LogViewerWidget()

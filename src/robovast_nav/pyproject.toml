@@ -1,0 +1,27 @@
+[tool.poetry]
+name = "robovast-nav"
+version = "1.0.0"
+description = "Navigation-specific variation types for RoboVAST"
+authors = ["Frederik Pasch <fred-labs@mailbox.org>"]
+license = "Apache-2.0"
+readme = "README.md"
+packages = [{include = "robovast_nav"}]
+
+[tool.poetry.dependencies]
+python = ">=3.12,<3.14"
+robovast = "*"
+pyside6-essentials = "^6.6"
+scipy = "^1.11"
+numpy = "^1.26"
+Pillow = "^10.0"
+pyyaml = "^6.0"
+
+
+[tool.poetry.plugins."robovast.variation_types"]
+"FloorplanVariation" = "robovast_nav.nav_variation:FloorplanVariation"
+"PathVariation" = "robovast_nav.nav_variation:PathVariation"
+"ObstacleVariation" = "robovast_nav.nav_variation:ObstacleVariation"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

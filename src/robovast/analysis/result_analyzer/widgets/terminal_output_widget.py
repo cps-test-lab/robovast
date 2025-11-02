@@ -16,9 +16,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import re
-from PySide6.QtGui import QPalette, QColor, QFont, QTextCharFormat, QTextCursor
+
+from PySide6.QtGui import QColor, QFont, QPalette, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (QHBoxLayout, QPushButton, QTextEdit,
-                                QVBoxLayout, QWidget)
+                               QVBoxLayout, QWidget)
+
 
 class TerminalOutputWidget(QTextEdit):
     """Widget for displaying terminal output with syntax highlighting"""

@@ -16,16 +16,17 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import shutil
 import signal
 import socket
 import subprocess
 import sys
 import tarfile
 import time
-import shutil
 
 import requests
 from kubernetes import client, config
+
 
 class ResultDownloader:
     def __init__(self):

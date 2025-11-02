@@ -7,20 +7,21 @@ settings:
   execution:
     kubernetes_manifest: kubernetes_tmpl.yaml
     scenario: scenario.osc
-    runs: 10
+    runs: 20
     test_files_filter: 
     - "**/files/*.py"
   variation:
-  - ParameterVariationList:
-      name: growth_rate
-      values:
-      - 0.05
-      - 0.1
-      - 0.3
-      - 0.5
-  - ParameterVariationList:
-      name: initial_population
-      values:
-      - 50
-      - 100
-      - 200
+    visualization:
+    - ParameterVariationList:
+        name: growth_rate
+        values:
+        - 0.05
+        - 0.1
+        - 0.3
+        - 0.5
+    - ParameterVariationList:
+        name: initial_population
+        values:
+        - 50
+        - 100
+        - 200

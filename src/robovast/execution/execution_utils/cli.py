@@ -17,17 +17,21 @@
 
 """CLI plugin for execution management."""
 
-import click
 import os
 import sys
 import tempfile
-from pprint import pprint
 
-from robovast.common import (load_config, get_execution_variants, prepare_run_configs)
-from robovast.common.cli.project_config import get_project_config
-from .execute_local import execute_docker_container, get_docker_image_from_yaml
+import click
+
+from robovast.common import prepare_run_configs
+from robovast.common.cli import get_project_config
 from robovast.execution.cluster_execution.cluster_execution import JobRunner
-from robovast.execution.cluster_execution.download_results import ResultDownloader
+from robovast.execution.cluster_execution.download_results import \
+    ResultDownloader
+
+from .execute_local import (execute_docker_container, get_commandline,
+                            initialize_local_execution)
+
 
 @click.group()
 def execution():
@@ -36,63 +40,37 @@ def execution():
     Run scenario variations either locally using Docker or on a
     Kubernetes cluster for distributed execution.
     """
-    pass
 
 
-@execution.command()
-@click.option('--variant', '-v', required=True,
-              help='Variant to execute')
-@click.option('--debug', '-d', is_flag=True,
-              help='Enable debug output')
-@click.option('--shell', '-s', is_flag=True,
-              help='Instead of running the scenario, login with shell')
-def local(variant, debug, shell):
-    """Execute a scenario variant locally using Docker.
+@execution.group()
+def local():
+    """Execute scenarios locally using Docker.
     
-    Runs a single variant in a Docker container with bind mounts
+    Run scenario variants in Docker containers with bind mounts
     for configuration and output data.
     
     Requires project initialization with 'vast init' first.
     """
-    # Get project configuration
-    project_config = get_project_config()
-    config = project_config.config_path
-    output = project_config.results_dir
-    
-    execution_parameters = load_config(config, "execution")
-    yaml_path = os.path.join(os.path.dirname(config), execution_parameters["kubernetes_manifest"])
-    
-    if not os.path.exists(yaml_path):
-        click.echo(f"Error: Kubernetes template not found: {yaml_path}", err=True)
-        sys.exit(1)
-    
-    docker_image = get_docker_image_from_yaml(yaml_path)
-    if not docker_image:
-        click.echo("Error: Could not extract Docker image from YAML file", err=True)
-        sys.exit(1)
-    
-    click.echo(f"Docker image: {docker_image}")
-    click.echo("-" * 60)
 
-    variants = get_execution_variants(config)
 
-    if variant not in variants:
-        click.echo(f"Error: variant '{variant}' not found in config.", err=True)
-        click.echo("Available variants:")
-        for v in variants:
-            click.echo(f"  - {v}")
-        sys.exit(1)
-
-    variant_configs = {variant: variants[variant]}
+@local.command()
+@click.argument('variant')
+@click.option('--debug', '-d', is_flag=True,
+              help='Enable debug output')
+@click.option('--shell', '-s', is_flag=True,
+              help='Instead of running the scenario, login with shell')
+def run(variant, debug, shell):
+    """Execute a scenario variant locally using Docker.
+    
+    Runs a single variant in a Docker container with bind mounts
+    for configuration and output data.
+    """
+    config, output, docker_image, variant_configs = initialize_local_execution(variant, debug)
     
     click.echo(f"Executing variant '{variant}' from {config}...")
     click.echo(f"Output directory: {output}")
 
     os.makedirs(output, exist_ok=True)
-
-    if debug:
-        click.echo("Variants:")
-        pprint(variant_configs)
     click.echo("-" * 60)
 
     try:
@@ -108,6 +86,50 @@ def local(variant, debug, shell):
             docker_image, config_path, temp_path.name, output, variant, shell=shell
         )
         sys.exit(return_code)
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@local.command()
+@click.argument('variant')
+@click.argument('output-dir')
+@click.option('--debug', '-d', is_flag=True,
+              help='Enable debug output')
+def prepare_run(variant, output_dir, debug):
+    """Prepare run configuration and print Docker command.
+    
+    Prepares all necessary configuration files for a variant
+    and prints the Docker command that can be used to execute it manually.
+    Files are written to OUTPUT-DIR for inspection or manual execution.
+    """
+    config, output, docker_image, variant_configs = initialize_local_execution(variant, debug)
+    
+    click.echo(f"Preparing variant '{variant}' from {config}...")
+    click.echo(f"Output directory: {output_dir}")
+
+    # Create the output directory
+    os.makedirs(output_dir, exist_ok=True)
+    click.echo("-" * 60)
+
+    try:
+        # Prepare the run configuration files in the output directory
+        prepare_run_configs(variant, variant_configs, output_dir)
+        config_path = os.path.join(output_dir, "config", variant, variant)
+        
+        click.echo(f"Config path: {config_path}")
+        click.echo(f"Configuration files prepared in: {output_dir}")
+        click.echo("-" * 60)
+        
+        # Get the Docker command line
+        docker_cmd = get_commandline(docker_image, config_path, output_dir, variant, run_num=0, shell=False)
+        
+        click.echo("\nDocker command to run:")
+        click.echo("-" * 60)
+        click.echo(' '.join(docker_cmd))
+        click.echo("-" * 60)
+        click.echo("\nYou can now execute this command manually or inspect the configuration files.")
 
     except Exception as e:
         click.echo(f"Error: {e}", err=True)

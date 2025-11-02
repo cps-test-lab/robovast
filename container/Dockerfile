@@ -60,6 +60,7 @@ RUN \
         ros-jazzy-py-trees-ros \
         ros-jazzy-py-trees-ros-interfaces \
         ros-jazzy-nav2-bringup \
+        ros-jazzy-nav2-route \
         python3-autopep8 \
         python3-transforms3d \
         python3-antlr4 \
@@ -82,6 +83,7 @@ RUN mkdir -p /ws/src
 # hadolint ignore=DL3003
 RUN  git clone "https://github.com/cps-test-lab/scenario-execution.git" /ws/src/scenario-execution && \
      . "/opt/ros/${ROS_DISTRO}/setup.bash" && \
+     cd /ws/src/scenario-execution && \
      cd /ws && \
      colcon build
 

@@ -18,13 +18,12 @@
 import tempfile
 from pathlib import Path
 
-from .common import clean_test_name
-from .terminal_output_widget import TerminalOutputWidget
-
 from PySide6.QtCore import QProcess, QThread, Signal
 from PySide6.QtWidgets import (QFormLayout, QHBoxLayout, QLineEdit,
-                                QPushButton, QVBoxLayout, QWidget)
+                               QPushButton, QVBoxLayout, QWidget)
 
+from .common import clean_test_name
+from .terminal_output_widget import TerminalOutputWidget
 
 
 class LocalExecutionWorker(QThread):
@@ -54,7 +53,7 @@ class LocalExecutionWorker(QThread):
 
             tmp_dir = tempfile.TemporaryDirectory(prefix="test_")
 
-            command = f"execute_local --config {self.config_file} --variant {self.variant_name} --output {tmp_dir.name}"
+            command = f"vast execution local {self.variant_name} --output {tmp_dir.name}"
 
             # Create a script that sets up a new process group and runs the command
             # This ensures all child processes can be killed together

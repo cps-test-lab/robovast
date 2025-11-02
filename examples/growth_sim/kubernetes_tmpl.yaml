@@ -19,10 +19,8 @@ spec:
         privileged: true
       containers:
         - name: example-container
-          # image: freeedlabs/scenario_execution_jazzy@sha256:53c128913bc373f93a70fe6b4c3e879c2bcd6b9129a93be8328bcd4265b038ff
           image: ghcr.io/cps-test-lab/robovast:latest
           # command: ["/bin/bash", "-c", "sleep 1000"]
-          # command: ["/entrypoint.sh", "/config/common/run.sh"]
           securityContext: # required for rke2
             privileged: true
           # - name: NOVNC_ENABLE

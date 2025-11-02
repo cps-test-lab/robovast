@@ -18,19 +18,20 @@ import os
 import re
 import tempfile
 
+import nbformat
+from nbconvert import HTMLExporter
+from nbconvert.preprocessors import ExecutePreprocessor
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QPalette
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (QApplication, QFrame, QLabel, QProgressBar,
                                QVBoxLayout, QWidget)
+
 from robovast.common import FileCache
 
 from .common import RunType
 from .worker_thread import CancellableWorkload
 
-import nbformat
-from nbconvert import HTMLExporter
-from nbconvert.preprocessors import ExecutePreprocessor
 
 def detect_theme() -> str:
     """Detect if the application is using dark or light theme"""

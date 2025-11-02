@@ -17,8 +17,9 @@
 import copy
 import os
 import tempfile
-import yaml
 from importlib.metadata import entry_points
+
+import yaml
 
 from .common import load_config, save_scenario_variants_file
 

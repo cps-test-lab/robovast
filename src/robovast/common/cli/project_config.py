@@ -17,12 +17,12 @@
 
 """Project configuration management for VAST CLI."""
 
-import os
 import json
+import os
 from pathlib import Path
 from typing import Optional
-import click
 
+import click
 
 PROJECT_FILE = ".robovast_project"
 

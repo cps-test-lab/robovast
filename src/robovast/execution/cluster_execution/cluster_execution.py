@@ -22,12 +22,14 @@ import subprocess
 import sys
 import tempfile
 import time
-import yaml
 
+import yaml
 from kubernetes import client, config
+
 from robovast.common import (get_execution_env_variables,
                              get_execution_variants, load_config,
                              prepare_run_configs)
+
 
 class JobRunner:
     def __init__(self, variation_config, single_variant=None):

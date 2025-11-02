@@ -13,7 +13,7 @@ To run the example, execute the following commands in the base folder of the Rob
 .. code-block:: bash
 
    # initialize project
-   vast init --config examples/growth_sim/growth_sim.vast
+   vast init examples/growth_sim/growth_sim.vast
 
    # show the variants that will be executed
    vast variation list
@@ -23,6 +23,9 @@ To run the example, execute the following commands in the base folder of the Rob
     
    # download results from the cluster
    vast execution download
+
+   # preprocess results
+   vast analysis preprocess
 
    # analyze the results
    vast analysis gui
@@ -35,6 +38,14 @@ The overall workflow in RoboVAST consists of three main steps:
 **Variation** → **Execution** → **Analysis**
 
 For each step, RoboVAST provides dedicated tools to facilitate the process. For details on specific tools, please refer to :doc:`how_to_run`.
+
+Before running any tests, you must initialize the RoboVAST project configuration:
+
+.. code-block:: bash
+
+   vast init <config>
+
+This command sets up the required configuration files and prepares your project for further steps.
 
 Test Definition
 ---------------
@@ -92,7 +103,7 @@ The ``execution`` section of the ``.vast`` configuration specifies all necessary
    :lines: 7-12
    :caption: Execution section of RoboVAST Configuration File
 
-In this example, we configure 100 runs for each variant to ensure statistically meaningful results.
+In this example, we configure 20 runs for each variant to ensure statistically meaningful results.
 In this basic example we hand in the system-under-test ``growth_sim.py`` directly by specifying the pattern ``**/files/*.py``. In larger setups, it might be required to use a custom container image.
 
 Check Generated Variants
@@ -114,7 +125,7 @@ The command runs the container using the ``docker`` command and the same paramet
 
 .. code-block:: bash
 
-   vast execution local --variant variant1 --output output_variant1
+   vast execution local variant1 --output output_variant1
 
 
 Cluster Execution

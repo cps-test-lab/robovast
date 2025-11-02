@@ -18,8 +18,10 @@
 import os
 from pathlib import Path
 from typing import Callable
+
 import pandas as pd
 import yaml
+
 
 def read_output_files(data_dir: str, reader_func: Callable[[Path], pd.DataFrame], debug: bool = False) -> pd.DataFrame:
     """
@@ -54,6 +56,8 @@ def read_output_files(data_dir: str, reader_func: Callable[[Path], pd.DataFrame]
     
     category_names = set({'test', 'variant'})
     for run_yaml in run_yaml_files:
+        if debug:
+            print(f"Reading data from: {run_yaml}")
         test_dir = run_yaml.parent
         test_name = test_dir.name
         
@@ -123,3 +127,39 @@ def read_output_csv(test_dir: Path, filename: str, skiprows: int = 0) -> pd.Data
     # Read CSV, skipping the first line (comment)
     df = pd.read_csv(csv_path, skiprows=skiprows)
     return df
+
+def for_each_test(data_dir: str, func: Callable[[Path], None], debug=False) -> None:
+    """
+    Applies a given function to each test directory within data_dir.
+
+    Args:
+        data_dir (str): Path to the directory containing test subdirectories.
+        func (Callable[[Path], None]): Function to apply to each test directory.
+        debug (bool, optional): If True, prints debug information. Defaults to False.
+
+    Raises:
+        ValueError: If data_dir does not exist or no run.yaml files are found.
+    """    
+    data_path = Path(data_dir)
+    
+    if not data_path.exists():
+        raise ValueError(f"Data directory does not exist: {data_dir}")
+    
+    # Find all run.yaml files in subdirectories
+    run_yaml_files = list(data_path.rglob("run.yaml"))
+    
+    if not run_yaml_files:
+        raise ValueError(f"No run.yaml files found in subdirectories of {data_dir}")
+    
+    if debug:
+        print(f"Found {len(run_yaml_files)} test directories")
+    
+    for run_yaml in run_yaml_files:
+        test_dir = run_yaml.parent
+        if debug:
+            print(f"Applying function to: {test_dir}")
+        try:
+            func(test_dir)
+        except Exception as e:
+            print(f"Warning: Could not apply function to {test_dir}: {e}")
+            continue

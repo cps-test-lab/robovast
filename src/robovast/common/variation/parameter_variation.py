@@ -22,6 +22,7 @@ import numpy as np
 
 from .base_variation import Variation
 
+
 class ParameterVariationDistributionUniform(Variation):
     """
     Creates variants with random parameter values from a uniform distribution.

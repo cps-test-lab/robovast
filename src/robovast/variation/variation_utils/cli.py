@@ -17,14 +17,15 @@
 
 """CLI plugin for variation management."""
 
-import click
 import os
 import sys
 import tempfile
 from importlib.metadata import entry_points
 
+import click
+
 from robovast.common import generate_scenario_variations, load_config
-from robovast.common.cli.project_config import get_project_config
+from robovast.common.cli import get_project_config
 from robovast.common.variation import get_scenario_parameter_template
 
 
@@ -34,7 +35,6 @@ def variation():
     
     Generate and list scenario variations from configuration files.
     """
-    pass
 
 
 @variation.command(name='list')
@@ -220,6 +220,6 @@ def points():
         
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
-        import traceback # pylint: disable=import-outside-toplevel
+        import traceback  # pylint: disable=import-outside-toplevel
         traceback.print_exc()
         sys.exit(1)
