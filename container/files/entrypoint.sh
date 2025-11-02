@@ -44,9 +44,9 @@ if [ "$#" -ne 0 ]; then
 else
     if [ -e /config/scenario.variant ]; then
         log "Starting scenario execution with variant file..."
-        exec ros2 run scenario_execution scenario_execution -o ${OUTPUT_DIR} /config/scenario.osc --scenario-parameter-file /config/scenario.variant
+        exec ros2 run scenario_execution_ros scenario_execution_ros -o ${OUTPUT_DIR} /config/scenario.osc --scenario-parameter-file /config/scenario.variant
     else
         log "Starting scenario execution without variant file..."
-        exec ros2 run scenario_execution scenario_execution -o ${OUTPUT_DIR} /config/scenario.osc
+        exec ros2 run scenario_execution_ros scenario_execution_ros -o ${OUTPUT_DIR} /config/scenario.osc
     fi
 fi
