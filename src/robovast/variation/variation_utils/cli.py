@@ -83,8 +83,7 @@ def list_cmd():
 
 
 @variation.command()
-@click.option('--output', '-o', required=True, type=click.Path(),
-              help='Output directory for generated scenarios variants and files')
+@click.argument('output', type=click.Path())
 def generate(output):
     """Generate scenario variants and output files.
     

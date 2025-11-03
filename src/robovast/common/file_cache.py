@@ -97,7 +97,7 @@ class FileCache:
             print("CACHE MISS (md5 file missing):", file_name)
             return None
 
-        if not hash_only and os.path.exists(cache_file):
+        if not hash_only and not os.path.exists(cache_file):
             print("CACHE MISS (cache file missing):", file_name)
             return None
 

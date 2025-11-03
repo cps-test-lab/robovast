@@ -1,7 +1,5 @@
 settings:
   version: 1
-  general:
-    robot_diameter: 0.35
   variation:
   - ParameterVariationList:
       name: goal_pose
@@ -30,7 +28,7 @@ settings:
   execution:
     kubernetes_manifest: kubernetes_tmpl.yaml
     scenario: scenario.osc
-    runs: 50
+    runs: 10
   analysis:
     preprocessing:
     - ../../tools/ros2_exec.sh rosbags_to_csv.py

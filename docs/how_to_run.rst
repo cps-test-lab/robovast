@@ -48,7 +48,7 @@ Generate Variants
 
 .. code-block:: bash
 
-    vast variation generate --output <output-dir>
+    vast variation generate <output-dir>
 
 Generate variant configurations and files to output directory.
 

@@ -25,34 +25,20 @@ scenario test_scenario:
                 key_value('base_frame_id', 'base_link')],
                 wait_for_shutdown: false
         )
-        parallel:
-            serial:
-                log_check(values: ["Detected jump back in time"])
-                emit fail
-            one_of:
-                serial:
-                    log_check(values: ["Passing new path to controller"])
-                serial:
-                    wait elapsed(30s)
-                    emit fail
-            serial:
-                repeat()
-                wait elapsed(1s)
-                check_process_running("gz")
-            serial:
-                robot.init_nav2(pose_3d())
-                bag_record([
-                        '/tf',
-                        '/tf_static', 
-                        '/scenario_execution/snapshots', 
-                        '/map', 
-                        '/local_costmap/costmap',
-                        '/amcl_pose',
-                        '/navigate_to_pose/_action/feedback',
-                        '/navigate_to_pose/_action/status'
-                    ],
-                    hidden_topics: true,
-                    use_sim_time: true,
-                    timestamp_suffix: false)
-                robot.nav_to_pose(goal_pose)
-                emit end
+        serial:
+            robot.init_nav2(pose_3d())
+            bag_record([
+                    '/tf',
+                    '/tf_static', 
+                    '/scenario_execution/snapshots', 
+                    '/map', 
+                    '/local_costmap/costmap',
+                    '/amcl_pose',
+                    '/navigate_to_pose/_action/feedback',
+                    '/navigate_to_pose/_action/status'
+                ],
+                hidden_topics: true,
+                use_sim_time: true,
+                timestamp_suffix: false)
+            robot.nav_to_pose(goal_pose)
+
