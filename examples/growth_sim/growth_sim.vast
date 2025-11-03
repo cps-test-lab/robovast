@@ -1,4 +1,5 @@
 settings:
+  version: 1
   analysis: 
     visualization:
     - Analysis:
@@ -12,17 +13,16 @@ settings:
     test_files_filter: 
     - "**/files/*.py"
   variation:
-    visualization:
-    - ParameterVariationList:
-        name: growth_rate
-        values:
-        - 0.05
-        - 0.1
-        - 0.3
-        - 0.5
-    - ParameterVariationList:
-        name: initial_population
-        values:
-        - 50
-        - 100
-        - 200
+  - ParameterVariationList:
+      name: growth_rate
+      values:
+      - 0.05
+      - 0.1
+      - 0.3
+      - 0.5
+  - ParameterVariationList:
+      name: initial_population
+      values:
+      - 50
+      - 100
+      - 200

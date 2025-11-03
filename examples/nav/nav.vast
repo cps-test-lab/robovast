@@ -1,4 +1,5 @@
 settings:
+  version: 1
   general:
     robot_diameter: 0.35
   variation:

@@ -21,6 +21,7 @@ nbconvert = "^7.16"
 lxml-html-clean = "^0.1"
 kubernetes = "^22.6"
 scipy = "^1.13"
+pydantic = "^2.12"
 
 [tool.poetry.group.dev.dependencies]
 ipykernel = "^7.1.0"
