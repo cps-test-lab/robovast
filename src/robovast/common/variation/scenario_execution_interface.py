@@ -45,7 +45,8 @@ def get_scenario_parameter_template(
         # Create temporary directory for output
         with tempfile.TemporaryDirectory(prefix="scenario_template_") as temp_dir:
             output_dir = os.path.join(temp_dir, "out")
-            os.makedirs(output_dir, exist_ok=True)
+            log_dir = os.path.join(output_dir, "logs")
+            os.makedirs(log_dir, exist_ok=True)
 
             template_file = os.path.join(output_dir, "template.yaml")
 
