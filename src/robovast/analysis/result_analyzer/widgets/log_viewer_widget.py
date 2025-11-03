@@ -18,8 +18,8 @@
 from pathlib import Path
 
 from PySide6.QtCore import QTimer, Signal, Slot
-from PySide6.QtWidgets import (QComboBox, QFormLayout, QLineEdit,
-                                QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QComboBox, QFormLayout, QLineEdit, QVBoxLayout,
+                               QWidget)
 
 from .common import check_preferred_log_file, get_log_files
 from .terminal_output_widget import TerminalOutputWidget

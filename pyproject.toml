@@ -20,9 +20,14 @@ nbformat = "^5.9"
 nbconvert = "^7.16"
 lxml-html-clean = "^0.1"
 kubernetes = "^22.6"
+scipy = "^1.13"
+pydantic = "^2.12"
 
 [tool.poetry.group.dev.dependencies]
 ipykernel = "^7.1.0"
+
+[tool.poetry.extras]
+nav = ["robovast-nav"]
 
 [tool.poetry.scripts]
 vast = "robovast.common.cli.cli:main"

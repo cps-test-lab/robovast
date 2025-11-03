@@ -17,14 +17,15 @@
 
 """CLI plugin for variation management."""
 
-import click
 import os
 import sys
 import tempfile
 from importlib.metadata import entry_points
 
+import click
+
 from robovast.common import generate_scenario_variations, load_config
-from robovast.common.cli.project_config import get_project_config
+from robovast.common.cli import get_project_config
 from robovast.common.variation import get_scenario_parameter_template
 
 
@@ -34,7 +35,6 @@ def variation():
     
     Generate and list scenario variations from configuration files.
     """
-    pass
 
 
 @variation.command(name='list')
@@ -83,9 +83,8 @@ def list_cmd():
 
 
 @variation.command()
-@click.option('--output', '-o', required=True, type=click.Path(),
-              help='Output directory for generated scenarios variants and files')
-def generate(output):
+@click.argument('output-dir', type=click.Path())
+def generate(output_dir):
     """Generate scenario variants and output files.
     
     Creates all variant configurations and associated files in the
@@ -101,14 +100,14 @@ def generate(output):
         click.echo(message)
     
     click.echo(f"Generating scenario variants from {config}...")
-    click.echo(f"Output directory: {output}")
+    click.echo(f"Output directory: {output_dir}")
     click.echo("-" * 60)
 
     try:
         variants = generate_scenario_variations(
             variation_file=config,
             progress_update_callback=progress_callback,
-            output_dir=output
+            output_dir=output_dir
         )
 
         if variants:
@@ -220,6 +219,6 @@ def points():
         
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
-        import traceback # pylint: disable=import-outside-toplevel
+        import traceback  # pylint: disable=import-outside-toplevel
         traceback.print_exc()
         sys.exit(1)

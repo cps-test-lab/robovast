@@ -1,0 +1,41 @@
+settings:
+  version: 1
+  variation:
+  - ParameterVariationList:
+      name: goal_pose
+      values:
+      - position:
+          x: 21.0
+          y: 6.0
+      - position:
+          x: 21.0
+          y: 4.0
+      - position:
+          x: 21.0
+          y: 2.0
+      - position:
+          x: 21.0
+          y: 0.0
+      - position:
+          x: 21.0
+          y: -2.0
+      - position:
+          x: 21.0
+          y: -4.0
+      - position:
+          x: 21.0
+          y: -6.0
+  execution:
+    kubernetes_manifest: kubernetes_tmpl.yaml
+    scenario: scenario.osc
+    runs: 10
+  analysis:
+    preprocessing:
+    - ../../tools/ros2_exec.sh rosbags_to_csv.py
+    - ../../tools/ros2_exec.sh rosbags_tf_to_csv.py --frame base_link --frame turtlebot4_base_link_gt
+    - ../../tools/ros2_exec.sh rosbags_bt_to_csv.py
+    visualization:
+    - Analysis:
+        single_test: analysis/analysis_single_test.ipynb
+        variant: analysis/analysis_variant.ipynb
+        run: analysis/analysis_run.ipynb

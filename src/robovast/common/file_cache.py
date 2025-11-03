@@ -54,8 +54,26 @@ class FileCache:
         os.makedirs(cache_dir, exist_ok=True)
         return os.path.join(cache_dir, f"{file_name}_md5")
 
-    def get_cached_file(self, input_files: list, file_name: str, binary: bool = False, content=True, strings_for_hash=None) -> Optional[str]:
-        """Get cached HTML if it exists and is valid"""
+    def get_cached_file(self, input_files: list, file_name: str, binary: bool = False, content=True, strings_for_hash=None, hash_only: bool=False) -> Optional[str]: # pylint: disable=too-many-return-statements
+        """
+        Retrieves a cached file if it exists and is valid based on input files and additional hash strings.
+
+        Args:
+            input_files (list): List of input file paths used to compute the cache hash.
+            file_name (str): Name of the file to retrieve from cache.
+            binary (bool, optional): If True, reads the cached file in binary mode. Defaults to False.
+            content (bool, optional): If True, returns the file content; if False, returns the cache file path. Defaults to True.
+            strings_for_hash (list, optional): Additional strings to include in the hash calculation. Defaults to None.
+            hash_only (bool, optional): If True, only checks the hash without reading the file. Defaults to False.
+
+        Returns:
+            Optional[str]: The content of the cached file (as str or bytes depending on `binary`), the cache file path, or None if cache is missing or invalid.
+
+        Notes:
+            - If the cache is valid (hash matches), returns the cached file content or path.
+            - If the cache is invalid (hash mismatch or error), removes the outdated cache files and returns None.
+            - Prints cache hit/miss information for debugging.
+        """
 
         if not strings_for_hash:
             strings_for_hash = []
@@ -71,43 +89,54 @@ class FileCache:
         # print("MD5 file:", md5_file)
         # print("----")
 
-        if cache_file and md5_file and os.path.exists(cache_file) and os.path.exists(md5_file):
-            try:
-                # Read stored hash
-                with open(md5_file, 'r', encoding='utf-8') as f:
-                    stored_hash = f.read().strip()
+        if not cache_file or not md5_file:
+            print("CACHE MISS (invalid cache paths):", file_name)
+            return None
+        
+        if not os.path.exists(md5_file):
+            print("CACHE MISS (md5 file missing):", file_name)
+            return None
 
-                # Calculate current hash
-                current_hash = self.create_input_files_hash(input_files, strings_for_hash)
+        if not hash_only and not os.path.exists(cache_file):
+            print("CACHE MISS (cache file missing):", file_name)
+            return None
 
-                # Check if hashes match
-                if stored_hash == current_hash:
-                    print("CACHE HIT:", file_name, " (hash:", current_hash + ")")
-                    if content:
-                        if binary:
-                            with open(cache_file, 'rb') as f:
-                                return f.read()
-                        else:
-                            with open(cache_file, 'r', encoding='utf-8') as f:
-                                return f.read()
+        try:
+            # Read stored hash
+            with open(md5_file, 'r', encoding='utf-8') as f:
+                stored_hash = f.read().strip()
+
+            # Calculate current hash
+            current_hash = self.create_input_files_hash(input_files, strings_for_hash)
+
+            # Check if hashes match
+            if stored_hash == current_hash:
+                print("CACHE HIT:", file_name, " (hash:", current_hash + ")")
+                if content:
+                    if binary:
+                        with open(cache_file, 'rb') as f:
+                            return f.read()
                     else:
-                        return cache_file
+                        with open(cache_file, 'r', encoding='utf-8') as f:
+                            return f.read()
                 else:
-                    print("CACHE MISS (hash mismatch):", file_name, f"(stored: {stored_hash}, current: {current_hash})")
-                    # Remove outdated cache files
-                    try:
-                        os.remove(cache_file)
-                        os.remove(md5_file)
-                    except Exception:
-                        pass
-            except Exception as e:
-                print(f"Error reading cache file: {e}")
-                # Remove invalid cache files
+                    return cache_file
+            else:
+                print("CACHE MISS (hash mismatch):", file_name, f"(stored: {stored_hash}, current: {current_hash})")
+                # Remove outdated cache files
                 try:
                     os.remove(cache_file)
                     os.remove(md5_file)
                 except Exception:
                     pass
+        except Exception as e:
+            print(f"Error reading cache file: {e}")
+            # Remove invalid cache files
+            try:
+                os.remove(cache_file)
+                os.remove(md5_file)
+            except Exception:
+                pass
         print("CACHE MISS (no cache):", file_name)
         return None
 

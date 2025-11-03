@@ -19,9 +19,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 
-from PySide6.QtCore import QObject
-from PySide6.QtCore import Signal
-from PySide6.QtCore import Slot
+from PySide6.QtCore import QObject, Signal, Slot
 
 
 class CancellableWorkload(ABC):

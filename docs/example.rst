@@ -13,7 +13,7 @@ To run the example, execute the following commands in the base folder of the Rob
 .. code-block:: bash
 
    # initialize project
-   vast init --config examples/growth_sim/growth_sim.vast
+   vast init examples/growth_sim/growth_sim.vast
 
    # show the variants that will be executed
    vast variation list
@@ -23,6 +23,9 @@ To run the example, execute the following commands in the base folder of the Rob
     
    # download results from the cluster
    vast execution download
+
+   # preprocess results
+   vast analysis preprocess
 
    # analyze the results
    vast analysis gui
@@ -35,6 +38,14 @@ The overall workflow in RoboVAST consists of three main steps:
 **Variation** → **Execution** → **Analysis**
 
 For each step, RoboVAST provides dedicated tools to facilitate the process. For details on specific tools, please refer to :doc:`how_to_run`.
+
+Before running any tests, you must initialize the RoboVAST project configuration:
+
+.. code-block:: bash
+
+   vast init <config>
+
+This command sets up the required configuration files and prepares your project for further steps.
 
 Test Definition
 ---------------
@@ -92,7 +103,7 @@ The ``execution`` section of the ``.vast`` configuration specifies all necessary
    :lines: 7-12
    :caption: Execution section of RoboVAST Configuration File
 
-In this example, we configure 100 runs for each variant to ensure statistically meaningful results.
+In this example, we configure 20 runs for each variant to ensure statistically meaningful results.
 In this basic example we hand in the system-under-test ``growth_sim.py`` directly by specifying the pattern ``**/files/*.py``. In larger setups, it might be required to use a custom container image.
 
 Check Generated Variants
@@ -114,7 +125,7 @@ The command runs the container using the ``docker`` command and the same paramet
 
 .. code-block:: bash
 
-   vast execution local --variant variant1 --output output_variant1
+   vast execution local run variant1 output_variant1
 
 
 Cluster Execution
@@ -156,13 +167,21 @@ Analysis
 ^^^^^^^^
 As result analysis is tailored to each test, users are expected to implement their own analysis routines.
 
+There are two steps invokes to analyze results.
+First, the downloaded results can optionally be preprocessed to simplify later analysis. The user might specify preprocessing commands in ``analysis.preprocessing`` section of the ``.vast`` configuration. Common scripts including converting ROS bags to CSV files or extracting poses from tf-data are available to improve usability.
+
+.. code-block:: bash
+
+   vast analysis preprocess
+
+After preprocessing, the actual analysis can be performed.
 To simplify this process, RoboVAST provides the ``result_analyzer`` tool, which enables users to execute Jupyter notebooks directly from a graphical interface.
 
-Analysis configuration is specified in the ``analysis`` section of the ``.vast`` configuration file.
+Analysis configuration is specified in the ``analysis.visualization`` section of the ``.vast`` configuration file.
 
 .. literalinclude:: ../examples/growth_sim/growth_sim.vast
    :language: yaml
-   :lines: 2-6
+   :lines: 2-7
    :caption: Analysis section of RoboVAST Configuration File
 
 Although this example includes only one entry in the analysis list, you can add more. Each additional entry will appear as a separate tab in the ``result_analyzer`` interface.

@@ -16,79 +16,9 @@
 
 import os
 from dataclasses import asdict, is_dataclass
+
 import yaml
-
-
-def validate_config(settings):
-    """
-    Validate the configuration settings.
-    
-    Checks that:
-    - All required sections are present: execution, analysis, general, variation
-    - settings["variation"] entries have a name-field that is either:
-      - A string (e.g., "server_jitter_ms")
-      - A dictionary with string values (e.g., {"start": "start_pose", "goals": "goal_poses"})
-    
-    Args:
-        settings: The settings dictionary to validate
-        
-    Raises:
-        ValueError: If validation fails
-    """
-    # Check for required sections
-    required_sections = ["execution", "analysis", "variation"]
-    missing_sections = [section for section in required_sections if section not in settings]
-    
-    if missing_sections:
-        raise ValueError(
-            f"Missing required section(s) in settings: {', '.join(missing_sections)}"
-        )
-    
-    # Validate variation section
-    variation = settings["variation"]
-    if not isinstance(variation, list):
-        raise ValueError("settings['variation'] must be a list")
-    
-    for idx, entry in enumerate(variation):
-        if not isinstance(entry, dict):
-            raise ValueError(f"Variation entry {idx} must be a dictionary")
-        
-        # Check if entry has ParameterVariationList
-        if "ParameterVariationList" not in entry:
-            raise ValueError(f"Variation entry {idx} must contain 'ParameterVariationList'")
-        
-        param_variation = entry["ParameterVariationList"]
-        if not isinstance(param_variation, dict):
-            raise ValueError(f"Variation entry {idx}: 'ParameterVariationList' must be a dictionary")
-        
-        # Check for name field
-        if "name" not in param_variation:
-            raise ValueError(f"Variation entry {idx}: 'ParameterVariationList' must have a 'name' field")
-        
-        name_field = param_variation["name"]
-        
-        # Validate name field is either string or dict with string values
-        if isinstance(name_field, str):
-            # Valid: name is a string
-            pass
-        elif isinstance(name_field, dict):
-            # Valid if all values are strings
-            for key, value in name_field.items():
-                if not isinstance(key, str):
-                    raise ValueError(
-                        f"Variation entry {idx}: name field dictionary keys must be strings, "
-                        f"got {type(key).__name__} for key '{key}'"
-                    )
-                if not isinstance(value, str):
-                    raise ValueError(
-                        f"Variation entry {idx}: name field dictionary values must be strings, "
-                        f"got {type(value).__name__} for key '{key}'"
-                    )
-        else:
-            raise ValueError(
-                f"Variation entry {idx}: 'name' field must be either a string or a dictionary "
-                f"with string values, got {type(name_field).__name__}"
-            )
+from .config import validate_config
 
 
 def load_config(config_file, subsection=None):

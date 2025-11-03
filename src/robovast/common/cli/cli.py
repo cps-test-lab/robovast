@@ -17,11 +17,14 @@
 
 """Main CLI entry point for RoboVAST."""
 
-import click
 import os
 import sys
 from importlib.metadata import entry_points
+
+import click
+
 from .project_config import ProjectConfig
+
 
 @click.group()
 @click.version_option(package_name="robovast", prog_name="RoboVAST")
@@ -31,12 +34,10 @@ def cli():
     A comprehensive tool for managing variations, executing scenarios,
     and analyzing results in the RoboVAST framework.
     """
-    pass
 
 
 @cli.command()
-@click.option('--config', '-c', required=True, type=click.Path(exists=True),
-              help='Path to .vast configuration file')
+@click.argument('config', type=click.Path(exists=True))
 @click.option('--results-dir', '-r', default="results", type=click.Path(),
               help='Directory for storing results')
 def init(config, results_dir):
@@ -47,8 +48,8 @@ def init(config, results_dir):
     will be used by other VAST commands automatically.
     
     Examples:
-      vast init --config config.vast --results-dir ./results
-      vast init -c scenarios/test.vast -r /tmp/test_results
+      vast init config.vast
+      vast init scenarios/test.vast -r /tmp/test_results
     """
     # Convert to absolute paths
     project_file_dir = os.path.abspath(os.getcwd())

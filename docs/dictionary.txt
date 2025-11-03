@@ -13,3 +13,7 @@ config
 Kubespray
 minikube
 ubuntu
+preprocessing
+preprocess
+preprocessed
+tf

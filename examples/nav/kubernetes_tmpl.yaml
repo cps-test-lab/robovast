@@ -27,9 +27,9 @@ spec:
           #   value: "true"
           resources:
             requests:
-              cpu: "1"
+              cpu: "7"
             limits:
-              cpu: "1"
+              cpu: "7"
 
       volumes:
         - name: transfer-storage
