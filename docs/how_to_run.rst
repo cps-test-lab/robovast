@@ -78,7 +78,7 @@ Local Execution
 
 .. code-block:: bash
 
-    vast execution local <variant-name> [--debug] [--shell]
+    vast execution local run <variant-name> <output-dir> [--debug] [--shell]
 
 Execute a single variant locally using Docker. Options:
 

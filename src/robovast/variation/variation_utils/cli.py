@@ -83,8 +83,8 @@ def list_cmd():
 
 
 @variation.command()
-@click.argument('output', type=click.Path())
-def generate(output):
+@click.argument('output-dir', type=click.Path())
+def generate(output_dir):
     """Generate scenario variants and output files.
     
     Creates all variant configurations and associated files in the
@@ -100,14 +100,14 @@ def generate(output):
         click.echo(message)
     
     click.echo(f"Generating scenario variants from {config}...")
-    click.echo(f"Output directory: {output}")
+    click.echo(f"Output directory: {output_dir}")
     click.echo("-" * 60)
 
     try:
         variants = generate_scenario_variations(
             variation_file=config,
             progress_update_callback=progress_callback,
-            output_dir=output
+            output_dir=output_dir
         )
 
         if variants:

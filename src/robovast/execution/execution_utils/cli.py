@@ -55,22 +55,23 @@ def local():
 
 @local.command()
 @click.argument('variant')
+@click.argument('output-dir', type=click.Path())
 @click.option('--debug', '-d', is_flag=True,
               help='Enable debug output')
 @click.option('--shell', '-s', is_flag=True,
               help='Instead of running the scenario, login with shell')
-def run(variant, debug, shell):
+def run(variant, output_dir, debug, shell):
     """Execute a scenario variant locally using Docker.
     
     Runs a single variant in a Docker container with bind mounts
     for configuration and output data.
     """
-    config, output, docker_image, variant_configs = initialize_local_execution(variant, debug)
+    config, docker_image, variant_configs = initialize_local_execution(variant, debug)
     
     click.echo(f"Executing variant '{variant}' from {config}...")
-    click.echo(f"Output directory: {output}")
+    click.echo(f"Output directory: {output_dir}")
 
-    os.makedirs(output, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
     click.echo("-" * 60)
 
     try:
@@ -83,7 +84,7 @@ def run(variant, debug, shell):
         
         click.echo(f"Config path: {config_path}")
         return_code = execute_docker_container(
-            docker_image, config_path, temp_path.name, output, variant, shell=shell
+            docker_image, config_path, temp_path.name, output_dir, variant, shell=shell
         )
         sys.exit(return_code)
 
@@ -94,7 +95,7 @@ def run(variant, debug, shell):
 
 @local.command()
 @click.argument('variant')
-@click.argument('output-dir')
+@click.argument('output-dir', type=click.Path())
 @click.option('--debug', '-d', is_flag=True,
               help='Enable debug output')
 def prepare_run(variant, output_dir, debug):
@@ -104,7 +105,7 @@ def prepare_run(variant, output_dir, debug):
     and prints the Docker command that can be used to execute it manually.
     Files are written to OUTPUT-DIR for inspection or manual execution.
     """
-    config, _, docker_image, variant_configs = initialize_local_execution(variant, debug)
+    config, docker_image, variant_configs = initialize_local_execution(variant, debug)
     
     click.echo(f"Preparing variant '{variant}' from {config}...")
     click.echo(f"Output directory: {output_dir}")

@@ -13,4 +13,3 @@ Navigation-specific extension for RoboVAST.
 ```bash
 pip install -e .
 ```
-

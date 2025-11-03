@@ -53,7 +53,7 @@ class LocalExecutionWorker(QThread):
 
             tmp_dir = tempfile.TemporaryDirectory(prefix="test_")
 
-            command = f"vast execution local {self.variant_name} --output {tmp_dir.name}"
+            command = f"vast execution local run {self.variant_name} {tmp_dir.name}"
 
             # Create a script that sets up a new process group and runs the command
             # This ensures all child processes can be killed together

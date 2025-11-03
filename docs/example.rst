@@ -125,7 +125,7 @@ The command runs the container using the ``docker`` command and the same paramet
 
 .. code-block:: bash
 
-   vast execution local variant1 --output output_variant1
+   vast execution local run variant1 output_variant1
 
 
 Cluster Execution

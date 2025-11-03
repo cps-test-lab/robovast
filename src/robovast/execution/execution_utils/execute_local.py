@@ -51,18 +51,18 @@ def initialize_local_execution(variant, debug=False):
     
     Args:
         variant: The variant name to execute
+        output_path: The output directory for the execution results
         debug: Enable debug output
         
     Returns:
-        Tuple of (config, output, docker_image, variant_configs)
-        
+        Tuple of (config, output_path, docker_image, variant_configs)
+
     Raises:
         SystemExit: If initialization fails
     """
     # Get project configuration
     project_config = get_project_config()
     config = project_config.config_path
-    output = project_config.results_dir
     
     execution_parameters = load_config(config, "execution")
     yaml_path = os.path.join(os.path.dirname(config), execution_parameters["kubernetes_manifest"])
@@ -94,7 +94,7 @@ def initialize_local_execution(variant, debug=False):
         print("Variants:")
         pprint(variant_configs)
     
-    return config, output, docker_image, variant_configs
+    return config, docker_image, variant_configs
 
 def get_commandline(image, config_path, output_path, variant_name, run_num=0, shell=False):
 
