@@ -20,7 +20,17 @@ import random
 
 import numpy as np
 
+from ..config import VariationConfig
 from .base_variation import Variation
+
+
+class ParameterVariationDistributionUniformConfig(VariationConfig):
+    name: str
+    num_variations: int
+    min: float | int | None = None
+    max: float | int | None = None
+    type: str = "float"
+    seed: int
 
 
 class ParameterVariationDistributionUniform(Variation):
@@ -35,6 +45,7 @@ class ParameterVariationDistributionUniform(Variation):
         type: Type to convert values to ('string', 'int', 'float', 'bool')
         seed: Random seed for reproducibility
     """
+    CONFIG_CLASS = ParameterVariationDistributionUniformConfig
 
     def variation(self, in_variants):
         self.progress_update("Running Parameter Variation (Random)...")
@@ -103,6 +114,17 @@ class ParameterVariationDistributionUniform(Variation):
         return results
 
 
+class ParameterVariationDistributionGaussianConfig(VariationConfig):
+    name: str
+    num_variations: int
+    mean: float
+    std: float
+    min: float | int | None = None
+    max: float | int | None = None
+    type: str = "float"
+    seed: int
+
+
 class ParameterVariationDistributionGaussian(Variation):
     """
     Creates variants with random parameter values from a Gaussian (normal) distribution.
@@ -117,19 +139,20 @@ class ParameterVariationDistributionGaussian(Variation):
         type: Type to convert values to ('string', 'int', 'float', 'bool')
         seed: Random seed for reproducibility
     """
+    CONFIG_CLASS = ParameterVariationDistributionGaussianConfig
 
     def variation(self, in_variants):
         self.progress_update("Running Parameter Variation (Gaussian)...")
 
         # Extract parameters
-        param_name = self.parameters.get("name")
-        num_variations = self.parameters.get("num_variations", 1)
-        mean = self.parameters.get("mean")
-        std = self.parameters.get("std")
-        min_val = self.parameters.get("min")
-        max_val = self.parameters.get("max")
-        value_type = self.parameters.get("type", "float")
-        seed = self.parameters.get("seed")
+        param_name = self.parameters.name
+        num_variations = self.parameters.num_variations
+        mean = self.parameters.mean
+        std = self.parameters.std
+        min_val = self.parameters.min
+        max_val = self.parameters.max
+        value_type = self.parameters.type
+        seed = self.parameters.seed
 
         # Validate required parameters
         if not param_name:
@@ -194,6 +217,11 @@ class ParameterVariationDistributionGaussian(Variation):
         return results
 
 
+class ParameterVariationListConfig(VariationConfig):
+    name: str
+    values: list[float | int | bool | dict | list]
+
+
 class ParameterVariationList(Variation):
     """
     Creates variants with parameter values from a predefined list.
@@ -202,17 +230,14 @@ class ParameterVariationList(Variation):
         name: Name of the parameter to vary
         values: List of values to use for the parameter
     """
+    CONFIG_CLASS = ParameterVariationListConfig
 
     def variation(self, in_variants):
         self.progress_update("Running Parameter Variation (List)...")
 
         # Extract parameters
-        param_name = self.parameters.get("name")
-        if "values" not in self.parameters:
-            raise ValueError("Parameter 'values' is required for ParameterVariationList")
-        if not isinstance(self.parameters["values"], list):
-            raise ValueError(f"Parameter 'values' must be a list for ParameterVariationList, but is of type {type(self.parameters['values']).__name__}")
-        values = self.parameters.get("values")
+        param_name = self.parameters.name
+        values = self.parameters.values
 
         # Validate required parameters
         if not param_name:
@@ -232,18 +257,6 @@ class ParameterVariationList(Variation):
         results = []
         for value in values:
             for variant in in_variants:
-                new_variant = copy.deepcopy(variant)
-
-                # Ensure variant dict exists
-                if 'variant' not in new_variant:
-                    new_variant['variant'] = {}
-
-                # Add parameter to variant
-                new_variant['variant'][param_name] = value
-
-                # Update variant name
-                new_variant['name'] = self.get_variant_name()
-
-                results.append(new_variant)
+                results.append(self.update_variant(variant, {param_name: value}))
 
         return results

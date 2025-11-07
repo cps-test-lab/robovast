@@ -98,4 +98,6 @@ ENV DPI=96
 ENV CDEPTH=24
 ENV QT_X11_NO_MITSHM=1
 
+RUN mkdir -p /out && chmod 777 /out
+
 ENTRYPOINT [ "/entrypoint.sh" ]

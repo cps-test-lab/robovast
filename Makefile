@@ -23,34 +23,39 @@ check: check-tools
 fix: check-tools
 	@echo "Auto-fixing Python code..."
 	@echo "Running autoflake..."
-	@autoflake --in-place --remove-all-unused-imports --recursive .
+	@autoflake --in-place --remove-all-unused-imports --recursive --exclude venv,.venv,dependencies,install,build .
 	@echo "Running isort..."
-	@isort .
+	@isort . --skip venv --skip .venv --skip dependencies --skip install --skip build
 	@echo "Running autopep8..."
-	@autopep8 --in-place --recursive --max-line-length 140 .
+	@autopep8 --in-place --recursive --max-line-length 140 --exclude venv,.venv,dependencies,install,build .
 	@echo "✅ Done! Now run 'make check' to verify."
 
-sphinx_setup:
-	if [ ! -d "venv" ]; then \
-		python -m venv venv/; \
-		. venv/bin/activate; \
-		pip install -r docs/requirements.txt; \
-		deactivate; \
-	fi
+.PHONY: venv
+venv: venv/.robovast_installed
 
-doc: sphinx_setup checklinks checkspelling
-	. venv/bin/activate && GITHUB_REF_NAME=local GITHUB_REPOSITORY=cps-test-lab/robovast python -m sphinx -b html -W docs build/html
+venv/.robovast_installed: 
+	@if [ ! -d venv ]; then \
+		echo "Creating virtual environment..."; \
+		python3 -m venv venv; \
+	fi
+	
+	@echo "Setting up RoboVAST environment..."
+	. venv/bin/activate && pip install -e .[docs] && pip install -e src/robovast_nav
+	@touch venv/.robovast_installed
+
+doc: venv/.robovast_installed
+	. venv/bin/activate && GITHUB_REF_NAME=local GITHUB_REPOSITORY=cps-test-lab/robovast python3 -m sphinx -b html -W docs build/html
 
 view_doc: doc
 	firefox build/html/index.html &
 
-checklinks: sphinx_setup
-	. venv/bin/activate && GITHUB_REF_NAME=local GITHUB_REPOSITORY=cps-test-lab/robovast python -m sphinx -b linkcheck -W docs $(LINKCHECKDIR)
+checklinks: venv
+	. venv/bin/activate && GITHUB_REF_NAME=local GITHUB_REPOSITORY=cps-test-lab/robovast python3 -m sphinx -b linkcheck -W docs $(LINKCHECKDIR)
 	@echo
 	@echo "Check finished. Report is in $(LINKCHECKDIR)."
 
-checkspelling: sphinx_setup
-	. venv/bin/activate && GITHUB_REF_NAME=local GITHUB_REPOSITORY=cps-test-lab/robovast python -m sphinx -b html -b spelling -W docs $(LINKCHECKDIR)
+checkspelling: venv/.docs_installed
+	. venv/bin/activate && GITHUB_REF_NAME=local GITHUB_REPOSITORY=cps-test-lab/robovast python3 -m sphinx -b html -b spelling -W docs $(LINKCHECKDIR)
 	@echo
 	@echo "Check finished. Report is in $(LINKCHECKDIR)."
 

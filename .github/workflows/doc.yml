@@ -22,7 +22,7 @@ jobs:
     name: 'Build Docs'
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/sphinx-doc/sphinx:7.1.2
+      image: ubuntu:24.04
       volumes:
         - ${{ github.workspace }}:/ws
     steps:
@@ -32,8 +32,9 @@ jobs:
         shell: bash
         run: |
           apt update
-          apt install -y -qq --no-install-recommends enchant-2
-          pip install -r docs/requirements.txt
+          apt install -y make python3 python3.12 enchant-2 python3.12-venv
+          make venv
+          source venv/bin/activate
           sphinx-build -W -b linkcheck ./docs _build
           sphinx-build -W -b spelling ./docs _build
           sphinx-build -M html ./docs _build

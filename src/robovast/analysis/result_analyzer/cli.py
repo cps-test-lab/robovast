@@ -35,7 +35,7 @@ from .preprocessing import (get_cached_file, get_hash_file_name,
 @click.group()
 def analysis():
     """Analyze test results and generate reports.
-    
+
     Tools for visualizing and analyzing scenario execution results.
     """
 
@@ -47,17 +47,12 @@ def analysis():
               help='Force preprocessing by skipping cache check')
 def preprocess_cmd(results_dir, force):
     """Run preprocessing commands on test results.
-    
+
     Executes preprocessing commands defined in the configuration file's
-    analysis.preprocessing section. Creates a .robovast_preprocessed flag
+    analysis.preprocessing section. Creates a ``.robovast_preprocessed`` flag
     file with a hash of the commands to track if preprocessing is up to date.
-    
-    Requires project initialization with 'vast init' first (unless --output is specified).
-    
-    Examples:
-      vast analysis preprocess
-      vast analysis preprocess --results-dir ./custom_results
-      vast analysis preprocess --force
+
+    Requires project initialization with ``vast init`` first (unless ``--results-dir`` is specified).
     """
     # Get project configuration
     project_config = get_project_config()
@@ -68,11 +63,11 @@ def preprocess_cmd(results_dir, force):
 
     # Get preprocessing commands
     commands = get_preprocessing_commands(config_path)
-    
+
     if not commands:
         click.echo("No preprocessing commands defined in configuration.")
         return
-    
+
     command_files = []
     command_paths = []
     for command in commands:
@@ -101,15 +96,15 @@ def preprocess_cmd(results_dir, force):
 
     if force:
         click.echo("Force mode enabled: skipping cache check")
-    
+
     click.echo("Starting preprocessing...")
     click.echo(f"Results directory: {results_dir}")
     click.echo("-" * 60)
-    
+
     if not os.path.exists(results_dir):
         click.echo(f"✗ Error: Results directory does not exist: {results_dir}", err=True)
         sys.exit(1)
-    
+
     # Execute each preprocessing command
     config_dir = os.path.dirname(config_path)
     success = True
@@ -119,37 +114,31 @@ def preprocess_cmd(results_dir, force):
         click.echo(f"\n[{i}/{len(command_paths)}] Executing: {' '.join(command)}")
         try:
             # Run the command with results directory as argument
+            # Stream output in real-time instead of capturing
             result = subprocess.run(
                 command,
                 cwd=config_dir,
-                capture_output=True,
-                text=True,
-                check=False
+                check=False,
+                env={**os.environ, 'PYTHONUNBUFFERED': '1'}
             )
-            
+
             if result.returncode == 0:
                 click.echo(f"✓ Success")
-                if result.stdout:
-                    click.echo(result.stdout)
             else:
                 click.echo(f"✗ Failed with exit code {result.returncode}", err=True)
-                if result.stderr:
-                    click.echo(result.stderr, err=True)
-                if result.stdout:
-                    click.echo(result.stdout)
                 success = False
                 break
-                
+
         except Exception as e:
             click.echo(f"✗ Error executing command: {e}", err=True)
             success = False
             break
-    
-    if success: 
+
+    if success:
         file_cache = FileCache()
         file_cache.set_current_data_directory(os.path.dirname(config_path))
         file_cache.save_file_to_cache(command_files, get_hash_file_name(results_dir), None, content=False, strings_for_hash=commands)
-           
+
         click.echo("\n" + "=" * 60)
         click.echo("✓ Preprocessing completed successfully!")
     else:
@@ -163,15 +152,11 @@ def preprocess_cmd(results_dir, force):
               help='Directory containing test results (uses project results dir if not specified)')
 def result_analyzer_cmd(results_dir):
     """Launch the graphical test results analyzer.
-    
+
     Opens a GUI application for interactive exploration and
     visualization of test results.
-    
-    Requires project initialization with 'vast init' first (unless --output is specified).
-    
-    Examples:
-      vast analysis gui
-      vast analysis gui --output ./custom_results
+
+    Requires project initialization with ``vast init`` first (unless ``--results-dir`` is specified).
     """
     # Get project configuration
     project_config = get_project_config()
@@ -186,7 +171,7 @@ def result_analyzer_cmd(results_dir):
         click.echo(f"⚠ Warning: Preprocessing is needed", err=True)
         click.echo("Please run 'vast analysis preprocess' before launching the GUI.", err=True)
         sys.exit(1)
-    
+
     try:
         from PySide6.QtWidgets import \
             QApplication  # pylint: disable=import-outside-toplevel
@@ -196,7 +181,7 @@ def result_analyzer_cmd(results_dir):
     except ImportError as e:
         click.echo(
             f"Error: Required dependencies not available: {e}\n"
-            "Install result-analyzer dependencies (PySide6, matplotlib, etc.)", 
+            "Install result-analyzer dependencies (PySide6, matplotlib, etc.)",
             err=True
         )
         sys.exit(1)

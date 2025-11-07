@@ -24,10 +24,10 @@ from robovast.common import FileCache, load_config
 
 def get_preprocessing_commands(config_path: str) -> List[str]:
     """Get preprocessing commands from configuration file.
-    
+
     Args:
         config_path: Path to .vast configuration file
-        
+
     Returns:
         List of preprocessing commands or empty list if none defined
     """
@@ -49,10 +49,10 @@ def is_preprocessing_needed(config_path: str, results_dir: str) -> bool:
         bool indicating if preprocessing is needed
     """
     commands = get_preprocessing_commands(config_path)
-    
+
     if not commands:
         return False
-    
+
     command_files = []
     for command in commands:
         splitted = command.split()
@@ -68,9 +68,11 @@ def is_preprocessing_needed(config_path: str, results_dir: str) -> bool:
 
     return not bool(cached_file)
 
+
 def get_hash_file_name(results_dir: str) -> str:
     file_name = "preprocess_" + results_dir
     return file_name.replace(os.sep, "_")
+
 
 def get_cached_file(config_path, results_dir, commands, command_files):
     file_cache = FileCache()

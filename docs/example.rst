@@ -3,7 +3,7 @@
 Example
 =======
 
-Code is available in :repo_link:`examples/growth_sim`.
+Code is available in :repo_link:`configs/examples/growth_sim`.
 
 TL;DR
 -----
@@ -13,16 +13,22 @@ To run the example, execute the following commands in the base folder of the Rob
 .. code-block:: bash
 
    # initialize project
-   vast init examples/growth_sim/growth_sim.vast
+   vast init configs/examples/growth_sim/growth_sim.vast
 
    # show the variants that will be executed
    vast variation list
+
+   # setup pods in cluster (kubernetes required)
+   vast execution cluster setup minikube
     
-   # execute the tests in the cluster (kubernetes required)
-   vast execution cluster
+   # execute the tests in the cluster
+   vast execution cluster run
     
    # download results from the cluster
-   vast execution download
+   vast execution cluster download
+
+   # cleanup pods in cluster
+   vast execution cluster cleanup
 
    # preprocess results
    vast analysis preprocess
@@ -50,7 +56,7 @@ This command sets up the required configuration files and prepares your project 
 Test Definition
 ---------------
 
-In this example, we test a simple logistic growth simulator defined in :repo_link:`examples/growth_sim/files/growth_sim.py`.
+In this example, we test a simple logistic growth simulator defined in :repo_link:`configs/examples/growth_sim/files/growth_sim.py`.
 We will do parameter sweeps for ``initial_population`` and ``growth_rate``.
 The simulator writes its output to a csv file.
 
@@ -58,7 +64,7 @@ This test uses a simple scenario: a single action invokes the growth simulator.
 Three scenario parameters are defined, and two of them will be varied later using parameter overriding during scenario execution.
 RoboVAST allows you to vary any scenario parameter as needed.
 
-.. literalinclude:: ../examples/growth_sim/scenario.osc
+.. literalinclude:: ../configs/examples/growth_sim/scenario.osc
    :language: python
    :caption: Scenario
 
@@ -67,7 +73,7 @@ RoboVAST Configuration
 
 The central part of RoboVAST is the configuration file, which defines all aspects of a workflow. It has the ending ``.vast`` and is written in YAML format.
 
-In this example we use configuration file :repo_link:`examples/growth_sim/growth_sim.vast`.
+In this example we use configuration file :repo_link:`configs/examples/growth_sim/growth_sim.vast`.
 
 The ``settings`` are split into three main sections: ``variation``, ``execution``, and ``analysis``.
 
@@ -80,7 +86,7 @@ Available variation types are described in :ref:`variation-points`.
 
 In this example, we vary the parameters ``initial_population`` and ``growth_rate`` using a fixed list of values and the variation plugin ``ParameterVariationList``.
 
-.. literalinclude:: ../examples/growth_sim/growth_sim.vast
+.. literalinclude:: ../configs/examples/growth_sim/growth_sim.vast
    :language: yaml
    :lines: 13-26
    :caption: Variation section of RoboVAST Configuration File
@@ -98,7 +104,7 @@ Execution
 
 The ``execution`` section of the ``.vast`` configuration specifies all necessary parameters for running the tests:
 
-.. literalinclude:: ../examples/growth_sim/growth_sim.vast
+.. literalinclude:: ../configs/examples/growth_sim/growth_sim.vast
    :language: yaml
    :lines: 7-12
    :caption: Execution section of RoboVAST Configuration File
@@ -135,16 +141,16 @@ To execute all tests in the cluster, run:
 
 .. code-block:: bash
 
-   vast execution cluster
+   vast execution cluster run
 
 Download Results
 """"""""""""""""
 
-The output of an execution is stored within the cluster-internal NFS-server and can be downloaded with:
+The output of an execution is stored within the cluster-internal server and can be downloaded with:
 
 .. code-block:: bash
 
-   vast execution download
+   vast execution cluster download
 
 The resulting folder structure looks like this:
 
@@ -179,7 +185,7 @@ To simplify this process, RoboVAST provides the ``result_analyzer`` tool, which 
 
 Analysis configuration is specified in the ``analysis.visualization`` section of the ``.vast`` configuration file.
 
-.. literalinclude:: ../examples/growth_sim/growth_sim.vast
+.. literalinclude:: ../configs/examples/growth_sim/growth_sim.vast
    :language: yaml
    :lines: 2-7
    :caption: Analysis section of RoboVAST Configuration File

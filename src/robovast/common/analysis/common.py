@@ -37,34 +37,36 @@ def read_output_files(data_dir: str, reader_func: Callable[[Path], pd.DataFrame]
 
     Raises:
         ValueError: If data_dir does not exist, no run.yaml files are found, or no valid test data could be read.
-    """    
+    """
     data_path = Path(data_dir)
-    
+
     if not data_path.exists():
         raise ValueError(f"Data directory does not exist: {data_dir}")
-    
+
     all_dataframes = []
-    
+
     # Find all run.yaml files in subdirectories
     run_yaml_files = list(data_path.rglob("run.yaml"))
-    
+
     if not run_yaml_files:
         raise ValueError(f"No run.yaml files found in subdirectories of {data_dir}")
-    
+
     if debug:
         print(f"Found {len(run_yaml_files)} test directories")
-    
+
     category_names = set({'test', 'variant'})
     for run_yaml in run_yaml_files:
         if debug:
             print(f"Reading data from: {run_yaml}")
         test_dir = run_yaml.parent
         test_name = test_dir.name
-        
+
         try:
             # Call the user-provided reader function
-            df = reader_func(test_dir)
-
+            if reader_func:
+                df = reader_func(test_dir)
+            else:
+                df = pd.DataFrame()
             scenario_variant_path = run_yaml.parent / "scenario.variant"
             variant_parameters = {}
             try:
@@ -86,16 +88,16 @@ def read_output_files(data_dir: str, reader_func: Callable[[Path], pd.DataFrame]
                     df[param_name] = yaml.safe_dump(param_value)
                 else:
                     df[param_name] = param_value
-            
+
             all_dataframes.append(df)
-            
+
         except Exception as e:
             print(f"Warning: Could not read data from {test_dir}: {e}")
             continue
-    
+
     if not all_dataframes:
         raise ValueError(f"No valid test data could be read from {data_dir}")
-    
+
     # Combine all dataframes
     combined_df = pd.concat(all_dataframes, ignore_index=True)
 
@@ -106,17 +108,18 @@ def read_output_files(data_dir: str, reader_func: Callable[[Path], pd.DataFrame]
         print(f"Combined dataframe shape: {combined_df.shape}")
         print(f"Columns: {list(combined_df.columns)}")
         print(f"Number of unique tests: {combined_df['test'].nunique()}")
-    
+
     return combined_df
+
 
 def read_output_csv(test_dir: Path, filename: str, skiprows: int = 0) -> pd.DataFrame:
     """
     Read a CSV file from a test directory, skipping the first line (comment).
-    
+
     Args:
         test_dir: Path to the test directory
         filename: Name of the CSV file to read
-        
+
     Returns:
         DataFrame with the CSV data
     """
@@ -127,6 +130,7 @@ def read_output_csv(test_dir: Path, filename: str, skiprows: int = 0) -> pd.Data
     # Read CSV, skipping the first line (comment)
     df = pd.read_csv(csv_path, skiprows=skiprows)
     return df
+
 
 def for_each_test(data_dir: str, func: Callable[[Path], None], debug=False) -> None:
     """
@@ -139,21 +143,21 @@ def for_each_test(data_dir: str, func: Callable[[Path], None], debug=False) -> N
 
     Raises:
         ValueError: If data_dir does not exist or no run.yaml files are found.
-    """    
+    """
     data_path = Path(data_dir)
-    
+
     if not data_path.exists():
         raise ValueError(f"Data directory does not exist: {data_dir}")
-    
+
     # Find all run.yaml files in subdirectories
     run_yaml_files = list(data_path.rglob("run.yaml"))
-    
+
     if not run_yaml_files:
         raise ValueError(f"No run.yaml files found in subdirectories of {data_dir}")
-    
+
     if debug:
         print(f"Found {len(run_yaml_files)} test directories")
-    
+
     for run_yaml in run_yaml_files:
         test_dir = run_yaml.parent
         if debug:

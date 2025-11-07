@@ -14,33 +14,57 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from pydantic import BaseModel, ValidationError, ConfigDict
-from typing import Optional, Any
+from typing import Any, Optional
+
+from pydantic import BaseModel, ConfigDict, ValidationError
+
 
 class GeneralConfig(BaseModel):
     model_config = ConfigDict(extra='allow')
 
+
+class VariationConfig(BaseModel):
+    pass
+    # model_config = ConfigDict(extra='forbid')
+
+
+class KubernetesResourcesConfig(BaseModel):
+    cpu: int | str
+    memory: Optional[str] = None
+
+
+class KubernetesConfig(BaseModel):
+    resources: KubernetesResourcesConfig
+
+
 class ExecutionConfig(BaseModel):
-    kubernetes_manifest: str
+    image: str
+    kubernetes: KubernetesConfig
+    env: Optional[list[dict[str, str]]] = None
     scenario: str
     runs: int
+
 
 class PreprocessingConfig(BaseModel):
     pass
 
+
 class VisualizationConfig(BaseModel):
     pass
+
 
 class AnalysisConfig(BaseModel):
     preprocessing: Optional[list[str]] = None
     visualization: Optional[list[dict[str, Any]]] = None
 
+
 class ConfigV1(BaseModel):
     version: int = 1
     general: Optional[GeneralConfig] = None
-    variation: Optional[list[dict[str, Any]]] = None
+    variation: Optional[list[VariationConfig]] = None
     execution: ExecutionConfig
     analysis: Optional[AnalysisConfig] = None
+
 
 def validate_config(config: dict):
     """
@@ -54,15 +78,19 @@ def validate_config(config: dict):
     version = config.get("version", None)
     if version != 1:
         raise ValueError(f"Unsupported config version: {version}")
-    
+    return get_validated_config(config, ConfigV1)
+
+
+def get_validated_config(config: dict, config_class):
     try:
-        config = ConfigV1(**config)
+        config = config_class(**config)
     except Exception as e:
         if isinstance(e, ValidationError):
             errors = []
-            for error in e.errors(): # pylint: disable=no-member
+            for error in e.errors():  # pylint: disable=no-member
                 field = ".".join(str(loc) for loc in error['loc'])
                 msg = error['msg']
                 errors.append(f"  - {field}: {msg}")
             raise ValueError(f"Config validation failed:\n" + "\n".join(errors)) from None
         raise ValueError(f"Config validation failed: {str(e)}") from None
+    return config

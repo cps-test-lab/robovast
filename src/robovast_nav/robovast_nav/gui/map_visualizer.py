@@ -25,10 +25,11 @@ in Jupyter notebooks with support for drawing paths on top of the map.
 
 import os
 from typing import List, Tuple
-from matplotlib import patches
+
 import matplotlib.pyplot as plt
 import numpy as np
 import yaml
+from matplotlib import patches
 from PIL import Image
 
 

@@ -30,8 +30,6 @@ from kubernetes import client, config
 
 class ResultDownloader:
     def __init__(self):
-        self.transfer_pvc_name = "transfer-pvc"
-        self.transfer_pod_name = "nfs-server"
         self.port_forward_process = None
         self.local_port = self._find_available_port()
         self.remote_port = 80  # HTTP server port in sidecar
@@ -39,9 +37,6 @@ class ResultDownloader:
         # Initialize Kubernetes client
         config.load_kube_config()
         self.k8s_client = client.CoreV1Api()
-
-        # Check if transfer-pvc exists
-        self.check_transfer_pvc_exists()
 
         # Check if transfer-pod exists
         self.check_transfer_pod_exists()
@@ -84,12 +79,12 @@ class ResultDownloader:
         if self.port_forward_process:
             return  # Already running
 
-        print(f"### Starting port-forward to {self.transfer_pod_name}:{self.remote_port} -> localhost:{self.local_port}")
+        print(f"### Starting port-forward to robovast:{self.remote_port} -> localhost:{self.local_port}")
 
         cmd = [
             "kubectl", "port-forward",
             "-n", "default",
-            f"pod/{self.transfer_pod_name}",
+            f"pod/robovast",
             f"{self.local_port}:{self.remote_port}"
         ]
 
@@ -103,36 +98,21 @@ class ResultDownloader:
         # Wait a moment for port-forward to establish
         time.sleep(2)
 
-    def check_transfer_pvc_exists(self):
-        """Check if transfer-pvc exists, exit if not found"""
-        try:
-            self.k8s_client.read_namespaced_persistent_volume_claim(
-                name=self.transfer_pvc_name,
-                namespace="default"
-            )
-            print(f"### Found existing transfer PVC: {self.transfer_pvc_name}")
-        except client.exceptions.ApiException as e:
-            if e.status == 404:
-                print(f"### ERROR: Required PVC '{self.transfer_pvc_name}' does not exist!")
-                sys.exit(1)
-            else:
-                raise
-
     def check_transfer_pod_exists(self):
         """Check if transfer-pod exists, exit if not found"""
         try:
             pod = self.k8s_client.read_namespaced_pod(
-                name=self.transfer_pod_name,
+                name="robovast",
                 namespace="default"
             )
             # Check if pod is running
             if pod.status.phase not in ["Running", "Pending"]:
-                print(f"### ERROR: Transfer pod '{self.transfer_pod_name}' exists but is not running (status: {pod.status.phase})!")
+                print(f"### ERROR: Transfer pod 'robovast' exists but is not running (status: {pod.status.phase})!")
                 sys.exit(1)
-            print(f"### Found existing transfer pod: {self.transfer_pod_name}")
+            print(f"### Found existing transfer pod: robovast")
         except client.exceptions.ApiException as e:
             if e.status == 404:
-                print(f"### ERROR: Required pod '{self.transfer_pod_name}' does not exist!")
+                print(f"### ERROR: Required pod 'robovast' does not exist!")
                 sys.exit(1)
             else:
                 raise
@@ -142,8 +122,8 @@ class ResultDownloader:
         try:
             # Use kubectl to list directories in /exports/out/
             list_runs_cmd = [
-                "kubectl", "exec", "-n", "default", self.transfer_pod_name,
-                "-c", "nfs-server",
+                "kubectl", "exec", "-n", "default", "robovast",
+                "-c", "robovast",
                 "--",
                 "find", "/exports/out", "-maxdepth", "1", "-type", "d", "-name", "run-*"
             ]
@@ -221,7 +201,7 @@ class ResultDownloader:
 
             # Check if remote archive already exists
             check_archive_cmd = [
-                "kubectl", "exec", "-n", "default", self.transfer_pod_name,
+                "kubectl", "exec", "-n", "default", "robovast",
                 "--",
                 "test", "-f", remote_archive_path
             ]
@@ -231,7 +211,7 @@ class ResultDownloader:
             if not archive_exists:
                 print(f"### Creating compressed archive on remote pod using kubectl...")
                 create_archive_cmd = [
-                    "kubectl", "exec", "-n", "default", self.transfer_pod_name,
+                    "kubectl", "exec", "-n", "default", "robovast",
                     "--",
                     "tar", "-czf", remote_archive_path, "-C", "/exports/out", run_id
                 ]
@@ -323,7 +303,7 @@ class ResultDownloader:
             # Clean up remote archive using kubectl
             print(f"### Cleaning up remote archive...")
             cleanup_cmd = [
-                "kubectl", "exec", "-n", "default", self.transfer_pod_name,
+                "kubectl", "exec", "-n", "default", "robovast",
                 "--",
                 "rm", "-f", remote_archive_path
             ]
@@ -332,7 +312,7 @@ class ResultDownloader:
             # Delete the run directory from remote pod after successful download
             print(f"### Deleting run directory from remote pod...")
             delete_run_cmd = [
-                "kubectl", "exec", "-n", "default", self.transfer_pod_name,
+                "kubectl", "exec", "-n", "default", "robovast",
                 "--",
                 "rm", "-rf", f"/exports/out/{run_id}"
             ]
@@ -348,7 +328,7 @@ class ResultDownloader:
 
             # Clean up remote archive on error
             cleanup_cmd = [
-                "kubectl", "exec", "-n", "default", self.transfer_pod_name,
+                "kubectl", "exec", "-n", "default", "robovast",
                 "--",
                 "rm", "-f", remote_archive_path
             ]
@@ -358,7 +338,7 @@ class ResultDownloader:
 
             # Clean up remote archive on error
             cleanup_cmd = [
-                "kubectl", "exec", "-n", "default", self.transfer_pod_name,
+                "kubectl", "exec", "-n", "default", "robovast",
                 "--",
                 "rm", "-f", remote_archive_path
             ]
@@ -368,7 +348,7 @@ class ResultDownloader:
 
             # Clean up remote archive on error
             cleanup_cmd = [
-                "kubectl", "exec", "-n", "default", self.transfer_pod_name,
+                "kubectl", "exec", "-n", "default", "robovast",
                 "--",
                 "rm", "-f", remote_archive_path
             ]

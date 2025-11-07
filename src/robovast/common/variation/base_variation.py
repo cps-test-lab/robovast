@@ -14,12 +14,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import copy
+
+from ..config import get_validated_config
 
 # Module-level counter for generating short, unique variant indexes.
 # All variation classes can call `get_variant_index()` to obtain a new
 # sequential index. Call `reset_variant_index()` to reset back to 0
 # (the next `get_variant_index()` will return 1).
-_variant_index = 0 # pylint: disable=invalid-name
+_variant_index = 0  # pylint: disable=invalid-name
+
 
 def reset_variant_index():
     """Reset the shared variant index back to zero.
@@ -28,7 +32,7 @@ def reset_variant_index():
     variation run) starts so generated short names begin at
     `variant1` again.
     """
-    global _variant_index # pylint: disable=global-statement
+    global _variant_index  # pylint: disable=global-statement
     _variant_index = 0
 
 
@@ -37,19 +41,24 @@ def get_variant_index():
 
     Thread-safe.
     """
-    global _variant_index # pylint: disable=global-statement
+    global _variant_index  # pylint: disable=global-statement
     _variant_index += 1
     return _variant_index
 
 
 class Variation():
 
+    CONFIG_CLASS = None  # Pydantic model class for config validation
+
     def __init__(self, base_path, parameters, general_parameters, progress_update_callback, output_dir):
         # Reset shared variant index for each new Variation instance so
         # generated short names start from 1 for this variation run.
         reset_variant_index()
         self.base_path = base_path
-        self.parameters = parameters
+        if self.CONFIG_CLASS is not None:
+            self.parameters = get_validated_config(parameters, self.CONFIG_CLASS)
+        else:
+            self.parameters = parameters
         self.general_parameters = general_parameters
         self.progress_update_callback = progress_update_callback
         self.output_dir = output_dir
@@ -64,3 +73,29 @@ class Variation():
     def get_variant_name(self):
         """Generate variant name"""
         return f"variant{get_variant_index()}"
+
+    def update_variant(self, variant, scenario_values, variant_files: list = None, other_values=None):
+        new_variant = copy.deepcopy(variant)
+
+        # Ensure variant dict exists
+        if 'variant' not in new_variant:
+            new_variant['variant'] = {}
+
+        # Add parameters to variant
+        for key, val in scenario_values.items():
+            new_variant['variant'][key] = val
+
+        # Add other parameters to variant
+        if other_values:
+            for key, val in other_values.items():
+                new_variant[key] = val
+
+        # Ensure variant_files list exists
+        if 'variant_files' not in new_variant:
+            new_variant['variant_files'] = []
+
+        new_variant['variant_files'].extend(variant_files or [])
+
+        # Update variant name
+        new_variant['name'] = self.get_variant_name()
+        return new_variant
