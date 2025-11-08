@@ -25,6 +25,7 @@ import datetime
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 import os
+import sys
 
 project = "RoboVAST"
 copyright = f"{datetime.datetime.now().year}, Frederik Pasch"
@@ -37,7 +38,18 @@ release = '0.1.0'
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
 
 extensions = ['sphinx.ext.extlinks',
+              'sphinx.ext.autodoc',
+              'sphinx.ext.napoleon',
+              'sphinx_click',
               'sphinxcontrib.spelling']
+
+# Add the project root to the path so we can import the modules
+
+sys.path.insert(0, os.path.abspath('../src'))
+
+# sphinx-click configuration
+# Enable proper formatting of Click docstrings
+sphinx_click_format_docstrings = True
 
 extlinks = {'repo_link': ('https://github.com/cps-test-lab/robovast/blob/main/%s', '%s')}
 

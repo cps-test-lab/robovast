@@ -18,6 +18,7 @@ import os
 from dataclasses import asdict, is_dataclass
 
 import yaml
+
 from .config import validate_config
 
 
@@ -39,7 +40,7 @@ def load_config(config_file, subsection=None):
         if settings:
             # Validate the configuration
             validate_config(settings)
-            
+
             if subsection:
                 subsection = settings.get(subsection, None)
                 if not subsection:
@@ -50,9 +51,11 @@ def load_config(config_file, subsection=None):
         else:
             raise ValueError("No 'settings' section found in scenario file")
 
+
 def dataclass_representer(dumper, data):
     """Custom YAML representer for dataclass objects."""
     return dumper.represent_dict(asdict(data))
+
 
 def convert_dataclasses_to_dict(obj):
     """

@@ -72,9 +72,9 @@ class TestResultsAnalyzer(QMainWindow):
                         run_nb = os.path.join(os.path.dirname(config_file), values.get("run"))
                         workloads.append(
                             JupyterNotebookRunner(name,
-                                                single_test_nb=single_nb,
-                                                variant_nb=variant_nb,
-                                                run_nb=run_nb)
+                                                  single_test_nb=single_nb,
+                                                  variant_nb=variant_nb,
+                                                  run_nb=run_nb)
                         )
                     except Exception as e:
                         print(f"Error adding notebook workload for {name}: {e}")
@@ -535,7 +535,7 @@ class TestResultsAnalyzer(QMainWindow):
             tab_names = list(self.analysis_tabs.keys())
             if workload_name == tab_names[-1]:
                 QTimer.singleShot(100, self._reset_status_to_ready)
-         
+
         except Exception as e:
             print(f"Error processing analysis results from {workload_name}: {e}")
             self.worker_progress_bar.show()  # Show to indicate error state
@@ -620,7 +620,7 @@ class TestResultsAnalyzer(QMainWindow):
                 pass
 
             self.local_execution_widget.stop_execution()
-                
+
             # Clear and teardown UI widgets to avoid segfaults on exit
             try:
                 if hasattr(self, 'tree') and self.tree:

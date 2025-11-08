@@ -20,14 +20,27 @@ nbformat = "^5.9"
 nbconvert = "^7.16"
 lxml-html-clean = "^0.1"
 kubernetes = "^22.6"
-scipy = "^1.13"
+scipy = "^1.16"
 pydantic = "^2.12"
+docker = "^7.0"
+# Optional documentation dependencies
+sphinx = {version = "^7.0.0", optional = true}
+sphinx-rtd-theme = {version = "^3.0.2", optional = true}
+sphinxcontrib-spelling = {version = "^8.0.0", optional = true}
+sphinx-click = {version = "^5.0.0", optional = true}
 
 [tool.poetry.group.dev.dependencies]
 ipykernel = "^7.1.0"
 
+[tool.poetry.group.docs.dependencies]
+sphinx = "^7.0.0"
+sphinx-rtd-theme = "^3.0.2"
+sphinxcontrib-spelling = "^8.0.0"
+sphinx-click = "^5.0.0"
+
 [tool.poetry.extras]
 nav = ["robovast-nav"]
+docs = ["sphinx", "sphinx-rtd-theme", "sphinxcontrib-spelling", "sphinx-click"]
 
 [tool.poetry.scripts]
 vast = "robovast.common.cli.cli:main"
@@ -36,6 +49,11 @@ vast = "robovast.common.cli.cli:main"
 execution = "robovast.execution.execution_utils.cli:execution"
 variation = "robovast.variation.variation_utils.cli:variation"
 analysis = "robovast.analysis.result_analyzer.cli:analysis"
+
+[tool.poetry.plugins."robovast.cluster_configs"]
+minikube = "robovast.execution.cluster_config.minikube:MinikubeClusterConfig"
+rke2 = "robovast.execution.cluster_config.rke2:Rke2ClusterConfig"
+gcp = "robovast.execution.cluster_config.gcp:GcpClusterConfig"
 
 [tool.poetry.plugins."robovast.variation_types"]
 "ParameterVariationList" = "robovast.common.variation.parameter_variation:ParameterVariationList"

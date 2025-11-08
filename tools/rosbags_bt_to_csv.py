@@ -113,6 +113,8 @@ def process_rosbag_wrapper(args):
 
 def process_rosbag(bag_path, csv_filename):
     """Process a single rosbag and extract behavior status changes to CSV."""
+    print(f"Processing rosbag: {Path(bag_path).name}")
+
     try:
         parent_folder = os.path.abspath(os.path.dirname(bag_path))
         output_file = os.path.join(parent_folder, csv_filename)

@@ -23,6 +23,9 @@ from importlib.metadata import entry_points
 
 import click
 
+from ..common import load_config
+from ..kubernetes import get_kubernetes_client
+from .checks import check_docker_access, check_kubernetes_access
 from .project_config import ProjectConfig
 
 
@@ -30,9 +33,11 @@ from .project_config import ProjectConfig
 @click.version_option(package_name="robovast", prog_name="RoboVAST")
 def cli():
     """VAST - RoboVAST Command-Line Interface.
-    
-    A comprehensive tool for managing variations, executing scenarios,
+
+    Main command for managing variations, executing scenarios,
     and analyzing results in the RoboVAST framework.
+
+    See ``vast --help`` for a list of available commands.
     """
 
 
@@ -40,17 +45,55 @@ def cli():
 @click.argument('config', type=click.Path(exists=True))
 @click.option('--results-dir', '-r', default="results", type=click.Path(),
               help='Directory for storing results')
-def init(config, results_dir):
+@click.option('--force', '-f', is_flag=True,
+              help='Skip Docker and Kubernetes accessibility checks')
+def init(config, results_dir, force):
     """Initialize a VAST project.
-    
-    Creates a .vast_project file in the current directory that stores
+
+    Creates a `.vast_project` file in the current directory that stores
     the configuration file path and results directory. These settings
     will be used by other VAST commands automatically.
-    
-    Examples:
-      vast init config.vast
-      vast init scenarios/test.vast -r /tmp/test_results
+
+    By default, performs the following checks before initialization:
+
+    * Docker daemon accessibility and version
+    * Kubernetes cluster connectivity and version
+    * robovast pod is running in the default namespace
+
+    Use the ``--force`` flag to skip all these checks if needed.
     """
+    # Check Docker and Kubernetes access unless --force is used
+    # Check Docker access
+    if force:
+        click.echo("⚠ Warning: Skipping checks (--force enabled)")
+
+    # check integrity of config file
+    try:
+        load_config(config)
+    except Exception as e:
+        click.echo(f"✗ Error: Failed to load configuration file: {e}", err=True)
+        if not force:
+            sys.exit(1)
+
+    click.echo("Checking Docker daemon access...")
+    docker_ok, docker_msg = check_docker_access()
+    if not docker_ok and not force:
+        click.echo(f"✗ Error: {docker_msg}", err=True)
+        click.echo("  Docker is required for RoboVAST execution.", err=True)
+        sys.exit(1)
+    click.echo(f"✓ {docker_msg}")
+
+    # Check Kubernetes access
+    k8s_client = get_kubernetes_client()
+    click.echo("Checking Kubernetes cluster access...")
+    k8s_ok, k8s_msg = check_kubernetes_access(k8s_client)
+    if not k8s_ok:
+        click.echo(f"✗ Error: {k8s_msg}", err=True)
+        click.echo("  Kubernetes cluster is required for RoboVAST execution.", err=True)
+        if not force:
+            sys.exit(1)
+    click.echo(f"✓ {k8s_msg}")
+
     # Convert to absolute paths
     project_file_dir = os.path.abspath(os.getcwd())
     if not os.path.isabs(config):
@@ -61,29 +104,29 @@ def init(config, results_dir):
         results_path = os.path.abspath(os.path.join(project_file_dir, results_dir))
     else:
         results_path = results_dir
-    
+
     # Validate config file exists
     if not os.path.isfile(config_path):
         click.echo(f"✗ Error: Configuration file not found: {config_path}", err=True)
         sys.exit(1)
-    
+
     # Create ProjectConfig and save it
     project_config = ProjectConfig(config_path=config_path, results_dir=results_path)
-    
+
     # Validate the configuration
     is_valid, error = project_config.validate()
     if not is_valid:
         click.echo(f"✗ Error: {error}", err=True)
         sys.exit(1)
-    
+
     # Check if .vast_project already exists
     existing_file = ProjectConfig.find_project_file()
     if existing_file:
         click.echo(f"⚠ Warning: Overwriting existing project file: {existing_file}")
-    
+
     # Save the project file
     project_file = project_config.save()
-    
+
     click.echo(f"✓ Project initialized successfully!")
     click.echo(f"  Configuration: {config_path}")
     click.echo(f"  Results directory: {results_path}")
@@ -93,13 +136,11 @@ def init(config, results_dir):
 @cli.command()
 def install_completion():
     """Install shell completion for the vast command.
-    
+
     Auto-detects your shell and installs completion to the appropriate config file.
-    
-    Examples:
-      vast install-completion
+
     """
-    
+
     # Auto-detect shell from SHELL environment variable
     shell_env = os.environ.get('SHELL', '')
     if 'zsh' in shell_env:
@@ -108,7 +149,7 @@ def install_completion():
         shell = 'fish'
     else:
         shell = 'bash'
-    
+
     # Generate completion script based on shell
     script = None
     if shell == 'bash':
@@ -122,12 +163,12 @@ def install_completion():
         config_file = os.path.expanduser('~/.config/fish/config.fish')
     else:
         raise click.ClickException(f"Unsupported shell for completion installation: {shell}")
-    
+
     # Install to the config file
     try:
         # Ensure directory exists
         os.makedirs(os.path.dirname(config_file), exist_ok=True)
-        
+
         # Check if completion is already installed
         if os.path.exists(config_file):
             with open(config_file, 'r') as f:
@@ -135,11 +176,11 @@ def install_completion():
                 if script in content:
                     click.echo(f"✓ Completion already installed in {config_file}")
                     return
-        
+
         # Append completion script to config file
         with open(config_file, 'a') as f:
             f.write(f"\n# VAST CLI completion\n{script}\n")
-        
+
         click.echo(f"✓ Completion installed successfully!")
         click.echo(f"  Shell: {shell}")
         click.echo(f"  Added to: {config_file}")
@@ -153,7 +194,7 @@ def install_completion():
 
 def load_plugins():
     """Dynamically load all VAST CLI plugins from entry points."""
-    try:        
+    try:
         eps = entry_points(group='robovast.cli_plugins')
 
         for ep in eps:
@@ -172,7 +213,7 @@ def main():
     """Main entry point for the VAST CLI."""
     # Load all plugins before running the CLI
     load_plugins()
-    
+
     # Run the CLI
     cli()
 

@@ -204,7 +204,7 @@ class JupyterNotebookRunner(CancellableWorkload):
         self.notebook_content = notebook_content
 
     @staticmethod
-    def get_csvs(data_path, run_type): # pylint: disable=too-many-return-statements
+    def get_csvs(data_path, run_type):  # pylint: disable=too-many-return-statements
         """Determine CSV files and analysis type based on directory structure"""
         try:
             if run_type == RunType.SINGLE_TEST:
@@ -239,25 +239,25 @@ class JupyterNotebookRunner(CancellableWorkload):
 
     def get_notebook(self, path, run_type):
         """Load and prepare notebook with DATA_DIR replaced.
-        
+
         Returns:
             nbformat.NotebookNode: The prepared notebook object
         """
         notebook_content = self._load_external_notebook(run_type)
         if not notebook_content:
             return None
-        
+
         # Parse the notebook as JSON/nbformat object
         try:
             notebook = nbformat.reads(notebook_content, as_version=4)
         except Exception as e:
             raise ValueError(f"Failed to parse notebook as JSON: {e}") from e
-        
+
         # Find and replace DATA_DIR in code cells
         replace_variable = "DATA_DIR"
         replace_string = f"'{os.path.abspath(path)}'"
         regex_pattern = re.compile(r'(?m)^(\s*)DATA_DIR\s*=\s*([\'"]).*?\2(.*)$')
-        
+
         num_replacements = 0
         for cell in notebook.cells:
             if cell.cell_type == 'code':
@@ -267,10 +267,10 @@ class JupyterNotebookRunner(CancellableWorkload):
                     cell.source
                 )
                 num_replacements += count
-        
+
         if num_replacements == 0:
             raise ValueError(f"Expected at least one replacement of '{replace_variable}', but made {num_replacements} replacements.")
-        
+
         # Return notebook object directly
         return notebook
 
@@ -349,7 +349,7 @@ class JupyterNotebookRunner(CancellableWorkload):
             self.progress_callback(10, "Setting up execution environment...")
 
             class ProgressExecutePreprocessor(ExecutePreprocessor):
-                def __init__(self, progress_callback=None, is_canceled_callback=None, *args, **kwargs): # pylint: disable=keyword-arg-before-vararg
+                def __init__(self, progress_callback=None, is_canceled_callback=None, *args, **kwargs):  # pylint: disable=keyword-arg-before-vararg
                     super().__init__(*args, **kwargs)
                     self.current_cell = 0.
                     self.cells = 1

@@ -2,6 +2,7 @@
 
 from .common import (convert_dataclasses_to_dict, load_config,
                      save_scenario_variants_file)
+from .config import VariationConfig, get_validated_config
 from .execution import (get_execution_env_variables, get_execution_variants,
                         prepare_run_configs)
 from .file_cache import FileCache
@@ -16,5 +17,7 @@ __all__ = [
     'convert_dataclasses_to_dict',
     'get_execution_variants',
     'prepare_run_configs',
-    'get_execution_env_variables'
+    'get_execution_env_variables',
+    'VariationConfig',
+    'get_validated_config',
 ]

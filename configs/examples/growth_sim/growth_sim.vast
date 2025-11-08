@@ -7,7 +7,10 @@ settings:
         variant: analysis/analysis_variant.ipynb
         run: analysis/analysis_run.ipynb
   execution:
-    kubernetes_manifest: kubernetes_tmpl.yaml
+    image: ghcr.io/cps-test-lab/robovast:latest
+    kubernetes:
+      resources:
+        cpu: 1
     scenario: scenario.osc
     runs: 20
     test_files_filter: 

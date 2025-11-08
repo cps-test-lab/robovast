@@ -5,7 +5,7 @@ fi
 
 if [ -S "/tmp/.X11-unix/X${DISPLAY/:/}" ]; then
   echo "x11 already running..."
-  return
+  exit 0
 fi
 
 mkdir -p /tmp/runtime-user 2>/dev/null || true

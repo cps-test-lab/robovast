@@ -38,38 +38,37 @@ def get_execution_env_variables(run_num, variant_name):
         'ROS_LOG_DIR': '/out/logs',
     }
 
+
 def get_execution_variants(variation_config):
 
     parameters = load_config(variation_config, subsection="execution")
 
     # Read filter patterns once
     test_files_filter = parameters.get("test_files_filter", [])
-    variant_filter_patterns = parameters.get("variant_filter_patterns", [])
 
     if test_files_filter:
         print(f"### Loaded {len(test_files_filter)} filter patterns.")
-    if variant_filter_patterns:
-        print(f"### Loaded {len(variant_filter_patterns)} filter patterns.")
 
     # Discover scenarios and collect filtered files
     scenario_file = os.path.join(os.path.dirname(variation_config), parameters["scenario"])
     if not os.path.exists(scenario_file):
         raise FileNotFoundError(f"Scenario file does not exist: {scenario_file}")
 
-    scenarios = get_filtered_files(variation_config, scenario_file, test_files_filter, variant_filter_patterns)
+    scenarios, output_dir = get_filtered_files(variation_config, scenario_file, test_files_filter)
 
     if not scenarios:
         raise ValueError("No scenario variants generated. ")
-    return scenarios
+    return scenarios, output_dir
 
-def get_filtered_files(variation_file, scenario_file, test_files_filter, variant_filter_patterns):
 
-    output_dir = tempfile.TemporaryDirectory(prefix="robovast_execution_", delete=False)
+def get_filtered_files(variation_file, scenario_file, test_files_filter):
+
+    output_dir = tempfile.TemporaryDirectory(prefix="robovast_execution_")
     variants = generate_scenario_variations(variation_file, print, variation_classes=None, output_dir=output_dir.name)
 
     if not variants:
         print("### Warning: No variants found.")
-        return []
+        return {}, output_dir
     scenarios = {}
 
     # Add files located next to the scenario file that match the filter patterns
@@ -83,25 +82,22 @@ def get_filtered_files(variation_file, scenario_file, test_files_filter, variant
             continue
         # Extract the name from the variant data for unique identification
         variant_name = variant["name"]
-        variant_files = []
-        variant_file_path = ''
-        if "floorplan_variant_path" in variant:
-            variant_file_path = variant["floorplan_variant_path"]
-            variant_files = collect_filtered_files(variant_filter_patterns, variant_file_path)
 
         variant_data = variant.get('variant')
 
         scenarios[variant_name] = {
             'scenario_files': scenario_files,
-            'variant_files': variant_files,
+            'variant_files': variant["variant_files"],
             'original_scenario_path': scenario_file,
-            'variant_file_path': variant_file_path,
             'variant_data': {
                 'test_scenario': convert_dataclasses_to_dict(variant_data)
             }
         }
+        if 'variant_file_path' in variant:
+            scenarios[variant_name]['variant_file_path'] = variant['variant_file_path']
         print(f"### Created {variant_name}")
-    return scenarios
+    return scenarios, output_dir
+
 
 def collect_filtered_files(filter_pattern, rel_path):
     """Collect files from scenario directory that match the filter patterns"""
@@ -140,6 +136,7 @@ def matches_patterns(file_path, patterns, base_dir):
 
     return False
 
+
 def _match_pattern(rel_path, pattern):
     """Match a single pattern against a relative path, supporting ** for recursive matching"""
     # Normalize pattern separators
@@ -164,6 +161,7 @@ def _match_pattern(rel_path, pattern):
             return True
         return False
 
+
 def _glob_match(path, pattern):
     """Enhanced glob matching with support for ** recursive patterns"""
     # Handle ** patterns
@@ -172,6 +170,7 @@ def _glob_match(path, pattern):
     else:
         # Use standard fnmatch for simple patterns
         return fnmatch.fnmatch(path, pattern)
+
 
 def _match_recursive_pattern(path, pattern):
     """Match patterns containing ** for recursive directory matching"""
@@ -214,7 +213,7 @@ def _match_recursive_pattern(path, pattern):
         return fnmatch.fnmatch(path, pattern)
 
 
-def prepare_run_configs(run_id, variants, output_dir):
+def prepare_run_configs(run_id, variants, variant_files_output_dir, output_dir):
     # Create the config directory structure: /config/$RUN_ID/
     config_dir = os.path.join(output_dir, "config", run_id)
     os.makedirs(config_dir, exist_ok=True)
@@ -236,7 +235,9 @@ def prepare_run_configs(run_id, variants, output_dir):
 
         # Copy variant files
         for config_file in scenario_data["variant_files"]:
-            src_path = os.path.join(os.path.dirname(original_scenario_path),
+            if "variant_file_path" not in scenario_data:
+                raise ValueError("variant_file_path missing in scenario data")
+            src_path = os.path.join(variant_files_output_dir,
                                     scenario_data["variant_file_path"], config_file)
             dst_path = os.path.join(scenario_dir, config_file)
             os.makedirs(os.path.dirname(dst_path), exist_ok=True)

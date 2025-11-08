@@ -32,7 +32,7 @@ from robovast.common.variation import get_scenario_parameter_template
 @click.group()
 def variation():
     """Manage scenario variations.
-    
+
     Generate and list scenario variations from configuration files.
     """
 
@@ -40,19 +40,19 @@ def variation():
 @variation.command(name='list')
 def list_cmd():
     """List scenario variants without generating files.
-    
+
     This command shows all variants that would be generated from the
     configuration file without actually creating the output files.
-    
-    Requires project initialization with 'vast init' first.
+
+    Requires project initialization with ``vast init`` first.
     """
     # Get project configuration
     project_config = get_project_config()
     config = project_config.config_path
-    
+
     def progress_callback(message):
         click.echo(message)
-    
+
     click.echo(f"Listing scenario variants from {config}...")
     click.echo("-" * 60)
 
@@ -86,19 +86,19 @@ def list_cmd():
 @click.argument('output-dir', type=click.Path())
 def generate(output_dir):
     """Generate scenario variants and output files.
-    
+
     Creates all variant configurations and associated files in the
     configured results directory.
-    
-    Requires project initialization with 'vast init' first.
+
+    Requires project initialization with ``vast init`` first.
     """
     # Get project configuration
     project_config = get_project_config()
     config = project_config.config_path
-    
+
     def progress_callback(message):
         click.echo(message)
-    
+
     click.echo(f"Generating scenario variants from {config}...")
     click.echo(f"Output directory: {output_dir}")
     click.echo("-" * 60)
@@ -125,21 +125,21 @@ def generate(output_dir):
 @variation.command()
 def types():
     """List available variation types.
-    
+
     Shows all registered variation type entry points that can be used
     in the variation section of .vast configuration files.
     """
     click.echo("Available variation types:")
     click.echo("-" * 60)
-    
+
     try:
         eps = entry_points()
         variation_eps = eps.select(group='robovast.variation_types')
-        
+
         if not variation_eps:
             click.echo("No variation types found.", err=True)
             sys.exit(1)
-        
+
         for ep in variation_eps:
             try:
                 # Load the class to verify it's accessible
@@ -154,7 +154,7 @@ def types():
             except Exception as e:
                 click.echo(f"  {ep.name} (Failed to load: {e})", err=True)
                 click.echo()
-                
+
     except Exception as e:
         click.echo(f"Error loading variation types: {e}", err=True)
         sys.exit(1)
@@ -163,51 +163,51 @@ def types():
 @variation.command()
 def points():
     """List possible variation points from the scenario file.
-    
+
     Shows all available variation points (scenario parameters) that can be
     varied in the scenario as defined in the scenario configuration file.
-    
-    Requires project initialization with 'vast init' first.
+
+    Requires project initialization with ``vast init`` first.
     """
     # Get project configuration
     project_config = get_project_config()
     config = project_config.config_path
-    
+
     click.echo("Loading scenario parameter template...")
     click.echo("-" * 60)
-    
+
     try:
         # Load the execution section to get the scenario file
         execution_config = load_config(config, subsection="execution")
         scenario_file = execution_config.get("scenario")
-        
+
         if not scenario_file:
             click.echo("Error: No 'scenario' field found in execution section", err=True)
             sys.exit(1)
-        
+
         # Make scenario path absolute relative to config file
         if not os.path.isabs(scenario_file):
             scenario_file = os.path.join(os.path.dirname(config), scenario_file)
-        
+
         if not os.path.exists(scenario_file):
             click.echo(f"Error: Scenario file does not exist: {scenario_file}", err=True)
             sys.exit(1)
-        
+
         # Get the scenario parameter template
         scenario_template = get_scenario_parameter_template(scenario_file)
-        
+
         if scenario_template:
             scenario_parameters = next(iter(scenario_template.values()))
         else:
             scenario_parameters = None
-        
+
         if not scenario_parameters:
             click.echo("No variation points found in scenario", err=True)
             sys.exit(1)
-        
+
         click.echo(f"Available variation points from: {scenario_file}")
         click.echo("-" * 60)
-        
+
         # Display the parameters in a readable format
         for param_name, param_value in scenario_parameters.items():
             click.echo(f"  {param_name}:")
@@ -216,7 +216,7 @@ def points():
                     click.echo(f"    {key}: {val}")
             else:
                 click.echo(f"    {param_value}")
-        
+
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         import traceback  # pylint: disable=import-outside-toplevel

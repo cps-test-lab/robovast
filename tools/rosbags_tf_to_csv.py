@@ -82,7 +82,7 @@ def process_rosbag(bag_path, frames, csv_filename):
     """Process a single rosbag and write pose records directly to CSV file."""
     if frames is None:
         raise ValueError("frames parameter must be provided")
-
+    print(f"Processing rosbag: {Path(bag_path).name}")
     # Initialize TF buffer for transform calculations
     tf_buffer = Buffer()
 

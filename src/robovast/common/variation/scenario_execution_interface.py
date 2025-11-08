@@ -61,7 +61,7 @@ def get_scenario_parameter_template(
                 '-v', f'{config_dir}:/config',  # Bind mount config directory
                 '-v', f'{output_dir}:/out',  # Bind mount output directory
                 docker_image,
-                'ros2', 'run', 
+                'ros2', 'run',
                 'scenario_execution', 'scenario_execution',
                 '--scenario-parameter-file', '/out/template.yaml',
                 '--create-scenario-parameter-file-template',

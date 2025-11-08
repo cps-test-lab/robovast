@@ -54,7 +54,7 @@ class FileCache:
         os.makedirs(cache_dir, exist_ok=True)
         return os.path.join(cache_dir, f"{file_name}_md5")
 
-    def get_cached_file(self, input_files: list, file_name: str, binary: bool = False, content=True, strings_for_hash=None, hash_only: bool=False) -> Optional[str]: # pylint: disable=too-many-return-statements
+    def get_cached_file(self, input_files: list, file_name: str, binary: bool = False, content=True, strings_for_hash=None, hash_only: bool = False) -> Optional[str]:  # pylint: disable=too-many-return-statements
         """
         Retrieves a cached file if it exists and is valid based on input files and additional hash strings.
 
@@ -92,7 +92,7 @@ class FileCache:
         if not cache_file or not md5_file:
             print("CACHE MISS (invalid cache paths):", file_name)
             return None
-        
+
         if not os.path.exists(md5_file):
             print("CACHE MISS (md5 file missing):", file_name)
             return None

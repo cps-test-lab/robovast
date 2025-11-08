@@ -1,0 +1,44 @@
+<?xml version='1.0'?>
+<sdf version="1.4" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:arg name="diameter" default="1.0" />
+  <xacro:arg name="height" default="1.0" />
+  
+  <xacro:property name="diameter" value="$(arg diameter)"/>
+  <xacro:property name="radius" value="${diameter/2.0}"/>
+  <xacro:property name="height" value="$(arg height)"/>
+  <model name="cylinder_model">
+    <pose>0 0 ${height/2.0} 0 0 0</pose>
+    <static>true</static>
+    <link name="link">
+      <inertial>
+        <mass>1.0</mass>
+        <inertia> <!-- inertias for a cylinder -->
+          <!-- http://gazebosim.org/tutorials?tut=inertia&cat=build_robot -->
+          <ixx>${0.083 * (3*radius*radius + height*height)}</ixx>       <!-- for a cylinder: ixx = (1/12) * mass * (3*r^2 + h^2) -->
+          <ixy>0.0</ixy>         <!-- for a cylinder: ixy = 0 -->
+          <ixz>0.0</ixz>         <!-- for a cylinder: ixz = 0 -->
+          <iyy>${0.083 * (3*radius*radius + height*height)}</iyy>       <!-- for a cylinder: iyy = (1/12) * mass * (3*r^2 + h^2) -->
+          <iyz>0.0</iyz>         <!-- for a cylinder: iyz = 0 -->
+          <izz>${0.5 * radius*radius}</izz>       <!-- for a cylinder: izz = (1/2) * mass * r^2 -->
+        </inertia>
+      </inertial>
+      <collision name="collision">
+        <geometry>
+          <cylinder>
+            <radius>${radius}</radius>
+            <length>${height}</length>
+          </cylinder>
+        </geometry>
+      </collision>
+      <visual name="visual">
+        <geometry>
+          <cylinder>
+            <radius>${radius}</radius>
+            <length>${height}</length>
+          </cylinder>
+        </geometry>
+      </visual>
+    </link>
+  </model>
+</sdf>

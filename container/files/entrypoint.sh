@@ -22,10 +22,13 @@ source "/ws/install/setup.bash" --
 log "Starting X11 virtual display..."
 /startx11_virtual.sh
 
-# Run the actual command and capture output
-# Using unbuffered tee for real-time output
-exec > >(stdbuf -oL tee -a "${LOG_FILE}")
-exec 2>&1
+# Only redirect output to log file if not running an interactive shell
+if [ "$#" -eq 0 ] || [[ "$@" != *"bash"* && "$@" != *"sh"* ]]; then
+    # Run the actual command and capture output
+    # Using unbuffered tee for real-time output
+    exec > >(stdbuf -oL tee -a "${LOG_FILE}")
+    exec 2>&1
+fi
 
 log "Entrypoint script initialized"
 
@@ -35,8 +38,10 @@ echo "RUN_NUM: $RUN_NUM" >> ${OUTPUT_DIR}/run.yaml
 echo "SCENARIO_ID: $SCENARIO_ID" >> ${OUTPUT_DIR}/run.yaml
 echo "SCENARIO_CONFIG: $SCENARIO_CONFIG" >> ${OUTPUT_DIR}/run.yaml
 
-log "Copying configuration files..."
-cp -r /config/* ${OUTPUT_DIR}/
+if [ -d /config ]; then
+  log "Copying configuration files..."
+  cp -r /config/* ${OUTPUT_DIR}/
+fi
 
 if [ "$#" -ne 0 ]; then
     log "Executing custom command: $@"

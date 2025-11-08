@@ -27,6 +27,7 @@ from .common import load_config, save_scenario_variants_file
 def progress_update(msg):
     print(msg)
 
+
 def execute_variation(base_dir, variants, variation_class, parameters, general_parameters, progress_update_callback, output_dir=None):
     variation = variation_class(base_dir, parameters, general_parameters, progress_update_callback, output_dir)
     try:
@@ -43,7 +44,8 @@ def execute_variation(base_dir, variants, variation_class, parameters, general_p
     # progress_update(f"Current variants {variants}")
     return variants
 
-def _read_variation_classes_from_file(variation_file): # pylint: disable=too-many-return-statements
+
+def _read_variation_classes_from_file(variation_file):  # pylint: disable=too-many-return-statements
     """
     Read variation class names from the variation file settings.
 
@@ -98,7 +100,7 @@ def _read_variation_classes_from_file(variation_file): # pylint: disable=too-man
                         if class_name in available_classes:
                             variation_classes.append((available_classes[class_name], item[class_name]))
                         else:
-                            print(f"Warning: Unknown variation class '{class_name}' found in variation file")
+                            raise ValueError(f"Unknown variation class '{class_name}' found in variation file")
 
             return variation_classes
 
@@ -127,15 +129,19 @@ def generate_scenario_variations(variation_file, progress_update_callback, varia
 
     general_parameters = parameters.get('general', {})
     variants = []
-    for variation_class, parameters in variation_classes_and_parameters:
-        result = execute_variation(os.path.dirname(variation_file), variants, variation_class,
-                                   parameters, general_parameters, progress_update_callback, output_dir)
-        if result is None or len(result) == 0:
-            # If a variation step fails or produces no results, stop the pipeline
-            progress_update_callback(f"Variation pipeline stopped at {variation_class.__name__} - no variants to process")
-            variants = []
-            break
-        variants = result
+    if not variation_classes_and_parameters:
+        progress_update_callback("No variation classes found in variation file. Creating default variant...")
+        variants = [{'name': 'variant1', 'variant': {}, 'variant_files': []}]
+    else:
+        for variation_class, parameters in variation_classes_and_parameters:
+            result = execute_variation(os.path.dirname(variation_file), variants, variation_class,
+                                       parameters, general_parameters, progress_update_callback, output_dir)
+            if result is None or len(result) == 0:
+                # If a variation step fails or produces no results, stop the pipeline
+                progress_update_callback(f"Variation pipeline stopped at {variation_class.__name__} - no variants to process")
+                variants = []
+                break
+            variants = result
 
     if variants:
         save_scenario_variants_file(variants, os.path.join(output_dir, 'scenario.variants'))

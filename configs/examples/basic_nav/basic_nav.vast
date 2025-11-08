@@ -26,7 +26,10 @@ settings:
           x: 21.0
           y: -6.0
   execution:
-    kubernetes_manifest: kubernetes_tmpl.yaml
+    image: ghcr.io/cps-test-lab/robovast:latest
+    kubernetes:
+      resources:
+        cpu: 8
     scenario: scenario.osc
     runs: 10
   analysis:

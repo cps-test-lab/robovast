@@ -27,6 +27,7 @@ def get_bag_info(bag_path: str) -> dict:
         print(f"Bag metadata file does not exist: {rosbag2_metadata_path}")
     return bag_info
 
+
 def print_bag_topics(bag_path: str, bag_dir_name: str = "rosbag2"):
     """
     Retrieves the list of topics from a ROS2 bag file.
@@ -42,10 +43,10 @@ def print_bag_topics(bag_path: str, bag_dir_name: str = "rosbag2"):
         raise ValueError(f"Could not retrieve bag info for path: {bag_path}")
     if 'rosbag2_bagfile_information' not in bag_info and 'topics_with_message_count' not in bag_info['rosbag2_bagfile_information']:
         raise ValueError(f"Invalid bag info format for path: {bag_path}")
-    
+
     topics = bag_info['rosbag2_bagfile_information']['topics_with_message_count']
     print(f"# Topics in bag at {bag_path}:")
-    for topic in topics:        
+    for topic in topics:
         metadata = topic.get('topic_metadata', {})
         topic_name = metadata.get('name', 'unknown')
         topic_type = metadata.get('type', 'unknown')
@@ -65,13 +66,13 @@ def get_behavior_info(behavior_name: str, behavior_dataframe: pd.DataFrame):
         pd.DataFrame: DataFrame with columns: behavior_name, id, start_time, end_time, duration
     """
     behavior_df = behavior_dataframe[behavior_dataframe['behavior_name'] == behavior_name].copy()
-    
+
     if behavior_df.empty:
         cols = ['behavior_name', 'id', 'duration', 'test', 'variant']
         return pd.DataFrame(columns=cols)
-    
+
     results = []
-    
+
     # Group by behavior_id, test, and variant to handle multiple instances and variants
     group_cols = ['behavior_id', 'test', 'variant']
 
@@ -112,20 +113,21 @@ def get_behavior_info(behavior_name: str, behavior_dataframe: pd.DataFrame):
         }
 
         results.append(record)
-    
+
     return pd.DataFrame(results)
+
 
 def calculate_speeds_from_poses(df_groundtruth):
     # Calculate linear and angular speeds from ground truth data
     group_cols = ['test', 'variant']
     min_dt = 1e-6
-    
+
     result_dfs = []
-    
+
     for _, group in df_groundtruth.groupby(group_cols, observed=False):
         df_gt_speeds = group[['test', 'variant', 'position.x', 'position.y',
                               'orientation.yaw', 'timestamp']].copy()
-        
+
         # Calculate time differences (dt)
         dt = np.diff(df_gt_speeds['timestamp'].values)
 
@@ -156,7 +158,7 @@ def calculate_speeds_from_poses(df_groundtruth):
         # Remove the last row with NaN values and rows with invalid dt
         df_gt_speeds = df_gt_speeds[:-1].copy()
         df_gt_speeds = df_gt_speeds[df_gt_speeds['dt'] > min_dt].copy()
-        
+
         result_dfs.append(df_gt_speeds)
-    
+
     return pd.concat(result_dfs, ignore_index=True)

@@ -18,7 +18,6 @@
 import copy
 import datetime
 import os
-import subprocess
 import sys
 import tempfile
 import time
@@ -29,36 +28,59 @@ from kubernetes import client, config
 from robovast.common import (get_execution_env_variables,
                              get_execution_variants, load_config,
                              prepare_run_configs)
+from robovast.common.kubernetes import (check_pod_running,
+                                        copy_config_to_cluster)
+
+from .manifests import JOB_TEMPLATE
 
 
 class JobRunner:
-    def __init__(self, variation_config, single_variant=None):
+    def __init__(self, variation_config, single_variant=None, num_runs=None, cluster_config=None):
         self.single_variant = single_variant
-        self.transfer_pvc_name = "transfer-pvc"
-        self.transfer_pod_name = "nfs-server"
-        
+        self.cluster_config = cluster_config
+        if not self.cluster_config:
+            raise ValueError("Cluster config must be provided to JobRunner")
+
         # Generate unique run ID
         self.run_id = f"run-{datetime.datetime.now().strftime('%Y-%m-%d-%H%M%S')}"
 
         parameters = load_config(variation_config, subsection="execution")
 
-        self.num_runs = 1
-        if "runs" in parameters:
+        # Use provided num_runs if specified, otherwise use config value or default to 1
+        if num_runs is not None:
+            self.num_runs = num_runs
+            print(f"### Overriding config: Running {self.num_runs} runs")
+        elif "runs" in parameters:
             self.num_runs = parameters["runs"]
-        self.manifest_file_path = os.path.join(os.path.dirname(variation_config), parameters["kubernetes_manifest"])
+        else:
+            self.num_runs = 1
 
-        self.scenarios = get_execution_variants(variation_config)
+        self.manifest = self.get_job_manifest(parameters["image"],
+                                              parameters["kubernetes"]["resources"],
+                                              parameters.get("env", []))
+
+        self.scenarios, self.variant_output_file_dir = get_execution_variants(variation_config)
+
+        # Filter scenarios if single_variant is specified
+        if self.single_variant:
+            if self.single_variant not in self.scenarios:
+                print(f"### ERROR: Variant '{self.single_variant}' not found in config.")
+                print("### Available variants:")
+                for v in self.scenarios:
+                    print(f"###   - {v}")
+                sys.exit(1)
+            print(f"### Running single variant: {self.single_variant}")
+            self.scenarios = {self.single_variant: self.scenarios[self.single_variant]}
 
         config.load_kube_config()
         self.k8s_client = client.CoreV1Api()
         self.k8s_batch_client = client.BatchV1Api()
         self.k8s_api_client = client.ApiClient()
 
-        # Check if transfer-pvc exists
-        # self.check_transfer_pvc_exists()
-
         # Check if transfer-pod exists
-        self.check_transfer_pod_exists()
+        if not check_pod_running(self.k8s_client, "robovast"):
+            print(f"### ERROR: Transfer pod 'robovast' is not available!")
+            sys.exit(1)
 
         # Initialize statistics tracking
         self.run_start_time = None
@@ -76,39 +98,63 @@ class JobRunner:
             elem = elem.replace(tmpl, str(idx))
         return elem
 
-    def check_transfer_pvc_exists(self):
-        """Check if transfer-pvc exists, exit if not found"""
-        try:
-            self.k8s_client.read_namespaced_persistent_volume_claim(
-                name=self.transfer_pvc_name,
-                namespace="default"
-            )
-            print(f"### Found existing transfer PVC: {self.transfer_pvc_name}")
-        except client.exceptions.ApiException as e:
-            if e.status == 404:
-                print(f"### ERROR: Required PVC '{self.transfer_pvc_name}' does not exist!")
-                sys.exit(1)
-            else:
-                raise
+    def create_job_manifest_for_scenario(self, scenario_key: str, run_number: int) -> dict:
+        """Create a complete job manifest for a specific scenario and run number.
 
-    def check_transfer_pod_exists(self):
-        """Check if transfer-pod exists, exit if not found"""
-        try:
-            pod = self.k8s_client.read_namespaced_pod(
-                name=self.transfer_pod_name,
-                namespace="default"
-            )
-            # Check if pod is running
-            if pod.status.phase not in ["Running", "Pending"]:
-                print(f"### ERROR: Transfer pod '{self.transfer_pod_name}' exists but is not running (status: {pod.status.phase})!")
-                sys.exit(1)
-            print(f"### Found existing transfer pod: {self.transfer_pod_name}")
-        except client.exceptions.ApiException as e:
-            if e.status == 404:
-                print(f"### ERROR: Required pod '{self.transfer_pod_name}' does not exist!")
-                sys.exit(1)
-            else:
-                raise
+        Args:
+            scenario_key: The scenario identifier
+            run_number: The run number for this scenario
+
+        Returns:
+            A complete Kubernetes job manifest dictionary
+        """
+        # Create a deep copy of the base manifest
+        job_manifest = copy.deepcopy(self.manifest)
+
+        # Replace template variables
+        self.replace_template(job_manifest, "$ITEM",
+                              f"{scenario_key.replace('/', '-').replace('_', '-')}-{run_number}")
+        self.replace_template(job_manifest, "$RUN_ID", self.run_id)
+        self.replace_template(job_manifest, "$SCENARIO_CONFIG", scenario_key)
+        self.replace_template(job_manifest, "$RUN_NUM", str(run_number))
+        self.replace_template(job_manifest, "$SCENARIO_ID",
+                              f"{scenario_key}-{run_number}")
+
+        # Add environment variables and volume mounts to the container
+        containers = job_manifest['spec']['template']['spec']['containers']
+        if containers:
+            # Add environment variables
+            if 'env' not in containers[0]:
+                containers[0]['env'] = []
+
+            env_vars = get_execution_env_variables(run_number, scenario_key)
+            for name, val in env_vars.items():
+                containers[0]['env'].append({
+                    'name': str(name),
+                    'value': "" if val is None else str(val)
+                })
+
+            # Add volume mounts
+            if 'volumeMounts' not in containers[0]:
+                containers[0]['volumeMounts'] = []
+
+            volume_mounts = [
+                {
+                    'name': 'data-storage',
+                    'mountPath': '/config',
+                    'subPath': f'config/{self.run_id}/{scenario_key}',
+                    'readOnly': False
+                },
+                {
+                    'name': 'data-storage',
+                    'mountPath': '/out',
+                    'subPath': f'out/{self.run_id}/{scenario_key}/{run_number}',
+                    'readOnly': False
+                }
+            ]
+            containers[0]['volumeMounts'].extend(volume_mounts)
+
+        return job_manifest
 
     def get_remaining_jobs(self, job_names):
         running_jobs = []
@@ -129,23 +175,54 @@ class JobRunner:
             try:
                 job_status = self.k8s_batch_client.read_namespaced_job_status(name=job_name, namespace="default")
 
-                start_time = job_status.status.start_time
                 completion_time = job_status.status.completion_time
+                succeeded = job_status.status.succeeded or 0
+                failed = job_status.status.failed or 0
+
+                # Get the actual pod start time (when it started running, not pending)
+                pod_start_time = None
+                try:
+                    # Get pods associated with this job
+                    pods = self.k8s_client.list_namespaced_pod(
+                        namespace="default",
+                        label_selector=f"job-name={job_name}"
+                    )
+
+                    # Find the earliest pod start time (when container actually started)
+                    for pod in pods.items:
+                        if pod.status.start_time:
+                            # Use container start time if available, otherwise use pod start time
+                            if pod.status.container_statuses:
+                                for container_status in pod.status.container_statuses:
+                                    if container_status.state.running and container_status.state.running.started_at:
+                                        container_start = container_status.state.running.started_at
+                                        if pod_start_time is None or container_start < pod_start_time:
+                                            pod_start_time = container_start
+                                    elif container_status.state.terminated and container_status.state.terminated.started_at:
+                                        container_start = container_status.state.terminated.started_at
+                                        if pod_start_time is None or container_start < pod_start_time:
+                                            pod_start_time = container_start
+                            # Fallback to pod start time if no container info available
+                            if pod_start_time is None:
+                                pod_start_time = pod.status.start_time
+                except Exception as e:
+                    print(f"### Warning: Could not get pod start time for job {job_name}: {e}")
 
                 # Only collect stats for jobs that have both start and completion times
-                if start_time and completion_time:
-                    duration = (completion_time - start_time).total_seconds()
-                    succeeded = job_status.status.succeeded or 0
-                    failed = job_status.status.failed or 0
+                if pod_start_time and completion_time:
+                    duration = (completion_time - pod_start_time).total_seconds()
 
                     self.job_statistics[job_name] = {
-                        'start_time': start_time,
+                        'start_time': pod_start_time,
                         'completion_time': completion_time,
                         'duration_seconds': duration,
                         'succeeded': succeeded,
                         'failed': failed,
                         'status': 'completed' if succeeded > 0 else 'failed' if failed > 0 else 'unknown'
                     }
+                elif completion_time:
+                    # Job completed but we couldn't determine actual start time
+                    print(f"### Warning: Could not determine actual running start time for job {job_name}")
 
             except Exception as e:
                 print(f"### Warning: Could not collect statistics for job {job_name}: {e}")
@@ -253,13 +330,9 @@ class JobRunner:
 
     def run(self):
         # check if k8s element names have "$ITEM" template
-        with open(self.manifest_file_path, 'r') as f:
-            manifest_data = list(yaml.safe_load_all(f))
-            if len(manifest_data) > 1:
-                raise ValueError("Manifest file should contain only one YAML document")
-            manifest_data = manifest_data[0]
-            if '$SCENARIO_ID' not in manifest_data['metadata']['name']:
-                raise ValueError("Manifest element names need to contain '$SCENARIO_ID' template")
+        manifest_data = self.manifest
+        if '$SCENARIO_ID' not in manifest_data['metadata']['name']:
+            raise ValueError("Manifest element names need to contain '$SCENARIO_ID' template")
 
         # Cleaning up previous k8s elements
         # Get the job name prefix by replacing templates
@@ -286,65 +359,21 @@ class JobRunner:
 
         # Create all jobs for all runs before executing any
         all_jobs = []
-
+        create_start_time = time.time()
         print(f"### Creating {self.num_runs} runs with {len(self.scenarios)} scenarios each (ID: {self.run_id})...")
         for run_number in range(self.num_runs):
             print(f"### Creating jobs for run {run_number + 1}/{self.num_runs}")
 
-            for scenario_idx in range(len(self.scenarios)):
-                scenario_key = list(self.scenarios.keys())[scenario_idx]
-                with open(self.manifest_file_path, 'r') as f:
-                    manifest_data = yaml.safe_load_all(f)
-                    for elem in manifest_data:
-                        # Create a deep copy to avoid modifying the original
-                        elem_copy = copy.deepcopy(elem)
-
-                        self.replace_template(elem_copy, "$ITEM", f"{scenario_key.replace('/', '-').replace('_', '-')}-{run_number}")
-                        self.replace_template(elem_copy, "$RUN_ID", self.run_id)
-                        self.replace_template(elem_copy, "$SCENARIO_CONFIG", f"{scenario_key}")
-                        self.replace_template(elem_copy, "$RUN_NUM", f"{run_number}")
-                        self.replace_template(elem_copy, "$SCENARIO_ID", f"{scenario_key}-{run_number}")
-
-                        # Add environment variables to the container
-                        containers = elem_copy['spec']['template']['spec']['containers']
-                        if containers:
-                            if 'env' not in containers[0]:
-                                containers[0]['env'] = []
-                            
-                            # Add the required environment variables
-                            env_vars = get_execution_env_variables(run_number, scenario_key)
-                    
-                            for name, val in env_vars.items():
-                                containers[0]['env'].append({'name': str(name), 'value': "" if val is None else str(val)})
-                            
-                            # Add volume mounts to the container
-                            if 'volumeMounts' not in containers[0]:
-                                containers[0]['volumeMounts'] = []
-                            
-                            volume_mounts = [
-                                {
-                                    'name': 'transfer-storage',
-                                    'mountPath': '/config',
-                                    'subPath': f'config/{self.run_id}/{scenario_key}',
-                                    'readOnly': True
-                                },
-                                {
-                                    'name': 'transfer-storage',
-                                    'mountPath': '/out',
-                                    'subPath': f'out/{self.run_id}/{scenario_key}/{run_number}',
-                                    'readOnly': False
-                                }
-                            ]
-                            
-                            containers[0]['volumeMounts'].extend(volume_mounts)
-
-                        job_name = elem_copy['metadata']['name']
-                        all_jobs.append(job_name)
-                        self.k8s_batch_client.create_namespaced_job(namespace="default", body=elem_copy)
-                        print(f"### Created job {job_name} for run {run_number + 1}")
+            for scenario_key in self.scenarios:
+                job_manifest = self.create_job_manifest_for_scenario(scenario_key, run_number)
+                job_name = job_manifest['metadata']['name']
+                all_jobs.append(job_name)
+                self.k8s_batch_client.create_namespaced_job(namespace="default", body=job_manifest)
+                print(f"### Created job {job_name} for run {run_number + 1}")
 
         print(f"### All {len(all_jobs)} jobs created. Starting execution...")
-
+        create_end_time = time.time()
+        print(f"### {create_end_time - create_start_time:.2f} seconds to create all jobs")
         # Track run start time
         self.run_start_time = datetime.datetime.now(datetime.timezone.utc)
 
@@ -390,7 +419,6 @@ class JobRunner:
         except client.rest.ApiException as e:
             print(f"### Error deleting pods with label selector: {e}")
 
-    
     def upload_tasks_to_transfer_pod(self):
         """Upload all files to transfer PVC using kubectl cp to transfer pod"""
 
@@ -398,41 +426,26 @@ class JobRunner:
         with tempfile.TemporaryDirectory() as temp_dir:
             print(f"### Using temporary directory: {temp_dir}")
 
-            prepare_run_configs(self.run_id, self.scenarios, temp_dir)
+            prepare_run_configs(self.run_id, self.scenarios, self.variant_output_file_dir.name, temp_dir)
 
-            # Use kubectl cp to copy the entire config directory to the transfer pod
-            try:
-                print(f"### Copying config files to transfer pod using kubectl cp...")
+            copy_config_to_cluster(os.path.join(temp_dir, "config"), self.run_id)
 
-                # Copy the config directory to the transfer pod at /exports/config/
-                cmd = [
-                    "kubectl", "cp",
-                    os.path.join(temp_dir, "config"),
-                    f"default/{self.transfer_pod_name}:/exports/"
-                ]
-
-                subprocess.run(cmd, capture_output=True, text=True, check=True)
-                print(f"### Successfully copied config files to transfer pod")
-
-                # Verify the copy was successful by listing the directory
-                verify_cmd = [
-                    "kubectl", "exec", "-n", "default", self.transfer_pod_name,
-                    "--",
-                    "ls", "-la", f"/exports/config/{self.run_id}"
-                ]
-
-                verify_result = subprocess.run(verify_cmd, capture_output=True, text=True, check=False)
-                if verify_result.returncode == 0:
-                    print(f"### Verification: Config files successfully uploaded to /exports/config/{self.run_id}/")
-                    print(f"### Directory contents:\n{verify_result.stdout}")
-                else:
-                    print(f"### Warning: Could not verify config file upload: {verify_result.stderr}")
-
-            except subprocess.CalledProcessError as e:
-                print(f"### ERROR: Failed to copy config files to transfer pod: {e}")
-                print(f"### stdout: {e.stdout}")
-                print(f"### stderr: {e.stderr}")
-                sys.exit(1)
-            except Exception as e:
-                print(f"### ERROR: Unexpected error during config file copy: {e}")
-                sys.exit(1)
+    def get_job_manifest(self, image: str, kubernetes_resources: dict, env: list) -> dict:
+        yaml_str = JOB_TEMPLATE.format(image=image, cpu=kubernetes_resources["cpu"], volumes=self.cluster_config.get_job_volumes())
+        manifest = yaml.safe_load(yaml_str)
+        if "memory" in kubernetes_resources:
+            # Add memory resource if specified
+            manifest['spec']['template']['spec']['containers'][0]['resources'] = {
+                'limits': {
+                    'memory': kubernetes_resources["memory"]
+                },
+                'requests': {
+                    'memory': kubernetes_resources["memory"]
+                }
+            }
+        for env_var in env:
+            manifest['spec']['template']['spec']['containers'][0].setdefault('env', []).append({
+                'name': env_var["name"],
+                'value': env_var["value"]
+            })
+        return manifest
