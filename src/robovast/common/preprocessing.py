@@ -19,8 +19,8 @@ import os
 import subprocess
 from typing import List
 
-from .file_cache import FileCache
 from .common import load_config
+from .file_cache import FileCache
 
 
 def get_preprocessing_commands(config_path: str) -> List[str]:

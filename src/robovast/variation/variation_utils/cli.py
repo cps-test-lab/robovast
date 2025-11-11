@@ -47,7 +47,9 @@ def gui(debug):
     """
     from PySide6.QtWidgets import \
         QApplication  # pylint: disable=import-outside-toplevel
-    from robovast.variation.gui.variation_editor import VariationEditor  # pylint: disable=import-outside-toplevel
+
+    from robovast.variation.gui.variation_editor import \
+        VariationEditor  # pylint: disable=import-outside-toplevel
     project_config = get_project_config()
 
     app = QApplication(sys.argv)

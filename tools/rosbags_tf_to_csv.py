@@ -170,7 +170,7 @@ def process_rosbag(bag_path, frames, csv_filename):
         if len(frames) == 1:  # Only show TF frames if processing a single frame
             print(f"  Found TF frames: \n{"\n - ".join(found_tfs)}")
 
-    return total_records
+    return total_records, record_counts
 
 
 def main():
@@ -242,18 +242,31 @@ def main():
 
     # Calculate summary statistics
     success = True
+    # Aggregate per-frame counts across all bags
+    total_frame_counts = {frame: 0 for frame in args.frame}
 
-    for record_count in results:
+    for record_count, frame_counts in results:
         total_records += record_count
         if record_count > 0:
             processed_bags += 1
         else:
             success = False
 
+        # Aggregate frame counts
+        for frame, count in frame_counts.items():
+            total_frame_counts[frame] += count
+
     elapsed = time.time() - start
     print(f"\nSummary:")
     print(f"Processed {processed_bags}/{len(rosbag_paths)} rosbags successfully")
     print(f"Total records: {total_records}")
+
+    # Check if any requested frame has no records
+    empty_frames = [frame for frame, count in total_frame_counts.items() if count == 0]
+    if empty_frames:
+        print(f"\n✗ Error: No records found for requested frame(s): {', '.join(empty_frames)}")
+        success = False
+
     print(f"Total time: {elapsed:.2f} seconds")
     if elapsed > 0:
         print(f"Average processing rate: {total_records/elapsed:.0f} records/second")
