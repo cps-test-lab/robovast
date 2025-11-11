@@ -1,0 +1,7 @@
+free_thresh: 0.196
+image: hallways.pgm
+laser_height: 0.7
+negate: 0
+occupied_thresh: 0.65
+origin: [-1.75, -8.75, 0]
+resolution: 0.05

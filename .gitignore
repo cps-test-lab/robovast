@@ -6,5 +6,5 @@ venv
 .venv
 .vscode/
 **/.cache
-.robovast_project
+**/.robovast_*
 results

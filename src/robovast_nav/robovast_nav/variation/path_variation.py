@@ -15,21 +15,34 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import math
-import os
+import pickle
+from typing import Optional
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict
 
 from robovast.common import FileCache
-from robovast.common.variation import Variation
+from robovast.common.variation import VariationGuiRenderer
 
+from ..data_model import Orientation, Pose, Position
+from ..gui.navigation_gui import NavigationGui
 from ..path_generator import PathGenerator
 from ..waypoint_generator import WaypointGenerator
+from .nav_base_variation import NavVariation
+
+
+class PoseConfig(BaseModel):
+    """Represents a 2D pose with x, y, and yaw."""
+    x: float
+    y: float
+    yaw: float
 
 
 class PathVariationConfig(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    name: list[str]
+    start_pose: str | PoseConfig
+    goal_pose: str | dict  # Can be a reference like "@goal_pose" or a dict with x, y, yaw
+    map_file: Optional[str] = None
     path_length: float
     num_paths: int
     path_length_tolerance: float = 0.5
@@ -37,47 +50,46 @@ class PathVariationConfig(BaseModel):
     seed: int
     robot_diameter: float
 
-    @field_validator('name')
-    @classmethod
-    def validate_name_list(cls, v):
-        if not v or len(v) != 2:
-            raise ValueError('name must contain exactly two elements, 1. for start_pose, 2. for goal_poses')
-        return v
+
+class PathVariationGuiRenderer(VariationGuiRenderer):
+
+    def update_gui(self, variant, path):
+        path = variant.get('_path', None)
+        if path:
+            plain_path = [(p.x, p.y) for p in path]
+            self.gui_object.draw_path(plain_path,
+                                      color='red', linewidth=2.0,
+                                      alpha=0.8, label='Path',
+                                      show_endpoints=True)
 
 
-class PathVariation(Variation):
+class PathVariation(NavVariation):
     """Create random route variations."""
 
     CONFIG_CLASS = PathVariationConfig
+    GUI_CLASS = NavigationGui
+    GUI_RENDERER_CLASS = PathVariationGuiRenderer
 
     def variation(self, in_variants):
         self.progress_update("Running Path Variation...")
-
-        # tasks = []
-        # for variant in in_variants:
-        #     for path_index in range(self.parameters.num_paths):
-        #         tasks.append((variant, path_index, self.parameters.seed))
         results = []
 
-        # for task in tasks:
-        #     result = self.generate_path_for_variant(self.output_dir, task[0], task[1], task[2])
-        #     if not result:
-        #         return []
-        #     results.append(result)
-
-        start_pose_parameter_name = self.parameters.name[0]
-        goal_poses_parameter_name = self.parameters.name[1]
         for variant in in_variants:
-
             # calculate all start/goal poses for variant
             for path_index in range(self.parameters.num_paths):
-                start_pose, goal_poses = self.generate_path_for_variant(
-                    self.output_dir, variant, path_index, self.parameters.seed
+                current_seed = self.parameters.seed + path_index
+                print(f"Generating path for variant {variant['name']}, path index {path_index}, seed {current_seed}")
+                start_pose, goal_pose, path, map_file = self.generate_path_for_variant(
+                    self.base_path, variant, path_index, current_seed
                 )
 
                 new_variant = self.update_variant(variant, {
-                    start_pose_parameter_name: start_pose,
-                    goal_poses_parameter_name: goal_poses})
+                    'start_pose': start_pose,
+                    'goal_pose': goal_pose},
+                    other_values={
+                        '_path': path,
+                        '_map_file': map_file
+                })
                 results.append(new_variant)
 
         return results
@@ -85,90 +97,140 @@ class PathVariation(Variation):
     def generate_path_for_variant(self, cache_path, variant, path_index, seed):
         """Generate a single path for a variant."""
 
-        if "floorplan_variant_path" not in variant:
-            raise ValueError("Expected variant to contain 'floorplan_variant_path' field")
+        try:
+            map_file_path = self.get_map_file(self.parameters.map_file, variant)
+        except Exception as e:  # pylint: disable=broad-except
+            raise ValueError(f"Error determining map file for variant {variant['name']}: {e}") from e
 
-        map_file_basename = os.path.basename(variant["floorplan_variant_path"]).rsplit("_", 1)[0]
-        rel_map_path = os.path.join('maps', map_file_basename + '.yaml')
-        map_file_path = os.path.join(self.output_dir, variant["floorplan_variant_path"], rel_map_path)
-        if not os.path.exists(map_file_path):
-            raise ValueError(f"File {map_file_path} does not exist.")
+        path_length_tolerance = self.parameters.path_length_tolerance
+        if not self.parameters.path_length_tolerance:
+            path_length_tolerance = 0.5
+        self.progress_update(f"Using map file: {map_file_path}")
+        self.progress_update(f"Using path_length: {self.parameters.path_length}±{path_length_tolerance}")
+        self.progress_update(f"Using robot_diameter: {self.parameters.robot_diameter}")
 
-        file_cache = FileCache()
-        cache_file_name = f"path_generation_{variant['name']}_{path_index}_{seed}"
-        file_cache.set_current_data_directory(cache_path)
-        strings_for_hash = [str(path_index), str(seed)]
-        cached_attempt = file_cache.get_cached_file([map_file_path], cache_file_name, strings_for_hash=strings_for_hash)
-        if cached_attempt:
-            attempt = int(cached_attempt)
-            self.progress_update(f"Using cached attempt {attempt}")
+        waypoint_generator = WaypointGenerator(map_file_path)
+
+        if self.parameters.start_pose:
+            if isinstance(self.parameters.start_pose, str):
+                # Reference to a variant parameter
+                pose_ref = self.parameters.start_pose.lstrip('@')
+                self.check_scenario_parameter_reference(pose_ref)
+                start_pose = None
+            else:
+                # Directly specified pose
+                start_pose = Pose(
+                    position=Position(
+                        x=self.parameters.start_pose.x,
+                        y=self.parameters.start_pose.y),
+                    orientation=Orientation(
+                        yaw=self.parameters.start_pose.yaw
+                    )
+                )
+                if not waypoint_generator.is_valid_position(start_pose.position.x, start_pose.position.y, self.parameters.robot_diameter/2.):
+                    raise ValueError(f"Start pose {start_pose} is not valid on the map.")
+                self.progress_update(f"Using provided start pose: {start_pose}")
         else:
-            attempt = 0
+            start_pose = None
+
+        file_cache = FileCache(cache_path, "robovast_path_generation_", [self.parameters, seed])
+        cache = file_cache.get_cached_file([map_file_path], binary=True)
+        if cache:
+            start_pose, goal_pose, path = pickle.loads(cache)
+            self.progress_update(f"Using cached start/goal poses {start_pose} -> {goal_pose}")
+            return start_pose, goal_pose, path, map_file_path
 
         path_generator = PathGenerator(map_file_path)
 
+        attempt = 0
         max_attempts = 1000  # Maximum attempts to find a valid path
         path_found = False
 
+        np.random.seed(seed)
         while attempt < max_attempts and not path_found:
-            current_seed = attempt + (max_attempts * path_index) + seed
 
-            np.random.seed(current_seed)
-            waypoint_generator = WaypointGenerator(map_file_path)
             self.progress_update(
                 f"Generating {variant['name']}, {path_index} - Attempt {attempt}/{max_attempts}"
             )
-            waypoints = waypoint_generator.generate_waypoints(
-                num_waypoints=2,  # Generate 2 waypoints beyond start
+
+            if not start_pose:
+                self.progress_update("  Generating start pose")
+                start_poses_list = waypoint_generator.generate_waypoints(num_waypoints=1,
+                                                                         robot_diameter=self.parameters.robot_diameter)
+                start_pose = start_poses_list[0]
+
+            waypoints = [start_pose]
+            goal_poses_list = waypoint_generator.generate_waypoints(
+                num_waypoints=1,
                 robot_diameter=self.parameters.robot_diameter,
                 min_distance=self.parameters.min_distance,  # Minimum distance between waypoints
+                max_distance=self.parameters.path_length,
+                initial_start_pose=start_pose
             )
-            start_pose = waypoints[0] if waypoints else None
-            goal_poses = waypoints[1:] if len(waypoints) > 1 else []
+            if not goal_poses_list:
+                self.progress_update("   no valid goal poses found")
+                attempt += 1
+                continue
 
-            if start_pose and goal_poses:
-                # Generate path considering any existing static objects
-                path = path_generator.generate_path(waypoints, [])
+            # Take the last goal pose as the final goal
+            goal_pose = goal_poses_list[-1]
+            waypoints.extend(goal_poses_list)
 
-                if not path:
-                    self.progress_update(f"   no path found")
-                    attempt += 1
-                    continue
+            self.progress_update(f"  Generated waypoints: {waypoints}")
+            # Generate path considering any existing static objects
+            path = path_generator.generate_path(waypoints, [])
 
-                # Enforce path length tolerance
-                path_length = self.parameters.path_length
-                path_length_tolerance = self.parameters.path_length_tolerance
-                if path_length is None:
-                    raise ValueError("'path_length' must be specified in parameters")
-                if path_length_tolerance is None:
-                    raise ValueError("'path_length_tolerance' must be specified in parameters")
+            if not path:
+                self.progress_update(f"   no path found")
+                attempt += 1
+                continue
 
-                length = sum(
-                    math.hypot(
-                        path[i].x - path[i - 1].x, path[i].y - path[i - 1].y
-                    )
-                    for i in range(1, len(path))
+            # Enforce path length tolerance
+            length = sum(
+                math.hypot(
+                    path[i].x - path[i - 1].x, path[i].y - path[i - 1].y
                 )
-                if abs(length - path_length) > path_length_tolerance:
-                    self.progress_update(f"   path length {length:.2f} outside tolerance. {
-                                         abs(length - path_length)} > {path_length_tolerance}")
-                    attempt += 1
-                    continue
+                for i in range(1, len(path))
+            )
+            if abs(length - self.parameters.path_length) > path_length_tolerance:
+                self.progress_update(f"   path length {length:.2f} outside tolerance. {
+                    abs(length - self.parameters.path_length)} > {path_length_tolerance}")
+                attempt += 1
+                continue
+            else:
+                self.progress_update(f"   path length {length:.2f} within tolerance.")
 
-                # Path found and valid
-                path_found = True
-            attempt += 1
+            # Path found and valid
+            path_found = True
+            break
 
         if not path_found:
-            self.progress_update(
-                f"Failed to generate {variant['name']}, {path_index} after {max_attempts} attempts"
-            )
-            return None
+            raise ValueError("Failed to generate valid path within maximum attempts.")
 
-        self.progress_update(f"  Found path after {attempt} attempts: {start_pose} -> {goal_poses}")
+        # Convert numpy types to native Python types
+        start_pose = Pose(
+            position=Position(
+                x=float(start_pose.position.x),
+                y=float(start_pose.position.y)
+            ),
+            orientation=Orientation(
+                yaw=float(start_pose.orientation.yaw)
+            )
+        )
+        goal_pose = Pose(
+            position=Position(
+                x=float(goal_pose.position.x),
+                y=float(goal_pose.position.y)
+            ),
+            orientation=Orientation(
+                yaw=float(goal_pose.orientation.yaw)
+            )
+        )
+
+        self.progress_update(f"  Found path after {attempt} attempts: {start_pose} -> {goal_pose}")
+        file_content = pickle.dumps((start_pose, goal_pose, path))
         file_cache.save_file_to_cache(
             input_files=[map_file_path],
-            file_name=cache_file_name,
-            file_content=str(attempt),
-            strings_for_hash=strings_for_hash)
-        return start_pose, goal_poses
+            file_content=file_content,
+            binary=True)
+        return start_pose, goal_pose, path, map_file_path

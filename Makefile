@@ -42,6 +42,10 @@ venv/.robovast_installed:
 	@echo "Setting up RoboVAST environment..."
 	. venv/bin/activate && pip install -e .[docs] && pip install -e src/robovast_nav
 	@touch venv/.robovast_installed
+	@echo ""
+	@echo "✅ Virtual environment created successfully!"
+	@echo "To activate the virtual environment, run:"
+	@echo "  source venv/bin/activate"
 
 doc: venv/.robovast_installed
 	. venv/bin/activate && GITHUB_REF_NAME=local GITHUB_REPOSITORY=cps-test-lab/robovast python3 -m sphinx -b html -W docs build/html

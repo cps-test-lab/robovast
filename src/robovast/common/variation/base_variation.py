@@ -16,6 +16,7 @@
 
 import copy
 
+from ..common import get_scenario_parameters
 from ..config import get_validated_config
 
 # Module-level counter for generating short, unique variant indexes.
@@ -49,8 +50,10 @@ def get_variant_index():
 class Variation():
 
     CONFIG_CLASS = None  # Pydantic model class for config validation
+    GUI_CLASS = None  # Could be set to a GUI class for editing
+    GUI_RENDERER_CLASS = None  # Could be set to a GUI renderer class
 
-    def __init__(self, base_path, parameters, general_parameters, progress_update_callback, output_dir):
+    def __init__(self, base_path, parameters, general_parameters, progress_update_callback, scenario_file, output_dir):
         # Reset shared variant index for each new Variation instance so
         # generated short names start from 1 for this variation run.
         reset_variant_index()
@@ -61,7 +64,10 @@ class Variation():
             self.parameters = parameters
         self.general_parameters = general_parameters
         self.progress_update_callback = progress_update_callback
+        self.scenario_file = scenario_file
         self.output_dir = output_dir
+        # Track the next index for each parent variant name
+        self._variant_child_indices = {}
 
     def variation(self, in_variants):
         # vary in_variants and return result
@@ -69,10 +75,6 @@ class Variation():
 
     def progress_update(self, msg):
         self.progress_update_callback(f"{self.__class__.__name__}: {msg}")
-
-    def get_variant_name(self):
-        """Generate variant name"""
-        return f"variant{get_variant_index()}"
 
     def update_variant(self, variant, scenario_values, variant_files: list = None, other_values=None):
         new_variant = copy.deepcopy(variant)
@@ -91,11 +93,30 @@ class Variation():
                 new_variant[key] = val
 
         # Ensure variant_files list exists
-        if 'variant_files' not in new_variant:
-            new_variant['variant_files'] = []
+        if '_variant_files' not in new_variant:
+            new_variant['_variant_files'] = []
 
-        new_variant['variant_files'].extend(variant_files or [])
+        new_variant['_variant_files'].extend(variant_files or [])
 
-        # Update variant name
-        new_variant['name'] = self.get_variant_name()
+        # Update variant name with automatic per-parent indexing
+        parent_name = variant['name']
+        # Automatically track index per parent variant
+        if parent_name not in self._variant_child_indices:
+            self._variant_child_indices[parent_name] = 1
+        local_index = self._variant_child_indices[parent_name]
+        self._variant_child_indices[parent_name] += 1
+
+        new_variant['name'] = f"{parent_name}-{local_index}"
         return new_variant
+
+    def check_scenario_parameter_reference(self, reference_name):
+        """Check if a scenario parameter reference exists."""
+        parameters = get_scenario_parameters(self.scenario_file)
+        if not isinstance(parameters, dict) or not len(parameters) == 1:
+            raise ValueError("Unexpected scenario parameters format.")
+
+        parameters = next(iter(parameters.values()))
+        for param in parameters:
+            if param.get('name') == reference_name:
+                return
+        raise ValueError(f"Scenario parameter reference '{reference_name}' not found in scenario parameters.")

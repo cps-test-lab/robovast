@@ -136,7 +136,7 @@ def get_cluster_config(config_name):
     return plugins[config_name]()
 
 
-def setup_server(config_name=None, list_configs=False, **cluster_kwargs):
+def setup_server(config_name=None, list_configs=False, force=False, **cluster_kwargs):
     """Set up transfer mechanism for cluster execution.
 
     Args:
@@ -168,7 +168,7 @@ def setup_server(config_name=None, list_configs=False, **cluster_kwargs):
 
     # Check if cluster is already set up
     existing_config = load_cluster_config_name()
-    if existing_config:
+    if existing_config and not force:
         raise RuntimeError(
             f"Cluster is already set up with '{existing_config}' config.\n"
             f"Run 'vast execution cluster cleanup' first to clean up the existing setup."

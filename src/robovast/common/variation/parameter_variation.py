@@ -15,7 +15,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 
-import copy
 import random
 
 import numpy as np
@@ -97,19 +96,9 @@ class ParameterVariationDistributionUniform(Variation):
 
         # Apply each random value to all input variants (creating all combinations)
         results = []
-        for value in random_values:
-            for variant in in_variants:
-                new_variant = copy.deepcopy(variant)
-
-                # Ensure variant dict exists
-                if 'variant' not in new_variant:
-                    new_variant['variant'] = {}
-
-                # Add parameter to variant
-                new_variant['variant'][param_name] = value
-                new_variant['name'] = self.get_variant_name()
-
-                results.append(new_variant)
+        for variant in in_variants:
+            for value in random_values:
+                results.append(self.update_variant(variant, {param_name: value}))
 
         return results
 
@@ -200,19 +189,9 @@ class ParameterVariationDistributionGaussian(Variation):
 
         # Apply each random value to all input variants (creating all combinations)
         results = []
-        for value in random_values:
-            for variant in in_variants:
-                new_variant = copy.deepcopy(variant)
-
-                # Ensure variant dict exists
-                if 'variant' not in new_variant:
-                    new_variant['variant'] = {}
-
-                # Add parameter to variant
-                new_variant['variant'][param_name] = value
-                new_variant['name'] = self.get_variant_name()
-
-                results.append(new_variant)
+        for variant in in_variants:
+            for value in random_values:
+                results.append(self.update_variant(variant, {param_name: value}))
 
         return results
 
@@ -255,8 +234,8 @@ class ParameterVariationList(Variation):
 
         # Apply each value to all input variants (creating all combinations)
         results = []
-        for value in values:
-            for variant in in_variants:
+        for variant in in_variants:
+            for value in values:
                 results.append(self.update_variant(variant, {param_name: value}))
 
         return results

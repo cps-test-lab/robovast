@@ -15,7 +15,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import tempfile
 from pathlib import Path
 
 from PySide6.QtCore import QProcess, QThread, Signal
@@ -51,9 +50,9 @@ class LocalExecutionWorker(QThread):
             self.process.readyReadStandardError.connect(self.handle_stderr)
             self.process.finished.connect(self.handle_finished)
 
-            tmp_dir = tempfile.TemporaryDirectory(prefix="test_")
-
-            command = f"vast execution local run {self.variant_name} {tmp_dir.name}"
+            # Use new command interface with --variant option
+            # Output will automatically go to project results_dir
+            command = f"vast execution local run --variant {self.variant_name}"
 
             # Create a script that sets up a new process group and runs the command
             # This ensures all child processes can be killed together

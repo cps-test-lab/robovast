@@ -1,0 +1,7 @@
+free_thresh: 0.196
+image: secorolab.pgm
+laser_height: 0.7
+negate: 0
+occupied_thresh: 0.65
+origin: [-7.199999999999999, -8.100000000000001, 0]
+resolution: 0.05

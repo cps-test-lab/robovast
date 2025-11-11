@@ -40,7 +40,7 @@ If no variation is defined, a single variant will be created that uses the scena
 
 .. code-block:: bash
 
-    vast execution local prepare-run variant1 ./test_run
+    vast execution local prepare-run --variant variant1 ./test_run
 
 Afterwards you can verify the scenario, the RoboVAST-configuration and the docker image.
 
@@ -65,7 +65,7 @@ Next, it is important to verify that the output (e.g. ROS bag) is stored correct
 
 .. code-block:: bash
 
-    vast execution local run variant1 ./test_out
+    vast execution local run --variant variant1 ./test_out
 
     # check that output is created in ./test_out/variant1
     ls -l ./test_out/variant1
@@ -87,7 +87,7 @@ A good procedure is to add variations one-by-one and analyze the result.
     vast variation list
 
     # 3. test local execution with one of the created variants
-    vast execution local run <variant-name> ./test_out
+    vast execution local run --variant <variant-name> ./test_out
 
 5. Execute in Cluster
 ^^^^^^^^^^^^^^^^^^^^^

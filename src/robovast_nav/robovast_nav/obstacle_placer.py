@@ -22,25 +22,17 @@ import math
 import random
 from typing import List
 
+import numpy as np
 from PySide6.QtCore import QObject, Signal
 
 from .data_model import Orientation, Pose, Position, StaticObject
+from .map_loader import load_map
 
 
 class ObstaclePlacer(QObject):
     """Class for placing obstacles near navigation paths."""
 
     status_update = Signal(str)
-
-    def __init__(self, seed=None):
-        """Initialize the obstacle placer.
-
-        Args:
-            seed: Random seed for reproducible results
-        """
-        super().__init__()
-        if seed is not None:
-            random.seed(seed)
 
     def place_obstacles(
         self,
@@ -132,6 +124,92 @@ class ObstaclePlacer(QObject):
                 )
 
                 obstacle_objects.append(obstacle)
+        return obstacle_objects
+
+    def place_obstacles_random(
+        self,
+        map_file,
+        amount: int,
+        model: str,
+        xacro_arguments: str = "",
+        robot_diameter: float = 0.354,
+        waypoints: List[Pose] = None,
+    ) -> List[StaticObject]:
+        """Place obstacles randomly on the map as StaticObject instances.
+
+        Args:
+            map_file: Path to the map YAML file
+            amount: Number of obstacles to place
+            model: Name of the obstacle model to use
+            xacro_arguments: Optional xacro arguments string for the model
+            robot_diameter: Diameter of the robot in meters (default: 0.354m for TurtleBot4)
+            waypoints: List of Pose objects to avoid placing obstacles near (e.g., start/goal poses)
+
+        Returns:
+            List of StaticObject instances for obstacles
+        """
+
+        # Load map using map_loader
+        map_obj = load_map(map_file)
+
+        # Find free space using the map's occupancy grid
+        # Invert occupancy_grid (True = occupied) to get free space (True = free)
+        free_space_mask = ~map_obj.occupancy_grid
+
+        # Get coordinates of free space (y, x format from numpy)
+        free_coords = np.argwhere(free_space_mask)
+
+        if len(free_coords) == 0:
+            return []
+
+        obstacle_objects: List[StaticObject] = []
+        waypoint_clearance = robot_diameter * 2.0  # 2x robot diameter for safety
+
+        if waypoints is None:
+            waypoint_positions: List[Position] = []
+        else:
+            waypoint_positions = [pose.position for pose in waypoints]
+
+        # Place obstacles with collision avoidance
+        max_attempts = amount * 1000  # Allow multiple attempts per obstacle
+        attempts = 0
+
+        while len(obstacle_objects) < amount and attempts < max_attempts:
+            self.status_update.emit(
+                f"Attempting to place obstacle: {len(obstacle_objects) + 1}/{amount}, "
+                f"try {attempts + 1}/{max_attempts}"
+            )
+            attempts += 1
+
+            # Select random free space coordinate
+            random_idx = np.random.randint(0, len(free_coords))
+            grid_y, grid_x = free_coords[random_idx]
+
+            # Convert grid coordinates to world coordinates using map_loader's conversion
+            world_x, world_y = map_obj.grid_to_world(grid_x, grid_y)
+            obstacle_pos = Position(x=world_x, y=world_y)
+
+            # Check if obstacle position is valid
+            if self._is_valid_obstacle_position(
+                obstacle_pos,
+                waypoint_positions,
+                waypoint_clearance,
+                [obj.spawn_pose.position for obj in obstacle_objects],
+                robot_diameter,
+            ):
+                # Generate random yaw angle (rotation) for the obstacle
+                yaw = np.random.uniform(-math.pi, math.pi)  # Random rotation from -180° to +180°
+                name = f"obstacle_{len(obstacle_objects)}"
+
+                obstacle = StaticObject(
+                    entity_name=name,
+                    model=model,
+                    spawn_pose=Pose(position=obstacle_pos, orientation=Orientation(yaw=yaw)),
+                    xacro_arguments=xacro_arguments,
+                )
+
+                obstacle_objects.append(obstacle)
+
         return obstacle_objects
 
     def _distance(self, p1: Position, p2: Position) -> float:

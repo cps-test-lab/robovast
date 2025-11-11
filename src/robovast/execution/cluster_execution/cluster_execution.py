@@ -25,24 +25,23 @@ import time
 import yaml
 from kubernetes import client, config
 
-from robovast.common import (get_execution_env_variables,
-                             get_execution_variants, load_config,
-                             prepare_run_configs)
+from robovast.common import (get_execution_env_variables, get_run_id,
+                             load_config, prepare_run_configs)
 from robovast.common.kubernetes import (check_pod_running,
                                         copy_config_to_cluster)
+from robovast.common.variant_generation import generate_scenario_variations
 
 from .manifests import JOB_TEMPLATE
 
 
 class JobRunner:
     def __init__(self, variation_config, single_variant=None, num_runs=None, cluster_config=None):
-        self.single_variant = single_variant
         self.cluster_config = cluster_config
         if not self.cluster_config:
             raise ValueError("Cluster config must be provided to JobRunner")
 
         # Generate unique run ID
-        self.run_id = f"run-{datetime.datetime.now().strftime('%Y-%m-%d-%H%M%S')}"
+        self.run_id = get_run_id()
 
         parameters = load_config(variation_config, subsection="execution")
 
@@ -59,18 +58,34 @@ class JobRunner:
                                               parameters["kubernetes"]["resources"],
                                               parameters.get("env", []))
 
-        self.scenarios, self.variant_output_file_dir = get_execution_variants(variation_config)
+        # Generate variants with filtered files
+        self.variant_output_file_dir = tempfile.TemporaryDirectory(prefix="robovast_execution_")
+        self.variants, _ = generate_scenario_variations(
+            variation_config,
+            print,
+            variation_classes=None,
+            output_dir=self.variant_output_file_dir.name,
+        )
+
+        if not self.variants:
+            raise ValueError("No scenario variants generated.")
 
         # Filter scenarios if single_variant is specified
-        if self.single_variant:
-            if self.single_variant not in self.scenarios:
-                print(f"### ERROR: Variant '{self.single_variant}' not found in config.")
-                print("### Available variants:")
-                for v in self.scenarios:
-                    print(f"###   - {v}")
+        if single_variant:
+            found_variant = None
+            for variant in self.variants:
+                if variant["name"] == single_variant:
+                    found_variant = variant
+                    break
+
+            if not found_variant:
+                print(f"ERROR: Variant '{single_variant}' not found in config.")
+                print("Available variants:")
+                for v in self.variants:
+                    print(f"   - {v["name"]}")
                 sys.exit(1)
-            print(f"### Running single variant: {self.single_variant}")
-            self.scenarios = {self.single_variant: self.scenarios[self.single_variant]}
+            print(f"Running single variant: {single_variant}")
+            self.variants = [found_variant]
 
         config.load_kube_config()
         self.k8s_client = client.CoreV1Api()
@@ -354,18 +369,19 @@ class JobRunner:
         self.cleanup_pods()
 
         # upload all config files to transfer PVC via transfer pod
-        print(f"### Uploading task config files for {len(self.scenarios)} scenarios to transfer PVC...")
+        print(f"### Uploading task config files for {len(self.variants)} scenarios to transfer PVC...")
         self.upload_tasks_to_transfer_pod()
 
         # Create all jobs for all runs before executing any
         all_jobs = []
         create_start_time = time.time()
-        print(f"### Creating {self.num_runs} runs with {len(self.scenarios)} scenarios each (ID: {self.run_id})...")
+        print(f"### Creating {self.num_runs} runs with {len(self.variants)} scenarios each (ID: {self.run_id})...")
         for run_number in range(self.num_runs):
             print(f"### Creating jobs for run {run_number + 1}/{self.num_runs}")
 
-            for scenario_key in self.scenarios:
-                job_manifest = self.create_job_manifest_for_scenario(scenario_key, run_number)
+            for variant in self.variants:
+                variant_name = variant.get("name")
+                job_manifest = self.create_job_manifest_for_scenario(variant_name, run_number)
                 job_name = job_manifest['metadata']['name']
                 all_jobs.append(job_name)
                 self.k8s_batch_client.create_namespaced_job(namespace="default", body=job_manifest)
@@ -426,7 +442,7 @@ class JobRunner:
         with tempfile.TemporaryDirectory() as temp_dir:
             print(f"### Using temporary directory: {temp_dir}")
 
-            prepare_run_configs(self.run_id, self.scenarios, self.variant_output_file_dir.name, temp_dir)
+            prepare_run_configs(self.run_id, self.variants, temp_dir)
 
             copy_config_to_cluster(os.path.join(temp_dir, "config"), self.run_id)
 

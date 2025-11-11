@@ -23,14 +23,13 @@ in Jupyter notebooks with support for drawing paths on top of the map.
 
 """
 
-import os
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
-import yaml
 from matplotlib import patches
-from PIL import Image
+
+from ..map_loader import Map, load_map
 
 
 class MapVisualizer:
@@ -42,8 +41,7 @@ class MapVisualizer:
 
     def __init__(self):
         """Initialize the MapVisualizer."""
-        self.map_data = None
-        self.map_info = None
+        self.map: Optional[Map] = None
         self.fig = None
         self.ax = None
 
@@ -58,38 +56,14 @@ class MapVisualizer:
             True if successful, False otherwise
         """
         try:
-            # Load YAML configuration
-            with open(yaml_path, 'r') as file:
-                self.map_info = yaml.safe_load(file)
-
-            # Get the directory of the YAML file
-            yaml_dir = os.path.dirname(yaml_path)
-
-            # Load the image file (relative to YAML file)
-            image_path = os.path.join(yaml_dir, self.map_info['image'])
-
-            if not os.path.exists(image_path):
-                print(f"Error: Image file not found: {image_path}")
-                return False
-
-            # Load the image
-            img = Image.open(image_path)
-
-            # Convert to grayscale numpy array
-            self.map_data = np.array(img)
-
-            # Handle different image formats
-            if len(self.map_data.shape) == 3:
-                # Convert RGB to grayscale
-                self.map_data = np.mean(self.map_data, axis=2)
+            # Load map using shared map_loader utility
+            self.map = load_map(yaml_path)
 
             # print(f"Map loaded successfully:")
-            # print(f"  Image: {self.map_info['image']}")
-            # print(f"  Resolution: {self.map_info['resolution']} m/pixel")
-            # print(f"  Origin: {self.map_info['origin']}")
-            # print(f"  Size: {self.map_data.shape[1]} x {self.map_data.shape[0]} pixels")
-            # print(f"  Free threshold: {self.map_info.get('free_thresh', 'N/A')}")
-            # print(f"  Occupied threshold: {self.map_info.get('occupied_thresh', 'N/A')}")
+            # print(f"  Image: {self.map.image_path}")
+            # print(f"  Resolution: {self.map.resolution} m/pixel")
+            # print(f"  Origin: {self.map.origin}")
+            # print(f"  Size: {self.map.width} x {self.map.height} pixels")
 
             return True
 
@@ -108,17 +82,11 @@ class MapVisualizer:
         Returns:
             Tuple of (world_x, world_y) coordinates
         """
-        if self.map_info is None:
+        if self.map is None:
             raise ValueError("No map loaded")
 
-        resolution = self.map_info['resolution']
-        origin_x, origin_y, _ = self.map_info['origin']
-
-        # Note: Image coordinates have Y axis flipped compared to world coordinates
-        world_x = origin_x + pixel_x * resolution
-        world_y = origin_y + (self.map_data.shape[0] - pixel_y) * resolution
-
-        return world_x, world_y
+        # Note: pixel coordinates are the same as grid coordinates
+        return self.map.grid_to_world(pixel_x, pixel_y)
 
     def world_to_pixel(self, world_x: float, world_y: float) -> Tuple[int, int]:
         """
@@ -131,17 +99,11 @@ class MapVisualizer:
         Returns:
             Tuple of (pixel_x, pixel_y) coordinates
         """
-        if self.map_info is None:
+        if self.map is None:
             raise ValueError("No map loaded")
 
-        resolution = self.map_info['resolution']
-        origin_x, origin_y, _ = self.map_info['origin']
-
-        # Note: Image coordinates have Y axis flipped compared to world coordinates
-        pixel_x = int((world_x - origin_x) / resolution)
-        pixel_y = int(self.map_data.shape[0] - (world_y - origin_y) / resolution)
-
-        return pixel_x, pixel_y
+        # Note: pixel coordinates are the same as grid coordinates
+        return self.map.world_to_grid(world_x, world_y)
 
     def create_figure(self, figsize: Tuple[int, int] = (12, 10), ax: plt.Axes = None) -> Tuple[plt.Figure, plt.Axes]:
         """
@@ -155,7 +117,7 @@ class MapVisualizer:
         Returns:
             Tuple of (figure, axes) objects
         """
-        if self.map_data is None:
+        if self.map is None:
             raise ValueError("No map data loaded")
 
         if ax is not None:
@@ -168,12 +130,14 @@ class MapVisualizer:
 
         # Display the map
         # Flip vertically to match ROS coordinate convention
-        map_display = np.flipud(self.map_data)
+        map_display = np.flipud(self.map.map_array)
 
         # Calculate extent in world coordinates
-        origin_x, origin_y, _ = self.map_info['origin']
-        resolution = self.map_info['resolution']
-        height, width = self.map_data.shape
+        origin_x = self.map.origin_x
+        origin_y = self.map.origin_y
+        resolution = self.map.resolution
+        height = self.map.height
+        width = self.map.width
 
         extent = [
             origin_x,  # left
@@ -185,10 +149,14 @@ class MapVisualizer:
         # Display map with proper coordinate system
         self.ax.imshow(map_display, cmap='gray', extent=extent, origin='lower')
 
-        self.ax.set_xlabel('X (meters)')
-        self.ax.set_ylabel('Y (meters)')
-        # self.ax.set_title(f'Map: {self.map_info["image"]}')
+        # self.ax.set_xlabel('X (meters)')
+        # self.ax.set_ylabel('Y (meters)')
+        # self.ax.set_title(f'Map: {self.map.image_path}')
         self.ax.grid(True, alpha=0.3)
+
+        # Minimize margins between map and borders
+        self.fig.subplots_adjust(left=0.1, right=1, top=1, bottom=0.1)
+        # self.ax.margins(1)
 
         return self.fig, self.ax
 
@@ -212,20 +180,23 @@ class MapVisualizer:
 
         if len(path_points) < 2:
             print("Warning: Path must have at least 2 points")
-            return
+            return []
 
         # Extract x and y coordinates
         x_coords = [point[0] for point in path_points]
         y_coords = [point[1] for point in path_points]
 
         # Draw the path
-        self.ax.plot(x_coords, y_coords, color=color, linewidth=linewidth,
-                     alpha=alpha, label=label)
+        objects = []
+        objects.append(self.ax.plot(x_coords, y_coords, color=color, linewidth=linewidth,
+                                    alpha=alpha, label=label))
 
         # Mark start and end points (without labels to avoid cluttering legend)
         if show_endpoints:
-            self.ax.plot(x_coords[0], y_coords[0], 'go', markersize=8)
-            self.ax.plot(x_coords[-1], y_coords[-1], 'ro', markersize=8)
+            objects.append(self.ax.plot(x_coords[0], y_coords[0], 'go', markersize=8))
+            objects.append(self.ax.plot(x_coords[-1], y_coords[-1], 'ro', markersize=8))
+
+        return objects
 
     def draw_waypoints(self, waypoints: List[Tuple[float, float]],
                        color: str = 'blue', marker: str = 'o',
@@ -313,7 +284,7 @@ class MapVisualizer:
                 raise ValueError("draw_args must include 'diameter' for circle shape")
             diameter = draw_args['diameter']
             circle = plt.Circle((x, y), diameter/2, color=color, alpha=alpha, label=label)
-            self.ax.add_patch(circle)
+            return self.ax.add_patch(circle)
 
         elif shape.lower() == 'box':
             # Draw rectangular obstacle
@@ -356,7 +327,7 @@ class MapVisualizer:
             # Create and add the rectangle patch
             rectangle = patches.Polygon(corners, closed=True, color=color,
                                         alpha=alpha, label=label)
-            self.ax.add_patch(rectangle)
+            return self.ax.add_patch(rectangle)
 
         else:
             raise ValueError(f"Unsupported obstacle shape: {shape}. Use 'circle' or 'box'")
@@ -389,12 +360,14 @@ class MapVisualizer:
         Returns:
             Tuple of (min_x, max_x, min_y, max_y)
         """
-        if self.map_info is None:
+        if self.map is None:
             raise ValueError("No map loaded")
 
-        origin_x, origin_y, _ = self.map_info['origin']
-        resolution = self.map_info['resolution']
-        height, width = self.map_data.shape
+        origin_x = self.map.origin_x
+        origin_y = self.map.origin_y
+        resolution = self.map.resolution
+        height = self.map.height
+        width = self.map.width
 
         min_x = origin_x
         max_x = origin_x + width * resolution

@@ -21,7 +21,7 @@ import tempfile
 import nbformat
 from nbconvert import HTMLExporter
 from nbconvert.preprocessors import ExecutePreprocessor
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QPalette
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (QApplication, QFrame, QLabel, QProgressBar,
@@ -210,9 +210,8 @@ class JupyterNotebookRunner(CancellableWorkload):
             if run_type == RunType.SINGLE_TEST:
                 # 1. Check if CSV file exists directly in the path (single run)
 
-                file_cache = FileCache()
-                file_cache.set_current_data_directory(data_path)
-                cached_file = file_cache.get_cache_filename("rosbag2.csv")
+                file_cache = FileCache(data_path, "rosbag2", [])
+                cached_file = file_cache.get_cache_filename()
                 if cached_file and os.path.exists(cached_file):
                     return [cached_file]
                 else:
@@ -327,13 +326,12 @@ class JupyterNotebookRunner(CancellableWorkload):
         return hash_files
 
     def run(self, data_path, run_type):
-        file_cache = FileCache()
         hash_files = self.get_hash_files(run_type)
         cache_file_name = self.get_cache_file_name(run_type)
-        file_cache.set_current_data_directory(data_path)
+        file_cache = FileCache(data_path, cache_file_name, hash_files)
         try:
             # Check cache first
-            cached_file = file_cache.get_cached_file(hash_files, cache_file_name, content=False)
+            cached_file = file_cache.get_cached_file(hash_files, None, content=False)
             if cached_file:
                 # Use cached HTML
                 print("Use cached analysis results.")
@@ -384,7 +382,7 @@ class JupyterNotebookRunner(CancellableWorkload):
             self.progress_callback(90, "Converting to HTML...")
 
             html_exporter = HTMLExporter()
-            html_exporter.template_name = 'basic'
+            html_exporter.template_name = 'lab'  # Use 'lab' template for full-featured HTML
             html_exporter.theme = detect_theme()
             # Hide code cell inputs in the exported HTML
             try:
@@ -402,7 +400,7 @@ class JupyterNotebookRunner(CancellableWorkload):
             with open(cache_file_name, 'w', encoding='utf-8') as cache_file:
                 cache_file.write(body)
 
-            cache_file_path = file_cache.save_file_to_cache(hash_files, cache_file_name, file_content=body)
+            cache_file_path = file_cache.save_file_to_cache(input_files=hash_files, file_content=body)
 
             self.progress_callback(100, "Notebook execution completed!")
             return True, os.path.abspath(cache_file_path)
@@ -507,7 +505,6 @@ class DataAnalysisWidget(QWidget):
         super().__init__(parent)
         self.current_data_directory = None
         self.current_analysis_type = None
-        self.file_cache = FileCache()
 
         # Caching variables
         self.current_csv_hash = None
@@ -524,6 +521,13 @@ class DataAnalysisWidget(QWidget):
 
         # Web view for notebook display (maximized)
         self.web_view = QWebEngineView()
+
+        # Configure web view settings for proper HTML rendering
+        settings = self.web_view.settings()
+        settings.setAttribute(settings.WebAttribute.LocalContentCanAccessFileUrls, True)
+        settings.setAttribute(settings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
+        settings.setAttribute(settings.WebAttribute.JavascriptEnabled, True)
+
         # Set an initial HTML that matches the current application theme to avoid
         # showing a white flash when the app uses a dark palette.
         self.web_view.setHtml(self.get_welcome_html(theme))
@@ -602,9 +606,20 @@ class DataAnalysisWidget(QWidget):
         # Ensure web view is visible
         self.web_view.show()
 
-        # Load in web view
-        file_url = f"file://{html_file}"
-        self.web_view.load(file_url)
+        # Read the HTML content and set it with a base URL
+        # This ensures proper rendering and allows relative resource loading
+        try:
+            with open(html_file, 'r', encoding='utf-8') as f:
+                html_content = f.read()
+
+            # Use the directory containing the HTML file as base URL for relative paths
+            base_url = QUrl.fromLocalFile(os.path.dirname(html_file) + os.sep)
+            self.web_view.setHtml(html_content, base_url)
+        except Exception as e:
+            # Fallback to direct file loading if reading fails
+            print(f"Error reading HTML file: {e}")
+            file_url = QUrl.fromLocalFile(html_file)
+            self.web_view.load(file_url)
 
     def clear_output(self):
         """Clear the current output - show empty widget without triggering webview signals"""

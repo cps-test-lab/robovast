@@ -23,10 +23,11 @@ import tempfile
 from importlib.metadata import entry_points
 
 import click
+import yaml
 
-from robovast.common import generate_scenario_variations, load_config
+from robovast.common import (filter_variants, generate_scenario_variations,
+                             get_scenario_parameters, load_config)
 from robovast.common.cli import get_project_config
-from robovast.common.variation import get_scenario_parameter_template
 
 
 @click.group()
@@ -37,8 +38,36 @@ def variation():
     """
 
 
+@variation.command()
+@click.option('--debug', is_flag=True, help='Show internal values starting with _')
+def gui(debug):
+    """Launch the graphical configuration editor.
+
+    Opens a GUI for editing and validating RoboVAST configuration files.
+    """
+    from PySide6.QtWidgets import \
+        QApplication  # pylint: disable=import-outside-toplevel
+    from robovast.variation.gui.variation_editor import VariationEditor  # pylint: disable=import-outside-toplevel
+    project_config = get_project_config()
+
+    app = QApplication(sys.argv)
+    app.setStyle('Fusion')
+
+    try:
+        window = VariationEditor(project_config, debug=debug)
+        window.show()
+        exit_code = app.exec_()
+        window.deleteLater()
+        sys.exit(exit_code)
+
+    except Exception as e:
+        click.echo(f"Application error: {e}", err=True)
+        sys.exit(1)
+
+
 @variation.command(name='list')
-def list_cmd():
+@click.option('--debug', is_flag=True, help='Show internal values starting with _')
+def list_cmd(debug):
     """List scenario variants without generating files.
 
     This command shows all variants that would be generated from the
@@ -58,18 +87,35 @@ def list_cmd():
 
     with tempfile.TemporaryDirectory(prefix="list_variants_") as temp_dir:
         try:
-            variants = generate_scenario_variations(
+            variants, _ = generate_scenario_variations(
                 variation_file=config,
                 progress_update_callback=progress_callback,
                 output_dir=temp_dir
             )
-
             if variants:
                 click.echo("-" * 60)
                 variants_file = os.path.join(temp_dir, "scenario.variants")
                 if os.path.exists(variants_file):
+
                     with open(variants_file, "r", encoding="utf-8") as vf:
-                        click.echo(vf.read())
+                        # Load all YAML documents
+                        all_variants = list(yaml.safe_load_all(vf))
+
+                        # Filter out internal values unless --debug is enabled
+                        if debug:
+                            filtered_documents = all_variants
+                        else:
+                            filtered_documents = filter_variants(all_variants)
+
+                        # Build output string with document separators
+                        output_parts = []
+                        for i, doc in enumerate(filtered_documents):
+                            if i > 0:
+                                output_parts.append("---")
+                            output_parts.append(yaml.dump(doc, default_flow_style=False, sort_keys=False).rstrip())
+
+                        output = "\n".join(output_parts)
+                        click.echo(output)
                 else:
                     click.echo(f"No scenario.variants file found at {variants_file}", err=True)
                     sys.exit(1)
@@ -104,7 +150,7 @@ def generate(output_dir):
     click.echo("-" * 60)
 
     try:
-        variants = generate_scenario_variations(
+        variants, _ = generate_scenario_variations(
             variation_file=config,
             progress_update_callback=progress_callback,
             output_dir=output_dir
@@ -162,10 +208,10 @@ def types():
 
 @variation.command()
 def points():
-    """List possible variation points from the scenario file.
+    """List possible variation points from the scenario files.
 
     Shows all available variation points (scenario parameters) that can be
-    varied in the scenario as defined in the scenario configuration file.
+    varied in the scenarios as defined in the vast configuration file.
 
     Requires project initialization with ``vast init`` first.
     """
@@ -176,13 +222,16 @@ def points():
     click.echo("Loading scenario parameter template...")
     click.echo("-" * 60)
 
-    try:
-        # Load the execution section to get the scenario file
-        execution_config = load_config(config, subsection="execution")
-        scenario_file = execution_config.get("scenario")
+    # Load the execution section to get the scenario file
+    full_config = load_config(config)
+    scenarios = full_config.get('definition', [])
+
+    for scenario in scenarios:
+        scenario_file = scenario.get('_scenario_file')
+        click.echo(f"{scenario['name']} ({scenario_file}):")
 
         if not scenario_file:
-            click.echo("Error: No 'scenario' field found in execution section", err=True)
+            click.echo("Error: No scenario file found in configuration", err=True)
             sys.exit(1)
 
         # Make scenario path absolute relative to config file
@@ -194,7 +243,7 @@ def points():
             sys.exit(1)
 
         # Get the scenario parameter template
-        scenario_template = get_scenario_parameter_template(scenario_file)
+        scenario_template = get_scenario_parameters(scenario_file)
 
         if scenario_template:
             scenario_parameters = next(iter(scenario_template.values()))
@@ -205,20 +254,6 @@ def points():
             click.echo("No variation points found in scenario", err=True)
             sys.exit(1)
 
-        click.echo(f"Available variation points from: {scenario_file}")
-        click.echo("-" * 60)
-
         # Display the parameters in a readable format
-        for param_name, param_value in scenario_parameters.items():
-            click.echo(f"  {param_name}:")
-            if isinstance(param_value, dict):
-                for key, val in param_value.items():
-                    click.echo(f"    {key}: {val}")
-            else:
-                click.echo(f"    {param_value}")
-
-    except Exception as e:
-        click.echo(f"Error: {e}", err=True)
-        import traceback  # pylint: disable=import-outside-toplevel
-        traceback.print_exc()
-        sys.exit(1)
+        for param in scenario_parameters:
+            click.echo(f"    {param["name"]}: {param["type"] if not param["is_list"] else f'list[{param["type"]}]'}")
