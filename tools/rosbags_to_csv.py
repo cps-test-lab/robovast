@@ -17,13 +17,13 @@
 
 """script that reads ROS2 messages using the rosbag2_py API."""
 import argparse
+import csv
 import os
 import sys
 import time
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
 
-import pandas as pd
 import rosbag2_py
 from rclpy.serialization import deserialize_message
 from rosidl_runtime_py.utilities import get_message
@@ -106,8 +106,22 @@ def process_rosbag(bag_path, skipped_topics):
         # Use only the immediate parent folder name for the CSV filename
         parent_folder = os.path.abspath(os.path.dirname(bag_path))
         output_file = os.path.join(parent_folder, os.path.basename(bag_path) + '.csv')
-        df = pd.DataFrame.from_records(records)
-        df.to_csv(output_file, index=False)
+
+        # Collect all unique fieldnames from all records
+        fieldnames = []
+        fieldnames_set = set()
+        for record in records:
+            for key in record.keys():
+                if key not in fieldnames_set:
+                    fieldnames.append(key)
+                    fieldnames_set.add(key)
+
+        # Write to CSV using DictWriter
+        with open(output_file, 'w', newline='') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(records)
+
         print(f"✓ {output_file}: {len(records)} messages")
         return len(records)
     else:
