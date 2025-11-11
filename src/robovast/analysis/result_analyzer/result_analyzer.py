@@ -23,10 +23,10 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, QThread, QTimer, Slot
 from PySide6.QtGui import QBrush, QColor, QIcon, QPalette
-from PySide6.QtWidgets import (QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-                               QMainWindow, QProgressBar, QPushButton,
-                               QSplitter, QStatusBar, QTabWidget, QTreeWidget,
-                               QTreeWidgetItem, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QGroupBox, QHBoxLayout, QLabel,
+                               QLineEdit, QMainWindow, QMenu, QProgressBar,
+                               QPushButton, QSplitter, QStatusBar, QTabWidget,
+                               QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from robovast.common import load_config
 
@@ -200,6 +200,10 @@ class TestResultsAnalyzer(QMainWindow):
         self.tree.setHeaderLabels(["Test Results"])
         self.tree.itemSelectionChanged.connect(self.on_tree_selection_changed)
 
+        # Enable context menu
+        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self.show_tree_context_menu)
+
         tree_layout.addWidget(self.tree)
         parent.addWidget(tree_group)
 
@@ -226,6 +230,30 @@ class TestResultsAnalyzer(QMainWindow):
         root = self.tree.invisibleRootItem()
         for i in range(root.childCount()):
             filter_item(root.child(i))
+
+    def show_tree_context_menu(self, position):
+        """Show context menu for tree widget"""
+        # Get the item at the position
+        item = self.tree.itemAt(position)
+        if not item:
+            return
+
+        # Get the path from the item data
+        item_path = item.data(0, Qt.UserRole)
+        if not item_path:
+            return
+
+        # Create context menu
+        menu = QMenu(self)
+        copy_path_action = menu.addAction("Copy Path")
+
+        # Show menu and get selected action
+        action = menu.exec(self.tree.viewport().mapToGlobal(position))
+
+        # Handle the action
+        if action == copy_path_action:
+            clipboard = QApplication.clipboard()
+            clipboard.setText(str(item_path))
 
     @Slot()
     def refresh_tree(self):

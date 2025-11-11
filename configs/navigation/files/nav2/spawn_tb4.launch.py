@@ -23,7 +23,7 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
-    _ = get_package_share_directory('nav2_minimal_tb4_sim') # MODIFIED
+    _ = get_package_share_directory('nav2_minimal_tb4_sim')  # MODIFIED
 
     use_sim_time = LaunchConfiguration('use_sim_time')
     namespace = LaunchConfiguration('namespace')
