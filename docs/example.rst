@@ -75,24 +75,27 @@ The central part of RoboVAST is the configuration file, which defines all aspect
 
 In this example we use configuration file :repo_link:`configs/examples/growth_sim/growth_sim.vast`.
 
-The ``settings`` are split into three main sections: ``variation``, ``execution``, and ``analysis``.
+The ``settings`` are split into three main sections: ``definition``, ``execution``, and ``analysis``.
 
-Variation
-^^^^^^^^^
+Definition
+^^^^^^^^^^
 
-The section ``variation`` is defined as a list of variations.
-By using python entry-points as plugin mechanism it is possible to create custom variations.
-Available variation types are described in :ref:`variation-points`.
+The ``definition`` section defines the test scenarios to be executed. Each scenario specifies:
 
-In this example, we vary the parameters ``initial_population`` and ``growth_rate`` using a fixed list of values and the variation plugin ``ParameterVariationList``.
+- ``name``: A unique identifier for the scenario
+- ``scenario_file``: The path to the scenario file (e.g., ``scenario.osc``)
+- ``parameters``: (Optional) Fixed parameters that apply to all variants of this scenario
+- ``variations``: (Optional) Advanced variation types for complex test generation
+
+In this example, we define two scenarios:
+
+1. **test**: Uses ``variations`` to create multiple variants by varying ``initial_population`` and ``growth_rate`` using the ``ParameterVariationList`` plugin. This creates 4 × 3 = 12 variants.
+2. **test-fixed-values**: Uses ``parameters`` to define a single variant with fixed values (``growth_rate: 0.07`` and ``initial_population: 123``).
 
 .. literalinclude:: ../configs/examples/growth_sim/growth_sim.vast
    :language: yaml
-   :lines: 13-26
-   :caption: Variation section of RoboVAST Configuration File
-
-
-RoboVAST creates a test for each combination, in this example 4 * 3 = 12 tests.
+   :lines: 3-24
+   :caption: Definition section of RoboVAST Configuration File
 
 
 Execution
@@ -106,11 +109,11 @@ The ``execution`` section of the ``.vast`` configuration specifies all necessary
 
 .. literalinclude:: ../configs/examples/growth_sim/growth_sim.vast
    :language: yaml
-   :lines: 7-12
+   :lines: 25-32
    :caption: Execution section of RoboVAST Configuration File
 
 In this example, we configure 20 runs for each variant to ensure statistically meaningful results.
-In this basic example we hand in the system-under-test ``growth_sim.py`` directly by specifying the pattern ``**/files/*.py``. In larger setups, it might be required to use a custom container image.
+In this basic example we hand in the system-under-test ``growth_sim.py`` directly by specifying the pattern ``**/files/*.py`` in the ``test_files_filter``. In larger setups, it might be required to use a custom container image.
 
 Check Generated Variants
 """"""""""""""""""""""""
@@ -131,7 +134,7 @@ The command runs the container using the ``docker`` command and the same paramet
 
 .. code-block:: bash
 
-   vast execution local run variant1 output_variant1
+   vast execution local run --variant variant1 output_variant1
 
 
 Cluster Execution
@@ -173,7 +176,7 @@ Analysis
 ^^^^^^^^
 As result analysis is tailored to each test, users are expected to implement their own analysis routines.
 
-There are two steps invokes to analyze results.
+There are two steps invoked to analyze results.
 First, the downloaded results can optionally be preprocessed to simplify later analysis. The user might specify preprocessing commands in ``analysis.preprocessing`` section of the ``.vast`` configuration. Common scripts including converting ROS bags to CSV files or extracting poses from tf-data are available to improve usability.
 
 .. code-block:: bash
@@ -187,7 +190,7 @@ Analysis configuration is specified in the ``analysis.visualization`` section of
 
 .. literalinclude:: ../configs/examples/growth_sim/growth_sim.vast
    :language: yaml
-   :lines: 2-7
+   :lines: 33-38
    :caption: Analysis section of RoboVAST Configuration File
 
 Although this example includes only one entry in the analysis list, you can add more. Each additional entry will appear as a separate tab in the ``result_analyzer`` interface.

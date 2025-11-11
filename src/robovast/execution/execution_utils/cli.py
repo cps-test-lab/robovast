@@ -23,7 +23,7 @@ import sys
 import click
 import yaml
 
-from robovast.common import prepare_run_configs
+from robovast.common import prepare_run_configs, reset_preprocessing_cache
 from robovast.common.cli import get_project_config
 from robovast.common.kubernetes import check_pod_running, get_kubernetes_client
 from robovast.execution.cluster_execution.cluster_execution import JobRunner
@@ -32,8 +32,7 @@ from robovast.execution.cluster_execution.download_results import \
 from robovast.execution.cluster_execution.setup import (
     delete_server, get_cluster_config, load_cluster_config_name, setup_server)
 
-from .execute_local import (generate_docker_run_script,
-                            initialize_local_execution)
+from .execute_local import initialize_local_execution
 
 
 @click.group()
@@ -57,8 +56,12 @@ def local():
 
 
 @local.command()
-@click.argument('variant')
-@click.argument('output-dir', type=click.Path())
+@click.option('--variant', '-v', default=None,
+              help='Run only a specific variant by name')
+@click.option('--runs', '-r', type=int, default=None,
+              help='Override the number of runs specified in the config')
+@click.option('--output', '-o', default=None,
+              help='Output directory (uses project results dir if not specified)')
 @click.option('--debug', '-d', is_flag=True,
               help='Enable debug output')
 @click.option('--shell', '-s', is_flag=True,
@@ -69,28 +72,26 @@ def local():
               help='Use host network mode')
 @click.option('--image', '-i', default='ghcr.io/cps-test-lab/robovast:latest',
               help='Use a custom Docker image')
-def run(variant, output_dir, debug, shell, no_gui, network_host, image):
-    """Execute a scenario variant locally using Docker.
+def run(variant, runs, output, debug, shell, no_gui, network_host, image):
+    """Execute scenario variants locally using Docker.
 
-    Runs a single variant in a Docker container with bind mounts
-    for configuration and output data.
+    Runs scenario variants in Docker containers with bind mounts for configuration
+    and output data. By default, runs all variants from the project configuration.
+    GUI support is enabled by default (requires X11 server on host).
+
+    Prerequisites:
+    - Docker must be installed and running
+    - Project initialized with ``vast init``
+    - X11 server running on host (for GUI support, disable with ``--no-gui``)
+
+    Output:
+        Results are written to the project results directory by default,
+        or to a custom directory specified with ``--output``.
     """
     try:
-        docker_image, config_path, temp_path = initialize_local_execution(
-            variant, output_dir, debug=debug, use_temp_dir=True
+        run_script_path = initialize_local_execution(
+            variant, None, runs, debug=debug, feedback_callback=click.echo
         )
-
-        # Generate run script
-        run_script_path = os.path.join(temp_path.name, "run.sh")
-        generate_docker_run_script(
-            docker_image, config_path, output_dir, variant,
-            run_num=0, output_script_path=run_script_path
-        )
-
-        # Execute run.sh
-        click.echo("-" * 60)
-        click.echo(f"Executing run script: {run_script_path}")
-        click.echo("-" * 60)
 
         # Build command with options
         cmd = [run_script_path]
@@ -100,11 +101,16 @@ def run(variant, output_dir, debug, shell, no_gui, network_host, image):
             cmd.append("--no-gui")
         if network_host:
             cmd.append("--network-host")
+        if output:
+            os.makedirs(output, exist_ok=True)
+            cmd.extend(["--output", os.path.abspath(output)])
         if image != 'ghcr.io/cps-test-lab/robovast:latest':
             cmd.extend(["--image", image])
 
-        # Use exec to replace current process with run script
-        # This ensures proper signal handling (like shell's exec)
+        click.echo(f"\nExecuting run script: {run_script_path}")
+        click.echo("=" * 60 + "\n")
+
+        # Use exec to replace current process for proper signal handling
         os.execv(run_script_path, cmd)
 
     except Exception as e:
@@ -113,28 +119,39 @@ def run(variant, output_dir, debug, shell, no_gui, network_host, image):
 
 
 @local.command()
-@click.argument('variant')
 @click.argument('output-dir', type=click.Path())
+@click.option('--variant', '-v', default=None,
+              help='Run only a specific variant by name')
+@click.option('--runs', '-r', type=int, default=None,
+              help='Override the number of runs specified in the config')
 @click.option('--debug', '-d', is_flag=True,
               help='Enable debug output')
-def prepare_run(variant, output_dir, debug):
-    """Prepare run configuration and print Docker command.
+def prepare_run(output_dir, variant, runs, debug):
+    """Prepare run configuration without executing.
 
-    Prepares all necessary configuration files for a variant
-    and prints the Docker command that can be used to execute it manually.
-    Files are written to OUTPUT-DIR for inspection or manual execution.
+    Generates all necessary configuration files and a ``run.sh`` script for
+    manual execution. This is useful for inspecting the generated configuration,
+    debugging, or executing scenarios with custom modifications.
+
+    This command does NOT execute the scenario - it only prepares the files.
+    Use ``vast execution local run`` for immediate execution.
+
+    Prerequisites:
+    - Project initialized with ``vast init``
+
+    Generated files in OUTPUT-DIR:
+    - config/: Directory containing all scenario configuration files
+    - run.sh: Executable shell script to run the scenario with Docker
+    - Various temporary configuration files for the execution
+
+    After preparation, inspect the files in OUTPUT-DIR and execute manually ``cd OUTPUT-DIR; ./run.sh``.
+
+    The run.sh script supports the same options as ``vast execution local run``
+    (--shell, --no-gui, --network-host, --output, --image).
     """
     try:
-        docker_image, config_path, _ = initialize_local_execution(
-            variant, output_dir, debug=debug, use_temp_dir=False
-        )
-
-        click.echo(f"Configuration files prepared in: {output_dir}")
-        click.echo("-" * 60)
-
-        generate_docker_run_script(
-            docker_image, config_path, output_dir, variant,
-            run_num=0, output_script_path=os.path.join(output_dir, "run.sh")
+        initialize_local_execution(
+            variant, output_dir, runs, debug=debug, feedback_callback=click.echo
         )
 
         click.echo("-" * 60)
@@ -247,10 +264,11 @@ def download(output, force):
 
     try:
         downloader = ResultDownloader()
-
         # Download all runs
-        downloader.download_results(output, force)
-        click.echo("### Download completed successfully!")
+        count = downloader.download_results(output, force)
+        if count > 0:
+            reset_preprocessing_cache(project_config.config_path, output)
+        click.echo(f"### Download of {count} runs completed successfully!")
 
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
@@ -262,19 +280,22 @@ def download(output, force):
               help='List available cluster configuration plugins')
 @click.option('--option', '-o', 'options', multiple=True,
               help='Cluster-specific option in key=value format (can be used multiple times)')
+@click.option('--force', '-f', is_flag=True,
+              help='Force re-setup even if cluster is already set up')
 @click.argument('cluster_config', required=False)
-def setup(list_configs, options, cluster_config):
+def setup(list_configs, options, force, cluster_config):
     """Set up the Kubernetes cluster for execution.
 
     Sets up the NFS server in the Kubernetes cluster, that is
     used to provide configurations and store results created by individual
-    scenario execution jobs. 
+    scenario execution jobs.
 
     This command should be run once before executing scenarios
     on the cluster for the first time.
 
     If the cluster is already set up, this command will exit with an error.
-    Run 'vast execution cluster cleanup' first to clean up the existing setup.
+    Run 'vast execution cluster cleanup' first to clean up the existing setup,
+    or use ``--force`` to force re-setup.
 
     Use ``--list`` to see available cluster configuration plugins.
 
@@ -302,7 +323,7 @@ def setup(list_configs, options, cluster_config):
         cluster_kwargs[key] = value
 
     try:
-        setup_server(config_name=cluster_config, list_configs=False, **cluster_kwargs)
+        setup_server(config_name=cluster_config, list_configs=False, force=force, **cluster_kwargs)
         click.echo("### Cluster setup completed successfully!")
 
     except Exception as e:
@@ -402,17 +423,16 @@ def prepare_run(output, variant, runs, cluster_config, options):  # pylint: disa
     job_runner = JobRunner(config_path, variant, runs, cluster_config)
 
     click.echo(f"### Preparing run configuration (ID: {job_runner.run_id})")
-    click.echo(f"### Variants: {len(job_runner.scenarios)}")
+    click.echo(f"### Variants: {len(job_runner.variants)}")
     click.echo(f"### Runs per variant: {job_runner.num_runs}")
-    click.echo(f"### Total jobs: {len(job_runner.scenarios) * job_runner.num_runs}")
+    click.echo(f"### Total jobs: {len(job_runner.variants) * job_runner.num_runs}")
 
     # Prepare config files
     click.echo("### Preparing configuration files...")
 
     prepare_run_configs(
         job_runner.run_id,
-        job_runner.scenarios,
-        job_runner.variant_output_file_dir,
+        job_runner.variants,
         output
     )
 
@@ -426,9 +446,9 @@ def prepare_run(output, variant, runs, cluster_config, options):  # pylint: disa
     job_count = 0
 
     for run_number in range(job_runner.num_runs):
-        for scenario_key in job_runner.scenarios:
+        for variant_key in job_runner.variants:
             # Use the centralized function to create the job manifest
-            job_manifest = job_runner.create_job_manifest_for_scenario(scenario_key, run_number)
+            job_manifest = job_runner.create_job_manifest_for_scenario(variant_key, run_number)
 
             # Save individual job manifest
             job_name = job_manifest['metadata']['name']

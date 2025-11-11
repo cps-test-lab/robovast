@@ -22,7 +22,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, QThread, QTimer, Slot
-from PySide6.QtGui import QBrush, QColor, QPalette
+from PySide6.QtGui import QBrush, QColor, QIcon, QPalette
 from PySide6.QtWidgets import (QGroupBox, QHBoxLayout, QLabel, QLineEdit,
                                QMainWindow, QProgressBar, QPushButton,
                                QSplitter, QStatusBar, QTabWidget, QTreeWidget,
@@ -97,6 +97,12 @@ class TestResultsAnalyzer(QMainWindow):
         self.base_dir = Path(base_dir)
 
         self.setWindowTitle(f"Test Results Analyzer - {self.base_dir}")
+
+        # Set window icon
+        icon_path = Path(__file__).parent.parent.parent.parent.parent / "docs" / "images" / "icon.png"
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
+
         self.resize(1400, 900)
 
         self.setup_ui()

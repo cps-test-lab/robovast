@@ -125,6 +125,10 @@ def calculate_speeds_from_poses(df_groundtruth):
     result_dfs = []
 
     for _, group in df_groundtruth.groupby(group_cols, observed=False):
+        # Need at least 2 data points to calculate speeds
+        if len(group) < 2:
+            continue
+
         df_gt_speeds = group[['test', 'variant', 'position.x', 'position.y',
                               'orientation.yaw', 'timestamp']].copy()
 
@@ -159,6 +163,14 @@ def calculate_speeds_from_poses(df_groundtruth):
         df_gt_speeds = df_gt_speeds[:-1].copy()
         df_gt_speeds = df_gt_speeds[df_gt_speeds['dt'] > min_dt].copy()
 
-        result_dfs.append(df_gt_speeds)
+        # Only add if we have valid data remaining
+        if not df_gt_speeds.empty:
+            result_dfs.append(df_gt_speeds)
+
+    # Return empty dataframe with correct columns if no valid data
+    if not result_dfs:
+        return pd.DataFrame(columns=['test', 'variant', 'position.x', 'position.y',
+                                     'orientation.yaw', 'timestamp', 'linear_speed',
+                                     'angular_speed', 'dt'])
 
     return pd.concat(result_dfs, ignore_index=True)

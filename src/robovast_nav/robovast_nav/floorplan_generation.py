@@ -27,9 +27,6 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
         progress_update_callback(f"✗ Path not found: {base_path}")
         return None
 
-    file_cache = FileCache()
-    file_cache.set_current_data_directory(base_path)
-
     script_path = os.path.join("dependencies", "scenery_builder.sh")
 
     if not os.path.exists(script_path):
@@ -49,10 +46,10 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
         variation = os.path.splitext(os.path.basename(variation_file))[0]
         progress_update_callback(f"\nProcessing: {variation}")
 
+        file_cache = FileCache(base_path, "floorplan_variation", [variation_file, num_variations, seed_value])
         files_for_hash = [variation_file_path]  # TODO: add fpm
-        hash_file_name = f"{os.path.basename(variation_file).replace('/', '_')}_{str(num_variations)}_{str(seed_value)}"
         strings_for_hash = [str(num_variations), str(seed_value)]
-        cached_file = file_cache.get_cached_file(files_for_hash, hash_file_name, binary=False,
+        cached_file = file_cache.get_cached_file(files_for_hash, binary=False,
                                                  content=False, strings_for_hash=strings_for_hash)
 
         if cached_file:
@@ -177,12 +174,12 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
                     progress_update_callback(error_msg)
                     raise ValueError(f"Generate step failed: {error_msg}") from e
 
-            cache_target_file_name = file_cache.get_cache_filename(hash_file_name)
+            cache_target_file_name = file_cache.get_cache_filename()
             progress_update_callback(f"\nCreating tar archive {cache_target_file_name}...")
             with tarfile.open(cache_target_file_name, "w:gz") as tar:
                 tar.add(artifacts_path, arcname="")
 
-            cache_file = file_cache.save_file_to_cache(files_for_hash, hash_file_name, None,
+            cache_file = file_cache.save_file_to_cache(files_for_hash, None,
                                                        binary=True, content=False, strings_for_hash=strings_for_hash)
             all_map_dirs.append(cache_file)
 

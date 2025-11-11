@@ -24,15 +24,13 @@ on occupancy grid maps where only white pixels are considered free space.
 
 import heapq
 import math
-import os
 from typing import List, Optional, Tuple
 
 import numpy as np
 import scipy.ndimage  # Add this import for distance transform
-import yaml
-from PIL import Image
 
 from .data_model import Pose, Position, StaticObject
+from .map_loader import Map, load_map
 from .object_shapes import (ObjectShapeRenderer,
                             get_object_type_from_model_path,
                             get_obstacle_dimensions)
@@ -50,12 +48,7 @@ class PathGenerator:
             robot_diameter: Diameter of the robot in meters (used for obstacle inflation)
         """
         self.map_file_path = map_file_path
-        self.map_data = None
-        self.map_resolution = 0.05
-        self.map_origin = [0.0, 0.0, 0.0]
-        self.occupancy_grid = None
-        self.height = 0
-        self.width = 0
+        self.map: Optional[Map] = None
         self.robot_diameter = robot_diameter
         self.robot_radius = robot_diameter / 2.0
         self.shape_renderer = ObjectShapeRenderer()
@@ -64,82 +57,34 @@ class PathGenerator:
 
     def _inflate_obstacles(self):
         """Inflate obstacles in the occupancy grid by the robot's radius."""
-        if self.occupancy_grid is None:
+        if self.map is None or self.map.occupancy_grid is None:
             return
 
         # Compute the number of pixels to inflate
-        inflation_radius_px = int(np.ceil(self.robot_radius / self.map_resolution))
+        inflation_radius_px = int(np.ceil(self.robot_radius / self.map.resolution))
+
         if inflation_radius_px <= 0:
             return
 
         # Use distance transform to inflate obstacles
         # Occupied cells are True, free are False
-        if self.occupancy_grid is not None:
-            distance = scipy.ndimage.distance_transform_edt(~self.occupancy_grid)
-            inflated_grid = distance <= inflation_radius_px
-            self.occupancy_grid = inflated_grid
+        distance = scipy.ndimage.distance_transform_edt(~self.map.occupancy_grid)
+        inflated_grid = distance <= inflation_radius_px
+
+        self.map.occupancy_grid = inflated_grid
 
     def _load_map(self):
         """Load the map file and initialize internal data structures."""
         try:
-            map_dir = os.path.dirname(self.map_file_path)
-            # Load map YAML
-            with open(self.map_file_path, "r") as f:
-                map_config = yaml.safe_load(f)
+            # Load map using shared map_loader utility
+            self.map = load_map(self.map_file_path)
 
-            # Get map parameters
-            image_file = map_config.get("image", "")
-            if not os.path.isabs(image_file):
-                image_file = os.path.join(map_dir, image_file)
-
-            self.map_resolution = map_config.get("resolution", 0.05)
-            self.map_origin = map_config.get("origin", [0.0, 0.0, 0.0])
-
-            # Load map image
-            if os.path.exists(image_file):
-                map_image = Image.open(image_file)
-                if map_image.mode != "L":
-                    map_image = map_image.convert("L")
-
-                self.map_data = np.array(map_image)
-                self.height, self.width = self.map_data.shape
-
-                # Create binary occupancy grid where only white pixels (255) are free
-                # Everything else is considered occupied
-                self.occupancy_grid = (self.map_data != 255).astype(bool)
-
-                # Inflate obstacles for robot size
-                self._inflate_obstacles()
-
-            else:
-                raise FileNotFoundError(f"Map image file not found: {image_file}")
+            # Inflate obstacles for robot size
+            self._inflate_obstacles()
 
         except Exception as e:
             print(f"Error loading map {self.map_file_path}: {e}")
-            self.map_data = None
-            self.occupancy_grid = None
-
-    def world_to_grid(self, x: float, y: float) -> Tuple[int, int]:
-        """Convert world coordinates to grid coordinates."""
-        grid_x = int((x - self.map_origin[0]) / self.map_resolution)
-        grid_y = int(
-            self.height - (y - self.map_origin[1]) / self.map_resolution
-        )  # Flip Y
-        return grid_x, grid_y
-
-    def grid_to_world(self, grid_x: int, grid_y: int) -> Tuple[float, float]:
-        """Convert grid coordinates to world coordinates."""
-        world_x = grid_x * self.map_resolution + self.map_origin[0]
-        world_y = (self.height - grid_y) * self.map_resolution + self.map_origin[
-            1
-        ]  # Flip Y
-        return world_x, world_y
-
-    def _is_valid_grid_position(self, grid_x: int, grid_y: int) -> bool:
-        """Check if grid position is valid and free."""
-        if not (0 <= grid_x < self.width and 0 <= grid_y < self.height):
-            return False
-        return not self.occupancy_grid[grid_y, grid_x]
+            self.map = None
 
     def _heuristic(self, a: Tuple[int, int], b: Tuple[int, int]) -> float:
         """Calculate Manhattan distance heuristic for A*."""
@@ -166,7 +111,7 @@ class PathGenerator:
 
         for dx, dy, cost in directions:
             new_x, new_y = x + dx, y + dy
-            if self._is_valid_grid_position(new_x, new_y):
+            if self.map.is_valid_grid_position(new_x, new_y):
                 neighbors.append(((new_x, new_y), cost))
 
         return neighbors
@@ -184,7 +129,7 @@ class PathGenerator:
         Returns:
             List of grid positions forming the path, or None if no path found
         """
-        if not self._is_valid_grid_position(*start) or not self._is_valid_grid_position(
+        if not self.map.is_valid_grid_position(*start) or not self.map.is_valid_grid_position(
             *goal
         ):
             return None
@@ -242,14 +187,14 @@ class PathGenerator:
         Returns:
             List of Position objects forming a valid path, or None if no path exists
         """
-        if self.occupancy_grid is None or not waypoints:
-            return None
+        if self.map is None or self.map.occupancy_grid is None or not waypoints:
+            raise ValueError("Occupancy grid not loaded or no waypoints provided.")
 
         if len(waypoints) < 2:
             raise ValueError("At least two waypoints are required to generate a path.")
 
         # Create a copy of the occupancy grid to avoid modifying the original
-        original_grid = self.occupancy_grid.copy()
+        original_grid = self.map.occupancy_grid.copy()
 
         try:
             # Add dynamic obstacles if provided
@@ -258,20 +203,22 @@ class PathGenerator:
 
             # Convert waypoints to grid coordinates
             grid_waypoints = []
-            for pose in waypoints:
-                grid_x, grid_y = self.world_to_grid(pose.position.x, pose.position.y)
-                if not self._is_valid_grid_position(grid_x, grid_y):
-                    return None  # Invalid waypoint
+            for i, pose in enumerate(waypoints):
+                grid_x, grid_y = self.map.world_to_grid(pose.position.x, pose.position.y)
+
+                if not self.map.is_valid_grid_position(grid_x, grid_y):
+                    raise ValueError(f"Invalid waypoint grid position: ({grid_x}, {grid_y})")
+
                 grid_waypoints.append((grid_x, grid_y))
 
             # Find path through all waypoints
             full_path = []
-
             for i in range(len(grid_waypoints) - 1):
                 start = grid_waypoints[i]
                 goal = grid_waypoints[i + 1]
 
                 segment_path = self._a_star(start, goal)
+
                 if segment_path is None:
                     return None  # No path between waypoints
 
@@ -286,7 +233,7 @@ class PathGenerator:
             # Convert back to Position objects (with default orientation)
             world_path = []
             for grid_x, grid_y in full_path:
-                world_x, world_y = self.grid_to_world(grid_x, grid_y)
+                world_x, world_y = self.map.grid_to_world(grid_x, grid_y)
                 # Use default orientation (0,0,0,1) for each pose
                 pos = Position(x=world_x, y=world_y)
                 world_path.append(pos)
@@ -295,7 +242,7 @@ class PathGenerator:
 
         finally:
             # Restore original occupancy grid
-            self.occupancy_grid = original_grid
+            self.map.occupancy_grid = original_grid
 
     def _add_circular_obstacle(self, center_x: int, center_y: int, radius: float):
         """
@@ -307,7 +254,7 @@ class PathGenerator:
         """
         # Inflate obstacle by robot radius for safe navigation
         inflated_radius = radius + self.robot_radius
-        radius_cells = int(np.ceil(inflated_radius / self.map_resolution))
+        radius_cells = int(np.ceil(inflated_radius / self.map.resolution))
 
         # Mark grid cells as occupied in a circular area around the obstacle
         for dy in range(-radius_cells, radius_cells + 1):
@@ -317,8 +264,8 @@ class PathGenerator:
                     check_y = center_y + dy
 
                     # Check bounds
-                    if 0 <= check_x < self.width and 0 <= check_y < self.height:
-                        self.occupancy_grid[check_y, check_x] = True
+                    if 0 <= check_x < self.map.width and 0 <= check_y < self.map.height:
+                        self.map.occupancy_grid[check_y, check_x] = True
 
     def _add_rectangular_obstacle(
         self,
@@ -342,8 +289,8 @@ class PathGenerator:
         inflated_length = length + 2 * self.robot_radius
 
         # Convert dimensions to grid cells
-        width_cells = inflated_width / self.map_resolution
-        length_cells = inflated_length / self.map_resolution
+        width_cells = inflated_width / self.map.resolution
+        length_cells = inflated_length / self.map.resolution
 
         # Calculate half dimensions
         half_width = width_cells / 2
@@ -385,7 +332,7 @@ class PathGenerator:
         for grid_y in range(search_min_y, search_max_y + 1):
             for grid_x in range(search_min_x, search_max_x + 1):
                 # Check bounds
-                if not (0 <= grid_x < self.width and 0 <= grid_y < self.height):
+                if not (0 <= grid_x < self.map.width and 0 <= grid_y < self.map.height):
                     continue
 
                 # Transform grid cell to obstacle local coordinates
@@ -398,7 +345,7 @@ class PathGenerator:
 
                 # Check if point is inside rectangle
                 if abs(rotated_x) <= half_width and abs(rotated_y) <= half_length:
-                    self.occupancy_grid[grid_y, grid_x] = True
+                    self.map.occupancy_grid[grid_y, grid_x] = True
 
     def add_dynamic_obstacles(self, obstacles: List[StaticObject]):
         """
@@ -407,12 +354,12 @@ class PathGenerator:
         Args:
             obstacles: List of StaticObject instances to add as obstacles
         """
-        if self.occupancy_grid is None or not obstacles:
+        if self.map is None or self.map.occupancy_grid is None or not obstacles:
             return
 
         for obstacle in obstacles:
             # Get obstacle position in grid coordinates
-            obs_grid_x, obs_grid_y = self.world_to_grid(
+            obs_grid_x, obs_grid_y = self.map.world_to_grid(
                 obstacle.spawn_pose.position.x, obstacle.spawn_pose.position.y
             )
 
@@ -459,11 +406,11 @@ class PathGenerator:
         Returns:
             Costmap as numpy array where 0=free, 255=occupied, or None if no map loaded
         """
-        if self.occupancy_grid is None:
+        if self.map is None or self.map.occupancy_grid is None:
             return None
 
         # Create a copy of the occupancy grid to avoid modifying the original
-        original_grid = self.occupancy_grid.copy()
+        original_grid = self.map.occupancy_grid.copy()
 
         try:
             # Add dynamic obstacles if provided
@@ -472,10 +419,10 @@ class PathGenerator:
 
             # Convert boolean occupancy grid to costmap values
             # True (occupied) -> 255 (black), False (free) -> 0 (white)
-            costmap = self.occupancy_grid.astype(np.uint8) * 255
+            costmap = self.map.occupancy_grid.astype(np.uint8) * 255
 
             return costmap
 
         finally:
             # Restore original occupancy grid
-            self.occupancy_grid = original_grid
+            self.map.occupancy_grid = original_grid

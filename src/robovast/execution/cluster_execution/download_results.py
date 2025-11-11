@@ -160,6 +160,9 @@ class ResultDownloader:
         Args:
             output_directory (str): Local directory where files will be downloaded
             force (bool): Force re-download even if files already exist
+
+        Returns:
+            int: Number of successfully downloaded runs
         """
 
         # Create output directory
@@ -170,21 +173,30 @@ class ResultDownloader:
         available_runs = self.list_available_runs()
         if not available_runs:
             print("### No runs found to download.")
-            return
+            return 0
 
         # Start port-forward for downloading
         self.start_port_forward()
 
+        downloaded_count = 0
         try:
             print(f"### Downloading {len(available_runs)} runs...")
             for current_run_id in available_runs:
-                self._download_run(output_directory, current_run_id, force)
+                if self._download_run(output_directory, current_run_id, force):
+                    downloaded_count += 1
         finally:
             # Clean up port-forward
             self.cleanup()
 
+        return downloaded_count
+
     def _download_run(self, output_directory, run_id, force=False):
-        """Download a specific run via HTTP."""
+        """
+        Download a specific run via HTTP.
+
+        Returns:
+            bool: True if download was successful or skipped (already exists), False on failure
+        """
         try:
             print(f"### Downloading entire run: {run_id}")
 
@@ -193,7 +205,7 @@ class ResultDownloader:
             if not force and os.path.exists(run_output_dir) and os.listdir(run_output_dir):
                 print(f"### Run {run_id} already exists and appears complete, skipping...")
                 print(f"### Use --force to re-download existing runs")
-                return
+                return True
 
             # Create compressed archive on remote pod using kubectl
             archive_name = f"{run_id}.tar.gz"
@@ -320,6 +332,7 @@ class ResultDownloader:
             print(f"### Successfully deleted run {run_id} from remote pod")
 
             print(f"### Successfully downloaded, extracted, and cleaned up run {run_id}")
+            return True
 
         except subprocess.CalledProcessError as e:
             print(f"### ERROR: Failed to create archive for run {run_id}: {e}")
@@ -333,6 +346,7 @@ class ResultDownloader:
                 "rm", "-f", remote_archive_path
             ]
             subprocess.run(cleanup_cmd, capture_output=True, text=True, check=False)
+            return False
         except requests.RequestException as e:
             print(f"### ERROR: Failed to download run {run_id} via HTTP: {e}")
 
@@ -343,6 +357,7 @@ class ResultDownloader:
                 "rm", "-f", remote_archive_path
             ]
             subprocess.run(cleanup_cmd, capture_output=True, text=True, check=False)
+            return False
         except Exception as e:
             print(f"### ERROR: Unexpected error downloading run {run_id}: {e}")
 
@@ -353,3 +368,4 @@ class ResultDownloader:
                 "rm", "-f", remote_archive_path
             ]
             subprocess.run(cleanup_cmd, capture_output=True, text=True, check=False)
+            return False

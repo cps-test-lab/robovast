@@ -15,11 +15,17 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import pickle
+import sys
 from dataclasses import asdict, is_dataclass
 
+import numpy as np
 import yaml
+from scenario_execution import \
+    get_scenario_parameters as _external_get_scenario_parameters
 
 from .config import validate_config
+from .file_cache import FileCache
 
 
 def load_config(config_file, subsection=None):
@@ -31,25 +37,29 @@ def load_config(config_file, subsection=None):
         raise FileNotFoundError(f"Config file {config_file} not found")
 
     with open(config_file, 'r') as f:
-        # Load all documents, the first one contains the settings
-        documents = list(yaml.safe_load_all(f))
-        if not documents:
-            raise ValueError("No documents found in scenario file")
-        config = documents[0]
-        settings = config.get('settings', None)
-        if settings:
-            # Validate the configuration
-            validate_config(settings)
+        try:
+            # Load all documents, the first one contains the settings
+            documents = list(yaml.safe_load_all(f))
+            if not documents:
+                raise ValueError("No documents found in scenario file")
+            config = documents[0]
+            settings = config.get('settings', None)
+            if settings:
+                # Validate the configuration
+                validate_config(settings)
 
-            if subsection:
-                subsection = settings.get(subsection, None)
-                if not subsection:
-                    raise ValueError(f"No subsection '{subsection}' found in settings")
-                return subsection
+                if subsection:
+                    subsection = settings.get(subsection, None)
+                    if not subsection:
+                        raise ValueError(f"No subsection '{subsection}' found in settings")
+                    return subsection
+                else:
+                    return settings
             else:
-                return settings
-        else:
-            raise ValueError("No 'settings' section found in scenario file")
+                raise ValueError("No 'settings' section found in scenario file")
+        except yaml.YAMLError as e:
+            print(f"Error parsing YAML file: {e}")
+            sys.exit(1)
 
 
 def dataclass_representer(dumper, data):
@@ -57,10 +67,10 @@ def dataclass_representer(dumper, data):
     return dumper.represent_dict(asdict(data))
 
 
-def convert_dataclasses_to_dict(obj):
+def convert_dataclasses_to_dict(obj): # pylint: disable=too-many-return-statements
     """
     Recursively convert dataclass objects to dictionaries.
-    Handles nested structures including lists and dicts.
+    Handles nested structures including lists, tuples, and dicts.
     """
     if is_dataclass(obj) and not isinstance(obj, type):
         return asdict(obj)
@@ -68,6 +78,18 @@ def convert_dataclasses_to_dict(obj):
         return {key: convert_dataclasses_to_dict(value) for key, value in obj.items()}
     elif isinstance(obj, list):
         return [convert_dataclasses_to_dict(item) for item in obj]
+    elif isinstance(obj, tuple):
+        # Convert tuples to lists and recursively process elements
+        return [convert_dataclasses_to_dict(item) for item in obj]
+    elif isinstance(obj, np.ndarray):
+        # Convert numpy arrays to lists and recursively process elements
+        return [convert_dataclasses_to_dict(item) for item in obj.tolist()]
+    elif isinstance(obj, (np.integer, np.floating)):
+        # Convert numpy scalars to Python native types
+        return obj.item()
+    elif isinstance(obj, np.bool_):
+        # Convert numpy bool to Python bool
+        return bool(obj)
     else:
         return obj
 
@@ -108,3 +130,62 @@ def save_scenario_variant_file(variant, output_file):
 
     with open(output_file, "w") as f:
         yaml.dump(data_to_save, f, default_flow_style=False)
+
+
+def filter_variants(variants):
+    """Parse YAML variants file and filter out keys starting with underscore.
+
+    Args:
+        variants_file: Path to the variants YAML file
+
+    Returns:
+        list: List of filtered variant documents
+    """
+    # Process each document
+    filtered_documents = []
+    for variants_data in variants:
+        # Filter out keys starting with "_"
+        if isinstance(variants_data, list):
+            filtered_variants = []
+            for variant in variants_data:
+                if isinstance(variant, dict):
+                    filtered_variant = {k: v for k, v in variant.items() if not k.startswith("_")}
+                    filtered_variants.append(filtered_variant)
+                else:
+                    filtered_variants.append(variant)
+            filtered_documents.append(filtered_variants)
+        elif isinstance(variants_data, dict):
+            filtered_variant = {k: v for k, v in variants_data.items() if not k.startswith("_")}
+            filtered_documents.append(filtered_variant)
+        else:
+            filtered_documents.append(variants_data)
+
+    return filtered_documents
+
+
+def get_scenario_parameters(scenario_file):
+    """Get scenario parameters from scenario file.
+
+    Args:
+        scenario_file: Path to the scenario file
+    """
+    file_cache = FileCache(os.path.dirname(scenario_file), "robovast_scenario_parameters_" +
+                           os.path.basename(scenario_file).replace("/", "_").replace(".", "_"), [])
+
+    cached_params = file_cache.get_cached_file([scenario_file], binary=True, content=True)
+    if cached_params:
+        return pickle.loads(cached_params)
+    else:
+        params = _external_get_scenario_parameters(scenario_file)
+        file_cache.save_file_to_cache([scenario_file], pickle.dumps(params), content=True, binary=True)
+        return params
+
+
+def is_scenario_parameter(value, scenario_file):
+    params_dict = get_scenario_parameters(scenario_file)
+    if params_dict:
+        scenario_parameters = next(iter(params_dict.values()))
+        for val in scenario_parameters:
+            if value == val["name"]:
+                return True
+    return False

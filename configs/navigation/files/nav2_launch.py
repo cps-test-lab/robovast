@@ -16,23 +16,29 @@
 
 import os
 
-from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
 
-    # For certain tests we need a modified nav2_bringup
-    nav2_bringup_dir = get_package_share_directory('nav2_bringup')
-
     return LaunchDescription([
 
+        DeclareLaunchArgument(
+            'laserscan_random_drop_percentage',
+            default_value='0.0',
+            description='Percentage of random drops in LaserScan'),
+
+        DeclareLaunchArgument(
+            'laserscan_gaussian_noise_std_deviation',
+            default_value='0.0',
+            description='Standard deviation of Gaussian noise in LaserScan'),
+
         IncludeLaunchDescription(
-            PythonLaunchDescriptionSource([PathJoinSubstitution([nav2_bringup_dir, 'launch', 'tb4_simulation_launch.py'])]),
+            PythonLaunchDescriptionSource(['/config/files/nav2/tb4_simulation_launch.py']),
             launch_arguments={
                 'rviz_config_file': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'view.rviz'),
             }.items()
@@ -46,6 +52,21 @@ def generate_launch_description():
                 {"gz_pose_topic": "/world/default/dynamic_pose/info"},
                 {"base_frame_id": "base_link"},
             ],
+        ),
+
+        Node(
+            package='message_modification',
+            executable='laserscan_modification',
+            name='laserscan_modification',
+            output='screen',
+            remappings=[
+                ('/in', '/scan_sim'),
+                ('/out', '/scan')
+            ],
+            parameters=[
+                {'random_drop_percentage': LaunchConfiguration('laserscan_random_drop_percentage'),
+                 'gaussian_noise_std_deviation': LaunchConfiguration('laserscan_gaussian_noise_std_deviation')}
+            ]
         ),
 
         IncludeLaunchDescription(

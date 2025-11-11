@@ -18,9 +18,8 @@ import os
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from robovast.common.variation import Variation
-
 from ..floorplan_generation import generate_floorplan_variations
+from .nav_base_variation import NavVariation
 
 
 class FloorplanVariationConfig(BaseModel):
@@ -52,17 +51,18 @@ class FloorplanVariationConfig(BaseModel):
         return v
 
 
-class FloorplanVariation(Variation):
+class FloorplanVariation(NavVariation):
     """Create floorplan variation."""
 
     CONFIG_CLASS = FloorplanVariationConfig
+    # GUI_CLASS = FloorplanVariationGui
 
     def variation(self, in_variants):
         self.progress_update("Running Floorplan Variation...")
 
         # If no input variants, create initial empty variant
         if not in_variants or len(in_variants) == 0:
-            in_variants = [{'variant': {}, 'variant_files': []}]
+            in_variants = [{'variant': {}, '_variant_files': []}]
 
         floorplan_names = generate_floorplan_variations(self.base_path,
                                                         self.parameters.variation_files,
@@ -98,10 +98,13 @@ class FloorplanVariation(Variation):
                     map_file_parameter_name: rel_map_yaml_path,
                     mesh_file_parameter_name: rel_mesh_path
                 },
-                    variant_files=[rel_map_yaml_path, rel_map_pgm_path, rel_mesh_path],
+                    variant_files=[
+                    (rel_map_yaml_path, map_file_path),
+                    (rel_map_pgm_path, os.path.join(self.output_dir, value, 'maps', base_name + '.pgm')),
+                    (rel_mesh_path, mesh_file_path)
+                ],
                     other_values={
-                        'variant_file_path': value,
-                        'floorplan_variant_path': value
+                        '_map_file': map_file_path,
                 }
                 )
                 results.append(new_variant)

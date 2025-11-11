@@ -1,0 +1,42 @@
+settings:
+  version: 1
+  definition:
+  - name: test1
+    scenario_file: scenario.osc
+    variations:
+    - PathVariation:
+        start_pose: "@spawn_pose"
+        goal_pose: "@goal_pose"
+        map_file: /opt/ros/jazzy/share/nav2_bringup/maps/depot.yaml
+        path_length: 13.0
+        num_paths: 3
+        path_length_tolerance: 0.5
+        min_distance: 1.0
+        seed: 42
+        robot_diameter: 0.35
+    - ObstacleVariation:
+        name: static_objects
+        map_file: /opt/ros/jazzy/share/nav2_bringup/maps/depot.yaml
+        obstacle_configs:
+        - amount: 1
+          max_distance: 0.1
+          model: file:///config/files/models/box.sdf.xacro
+          xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+        seed: 42
+        robot_diameter: 0.35
+  execution:
+    image: ghcr.io/cps-test-lab/robovast:latest
+    kubernetes:
+      resources:
+        cpu: 8
+    runs: 10
+  analysis:
+    preprocessing:
+    - ../../tools/ros2_exec.sh rosbags_to_csv.py
+    - ../../tools/ros2_exec.sh rosbags_tf_to_csv.py --frame base_link --frame turtlebot4_base_link_gt
+    - ../../tools/ros2_exec.sh rosbags_bt_to_csv.py
+    visualization:
+    - Analysis:
+        single_test: analysis/analysis_single_test.ipynb
+        variant: analysis/analysis_variant.ipynb
+        run: analysis/analysis_run.ipynb

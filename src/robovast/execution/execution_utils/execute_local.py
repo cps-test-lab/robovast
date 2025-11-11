@@ -15,18 +15,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
-import subprocess
 import sys
 import tempfile
-from pprint import pprint
 
-from robovast.common import (get_execution_env_variables,
-                             get_execution_variants, load_config,
+from robovast.common import (get_execution_env_variables, load_config,
                              prepare_run_configs)
 from robovast.common.cli import get_project_config
+from robovast.common.variant_generation import generate_scenario_variations
 
 
-def initialize_local_execution(variant, output_dir, debug=False, use_temp_dir=False):
+def initialize_local_execution(variant, output_dir, runs, debug=False, feedback_callback=print):
     """Initialize common setup for local execution commands.
 
     Performs all common setup steps including:
@@ -38,71 +36,93 @@ def initialize_local_execution(variant, output_dir, debug=False, use_temp_dir=Fa
 
     Args:
         variant: The variant name to execute
-        output_dir: Directory where output files will be written
+        output_dir: Directory where output files will be written, if none a temporary directory is created
+        runs: Number of runs per variant
         debug: Enable debug output
-        use_temp_dir: If True, creates a temporary directory for config files (used by run())
-
-    Returns:
-        Tuple of (docker_image, config_path, temp_path)
-        where temp_path is a TemporaryDirectory object (or None if use_temp_dir=False)
+        feedback_callback: Function to call for feedback messages (e.g., print or click.echo)
 
     Raises:
         SystemExit: If initialization fails
     """
-    # Get project configuration
+    # Load configuration
     project_config = get_project_config()
-    config = project_config.config_path
+    config_path = project_config.config_path
+    execution_parameters = load_config(config_path, "execution")
+    docker_image = execution_parameters.get("image", "ghcr.io/cps-test-lab/robovast:latest")
+    results_dir = project_config.results_dir
+    feedback_callback(f"Docker image: {docker_image}")
+    feedback_callback("-" * 60)
 
-    execution_parameters = load_config(config, "execution")
-    docker_image = execution_parameters["image"]
-    print(f"Docker image: {docker_image}")
-    print("-" * 60)
+    # Generate and filter variants
+    temp_dir = tempfile.TemporaryDirectory(prefix="robovast_execution_")
+    variants, _ = generate_scenario_variations(
+        variation_file=config_path,
+        progress_update_callback=print,
+        output_dir=temp_dir.name
+    )
 
-    variants, variant_files_dir = get_execution_variants(config)
-
-    if variant not in variants:
-        print(f"Error: variant '{variant}' not found in config.")
-        print("Available variants:")
-        for v in variants:
-            print(f"  - {v}")
+    if not variants:
+        feedback_callback("Error: No variants found in config.", file=sys.stderr)
         sys.exit(1)
 
-    variant_configs = {variant: variants[variant]}
+    # Filter to specific variant if requested
+    if variant:
+        found_variant = None
+        for v in variants:
+            if v['name'] == variant:
+                found_variant = v
+                break
 
-    if debug:
-        print("Variants:")
-        pprint(variant_configs)
+        if not found_variant:
+            feedback_callback(f"Error: Variant '{variant}' not found in config.", file=sys.stderr)
+            feedback_callback("Available variants:")
+            for v in variants:
+                feedback_callback(f"  - {v['name']}")
+            sys.exit(1)
 
-    print(f"Executing variant '{variant}' from {config}...")
-    print(f"Output directory: {output_dir}")
+        variants = [found_variant]
+
+    feedback_callback(f"Preparing {len(variants)} variants from {config_path}...")
+    feedback_callback(f"Output directory: {output_dir}")
 
     # Create the output directory
-    try:
-        os.makedirs(output_dir, exist_ok=True)
-    except Exception as e:  # pylint: disable=broad-except
-        print(f"Error creating output directory: {e}", file=sys.stderr)
-        sys.exit(1)
-    print("-" * 60)
+    feedback_callback("-" * 60)
 
     # Create temp directory for run() or use output_dir for prepare_run()
     temp_path = None
-    if use_temp_dir:
-        temp_path = tempfile.TemporaryDirectory(prefix="robovast_local_", delete=not debug)
+    if not output_dir:
+        temp_path = tempfile.TemporaryDirectory(prefix="robovast_local_", delete=False)
+        feedback_callback(f"Using temporary directory for config files: {temp_path.name}")
         if debug:
-            print(f"Temp path: {temp_path.name}")
+            feedback_callback(f"Temp path: {temp_path.name}")
         config_dir = temp_path.name
     else:
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+        except Exception as e:  # pylint: disable=broad-except
+            feedback_callback(f"Error creating output directory: {e}", file=sys.stderr)
+            sys.exit(1)
         config_dir = output_dir
 
     try:
-        prepare_run_configs(variant, variant_configs, variant_files_dir.name, config_dir)
-        config_path = os.path.join(config_dir, "config", variant, variant)
-        print(f"Config path: {config_path}")
+        prepare_run_configs("local", variants, config_dir)
+        config_path_result = os.path.join(config_dir, "config", "local")
+        feedback_callback(f"Config path: {config_path_result}")
     except Exception as e:  # pylint: disable=broad-except
-        print(f"Error preparing run configs: {e}", file=sys.stderr)
+        feedback_callback(f"Error preparing run configs: {e}", file=sys.stderr)
         sys.exit(1)
 
-    return docker_image, config_path, temp_path
+    feedback_callback(f"Configuration files prepared in: {config_dir}")
+    feedback_callback("-" * 60)
+
+    docker_configs = []
+    for run_number in range(runs):
+        for variant_entry in variants:
+            docker_configs.append((docker_image, os.path.abspath(os.path.join(
+                config_path_result, variant_entry["name"])), variant_entry['name'], run_number))
+
+    generate_docker_run_script(docker_configs, results_dir, os.path.join(config_dir, "run.sh"))
+    return os.path.join(config_dir, "run.sh")
 
 
 def get_commandline(image, config_path, output_path, variant_name, run_num=0, shell=False):
@@ -115,8 +135,8 @@ def get_commandline(image, config_path, output_path, variant_name, run_num=0, sh
         'docker', 'run',
         '--rm',  # Remove container after execution
         '--user', f'{uid}:{gid}',  # Run as host user to avoid permission issues
-        '-v', f'{os.path.abspath(config_path)}:/config',  # Bind mount temp_path to /config
-        '-v', f'{os.path.abspath(output_path)}:/out',   # Bind mount output to /out
+        '-v', f'{config_path}:/config',  # Bind mount temp_path to /config
+        '-v', f'{output_path}:/out',   # Bind mount output to /out
     ]
 
     env_vars = get_execution_env_variables(run_num, variant_name)
@@ -135,32 +155,6 @@ def get_commandline(image, config_path, output_path, variant_name, run_num=0, sh
     return docker_cmd
 
 
-def execute_docker_container(image, config_path, temp_path, output_path, variant_name, run_num=0, shell=False):
-    """Execute Docker container with the specified bind mounts."""
-    docker_cmd = get_commandline(image, config_path, output_path, variant_name, run_num, shell)
-    print(f"Docker command:\n{' '.join(docker_cmd)}")
-    print("-" * 60)
-    sys.stdout.flush()  # Ensure all output is flushed before starting docker
-
-    try:
-        if shell:
-            # For interactive shell, use subprocess.call which properly inherits stdin/stdout/stderr
-            # This gives proper TTY handling for interactive sessions
-            return_code = subprocess.call(docker_cmd)
-            return return_code
-        else:
-            # Normal execution mode - use subprocess.call instead of run to stream output in real-time
-            # This ensures that stdout/stderr are directly inherited and shown immediately
-            return_code = subprocess.call(docker_cmd)
-            return return_code
-    except subprocess.CalledProcessError as e:
-        print(f"Error executing Docker container: return code {e.returncode}")
-        return e.returncode
-    except Exception as e:
-        print(f"Unexpected error: {e}")
-        return 1
-
-
 DOCKER_RUN_TEMPLATE = """#!/usr/bin/env bash
 
 # Default Docker image
@@ -169,6 +163,8 @@ NETWORK_MODE=""
 USE_GUI=true
 USE_SHELL=false
 CONTAINER_NAME="robovast"
+RUN_ID="run-$(date +%Y-%m-%d-%H%M%S)"
+RESULTS_DIR=
 
 # Variable to track if cleanup has run
 CLEANUP_DONE=0
@@ -202,6 +198,7 @@ OPTIONS:
     --image IMAGE       Use a custom Docker image (default: ghcr.io/cps-test-lab/robovast:latest)
     --network-host      Use host networking mode
     --no-gui            Disable host GUI support
+    --output DIR        Override the results output directory
     --shell             Launch an interactive shell instead of running the test
     -h, --help          Show this help message
 EOF
@@ -229,6 +226,15 @@ while [ $# -gt 0 ]; do
         --shell)
             USE_SHELL=true
             shift
+            ;;
+        --output)
+            if [[ "$2" != /* ]]; then
+                echo "Error: --output must be an absolute path (starting with /)"
+                exit 1
+            fi
+            echo "Overriding results directory to: $2"
+            RESULTS_DIR="$2"
+            shift 2
             ;;
         *)
             break
@@ -258,47 +264,99 @@ else
     INTERACTIVE=""
 fi
 
-docker run $INTERACTIVE \
-    --name "$CONTAINER_NAME" \
-    $NETWORK_MODE \
-    $GUI_OPTIONS \
+mkdir -p ${RESULTS_DIR}
 """
 
 
-def generate_docker_run_script(image, config_path, output_path, variant_name, run_num, output_script_path):
-    """Generate a shell script to run the Docker container with the correct parameters."""
-    cmd_line = get_commandline(image, config_path, output_path, variant_name, run_num)
+def generate_docker_run_script(variant_configs, results_dir, output_script_path):
+    """Generate a shell script to run Docker containers sequentially.
+
+    Args:
+        variant_configs: List of tuples (image, config_path, variant_name, run_num)
+        output_script_path: Path where the script should be written
+    """
+    if not variant_configs:
+        raise ValueError("At least one variant configuration is required")
+
+    # Use the first variant's image as the default
+    default_image = variant_configs[0][0]
 
     # Start with the template, replacing the image
-    script = DOCKER_RUN_TEMPLATE.replace(
+    # Replace only the first occurrence of DOCKER_IMAGE and RESULTS_DIR
+    script = DOCKER_RUN_TEMPLATE
+    script = script.replace(
         'DOCKER_IMAGE="ghcr.io/cps-test-lab/robovast:latest"',
-        f'DOCKER_IMAGE="{image}"'
+        f'DOCKER_IMAGE="{default_image}"', 1
+    )
+    script = script.replace(
+        'RESULTS_DIR=',
+        f'RESULTS_DIR="{results_dir}/${{RUN_ID}}"', 1
     )
 
-    # Extract docker run parameters from cmd_line (skip 'docker', 'run')
-    docker_params = []
-    i = 2  # Skip 'docker' and 'run'
-    while i < len(cmd_line):
-        arg = cmd_line[i]
-        if arg == image:
-            # Stop when we reach the image name
-            break
-        elif arg in ['-v', '-e', '--user']:
-            # Options with values
-            docker_params.append(f"    {arg} {cmd_line[i+1]} \\")
-            i += 2
-        else:
-            # Options without values
-            docker_params.append(f"    {arg} \\")
-            i += 1
+    total_variants = len(variant_configs)
 
-    # Add the parameters to the script
-    script += "\n".join(docker_params)
-    script += f'\n    "$DOCKER_IMAGE" \\\n    $COMMAND\n\n'
-    script += '# Capture exit code and cleanup\n'
-    script += 'EXIT_CODE=$?\n'
-    script += 'cleanup\n'
-    script += 'exit $EXIT_CODE\n'
+    # Generate docker run commands for each variant
+    for idx, (image, config_path, variant_name, run_num) in enumerate(variant_configs, 1):
+        test_path = os.path.join("${RESULTS_DIR}", variant_name, str(run_num))
+        cmd_line = get_commandline(image, config_path, test_path, variant_name, run_num)
+
+        # Add progress message
+        script += f'\necho ""\n'
+        script += f'echo "{"=" * 60}"\n'
+        script += f'echo "{idx}/{total_variants} Executing variant {variant_name}, run {run_num}"\n'
+        script += f'echo "{"=" * 60}"\n'
+        script += f'echo ""\n\n'
+        script += f'mkdir -p {test_path}/logs\n'
+
+        # Extract docker run parameters from cmd_line (skip 'docker', 'run')
+        docker_params = []
+        i = 2  # Skip 'docker' and 'run'
+        while i < len(cmd_line):
+            arg = cmd_line[i]
+            if arg == image:
+                # Stop when we reach the image name
+                break
+            elif arg in ['-v', '-e', '--user']:
+                # Options with values
+                docker_params.append(f"    {arg} {cmd_line[i+1]} \\")
+                i += 2
+            else:
+                # Options without values
+                docker_params.append(f"    {arg} \\")
+                i += 1
+
+        # Add docker run command for this variant
+        script += 'docker run $INTERACTIVE \\\n'
+        script += f'    --name "$CONTAINER_NAME" \\\n'
+        script += '    $NETWORK_MODE \\\n'
+        script += '    $GUI_OPTIONS \\\n'
+        script += "\n".join(docker_params)
+        script += f'\n    "$DOCKER_IMAGE" \\\n    $COMMAND\n\n'
+
+        # Check exit code after each run
+        if idx < total_variants:
+            # Not the last one - check and continue
+            script += '# Check exit code\n'
+            script += 'EXIT_CODE=$?\n'
+            script += 'if [ $EXIT_CODE -ne 0 ]; then\n'
+            script += f'    echo "Error: Variant {idx}/{total_variants} ({variant_name}) failed with exit code $EXIT_CODE"\n'
+            script += '    cleanup\n'
+            script += '    exit $EXIT_CODE\n'
+            script += 'fi\n\n'
+        else:
+            # Last one - capture exit code and cleanup
+            script += '# Capture exit code and cleanup\n'
+            script += 'EXIT_CODE=$?\n'
+            script += 'if [ $EXIT_CODE -eq 0 ]; then\n'
+            script += f'    echo ""\n'
+            script += f'    echo "{"=" * 60}"\n'
+            script += f'    echo "All {total_variants} variant(s) completed successfully!"\n'
+            script += f'    echo "{"=" * 60}"\n'
+            script += 'else\n'
+            script += f'    echo "Error: Variant {idx}/{total_variants} ({variant_name}) failed with exit code $EXIT_CODE"\n'
+            script += 'fi\n'
+            script += 'cleanup\n'
+            script += 'exit $EXIT_CODE\n'
 
     try:
         with open(output_script_path, 'w') as f:

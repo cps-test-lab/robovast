@@ -16,7 +16,7 @@
 
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 
 class GeneralConfig(BaseModel):
@@ -26,6 +26,26 @@ class GeneralConfig(BaseModel):
 class VariationConfig(BaseModel):
     pass
     # model_config = ConfigDict(extra='forbid')
+
+
+class ScenarioParameterConfig(BaseModel):
+    model_config = ConfigDict(extra='allow')
+
+
+class DefinitionConfig(BaseModel):
+    name: str
+    scenario_file: str
+    parameters: Optional[list[ScenarioParameterConfig]] = None
+    variations: Optional[list[VariationConfig]] = None
+
+    @field_validator('name')
+    @classmethod
+    def validate_name_no_invalid_characters(cls, v: str) -> str:
+        if not v.islower():
+            raise ValueError(f'name {v} must be all lowercase')
+        if '_' in v or ' ' in v or '.' in v:
+            raise ValueError(f'name {v}must not contain underscores, spaces, or periods')
+        return v
 
 
 class KubernetesResourcesConfig(BaseModel):
@@ -41,8 +61,8 @@ class ExecutionConfig(BaseModel):
     image: str
     kubernetes: KubernetesConfig
     env: Optional[list[dict[str, str]]] = None
-    scenario: str
     runs: int
+    test_files_filter: Optional[list[str]] = None
 
 
 class PreprocessingConfig(BaseModel):
@@ -59,9 +79,10 @@ class AnalysisConfig(BaseModel):
 
 
 class ConfigV1(BaseModel):
+    model_config = ConfigDict(extra='forbid')
     version: int = 1
     general: Optional[GeneralConfig] = None
-    variation: Optional[list[VariationConfig]] = None
+    definition: Optional[list[DefinitionConfig]] = None
     execution: ExecutionConfig
     analysis: Optional[AnalysisConfig] = None
 
