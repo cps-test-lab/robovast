@@ -39,7 +39,7 @@ from .execute_local import initialize_local_execution
 def execution():
     """Execute scenarios locally or on a cluster.
 
-    Run scenario variations either locally using Docker or on a
+    Run scenario configurations either locally using Docker or on a
     Kubernetes cluster for distributed execution.
     """
 

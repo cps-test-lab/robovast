@@ -1,10 +1,10 @@
 How to run
 ==========
 
-.. click:: robovast.variation.variation_utils.cli:variation
-   :prog: vast variation
+.. click:: robovast.configuration.configuration_utils.cli:configuration
+   :prog: vast configuration
    :nested: full
-   :commands: generate, points, types, list
+   :commands: generate, variation-points, variation-types, list
 
 
 .. click:: robovast.execution.execution_utils.cli:execution

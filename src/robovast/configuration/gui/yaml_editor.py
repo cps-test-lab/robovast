@@ -19,7 +19,7 @@ from PySide6.QtGui import (QColor, QFont, QKeyEvent, QPainter, QTextCursor,
                            QTextOption)
 from PySide6.QtWidgets import QPlainTextEdit, QWidget
 
-from robovast.variation.gui.yaml_highlighter import YamlHighlighter
+from robovast.configuration.gui.yaml_highlighter import YamlHighlighter
 
 
 class LineNumberArea(QWidget):

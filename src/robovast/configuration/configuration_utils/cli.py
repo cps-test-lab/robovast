@@ -15,7 +15,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""CLI plugin for variation management."""
+"""CLI plugin for test definition."""
 
 import os
 import sys
@@ -31,15 +31,13 @@ from robovast.common.cli import get_project_config
 
 
 @click.group()
-def variation():
-    """Manage scenario variations.
-
-    Generate and list scenario variations from configuration files.
+def configuration():
+    """Manage test configuration.
     """
 
 
-@variation.command()
-@click.option('--debug', is_flag=True, help='Show internal values starting with _')
+@configuration.command()
+@click.option('--debug', is_flag=True, help='Show internal variant values starting with _')
 def gui(debug):
     """Launch the graphical configuration editor.
 
@@ -48,15 +46,15 @@ def gui(debug):
     from PySide6.QtWidgets import \
         QApplication  # pylint: disable=import-outside-toplevel
 
-    from robovast.variation.gui.variation_editor import \
-        VariationEditor  # pylint: disable=import-outside-toplevel
+    from robovast.configuration.gui.config_editor import \
+        ConfigEditor  # pylint: disable=import-outside-toplevel
     project_config = get_project_config()
 
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
 
     try:
-        window = VariationEditor(project_config, debug=debug)
+        window = ConfigEditor(project_config, debug=debug)
         window.show()
         exit_code = app.exec_()
         window.deleteLater()
@@ -67,7 +65,7 @@ def gui(debug):
         sys.exit(1)
 
 
-@variation.command(name='list')
+@configuration.command(name='list')
 @click.option('--debug', is_flag=True, help='Show internal values starting with _')
 def list_cmd(debug):
     """List scenario variants without generating files.
@@ -81,9 +79,6 @@ def list_cmd(debug):
     project_config = get_project_config()
     config = project_config.config_path
 
-    def progress_callback(message):
-        click.echo(message)
-
     click.echo(f"Listing scenario variants from {config}...")
     click.echo("-" * 60)
 
@@ -91,7 +86,7 @@ def list_cmd(debug):
         try:
             variants, _ = generate_scenario_variations(
                 variation_file=config,
-                progress_update_callback=progress_callback,
+                progress_update_callback=click.echo,
                 output_dir=temp_dir
             )
             if variants:
@@ -130,7 +125,7 @@ def list_cmd(debug):
             sys.exit(1)
 
 
-@variation.command()
+@configuration.command()
 @click.argument('output-dir', type=click.Path())
 def generate(output_dir):
     """Generate scenario variants and output files.
@@ -170,12 +165,12 @@ def generate(output_dir):
         sys.exit(1)
 
 
-@variation.command()
-def types():
+@configuration.command(name='variation-types')
+def variation_types():
     """List available variation types.
 
     Shows all registered variation type entry points that can be used
-    in the variation section of .vast configuration files.
+    in the variations section of .vast configuration files.
     """
     click.echo("Available variation types:")
     click.echo("-" * 60)
@@ -208,8 +203,8 @@ def types():
         sys.exit(1)
 
 
-@variation.command()
-def points():
+@configuration.command(name='variation-points')
+def variation_points():
     """List possible variation points from the scenario files.
 
     Shows all available variation points (scenario parameters) that can be
@@ -223,15 +218,23 @@ def points():
 
     click.echo("Loading scenario parameter template...")
     click.echo("-" * 60)
+    
+    with tempfile.TemporaryDirectory(prefix="list_variants_") as temp_dir:
+        try:
+            variants, _ = generate_scenario_variations(
+                variation_file=config,
+                progress_update_callback=click.echo,
+                output_dir=temp_dir
+            )
+        except Exception as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
 
-    # Load the execution section to get the scenario file
-    full_config = load_config(config)
-    scenarios = full_config.get('definition', [])
+    unique_scenarios = set()
+    for variant in variants:
+        unique_scenarios.add(variant.get('_scenario_file'))
 
-    for scenario in scenarios:
-        scenario_file = scenario.get('_scenario_file')
-        click.echo(f"{scenario['name']} ({scenario_file}):")
-
+    for scenario_file in unique_scenarios:
         if not scenario_file:
             click.echo("Error: No scenario file found in configuration", err=True)
             sys.exit(1)
@@ -257,5 +260,6 @@ def points():
             sys.exit(1)
 
         # Display the parameters in a readable format
+        print(f"Variation points in scenario file: {scenario_file}")
         for param in scenario_parameters:
             click.echo(f"    {param["name"]}: {param["type"] if not param["is_list"] else f'list[{param["type"]}]'}")

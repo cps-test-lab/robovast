@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (QLabel, QSplitter, QTabWidget, QVBoxLayout,
                                QWidget)
 
 from robovast.common import convert_dataclasses_to_dict, filter_variants
-from robovast.variation.gui.yaml_editor import YamlEditor
+from robovast.configuration.gui.yaml_editor import YamlEditor
 
 
 class VariantView(QWidget):

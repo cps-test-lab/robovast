@@ -16,7 +16,7 @@ To run the example, execute the following commands in the base folder of the Rob
    vast init configs/examples/growth_sim/growth_sim.vast
 
    # show the variants that will be executed
-   vast variation list
+   vast configuration list
 
    # setup pods in cluster (kubernetes required)
    vast execution cluster setup minikube
@@ -119,7 +119,7 @@ Before starting the execution in the cluster, it is recommended to first check t
 
 .. code-block:: bash
 
-   vast variation list
+   vast configuration list
 
 
 Check Result of a Single Execution
@@ -191,7 +191,7 @@ The visualization can be customized by adapting the ``analysis.visualization`` s
 
 .. literalinclude:: ../configs/examples/growth_sim/growth_sim.vast
    :language: yaml
-   :lines: 33-38
+   :lines: 32-37
    :caption: Analysis section of RoboVAST Configuration File
 
 Although this example includes only one entry in the analysis list, you can add more. Each additional entry will appear as a separate tab in the GUI.

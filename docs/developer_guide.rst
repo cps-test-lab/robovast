@@ -34,9 +34,8 @@ To test your scenario locally, you can run:
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Create a RoboVAST configuration file, based on the existing examples in the `configs/` directory.
-Do not set any variations yet, as this will be done in the next step.
+Do not set any configuration, as this will be done in the next step.
 
-If no variation is defined, a single variant will be created that uses the scenario as-is with name `variant1`.
 
 .. code-block:: bash
 
@@ -84,10 +83,10 @@ A good procedure is to add variations one-by-one and analyze the result.
     # 1. add variation in config file
 
     # 2. list created variants
-    vast variation list
+    vast configuration list
 
     # 3. test local execution with one of the created variants
-    vast execution local run --variant <variant-name> ./test_out
+    vast execution local run --variant <variant-name> --runs 1 ./test_out
 
 5. Execute in Cluster
 ^^^^^^^^^^^^^^^^^^^^^

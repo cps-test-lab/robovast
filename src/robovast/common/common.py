@@ -38,25 +38,22 @@ def load_config(config_file, subsection=None):
 
     with open(config_file, 'r') as f:
         try:
-            # Load all documents, the first one contains the settings
+            # Load all documents, the first one contains the config
             documents = list(yaml.safe_load_all(f))
             if not documents:
                 raise ValueError("No documents found in scenario file")
             config = documents[0]
-            settings = config.get('settings', None)
-            if settings:
-                # Validate the configuration
-                validate_config(settings)
 
-                if subsection:
-                    subsection = settings.get(subsection, None)
-                    if not subsection:
-                        raise ValueError(f"No subsection '{subsection}' found in settings")
-                    return subsection
-                else:
-                    return settings
+            # Validate the configuration
+            validate_config(config)
+
+            if subsection:
+                subsection_data = config.get(subsection, None)
+                if not subsection_data:
+                    raise ValueError(f"No subsection '{subsection}' found in configuration")
+                return subsection_data
             else:
-                raise ValueError("No 'settings' section found in scenario file")
+                return config
         except yaml.YAMLError as e:
             print(f"Error parsing YAML file: {e}")
             sys.exit(1)

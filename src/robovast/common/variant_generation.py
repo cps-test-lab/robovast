@@ -208,8 +208,8 @@ def generate_scenario_variations(variation_file, progress_update_callback, varia
 
     parameters = load_config(variation_file)
 
-    # Get scenario file from new scenarios format or old format
-    scenarios = parameters.get('definition', [])
+    # Get scenario file from configuration section
+    scenarios = parameters.get('configuration', [])
 
     scenario_files = []
     # Get test_files_filter from config
@@ -219,6 +219,7 @@ def generate_scenario_variations(variation_file, progress_update_callback, varia
         progress_update_callback(f"Loaded {len(test_files_filter)} filter patterns (found {len(scenario_files)} files).")
 
     variants = []
+    variation_gui_classes = {}
     for scenario in scenarios:
         scenario_file_name = scenario.get('scenario_file')
         scenario_file = os.path.join(os.path.dirname(variation_file), scenario_file_name) if scenario_file_name else None
@@ -268,7 +269,6 @@ def generate_scenario_variations(variation_file, progress_update_callback, varia
         if test_files_filter:
             current_variants[0]['_scenario_files'] = scenario_files
 
-        variation_gui_classes = {}
         for variation_class, parameters in variation_classes_and_parameters:
             variation_gui_class = None
             if hasattr(variation_class, 'GUI_CLASS'):

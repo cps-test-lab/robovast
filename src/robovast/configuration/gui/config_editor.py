@@ -31,9 +31,9 @@ from ruamel.yaml.error import YAMLError
 
 from robovast.common import generate_scenario_variations
 from robovast.common.config import validate_config
-from robovast.variation.gui.variant_list import VariantList
-from robovast.variation.gui.variant_view import VariantView
-from robovast.variation.gui.yaml_editor import YamlEditor
+from robovast.configuration.gui.variant_list import VariantList
+from robovast.configuration.gui.variant_view import VariantView
+from robovast.configuration.gui.yaml_editor import YamlEditor
 
 
 class GenerationWorker(QObject):
@@ -66,7 +66,7 @@ class GenerationWorker(QObject):
             self.error.emit(str(e))
 
 
-class VariationEditor(QMainWindow):
+class ConfigEditor(QMainWindow):
     """Main window for the configuration editor."""
 
     def __init__(self, project_config=None, debug=False):
@@ -81,7 +81,7 @@ class VariationEditor(QMainWindow):
         self.yaml_parser.default_flow_style = False
 
         # Initialize QSettings for storing window geometry
-        self.settings = QSettings("RoboVAST", "VariationEditor")
+        self.settings = QSettings("RoboVAST", "ConfigEditor")
 
         # Thread and worker for generation
         self.generation_thread = None
@@ -559,14 +559,9 @@ class VariationEditor(QMainWindow):
 
         # Then, validate against Pydantic schema
         try:
-            # Extract settings section from config
-            settings = config_data.get('settings', None)
-            if not settings:
-                raise ValueError("No 'settings' section found in configuration")
-
-            validate_config(settings)
+            validate_config(config_data)
             success_msg = "<span style='color: #4ec9b0;'><b>✓ Configuration is valid!</b></span><br>"
-            success_msg += f"<span style='color: #9cdcfe;'>Version: {settings.get('version', 'N/A')}</span>"
+            success_msg += f"<span style='color: #9cdcfe;'>Version: {config_data.get('version', 'N/A')}</span>"
             self.error_display.setHtml(success_msg)
         except ValueError as e:
             error_msg = f"<span style='color: #f48771;'><b>Validation Error:</b></span><br>"
@@ -583,7 +578,7 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("YAML Config Editor")
 
-    window = VariationEditor(None)
+    window = ConfigEditor(None)
     window.show()
 
     sys.exit(app.exec())
