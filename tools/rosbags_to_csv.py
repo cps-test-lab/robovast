@@ -22,42 +22,15 @@ import os
 import sys
 import time
 from multiprocessing import Pool, cpu_count
-from pathlib import Path
 
 import rosbag2_py
 from rclpy.serialization import deserialize_message
+from rosbags_common import (find_rosbags, gen_msg_values,
+                            should_skip_processing, write_hash_file)
 from rosidl_runtime_py.utilities import get_message
 
-
-def gen_msg_values(msg, prefix=""):
-    if isinstance(msg, list):
-        for i, val in enumerate(msg):
-            yield from gen_msg_values(val, f"{prefix}[{i}]")
-    elif hasattr(msg, "get_fields_and_field_types"):
-        for field, type_ in msg.get_fields_and_field_types().items():
-            val = getattr(msg, field)
-            full_field_name = prefix + "." + field if prefix else field
-            if type_.startswith("sequence<"):
-                for i, aval in enumerate(val):
-                    yield from gen_msg_values(aval, f"{full_field_name}[{i}]")
-            else:
-                yield from gen_msg_values(val, full_field_name)
-    else:
-        yield prefix, msg
-
-
-def find_rosbags(directory):
-    """Find all rosbag directories in subdirectories."""
-    rosbag_dirs = []
-    for root, _, files in os.walk(directory):
-        # Check if this directory contains .mcap files or metadata.yaml (rosbag indicators)
-        has_mcap = any(f.endswith('.mcap') for f in files)
-        has_metadata = 'metadata.yaml' in files
-
-        if has_mcap or has_metadata:
-            rosbag_dirs.append(root)
-
-    return rosbag_dirs
+# Get script name without extension to use as prefix
+SCRIPT_NAME = os.path.splitext(os.path.basename(__file__))[0]
 
 
 def process_rosbag_wrapper(args):
@@ -68,65 +41,63 @@ def process_rosbag_wrapper(args):
 
 def process_rosbag(bag_path, skipped_topics):
     """Process a single rosbag and save to CSV in the output directory."""
-    records = []
-    append = records.append  # Local variable for faster access
+    try:
+        # Check if we should skip processing based on hash
+        if should_skip_processing(bag_path, prefix=SCRIPT_NAME):
+            # print(f"⊘ {bag_path}: Skipped (already processed)")
+            return -1  # Return -1 to indicate skipped
 
-    reader = rosbag2_py.SequentialReader()
-    reader.open(
-        rosbag2_py.StorageOptions(uri=bag_path, storage_id="mcap"),
-        rosbag2_py.ConverterOptions(
-            input_serialization_format="cdr", output_serialization_format="cdr"
-        ),
-    )
+        records = []
+        append = records.append  # Local variable for faster access
 
-    topic_types = reader.get_all_topics_and_types()
+        reader = rosbag2_py.SequentialReader()
+        reader.open(
+            rosbag2_py.StorageOptions(uri=bag_path, storage_id="mcap"),
+            rosbag2_py.ConverterOptions(
+                input_serialization_format="cdr", output_serialization_format="cdr"
+            ),
+        )
 
-    def typename(topic_name):
-        for topic_type in topic_types:
-            if topic_type.name == topic_name:
-                return topic_type.type
-        raise ValueError(f"topic {topic_name} not in bag")
+        topic_types = reader.get_all_topics_and_types()
 
-    while reader.has_next():
-        topic, data, timestamp = reader.read_next()
-        msg_type = get_message(typename(topic))
-        msg = deserialize_message(data, msg_type)
+        def typename(topic_name):
+            for topic_type in topic_types:
+                if topic_type.name == topic_name:
+                    return topic_type.type
+            raise ValueError(f"topic {topic_name} not in bag")
 
-        if topic not in skipped_topics:
-            fields = dict(gen_msg_values(msg))
-            record = {
-                "timestamp": timestamp,
-                "topic": topic,
-                "type": type(msg).__name__,
-                **fields
-            }
-            append(record)
+        while reader.has_next():
+            topic, data, timestamp = reader.read_next()
+            msg_type = get_message(typename(topic))
+            msg = deserialize_message(data, msg_type)
 
-    if records:
-        # Use only the immediate parent folder name for the CSV filename
-        parent_folder = os.path.abspath(os.path.dirname(bag_path))
-        output_file = os.path.join(parent_folder, os.path.basename(bag_path) + '.csv')
+            if topic not in skipped_topics:
+                fields = dict(gen_msg_values(msg))
+                record = {
+                    "timestamp": timestamp,
+                    "topic": topic,
+                    "type": type(msg).__name__,
+                    **fields
+                }
+                append(record)
 
-        # Collect all unique fieldnames from all records
-        fieldnames = []
-        fieldnames_set = set()
-        for record in records:
-            for key in record.keys():
-                if key not in fieldnames_set:
-                    fieldnames.append(key)
-                    fieldnames_set.add(key)
+        write_hash_file(bag_path, prefix=SCRIPT_NAME)
+        if records:
+            # Use only the immediate parent folder name for the CSV filename
+            parent_folder = os.path.abspath(os.path.dirname(bag_path))
+            output_file = os.path.join(parent_folder, os.path.basename(bag_path) + '.csv')
+            df = pd.DataFrame.from_records(records)
+            df.to_csv(output_file, index=False)
 
-        # Write to CSV using DictWriter
-        with open(output_file, 'w', newline='') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(records)
-
-        print(f"✓ {output_file}: {len(records)} messages")
-        return len(records)
-    else:
-        print(f"✗ {Path(bag_path).name}: No records found")
-        return 0
+            print(f"✓ {output_file}: {len(records)} messages")
+            return len(records)
+        else:
+            print(f"✗ {bag_path}: No records found")
+            return 0
+    except Exception as e:
+        print(f"✗ {bag_path}: Error - {str(e)}")
+        write_hash_file(bag_path, prefix=SCRIPT_NAME)
+        return -2  # Return -2 to indicate error
 
 
 def main():
@@ -156,13 +127,9 @@ def main():
 
     if not rosbag_paths:
         print(f"No rosbags found in {args.input}")
-        return
+        return 0
 
-    print(f"Found {len(rosbag_paths)} rosbags to process:")
-    for path in rosbag_paths:
-        print(f"  - {path}")
-    print(f"Using {args.workers} parallel workers")
-    print()
+    print(f"Found {len(rosbag_paths)} rosbags to process. Using {args.workers} parallel workers...")
 
     start = time.time()
     total_records = 0
@@ -174,28 +141,28 @@ def main():
         process_args.append((bag_path, skipped_topics))
 
     # Process rosbags in parallel
-    print("Processing rosbags...")
-    try:
-        with Pool(processes=args.workers) as pool:
-            results = pool.map(process_rosbag_wrapper, process_args)
-    except Exception as e:
-        print(f"✗ Error during rosbag processing: {str(e)}")
-        sys.exit(1)
-    print()  # Add a blank line after all processing output
+    with Pool(processes=args.workers) as pool:
+        results = pool.map(process_rosbag_wrapper, process_args)
 
     # Calculate summary statistics
+    skipped_bags = 0
+    failed_bags = 0
+    error_bags = 0
     for records_count in results:
-        total_records += records_count
-        if records_count > 0:
+        if records_count == -1:
+            skipped_bags += 1
+        elif records_count == -2:
+            error_bags += 1
+        elif records_count > 0:
+            total_records += records_count
             processed_bags += 1
+        elif records_count == 0:
+            failed_bags += 1
 
     elapsed = time.time() - start
-    print(f"\nSummary:")
-    print(f"Processed {processed_bags}/{len(rosbag_paths)} rosbags successfully")
-    print(f"Total records: {total_records}")
-    print(f"Total time: {elapsed:.2f} seconds")
-    if elapsed > 0:
-        print(f"Average processing rate: {total_records/elapsed:.0f} records/second")
+    print(f"Summary: {len(rosbag_paths)} rosbags ({processed_bags} success, {
+          error_bags} errors, {failed_bags} failed, {skipped_bags} skipped), time {elapsed:.2f}")
+    return 0
 
 
 if __name__ == "__main__":
