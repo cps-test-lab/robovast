@@ -67,7 +67,7 @@ def dataclass_representer(dumper, data):
     return dumper.represent_dict(asdict(data))
 
 
-def convert_dataclasses_to_dict(obj): # pylint: disable=too-many-return-statements
+def convert_dataclasses_to_dict(obj):  # pylint: disable=too-many-return-statements
     """
     Recursively convert dataclass objects to dictionaries.
     Handles nested structures including lists, tuples, and dicts.
