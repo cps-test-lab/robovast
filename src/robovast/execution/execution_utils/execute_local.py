@@ -50,6 +50,15 @@ def initialize_local_execution(variant, output_dir, runs, debug=False, feedback_
     execution_parameters = load_config(config_path, "execution")
     docker_image = execution_parameters.get("image", "ghcr.io/cps-test-lab/robovast:latest")
     results_dir = project_config.results_dir
+
+    # Use execution_parameters value if runs is not provided
+    if runs is None:
+        if "runs" not in execution_parameters:
+            feedback_callback("Error: Number of runs not specified in command or config.")
+            sys.exit(1)
+        else:
+            runs = execution_parameters["runs"]
+
     feedback_callback(f"Docker image: {docker_image}")
     feedback_callback("-" * 60)
 
