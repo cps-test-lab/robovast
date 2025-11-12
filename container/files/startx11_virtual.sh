@@ -9,9 +9,11 @@ if [ -S "/tmp/.X11-unix/X${DISPLAY/:/}" ]; then
 fi
 
 mkdir -p /tmp/runtime-user 2>/dev/null || true
+mkdir -p /tmp/.X11-unix 2>/dev/null || true
+chmod 1777 /tmp/.X11-unix 2>/dev/null || true
 ln -snf /dev/ptmx /dev/tty7 2>/dev/null || true
 
-Xvfb tty7 -noreset -dpi "${DPI}" +extension "RANDR" +extension "RENDER" +extension "MIT-SHM" -screen ${DISPLAY} ${SIZEW}x${SIZEH}x${CDEPTH} "${DISPLAY}" &
+Xvfb tty7 -noreset -dpi "${DPI}" +extension "RANDR" +extension "RENDER" +extension "MIT-SHM" -screen ${DISPLAY} ${SIZEW}x${SIZEH}x${CDEPTH} "${DISPLAY}" 2>/dev/null &
 
 echo -n "Waiting for X socket..."
 until [ -S "/tmp/.X11-unix/X${DISPLAY/:/}" ]; do sleep 1; done
