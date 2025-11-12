@@ -23,7 +23,7 @@ import click
 
 from robovast.common.cli import get_project_config
 
-from ...common import is_preprocessing_needed, run_preprocessing
+from ...common import run_preprocessing
 
 
 @click.group()
@@ -37,14 +37,11 @@ def analysis():
 @analysis.command(name='preprocess')
 @click.option('--results-dir', '-r', default=None,
               help='Directory containing test results (uses project results dir if not specified)')
-@click.option('--force', '-f', is_flag=True,
-              help='Force preprocessing by skipping cache check')
-def preprocess_cmd(results_dir, force):
+def preprocess_cmd(results_dir):
     """Run preprocessing commands on test results.
 
     Executes preprocessing commands defined in the configuration file's
-    analysis.preprocessing section. Creates a ``.robovast_preprocessed`` flag
-    file with a hash of the commands to track if preprocessing is up to date.
+    analysis.preprocessing section. Preprocessing is skipped if the result-directory is unchanged.
 
     Requires project initialization with ``vast init`` first (unless ``--results-dir`` is specified).
     """
@@ -55,9 +52,6 @@ def preprocess_cmd(results_dir, force):
     # Use provided results_dir or fall back to project results dir
     results_dir = results_dir if results_dir is not None else project_config.results_dir
 
-    if force:
-        click.echo("Force mode enabled: skipping cache check")
-
     click.echo("Starting preprocessing...")
     click.echo(f"Results directory: {results_dir}")
     click.echo("-" * 60)
@@ -66,14 +60,11 @@ def preprocess_cmd(results_dir, force):
     success, message = run_preprocessing(
         config_path=config_path,
         results_dir=results_dir,
-        force=force,
         output_callback=click.echo
     )
 
     click.echo("\n" + "=" * 60)
-    if success:
-        click.echo(f"✓ {message}")
-    else:
+    if not success:
         click.echo(f"✗ {message}", err=True)
         sys.exit(1)
 
@@ -85,7 +76,8 @@ def result_analyzer_cmd(results_dir):
     """Launch the graphical test results analyzer.
 
     Opens a GUI application for interactive exploration and
-    visualization of test results.
+    visualization of test results. Automatically runs preprocessing
+    before launching the GUI.
 
     Requires project initialization with ``vast init`` first (unless ``--results-dir`` is specified).
     """
@@ -96,11 +88,16 @@ def result_analyzer_cmd(results_dir):
     # Use provided results_dir or fall back to project results dir
     results_dir = results_dir if results_dir is not None else project_config.results_dir
 
-    # Check if preprocessing is needed
-    is_needed = is_preprocessing_needed(config, results_dir)
-    if is_needed:
-        click.echo(f"⚠ Warning: Preprocessing is needed", err=True)
-        click.echo("Please run 'vast analysis preprocess' before launching the GUI.", err=True)
+    # Run preprocessing before launching GUI
+    success, message = run_preprocessing(
+        config_path=config,
+        results_dir=results_dir,
+        output_callback=click.echo
+    )
+
+    if not success:
+        click.echo(f"\n✗ Preprocessing failed: {message}", err=True)
+        click.echo("Cannot launch GUI without successful preprocessing.", err=True)
         sys.exit(1)
 
     try:

@@ -30,9 +30,6 @@ To run the example, execute the following commands in the base folder of the Rob
    # cleanup pods in cluster
    vast execution cluster cleanup
 
-   # preprocess results
-   vast analysis preprocess
-
    # analyze the results
    vast analysis gui
 
@@ -177,23 +174,27 @@ Analysis
 As result analysis is tailored to each test, users are expected to implement their own analysis routines.
 
 There are two steps invoked to analyze results.
-First, the downloaded results can optionally be preprocessed to simplify later analysis. The user might specify preprocessing commands in ``analysis.preprocessing`` section of the ``.vast`` configuration. Common scripts including converting ROS bags to CSV files or extracting poses from tf-data are available to improve usability.
+First, the results can optionally be preprocessed to simplify later analysis. The user might specify preprocessing commands in ``analysis.preprocessing`` section of the ``.vast`` configuration. Common scripts including converting ROS bags to CSV files or extracting poses from tf-data are available to improve usability.
 
 .. code-block:: bash
 
    vast analysis preprocess
 
 After preprocessing, the actual analysis can be performed.
-To simplify this process, RoboVAST provides the ``result_analyzer`` tool, which enables users to execute Jupyter notebooks directly from a graphical interface.
+To simplify this process, RoboVAST provides a GUI tool, which enables users to execute Jupyter notebooks directly from a graphical interface.
 
-Analysis configuration is specified in the ``analysis.visualization`` section of the ``.vast`` configuration file.
+.. code-block:: bash
+
+   vast analysis gui
+
+The visualization can be customized by adapting the ``analysis.visualization`` section of the ``.vast`` configuration file.
 
 .. literalinclude:: ../configs/examples/growth_sim/growth_sim.vast
    :language: yaml
    :lines: 33-38
    :caption: Analysis section of RoboVAST Configuration File
 
-Although this example includes only one entry in the analysis list, you can add more. Each additional entry will appear as a separate tab in the ``result_analyzer`` interface.
+Although this example includes only one entry in the analysis list, you can add more. Each additional entry will appear as a separate tab in the GUI.
 
 There are three reserved keys for analysis: ``single_test``, ``variant``, and ``run``. These allow you to specify Jupyter notebooks for different scopes:
 
@@ -207,6 +208,6 @@ You are free to implement the notebooks as needed. The only requirement is that 
 
    DATA_DIR = ''
 
-During execution within the ``result_analyzer`` the content of ``DATA_DIR`` is replaced by the currently selected test-directory.
+During execution within the GUI the content of ``DATA_DIR`` is replaced by the currently selected test-directory.
 
 To improve usability the output of the jupyter-notebook-execution is cached and once it was generated it will be displayed instantly.
