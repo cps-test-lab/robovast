@@ -26,7 +26,7 @@ import click
 import yaml
 
 from robovast.common import (filter_configs, generate_scenario_variations,
-                             get_scenario_parameters, load_config)
+                             get_scenario_parameters)
 from robovast.common.cli import get_project_config
 
 

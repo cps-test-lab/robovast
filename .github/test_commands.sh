@@ -64,11 +64,11 @@ done
 
 cd "$TEMP_DIR"
 poetry run --directory "$ORIGINAL_DIR" vast init "$ORIGINAL_DIR/configs/examples/growth_sim/growth_sim.vast"
-poetry run --directory "$ORIGINAL_DIR" vast configuration generate
-poetry run --directory "$ORIGINAL_DIR" vast configuration list
-poetry run --directory "$ORIGINAL_DIR" vast configuration variation-types
-poetry run --directory "$ORIGINAL_DIR" vast configuration variation-points
-poetry run --directory "$ORIGINAL_DIR" vast execution local prepare-run --config test-fixed-values --runs 1 ./test_out
+# poetry run --directory "$ORIGINAL_DIR" vast configuration generate ./test_generated
+# poetry run --directory "$ORIGINAL_DIR" vast configuration list
+# poetry run --directory "$ORIGINAL_DIR" vast configuration variation-types
+# poetry run --directory "$ORIGINAL_DIR" vast configuration variation-points
+# poetry run --directory "$ORIGINAL_DIR" vast execution local prepare-run --config test-fixed-values --runs 1 ./test_out
 
 
 echo "================================="

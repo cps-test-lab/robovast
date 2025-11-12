@@ -453,8 +453,8 @@ def prepare_run(output, config, runs, cluster_config, options):  # pylint: disab
     job_count = 0
 
     for run_number in range(job_runner.num_runs):
-        for config in job_runner.configs:
-            config_name = config.get("name")
+        for cfg in job_runner.configs:
+            config_name = cfg.get("name")
             # Use the centralized function to create the job manifest
             job_manifest = job_runner.create_job_manifest_for_scenario(config_name, run_number)
 

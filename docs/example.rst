@@ -51,7 +51,7 @@ Before running any tests, you must initialize the RoboVAST project configuration
 This command sets up the required configuration files and prepares your project for further steps.
 
 Test Description
----------------
+----------------
 
 In this example, we test a simple logistic growth simulator defined in :repo_link:`configs/examples/growth_sim/files/growth_sim.py`.
 We will do parameter sweeps for ``initial_population`` and ``growth_rate``.

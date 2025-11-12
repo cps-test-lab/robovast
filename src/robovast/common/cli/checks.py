@@ -45,4 +45,3 @@ def check_docker_access():
 
     except Exception as e:
         return False, f"Failed to check Docker access: {str(e)}"
-
