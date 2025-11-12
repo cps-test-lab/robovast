@@ -15,12 +15,15 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Preprocessing functionality for analysis data."""
+import hashlib
+from pathlib import Path
+import time
+import json
 import os
 import subprocess
 from typing import List
 
 from .common import load_config
-from .file_cache import FileCache
 
 
 def get_preprocessing_commands(config_path: str) -> List[str]:
@@ -77,67 +80,35 @@ def get_command_files_and_paths(config_path: str, commands: List[str]) -> tuple[
     return command_files, command_paths
 
 
-def is_preprocessing_needed(config_path: str, results_dir: str) -> bool:
-    """Check if preprocessing is needed.
+def compute_dir_hash(dir_path):
+    """Compute a hash for a directory based on modification time and file sizes."""
+    path = Path(dir_path)
 
-    Args:
-        config_path: Path to .vast configuration file
-        results_dir: Path to the results directory
+    # Collect all files recursively except those starting with "." or ending with .pyc
+    files_to_check = [f for f in path.rglob("*") if f.is_file() and not f.name.startswith(".")
+                      and not f.is_symlink() and not f.name.endswith('pyc')]
 
-    Returns:
-        bool indicating if preprocessing is needed
-    """
-    commands = get_preprocessing_commands(config_path)
+    # Create hash based on file stats (even if empty)
+    hash_data = []
+    for file_path in sorted(files_to_check):
+        stat = file_path.stat()
+        hash_data.append({
+            "name": file_path.name,
+            "size": stat.st_size,
+            "mtime": stat.st_mtime
+        })
 
-    if not commands:
-        return False
-
-    try:
-        command_files, _ = get_command_files_and_paths(config_path, commands)
-    except ValueError:
-        # If command validation fails, preprocessing is needed (will fail later with proper error)
-        return True
-
-    config_dir = os.path.dirname(config_path)
-    cached_file = get_cached_file(config_dir, results_dir, commands, command_files)
-
-    return not bool(cached_file)
+    # Create a simple hash string
+    hash_string = json.dumps(hash_data, sort_keys=True)
+    return hashlib.md5(hash_string.encode()).hexdigest()
 
 
-def get_cached_file(config_dir, results_dir, commands, command_files):
-    """Check if preprocessing cache is valid.
-
-    Args:
-        config_dir: Directory containing the configuration file
-        results_dir: Path to the results directory
-        commands: List of preprocessing commands
-        command_files: List of command file paths
-
-    Returns:
-        Cached file path if cache is valid, None otherwise
-    """
-    file_cache = FileCache(config_dir, "robovast_preprocess_" + results_dir.replace(os.sep, "_"), commands)
-    return file_cache.get_cached_file(command_files, content=False, strings_for_hash=commands, hash_only=True)
-
-
-def reset_preprocessing_cache(config_path, results_dir):
-    commands = get_preprocessing_commands(config_path)
-
-    if not commands:
-        return
-
-    config_dir = os.path.dirname(config_path)
-    file_cache = FileCache(config_dir, "robovast_preprocess_" + results_dir.replace(os.sep, "_"), commands)
-    file_cache.remove_cache()
-
-
-def run_preprocessing(config_path: str, results_dir: str, force: bool = False, output_callback=None):
+def run_preprocessing(config_path: str, results_dir: str, output_callback=None): # pylint: disable=too-many-return-statements
     """Run preprocessing commands on test results.
 
     Args:
         config_path: Path to .vast configuration file
         results_dir: Directory containing test results
-        force: Force preprocessing by skipping cache check
         output_callback: Optional callback function for output messages (takes message string)
 
     Returns:
@@ -150,6 +121,31 @@ def run_preprocessing(config_path: str, results_dir: str, force: bool = False, o
         else:
             print(msg)
 
+    # Validate results directory
+    if not os.path.exists(results_dir):
+        return False, f"Results directory does not exist: {results_dir}"
+
+    # Compute hash of results directory
+    start_time = time.time()
+    hash_result = compute_dir_hash(results_dir)
+    elapsed_time = time.time() - start_time
+    output(f"Hashing {results_dir} took {elapsed_time:.4f} seconds")
+
+    # Check if preprocessing is needed by comparing with stored hash
+    hash_file = os.path.join(results_dir, ".robovast_preprocessing.hash")
+
+    if os.path.exists(hash_file):
+        try:
+            with open(hash_file, 'r') as f:
+                stored_hash = f.read().strip()
+
+            if stored_hash == hash_result:
+                output("Preprocessing skipped: results directory hash unchanged")
+                return True, "Preprocessing not needed (hash unchanged)"
+        except Exception as e:
+            output(f"Warning: Could not read hash file: {e}")
+            # Continue with preprocessing if we can't read the hash file
+
     # Get preprocessing commands
     commands = get_preprocessing_commands(config_path)
 
@@ -158,28 +154,18 @@ def run_preprocessing(config_path: str, results_dir: str, force: bool = False, o
 
     # Validate and resolve command paths
     try:
-        command_files, command_paths = get_command_files_and_paths(config_path, commands)
+        _, command_paths = get_command_files_and_paths(config_path, commands)
     except ValueError as e:
         return False, str(e)
 
     config_dir = os.path.dirname(config_path)
-
-    # Check cache
-    cached_file = get_cached_file(config_dir, results_dir, commands, command_files)
-
-    if cached_file and not force:
-        return True, "Preprocessing is already up to date. No action needed."
-
-    # Validate results directory
-    if not os.path.exists(results_dir):
-        return False, f"Results directory does not exist: {results_dir}"
 
     # Execute each preprocessing command
     success = True
 
     for i, command in enumerate(command_paths, 1):
         command.append(os.path.abspath(results_dir))
-        output(f"\n[{i}/{len(command_paths)}] Executing: {' '.join(command)}")
+        output(f"[{i}/{len(command_paths)}] Executing: {' '.join(command)}")
 
         try:
             result = subprocess.run(
@@ -189,22 +175,25 @@ def run_preprocessing(config_path: str, results_dir: str, force: bool = False, o
                 env={**os.environ, 'PYTHONUNBUFFERED': '1'}
             )
 
-            if result.returncode == 0:
-                output("✓ Success")
-            else:
+            if result.returncode != 0:
                 output(f"✗ Failed with exit code {result.returncode}")
                 success = False
-                break
+                continue
 
         except Exception as e:
             output(f"✗ Error executing command: {e}")
             success = False
-            break
+            continue
 
-    # Save cache on success
+    # Store the hash if preprocessing was successful
     if success:
-        file_cache = FileCache(config_dir, "robovast_preprocess_" + results_dir.replace(os.sep, "_"), commands)
-        file_cache.save_file_to_cache(command_files, None, content=False, strings_for_hash=commands)
+        try:
+            with open(hash_file, 'w') as f:
+                f.write(hash_result)
+            output(f"Stored preprocessing hash to {hash_file}")
+        except Exception as e:
+            output(f"Warning: Could not write hash file: {e}")
+
         return True, "Preprocessing completed successfully!"
     else:
         return False, "Preprocessing failed!"

@@ -23,7 +23,7 @@ import sys
 import click
 import yaml
 
-from robovast.common import prepare_run_configs, reset_preprocessing_cache
+from robovast.common import prepare_run_configs
 from robovast.common.cli import get_project_config
 from robovast.common.kubernetes import check_pod_running, get_kubernetes_client
 from robovast.execution.cluster_execution.cluster_execution import JobRunner
@@ -266,8 +266,6 @@ def download(output, force):
         downloader = ResultDownloader()
         # Download all runs
         count = downloader.download_results(output, force)
-        if count > 0:
-            reset_preprocessing_cache(project_config.config_path, output)
         click.echo(f"### Download of {count} runs completed successfully!")
 
     except Exception as e:

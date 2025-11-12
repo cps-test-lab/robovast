@@ -22,11 +22,15 @@ import os
 import sys
 import time
 from multiprocessing import Pool, cpu_count
-from pathlib import Path
 
 import rosbag2_py
 from py_trees_ros_interfaces.msg import BehaviourTree
 from rclpy.serialization import deserialize_message
+from rosbags_common import (find_rosbags, should_skip_processing,
+                            write_hash_file)
+
+# Get script name without extension to use as prefix
+SCRIPT_NAME = os.path.splitext(os.path.basename(__file__))[0]
 
 
 def reconstruct_behavior_timeline(bag_path, output_file):
@@ -92,20 +96,6 @@ def reconstruct_behavior_timeline(bag_path, output_file):
     return record_count
 
 
-def find_rosbags(directory):
-    """Find all rosbag directories in subdirectories."""
-    rosbag_dirs = []
-    for root, _, files in os.walk(directory):
-        # Check if this directory contains .mcap files or metadata.yaml (rosbag indicators)
-        has_mcap = any(f.endswith('.mcap') for f in files)
-        has_metadata = 'metadata.yaml' in files
-
-        if has_mcap or has_metadata:
-            rosbag_dirs.append(root)
-
-    return rosbag_dirs
-
-
 def process_rosbag_wrapper(args):
     """Wrapper function for multiprocessing that unpacks arguments."""
     return process_rosbag(*args)
@@ -113,23 +103,29 @@ def process_rosbag_wrapper(args):
 
 def process_rosbag(bag_path, csv_filename):
     """Process a single rosbag and extract behavior status changes to CSV."""
-    print(f"Processing rosbag: {Path(bag_path).name}")
-
     try:
+        # Check if we should skip processing based on hash
+        if should_skip_processing(bag_path, prefix=SCRIPT_NAME):
+            return -1  # Return -1 to indicate skipped
+
         parent_folder = os.path.abspath(os.path.dirname(bag_path))
         output_file = os.path.join(parent_folder, csv_filename)
 
         record_count = reconstruct_behavior_timeline(bag_path, output_file)
 
+        # Write hash file after successful processing
+        write_hash_file(bag_path, prefix=SCRIPT_NAME)
+
         if record_count > 0:
             print(f"✓ {output_file}: {record_count} status records")
             return record_count
         else:
-            print(f"✗ {Path(bag_path).name}: No behavior records found")
+            print(f"✗ {bag_path}: No behavior records found")
             return 0
     except Exception as e:
-        print(f"✗ Error processing {Path(bag_path).name}: {str(e)}")
-        return 0
+        print(f"✗ {bag_path}: Error - {str(e)}")
+        write_hash_file(bag_path, prefix=SCRIPT_NAME)
+        return -2  # Return -2 to indicate error
 
 
 def main():
@@ -160,11 +156,7 @@ def main():
         print(f"No rosbags found in {args.input}")
         return
 
-    print(f"Found {len(rosbag_paths)} rosbags to process:")
-    for path in rosbag_paths:
-        print(f"  - {path}")
-    print(f"Using {args.workers} parallel workers")
-    print()
+    print(f"Found {len(rosbag_paths)} rosbags to process. Using {args.workers} parallel workers...")
 
     start = time.time()
     total_behaviors = 0
@@ -174,26 +166,27 @@ def main():
     process_args = [(bag_path, args.csv_filename) for bag_path in rosbag_paths]
 
     # Process rosbags in parallel
-    print("Extracting behavior timelines...")
-    try:
-        with Pool(processes=args.workers) as pool:
-            results = pool.map(process_rosbag_wrapper, process_args)
-    except Exception as e:
-        print(f"✗ Error during processing: {str(e)}")
-        sys.exit(1)
-    print()
+    with Pool(processes=args.workers) as pool:
+        results = pool.map(process_rosbag_wrapper, process_args)
 
     # Calculate summary statistics
+    skipped_bags = 0
+    failed_bags = 0
+    error_bags = 0
     for behavior_count in results:
-        total_behaviors += behavior_count
-        if behavior_count > 0:
+        if behavior_count == -1:
+            skipped_bags += 1
+        elif behavior_count == -2:
+            error_bags += 1
+        elif behavior_count > 0:
+            total_behaviors += behavior_count
             processed_bags += 1
+        elif behavior_count == 0:
+            failed_bags += 1
 
     elapsed = time.time() - start
-    print(f"\nSummary:")
-    print(f"Processed {processed_bags}/{len(rosbag_paths)} rosbags successfully")
-    print(f"Total status records extracted: {total_behaviors}")
-    print(f"Total time: {elapsed:.2f} seconds")
+    print(f"Summary: {len(rosbag_paths)} rosbags ({processed_bags} success, {
+          error_bags} errors, {failed_bags} failed, {skipped_bags} skipped), time {elapsed:.2f}s")
 
 
 if __name__ == "__main__":

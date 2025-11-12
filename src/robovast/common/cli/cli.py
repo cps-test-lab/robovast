@@ -27,7 +27,6 @@ import click
 
 from ..common import load_config
 from ..kubernetes import get_kubernetes_client
-from ..preprocessing import reset_preprocessing_cache
 from .checks import check_docker_access, check_kubernetes_access
 from .project_config import ProjectConfig, get_project_config
 
@@ -287,11 +286,6 @@ def import_results(archive, output, force):
             tar.extractall(path=output)
 
         click.echo(f"Successfully extracted to: {output}")
-
-        # Reset preprocessing cache if we have project config
-        if project_config:
-            reset_preprocessing_cache(project_config.config_path, output)
-            click.echo(f"Preprocessing cache reset")
 
         click.echo(f"Import completed successfully!")
 
