@@ -192,11 +192,11 @@ def format_notebook_error_html(error_str: str) -> str:
 class JupyterNotebookRunner(CancellableWorkload):
     """Thread for executing notebooks without blocking the UI"""
 
-    def __init__(self, name, single_test_nb, variant_nb, run_nb):
+    def __init__(self, name, single_test_nb, config_nb, run_nb):
         super().__init__(name)
         self.notebook_content = None
         self.single_test_nb = single_test_nb
-        self.variant_nb = variant_nb
+        self.config_nb = config_nb
         self.run_nb = run_nb
 
     def set_notebook(self, notebook_content: str):
@@ -216,7 +216,7 @@ class JupyterNotebookRunner(CancellableWorkload):
                     return [cached_file]
                 else:
                     return None
-            elif run_type == RunType.SINGLE_VARIANT:
+            elif run_type == RunType.CONFIG:
                 # 2. Check if CSV files exist in subfolders (folder run)
                 csv_files = list(data_path.glob("*/*.csv"))
                 if csv_files:
@@ -276,8 +276,8 @@ class JupyterNotebookRunner(CancellableWorkload):
     def _get_external_notebook_path(self, run_type) -> str:
         if run_type == RunType.SINGLE_TEST:
             return self.single_test_nb
-        elif run_type == RunType.SINGLE_VARIANT:
-            return self.variant_nb
+        elif run_type == RunType.CONFIG:
+            return self.config_nb
         elif run_type == RunType.RUN:
             return self.run_nb
         return None
@@ -314,8 +314,8 @@ class JupyterNotebookRunner(CancellableWorkload):
         """Determine CSV files and analysis type based on directory structure"""
         if run_type == RunType.SINGLE_TEST:
             return "overview_single_test.html"
-        elif run_type == RunType.SINGLE_VARIANT:
-            return "overview_single_variant.html"
+        elif run_type == RunType.CONFIG:
+            return "overview_config.html"
         elif run_type == RunType.RUN:
             return "overview_run.html"
         raise ValueError("Unknown run-type")

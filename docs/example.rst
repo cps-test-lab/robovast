@@ -15,7 +15,7 @@ To run the example, execute the following commands in the base folder of the Rob
    # initialize project
    vast init configs/examples/growth_sim/growth_sim.vast
 
-   # show the variants that will be executed
+   # show the configurations that will be executed
    vast configuration list
 
    # setup pods in cluster (kubernetes required)
@@ -50,7 +50,7 @@ Before running any tests, you must initialize the RoboVAST project configuration
 
 This command sets up the required configuration files and prepares your project for further steps.
 
-Test Definition
+Test Description
 ---------------
 
 In this example, we test a simple logistic growth simulator defined in :repo_link:`configs/examples/growth_sim/files/growth_sim.py`.
@@ -72,27 +72,27 @@ The central part of RoboVAST is the configuration file, which defines all aspect
 
 In this example we use configuration file :repo_link:`configs/examples/growth_sim/growth_sim.vast`.
 
-The ``settings`` are split into three main sections: ``definition``, ``execution``, and ``analysis``.
+The ``settings`` are split into three main sections: ``configuration``, ``execution``, and ``analysis``.
 
-Definition
-^^^^^^^^^^
+Configuration
+^^^^^^^^^^^^^
 
-The ``definition`` section defines the test scenarios to be executed. Each scenario specifies:
+The ``configuration`` section defines the test scenarios to be executed. Each scenario specifies:
 
 - ``name``: A unique identifier for the scenario
 - ``scenario_file``: The path to the scenario file (e.g., ``scenario.osc``)
-- ``parameters``: (Optional) Fixed parameters that apply to all variants of this scenario
+- ``parameters``: (Optional) Fixed parameters that apply to all configurations of this scenario
 - ``variations``: (Optional) Advanced variation types for complex test generation
 
 In this example, we define two scenarios:
 
-1. **test**: Uses ``variations`` to create multiple variants by varying ``initial_population`` and ``growth_rate`` using the ``ParameterVariationList`` plugin. This creates 4 × 3 = 12 variants.
-2. **test-fixed-values**: Uses ``parameters`` to define a single variant with fixed values (``growth_rate: 0.07`` and ``initial_population: 123``).
+1. **test**: Uses ``variations`` to create multiple configurations by varying ``initial_population`` and ``growth_rate`` using the ``ParameterVariationList`` plugin. This creates 4 × 3 = 12 configurations.
+2. **test-fixed-values**: Uses ``parameters`` to define a single configuration with fixed values (``growth_rate: 0.07`` and ``initial_population: 123``).
 
 .. literalinclude:: ../configs/examples/growth_sim/growth_sim.vast
    :language: yaml
-   :lines: 3-24
-   :caption: Definition section of RoboVAST Configuration File
+   :lines: 2-23
+   :caption: Configuration section of RoboVAST Configuration File
 
 
 Execution
@@ -106,16 +106,16 @@ The ``execution`` section of the ``.vast`` configuration specifies all necessary
 
 .. literalinclude:: ../configs/examples/growth_sim/growth_sim.vast
    :language: yaml
-   :lines: 25-32
+   :lines: 24-31
    :caption: Execution section of RoboVAST Configuration File
 
-In this example, we configure 20 runs for each variant to ensure statistically meaningful results.
+In this example, we configure 20 runs for each config to ensure statistically meaningful results.
 In this basic example we hand in the system-under-test ``growth_sim.py`` directly by specifying the pattern ``**/files/*.py`` in the ``test_files_filter``. In larger setups, it might be required to use a custom container image.
 
-Check Generated Variants
-""""""""""""""""""""""""
+Check Generated Configurations
+""""""""""""""""""""""""""""""
 
-Before starting the execution in the cluster, it is recommended to first check the variants.
+Before starting the execution in the cluster, it is recommended to first check the configurations.
 
 .. code-block:: bash
 
@@ -131,7 +131,7 @@ The command runs the container using the ``docker`` command and the same paramet
 
 .. code-block:: bash
 
-   vast execution local run --variant variant1 output_variant1
+   vast execution local run --config config1 output_config1
 
 
 Cluster Execution
@@ -158,12 +158,12 @@ The resulting folder structure looks like this:
 
     growth_sim_results/
     ├── run_<timestamp>/             <-- Each cluster execution creates a new folder 
-    |   ├── variant<index>           <-- Each variant is stored within a separate folder (example: variant42)
-    |   |   ├── <run_number>         <-- Each run of a variant is stored in a separate folder. It contains all input- and output-files of a single test run
+    |   ├── <test-name>              <-- Each configuration is stored within a separate folder (example: config42)
+    |   |   ├── <run_number>         <-- Each run of a configuration is stored in a separate folder. It contains all input- and output-files of a single test run
     |   |   |   ├── logs             <-- Logs folder (e.g. for ROS_LOG_DIR)
     |   |   |   |   ├── system.log   <-- The complete system log
     |   |   |   ├── scenario.osc     <-- The scenario used within this test
-    |   |   |   ├── scenario.variant <-- The parameter set used within this run
+    |   |   |   ├── scenario.config  <-- The parameter set used within this run
     |   |   |   ├── run.yaml         <-- Details about the run (e.g. RUN_ID)
     |   |   |   ├── test.xml         <-- Scenario result, in junitxml format
     |   |   |   ├── <test-specifics> <-- Any test-specific files, stored during the test run within /out (e.g. rosbag)
@@ -196,11 +196,11 @@ The visualization can be customized by adapting the ``analysis.visualization`` s
 
 Although this example includes only one entry in the analysis list, you can add more. Each additional entry will appear as a separate tab in the GUI.
 
-There are three reserved keys for analysis: ``single_test``, ``variant``, and ``run``. These allow you to specify Jupyter notebooks for different scopes:
+There are three reserved keys for analysis: ``single_test``, ``config``, and ``run``. These allow you to specify Jupyter notebooks for different scopes:
 
 - **single_test**: analyzes an individual test run.
-- **variant**: analyzes all test runs for a specific variant or parameter set.
-- **run**: analyzes all tests within a run, covering all variants and parameter sets.
+- **config**: analyzes all test runs for a specific configuration/parameter set.
+- **run**: analyzes all tests within a run, covering all configurations and parameter sets.
 
 You are free to implement the notebooks as needed. The only requirement is that each notebook includes the following line:
 

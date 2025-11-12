@@ -39,7 +39,7 @@ Do not set any configuration, as this will be done in the next step.
 
 .. code-block:: bash
 
-    vast execution local prepare-run --variant variant1 ./test_run
+    vast execution local prepare-run --config config1 ./test_run
 
 Afterwards you can verify the scenario, the RoboVAST-configuration and the docker image.
 
@@ -64,42 +64,41 @@ Next, it is important to verify that the output (e.g. ROS bag) is stored correct
 
 .. code-block:: bash
 
-    vast execution local run --variant variant1 ./test_out
+    vast execution local run --config config1 ./test_out
 
-    # check that output is created in ./test_out/variant1
-    ls -l ./test_out/variant1
-
+    # check that output is created in ./test_out/config1
+    ls -l ./test_out/config1
 
 Once you are satisfied that the scenario and configuration work as expected, you can proceed to the next step.
 
-4. Configure Variations
-^^^^^^^^^^^^^^^^^^^^^^^
+4. Define Configurations
+^^^^^^^^^^^^^^^^^^^^^^^^
 
-Define variations in your RoboVAST configuration file to create multiple test variants.
-A good procedure is to add variations one-by-one and analyze the result.
+Define configurations in your ``.vast`` file.
+A good procedure is to add configurations one-by-one and analyze the result.
 
 .. code-block:: bash
 
-    # 1. add variation in config file
+    # 1. add configuration in config file
 
-    # 2. list created variants
+    # 2. list created configurations
     vast configuration list
 
-    # 3. test local execution with one of the created variants
-    vast execution local run --variant <variant-name> --runs 1 ./test_out
+    # 3. test local execution with one of the created configurations
+    vast execution local run --config <config-name> --runs 1 ./test_out
 
 5. Execute in Cluster
 ^^^^^^^^^^^^^^^^^^^^^
 
-Once you have defined your variations and verified local execution, you can run the tests in a Kubernetes cluster.
+Once you have defined your configurations and verified local execution, you can run the tests in a Kubernetes cluster.
 
-A good practice is, to first run a single variant to verify that everything works as expected. 
+A good practice is, to first run a single configuration to verify that everything works as expected. 
 
 
 .. code-block:: bash
 
-    # 1. run single variant in cluster, once
-    vast execution cluster run --variant variant1 --runs 1
+    # 1. run single configuration in cluster, once
+    vast execution cluster run --config config1 --runs 1
 
     # 2. check results
     vast execution cluster download
@@ -131,9 +130,9 @@ To develop the notebooks, it is recommended to use e.g. VSCode. For the RoboVAST
 .. code-block:: python
 
     # for single-test
-    DATA_DIR = '<path-to-your-results-directory>/variant1/0'
-    # for variant
-    DATA_DIR = '<path-to-your-results-directory>/variant1'
+    DATA_DIR = '<path-to-your-results-directory>/config1/0'
+    # for configuration
+    DATA_DIR = '<path-to-your-results-directory>/config1'
     # for complete run
     DATA_DIR = '<path-to-your-results-directory>'
 

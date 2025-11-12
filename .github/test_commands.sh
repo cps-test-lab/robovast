@@ -4,6 +4,20 @@
 
 set -e  # Exit on first error
 
+# Save original directory
+ORIGINAL_DIR=$(pwd)
+
+# Create temporary directory for tests
+TEMP_DIR=$(mktemp -d)
+echo "Created temporary directory: $TEMP_DIR"
+
+# Cleanup function to remove temp directory on exit
+cleanup() {
+    echo "Cleaning up temporary directory..."
+    rm -rf "$TEMP_DIR"
+}
+trap cleanup EXIT
+
 echo "================================="
 echo "Testing CLI Commands"
 echo "================================="
@@ -46,6 +60,16 @@ for cmd in "${commands[@]}"; do
     fi
     echo ""
 done
+
+
+cd "$TEMP_DIR"
+poetry run --directory "$ORIGINAL_DIR" vast init "$ORIGINAL_DIR/configs/examples/growth_sim/growth_sim.vast"
+poetry run --directory "$ORIGINAL_DIR" vast configuration generate
+poetry run --directory "$ORIGINAL_DIR" vast configuration list
+poetry run --directory "$ORIGINAL_DIR" vast configuration variation-types
+poetry run --directory "$ORIGINAL_DIR" vast configuration variation-points
+poetry run --directory "$ORIGINAL_DIR" vast execution local prepare-run --config test-fixed-values --runs 1 ./test_out
+
 
 echo "================================="
 echo "All tests passed successfully! ✅"

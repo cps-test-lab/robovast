@@ -33,7 +33,7 @@ def read_output_files(data_dir: str, reader_func: Callable[[Path], pd.DataFrame]
         debug (bool, optional): If True, prints debug information. Defaults to False.
 
     Returns:
-        pd.DataFrame: Combined DataFrame containing all test data, with additional columns for test, variant, and scenario parameters.
+        pd.DataFrame: Combined DataFrame containing all test data, with additional columns for test, config, and scenario parameters.
 
     Raises:
         ValueError: If data_dir does not exist, no run.yaml files are found, or no valid test data could be read.
@@ -54,7 +54,7 @@ def read_output_files(data_dir: str, reader_func: Callable[[Path], pd.DataFrame]
     if debug:
         print(f"Found {len(run_yaml_files)} test directories")
 
-    category_names = set({'test', 'variant'})
+    category_names = set({'test', 'config'})
     for run_yaml in run_yaml_files:
         if debug:
             print(f"Reading data from: {run_yaml}")
@@ -67,23 +67,22 @@ def read_output_files(data_dir: str, reader_func: Callable[[Path], pd.DataFrame]
                 df = reader_func(test_dir)
             else:
                 df = pd.DataFrame()
-            scenario_variant_path = run_yaml.parent / "scenario.variant"
-            variant_parameters = {}
+            scenario_config_path = run_yaml.parent / "scenario.config"
+            config_parameters = {}
             try:
-                with open(scenario_variant_path, 'r') as f:
-                    variant_content = yaml.safe_load(f)
+                with open(scenario_config_path, 'r') as f:
+                    config_content = yaml.safe_load(f)
 
                     # skip scenario-name
-                    if isinstance(variant_content, dict) and len(variant_content) == 1:
-                        variant_parameters = next(iter(variant_content.values()))
-
+                    if isinstance(config_content, dict) and len(config_content) == 1:
+                        config_parameters = next(iter(config_content.values()))
             except Exception as e:
-                print(f"Could not read scenario.variant: {e}\n")
+                print(f"Could not read scenario.config: {e}\n")
 
             df['test'] = str(test_name)
-            df['variant'] = str(os.path.basename(test_dir.parent))
-            category_names.update(variant_parameters.keys())
-            for param_name, param_value in variant_parameters.items():
+            df['config'] = str(os.path.basename(test_dir.parent))
+            category_names.update(config_parameters.keys())
+            for param_name, param_value in config_parameters.items():
                 if isinstance(param_value, (dict, list)):
                     df[param_name] = yaml.safe_dump(param_value)
                 else:

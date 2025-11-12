@@ -26,8 +26,7 @@ from importlib.metadata import entry_points
 import click
 
 from ..common import load_config
-from ..kubernetes import get_kubernetes_client
-from .checks import check_docker_access, check_kubernetes_access
+from .checks import check_docker_access
 from .project_config import ProjectConfig, get_project_config
 
 
@@ -84,17 +83,6 @@ def init(config, results_dir, force):
         click.echo("  Docker is required for RoboVAST execution.", err=True)
         sys.exit(1)
     click.echo(f"✓ {docker_msg}")
-
-    # Check Kubernetes access
-    k8s_client = get_kubernetes_client()
-    click.echo("Checking Kubernetes cluster access...")
-    k8s_ok, k8s_msg = check_kubernetes_access(k8s_client)
-    if not k8s_ok:
-        click.echo(f"✗ Error: {k8s_msg}", err=True)
-        click.echo("  Kubernetes cluster is required for RoboVAST execution.", err=True)
-        if not force:
-            sys.exit(1)
-    click.echo(f"✓ {k8s_msg}")
 
     # Convert to absolute paths
     project_file_dir = os.path.abspath(os.getcwd())

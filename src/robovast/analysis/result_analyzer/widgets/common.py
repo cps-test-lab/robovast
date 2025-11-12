@@ -22,7 +22,7 @@ import yaml
 
 class RunType(Enum):
     SINGLE_TEST = 0
-    SINGLE_VARIANT = 1
+    CONFIG = 1
     RUN = 2
 
 
@@ -34,7 +34,6 @@ def clean_test_name(test_file_path):
         return None
 
     try:
-        # 2. Parse scenarios/Dataset/scenario.variants to get the entry that matches the real name
         with open(run_file, 'r') as f:
             content = f.read()
 
@@ -51,52 +50,6 @@ def clean_test_name(test_file_path):
         return None
 
     return run_data["SCENARIO_CONFIG"]
-
-
-def get_variant_value(test_file_path, key):
-    """
-    Get a specific value from the variant data for a test by parsing scenario.variants
-
-    Args:
-        test_file_path: The path to the test file
-        key: The key to retrieve from the variant data
-
-    Returns:
-        Value corresponding to the key, or None if not found
-    """
-    variant_file = test_file_path / "scenario.variant"
-
-    if not variant_file.exists():
-        print(f"Variant file not found: {variant_file}")
-        return None
-
-    try:
-        # 2. Parse scenarios/Dataset/scenario.variants to get the entry that matches the real name
-        with open(variant_file, 'r') as f:
-            content = f.read()
-
-        try:
-            variant_data = yaml.safe_load(content)
-        except yaml.YAMLError:
-            return None
-
-    except Exception as e:
-        print(f"Error getting variant data for {variant_file}: {str(e)}")
-        return None
-
-    if not variant_data:
-        return None
-    path = ["test_scenario"]
-    path.append(key)
-
-    # Navigate through the variant data using path
-    value = variant_data
-    for k in path:
-        if isinstance(value, dict) and k in value:
-            value = value[k]
-        else:
-            return None
-    return value
 
 
 def check_preferred_log_file(file_path):

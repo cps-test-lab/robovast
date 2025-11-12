@@ -19,8 +19,6 @@
 
 import docker
 from docker.errors import DockerException
-from kubernetes import client, config
-from kubernetes.client.rest import ApiException
 
 
 def check_docker_access():
@@ -48,30 +46,3 @@ def check_docker_access():
     except Exception as e:
         return False, f"Failed to check Docker access: {str(e)}"
 
-
-def check_kubernetes_access(k8s_client):
-    """Check if Kubernetes cluster is accessible.
-
-    Returns:
-        tuple: (bool, str) - (success, message)
-            - success: True if Kubernetes cluster is accessible, False otherwise
-            - message: Success message or error description
-    """
-    try:
-        # Try to get server version as a connectivity test
-        version = client.VersionApi().get_code()
-        k8s_version = f"{version.major}.{version.minor}"
-
-        # Try to list namespaces to verify we have basic permissions
-        k8s_client.list_namespace(limit=1)
-
-        return True, f"Kubernetes cluster is accessible (version {k8s_version})"
-
-    except config.ConfigException as e:
-        return False, f"Kubernetes configuration not found: {str(e)}"
-
-    except ApiException as e:
-        return False, f"Kubernetes API error: {e.status} - {e.reason}"
-
-    except Exception as e:
-        return False, f"Failed to check Kubernetes access: {str(e)}"

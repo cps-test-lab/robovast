@@ -24,14 +24,14 @@ from .map_visualizer_qt import MapVisualizerWidget
 class NavigationGui(MapVisualizerWidget, VariationGui):
     """GUI for Navigation Variations."""
 
-    def update(self, variant, path):
-        """Update the GUI with the given variant data.
+    def update(self, config, path):
+        """Update the GUI with the given config data.
 
         Args:
-            variant: The variant data to display.
-            path: The file path of the variant.
+            config: The config data to display.
+            path: The file path of the config.
         """
-        map_file = variant.get('_map_file', None)
+        map_file = config.get('_map_file', None)
         if os.path.isabs(map_file):
             map_path = map_file
         else:

@@ -15953,5 +15953,5 @@ analysis:
   visualization:
   - Analysis:
       single_test: analysis/analysis_single_test.ipynb
-      variant: analysis/analysis_variant.ipynb
+      config: analysis/analysis_config.ipynb
       run: analysis/analysis_run.ipynb

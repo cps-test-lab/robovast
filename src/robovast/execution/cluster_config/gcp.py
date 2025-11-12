@@ -19,7 +19,7 @@ import io
 import yaml
 from kubernetes import client, config
 
-from robovast.common.kubernetes import apply_manifests, delete_manifests
+from ..cluster_execution.kubernetes import apply_manifests, delete_manifests
 
 from .base_config import BaseConfig
 

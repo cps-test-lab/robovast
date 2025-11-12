@@ -61,8 +61,8 @@ class ObstacleVariationConfig(BaseModel):
 
 class ObstacleVariationGuiRenderer(VariationGuiRenderer):
 
-    def update_gui(self, variant, path):
-        for obstacle in variant["variant"].get('static_objects', []):
+    def update_gui(self, config, path):
+        for obstacle in config["config"].get('static_objects', []):
             shape = None
             if "box" in obstacle["model"]:
                 shape = "box"
@@ -83,30 +83,29 @@ class ObstacleVariation(NavVariation):
     GUI_CLASS = NavigationGui
     GUI_RENDERER_CLASS = ObstacleVariationGuiRenderer
 
-    def variation(self, in_variants):
+    def variation(self, in_configs):
         self.progress_update("Running Obstacle Variation...")
 
         results = []
-        for variant in in_variants:
+        for config in in_configs:
             np.random.seed(self.parameters.seed)
             for _ in range(self.parameters.count):
-                result = self._generate_obstacles_for_variant(self.base_path, variant, self.parameters.obstacle_configs)
+                result = self._generate_obstacles_for_config(self.base_path, config, self.parameters.obstacle_configs)
                 results.extend(result)
         return results
 
-    def _generate_obstacles_for_variant(self, base_path, variant, obstacle_configs):
-
-        resulting_variants = []
+    def _generate_obstacles_for_config(self, base_path, config, obstacle_configs):
+        resulting_configs = []
 
         placer = ObstaclePlacer()
 
         try:
-            map_file_path = self.get_map_file(self.parameters.map_file, variant)
+            map_file_path = self.get_map_file(self.parameters.map_file, config)
         except Exception as e:  # pylint: disable=broad-except
-            raise ValueError(f"Error determining map file for variant {variant['name']}: {e}") from e
+            raise ValueError(f"Error determining map file for config {config['name']}: {e}") from e
 
-        if 'start_pose' not in variant['variant'] or 'goal_poses' not in variant['variant']:
-            self.progress_update("start_pose and/or goal_poses not defined in variant, placing obstacles randomly (idependent of path)...")
+        if 'start_pose' not in config['config'] or 'goal_poses' not in config['config']:
+            self.progress_update("start_pose and/or goal_poses not defined in config, placing obstacles randomly (idependent of path)...")
 
             for obstacle_config in obstacle_configs:
                 obstacle_objects = placer.place_obstacles_random(
@@ -118,8 +117,8 @@ class ObstacleVariation(NavVariation):
         else:
             raise NotImplementedError("Path-dependent obstacle placement is not implemented yet.")
             # waypoints = [
-            #     variant["variant"]["start_pose"],
-            # ] + variant["variant"]["goal_poses"]
+            #     config["config"]["start_pose"],
+            # ] + config["config"]["goal_poses"]
 
             # path_generator = PathGenerator(map_file_path, self.parameters.robot_diameter)
             # path = path_generator.generate_path(waypoints, [])
@@ -128,11 +127,11 @@ class ObstacleVariation(NavVariation):
             #     if obstacle_config.amount > 0:
             #         max_attempts = 10
             #         attempt = 0
-            #         navigable_variant_found = False
+            #         navigable_config_found = False
 
             #         while (
             #             attempt < max_attempts
-            #             and not navigable_variant_found
+            #             and not navigable_config_found
             #         ):
             #             attempt += 1
 
@@ -151,10 +150,10 @@ class ObstacleVariation(NavVariation):
             #                 obstacle_objects = []
 
             #             if not obstacle_objects:
-            #                 navigable_variant_found = True
+            #                 navigable_config_found = True
 
             #             # Validate navigation with the placed obstacles
-            #             if obstacle_objects and variant['variant']["map_file"]:
+            #             if obstacle_objects and config['config']["map_file"]:
             #                 self.progress_update(f"Validating navigation on map {map_path} with {len(obstacle_objects)} obstacles")
             #                 if os.path.exists(map_path):
             #                     try:
@@ -170,9 +169,9 @@ class ObstacleVariation(NavVariation):
 
             #                         if path:
             #                             # Success! Navigation is still possible
-            #                             navigable_variant_found = True
+            #                             navigable_config_found = True
             #                             self.progress_update(
-            #                                 f"Successfully placed {obstacle_config.amount} obstacles for variant"
+            #                                 f"Successfully placed {obstacle_config.amount} obstacles for config"
             #                             )
             #                         else:
             #                             self.progress_update(
@@ -189,22 +188,22 @@ class ObstacleVariation(NavVariation):
 
             #             # If we couldn't find a navigable configuration after
             #             # all attempts
-            #             if not navigable_variant_found:
+            #             if not navigable_config_found:
             #                 if obstacle_config.amount > 0:
             #                     self.progress_update(
             #                         f"Warning: Could not place {obstacle_config['amount']
-            #                                                     } obstacles for variant while maintaining navigation"
+            #                                                     } obstacles for config while maintaining navigation"
             #                     )
             #                     raise ValueError("Could not place obstacles while maintaining navigation")
 
         if obstacle_objects:
             static_objects_parameter_name = self.parameters.name
-            result_variant = self.update_variant(variant, {
+            result_config = self.update_config(config, {
                 static_objects_parameter_name: convert_dataclasses_to_dict(obstacle_objects)
             })
 
-            resulting_variants.append(result_variant)
+            resulting_configs.append(result_config)
         else:
-            resulting_variants.append(variant)
+            resulting_configs.append(config)
 
-        return resulting_variants
+        return resulting_configs

@@ -69,12 +69,12 @@ class TestResultsAnalyzer(QMainWindow):
                         if not isinstance(values, dict):
                             continue
                         single_nb = os.path.join(os.path.dirname(config_file), values.get("single_test"))
-                        variant_nb = os.path.join(os.path.dirname(config_file), values.get("variant"))
+                        config_nb = os.path.join(os.path.dirname(config_file), values.get("config"))
                         run_nb = os.path.join(os.path.dirname(config_file), values.get("run"))
                         workloads.append(
                             JupyterNotebookRunner(name,
                                                   single_test_nb=single_nb,
-                                                  variant_nb=variant_nb,
+                                                  config_nb=config_nb,
                                                   run_nb=run_nb)
                         )
                     except Exception as e:
@@ -443,7 +443,7 @@ class TestResultsAnalyzer(QMainWindow):
             # 2. Check if run.yamls exist in subfolders (folder run)
             run_files = list(data_path.glob("*/run.yaml"))
             if run_files:
-                return RunType.SINGLE_VARIANT
+                return RunType.CONFIG
 
             # 3. Check if CSV files exist in subfolders of subfolders (whole run)
             run_files = list(data_path.glob("*/*/run.yaml"))
@@ -618,7 +618,7 @@ class TestResultsAnalyzer(QMainWindow):
 
     def is_test_directory(self, directory_path):
         """Check if directory is a test directory"""
-        test_indicators = ["test.xml", "capture.mp4", "scenario.osc", "scenario.variant"]
+        test_indicators = ["test.xml", "capture.mp4", "scenario.osc", "scenario.config"]
         indicator_count = sum(1 for indicator in test_indicators
                               if (directory_path / indicator).exists())
         return indicator_count >= 2

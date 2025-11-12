@@ -31,10 +31,10 @@ class LocalExecutionWorker(QThread):
     execution_finished = Signal(int)
     stop_requested = Signal()
 
-    def __init__(self, config_file, variant_name, working_dir=None):
+    def __init__(self, config_file, config_name, working_dir=None):
         super().__init__()
         self.config_file = config_file
-        self.variant_name = variant_name
+        self.config_name = config_name
         self.working_dir = working_dir
         self.process = None
         self._should_stop = False
@@ -50,9 +50,8 @@ class LocalExecutionWorker(QThread):
             self.process.readyReadStandardError.connect(self.handle_stderr)
             self.process.finished.connect(self.handle_finished)
 
-            # Use new command interface with --variant option
             # Output will automatically go to project results_dir
-            command = f"vast execution local run --variant {self.variant_name}"
+            command = f"vast execution local run --config {self.config_file}"
 
             # Create a script that sets up a new process group and runs the command
             # This ensures all child processes can be killed together
@@ -252,7 +251,7 @@ class LocalExecutionWidget(QWidget):
             self.execute_btn.setEnabled(False)
             return
 
-        # Note: variant file is handled by the script, not as a separate parameter
+        # Note: config file is handled by the script, not as a separate parameter
         self.execute_btn.setEnabled(not self.is_running)
 
     def execute_command(self):
