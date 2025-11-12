@@ -53,10 +53,11 @@ def initialize_local_execution(variant, output_dir, runs, debug=False, feedback_
 
     # Use execution_parameters value if runs is not provided
     if runs is None:
-        if execution_parameters.get("runs") is None:
-            raise SystemExit("Error: Number of runs not specified in command or config.")
+        if "runs" not in execution_parameters:
+            feedback_callback("Error: Number of runs not specified in command or config.")
+            sys.exit(1)
         else:
-            runs = execution_parameters.get("runs")
+            runs = execution_parameters["runs"]
 
     feedback_callback(f"Docker image: {docker_image}")
     feedback_callback("-" * 60)
