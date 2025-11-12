@@ -127,6 +127,12 @@ def run_preprocessing(config_path: str, results_dir: str, output_callback=None):
     if not os.path.exists(results_dir):
         return False, f"Results directory does not exist: {results_dir}"
 
+    # Get preprocessing commands
+    commands = get_preprocessing_commands(config_path)
+
+    if not commands:
+        return False, "No preprocessing commands defined in configuration."
+
     output(f"Checking if preprocessing is needed...")
     # Compute hash of results directory
     start_time = time.time()
@@ -148,12 +154,6 @@ def run_preprocessing(config_path: str, results_dir: str, output_callback=None):
         except Exception as e:
             output(f"Warning: Could not read hash file: {e}")
             # Continue with preprocessing if we can't read the hash file
-
-    # Get preprocessing commands
-    commands = get_preprocessing_commands(config_path)
-
-    if not commands:
-        return False, "No preprocessing commands defined in configuration."
 
     # Validate and resolve command paths
     try:

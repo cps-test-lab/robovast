@@ -31,9 +31,9 @@ from ruamel.yaml.error import YAMLError
 
 from robovast.common import generate_scenario_variations
 from robovast.common.config import validate_config
-from robovast.variation.gui.variant_list import VariantList
-from robovast.variation.gui.variant_view import VariantView
-from robovast.variation.gui.yaml_editor import YamlEditor
+from robovast.configuration.gui.config_list import ConfigList
+from robovast.configuration.gui.config_view import ConfigView
+from robovast.configuration.gui.yaml_editor import YamlEditor
 
 
 class GenerationWorker(QObject):
@@ -41,32 +41,32 @@ class GenerationWorker(QObject):
 
     # Signals
     progress = Signal(str)  # Progress message
-    finished = Signal()  # Variants list, GUI classes dict
+    finished = Signal()  # Configs list, GUI classes dict
     error = Signal(str)  # Error message
 
     def __init__(self, yaml_path, output_dir):
         super().__init__()
         self.yaml_path = yaml_path
         self.output_dir = output_dir
-        self.variants = []
+        self.configs = []
         self.variation_gui_classes = {}
 
     def run(self):
         """Run the generation process."""
         try:
-            variants, variation_gui_classes = generate_scenario_variations(
+            configs, variation_gui_classes = generate_scenario_variations(
                 variation_file=self.yaml_path,
                 progress_update_callback=self.progress.emit,
                 output_dir=self.output_dir
             )
-            self.variants = variants
+            self.configs = configs
             self.variation_gui_classes = variation_gui_classes
             self.finished.emit()
         except Exception as e:
             self.error.emit(str(e))
 
 
-class VariationEditor(QMainWindow):
+class ConfigEditor(QMainWindow):
     """Main window for the configuration editor."""
 
     def __init__(self, project_config=None, debug=False):
@@ -81,7 +81,7 @@ class VariationEditor(QMainWindow):
         self.yaml_parser.default_flow_style = False
 
         # Initialize QSettings for storing window geometry
-        self.settings = QSettings("RoboVAST", "VariationEditor")
+        self.settings = QSettings("RoboVAST", "ConfigEditor")
 
         # Thread and worker for generation
         self.generation_thread = None
@@ -128,7 +128,7 @@ class VariationEditor(QMainWindow):
         self.setCentralWidget(central_widget)
         layout = QVBoxLayout(central_widget)
 
-        # Create horizontal splitter for 3 columns: editor+error, variant list, variant view
+        # Create horizontal splitter for 3 columns: editor+error, config list, config view
         self.main_splitter = QSplitter(Qt.Horizontal)
 
         # Column 1: Create vertical splitter for editor and error display
@@ -261,19 +261,19 @@ class VariationEditor(QMainWindow):
         # Add column 1 to main splitter
         self.main_splitter.addWidget(self.left_splitter)
 
-        # Column 2: Create variant list (full height)
-        self.variant_list = VariantList()
-        self.main_splitter.addWidget(self.variant_list)
+        # Column 2: Create config list (full height)
+        self.config_list = ConfigList()
+        self.main_splitter.addWidget(self.config_list)
 
-        # Column 3: Create variant view (full height)
-        self.variant_view = VariantView(debug=self.debug)
-        self.main_splitter.addWidget(self.variant_view)
+        # Column 3: Create config view (full height)
+        self.config_view = ConfigView(debug=self.debug)
+        self.main_splitter.addWidget(self.config_view)
 
-        # Set main splitter sizes for 3 columns (editor+error, variant list, variant view)
+        # Set main splitter sizes for 3 columns (editor+error, config list, config view)
         self.main_splitter.setSizes([700, 200, 500])
 
-        # Connect variant list selection to variant view
-        self.variant_list.variant_selected.connect(self.variant_view.update_variant_info)
+        # Connect config list selection to config view
+        self.config_list.config_selected.connect(self.config_view.update_config_info)
 
         layout.addWidget(self.main_splitter)
 
@@ -402,8 +402,8 @@ class VariationEditor(QMainWindow):
         self.error_display.clear()
         self.error_display.append("<span style='color: #4ec9b0;'>Starting generation...</span>")
 
-        # Clear variant list and variant view
-        self.variant_view.clear()
+        # Clear config list and config view
+        self.config_view.clear()
 
         # Update button states for generation
         self.generate_button.setEnabled(False)
@@ -503,24 +503,24 @@ class VariationEditor(QMainWindow):
 
     def on_generation_finished(self):
         """Handle successful completion of generation."""
-        variants = self.generation_worker.variants
+        configs = self.generation_worker.configs
         variation_gui_classes = self.generation_worker.variation_gui_classes
         # Display success message
-        self.error_display.append(f"<span style='color: #4ec9b0;'><b>✓ Generated {len(variants)} variant(s)!</b></span>")
+        self.error_display.append(f"<span style='color: #4ec9b0;'><b>✓ Generated {len(configs)} config(s)!</b></span>")
 
-        # Update variant list - store full variant data
-        variant_list_data = []
-        for i, variant in enumerate(variants):
-            variant_list_data.append({
-                "name": variant.get("name", f"variant_{i}"),
+        # Update config list - store full config data
+        config_list_data = []
+        for i, config in enumerate(configs):
+            config_list_data.append({
+                "name": config.get("name", f"config_{i}"),
                 "status": "Generated",
-                "data": variant  # Store the full variant data
+                "data": config  # Store the full config data
             })
-        self.variant_list.update_variants(variant_list_data)
-        self.variant_view.update_variants(variation_gui_classes, self.temp_dir.name)
-        # Auto-select the first variant if any variants were generated
-        if len(variant_list_data) > 0:
-            self.variant_list.select_variant(0)
+        self.config_list.update_configs(config_list_data)
+        self.config_view.update_configs(variation_gui_classes, self.temp_dir.name)
+        # Auto-select the first config if any configs were generated
+        if len(config_list_data) > 0:
+            self.config_list.select_config(0)
 
     def on_generation_error(self, error_message):
         """Handle generation errors."""
@@ -559,14 +559,9 @@ class VariationEditor(QMainWindow):
 
         # Then, validate against Pydantic schema
         try:
-            # Extract settings section from config
-            settings = config_data.get('settings', None)
-            if not settings:
-                raise ValueError("No 'settings' section found in configuration")
-
-            validate_config(settings)
+            validate_config(config_data)
             success_msg = "<span style='color: #4ec9b0;'><b>✓ Configuration is valid!</b></span><br>"
-            success_msg += f"<span style='color: #9cdcfe;'>Version: {settings.get('version', 'N/A')}</span>"
+            success_msg += f"<span style='color: #9cdcfe;'>Version: {config_data.get('version', 'N/A')}</span>"
             self.error_display.setHtml(success_msg)
         except ValueError as e:
             error_msg = f"<span style='color: #f48771;'><b>Validation Error:</b></span><br>"
@@ -583,7 +578,7 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("YAML Config Editor")
 
-    window = VariationEditor(None)
+    window = ConfigEditor(None)
     window.show()
 
     sys.exit(app.exec())

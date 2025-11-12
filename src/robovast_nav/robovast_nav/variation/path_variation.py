@@ -53,8 +53,8 @@ class PathVariationConfig(BaseModel):
 
 class PathVariationGuiRenderer(VariationGuiRenderer):
 
-    def update_gui(self, variant, path):
-        path = variant.get('_path', None)
+    def update_gui(self, config, path):
+        path = config.get('_path', None)
         if path:
             plain_path = [(p.x, p.y) for p in path]
             self.gui_object.draw_path(plain_path,
@@ -70,37 +70,37 @@ class PathVariation(NavVariation):
     GUI_CLASS = NavigationGui
     GUI_RENDERER_CLASS = PathVariationGuiRenderer
 
-    def variation(self, in_variants):
+    def variation(self, in_configs):
         self.progress_update("Running Path Variation...")
         results = []
 
-        for variant in in_variants:
-            # calculate all start/goal poses for variant
+        for config in in_configs:
+            # calculate all start/goal poses for configuration
             for path_index in range(self.parameters.num_paths):
                 current_seed = self.parameters.seed + path_index
-                print(f"Generating path for variant {variant['name']}, path index {path_index}, seed {current_seed}")
-                start_pose, goal_pose, path, map_file = self.generate_path_for_variant(
-                    self.base_path, variant, path_index, current_seed
+                print(f"Generating path for configuration {config['name']}, path index {path_index}, seed {current_seed}")
+                start_pose, goal_pose, path, map_file = self.generate_path_for_config(
+                    self.base_path, config, path_index, current_seed
                 )
 
-                new_variant = self.update_variant(variant, {
+                new_config = self.update_config(config, {
                     'start_pose': start_pose,
                     'goal_pose': goal_pose},
                     other_values={
                         '_path': path,
                         '_map_file': map_file
                 })
-                results.append(new_variant)
+                results.append(new_config)
 
         return results
 
-    def generate_path_for_variant(self, cache_path, variant, path_index, seed):
-        """Generate a single path for a variant."""
+    def generate_path_for_config(self, cache_path, config, path_index, seed):
+        """Generate a single path for a config."""
 
         try:
-            map_file_path = self.get_map_file(self.parameters.map_file, variant)
+            map_file_path = self.get_map_file(self.parameters.map_file, config)
         except Exception as e:  # pylint: disable=broad-except
-            raise ValueError(f"Error determining map file for variant {variant['name']}: {e}") from e
+            raise ValueError(f"Error determining map file for config {config['name']}: {e}") from e
 
         path_length_tolerance = self.parameters.path_length_tolerance
         if not self.parameters.path_length_tolerance:
@@ -113,7 +113,7 @@ class PathVariation(NavVariation):
 
         if self.parameters.start_pose:
             if isinstance(self.parameters.start_pose, str):
-                # Reference to a variant parameter
+                # Reference to a config parameter
                 pose_ref = self.parameters.start_pose.lstrip('@')
                 self.check_scenario_parameter_reference(pose_ref)
                 start_pose = None
@@ -150,7 +150,7 @@ class PathVariation(NavVariation):
         while attempt < max_attempts and not path_found:
 
             self.progress_update(
-                f"Generating {variant['name']}, {path_index} - Attempt {attempt}/{max_attempts}"
+                f"Generating {config['name']}, {path_index} - Attempt {attempt}/{max_attempts}"
             )
 
             if not start_pose:

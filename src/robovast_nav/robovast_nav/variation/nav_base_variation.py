@@ -23,8 +23,8 @@ from robovast.common.variation import Variation
 
 class NavVariation(Variation):
 
-    def get_map_file(self, map_file_parameter, variant) -> Optional[str]:
-        """Determine the map file path to use for this variant."""
+    def get_map_file(self, map_file_parameter, config) -> Optional[str]:
+        """Determine the map file path to use for this config."""
 
         map_file_path = None
         # 1. try to get map file from config
@@ -39,8 +39,8 @@ class NavVariation(Variation):
                 self.progress_update(f"Map file {map_file_parameter} does not exist. Using it as scenario parameter reference.")
                 if not is_scenario_parameter(map_file_parameter, self.scenario_file):
                     raise ValueError(f"Map file {map_file_path} is not a valid scenario parameter reference.")
-                if map_file_parameter in variant["variant"]:
-                    temp_path = os.path.join(variant["variant"][map_file_parameter])
+                if map_file_parameter in config["config"]:
+                    temp_path = os.path.join(config["config"][map_file_parameter])
                     if os.path.exists(temp_path):
                         self.progress_update(f"Resolved map file path from scenario parameter: {temp_path}")
                         map_file_path = temp_path
@@ -48,13 +48,13 @@ class NavVariation(Variation):
                         raise FileNotFoundError(f"Resolved map file path from scenario parameter does not exist: {temp_path}")
         else:
             self.progress_update("No map_file specified in PathVariation configuration.")
-            if "_map_file" in variant:
-                temp_path = variant["_map_file"]
+            if "_map_file" in config:
+                temp_path = config["_map_file"]
                 if os.path.exists(temp_path):
-                    self.progress_update(f"Using map file from variant._map_file: {temp_path}")
+                    self.progress_update(f"Using map file from config._map_file: {temp_path}")
                     map_file_path = temp_path
                 else:
-                    raise FileNotFoundError(f"Map file from variant data does not exist: {temp_path}")
+                    raise FileNotFoundError(f"Map file from config data does not exist: {temp_path}")
 
         if not map_file_path:
             raise ValueError("No valid map file path could be determined.")

@@ -32,7 +32,7 @@ class ScenarioParameterConfig(BaseModel):
     model_config = ConfigDict(extra='allow')
 
 
-class DefinitionConfig(BaseModel):
+class ConfigurationConfig(BaseModel):
     name: str
     scenario_file: str
     parameters: Optional[list[ScenarioParameterConfig]] = None
@@ -82,7 +82,7 @@ class ConfigV1(BaseModel):
     model_config = ConfigDict(extra='forbid')
     version: int = 1
     general: Optional[GeneralConfig] = None
-    definition: Optional[list[DefinitionConfig]] = None
+    configuration: Optional[list[ConfigurationConfig]] = None
     execution: ExecutionConfig
     analysis: Optional[AnalysisConfig] = None
 

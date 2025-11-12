@@ -47,11 +47,11 @@ if [ "$#" -ne 0 ]; then
     log "Executing custom command: $@"
     exec "$@"
 else
-    if [ -e /config/scenario.variant ]; then
-        log "Starting scenario execution with variant file..."
-        exec ros2 run scenario_execution_ros scenario_execution_ros -o ${OUTPUT_DIR} /config/scenario.osc --scenario-parameter-file /config/scenario.variant ${SCENARIO_EXECUTION_PARAMETERS}
+    if [ -e /config/scenario.config ]; then
+        log "Starting scenario execution with config file..."
+        exec ros2 run scenario_execution_ros scenario_execution_ros -o ${OUTPUT_DIR} /config/scenario.osc --scenario-parameter-file /config/scenario.config ${SCENARIO_EXECUTION_PARAMETERS}
     else
-        log "Starting scenario execution without variant file..."
+        log "Starting scenario execution without config file..."
         exec ros2 run scenario_execution_ros scenario_execution_ros -o ${OUTPUT_DIR} /config/scenario.osc ${SCENARIO_EXECUTION_PARAMETERS}
     fi
 fi

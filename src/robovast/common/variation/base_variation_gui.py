@@ -28,23 +28,23 @@ class VariationGuiRenderer:
         """
         self.gui_object = gui_object
 
-    def update_gui(self, variant, path):
-        """Update the GUI with the given variant data.
+    def update_gui(self, config, path):
+        """Update the GUI with the given config data.
 
         Args:
             gui_object: The GUI object to update.
-            variant: The variant data to display.
-            path: The file path of the variant.
+            config: The config data to display.
+            path: The file path of the config.
         """
 
 
 class VariationGui(QWidget):
 
-    def update_gui(self, variant, path):
-        """Update the GUI with the given variant data.
+    def update_gui(self, config, path):
+        """Update the GUI with the given config data.
 
         Args:
             gui_object: The GUI object to update.
-            variant: The variant data to display.
-            path: The file path of the variant.
+            config: The config data to display.
+            path: The file path of the config.
         """

@@ -57,7 +57,7 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
             all_map_dirs.append(cached_file)
         else:
             # Step 1: variation
-            temp_variation_output_path = os.path.join(temp_base, variation, "variants")
+            temp_variation_output_path = os.path.join(temp_base, variation, "configs")
             os.makedirs(temp_variation_output_path, exist_ok=True)
             progress_update_callback(
                 f"Step 1: Running variation for {variation}..."
@@ -104,13 +104,13 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
             )
 
             for fpm_file in fpm_files:
-                variant_name = os.path.splitext(fpm_file)[0]
+                config_name = os.path.splitext(fpm_file)[0]
                 fpm_path = os.path.join(temp_variation_output_path, fpm_file)
-                temp_transform_path = os.path.join(temp_base, variation, "json-ld", variant_name)
+                temp_transform_path = os.path.join(temp_base, variation, "json-ld", config_name)
                 os.makedirs(temp_transform_path, exist_ok=True)
 
                 progress_update_callback(
-                    f"Step 2: Transforming {variant_name}..."
+                    f"Step 2: Transforming {config_name}..."
                 )
                 cmd2 = [
                     script_path,
@@ -140,11 +140,11 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
 
                 # Step 3: generate map
                 artifacts_path = os.path.join(temp_base, variation, "artifacts")
-                temp_generate_output_path = os.path.join(artifacts_path, variant_name)
+                temp_generate_output_path = os.path.join(artifacts_path, config_name)
                 os.makedirs(temp_generate_output_path, exist_ok=True)
 
                 progress_update_callback(
-                    f"Step 3: Generating map for {variant_name}..."
+                    f"Step 3: Generating map for {config_name}..."
                 )
                 cmd3 = [
                     script_path,

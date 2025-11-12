@@ -22,28 +22,28 @@ import tempfile
 from importlib.metadata import entry_points
 
 from .common import (get_scenario_parameters, load_config,
-                     save_scenario_variants_file)
+                     save_scenario_configs_file)
 
 
 def progress_update(msg):
     print(msg)
 
 
-def execute_variation(base_dir, variants, variation_class, parameters, general_parameters, progress_update_callback, scenario_file, output_dir=None):
+def execute_variation(base_dir, configs, variation_class, parameters, general_parameters, progress_update_callback, scenario_file, output_dir=None):
     variation = variation_class(base_dir, parameters, general_parameters, progress_update_callback, scenario_file, output_dir)
     try:
-        variants = variation.variation(copy.deepcopy(variants))
+        configs = variation.variation(copy.deepcopy(configs))
     except Exception as e:
         progress_update_callback(f"Variation failed. {variation_class.__name__}: {e}")
         return []
 
-    # Check if variants is None and return empty list
-    if variants is None:
-        progress_update_callback(f"Variation failed. {variation_class.__name__}: No variants returned")
+    # Check if configs is None and return empty list
+    if configs is None:
+        progress_update_callback(f"Variation failed. {variation_class.__name__}: No configs returned")
         return []
 
-    # progress_update(f"Current variants {variants}")
-    return variants
+    # progress_update(f"Current configs {configs}")
+    return configs
 
 
 def collect_filtered_files(filter_pattern, rel_path):
@@ -204,12 +204,12 @@ def _get_variation_classes(scenario_config):
 
 
 def generate_scenario_variations(variation_file, progress_update_callback, variation_classes=None, output_dir=None, test_files_filter=None):
-    progress_update_callback("Start generating variants.")
+    progress_update_callback("Start generating configs.")
 
     parameters = load_config(variation_file)
 
-    # Get scenario file from new scenarios format or old format
-    scenarios = parameters.get('definition', [])
+    # Get scenario file from configuration section
+    scenarios = parameters.get('configuration', [])
 
     scenario_files = []
     # Get test_files_filter from config
@@ -218,7 +218,8 @@ def generate_scenario_variations(variation_file, progress_update_callback, varia
         scenario_files = collect_filtered_files(test_files_filter, os.path.dirname(variation_file))
         progress_update_callback(f"Loaded {len(test_files_filter)} filter patterns (found {len(scenario_files)} files).")
 
-    variants = []
+    configs = []
+    variation_gui_classes = {}
     for scenario in scenarios:
         scenario_file_name = scenario.get('scenario_file')
         scenario_file = os.path.join(os.path.dirname(variation_file), scenario_file_name) if scenario_file_name else None
@@ -235,8 +236,8 @@ def generate_scenario_variations(variation_file, progress_update_callback, varia
 
         general_parameters = parameters.get('general', {})
 
-        # Initialize variant dict with scenario parameters if they exist
-        variant_dict = {}
+        # Initialize config dict with scenario parameters if they exist
+        config_dict = {}
         scenario_param_dict = get_scenario_parameters(scenario_file)
         existing_scenario_parameters = next(iter(scenario_param_dict.values())) if scenario_param_dict else []
 
@@ -245,30 +246,29 @@ def generate_scenario_variations(variation_file, progress_update_callback, varia
             # Convert list of single-key dicts to a single dict
             for param in scenario_parameters:
                 if isinstance(param, dict):
-                    variant_dict.update(param)
+                    config_dict.update(param)
 
             # Validate that all specified parameters exist in the scenario
             if existing_scenario_parameters:
                 # Extract parameter names from the scenario (each entry has a 'name' field)
                 valid_param_names = [p.get('name') for p in existing_scenario_parameters if isinstance(p, dict) and 'name' in p]
 
-                # Check each parameter in variant_dict
-                invalid_params = [p for p in variant_dict if p not in valid_param_names]
+                # Check each parameter in config_dict
+                invalid_params = [p for p in config_dict if p not in valid_param_names]
                 if invalid_params:
                     raise ValueError(
                         f"Invalid parameters in scenario '{scenario['name']}': {invalid_params}. "
                         f"Valid parameters are: {valid_param_names}"
                     )
 
-        current_variants = [{
+        current_configs = [{
             'name': scenario['name'],
-            'variant': variant_dict,
-            '_variant_files': [],
+            'config': config_dict,
+            '_config_files': [],
             '_scenario_file': scenario_file}]
         if test_files_filter:
-            current_variants[0]['_scenario_files'] = scenario_files
+            current_configs[0]['_scenario_files'] = scenario_files
 
-        variation_gui_classes = {}
         for variation_class, parameters in variation_classes_and_parameters:
             variation_gui_class = None
             if hasattr(variation_class, 'GUI_CLASS'):
@@ -284,17 +284,17 @@ def generate_scenario_variations(variation_file, progress_update_callback, varia
                     if variation_gui_class is None:
                         raise ValueError(f"Variation class {variation_class.__name__} has GUI_RENDERER_CLASS defined but no GUI_CLASS.")
                     variation_gui_classes[variation_gui_class].append(variation_gui_renderer_class)
-            result = execute_variation(os.path.dirname(variation_file), current_variants, variation_class,
+            result = execute_variation(os.path.dirname(variation_file), current_configs, variation_class,
                                        parameters, general_parameters, progress_update_callback, scenario_file, output_dir)
             if result is None or len(result) == 0:
                 # If a variation step fails or produces no results, stop the pipeline
-                progress_update_callback(f"Variation pipeline stopped at {variation_class.__name__} - no variants to process")
-                current_variants = []
+                progress_update_callback(f"Variation pipeline stopped at {variation_class.__name__} - no configs to process")
+                current_configs = []
                 break
-            current_variants = result
+            current_configs = result
 
-        variants.extend(current_variants)
-    if variants:
-        save_scenario_variants_file(variants, os.path.join(output_dir, 'scenario.variants'))
+        configs.extend(current_configs)
+    if configs:
+        save_scenario_configs_file(configs, os.path.join(output_dir, 'scenario.configs'))
 
-    return variants, variation_gui_classes
+    return configs, variation_gui_classes

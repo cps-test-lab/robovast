@@ -20,17 +20,17 @@ from PySide6.QtWidgets import (QHeaderView, QLabel, QTableView, QVBoxLayout,
                                QWidget)
 
 
-class VariantTableModel(QAbstractTableModel):
-    """Table model for displaying variant data."""
+class ConfigTableModel(QAbstractTableModel):
+    """Table model for displaying config data."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.variants = []
+        self.configs = []
         self.headers = ["Name"]
 
     def rowCount(self, parent=QModelIndex()):
-        return len(self.variants)
-
+        return len(self.configs)
+    
     def columnCount(self, parent=QModelIndex()):
         return len(self.headers)
 
@@ -39,9 +39,8 @@ class VariantTableModel(QAbstractTableModel):
             return None
 
         if role == Qt.DisplayRole:
-            variant = self.variants[index.row()]
-            return variant.get("name", "Unknown")
-
+            config = self.configs[index.row()]
+            return config.get("name", "Unknown")
         return None
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):
@@ -49,24 +48,24 @@ class VariantTableModel(QAbstractTableModel):
             return self.headers[section]
         return None
 
-    def update_variants(self, variants):
-        """Update the variant list."""
+    def update_configs(self, configs):
+        """Update the config list."""
         self.beginResetModel()
-        self.variants = variants
+        self.configs = configs
         self.endResetModel()
 
-    def get_variant(self, row):
-        """Get variant data for a specific row."""
-        if 0 <= row < len(self.variants):
-            return self.variants[row]
+    def get_config(self, row):
+        """Get config data for a specific row."""
+        if 0 <= row < len(self.configs):
+            return self.configs[row]
         return None
 
 
-class VariantList(QWidget):
-    """Custom view for displaying variant information."""
+class ConfigList(QWidget):
+    """Custom view for displaying config information."""
 
-    # Signal emitted when a variant is selected
-    variant_selected = Signal(object)
+    # Signal emitted when a config is selected
+    config_selected = Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -79,12 +78,12 @@ class VariantList(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
 
         # Add label
-        label = QLabel("Variants")
+        label = QLabel("Configs")
         layout.addWidget(label)
 
         # Create table view
         self.table_view = QTableView()
-        self.model = VariantTableModel()
+        self.model = ConfigTableModel()
         self.table_view.setModel(self.model)
 
         # Configure table appearance
@@ -131,24 +130,24 @@ class VariantList(QWidget):
         indexes = selected.indexes()
         if indexes:
             row = indexes[0].row()
-            variant_data = self.model.get_variant(row)
-            if variant_data:
-                # Emit the full variant data (which includes 'data' key with actual variant)
-                self.variant_selected.emit(variant_data.get("data", variant_data))
+            config_data = self.model.get_config(row)
+            if config_data:
+                # Emit the full config data (which includes 'data' key with actual config)
+                self.config_selected.emit(config_data.get("data", config_data))
 
-    def update_variants(self, variants):
-        """Update the variant list.
+    def update_configs(self, configs):
+        """Update the configs list.
 
         Args:
-            variants: List of variant dictionaries with keys like 'name', 'status', etc.
+            configs: List of config dictionaries with keys like 'name', 'status', etc.
         """
-        self.model.update_variants(variants)
+        self.model.update_configs(configs)
 
-    def select_variant(self, index):
-        """Programmatically select a variant by index.
+    def select_config(self, index):
+        """Programmatically select a config by index.
 
         Args:
-            index: The row index of the variant to select (0-based).
+            index: The row index of the config to select (0-based).
         """
         if 0 <= index < self.model.rowCount():
             # Select the specified row using setCurrentIndex

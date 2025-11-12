@@ -1,27 +1,27 @@
 #!/usr/bin/env python3
 
-from .common import (convert_dataclasses_to_dict, filter_variants,
+from .common import (convert_dataclasses_to_dict, filter_configs,
                      get_scenario_parameters, is_scenario_parameter,
-                     load_config, save_scenario_variants_file)
+                     load_config, save_scenario_configs_file)
 from .config import VariationConfig, get_validated_config
 from .execution import (get_execution_env_variables, get_run_id,
                         prepare_run_configs)
 from .file_cache import FileCache
 from .preprocessing import run_preprocessing
-from .variant_generation import execute_variation, generate_scenario_variations
+from .config_generation import execute_variation, generate_scenario_variations
 
 __all__ = [
     'FileCache',
     'generate_scenario_variations',
     'load_config',
-    'save_scenario_variants_file',
+    'save_scenario_configs_file',
     'execute_variation',
     'convert_dataclasses_to_dict',
     'prepare_run_configs',
     'get_execution_env_variables',
     'VariationConfig',
     'get_validated_config',
-    'filter_variants',
+    'filter_configs',
     'get_scenario_parameters',
     'is_scenario_parameter',
     'run_preprocessing',

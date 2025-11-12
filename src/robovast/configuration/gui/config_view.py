@@ -19,13 +19,13 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QLabel, QSplitter, QTabWidget, QVBoxLayout,
                                QWidget)
 
-from robovast.common import convert_dataclasses_to_dict, filter_variants
-from robovast.variation.gui.yaml_editor import YamlEditor
+from robovast.common import convert_dataclasses_to_dict, filter_configs
+from robovast.configuration.gui.yaml_editor import YamlEditor
 
 
-class VariantView(QWidget):
+class ConfigView(QWidget):
 
-    """View for displaying variant information."""
+    """View for displaying config information."""
 
     def __init__(self, parent=None, debug=False):
         super().__init__(parent)
@@ -42,10 +42,10 @@ class VariantView(QWidget):
         self.setLayout(layout)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        self.label = QLabel("Variant Details")
+        self.label = QLabel("Config Details")
         layout.addWidget(self.label)
 
-        # Use YAML editor for displaying variant data
+        # Use YAML editor for displaying config data
         self.info_display = YamlEditor()
         self.info_display.setReadOnly(True)
 
@@ -56,17 +56,17 @@ class VariantView(QWidget):
         self.gui_container = None
 
     def clear(self):
-        self.update_variants({}, None)
+        self.update_configs({}, None)
         self.info_display.clear()
 
-    def update_variants(self, gui_classes, variant_file_path):
-        """Set GUI class for variant parameters.
+    def update_configs(self, gui_classes, config_file_path):
+        """Set GUI class for config parameters.
 
         Args:
             gui_classes: The GUI classes to set.
         """
         self.gui_classes = gui_classes
-        self.variant_file_path = variant_file_path
+        self.config_file_path = config_file_path
         self._rebuild_layout()
 
     def _rebuild_layout(self):
@@ -125,23 +125,23 @@ class VariantView(QWidget):
                     self.plugin_widget_renderer.append(renderer_instance)
             self.splitter.addWidget(self.gui_container)
 
-    def update_variant_info(self, variant_data):
-        """Update the displayed variant information.
+    def update_config_info(self, config_data):
+        """Update the displayed config information.
 
         Args:
-            variant_data: The variant information to display.
+            config_data: The config information to display.
         """
         if self.debug:
             # In debug mode, skip filtering to show all internal values
-            converted_variant = convert_dataclasses_to_dict(variant_data)
+            converted_config = convert_dataclasses_to_dict(config_data)
         else:
             # In normal mode, filter out internal values starting with _
-            filtered_variants = filter_variants([variant_data])
-            converted_variant = convert_dataclasses_to_dict(filtered_variants[0])
+            filtered_configs = filter_configs([config_data])
+            converted_config = convert_dataclasses_to_dict(filtered_configs[0])
 
-        self.info_display.setPlainText(yaml.dump(converted_variant))
+        self.info_display.setPlainText(yaml.dump(converted_config))
 
         for widget in self.plugin_widgets:
-            widget.update(variant_data, self.variant_file_path)
+            widget.update(config_data, self.config_file_path)
         for renderer in self.plugin_widget_renderer:
-            renderer.update_gui(variant_data, self.variant_file_path)
+            renderer.update_gui(config_data, self.config_file_path)

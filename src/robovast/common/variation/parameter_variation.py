@@ -34,11 +34,11 @@ class ParameterVariationDistributionUniformConfig(VariationConfig):
 
 class ParameterVariationDistributionUniform(Variation):
     """
-    Creates variants with random parameter values from a uniform distribution.
+    Creates configs with random parameter values from a uniform distribution.
 
     Expected parameters:
         name: Name of the parameter to vary
-        num_variations: Number of random variants to generate
+        num_variations: Number of random configs to generate
         min: Minimum value (inclusive)
         max: Maximum value (inclusive)
         type: Type to convert values to ('string', 'int', 'float', 'bool')
@@ -46,7 +46,7 @@ class ParameterVariationDistributionUniform(Variation):
     """
     CONFIG_CLASS = ParameterVariationDistributionUniformConfig
 
-    def variation(self, in_variants):
+    def variation(self, in_configs):
         self.progress_update("Running Parameter Variation (Random)...")
 
         # Extract parameters
@@ -69,9 +69,9 @@ class ParameterVariationDistributionUniform(Variation):
         random.seed(seed)
         np.random.seed(seed)
 
-        # If no input variants, create initial empty variant
-        if not in_variants or len(in_variants) == 0:
-            in_variants = [{'variant': {}}]
+        # If no input configs, create initial empty config
+        if not in_configs or len(in_configs) == 0:
+            in_configs = [{'config': {}}]
 
         # Generate random parameter values once
         random_values = []
@@ -94,11 +94,11 @@ class ParameterVariationDistributionUniform(Variation):
             random_values.append(value)
             self.progress_update(f"Generated random value: {param_name}={value}")
 
-        # Apply each random value to all input variants (creating all combinations)
+        # Apply each random value to all input configs (creating all combinations)
         results = []
-        for variant in in_variants:
+        for config in in_configs:
             for value in random_values:
-                results.append(self.update_variant(variant, {param_name: value}))
+                results.append(self.update_config(config, {param_name: value}))
 
         return results
 
@@ -116,11 +116,11 @@ class ParameterVariationDistributionGaussianConfig(VariationConfig):
 
 class ParameterVariationDistributionGaussian(Variation):
     """
-    Creates variants with random parameter values from a Gaussian (normal) distribution.
+    Creates configs with random parameter values from a Gaussian (normal) distribution.
 
     Expected parameters:
         name: Name of the parameter to vary
-        num_variations: Number of random variants to generate
+        num_variations: Number of random configs to generate
         mean: Mean (mu) of the Gaussian distribution
         std: Standard deviation (sigma) of the Gaussian distribution
         min: Minimum value (optional, clips values below this)
@@ -130,7 +130,7 @@ class ParameterVariationDistributionGaussian(Variation):
     """
     CONFIG_CLASS = ParameterVariationDistributionGaussianConfig
 
-    def variation(self, in_variants):
+    def variation(self, in_configs):
         self.progress_update("Running Parameter Variation (Gaussian)...")
 
         # Extract parameters
@@ -157,9 +157,9 @@ class ParameterVariationDistributionGaussian(Variation):
         random.seed(seed)
         np.random.seed(seed)
 
-        # If no input variants, create initial empty variant
-        if not in_variants or len(in_variants) == 0:
-            in_variants = [{'variant': {}}]
+        # If no input configs, create initial empty config
+        if not in_configs or len(in_configs) == 0:
+            in_configs = [{'config': {}}]
 
         # Generate Gaussian distributed parameter values
         random_values = []
@@ -187,11 +187,11 @@ class ParameterVariationDistributionGaussian(Variation):
             random_values.append(value)
             self.progress_update(f"Generated Gaussian value: {param_name}={value}")
 
-        # Apply each random value to all input variants (creating all combinations)
+        # Apply each random value to all input configs (creating all combinations)
         results = []
-        for variant in in_variants:
+        for config in in_configs:
             for value in random_values:
-                results.append(self.update_variant(variant, {param_name: value}))
+                results.append(self.update_config(config, {param_name: value}))
 
         return results
 
@@ -203,7 +203,7 @@ class ParameterVariationListConfig(VariationConfig):
 
 class ParameterVariationList(Variation):
     """
-    Creates variants with parameter values from a predefined list.
+    Creates configs with parameter values from a predefined list.
 
     Expected parameters:
         name: Name of the parameter to vary
@@ -211,7 +211,7 @@ class ParameterVariationList(Variation):
     """
     CONFIG_CLASS = ParameterVariationListConfig
 
-    def variation(self, in_variants):
+    def variation(self, in_configs):
         self.progress_update("Running Parameter Variation (List)...")
 
         # Extract parameters
@@ -224,18 +224,18 @@ class ParameterVariationList(Variation):
         if not values or len(values) == 0:
             raise ValueError("Parameter 'values' must be a non-empty list for ParameterVariationList")
 
-        # If no input variants, create initial empty variant
-        if not in_variants or len(in_variants) == 0:
-            in_variants = [{'variant': {}}]
+        # If no input configs, create initial empty config
+        if not in_configs or len(in_configs) == 0:
+            in_configs = [{'config': {}}]
 
         # Log each value that will be used
         for value in values:
             self.progress_update(f"Using value: {param_name}={value}")
 
-        # Apply each value to all input variants (creating all combinations)
+        # Apply each value to all input configs (creating all combinations)
         results = []
-        for variant in in_variants:
+        for config in in_configs:
             for value in values:
-                results.append(self.update_variant(variant, {param_name: value}))
+                results.append(self.update_config(config, {param_name: value}))
 
         return results

@@ -57,12 +57,12 @@ class FloorplanVariation(NavVariation):
     CONFIG_CLASS = FloorplanVariationConfig
     # GUI_CLASS = FloorplanVariationGui
 
-    def variation(self, in_variants):
+    def variation(self, in_configs):
         self.progress_update("Running Floorplan Variation...")
 
-        # If no input variants, create initial empty variant
-        if not in_variants or len(in_variants) == 0:
-            in_variants = [{'variant': {}, '_variant_files': []}]
+        # If no input configs, create initial empty config
+        if not in_configs or len(in_configs) == 0:
+            in_configs = [{'config': {}, '_config_files': []}]
 
         floorplan_names = generate_floorplan_variations(self.base_path,
                                                         self.parameters.variation_files,
@@ -74,7 +74,7 @@ class FloorplanVariation(NavVariation):
         if not floorplan_names:
             raise ValueError("Floorplan variation failed, no result returned")
         if len(floorplan_names) != self.parameters.num_variations * len(self.parameters.variation_files):
-            raise ValueError(f"Floorplan variation returned unexpected number ({len(floorplan_names)}) of variants. Expected {
+            raise ValueError(f"Floorplan variation returned unexpected number ({len(floorplan_names)}) of configs. Expected {
                              self.parameters.num_variations * len(self.parameters.variation_files)}")
 
         map_file_parameter_name = self.parameters.name[0]
@@ -82,7 +82,7 @@ class FloorplanVariation(NavVariation):
 
         results = []
         for value in floorplan_names:
-            for variant in in_variants:
+            for config in in_configs:
                 base_name = os.path.basename(value).split('_')[0]
                 map_file_path = os.path.join(self.output_dir, value, 'maps', base_name + '.yaml')
                 mesh_file_path = os.path.join(self.output_dir, value, '3d-mesh', base_name + '.stl')
@@ -94,11 +94,11 @@ class FloorplanVariation(NavVariation):
                 rel_map_yaml_path = os.path.join('maps', base_name + '.yaml')
                 rel_map_pgm_path = os.path.join('maps', base_name + '.pgm')
                 rel_mesh_path = os.path.join('3d-mesh', base_name + '.stl')
-                new_variant = self.update_variant(variant, {
+                new_config = self.update_config(config, {
                     map_file_parameter_name: rel_map_yaml_path,
                     mesh_file_parameter_name: rel_mesh_path
                 },
-                    variant_files=[
+                    config_files=[
                     (rel_map_yaml_path, map_file_path),
                     (rel_map_pgm_path, os.path.join(self.output_dir, value, 'maps', base_name + '.pgm')),
                     (rel_mesh_path, mesh_file_path)
@@ -107,6 +107,6 @@ class FloorplanVariation(NavVariation):
                         '_map_file': map_file_path,
                 }
                 )
-                results.append(new_variant)
+                results.append(new_config)
 
         return results

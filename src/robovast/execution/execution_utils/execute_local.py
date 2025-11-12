@@ -21,23 +21,23 @@ import tempfile
 from robovast.common import (get_execution_env_variables, load_config,
                              prepare_run_configs)
 from robovast.common.cli import get_project_config
-from robovast.common.variant_generation import generate_scenario_variations
+from robovast.common.config_generation import generate_scenario_variations
 
 
-def initialize_local_execution(variant, output_dir, runs, debug=False, feedback_callback=print):
+def initialize_local_execution(config, output_dir, runs, debug=False, feedback_callback=print):
     """Initialize common setup for local execution commands.
 
     Performs all common setup steps including:
     - Loading project and execution configuration
-    - Validating variant exists
+    - Validating config exists
     - Creating output directory
     - Preparing run configuration files
     - Generating config path
 
     Args:
-        variant: The variant name to execute
+        config: The config name to execute
         output_dir: Directory where output files will be written, if none a temporary directory is created
-        runs: Number of runs per variant
+        runs: Number of runs per config
         debug: Enable debug output
         feedback_callback: Function to call for feedback messages (e.g., print or click.echo)
 
@@ -62,36 +62,36 @@ def initialize_local_execution(variant, output_dir, runs, debug=False, feedback_
     feedback_callback(f"Docker image: {docker_image}")
     feedback_callback("-" * 60)
 
-    # Generate and filter variants
+    # Generate and filter configs
     temp_dir = tempfile.TemporaryDirectory(prefix="robovast_execution_")
-    variants, _ = generate_scenario_variations(
+    configs, _ = generate_scenario_variations(
         variation_file=config_path,
         progress_update_callback=print,
         output_dir=temp_dir.name
     )
 
-    if not variants:
-        feedback_callback("Error: No variants found in config.", file=sys.stderr)
+    if not configs:
+        feedback_callback("Error: No configs found in vast-file.", file=sys.stderr)
         sys.exit(1)
 
-    # Filter to specific variant if requested
-    if variant:
-        found_variant = None
-        for v in variants:
-            if v['name'] == variant:
-                found_variant = v
+    # Filter to specific config if requested
+    if config:
+        found_config = None
+        for cfg in configs:
+            if cfg['name'] == config:
+                found_config = cfg
                 break
 
-        if not found_variant:
-            feedback_callback(f"Error: Variant '{variant}' not found in config.", file=sys.stderr)
-            feedback_callback("Available variants:")
-            for v in variants:
-                feedback_callback(f"  - {v['name']}")
+        if not found_config:
+            feedback_callback(f"Error: Config '{config}' not found in config.", file=sys.stderr)
+            feedback_callback("Available configs:")
+            for cfg in configs:
+                feedback_callback(f"  - {cfg['name']}")
             sys.exit(1)
 
-        variants = [found_variant]
+        configs = [found_config]
 
-    feedback_callback(f"Preparing {len(variants)} variants from {config_path}...")
+    feedback_callback(f"Preparing {len(configs)} configs from {config_path}...")
     feedback_callback(f"Output directory: {output_dir}")
 
     # Create the output directory
@@ -114,7 +114,7 @@ def initialize_local_execution(variant, output_dir, runs, debug=False, feedback_
         config_dir = output_dir
 
     try:
-        prepare_run_configs("local", variants, config_dir)
+        prepare_run_configs("local", configs, config_dir)
         config_path_result = os.path.join(config_dir, "config", "local")
         feedback_callback(f"Config path: {config_path_result}")
     except Exception as e:  # pylint: disable=broad-except
@@ -126,15 +126,15 @@ def initialize_local_execution(variant, output_dir, runs, debug=False, feedback_
 
     docker_configs = []
     for run_number in range(runs):
-        for variant_entry in variants:
+        for config_entry in configs:
             docker_configs.append((docker_image, os.path.abspath(os.path.join(
-                config_path_result, variant_entry["name"])), variant_entry['name'], run_number))
+                config_path_result, config_entry["name"])), config_entry['name'], run_number))
 
     generate_docker_run_script(docker_configs, results_dir, os.path.join(config_dir, "run.sh"))
     return os.path.join(config_dir, "run.sh")
 
 
-def get_commandline(image, config_path, output_path, variant_name, run_num=0, shell=False):
+def get_commandline(image, config_path, output_path, config_name, run_num=0, shell=False):
 
     # Get the current user and group IDs to run docker with the same permissions
     uid = os.getuid()
@@ -148,7 +148,7 @@ def get_commandline(image, config_path, output_path, variant_name, run_num=0, sh
         '-v', f'{output_path}:/out',   # Bind mount output to /out
     ]
 
-    env_vars = get_execution_env_variables(run_num, variant_name)
+    env_vars = get_execution_env_variables(run_num, config_name)
     for key, value in env_vars.items():
         docker_cmd.extend(['-e', f'{key}={value}'])
 
@@ -266,7 +266,7 @@ if [ "$USE_SHELL" = true ]; then
     echo "--------------------------------------------------------"
     echo "Execute the following command to run the test:"
     echo
-    echo "ros2 run scenario_execution_ros scenario_execution_ros -o /out /config/scenario.osc --scenario-parameter-file /config/scenario.variant"
+    echo "ros2 run scenario_execution_ros scenario_execution_ros -o /out /config/scenario.osc --scenario-parameter-file /config/scenario.config"
     echo "--------------------------------------------------------"
 else
     COMMAND="$*"
@@ -277,18 +277,18 @@ mkdir -p ${RESULTS_DIR}
 """
 
 
-def generate_docker_run_script(variant_configs, results_dir, output_script_path):
+def generate_docker_run_script(configs, results_dir, output_script_path):
     """Generate a shell script to run Docker containers sequentially.
 
     Args:
-        variant_configs: List of tuples (image, config_path, variant_name, run_num)
+        configs: List of tuples (image, config_path, config_name, run_num)
         output_script_path: Path where the script should be written
     """
-    if not variant_configs:
-        raise ValueError("At least one variant configuration is required")
+    if not configs:
+        raise ValueError("At least one config configuration is required")
 
-    # Use the first variant's image as the default
-    default_image = variant_configs[0][0]
+    # Use the first config's image as the default
+    default_image = configs[0][0]
 
     # Start with the template, replacing the image
     # Replace only the first occurrence of DOCKER_IMAGE and RESULTS_DIR
@@ -302,17 +302,17 @@ def generate_docker_run_script(variant_configs, results_dir, output_script_path)
         f'RESULTS_DIR="{results_dir}/${{RUN_ID}}"', 1
     )
 
-    total_variants = len(variant_configs)
+    total_configs = len(configs)
 
-    # Generate docker run commands for each variant
-    for idx, (image, config_path, variant_name, run_num) in enumerate(variant_configs, 1):
-        test_path = os.path.join("${RESULTS_DIR}", variant_name, str(run_num))
-        cmd_line = get_commandline(image, config_path, test_path, variant_name, run_num)
+    # Generate docker run commands for each config
+    for idx, (image, config_path, config_name, run_num) in enumerate(configs, 1):
+        test_path = os.path.join("${RESULTS_DIR}", config_name, str(run_num))
+        cmd_line = get_commandline(image, config_path, test_path, config_name, run_num)
 
         # Add progress message
         script += f'\necho ""\n'
         script += f'echo "{"=" * 60}"\n'
-        script += f'echo "{idx}/{total_variants} Executing variant {variant_name}, run {run_num}"\n'
+        script += f'echo "{idx}/{total_configs} Executing config {config_name}, run {run_num}"\n'
         script += f'echo "{"=" * 60}"\n'
         script += f'echo ""\n\n'
         script += f'mkdir -p {test_path}/logs\n'
@@ -334,7 +334,7 @@ def generate_docker_run_script(variant_configs, results_dir, output_script_path)
                 docker_params.append(f"    {arg} \\")
                 i += 1
 
-        # Add docker run command for this variant
+        # Add docker run command for this config
         script += 'docker run $INTERACTIVE \\\n'
         script += f'    --name "$CONTAINER_NAME" \\\n'
         script += '    $NETWORK_MODE \\\n'
@@ -343,12 +343,12 @@ def generate_docker_run_script(variant_configs, results_dir, output_script_path)
         script += f'\n    "$DOCKER_IMAGE" \\\n    $COMMAND\n\n'
 
         # Check exit code after each run
-        if idx < total_variants:
+        if idx < total_configs:
             # Not the last one - check and continue
             script += '# Check exit code\n'
             script += 'EXIT_CODE=$?\n'
             script += 'if [ $EXIT_CODE -ne 0 ]; then\n'
-            script += f'    echo "Error: Variant {idx}/{total_variants} ({variant_name}) failed with exit code $EXIT_CODE"\n'
+            script += f'    echo "Error: Config {idx}/{total_configs} ({config_name}) failed with exit code $EXIT_CODE"\n'
             script += '    cleanup\n'
             script += '    exit $EXIT_CODE\n'
             script += 'fi\n\n'
@@ -359,10 +359,10 @@ def generate_docker_run_script(variant_configs, results_dir, output_script_path)
             script += 'if [ $EXIT_CODE -eq 0 ]; then\n'
             script += f'    echo ""\n'
             script += f'    echo "{"=" * 60}"\n'
-            script += f'    echo "All {total_variants} variant(s) completed successfully!"\n'
+            script += f'    echo "All {total_configs} config(s) completed successfully!"\n'
             script += f'    echo "{"=" * 60}"\n'
             script += 'else\n'
-            script += f'    echo "Error: Variant {idx}/{total_variants} ({variant_name}) failed with exit code $EXIT_CODE"\n'
+            script += f'    echo "Error: Config {idx}/{total_configs} ({config_name}) failed with exit code $EXIT_CODE"\n'
             script += 'fi\n'
             script += 'cleanup\n'
             script += 'exit $EXIT_CODE\n'

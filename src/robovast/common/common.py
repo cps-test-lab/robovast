@@ -38,25 +38,22 @@ def load_config(config_file, subsection=None):
 
     with open(config_file, 'r') as f:
         try:
-            # Load all documents, the first one contains the settings
+            # Load all documents, the first one contains the config
             documents = list(yaml.safe_load_all(f))
             if not documents:
                 raise ValueError("No documents found in scenario file")
             config = documents[0]
-            settings = config.get('settings', None)
-            if settings:
-                # Validate the configuration
-                validate_config(settings)
 
-                if subsection:
-                    subsection = settings.get(subsection, None)
-                    if not subsection:
-                        raise ValueError(f"No subsection '{subsection}' found in settings")
-                    return subsection
-                else:
-                    return settings
+            # Validate the configuration
+            validate_config(config)
+
+            if subsection:
+                subsection_data = config.get(subsection, None)
+                if not subsection_data:
+                    raise ValueError(f"No subsection '{subsection}' found in configuration")
+                return subsection_data
             else:
-                raise ValueError("No 'settings' section found in scenario file")
+                return config
         except yaml.YAMLError as e:
             print(f"Error parsing YAML file: {e}")
             sys.exit(1)
@@ -94,71 +91,55 @@ def convert_dataclasses_to_dict(obj):  # pylint: disable=too-many-return-stateme
         return obj
 
 
-def save_scenario_variants_file(variants, output_file):
+def save_scenario_configs_file(configs, output_file):
     # Ensure the directory exists
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
 
-    # Create the complete data structure with variants and settings
+    # Create the complete data structure with configs and settings
     data_to_save = []
 
-    for variant_data in variants:
+    for config_data in configs:
         # Convert dataclasses to dicts automatically
-        converted_variant = convert_dataclasses_to_dict(variant_data)
-        converted_variant.pop('path', None)
-        data_to_save.append(converted_variant)
+        converted_config = convert_dataclasses_to_dict(config_data)
+        converted_config.pop('path', None)
+        data_to_save.append(converted_config)
 
-    # Write settings at the top, then variants
+    # Write settings at the top, then configurations
     with open(output_file, "w") as f:
-        # Write each variant as a separate YAML document
-        for idx, variant_dict in enumerate(data_to_save):
-            yaml.dump(variant_dict, f, default_flow_style=False)
+        # Write each config as a separate YAML document
+        for idx, config_dict in enumerate(data_to_save):
+            yaml.dump(config_dict, f, default_flow_style=False)
             # separate documents with '---'
             if idx < len(data_to_save) - 1:
                 f.write("---\n")
 
-
-def save_scenario_variant_file(variant, output_file):
-    # Ensure the directory exists
-    os.makedirs(os.path.dirname(output_file), exist_ok=True)
-
-    # Create the complete data structure with variants and settings
-    data_to_save = []
-
-    # Convert dataclasses to dicts automatically
-    converted_variant = convert_dataclasses_to_dict(variant)
-    data_to_save.append(converted_variant)
-
-    with open(output_file, "w") as f:
-        yaml.dump(data_to_save, f, default_flow_style=False)
-
-
-def filter_variants(variants):
-    """Parse YAML variants file and filter out keys starting with underscore.
+def filter_configs(configs):
+    """Parse YAML config file and filter out keys starting with underscore.
 
     Args:
-        variants_file: Path to the variants YAML file
+        configs: List of configuration dictionaries
 
     Returns:
-        list: List of filtered variant documents
+        list: List of filtered configuration documents
     """
     # Process each document
     filtered_documents = []
-    for variants_data in variants:
+    for configs_data in configs:
         # Filter out keys starting with "_"
-        if isinstance(variants_data, list):
-            filtered_variants = []
-            for variant in variants_data:
-                if isinstance(variant, dict):
-                    filtered_variant = {k: v for k, v in variant.items() if not k.startswith("_")}
-                    filtered_variants.append(filtered_variant)
+        if isinstance(configs_data, list):
+            filtered_configs = []
+            for config in configs_data:
+                if isinstance(config, dict):
+                    filtered_config = {k: v for k, v in config.items() if not k.startswith("_")}
+                    filtered_configs.append(filtered_config)
                 else:
-                    filtered_variants.append(variant)
-            filtered_documents.append(filtered_variants)
-        elif isinstance(variants_data, dict):
-            filtered_variant = {k: v for k, v in variants_data.items() if not k.startswith("_")}
-            filtered_documents.append(filtered_variant)
+                    filtered_configs.append(config)
+            filtered_documents.append(filtered_configs)
+        elif isinstance(configs_data, dict):
+            filtered_config = {k: v for k, v in configs_data.items() if not k.startswith("_")}
+            filtered_documents.append(filtered_config)
         else:
-            filtered_documents.append(variants_data)
+            filtered_documents.append(configs_data)
 
     return filtered_documents
 

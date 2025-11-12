@@ -25,7 +25,7 @@ import yaml
 
 from robovast.common import prepare_run_configs
 from robovast.common.cli import get_project_config
-from robovast.common.kubernetes import check_pod_running, get_kubernetes_client
+from ..cluster_execution.kubernetes import check_pod_running, get_kubernetes_client, check_kubernetes_access
 from robovast.execution.cluster_execution.cluster_execution import JobRunner
 from robovast.execution.cluster_execution.download_results import \
     ResultDownloader
@@ -39,7 +39,7 @@ from .execute_local import initialize_local_execution
 def execution():
     """Execute scenarios locally or on a cluster.
 
-    Run scenario variations either locally using Docker or on a
+    Run scenario configurations either locally using Docker or on a
     Kubernetes cluster for distributed execution.
     """
 
@@ -48,7 +48,7 @@ def execution():
 def local():
     """Execute scenarios locally using Docker.
 
-    Run scenario variants in Docker containers with bind mounts
+    Run test configurations in Docker containers with bind mounts
     for configuration and output data.
 
     Requires project initialization with ``vast init`` first.
@@ -56,8 +56,8 @@ def local():
 
 
 @local.command()
-@click.option('--variant', '-v', default=None,
-              help='Run only a specific variant by name')
+@click.option('--config', '-c', default=None,
+              help='Run only a specific configuration by name')
 @click.option('--runs', '-r', type=int, default=None,
               help='Override the number of runs specified in the config')
 @click.option('--output', '-o', default=None,
@@ -72,11 +72,11 @@ def local():
               help='Use host network mode')
 @click.option('--image', '-i', default='ghcr.io/cps-test-lab/robovast:latest',
               help='Use a custom Docker image')
-def run(variant, runs, output, debug, shell, no_gui, network_host, image):
-    """Execute scenario variants locally using Docker.
+def run(config, runs, output, debug, shell, no_gui, network_host, image):
+    """Execute scenario configurations locally using Docker.
 
-    Runs scenario variants in Docker containers with bind mounts for configuration
-    and output data. By default, runs all variants from the project configuration.
+    Runs scenario configurations in Docker containers with bind mounts for configuration
+    and output data. By default, runs all configurations from the project configuration.
     GUI support is enabled by default (requires X11 server on host).
 
     Prerequisites:
@@ -90,7 +90,7 @@ def run(variant, runs, output, debug, shell, no_gui, network_host, image):
     """
     try:
         run_script_path = initialize_local_execution(
-            variant, None, runs, debug=debug, feedback_callback=click.echo
+            config, None, runs, debug=debug, feedback_callback=click.echo
         )
 
         # Build command with options
@@ -120,14 +120,14 @@ def run(variant, runs, output, debug, shell, no_gui, network_host, image):
 
 @local.command()
 @click.argument('output-dir', type=click.Path())
-@click.option('--variant', '-v', default=None,
-              help='Run only a specific variant by name')
+@click.option('--config', '-c', default=None,
+              help='Run only a specific configuration by name')
 @click.option('--runs', '-r', type=int, default=None,
               help='Override the number of runs specified in the config')
 @click.option('--debug', '-d', is_flag=True,
               help='Enable debug output')
-def prepare_run(output_dir, variant, runs, debug):
-    """Prepare run configuration without executing.
+def prepare_run(output_dir, config, runs, debug):
+    """Prepare run without executing.
 
     Generates all necessary configuration files and a ``run.sh`` script for
     manual execution. This is useful for inspecting the generated configuration,
@@ -151,7 +151,7 @@ def prepare_run(output_dir, variant, runs, debug):
     """
     try:
         initialize_local_execution(
-            variant, output_dir, runs, debug=debug, feedback_callback=click.echo
+            config, output_dir, runs, debug=debug, feedback_callback=click.echo
         )
 
         click.echo("-" * 60)
@@ -166,7 +166,7 @@ def prepare_run(output_dir, variant, runs, debug):
 def cluster():
     """Execute scenarios on a Kubernetes cluster.
 
-    Run scenario variants as Kubernetes jobs with bind mounts
+    Run scenario configurations as Kubernetes jobs with bind mounts
     for configuration and output data.
 
     Requires project initialization with ``vast init`` first.
@@ -174,21 +174,30 @@ def cluster():
 
 
 @cluster.command()
-@click.option('--variant', '-v', default=None,
-              help='Run only a specific variant by name')
+@click.option('--config', '-c', default=None,
+              help='Run only a specific configuration by name')
 @click.option('--runs', '-r', type=int, default=None,
               help='Override the number of runs specified in the config')
-def run(variant, runs):  # pylint: disable=function-redefined
+def run(config, runs):  # pylint: disable=function-redefined
     """Execute scenarios on a Kubernetes cluster.
 
-    Deploys all variants (or a specific variant) as Kubernetes jobs
+    Deploys all test configurations (or a specific one) as Kubernetes jobs
     for distributed parallel execution.
 
     Requires project initialization with ``vast init`` first.
     """
     # Get project configuration
     project_config = get_project_config()
-    config = project_config.config_path
+
+    # Check Kubernetes access
+    k8s_client = get_kubernetes_client()
+    click.echo("Checking Kubernetes cluster access...")
+    k8s_ok, k8s_msg = check_kubernetes_access(k8s_client)
+    if not k8s_ok:
+        click.echo(f"✗ Error: {k8s_msg}", err=True)
+        click.echo("  Kubernetes cluster is required for RoboVAST execution.", err=True)
+        sys.exit(1)
+    click.echo(f"✓ {k8s_msg}")
 
     # Check if transfer pod is running
     click.echo("Checking robovast pod status...")
@@ -221,7 +230,7 @@ def run(variant, runs):  # pylint: disable=function-redefined
     click.echo(f"✓ {pod_msg}")
 
     try:
-        job_runner = JobRunner(config, variant, runs, cluster_config)
+        job_runner = JobRunner(project_config.config_path, config, runs, cluster_config)
         job_runner.run()
         click.echo("### Cluster execution finished.")
         click.echo()
@@ -341,7 +350,7 @@ def cleanup(config_name):
     This command can be run after completing all scenario executions
     to clean up cluster resources.
 
-    If --config is not specified, it will automatically detect which
+    If ``--config`` is not specified, it will automatically detect which
     cluster configuration was used during setup.
     """
     try:
@@ -355,15 +364,15 @@ def cleanup(config_name):
 
 @cluster.command()
 @click.argument('output', type=click.Path())
-@click.option('--variant', '-v', default=None,
-              help='Prepare only a specific variant by name')
+@click.option('--config', '-c', default=None,
+              help='Prepare only a specific config by name')
 @click.option('--runs', '-r', type=int, default=None,
               help='Override the number of runs specified in the config')
-@click.option('--cluster-config', '-c', default=None,
+@click.option('--cluster-config', '-k', default=None,
               help='Override the cluster configuration specified in the config')
 @click.option('--option', '-o', 'options', multiple=True,
               help='Cluster-specific option in key=value format (can be used multiple times)')
-def prepare_run(output, variant, runs, cluster_config, options):  # pylint: disable=function-redefined
+def prepare_run(output, config, runs, cluster_config, options):  # pylint: disable=function-redefined
     """Prepare complete cluster execution package for offline deployment.
 
     Generates all necessary files for cluster execution and writes them to
@@ -418,19 +427,19 @@ def prepare_run(output, variant, runs, cluster_config, options):  # pylint: disa
         raise RuntimeError(f"Failed to get cluster config: {e}") from e
 
     # Initialize job runner (this prepares all scenarios)
-    job_runner = JobRunner(config_path, variant, runs, cluster_config)
+    job_runner = JobRunner(config_path, config, runs, cluster_config)
 
     click.echo(f"### Preparing run configuration (ID: {job_runner.run_id})")
-    click.echo(f"### Variants: {len(job_runner.variants)}")
-    click.echo(f"### Runs per variant: {job_runner.num_runs}")
-    click.echo(f"### Total jobs: {len(job_runner.variants) * job_runner.num_runs}")
+    click.echo(f"### Test configurations: {len(job_runner.configs)}")
+    click.echo(f"### Runs per test configuration: {job_runner.num_runs}")
+    click.echo(f"### Total jobs: {len(job_runner.configs) * job_runner.num_runs}")
 
     # Prepare config files
     click.echo("### Preparing configuration files...")
 
     prepare_run_configs(
         job_runner.run_id,
-        job_runner.variants,
+        job_runner.configs,
         output
     )
 
@@ -444,9 +453,10 @@ def prepare_run(output, variant, runs, cluster_config, options):  # pylint: disa
     job_count = 0
 
     for run_number in range(job_runner.num_runs):
-        for variant_key in job_runner.variants:
+        for cfg in job_runner.configs:
+            config_name = cfg.get("name")
             # Use the centralized function to create the job manifest
-            job_manifest = job_runner.create_job_manifest_for_scenario(variant_key, run_number)
+            job_manifest = job_runner.create_job_manifest_for_scenario(config_name, run_number)
 
             # Save individual job manifest
             job_name = job_manifest['metadata']['name']
@@ -489,7 +499,7 @@ Run ID: {run_id}
 import os
 import subprocess
 import sys
-from robovast.common.kubernetes import copy_config_to_cluster
+from robovast.execution.cluster_execution.kubernetes import copy_config_to_cluster
 
 
 def main():
