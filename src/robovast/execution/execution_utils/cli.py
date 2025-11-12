@@ -350,7 +350,7 @@ def cleanup(config_name):
     This command can be run after completing all scenario executions
     to clean up cluster resources.
 
-    If --config is not specified, it will automatically detect which
+    If ``--config`` is not specified, it will automatically detect which
     cluster configuration was used during setup.
     """
     try:

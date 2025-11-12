@@ -23,7 +23,8 @@ import tempfile
 import time
 
 import yaml
-from kubernetes import client, config
+from kubernetes import client
+from kubernetes import config as kube_config
 
 from robovast.common import (get_execution_env_variables, get_run_id,
                              load_config, prepare_run_configs)
@@ -48,7 +49,7 @@ class JobRunner:
         # Use provided num_runs if specified, otherwise use config value or default to 1
         if num_runs is not None:
             self.num_runs = num_runs
-            print(f"### Overriding config: Running {self.num_runs} runs")
+            print(f"Overriding config: Running {self.num_runs} runs")
         elif "runs" in parameters:
             self.num_runs = parameters["runs"]
         else:
@@ -86,14 +87,14 @@ class JobRunner:
             print(f"Running single config: {single_config}")
             self.configs = [found_config]
 
-        config.load_kube_config()
+        kube_config.load_kube_config()
         self.k8s_client = client.CoreV1Api()
         self.k8s_batch_client = client.BatchV1Api()
         self.k8s_api_client = client.ApiClient()
 
         # Check if transfer-pod exists
         if not check_pod_running(self.k8s_client, "robovast"):
-            print(f"### ERROR: Transfer pod 'robovast' is not available!")
+            print(f"ERROR: Transfer pod 'robovast' is not available!")
             sys.exit(1)
 
         # Initialize statistics tracking
@@ -220,7 +221,7 @@ class JobRunner:
                             if pod_start_time is None:
                                 pod_start_time = pod.status.start_time
                 except Exception as e:
-                    print(f"### Warning: Could not get pod start time for job {job_name}: {e}")
+                    print(f"Warning: Could not get pod start time for job {job_name}: {e}")
 
                 # Only collect stats for jobs that have both start and completion times
                 if pod_start_time and completion_time:
@@ -236,15 +237,15 @@ class JobRunner:
                     }
                 elif completion_time:
                     # Job completed but we couldn't determine actual start time
-                    print(f"### Warning: Could not determine actual running start time for job {job_name}")
+                    print(f"Warning: Could not determine actual running start time for job {job_name}")
 
             except Exception as e:
-                print(f"### Warning: Could not collect statistics for job {job_name}: {e}")
+                print(f"Warning: Could not collect statistics for job {job_name}: {e}")
 
     def print_run_statistics(self):
         """Print comprehensive statistics about the run"""
         if not self.job_statistics:
-            print("### No job statistics available")
+            print("No job statistics available")
             return
 
         print("\n" + "=" * 80)
@@ -332,15 +333,15 @@ class JobRunner:
     def cleanup_jobs(self):
         # cleanup all jobs with label jobgroup: scenario-runs in a single call
         try:
-            print(f"### Deleting all jobs with label 'jobgroup=scenario-runs'")
+            print(f"Deleting all jobs with label 'jobgroup=scenario-runs'")
             self.k8s_batch_client.delete_collection_namespaced_job(
                 namespace="default",
                 label_selector="jobgroup=scenario-runs",
                 body=client.V1DeleteOptions(grace_period_seconds=0)
             )
-            print(f"### Successfully deleted all scenario-runs jobs")
+            print(f"Successfully deleted all scenario-runs jobs")
         except client.rest.ApiException as e:
-            print(f"### Error deleting jobs with label selector: {e}")
+            print(f"Error deleting jobs with label selector: {e}")
 
     def run(self):
         # check if k8s element names have "$ITEM" template
@@ -358,25 +359,25 @@ class JobRunner:
         for job in job_list.items:
             if job.metadata.name.startswith(job_prefix):
                 jobs_to_cleanup.append(job.metadata.name)
-                print(f"### Found existing job to cleanup: {job.metadata.name}")
+                print(f"Found existing job to cleanup: {job.metadata.name}")
 
         if jobs_to_cleanup:
-            print(f"### Cleaning up {len(jobs_to_cleanup)} existing jobs")
+            print(f"Cleaning up {len(jobs_to_cleanup)} existing jobs")
             self.cleanup_jobs()
 
         # Clean up existing pods with label jobgroup: scenario-runs
         self.cleanup_pods()
 
         # upload all config files to transfer PVC via transfer pod
-        print(f"### Uploading task config files for {len(self.configs)} scenarios to transfer PVC...")
+        print(f"Uploading task config files for {len(self.configs)} scenarios to transfer PVC...")
         self.upload_tasks_to_transfer_pod()
 
         # Create all jobs for all runs before executing any
         all_jobs = []
         create_start_time = time.time()
-        print(f"### Creating {self.num_runs} runs with {len(self.configs)} scenarios each (ID: {self.run_id})...")
+        print(f"Creating {self.num_runs} runs with {len(self.configs)} scenarios each (ID: {self.run_id})...")
         for run_number in range(self.num_runs):
-            print(f"### Creating jobs for run {run_number + 1}/{self.num_runs}")
+            print(f"Creating jobs for run {run_number + 1}/{self.num_runs}")
 
             for config in self.configs:
                 config_name = config.get("name")
@@ -384,11 +385,11 @@ class JobRunner:
                 job_name = job_manifest['metadata']['name']
                 all_jobs.append(job_name)
                 self.k8s_batch_client.create_namespaced_job(namespace="default", body=job_manifest)
-                print(f"### Created job {job_name} for run {run_number + 1}")
+                print(f"Created job {job_name} for run {run_number + 1}")
 
-        print(f"### All {len(all_jobs)} jobs created. Starting execution...")
+        print(f"All {len(all_jobs)} jobs created. Starting execution...")
         create_end_time = time.time()
-        print(f"### {create_end_time - create_start_time:.2f} seconds to create all jobs")
+        print(f"{create_end_time - create_start_time:.2f} seconds to create all jobs")
         # Track run start time
         self.run_start_time = datetime.datetime.now(datetime.timezone.utc)
 
@@ -398,48 +399,48 @@ class JobRunner:
                 job_status = self.get_remaining_jobs(all_jobs)
 
                 if job_status:
-                    print(f"### Waiting for {len(job_status)} out of {len(all_jobs)} jobs to finish...")
+                    print(f"Waiting for {len(job_status)} out of {len(all_jobs)} jobs to finish...")
                     time.sleep(1)
                 else:
                     break
-            print("### All jobs finished.")
+            print("All jobs finished.")
         except KeyboardInterrupt:
-            print("\n### Keyboard interrupt received, cleaning up...")
+            print("\nKeyboard interrupt received, cleaning up...")
 
         # Track run end time and collect statistics
         self.run_end_time = datetime.datetime.now(datetime.timezone.utc)
-        print("### Collecting job statistics...")
+        print("Collecting job statistics...")
         self.collect_job_statistics(all_jobs)
 
         # Clean up
         self.cleanup_pods()
         self.cleanup_jobs()
-        print(f"### Cleaned up jobs")
+        print(f"Cleaned up jobs")
 
         # Print comprehensive statistics
         self.print_run_statistics()
 
-        print(f"### Transfer PVC and pod are left running for reuse")
+        print(f"Transfer PVC and pod are left running for reuse")
 
     def cleanup_pods(self):
         # Cleanup pods with label jobgroup: scenario-runs
         try:
-            print(f"### Deleting all pods with label 'jobgroup=scenario-runs'")
+            print(f"Deleting all pods with label 'jobgroup=scenario-runs'")
             self.k8s_client.delete_collection_namespaced_pod(
                 namespace="default",
                 label_selector="jobgroup=scenario-runs",
                 body=client.V1DeleteOptions(grace_period_seconds=0)
             )
-            print(f"### Successfully cleaned up all scenario-runs pods")
+            print(f"Successfully cleaned up all scenario-runs pods")
         except client.rest.ApiException as e:
-            print(f"### Error deleting pods with label selector: {e}")
+            print(f"Error deleting pods with label selector: {e}")
 
     def upload_tasks_to_transfer_pod(self):
         """Upload all files to transfer PVC using kubectl cp to transfer pod"""
 
         # Create a temporary directory to organize all files
         with tempfile.TemporaryDirectory() as temp_dir:
-            print(f"### Using temporary directory: {temp_dir}")
+            print(f"Using temporary directory: {temp_dir}")
 
             prepare_run_configs(self.run_id, self.configs, temp_dir)
 
