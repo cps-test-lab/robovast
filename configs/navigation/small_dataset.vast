@@ -21,7 +21,7 @@ settings:
           x: 2.856238278134053
           y: 1.710884621500636
     - static_objects:
-      - entity_name: obstacle_0
+      - entity_name: obstacle0
         model: file:///config/files/models/box.sdf.xacro
         spawn_pose:
           orientation:
@@ -31,7 +31,7 @@ settings:
             y: 4.797675215102369
             z: 0.5
         xacro_arguments: width:=0.5, length:=0.5, height:=1.0
-      - entity_name: obstacle_1
+      - entity_name: obstacle1
         model: file:///config/files/models/box.sdf.xacro
         spawn_pose:
           orientation:
@@ -1638,7 +1638,8 @@ settings:
             x: 0.0
             y: -3.8
             z: 0.5
-      - entity_name: object
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      - entity_name: object_1
         model: file:///config/files/models/box.sdf.xacro
         spawn_pose:
           orientation:
@@ -1647,6 +1648,7 @@ settings:
             x: -3.7
             y: -1.5
             z: 0.5
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
       - entity_name: object1
         model: file:///config/files/models/box.sdf.xacro
         spawn_pose:
@@ -1656,7 +1658,8 @@ settings:
             x: 0.0
             y: -2.0
             z: 0.5
-      - entity_name: object
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      - entity_name: object_2
         model: file:///config/files/models/box.sdf.xacro
         spawn_pose:
           orientation:
@@ -1665,6 +1668,7 @@ settings:
             x: 3.4
             y: -4.2
             z: 0.5
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
   - name: small-dataset-maps-door-size-0-5-1s1-1
     scenario_file: scenario.osc
     parameters:
@@ -1844,7 +1848,8 @@ settings:
             x: 0.0
             y: -2.9
             z: 0.5
-      - entity_name: object
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      - entity_name: object_1
         model: file:///config/files/models/box.sdf.xacro
         spawn_pose:
           orientation:
@@ -1853,7 +1858,8 @@ settings:
             x: 0.0
             y: -3.3
             z: 0.5
-      - entity_name: object
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      - entity_name: object_2
         model: file:///config/files/models/box.sdf.xacro
         spawn_pose:
           orientation:
@@ -1862,6 +1868,7 @@ settings:
             x: -2.5
             y: -1.4
             z: 0.5
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
   - name: small-dataset-maps-door-size-0-5-1f2-3
     scenario_file: scenario.osc
     parameters:
@@ -1896,6 +1903,7 @@ settings:
             x: 3.0
             y: -2.0
             z: 0.5
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
       - entity_name: object1
         model: file:///config/files/models/box.sdf.xacro
         spawn_pose:
@@ -1905,7 +1913,8 @@ settings:
             x: 0.0
             y: 0.0
             z: 0.5
-      - entity_name: object
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      - entity_name: object_1
         model: file:///config/files/models/box.sdf.xacro
         spawn_pose:
           orientation:
@@ -1914,7 +1923,8 @@ settings:
             x: 0.0
             y: 3.0
             z: 0.5
-      - entity_name: object
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      - entity_name: object_2
         model: file:///config/files/models/box.sdf.xacro
         spawn_pose:
           orientation:
@@ -1923,6 +1933,7 @@ settings:
             x: 0.0
             y: -1.7
             z: 0.5
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
   - name: small-dataset-maps-door-size-0-5-1f2-4
     scenario_file: scenario.osc
     parameters:
@@ -1957,6 +1968,7 @@ settings:
             x: 1.0
             y: -3.8
             z: 0.5
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
   - name: small-dataset-maps-door-size-0-5-1f2-5
     scenario_file: scenario.osc
     parameters:
@@ -1991,6 +2003,7 @@ settings:
             x: 1.0
             y: 3.4
             z: 0.5
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
   - name: small-dataset-maps-door-size-0-5-1f2-6
     scenario_file: scenario.osc
     parameters:
@@ -2030,7 +2043,8 @@ settings:
             x: -0.5
             y: -1.3
             z: 0.5
-      - entity_name: object
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      - entity_name: object_1
         model: file:///config/files/models/box.sdf.xacro
         spawn_pose:
           orientation:
@@ -2039,7 +2053,8 @@ settings:
             x: 0.0
             y: -1.6
             z: 0.5
-      - entity_name: object
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      - entity_name: object_2
         model: file:///config/files/models/box.sdf.xacro
         spawn_pose:
           orientation:
@@ -2048,6 +2063,7 @@ settings:
             x: 0.5
             y: -2.0
             z: 0.5
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
   - name: small-dataset-maps-door-size-0-5-1f3-1
     scenario_file: scenario.osc
     parameters:
@@ -15926,10 +15942,10 @@ settings:
       resources:
         cpu: 8
     runs: 10
-    test_files_filter: 
-    - "**/files/*"
-    - "**/small_dataset_maps/*.stl"
-    - "**/small_dataset_maps/**/maps/*"
+    test_files_filter:
+    - '**/files/*'
+    - '**/small_dataset_maps/*.stl'
+    - '**/small_dataset_maps/**/maps/*'
   analysis:
     preprocessing:
     - ../../tools/ros2_exec.sh rosbags_to_csv.py

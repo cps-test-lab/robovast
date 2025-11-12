@@ -52,14 +52,6 @@ while [ $# -gt 0 ]; do
             DOCKER_IMAGE="$2"
             shift 2
             ;;
-        --network-host)
-            NETWORK_MODE="--network host"
-            shift
-            ;;
-        --no-gui)
-            USE_GUI=false
-            shift
-            ;;
         *)
             break
             ;;

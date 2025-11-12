@@ -16,11 +16,11 @@
 
 """Preprocessing functionality for analysis data."""
 import hashlib
-from pathlib import Path
-import time
 import json
 import os
 import subprocess
+import time
+from pathlib import Path
 from typing import List
 
 from .common import load_config
@@ -85,8 +85,10 @@ def compute_dir_hash(dir_path):
     path = Path(dir_path)
 
     # Collect all files recursively except those starting with "." or ending with .pyc
+    # Also skip files in .cache subdirectories
     files_to_check = [f for f in path.rglob("*") if f.is_file() and not f.name.startswith(".")
-                      and not f.is_symlink() and not f.name.endswith('pyc')]
+                      and not f.is_symlink() and not f.name.endswith('pyc')
+                      and '.cache' not in f.parts]
 
     # Create hash based on file stats (even if empty)
     hash_data = []
@@ -103,7 +105,7 @@ def compute_dir_hash(dir_path):
     return hashlib.md5(hash_string.encode()).hexdigest()
 
 
-def run_preprocessing(config_path: str, results_dir: str, output_callback=None): # pylint: disable=too-many-return-statements
+def run_preprocessing(config_path: str, results_dir: str, output_callback=None):  # pylint: disable=too-many-return-statements
     """Run preprocessing commands on test results.
 
     Args:
@@ -125,6 +127,7 @@ def run_preprocessing(config_path: str, results_dir: str, output_callback=None):
     if not os.path.exists(results_dir):
         return False, f"Results directory does not exist: {results_dir}"
 
+    output(f"Checking if preprocessing is needed...")
     # Compute hash of results directory
     start_time = time.time()
     hash_result = compute_dir_hash(results_dir)

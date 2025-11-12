@@ -86,8 +86,22 @@ def process_rosbag(bag_path, skipped_topics):
             # Use only the immediate parent folder name for the CSV filename
             parent_folder = os.path.abspath(os.path.dirname(bag_path))
             output_file = os.path.join(parent_folder, os.path.basename(bag_path) + '.csv')
-            df = pd.DataFrame.from_records(records)
-            df.to_csv(output_file, index=False)
+
+            # Collect all fieldnames from all records (dynamic fields)
+            fieldnames_set = set()
+            for record in records:
+                fieldnames_set.update(record.keys())
+            # Sort fieldnames, but keep timestamp, topic, type first
+            base_fields = ['timestamp', 'topic', 'type']
+            other_fields = sorted(fieldnames_set - set(base_fields))
+            fieldnames = base_fields + other_fields
+
+            # Write to CSV using DictWriter
+            with open(output_file, 'w', newline='') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                writer.writeheader()
+                for record in records:
+                    writer.writerow(record)
 
             print(f"✓ {output_file}: {len(records)} messages")
             return len(records)
