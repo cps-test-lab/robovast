@@ -14,9 +14,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
 from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
+
+logger = logging.getLogger(__name__)
 
 
 class GeneralConfig(BaseModel):
@@ -96,15 +99,20 @@ def validate_config(config: dict):
     Raises:
         ValueError: If required sections are missing
     """
+    logger.debug("Validating configuration")
     version = config.get("version", None)
     if version != 1:
+        logger.error(f"Unsupported config version: {version}")
         raise ValueError(f"Unsupported config version: {version}")
+    logger.debug(f"Config version {version} is supported")
     return get_validated_config(config, ConfigV1)
 
 
 def get_validated_config(config: dict, config_class):
     try:
+        logger.debug(f"Validating config against {config_class.__name__}")
         config = config_class(**config)
+        logger.debug("Configuration validation successful")
     except Exception as e:
         if isinstance(e, ValidationError):
             errors = []
@@ -112,6 +120,9 @@ def get_validated_config(config: dict, config_class):
                 field = ".".join(str(loc) for loc in error['loc'])
                 msg = error['msg']
                 errors.append(f"  - {field}: {msg}")
-            raise ValueError(f"Config validation failed:\n" + "\n".join(errors)) from None
+            error_msg = f"Config validation failed:\n" + "\n".join(errors)
+            logger.error(error_msg)
+            raise ValueError(error_msg) from None
+        logger.error(f"Config validation failed: {str(e)}")
         raise ValueError(f"Config validation failed: {str(e)}") from None
     return config

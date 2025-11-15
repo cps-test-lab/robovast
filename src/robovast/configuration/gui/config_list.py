@@ -30,7 +30,7 @@ class ConfigTableModel(QAbstractTableModel):
 
     def rowCount(self, parent=QModelIndex()):
         return len(self.configs)
-    
+
     def columnCount(self, parent=QModelIndex()):
         return len(self.headers)
 

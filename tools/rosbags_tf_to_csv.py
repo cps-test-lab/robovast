@@ -193,7 +193,7 @@ def main():
 
     if not rosbag_paths:
         print(f"No rosbags found in {args.input}")
-        return
+        return 0
 
     if args.frame == []:
         args.frame = ["base_link"]
@@ -212,8 +212,12 @@ def main():
         process_args.append((bag_path, args.frame, args.csv_filename))
 
     # Process rosbags in parallel
-    with Pool(processes=args.workers) as pool:
-        results = pool.map(process_rosbag_wrapper, process_args)
+    try:
+        with Pool(processes=args.workers) as pool:
+            results = pool.map(process_rosbag_wrapper, process_args)
+    except KeyboardInterrupt:
+        print("Processing interrupted by user.")
+        return 1
 
     # Calculate summary statistics
     skipped_bags = 0
@@ -244,7 +248,7 @@ def main():
     empty_frames = [frame for frame, count in total_frame_counts.items() if count == 0]
     if empty_frames:
         print(f"✗ Warning: {args.input} No records found for requested frame(s): {', '.join(empty_frames)}")
-
+    return 0
 
 if __name__ == "__main__":
     # Required for multiprocessing on Windows and some Unix systems

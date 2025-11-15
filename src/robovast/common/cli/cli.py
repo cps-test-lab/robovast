@@ -17,6 +17,7 @@
 
 """Main CLI entry point for RoboVAST."""
 
+import logging
 import os
 import shutil
 import sys
@@ -26,34 +27,74 @@ from importlib.metadata import entry_points
 import click
 
 from ..common import load_config
+from ..logging_config import (get_logger, setup_logging,
+                              setup_logging_from_project_config)
 from .checks import check_docker_access
 from .project_config import ProjectConfig, get_project_config
 
+logger = get_logger(__name__)
+
+
+def configure_logging(ctx, param, value):
+    """Callback to configure logging based on --log-level option."""
+    if value is not None:
+        # User explicitly specified log level, use it
+        setup_logging(value)
+        # Store in context for later use
+        ctx.ensure_object(dict)
+        ctx.obj['log_level'] = value
+    else:
+        # No log level specified, use project config
+        setup_logging_from_project_config()
+    return value
+
 
 @click.group()
+@click.option('--log-level', '-l',
+              type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], case_sensitive=False),
+              help='Set logging level (overrides project configuration)',
+              callback=configure_logging,
+              is_eager=True,
+              expose_value=False)
 @click.version_option(package_name="robovast", prog_name="RoboVAST")
-def cli():
+@click.pass_context
+def cli(ctx):
     """VAST - RoboVAST Command-Line Interface.
 
     Main command for managing variations, executing scenarios,
     and analyzing results in the RoboVAST framework.
 
+    The global ``--log-level`` option can be used to control logging verbosity
+    for any command, overriding the project configuration.
+
+    Examples:
+      vast --log-level DEBUG execution cluster cleanup
+      vast --log-level INFO init config.yaml
+
     See ``vast --help`` for a list of available commands.
     """
+    # Ensure context object exists
+    ctx.ensure_object(dict)
 
 
 @cli.command()
 @click.argument('config', type=click.Path(exists=True))
 @click.option('--results-dir', '-r', default="results", type=click.Path(),
               help='Directory for storing results')
+@click.option('--project-log-level', default="INFO",
+              type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], case_sensitive=False),
+              help='Default logging level for the project (saved to project config)')
 @click.option('--force', '-f', is_flag=True,
               help='Skip Docker and Kubernetes accessibility checks')
-def init(config, results_dir, force):
+def init(config, results_dir, project_log_level, force):
     """Initialize a VAST project.
 
     Creates a `.vast_project` file in the current directory that stores
-    the configuration file path and results directory. These settings
-    will be used by other VAST commands automatically.
+    the configuration file path, results directory, and default logging level.
+    These settings will be used by other VAST commands automatically.
+
+    The default log level can be overridden for any command using the global
+    ``--log-level`` flag (e.g., ``vast --log-level DEBUG <command>``).
 
     By default, performs the following checks before initialization:
 
@@ -76,13 +117,12 @@ def init(config, results_dir, force):
         if not force:
             sys.exit(1)
 
-    click.echo("Checking Docker daemon access...")
+    logger.debug("Checking Docker daemon access...")
     docker_ok, docker_msg = check_docker_access()
     if not docker_ok and not force:
         click.echo(f"✗ Error: {docker_msg}", err=True)
         click.echo("  Docker is required for RoboVAST execution.", err=True)
         sys.exit(1)
-    click.echo(f"✓ {docker_msg}")
 
     # Convert to absolute paths
     project_file_dir = os.path.abspath(os.getcwd())
@@ -101,7 +141,7 @@ def init(config, results_dir, force):
         sys.exit(1)
 
     # Create ProjectConfig and save it
-    project_config = ProjectConfig(config_path=config_path, results_dir=results_path)
+    project_config = ProjectConfig(config_path=config_path, results_dir=results_path, log_level=project_log_level)
 
     # Validate the configuration
     is_valid, error = project_config.validate()
@@ -118,9 +158,10 @@ def init(config, results_dir, force):
     project_file = project_config.save()
 
     click.echo(f"✓ Project initialized successfully!")
-    click.echo(f"  Configuration: {config_path}")
-    click.echo(f"  Results directory: {results_path}")
-    click.echo(f"  Project file: {project_file}")
+    logging.debug(f"Configuration: {config_path}")
+    logging.debug(f"Results directory: {results_path}")
+    logging.debug(f"Log level: {project_log_level}")
+    logging.debug(f"Project file: {project_file}")
 
 
 @cli.command()
@@ -224,8 +265,7 @@ def import_results(archive, output, force):
 
     try:
         archive_path = os.path.abspath(archive)
-        click.echo(f"Importing results from: {archive_path}")
-        click.echo(f"Extracting to: {output}")
+        click.echo(f"Importing results from: {archive_path} to results directory '{output}'...")
 
         # Validate the archive
         click.echo(f"Validating archive...")
@@ -269,13 +309,13 @@ def import_results(archive, output, force):
                     shutil.rmtree(run_output_dir)
 
         # Extract the archive
-        click.echo(f"Extracting archive...")
+        logger.debug(f"Extracting archive...")
         with tarfile.open(archive_path, 'r:gz') as tar:
             tar.extractall(path=output)
 
-        click.echo(f"Successfully extracted to: {output}")
+        logger.debug(f"Successfully extracted to: {output}")
 
-        click.echo(f"Import completed successfully!")
+        click.echo(f"✓ Import completed successfully!")
 
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
@@ -293,6 +333,10 @@ def load_plugins():
                 plugin_group = ep.load()
                 # Add it as a subcommand to the main CLI
                 cli.add_command(plugin_group, name=ep.name)
+
+                # Add alias for configuration -> config
+                if ep.name == 'configuration':
+                    cli.add_command(plugin_group, name='config')
             except Exception as e:
                 click.echo(f"Warning: Failed to load plugin '{ep.name}': {e}", err=True)
     except Exception as e:
@@ -304,8 +348,8 @@ def main():
     # Load all plugins before running the CLI
     load_plugins()
 
-    # Run the CLI
-    cli()
+    # Run the CLI (logging is configured via the --log-level callback)
+    cli()  # pylint: disable=no-value-for-parameter
 
 
 if __name__ == '__main__':

@@ -17,11 +17,13 @@
 
 """Setup utilities for cluster execution."""
 
+import logging
 import os
-import sys
 from importlib.metadata import entry_points
 
 from robovast.common.cli.project_config import ProjectConfig
+
+logger = logging.getLogger(__name__)
 
 # Flag file name to store the cluster config name that was used for setup
 CLUSTER_CONFIG_FLAG_FILE = ".robovast_cluster_config"
@@ -101,9 +103,9 @@ def load_cluster_config_plugins():
                 plugin_class = ep.load()
                 plugins[ep.name] = plugin_class
             except Exception as e:
-                print(f"Warning: Failed to load cluster config plugin '{ep.name}': {e}", file=sys.stderr)
+                logger.warning(f"Failed to load cluster config plugin '{ep.name}': {e}")
     except Exception as e:
-        print(f"Warning: Failed to load cluster config plugins: {e}", file=sys.stderr)
+        logger.warning(f"Failed to load cluster config plugins: {e}")
 
     return plugins
 
@@ -153,11 +155,11 @@ def setup_server(config_name=None, list_configs=False, force=False, **cluster_kw
     if list_configs:
         plugins = load_cluster_config_plugins()
         if plugins:
-            print("Available cluster configurations:")
+            logger.info("Available cluster configurations:")
             for name in sorted(plugins.keys()):
-                print(f"  - {name}")
+                logger.info(f"  - {name}")
         else:
-            print("No cluster configurations available.")
+            logger.info("No cluster configurations available.")
         return
 
     if config_name is None:
@@ -180,7 +182,7 @@ def setup_server(config_name=None, list_configs=False, force=False, **cluster_kw
     # Save the config name to flag file after successful setup
     flag_path = get_cluster_config_flag_path()
     save_cluster_config_name(config_name)
-    print(f"Cluster config '{config_name}' saved to {flag_path}")
+    logger.debug(f"Cluster config '{config_name}' saved to {flag_path}")
 
 
 def delete_server(config_name=None):
@@ -197,7 +199,7 @@ def delete_server(config_name=None):
     if config_name is None:
         config_name = load_cluster_config_name()
         if config_name:
-            print(f"Auto-detected cluster config: {config_name}")
+            logger.debug(f"Auto-detected cluster config: {config_name}")
         else:
             raise ValueError(
                 "No cluster config specified and no saved config found. "

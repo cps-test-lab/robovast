@@ -22,6 +22,28 @@ from typing import Callable
 import pandas as pd
 import yaml
 
+def get_scenario_parameter(data_dir: str, parameter_name: str):
+    """
+    Get a specific scenario parameter from the scenario configuration file.
+
+    Args:
+        data_dir (str): Path to the directory containing the scenario.config file.
+        parameter_name (str): Name of the parameter to retrieve.
+    Returns:
+        The value of the specified parameter, or None if not found.
+    """
+    config_path = Path(data_dir) / "scenario.config"
+    if not config_path.exists():
+        raise FileNotFoundError(f"scenario.config not found in {data_dir}")
+
+    with open(config_path, 'r') as f:
+        config_content = yaml.safe_load(f)
+
+        # skip scenario-name
+        if isinstance(config_content, dict) and len(config_content) == 1:
+            config_content = next(iter(config_content.values()))
+
+        return config_content.get(parameter_name, None)
 
 def read_output_files(data_dir: str, reader_func: Callable[[Path], pd.DataFrame], debug: bool = False) -> pd.DataFrame:
     """

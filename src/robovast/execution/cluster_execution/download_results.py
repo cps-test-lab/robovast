@@ -15,6 +15,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
 import os
 import shutil
 import signal
@@ -26,6 +27,8 @@ import time
 
 import requests
 from kubernetes import client, config
+
+logger = logging.getLogger(__name__)
 
 
 class ResultDownloader:
@@ -51,7 +54,7 @@ class ResultDownloader:
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                     s.bind(('localhost', port))
-                    print(f"### Found available port: {port}")
+                    logger.debug(f"Found available port: {port}")
                     return port
             except OSError:
                 continue
@@ -59,14 +62,14 @@ class ResultDownloader:
 
     def _signal_handler(self, signum, frame):
         """Handle signals for graceful cleanup"""
-        print("\n### Cleaning up...")
+        logger.info("\nCleaning up...")
         self.cleanup()
         sys.exit(0)
 
     def cleanup(self):
         """Clean up port-forward process"""
         if self.port_forward_process:
-            print("### Terminating port-forward...")
+            logger.debug("Terminating port-forward...")
             self.port_forward_process.terminate()
             try:
                 self.port_forward_process.wait(timeout=5)
@@ -79,7 +82,7 @@ class ResultDownloader:
         if self.port_forward_process:
             return  # Already running
 
-        print(f"### Starting port-forward to robovast:{self.remote_port} -> localhost:{self.local_port}")
+        logger.debug(f"Starting port-forward to robovast:{self.remote_port} -> localhost:{self.local_port}")
 
         cmd = [
             "kubectl", "port-forward",
@@ -107,12 +110,12 @@ class ResultDownloader:
             )
             # Check if pod is running
             if pod.status.phase not in ["Running", "Pending"]:
-                print(f"### ERROR: Transfer pod 'robovast' exists but is not running (status: {pod.status.phase})!")
+                logger.error(f"Transfer pod 'robovast' exists but is not running (status: {pod.status.phase})!")
                 sys.exit(1)
-            print(f"### Found existing transfer pod: robovast")
+            logger.debug(f"Found existing transfer pod: robovast")
         except client.exceptions.ApiException as e:
             if e.status == 404:
-                print(f"### ERROR: Required pod 'robovast' does not exist!")
+                logger.error(f"Required pod 'robovast' does not exist!")
                 sys.exit(1)
             else:
                 raise
@@ -139,18 +142,18 @@ class ResultDownloader:
                         run_ids.append(run_id)
 
             if run_ids:
-                print(f"### Available runs:")
+                logger.debug(f"Available runs:")
                 for run_id in run_ids:
-                    print(f"  - {run_id}")
+                    logger.debug(f"  - {run_id}")
 
             return run_ids
 
         except subprocess.CalledProcessError as e:
-            print(f"### ERROR: Failed to list runs via kubectl: {e}")
-            print(f"### stderr: {e.stderr}")
+            logger.error(f"Failed to list runs via kubectl: {e}")
+            logger.error(f"stderr: {e.stderr}")
             return []
         except Exception as e:
-            print(f"### ERROR: Unexpected error listing runs: {e}")
+            logger.error(f"Unexpected error listing runs: {e}")
             return []
 
     def download_results(self, output_directory, force=False):
@@ -167,20 +170,20 @@ class ResultDownloader:
 
         # Create output directory
         os.makedirs(output_directory, exist_ok=True)
-        print(f"### Output directory: {output_directory}")
 
         # Get available runs using kubectl (no port-forward needed for listing)
         available_runs = self.list_available_runs()
         if not available_runs:
-            print("### No runs found to download.")
+            logger.info("No runs found to download.")
             return 0
+
+        logger.info(f"Downloading {len(available_runs)} run results to directory '{output_directory}'...")
 
         # Start port-forward for downloading
         self.start_port_forward()
 
         downloaded_count = 0
         try:
-            print(f"### Downloading {len(available_runs)} runs...")
             for current_run_id in available_runs:
                 if self._download_run(output_directory, current_run_id, force):
                     downloaded_count += 1
@@ -198,13 +201,13 @@ class ResultDownloader:
             bool: True if download was successful or skipped (already exists), False on failure
         """
         try:
-            print(f"### Downloading entire run: {run_id}")
+            logger.info(f"Downloading {run_id}...")
 
             # Check if run directory already exists and is complete
             run_output_dir = os.path.join(output_directory, run_id)
             if not force and os.path.exists(run_output_dir) and os.listdir(run_output_dir):
-                print(f"### Run {run_id} already exists and appears complete, skipping...")
-                print(f"### Use --force to re-download existing runs")
+                logger.info(f"Run {run_id} already exists and appears complete, skipping...")
+                logger.info(f"Use --force to re-download existing runs")
                 return True
 
             # Create compressed archive on remote pod using kubectl
@@ -221,7 +224,7 @@ class ResultDownloader:
             archive_exists = subprocess.run(check_archive_cmd, capture_output=True, text=True, check=False).returncode == 0
 
             if not archive_exists:
-                print(f"### Creating compressed archive on remote pod using kubectl...")
+                logger.debug(f"Creating compressed archive on remote pod using kubectl...")
                 create_archive_cmd = [
                     "kubectl", "exec", "-n", "default", "robovast",
                     "--",
@@ -229,9 +232,9 @@ class ResultDownloader:
                 ]
 
                 subprocess.run(create_archive_cmd, capture_output=True, text=True, check=True)
-                print(f"### Archive created successfully at {remote_archive_path}")
+                logger.debug(f"Archive created successfully at {remote_archive_path}")
             else:
-                print(f"### Archive already exists at {remote_archive_path}, reusing...")
+                logger.debug(f"Archive already exists at {remote_archive_path}, reusing...")
 
             # Now download the pre-created archive via HTTP
             download_url = f"/{archive_name}"
@@ -243,26 +246,26 @@ class ResultDownloader:
             initial_pos = 0
             if os.path.exists(local_archive_path):
                 initial_pos = os.path.getsize(local_archive_path)
-                print(f"### Found partial download ({initial_pos} bytes), attempting to resume...")
+                logger.info(f"Found partial download ({initial_pos} bytes), attempting to resume...")
 
             # Set up headers for resume if partial file exists
             headers = {}
             if initial_pos > 0:
                 headers['Range'] = f'bytes={initial_pos}-'
 
-            print(f"### Downloading archive from http://localhost:{self.local_port}{download_url} ...")
+            logger.debug(f"Downloading archive from http://localhost:{self.local_port}{download_url} ...")
 
             with requests.get(f"http://localhost:{self.local_port}{download_url}",
                               headers=headers, stream=True, timeout=600) as response:
                 total_size = 0
                 # Handle different response codes
                 if response.status_code == 206:  # Partial content (resume)
-                    print(f"### Resuming download from byte {initial_pos}")
+                    logger.info(f"Resuming download from byte {initial_pos}")
                     total_size = int(response.headers.get('content-range', '0').split('/')[-1])
                     downloaded = initial_pos
                 elif response.status_code == 200:  # Full content
                     if initial_pos > 0:
-                        print(f"### Server doesn't support resume, restarting download...")
+                        logger.info(f"Server doesn't support resume, restarting download...")
                         # Remove partial file to start fresh
                         os.remove(local_archive_path)
                         initial_pos = 0
@@ -281,29 +284,27 @@ class ResultDownloader:
                             downloaded += len(chunk)
                             if total_size > 0:
                                 progress = (downloaded / total_size) * 100
-                                print(f"\r### Progress: {progress:.1f}% ({downloaded}/{total_size} bytes)", end='', flush=True)
-
-            print(f"\n### Archive downloaded successfully")
+                                logger.debug(f"Progress: {progress:.1f}% ({downloaded}/{total_size} bytes)")
 
             # Validate the downloaded archive
-            print(f"### Validating downloaded archive...")
+            logger.debug(f"Validating downloaded archive...")
             try:
                 with tarfile.open(local_archive_path, 'r:gz') as tar:
                     # Try to list contents to validate the archive
                     tar.getnames()
-                print(f"### Archive validation successful")
+                logger.debug(f"Archive validation successful")
             except (tarfile.TarError, OSError) as e:
-                print(f"### Archive validation failed: {e}")
-                print(f"### Removing corrupted archive and retrying...")
+                logger.error(f"Archive validation failed: {e}")
+                logger.info(f"Removing corrupted archive and retrying...")
                 os.remove(local_archive_path)
                 raise RuntimeError("Archive validation failed, retry needed") from e
 
             # Extract the archive locally
-            print(f"### Extracting archive...")
+            logger.debug(f"Extracting archive...")
 
             # Remove existing extraction directory if force mode or incomplete
             if force and os.path.exists(run_output_dir):
-                print(f"### Removing existing run directory for clean extraction...")
+                logger.debug(f"Removing existing run directory for clean extraction...")
                 shutil.rmtree(run_output_dir)
 
             with tarfile.open(local_archive_path, 'r:gz') as tar:
@@ -313,7 +314,7 @@ class ResultDownloader:
             # os.remove(local_archive_path)
 
             # Clean up remote archive using kubectl
-            print(f"### Cleaning up remote archive...")
+            logger.debug(f"Cleaning up remote archive...")
             cleanup_cmd = [
                 "kubectl", "exec", "-n", "default", "robovast",
                 "--",
@@ -322,22 +323,21 @@ class ResultDownloader:
             subprocess.run(cleanup_cmd, capture_output=True, text=True, check=False)
 
             # Delete the run directory from remote pod after successful download
-            print(f"### Deleting run directory from remote pod...")
+            logger.debug(f"Deleting run directory from remote pod...")
             delete_run_cmd = [
                 "kubectl", "exec", "-n", "default", "robovast",
                 "--",
                 "rm", "-rf", f"/exports/out/{run_id}"
             ]
             subprocess.run(delete_run_cmd, capture_output=True, text=True, check=True)
-            print(f"### Successfully deleted run {run_id} from remote pod")
 
-            print(f"### Successfully downloaded, extracted, and cleaned up run {run_id}")
+            logger.info(f"Successfully downloaded run {run_id}")
             return True
 
         except subprocess.CalledProcessError as e:
-            print(f"### ERROR: Failed to create archive for run {run_id}: {e}")
-            print(f"### stdout: {e.stdout}")
-            print(f"### stderr: {e.stderr}")
+            logger.error(f"Failed to create archive for run {run_id}: {e}")
+            logger.error(f"stdout: {e.stdout}")
+            logger.error(f"stderr: {e.stderr}")
 
             # Clean up remote archive on error
             cleanup_cmd = [
@@ -348,7 +348,7 @@ class ResultDownloader:
             subprocess.run(cleanup_cmd, capture_output=True, text=True, check=False)
             return False
         except requests.RequestException as e:
-            print(f"### ERROR: Failed to download run {run_id} via HTTP: {e}")
+            logger.error(f"Failed to download run {run_id} via HTTP: {e}")
 
             # Clean up remote archive on error
             cleanup_cmd = [
@@ -359,7 +359,7 @@ class ResultDownloader:
             subprocess.run(cleanup_cmd, capture_output=True, text=True, check=False)
             return False
         except Exception as e:
-            print(f"### ERROR: Unexpected error downloading run {run_id}: {e}")
+            logger.error(f"Unexpected error downloading run {run_id}: {e}")
 
             # Clean up remote archive on error
             cleanup_cmd = [

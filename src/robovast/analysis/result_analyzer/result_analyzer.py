@@ -20,14 +20,14 @@ import os
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
+import subprocess
 
 from PySide6.QtCore import QSettings, Qt, QThread, QTimer, Slot
 from PySide6.QtGui import QBrush, QColor, QIcon, QPalette
 from PySide6.QtWidgets import (QApplication, QGroupBox, QHBoxLayout, QLabel,
                                QLineEdit, QMainWindow, QMenu, QProgressBar,
-                               QPushButton, QSplitter, QStatusBar, QTabWidget,
-                               QTreeWidget, QTreeWidgetItem, QVBoxLayout,
-                               QWidget)
+                               QSplitter, QStatusBar, QTabWidget, QTreeWidget,
+                               QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from robovast.common import load_config
 
@@ -164,28 +164,8 @@ class TestResultsAnalyzer(QMainWindow):
 
     def setup_tree_widget(self, parent):
         """Setup the tree widget"""
-        tree_group = QGroupBox("Test Results Directory")
+        tree_group = QGroupBox("Test Results")
         tree_layout = QVBoxLayout(tree_group)
-
-        # Add header with settings button
-        header_layout = QHBoxLayout()
-
-        # Title label
-        title_label = QLabel("Test Results")
-        title_label.setStyleSheet("font-weight: bold; font-size: 12px;")
-        header_layout.addWidget(title_label)
-
-        # Spacer to push buttons to the right
-        header_layout.addStretch()
-
-        # Refresh button
-        refresh_button = QPushButton("🔄")
-        refresh_button.setToolTip("Refresh Tree")
-        refresh_button.setFixedSize(24, 24)
-        refresh_button.clicked.connect(self.refresh_tree)
-        header_layout.addWidget(refresh_button)
-
-        tree_layout.addLayout(header_layout)
 
         # Add search bar for runs
         search_layout = QHBoxLayout()
@@ -248,6 +228,14 @@ class TestResultsAnalyzer(QMainWindow):
         menu = QMenu(self)
         copy_path_action = menu.addAction("Copy Path")
 
+        # Add "Open Notebook in VS Code" action if applicable
+        open_notebook_action = None
+        directory_path = Path(item_path)
+        if directory_path.is_dir():
+            run_type = self.get_run_type(directory_path)
+            if run_type is not None:
+                open_notebook_action = menu.addAction("Open Notebook in VS Code")
+
         # Show menu and get selected action
         action = menu.exec(self.tree.viewport().mapToGlobal(position))
 
@@ -255,6 +243,53 @@ class TestResultsAnalyzer(QMainWindow):
         if action == copy_path_action:
             clipboard = QApplication.clipboard()
             clipboard.setText(str(item_path))
+        elif action == open_notebook_action:
+            self.open_notebook_in_vscode(directory_path)
+
+    def open_notebook_in_vscode(self, directory_path):
+        """Open the corresponding Jupyter notebook in VS Code"""
+
+        # Determine the run type
+        run_type = self.get_run_type(directory_path)
+        if run_type is None:
+            self.status_label.setText("No notebook found for this directory")
+            QTimer.singleShot(2000, lambda: self.status_label.setText("Ready"))
+            return
+
+        # Find the appropriate notebook based on run type from configuration
+        notebook_path = None
+        if "visualization" in self.parameters:
+            for view in self.parameters["visualization"]:
+                for _, values in view.items():
+                    if not isinstance(values, dict):
+                        continue
+
+                    # Get the notebook path based on run type
+                    if run_type == RunType.SINGLE_TEST and "single_test" in values:
+                        notebook_path = os.path.join(os.path.dirname(self.config_file), values["single_test"])
+                        break
+                    elif run_type == RunType.CONFIG and "config" in values:
+                        notebook_path = os.path.join(os.path.dirname(self.config_file), values["config"])
+                        break
+                    elif run_type == RunType.RUN and "run" in values:
+                        notebook_path = os.path.join(os.path.dirname(self.config_file), values["run"])
+                        break
+
+                if notebook_path:
+                    break
+
+        if notebook_path and Path(notebook_path).exists():
+            try:
+                # Open the notebook in VS Code
+                subprocess.Popen(['code', str(notebook_path)])
+                self.status_label.setText(f"Opening notebook in VS Code: {Path(notebook_path).name}")
+                QTimer.singleShot(2000, lambda: self.status_label.setText("Ready"))
+            except Exception as e:
+                self.status_label.setText(f"Error opening notebook: {e}")
+                QTimer.singleShot(3000, lambda: self.status_label.setText("Ready"))
+        else:
+            self.status_label.setText("Notebook file not found")
+            QTimer.singleShot(2000, lambda: self.status_label.setText("Ready"))
 
     @Slot()
     def refresh_tree(self):
@@ -321,7 +356,7 @@ class TestResultsAnalyzer(QMainWindow):
 
     def setup_details_panel(self, parent):
         """Setup the details panel"""
-        details_group = QGroupBox("Test Run Details")
+        details_group = QGroupBox("Details")
         details_layout = QVBoxLayout(details_group)
 
         # Tab widget

@@ -79,18 +79,14 @@ def list_cmd(debug):
     project_config = get_project_config()
     config = project_config.config_path
 
-    click.echo(f"Listing scenario configs from {config}...")
-    click.echo("-" * 60)
-
     with tempfile.TemporaryDirectory(prefix="robovast_list_configs_") as temp_dir:
         try:
             configs, _ = generate_scenario_variations(
                 variation_file=config,
-                progress_update_callback=click.echo,
+                progress_update_callback=None,
                 output_dir=temp_dir
             )
             if configs:
-                click.echo("-" * 60)
                 configs_file = os.path.join(temp_dir, "scenario.configs")
                 if os.path.exists(configs_file):
 
@@ -139,23 +135,17 @@ def generate(output_dir):
     project_config = get_project_config()
     config = project_config.config_path
 
-    def progress_callback(message):
-        click.echo(message)
-
-    click.echo(f"Generating scenario configurations from {config}...")
-    click.echo(f"Output directory: {output_dir}")
-    click.echo("-" * 60)
+    click.echo(f"Generating scenario configurations...")
 
     try:
         configs, _ = generate_scenario_variations(
             variation_file=config,
-            progress_update_callback=progress_callback,
+            progress_update_callback=None,
             output_dir=output_dir
         )
 
         if configs:
-            click.echo("-" * 60)
-            click.echo(f"✓ Successfully generated {len(configs)} scenario configurations!")
+            click.echo(f"✓ Successfully generated {len(configs)} scenario configurations in directory '{output_dir}'.")
         else:
             click.echo("✗ Failed to generate scenario configurations", err=True)
             sys.exit(1)
@@ -173,7 +163,7 @@ def variation_types():
     in the variations section of .vast configuration files.
     """
     click.echo("Available variation types:")
-    click.echo("-" * 60)
+    click.echo("")
 
     try:
         eps = entry_points()
@@ -217,13 +207,13 @@ def variation_points():
     config = project_config.config_path
 
     click.echo("Loading scenario parameter template...")
-    click.echo("-" * 60)
-    
+    click.echo("")
+
     with tempfile.TemporaryDirectory(prefix="robovast_list_configs_") as temp_dir:
         try:
             configs, _ = generate_scenario_variations(
                 variation_file=config,
-                progress_update_callback=click.echo,
+                progress_update_callback=None,
                 output_dir=temp_dir
             )
         except Exception as e:

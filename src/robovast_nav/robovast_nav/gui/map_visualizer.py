@@ -30,6 +30,7 @@ import numpy as np
 from matplotlib import patches
 
 from ..map_loader import Map, load_map
+from ..object_shapes import get_object_type_from_model_path, get_obstacle_dimensions
 
 
 class MapVisualizer:
@@ -331,6 +332,63 @@ class MapVisualizer:
 
         else:
             raise ValueError(f"Unsupported obstacle shape: {shape}. Use 'circle' or 'box'")
+
+    def draw_obstacles(self, obstacles: List[dict], color: str = 'red',
+                       alpha: float = 0.7) -> None:
+        """
+        Draw multiple obstacles on the map.
+
+        Args:
+            obstacles: List of obstacle dictionaries, each containing:
+                      - entity_name: Name of the obstacle
+                      - spawn_pose: Dictionary with 'position' (x, y, z) and 'orientation' (yaw)
+                      - xacro_arguments: String like "width:=0.5, length:=0.5, height:=1.0"
+                      - model: Model path (used to determine shape)
+            color: Color for all obstacles
+            alpha: Transparency for all obstacles
+        """
+        if self.ax is None:
+            raise ValueError("No figure created. Call create_figure() first")
+
+        for obstacle in obstacles:
+            # Extract position
+            position = obstacle.get('spawn_pose', {}).get('position', {})
+            x = position.get('x', 0.0)
+            y = position.get('y', 0.0)
+
+            # Extract orientation
+            orientation = obstacle.get('spawn_pose', {}).get('orientation', {})
+            yaw = orientation.get('yaw', 0.0)
+
+            # Get model path and determine shape
+            model_path = obstacle.get('model', '')
+            object_type = get_object_type_from_model_path(model_path)
+
+            # Parse xacro_arguments to extract dimensions
+            xacro_args_str = obstacle.get('xacro_arguments', '')
+            dimensions = get_obstacle_dimensions(xacro_args_str)
+
+            # Prepare draw_args based on object type
+            if object_type == 'cylinder':
+                shape = 'circle'
+                # For cylinder, use diameter
+                diameter = dimensions.get('radius', 0.25) * 2
+                draw_args = {'diameter': diameter}
+            else:
+                # Default to box
+                shape = 'box'
+                draw_args = {
+                    'width': dimensions.get('width', 0.5),
+                    'length': dimensions.get('length', 0.5),
+                    'height': dimensions.get('height', 1.0)
+                }
+
+            # Get entity name for label
+            label = obstacle.get('entity_name', 'Obstacle')
+
+            # Draw the obstacle
+            self.draw_obstacle(x, y, draw_args, yaw=yaw, shape=shape,
+                             color=color, alpha=alpha, label=label)
 
     def show_legend(self) -> None:
         """Show the legend for all drawn elements."""

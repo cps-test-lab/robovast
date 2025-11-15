@@ -17,6 +17,7 @@
 
 """CLI plugin for execution management."""
 
+import logging
 import os
 import sys
 
@@ -25,13 +26,15 @@ import yaml
 
 from robovast.common import prepare_run_configs
 from robovast.common.cli import get_project_config
-from ..cluster_execution.kubernetes import check_pod_running, get_kubernetes_client, check_kubernetes_access
 from robovast.execution.cluster_execution.cluster_execution import JobRunner
+from robovast.execution.cluster_execution.cluster_setup import (
+    delete_server, get_cluster_config, load_cluster_config_name, setup_server)
 from robovast.execution.cluster_execution.download_results import \
     ResultDownloader
-from robovast.execution.cluster_execution.setup import (
-    delete_server, get_cluster_config, load_cluster_config_name, setup_server)
 
+from ..cluster_execution.kubernetes import (check_kubernetes_access,
+                                            check_pod_running,
+                                            get_kubernetes_client)
 from .execute_local import initialize_local_execution
 
 
@@ -62,8 +65,6 @@ def local():
               help='Override the number of runs specified in the config')
 @click.option('--output', '-o', default=None,
               help='Output directory (uses project results dir if not specified)')
-@click.option('--debug', '-d', is_flag=True,
-              help='Enable debug output')
 @click.option('--shell', '-s', is_flag=True,
               help='Instead of running the scenario, login with shell')
 @click.option('--no-gui',  is_flag=True,
@@ -72,7 +73,7 @@ def local():
               help='Use host network mode')
 @click.option('--image', '-i', default='ghcr.io/cps-test-lab/robovast:latest',
               help='Use a custom Docker image')
-def run(config, runs, output, debug, shell, no_gui, network_host, image):
+def run(config, runs, output, shell, no_gui, network_host, image):
     """Execute scenario configurations locally using Docker.
 
     Runs scenario configurations in Docker containers with bind mounts for configuration
@@ -90,7 +91,7 @@ def run(config, runs, output, debug, shell, no_gui, network_host, image):
     """
     try:
         run_script_path = initialize_local_execution(
-            config, None, runs, debug=debug, feedback_callback=click.echo
+            config, None, runs, feedback_callback=click.echo
         )
 
         # Build command with options
@@ -107,8 +108,7 @@ def run(config, runs, output, debug, shell, no_gui, network_host, image):
         if image != 'ghcr.io/cps-test-lab/robovast:latest':
             cmd.extend(["--image", image])
 
-        click.echo(f"\nExecuting run script: {run_script_path}")
-        click.echo("=" * 60 + "\n")
+        logging.debug(f"Executing run script: {run_script_path}")
 
         # Use exec to replace current process for proper signal handling
         os.execv(run_script_path, cmd)
@@ -124,9 +124,7 @@ def run(config, runs, output, debug, shell, no_gui, network_host, image):
               help='Run only a specific configuration by name')
 @click.option('--runs', '-r', type=int, default=None,
               help='Override the number of runs specified in the config')
-@click.option('--debug', '-d', is_flag=True,
-              help='Enable debug output')
-def prepare_run(output_dir, config, runs, debug):
+def prepare_run(output_dir, config, runs):
     """Prepare run without executing.
 
     Generates all necessary configuration files and a ``run.sh`` script for
@@ -151,10 +149,9 @@ def prepare_run(output_dir, config, runs, debug):
     """
     try:
         initialize_local_execution(
-            config, output_dir, runs, debug=debug, feedback_callback=click.echo
+            config, output_dir, runs, feedback_callback=click.echo
         )
 
-        click.echo("-" * 60)
         click.echo(f"\nFor local execution, run: \n\n{os.path.join(output_dir, 'run.sh')}\n")
 
     except Exception as e:
@@ -197,7 +194,7 @@ def run(config, runs):  # pylint: disable=function-redefined
         click.echo(f"✗ Error: {k8s_msg}", err=True)
         click.echo("  Kubernetes cluster is required for RoboVAST execution.", err=True)
         sys.exit(1)
-    click.echo(f"✓ {k8s_msg}")
+    logging.debug(k8s_msg)
 
     # Check if transfer pod is running
     click.echo("Checking robovast pod status...")
@@ -209,7 +206,7 @@ def run(config, runs):  # pylint: disable=function-redefined
         try:
             config_name = load_cluster_config_name()
             if config_name:
-                print(f"Auto-detected cluster config: {config_name}")
+                logging.debug(f"Auto-detected cluster config: {config_name}")
             else:
                 raise ValueError(
                     "No cluster config specified and no saved config found. "
@@ -227,12 +224,12 @@ def run(config, runs):  # pylint: disable=function-redefined
         click.echo("  vast execution cluster setup <cluster-config>", err=True)
         click.echo()
         sys.exit(1)
-    click.echo(f"✓ {pod_msg}")
+    logging.debug(pod_msg)
 
     try:
         job_runner = JobRunner(project_config.config_path, config, runs, cluster_config)
         job_runner.run()
-        click.echo("### Cluster execution finished.")
+        click.echo("Cluster execution finished.")
         click.echo()
         click.echo("You can now download the results using:")
         click.echo()
@@ -275,7 +272,7 @@ def download(output, force):
         downloader = ResultDownloader()
         # Download all runs
         count = downloader.download_results(output, force)
-        click.echo(f"### Download of {count} runs completed successfully!")
+        click.echo(f"✓ Download of {count} runs completed successfully!")
 
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
@@ -331,7 +328,7 @@ def setup(list_configs, options, force, cluster_config):
 
     try:
         setup_server(config_name=cluster_config, list_configs=False, force=force, **cluster_kwargs)
-        click.echo("### Cluster setup completed successfully!")
+        click.echo("✓ Cluster setup completed successfully!")
 
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
@@ -355,7 +352,7 @@ def cleanup(config_name):
     """
     try:
         delete_server(config_name=config_name)
-        click.echo("### Cluster cleanup completed successfully!")
+        click.echo("✓ Cluster cleanup completed successfully!")
 
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
@@ -373,11 +370,10 @@ def cleanup(config_name):
 @click.option('--option', '-o', 'options', multiple=True,
               help='Cluster-specific option in key=value format (can be used multiple times)')
 def prepare_run(output, config, runs, cluster_config, options):  # pylint: disable=function-redefined
-    """Prepare complete cluster execution package for offline deployment.
+    """Prepare complete setup for manual deployment.
 
     Generates all necessary files for cluster execution and writes them to
-    the specified output directory. This package can be transferred to a
-    cluster environment for offline deployment and execution.
+    the specified output directory.
 
     The output directory will contain:
     - config/ directory with all scenario configurations
@@ -415,7 +411,7 @@ def prepare_run(output, config, runs, cluster_config, options):  # pylint: disab
     if cluster_config is None:
         cluster_config = load_cluster_config_name()
         if cluster_config:
-            print(f"Auto-detected cluster config: {cluster_config}")
+            logging.debug(f"Auto-detected cluster config: {cluster_config}")
         else:
             raise ValueError(
                 "No cluster config specified and no saved config found. "
@@ -429,13 +425,11 @@ def prepare_run(output, config, runs, cluster_config, options):  # pylint: disab
     # Initialize job runner (this prepares all scenarios)
     job_runner = JobRunner(config_path, config, runs, cluster_config)
 
-    click.echo(f"### Preparing run configuration (ID: {job_runner.run_id})")
-    click.echo(f"### Test configurations: {len(job_runner.configs)}")
-    click.echo(f"### Runs per test configuration: {job_runner.num_runs}")
-    click.echo(f"### Total jobs: {len(job_runner.configs) * job_runner.num_runs}")
+    click.echo(f"Preparing run configuration 'ID: {job_runner.run_id}', test configs: {
+               len(job_runner.configs)}, runs per test config: {job_runner.num_runs}...")
 
     # Prepare config files
-    click.echo("### Preparing configuration files...")
+    logging.debug("Preparing configuration files...")
 
     prepare_run_configs(
         job_runner.run_id,
@@ -448,7 +442,7 @@ def prepare_run(output, config, runs, cluster_config, options):  # pylint: disab
     os.makedirs(jobs_dir, exist_ok=True)
 
     # Generate all job manifests
-    click.echo("### Generating job manifests...")
+    logging.debug("Generating job manifests...")
     all_jobs = []
     job_count = 0
 
@@ -476,11 +470,7 @@ def prepare_run(output, config, runs, cluster_config, options):  # pylint: disab
 
     generate_copy_script(output, job_runner.run_id)
 
-    click.echo(f"### Successfully prepared {job_count} job manifests")
-    click.echo(f"### Configuration files: {output}/config/")
-    click.echo(f"### Individual job files: {output}/jobs/")
-    click.echo(f"### Combined manifest: {output}/all-jobs.yaml")
-    click.echo(f"### Copy script: {output}/copy_configs.py")
+    click.echo(f"✓ Successfully prepared {job_count} job manifests in directory'{output}'.\n\nFollow README files to set up and execute.\n")
 
 
 def generate_copy_script(output_dir, run_id):
@@ -513,9 +503,9 @@ def main():
         print(f"ERROR: Config directory not found: {{config_dir}}")
         sys.exit(1)
 
-    print(f"### Copying config files to transfer pod using kubectl cp...")
-    print(f"### Source: {{config_dir}}")
-    print(f"### Destination: robovast pod at /exports/")
+    print(f"Copying config files to transfer pod using kubectl cp...")
+    print(f"Source: {{config_dir}}")
+    print(f"Destination: robovast pod at /exports/")
 
     copy_config_to_cluster(config_dir, run_id)
 

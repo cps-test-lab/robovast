@@ -14,6 +14,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
 import os
 import pickle
 import sys
@@ -27,13 +28,18 @@ from scenario_execution import \
 from .config import validate_config
 from .file_cache import FileCache
 
+logger = logging.getLogger(__name__)
+
 
 def load_config(config_file, subsection=None):
     """Load and parse scenario variation file."""
+    logger.debug(f"Loading config file: {config_file}")
     if not config_file:
+        logger.error("No config file provided")
         raise ValueError("No config file provided")
 
     if not os.path.exists(config_file):
+        logger.error(f"Config file {config_file} not found")
         raise FileNotFoundError(f"Config file {config_file} not found")
 
     with open(config_file, 'r') as f:
@@ -41,6 +47,7 @@ def load_config(config_file, subsection=None):
             # Load all documents, the first one contains the config
             documents = list(yaml.safe_load_all(f))
             if not documents:
+                logger.error("No documents found in scenario file")
                 raise ValueError("No documents found in scenario file")
             config = documents[0]
 
@@ -50,12 +57,15 @@ def load_config(config_file, subsection=None):
             if subsection:
                 subsection_data = config.get(subsection, None)
                 if not subsection_data:
+                    logger.error(f"No subsection '{subsection}' found in configuration")
                     raise ValueError(f"No subsection '{subsection}' found in configuration")
+                logger.debug(f"Successfully loaded config subsection: {subsection}")
                 return subsection_data
             else:
+                logger.debug(f"Successfully loaded config file: {config_file}")
                 return config
         except yaml.YAMLError as e:
-            print(f"Error parsing YAML file: {e}")
+            logger.error(f"Error parsing YAML file: {e}")
             sys.exit(1)
 
 
@@ -112,6 +122,7 @@ def save_scenario_configs_file(configs, output_file):
             # separate documents with '---'
             if idx < len(data_to_save) - 1:
                 f.write("---\n")
+
 
 def filter_configs(configs):
     """Parse YAML config file and filter out keys starting with underscore.

@@ -154,7 +154,7 @@ def main():
 
     if not rosbag_paths:
         print(f"No rosbags found in {args.input}")
-        return
+        return 0
 
     print(f"Found {len(rosbag_paths)} rosbags to process. Using {args.workers} parallel workers...")
 
@@ -166,8 +166,12 @@ def main():
     process_args = [(bag_path, args.csv_filename) for bag_path in rosbag_paths]
 
     # Process rosbags in parallel
-    with Pool(processes=args.workers) as pool:
-        results = pool.map(process_rosbag_wrapper, process_args)
+    try:
+        with Pool(processes=args.workers) as pool:
+            results = pool.map(process_rosbag_wrapper, process_args)
+    except KeyboardInterrupt:
+        print("Processing interrupted by user.")
+        return 1
 
     # Calculate summary statistics
     skipped_bags = 0
@@ -187,7 +191,7 @@ def main():
     elapsed = time.time() - start
     print(f"Summary: {len(rosbag_paths)} rosbags ({processed_bags} success, {
           error_bags} errors, {failed_bags} failed, {skipped_bags} skipped), time {elapsed:.2f}s")
-
+    return 0
 
 if __name__ == "__main__":
     # Required for multiprocessing on Windows and some Unix systems

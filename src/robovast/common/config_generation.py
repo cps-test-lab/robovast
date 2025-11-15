@@ -16,6 +16,7 @@
 
 import copy
 import fnmatch
+import logging
 import os
 import re
 import tempfile
@@ -24,24 +25,30 @@ from importlib.metadata import entry_points
 from .common import (get_scenario_parameters, load_config,
                      save_scenario_configs_file)
 
+logger = logging.getLogger(__name__)
+
 
 def progress_update(msg):
-    print(msg)
+    logger.info(msg)
 
 
 def execute_variation(base_dir, configs, variation_class, parameters, general_parameters, progress_update_callback, scenario_file, output_dir=None):
+    logger.debug(f"Executing variation: {variation_class.__name__}")
     variation = variation_class(base_dir, parameters, general_parameters, progress_update_callback, scenario_file, output_dir)
     try:
         configs = variation.variation(copy.deepcopy(configs))
     except Exception as e:
+        logger.error(f"Variation failed. {variation_class.__name__}: {e}")
         progress_update_callback(f"Variation failed. {variation_class.__name__}: {e}")
         return []
 
     # Check if configs is None and return empty list
     if configs is None:
+        logger.warning(f"Variation failed. {variation_class.__name__}: No configs returned")
         progress_update_callback(f"Variation failed. {variation_class.__name__}: No configs returned")
         return []
 
+    logger.debug(f"Variation {variation_class.__name__} completed successfully")
     # progress_update(f"Current configs {configs}")
     return configs
 
@@ -49,7 +56,7 @@ def execute_variation(base_dir, configs, variation_class, parameters, general_pa
 def collect_filtered_files(filter_pattern, rel_path):
     """Collect files from scenario directory that match the filter patterns"""
     filtered_files = []
-    print("### Collecting filtered files from:", rel_path)
+    logger.debug(f"Collecting filtered files from: {rel_path}")
     if not filter_pattern:
         return filtered_files
     for root, _, files in os.walk(rel_path):
@@ -203,7 +210,9 @@ def _get_variation_classes(scenario_config):
     return variation_classes
 
 
-def generate_scenario_variations(variation_file, progress_update_callback, variation_classes=None, output_dir=None, test_files_filter=None):
+def generate_scenario_variations(variation_file, progress_update_callback=None, variation_classes=None, output_dir=None, test_files_filter=None):
+    if not progress_update_callback:
+        progress_update_callback = logger.debug
     progress_update_callback("Start generating configs.")
 
     parameters = load_config(variation_file)

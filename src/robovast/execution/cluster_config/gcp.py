@@ -15,12 +15,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 import io
+import logging
 
 import yaml
 from kubernetes import client, config
 
 from ..cluster_execution.kubernetes import apply_manifests, delete_manifests
-
 from .base_config import BaseConfig
 
 NFS_MANIFEST_GCP = """---
@@ -114,8 +114,8 @@ class GcpClusterConfig(BaseConfig):
             storage_size (str): Size of the persistent volume (default: "10Gi")
             **kwargs: Additional cluster-specific options (ignored)
         """
-        print("Setting up RoboVAST in GCP cluster...")
-        print(f"Storage size: {storage_size}")
+        logging.info("Setting up RoboVAST in GCP cluster...")
+        logging.info(f"Storage size: {storage_size}")
 
         # Load Kubernetes configuration
         config.load_kube_config()
@@ -123,7 +123,7 @@ class GcpClusterConfig(BaseConfig):
         # Initialize API clients
         k8s_client = client.ApiClient()
 
-        print("Applying RoboVAST manifest to Kubernetes cluster...")
+        logging.debug("Applying RoboVAST manifest to Kubernetes cluster...")
         try:
             try:
                 yaml_objects = yaml.safe_load_all(io.StringIO(NFS_MANIFEST_GCP.format(storage_size=storage_size)))
@@ -136,7 +136,7 @@ class GcpClusterConfig(BaseConfig):
 
     def cleanup_cluster(self):
         """Clean up transfer mechanism for RKE2 cluster."""
-        print("Cleaning up RoboVAST in GCP cluster...")
+        logging.debug("Cleaning up RoboVAST in GCP cluster...")
         # Load Kubernetes configuration
         config.load_kube_config()
 
@@ -149,7 +149,7 @@ class GcpClusterConfig(BaseConfig):
             raise RuntimeError(f"Failed to parse PVC manifest YAML: {str(e)}") from e
 
         delete_manifests(core_v1, yaml_objects)
-        print("### NFS manifest deleted successfully!")
+        logging.debug("NFS manifest deleted successfully!")
 
     def get_job_volumes(self):
         """Get job volumes for GCP cluster."""
