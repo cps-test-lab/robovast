@@ -249,7 +249,8 @@ class JobRunner:
             logger.info("No job statistics available")
             return
 
-        logger.info("\n" + "=" * 80)
+        logger.info("")
+        logger.info("=" * 80)
         logger.info("RUN STATISTICS")
         logger.info("=" * 80)
 
