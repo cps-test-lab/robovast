@@ -21,7 +21,7 @@ import tempfile
 import nbformat
 from nbconvert import HTMLExporter
 from nbconvert.preprocessors import ExecutePreprocessor
-from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QPalette
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (QApplication, QFrame, QLabel, QProgressBar,
@@ -77,6 +77,28 @@ def format_notebook_error_html(error_str: str) -> str:
     error_type = "Execution Error"
     error_message = ""
     traceback_lines = []
+    cell_info = None
+    cell_source = None
+    error_line_number = None
+
+    # Check if error message contains cell information
+    import re
+    cell_match = re.search(r'Error in cell (\d+) of (\d+):', clean_error)
+    if cell_match:
+        cell_num = cell_match.group(1)
+        total_cells = cell_match.group(2)
+        cell_info = f"Cell {cell_num} of {total_cells}"
+
+    # Extract cell source code if present
+    source_match = re.search(r'--- Cell Source ---\n(.*?)\n--- End Cell Source ---', clean_error, re.DOTALL)
+    if source_match:
+        cell_source = source_match.group(1).strip()
+
+    # Try to extract the line number from the traceback
+    # Look for patterns like "line 5" or "<ipython-input-X>, line 5"
+    line_match = re.search(r'line (\d+)', clean_error)
+    if line_match:
+        error_line_number = int(line_match.group(1))
 
     # Parse the error to extract meaningful information
     in_traceback = False
@@ -111,6 +133,60 @@ def format_notebook_error_html(error_str: str) -> str:
             error_message = last_line
 
     # Create a clean HTML error page
+    # Escape HTML in cell source and preserve formatting
+    import html
+    cell_source_html = ""
+    if cell_source:
+        # Split into lines and add line numbers with highlighting
+        source_lines = cell_source.split('\n')
+        formatted_lines = []
+
+        # Determine the range of lines to show (max 10 lines before error)
+        if error_line_number:
+            start_line = max(1, error_line_number - 10)
+            end_line = error_line_number
+        else:
+            start_line = 1
+            end_line = len(source_lines)
+
+        for i, line in enumerate(source_lines, start=1):
+            # Skip lines before start_line
+            if i < start_line:
+                continue
+
+            escaped_line = html.escape(line)
+            # Highlight the error line if we know which one it is
+            if error_line_number and i == error_line_number:
+                formatted_lines.append(
+                    f'<span class="line-number error-line-number">{i:3d}</span>'
+                    f'<span class="error-line">{escaped_line}</span>'
+                )
+                # Stop displaying lines after the error line
+                break
+            else:
+                formatted_lines.append(
+                    f'<span class="line-number">{i:3d}</span>'
+                    f'<span class="code-line">{escaped_line}</span>'
+                )
+
+        formatted_code = '\n'.join(formatted_lines)
+
+        # Build header with cell info and error line number
+        header_parts = []
+        if cell_info:
+            header_parts.append(f'<strong>📍 {cell_info}</strong>')
+        if error_line_number:
+            header_parts.append(f'<span style="color: #dc3545; font-weight: bold;">Error on line {error_line_number}</span>')
+
+        header = ' - '.join(header_parts) if header_parts else '💻 Failing Cell Code'
+
+        cell_source_html = f"""
+            <div class="cell-source">
+                <h4>{header}</h4>
+                <pre><code>{formatted_code}</code></pre>
+            </div>
+        """
+
     html_template = f"""
 <!DOCTYPE html>
 <html lang="en">
@@ -136,6 +212,66 @@ def format_notebook_error_html(error_str: str) -> str:
 
         .error-content {{
             padding: 30px;
+        }}
+
+        .cell-source {{
+            background: #f8f9fa;
+            border-left: 4px solid #6c757d;
+            padding: 20px;
+            margin-bottom: 20px;
+        }}
+
+        .cell-source h4 {{
+            color: #495057;
+            margin: 0 0 15px 0;
+            font-size: 1.1rem;
+        }}
+
+        .cell-source pre {{
+            background: #2c3e50;
+            color: #ecf0f1;
+            padding: 15px;
+            border-radius: 4px;
+            overflow-x: auto;
+            margin: 0;
+        }}
+
+        .cell-source code {{
+            font-family: 'Courier New', 'Consolas', monospace;
+            font-size: 0.9rem;
+            line-height: 1.6;
+            display: block;
+        }}
+
+        .line-number {{
+            display: inline-block;
+            width: 3em;
+            text-align: right;
+            margin-right: 1em;
+            color: #7f8c8d;
+            user-select: none;
+            border-right: 2px solid #34495e;
+            padding-right: 0.5em;
+        }}
+
+        .error-line-number {{
+            background: #c0392b;
+            color: #fff;
+            font-weight: bold;
+            border-right: 2px solid #e74c3c;
+        }}
+
+        .code-line {{
+            display: inline;
+        }}
+
+        .error-line {{
+            display: inline;
+            background: #e74c3c;
+            color: #fff;
+            padding: 2px 4px;
+            margin-left: -4px;
+            font-weight: bold;
         }}
 
         .error-type {{
@@ -179,6 +315,8 @@ def format_notebook_error_html(error_str: str) -> str:
                 <div class="error-message">{error_message or 'No detailed error message available.'}</div>
             </div>
 
+            {cell_source_html}
+
             {"<div class='traceback-content'>" + '<br>'.join(traceback_lines) + "</div>" if traceback_lines else ""}
         </div>
     </div>
@@ -202,39 +340,6 @@ class JupyterNotebookRunner(CancellableWorkload):
     def set_notebook(self, notebook_content: str):
         """Set the notebook content to execute"""
         self.notebook_content = notebook_content
-
-    @staticmethod
-    def get_csvs(data_path, run_type):  # pylint: disable=too-many-return-statements
-        """Determine CSV files and analysis type based on directory structure"""
-        try:
-            if run_type == RunType.SINGLE_TEST:
-                # 1. Check if CSV file exists directly in the path (single run)
-
-                file_cache = FileCache(data_path, "rosbag2", [])
-                cached_file = file_cache.get_cache_filename()
-                if cached_file and os.path.exists(cached_file):
-                    return [cached_file]
-                else:
-                    return None
-            elif run_type == RunType.CONFIG:
-                # 2. Check if CSV files exist in subfolders (folder run)
-                csv_files = list(data_path.glob("*/*.csv"))
-                if csv_files:
-                    return csv_files
-                else:
-                    return None
-            elif run_type == RunType.RUN:
-                # 3. Check if CSV files exist in subfolders of subfolders (whole run)
-                csv_files = list(data_path.glob("*/*/*.csv"))
-                if csv_files:
-                    return csv_files
-                else:
-                    return None
-
-        except Exception:
-            return None
-
-        return None
 
     def get_notebook(self, path, run_type):
         """Load and prepare notebook with DATA_DIR replaced.
@@ -328,7 +433,7 @@ class JupyterNotebookRunner(CancellableWorkload):
     def run(self, data_path, run_type):
         hash_files = self.get_hash_files(run_type)
         cache_file_name = self.get_cache_file_name(run_type)
-        file_cache = FileCache(data_path, cache_file_name, hash_files)
+        file_cache = FileCache(data_path, cache_file_name, hash_files, ".html")
         try:
             # Check cache first
             cached_file = file_cache.get_cached_file(hash_files, None, content=False)
@@ -367,7 +472,14 @@ class JupyterNotebookRunner(CancellableWorkload):
                         self.progress_callback(progress_value, f"Executing cell {index + 1}/{self.cells}...")
                     if self.is_canceled_callback and self.is_canceled_callback():
                         raise RuntimeError("Notebook execution canceled by user.")
-                    return super().preprocess_cell(cell, resources, index)
+                    try:
+                        return super().preprocess_cell(cell, resources, index)
+                    except Exception as e:
+                        # Re-raise with cell number and source code information
+                        cell_source = cell.get('source', '')
+                        error_msg = f"Error in cell {
+                            index + 1} of {self.cells}: {str(e)}\n\n--- Cell Source ---\n{cell_source}\n--- End Cell Source ---"
+                        raise RuntimeError(error_msg) from e
 
             executor = ProgressExecutePreprocessor(progress_callback=self.progress_callback,
                                                    is_canceled_callback=self.is_cancelled, timeout=600, kernel_name='python3')
@@ -554,8 +666,10 @@ class DataAnalysisWidget(QWidget):
         """Called when webview finishes loading"""
         self.loading_overlay.hide_loading()
         if not success:
-            self.loading_overlay.show_loading("Failed to load content")
-            QTimer.singleShot(2000, self.loading_overlay.hide_loading)  # Hide after 2 seconds
+            # Show minimal error page instead of temporary overlay message
+            theme = detect_theme()
+            error_html = self.get_error_html(theme)
+            self.web_view.setHtml(error_html)
 
     def resizeEvent(self, event):
         """Ensure overlay is repositioned when widget is resized"""
@@ -598,6 +712,80 @@ class DataAnalysisWidget(QWidget):
         </html>
         """
 
+    def get_error_html(self, theme: str = 'light') -> str:
+        """Get minimal error page HTML matching the provided theme.
+
+        Args:
+                theme: 'light' or 'dark' to choose appropriate background/colors.
+        """
+        if theme == 'dark':
+            bg = '#121212'
+            fg = '#e0e0e0'
+            border_color = '#dc3545'
+            error_bg = '#2c1a1a'
+        else:
+            bg = '#ffffff'
+            fg = '#111111'
+            border_color = '#dc3545'
+            error_bg = '#f8d7da'
+
+        return f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset=\"utf-8\" />
+            <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+            <style>
+                html, body {{ height: 100%; margin: 0; padding: 0; }}
+                body {{
+                    background-color: {bg};
+                    color: {fg};
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                    -webkit-font-smoothing: antialiased;
+                    -moz-osx-font-smoothing: grayscale;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                }}
+                .error-container {{
+                    max-width: 600px;
+                    padding: 40px;
+                    text-align: center;
+                }}
+                .error-title {{
+                    font-size: 24px;
+                    font-weight: bold;
+                    margin-bottom: 10px;
+                    color: {border_color};
+                }}
+                .error-message {{
+                    font-size: 16px;
+                    line-height: 1.5;
+                    color: {fg};
+                    opacity: 0.8;
+                }}
+                .error-box {{
+                    background-color: {error_bg};
+                    border-left: 4px solid {border_color};
+                    padding: 20px;
+                    margin-top: 20px;
+                    border-radius: 4px;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="error-container">
+                <div class="error-box">
+                    <div class="error-title">Failed to Load Content</div>
+                    <div class="error-message">
+                        The requested content could not be loaded.
+                    </div>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+
     def display_html(self, html_file: str):
         """Load HTML file in web view with loading overlay"""
         # Show loading overlay with custom message
@@ -606,20 +794,9 @@ class DataAnalysisWidget(QWidget):
         # Ensure web view is visible
         self.web_view.show()
 
-        # Read the HTML content and set it with a base URL
-        # This ensures proper rendering and allows relative resource loading
-        try:
-            with open(html_file, 'r', encoding='utf-8') as f:
-                html_content = f.read()
-
-            # Use the directory containing the HTML file as base URL for relative paths
-            base_url = QUrl.fromLocalFile(os.path.dirname(html_file) + os.sep)
-            self.web_view.setHtml(html_content, base_url)
-        except Exception as e:
-            # Fallback to direct file loading if reading fails
-            print(f"Error reading HTML file: {e}")
-            file_url = QUrl.fromLocalFile(html_file)
-            self.web_view.load(file_url)
+        # Load HTML file directly using setUrl
+        file_url = QUrl.fromLocalFile(html_file)
+        self.web_view.setUrl(file_url)
 
     def clear_output(self):
         """Clear the current output - show empty widget without triggering webview signals"""

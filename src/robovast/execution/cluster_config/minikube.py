@@ -16,12 +16,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import io
+import logging
 
 import yaml
 from kubernetes import client, config
 
 from ..cluster_execution.kubernetes import apply_manifests, delete_manifests
-
 from .base_config import BaseConfig
 
 NFS_MANIFEST_MINIKUBE = """apiVersion: v1
@@ -63,7 +63,7 @@ class MinikubeClusterConfig(BaseConfig):
         Args:
             **kwargs: Cluster-specific options (ignored for Minikube)
         """
-        print("Setting up RoboVAST in minikube cluster...")
+        logging.info("Setting up RoboVAST in minikube cluster...")
 
         # Load Kubernetes configuration
         config.load_kube_config()
@@ -71,7 +71,7 @@ class MinikubeClusterConfig(BaseConfig):
         # Initialize API clients
         k8s_client = client.ApiClient()
 
-        print("Applying RoboVAST manifest to Kubernetes cluster...")
+        logging.debug("Applying RoboVAST manifest to Kubernetes cluster...")
         try:
             try:
                 yaml_objects = yaml.safe_load_all(io.StringIO(NFS_MANIFEST_MINIKUBE))
@@ -83,7 +83,7 @@ class MinikubeClusterConfig(BaseConfig):
 
     def cleanup_cluster(self):
         """Clean up transfer mechanism for Minikube cluster."""
-        print("Cleaning up RoboVAST in minikube cluster...")
+        logging.debug("Cleaning up RoboVAST in minikube cluster...")
         # Load Kubernetes configuration
         config.load_kube_config()
 
@@ -96,7 +96,7 @@ class MinikubeClusterConfig(BaseConfig):
             raise RuntimeError(f"Failed to parse PVC manifest YAML: {str(e)}") from e
 
         delete_manifests(core_v1, yaml_objects)
-        print("### RoboVAST manifest deleted successfully!")
+        logging.debug("RoboVAST manifest deleted successfully!")
 
     def get_job_volumes(self):
         """Get job volumes for Minikube cluster."""

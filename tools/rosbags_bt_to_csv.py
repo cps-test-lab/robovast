@@ -166,8 +166,12 @@ def main():
     process_args = [(bag_path, args.csv_filename) for bag_path in rosbag_paths]
 
     # Process rosbags in parallel
-    with Pool(processes=args.workers) as pool:
-        results = pool.map(process_rosbag_wrapper, process_args)
+    try:
+        with Pool(processes=args.workers) as pool:
+            results = pool.map(process_rosbag_wrapper, process_args)
+    except KeyboardInterrupt:
+        print("Processing interrupted by user.")
+        return 1
 
     # Calculate summary statistics
     skipped_bags = 0

@@ -16,7 +16,6 @@
 
 """Preprocessing functionality for analysis data."""
 import hashlib
-import json
 import os
 import subprocess
 import time
@@ -83,25 +82,31 @@ def get_command_files_and_paths(config_path: str, commands: List[str]) -> tuple[
 def compute_dir_hash(dir_path):
     """Compute a hash for a directory based on modification time and file sizes."""
     path = Path(dir_path)
+    path_str = str(path)
+    path_len = len(path_str) + 1  # +1 for trailing slash
 
-    # Collect all files recursively except those starting with "." or ending with .pyc
+    # Collect all files recursively except those starting with "." or ending with .pyc or .tar.gz
     # Also skip files in .cache subdirectories
-    files_to_check = [f for f in path.rglob("*") if f.is_file() and not f.name.startswith(".")
-                      and not f.is_symlink() and not f.name.endswith('pyc')
-                      and '.cache' not in f.parts]
+    # Optimized: use tuple for endswith()
+    files_to_check = [
+        f for f in path.rglob("*")
+        if f.is_file()
+        and not f.name.startswith(".")
+        and not f.is_symlink()
+        and not f.name.endswith(('.pyc', '.tar.gz'))
+        and '.cache' not in f.parts
+    ]
 
-    # Create hash based on file stats (even if empty)
-    hash_data = []
+    # Build all data first, then hash once - fastest approach
+    # Avoids repeated encode() and hasher.update() calls
+    hash_parts = []
     for file_path in sorted(files_to_check):
         stat = file_path.stat()
-        hash_data.append({
-            "name": file_path.name,
-            "size": stat.st_size,
-            "mtime": stat.st_mtime
-        })
+        rel_path = str(file_path)[path_len:]  # Fast string slice
+        hash_parts.append(f"{rel_path}|{stat.st_size}|{stat.st_mtime}\n")
 
-    # Create a simple hash string
-    hash_string = json.dumps(hash_data, sort_keys=True)
+    # Single join, encode, and hash operation
+    hash_string = "".join(hash_parts)
     return hashlib.md5(hash_string.encode()).hexdigest()
 
 
@@ -157,23 +162,24 @@ def run_preprocessing(config_path: str, results_dir: str, output_callback=None):
 
     # Validate and resolve command paths
     try:
-        _, command_paths = get_command_files_and_paths(config_path, commands)
+        command_files, command_paths = get_command_files_and_paths(config_path, commands)
     except ValueError as e:
         return False, str(e)
-
-    config_dir = os.path.dirname(config_path)
 
     # Execute each preprocessing command
     success = True
 
     for i, command in enumerate(command_paths, 1):
+        command_dir = os.path.dirname(command_files[i - 1])
+        # Update command to use just the basename since we're running in command_dir
+        command[0] = './' + os.path.basename(command_files[i - 1])
         command.append(os.path.abspath(results_dir))
-        output(f"[{i}/{len(command_paths)}] Executing: {' '.join(command)}")
+        output(f"[{i}/{len(command_paths)}] Executing: {' '.join(command)} in {command_dir}")
 
         try:
             result = subprocess.run(
                 command,
-                cwd=config_dir,
+                cwd=command_dir,
                 check=False,
                 env={**os.environ, 'PYTHONUNBUFFERED': '1'}
             )

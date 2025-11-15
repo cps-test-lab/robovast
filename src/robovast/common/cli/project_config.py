@@ -30,15 +30,17 @@ PROJECT_FILE = ".robovast_project"
 class ProjectConfig:
     """Manages VAST project configuration stored in .vast_project file."""
 
-    def __init__(self, config_path: Optional[str] = None, results_dir: Optional[str] = None):
+    def __init__(self, config_path: Optional[str] = None, results_dir: Optional[str] = None, log_level: str = "INFO"):
         """Initialize project configuration.
 
         Args:
             config_path: Path to .vast configuration file
             results_dir: Directory for storing results
+            log_level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
         """
         self.config_path = config_path
         self.results_dir = results_dir
+        self.log_level = log_level.upper()
 
     @classmethod
     def find_project_file(cls, start_dir: Optional[str] = None) -> Optional[str]:
@@ -88,6 +90,7 @@ class ProjectConfig:
 
             config_path = data.get('config')
             results_dir = data.get('results_dir')
+            log_level = data.get('log_level', 'INFO')
 
             if not config_path or not results_dir:
                 return None
@@ -99,7 +102,7 @@ class ProjectConfig:
             if not os.path.isabs(results_dir):
                 results_dir = os.path.abspath(os.path.join(project_dir, results_dir))
 
-            return cls(config_path=config_path, results_dir=results_dir)
+            return cls(config_path=config_path, results_dir=results_dir, log_level=log_level)
 
         except (json.JSONDecodeError, IOError):
             return None
@@ -141,7 +144,8 @@ class ProjectConfig:
 
         data = {
             'config': config_to_save,
-            'results_dir': results_to_save
+            'results_dir': results_to_save,
+            'log_level': self.log_level
         }
 
         with open(project_file, 'w') as f:

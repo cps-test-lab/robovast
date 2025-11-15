@@ -15,6 +15,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import hashlib
+import logging
 import os
 from typing import Optional
 
@@ -24,7 +25,7 @@ class FileCache:
     A class to manage caching of files for efficient access.
     """
 
-    def __init__(self, data_directory: str, cache_file_prefix: str, file_name_hash_objects: list):
+    def __init__(self, data_directory: str, cache_file_prefix: str, file_name_hash_objects: list, cache_file_suffix: str = ""):
         """
         Initialize the file cache.
         """
@@ -46,11 +47,12 @@ class FileCache:
         if file_name_hash_objects:
             combined = "|".join(hash_parts)
             hash_string = hashlib.md5(combined.encode()).hexdigest()
-            self.cache_file = f"{cache_file_prefix}_{hash_string}"
+            self.cache_file = f"{cache_file_prefix}_{hash_string}{cache_file_suffix}"
         else:
-            self.cache_file = f"{cache_file_prefix}"
+            self.cache_file = f"{cache_file_prefix}{cache_file_suffix}"
 
-        # print(f"Initialized FileCache with cache file name: {self.get_cache_filename()}")
+        logger = logging.getLogger(__name__)
+        logger.debug(f"Initialized FileCache with cache file name: {self.get_cache_filename()}")
 
     def get_cache_directory(self):
         if not self.current_data_directory:
@@ -75,7 +77,7 @@ class FileCache:
             raise ValueError("Cache file name is not set.")
         return os.path.join(self.get_cache_directory(), f"{self.cache_file}_md5")
 
-    def get_cached_file(self, input_files: list, binary: bool = False, content=True, strings_for_hash=None, hash_only: bool = False, debug: bool=False) -> Optional[str]:  # pylint: disable=too-many-return-statements
+    def get_cached_file(self, input_files: list, binary: bool = False, content=True, strings_for_hash=None, hash_only: bool = False) -> Optional[str]:  # pylint: disable=too-many-return-statements
         """
         Retrieves a cached file if it exists and is valid based on input files and additional hash strings.
 
@@ -111,18 +113,15 @@ class FileCache:
         # print("----")
 
         if not cache_file or not md5_file:
-            if debug:
-                print("CACHE MISS (invalid cache paths):", cache_file)
+            logging.debug(f"CACHE MISS (invalid cache paths): {cache_file}")
             return None
 
         if not os.path.exists(md5_file):
-            if debug:
-                print("CACHE MISS (md5 file missing):", cache_file)
+            logging.debug(f"CACHE MISS (md5 file missing): {cache_file}")
             return None
 
         if not hash_only and not os.path.exists(cache_file):
-            if debug:
-                print("CACHE MISS (cache file missing):", cache_file)
+            logging.debug(f"CACHE MISS (cache file missing): {cache_file}")
             return None
 
         try:
@@ -135,8 +134,7 @@ class FileCache:
 
             # Check if hashes match
             if stored_hash == current_hash:
-                if debug:
-                    print("CACHE HIT:", cache_file, " (hash:", current_hash + ")")
+                logging.debug(f"CACHE HIT: {cache_file} (hash: {current_hash})")
                 if content:
                     if binary:
                         with open(cache_file, 'rb') as f:
@@ -147,8 +145,7 @@ class FileCache:
                 else:
                     return cache_file
             else:
-                if debug:
-                    print("CACHE MISS (hash mismatch):", cache_file, f"(stored: {stored_hash}, current: {current_hash})")
+                logging.debug(f"CACHE MISS (hash mismatch): {cache_file} (stored: {stored_hash}, current: {current_hash})")
                 # Remove outdated cache files
                 try:
                     os.remove(cache_file)
@@ -157,15 +154,14 @@ class FileCache:
                     pass
                 return None
         except Exception as e:
-            print(f"Error reading cache file: {e}")
+            logging.warning(f"Error reading cache file: {e}")
             # Remove invalid cache files
             try:
                 os.remove(cache_file)
                 os.remove(md5_file)
             except Exception:
                 pass
-            if debug:
-                print("CACHE MISS (no cache):", cache_file)
+            logging.debug(f"CACHE MISS (no cache): {cache_file}")
         return None
 
     def save_file_to_cache(self, input_files: list, file_content: str, binary: bool = False, content=True, strings_for_hash=None):
@@ -191,9 +187,9 @@ class FileCache:
                 csv_hash = self.create_input_files_hash(input_files, strings_for_hash=strings_for_hash)
                 with open(md5_file, 'w', encoding='utf-8') as f:
                     f.write(csv_hash)
-                print(f"Saved {cache_file} to cache (hash: {csv_hash})...")
+                logging.info(f"Saved {cache_file} to cache (hash: {csv_hash})...")
         except Exception as e:
-            print(f"Error saving to cache: {e}")
+            logging.warning(f"Error saving to cache: {e}")
             return None
         return cache_file
 
@@ -219,6 +215,6 @@ class FileCache:
                 os.remove(cache_file)
             if os.path.exists(md5_file):
                 os.remove(md5_file)
-            print(f"Removed cache files: {cache_file}, {md5_file}")
+            logging.info(f"Removed cache files: {cache_file}, {md5_file}")
         except Exception as e:
-            print(f"Error removing cache files: {e}")
+            logging.warning(f"Error removing cache files: {e}")

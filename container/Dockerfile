@@ -83,7 +83,7 @@ RUN mkdir -p /ws/src
 # hadolint ignore=DL3003
 RUN  git clone "https://github.com/cps-test-lab/scenario-execution.git" /ws/src/scenario-execution && \
      cd /ws/src/scenario-execution && \
-     git checkout 25e09099e3b27e25331a7b04b8c588a37d9b536a && \
+     git checkout faa2819c4871e7bb6873fe350c54e28e24462ca3 && \
      . "/opt/ros/${ROS_DISTRO}/setup.bash" && \
      cd /ws && \
      colcon build

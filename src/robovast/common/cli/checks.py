@@ -17,8 +17,12 @@
 
 """Docker and Kubernetes utilities for RoboVAST CLI."""
 
+import logging
+
 import docker
 from docker.errors import DockerException
+
+logger = logging.getLogger(__name__)
 
 
 def check_docker_access():
@@ -30,6 +34,7 @@ def check_docker_access():
             - message: Success message or error description
     """
     try:
+        logger.debug("Checking Docker daemon access")
         k8s_client = docker.from_env()
         # Try to ping the Docker daemon
         k8s_client.ping()
@@ -38,10 +43,13 @@ def check_docker_access():
         version_info = k8s_client.version()
         docker_version = version_info.get('Version', 'unknown')
 
+        logger.debug(f"Docker is accessible (version {docker_version})")
         return True, f"Docker is accessible (version {docker_version})"
 
     except DockerException as e:
+        logger.warning(f"Docker daemon is not accessible: {str(e)}")
         return False, f"Docker daemon is not accessible: {str(e)}"
 
     except Exception as e:
+        logger.error(f"Failed to check Docker access: {str(e)}")
         return False, f"Failed to check Docker access: {str(e)}"

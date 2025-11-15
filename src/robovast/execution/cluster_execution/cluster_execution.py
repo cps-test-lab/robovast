@@ -17,6 +17,7 @@
 
 import copy
 import datetime
+import logging
 import os
 import sys
 import tempfile
@@ -28,11 +29,13 @@ from kubernetes import config as kube_config
 
 from robovast.common import (get_execution_env_variables, get_run_id,
                              load_config, prepare_run_configs)
-from robovast.execution.cluster_execution.kubernetes import (check_pod_running,
-                                        copy_config_to_cluster)
 from robovast.common.config_generation import generate_scenario_variations
+from robovast.execution.cluster_execution.kubernetes import (
+    check_pod_running, copy_config_to_cluster)
 
 from .manifests import JOB_TEMPLATE
+
+logger = logging.getLogger(__name__)
 
 
 class JobRunner:
@@ -49,7 +52,6 @@ class JobRunner:
         # Use provided num_runs if specified, otherwise use config value or default to 1
         if num_runs is not None:
             self.num_runs = num_runs
-            print(f"Overriding config: Running {self.num_runs} runs")
         elif "runs" in parameters:
             self.num_runs = parameters["runs"]
         else:
@@ -63,7 +65,7 @@ class JobRunner:
         self.config_output_file_dir = tempfile.TemporaryDirectory(prefix="robovast_execution_")
         self.configs, _ = generate_scenario_variations(
             config_path,
-            print,
+            None,
             variation_classes=None,
             output_dir=self.config_output_file_dir.name,
         )
@@ -79,12 +81,11 @@ class JobRunner:
                     break
 
             if not found_config:
-                print(f"ERROR: Config '{single_config}' not found in config.")
-                print("Available configs:")
+                logger.error(f"Config '{single_config}' not found in config.")
+                logger.error("Available configs:")
                 for v in self.configs:
-                    print(f"   - {v["name"]}")
+                    logger.error(f"   - {v["name"]}")
                 sys.exit(1)
-            print(f"Running single config: {single_config}")
             self.configs = [found_config]
 
         kube_config.load_kube_config()
@@ -94,7 +95,7 @@ class JobRunner:
 
         # Check if transfer-pod exists
         if not check_pod_running(self.k8s_client, "robovast"):
-            print(f"ERROR: Transfer pod 'robovast' is not available!")
+            logger.error(f"Transfer pod 'robovast' is not available!")
             sys.exit(1)
 
         # Initialize statistics tracking
@@ -221,7 +222,7 @@ class JobRunner:
                             if pod_start_time is None:
                                 pod_start_time = pod.status.start_time
                 except Exception as e:
-                    print(f"Warning: Could not get pod start time for job {job_name}: {e}")
+                    logger.warning(f"Could not get pod start time for job {job_name}: {e}")
 
                 # Only collect stats for jobs that have both start and completion times
                 if pod_start_time and completion_time:
@@ -237,37 +238,37 @@ class JobRunner:
                     }
                 elif completion_time:
                     # Job completed but we couldn't determine actual start time
-                    print(f"Warning: Could not determine actual running start time for job {job_name}")
+                    logger.warning(f"Could not determine actual running start time for job {job_name}")
 
             except Exception as e:
-                print(f"Warning: Could not collect statistics for job {job_name}: {e}")
+                logger.warning(f"Could not collect statistics for job {job_name}: {e}")
 
     def print_run_statistics(self):
         """Print comprehensive statistics about the run"""
         if not self.job_statistics:
-            print("No job statistics available")
+            logger.info("No job statistics available")
             return
 
-        print("\n" + "=" * 80)
-        print("RUN STATISTICS")
-        print("=" * 80)
+        logger.info("\n" + "=" * 80)
+        logger.info("RUN STATISTICS")
+        logger.info("=" * 80)
 
         # Overall run duration
         if self.run_start_time and self.run_end_time:
             total_run_duration = (self.run_end_time - self.run_start_time).total_seconds()
-            print(f"Total run duration: {self.format_duration(total_run_duration)}")
-            print(f"Run started: {self.run_start_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
-            print(f"Run ended: {self.run_end_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
-            print()
+            logger.info(f"Total run duration: {self.format_duration(total_run_duration)}")
+            logger.info(f"Run started: {self.run_start_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+            logger.info(f"Run ended: {self.run_end_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+            logger.info("")
 
         # Job statistics
         completed_jobs = [job for job, stats in self.job_statistics.items() if stats['status'] == 'completed']
         failed_jobs = [job for job, stats in self.job_statistics.items() if stats['status'] == 'failed']
 
-        print(f"Total jobs: {len(self.job_statistics)}")
-        print(f"Completed successfully: {len(completed_jobs)}")
-        print(f"Failed: {len(failed_jobs)}")
-        print()
+        logger.info(f"Total jobs: {len(self.job_statistics)}")
+        logger.info(f"Completed successfully: {len(completed_jobs)}")
+        logger.info(f"Failed: {len(failed_jobs)}")
+        logger.info("")
 
         if completed_jobs:
             # Duration statistics for completed jobs
@@ -285,36 +286,36 @@ class JobRunner:
             else:
                 median_duration = sorted_durations[n//2]
 
-            print("Job Duration Statistics (completed jobs only):")
-            print(f"  Average: {self.format_duration(avg_duration)}")
-            print(f"  Median:  {self.format_duration(median_duration)}")
-            print(f"  Minimum: {self.format_duration(min_duration)}")
-            print(f"  Maximum: {self.format_duration(max_duration)}")
-            print()
+            logger.info("Job Duration Statistics (completed jobs only):")
+            logger.info(f"  Average: {self.format_duration(avg_duration)}")
+            logger.info(f"  Median:  {self.format_duration(median_duration)}")
+            logger.info(f"  Minimum: {self.format_duration(min_duration)}")
+            logger.info(f"  Maximum: {self.format_duration(max_duration)}")
+            logger.info("")
 
             # Find fastest and slowest jobs
             fastest_job = min(completed_jobs, key=lambda job: self.job_statistics[job]['duration_seconds'])
             slowest_job = max(completed_jobs, key=lambda job: self.job_statistics[job]['duration_seconds'])
 
-            print(f"Fastest job: {fastest_job} ({self.format_duration(self.job_statistics[fastest_job]['duration_seconds'])})")
-            print(f"Slowest job: {slowest_job} ({self.format_duration(self.job_statistics[slowest_job]['duration_seconds'])})")
-            print()
+            logger.info(f"Fastest job: {fastest_job} ({self.format_duration(self.job_statistics[fastest_job]['duration_seconds'])})")
+            logger.info(f"Slowest job: {slowest_job} ({self.format_duration(self.job_statistics[slowest_job]['duration_seconds'])})")
+            logger.info("")
 
         if failed_jobs:
-            print("Failed jobs:")
+            logger.info("Failed jobs:")
             for job in failed_jobs[:10]:  # Show first 10 failed jobs
                 stats = self.job_statistics[job]
                 if stats['start_time']:
                     duration = self.format_duration(stats['duration_seconds']) if stats['duration_seconds'] > 0 else "Unknown"
-                    print(f"  {job} (duration: {duration})")
+                    logger.info(f"  {job} (duration: {duration})")
                 else:
-                    print(f"  {job} (never started)")
+                    logger.info(f"  {job} (never started)")
 
             if len(failed_jobs) > 10:
-                print(f"  ... and {len(failed_jobs) - 10} more failed jobs")
-            print()
+                logger.info(f"  ... and {len(failed_jobs) - 10} more failed jobs")
+            logger.info("")
 
-        print("=" * 80)
+        logger.info("=" * 80)
 
     def format_duration(self, seconds):
         """Format duration in a human-readable way"""
@@ -333,15 +334,15 @@ class JobRunner:
     def cleanup_jobs(self):
         # cleanup all jobs with label jobgroup: scenario-runs in a single call
         try:
-            print(f"Deleting all jobs with label 'jobgroup=scenario-runs'")
+            logger.debug(f"Deleting all jobs with label 'jobgroup=scenario-runs'")
             self.k8s_batch_client.delete_collection_namespaced_job(
                 namespace="default",
                 label_selector="jobgroup=scenario-runs",
                 body=client.V1DeleteOptions(grace_period_seconds=0)
             )
-            print(f"Successfully deleted all scenario-runs jobs")
+            logger.info(f"Successfully deleted all scenario-runs jobs")
         except client.rest.ApiException as e:
-            print(f"Error deleting jobs with label selector: {e}")
+            logger.error(f"Error deleting jobs with label selector: {e}")
 
     def run(self):
         # check if k8s element names have "$ITEM" template
@@ -359,25 +360,24 @@ class JobRunner:
         for job in job_list.items:
             if job.metadata.name.startswith(job_prefix):
                 jobs_to_cleanup.append(job.metadata.name)
-                print(f"Found existing job to cleanup: {job.metadata.name}")
+                logger.debug(f"Found existing job to cleanup: {job.metadata.name}")
 
         if jobs_to_cleanup:
-            print(f"Cleaning up {len(jobs_to_cleanup)} existing jobs")
+            logger.debug(f"Cleaning up {len(jobs_to_cleanup)} existing jobs...")
             self.cleanup_jobs()
 
         # Clean up existing pods with label jobgroup: scenario-runs
         self.cleanup_pods()
 
         # upload all config files to transfer PVC via transfer pod
-        print(f"Uploading task config files for {len(self.configs)} scenarios to transfer PVC...")
+        logger.debug(f"Uploading task config files for {len(self.configs)} scenarios to cluster...")
         self.upload_tasks_to_transfer_pod()
 
         # Create all jobs for all runs before executing any
         all_jobs = []
-        create_start_time = time.time()
-        print(f"Creating {self.num_runs} runs with {len(self.configs)} scenarios each (ID: {self.run_id})...")
+        logger.info(f"Creating {len(self.configs)} config(s) with {self.num_runs} runs each (ID: {self.run_id})...")
         for run_number in range(self.num_runs):
-            print(f"Creating jobs for run {run_number + 1}/{self.num_runs}")
+            logger.debug(f"Creating jobs for run {run_number + 1}/{self.num_runs}")
 
             for config in self.configs:
                 config_name = config.get("name")
@@ -385,11 +385,9 @@ class JobRunner:
                 job_name = job_manifest['metadata']['name']
                 all_jobs.append(job_name)
                 self.k8s_batch_client.create_namespaced_job(namespace="default", body=job_manifest)
-                print(f"Created job {job_name} for run {run_number + 1}")
+                logger.debug(f"Created job {job_name} for run {run_number + 1}")
 
-        print(f"All {len(all_jobs)} jobs created. Starting execution...")
-        create_end_time = time.time()
-        print(f"{create_end_time - create_start_time:.2f} seconds to create all jobs")
+        logger.info(f"All {len(all_jobs)} jobs created. Starting execution...")
         # Track run start time
         self.run_start_time = datetime.datetime.now(datetime.timezone.utc)
 
@@ -399,48 +397,48 @@ class JobRunner:
                 job_status = self.get_remaining_jobs(all_jobs)
 
                 if job_status:
-                    print(f"Waiting for {len(job_status)} out of {len(all_jobs)} jobs to finish...")
+                    logger.info(f"Waiting for {len(job_status)} out of {len(all_jobs)} jobs to finish...")
                     time.sleep(1)
                 else:
                     break
-            print("All jobs finished.")
+            logger.info("All jobs finished.")
         except KeyboardInterrupt:
-            print("\nKeyboard interrupt received, cleaning up...")
+            logger.info("\nKeyboard interrupt received, cleaning up...")
 
         # Track run end time and collect statistics
         self.run_end_time = datetime.datetime.now(datetime.timezone.utc)
-        print("Collecting job statistics...")
+        logger.info("Collecting job statistics...")
         self.collect_job_statistics(all_jobs)
 
         # Clean up
         self.cleanup_pods()
         self.cleanup_jobs()
-        print(f"Cleaned up jobs")
+        logger.info(f"Cleaned up jobs.")
 
         # Print comprehensive statistics
         self.print_run_statistics()
 
-        print(f"Transfer PVC and pod are left running for reuse")
+        logger.debug(f"Transfer PVC and pod are left running for reuse")
 
     def cleanup_pods(self):
         # Cleanup pods with label jobgroup: scenario-runs
         try:
-            print(f"Deleting all pods with label 'jobgroup=scenario-runs'")
+            logger.debug(f"Deleting all pods with label 'jobgroup=scenario-runs'")
             self.k8s_client.delete_collection_namespaced_pod(
                 namespace="default",
                 label_selector="jobgroup=scenario-runs",
                 body=client.V1DeleteOptions(grace_period_seconds=0)
             )
-            print(f"Successfully cleaned up all scenario-runs pods")
+            logger.debug(f"Successfully cleaned up all scenario-runs pods")
         except client.rest.ApiException as e:
-            print(f"Error deleting pods with label selector: {e}")
+            logger.error(f"Error deleting pods with label selector: {e}")
 
     def upload_tasks_to_transfer_pod(self):
         """Upload all files to transfer PVC using kubectl cp to transfer pod"""
 
         # Create a temporary directory to organize all files
         with tempfile.TemporaryDirectory() as temp_dir:
-            print(f"Using temporary directory: {temp_dir}")
+            logger.debug(f"Using temporary directory: {temp_dir}")
 
             prepare_run_configs(self.run_id, self.configs, temp_dir)
 

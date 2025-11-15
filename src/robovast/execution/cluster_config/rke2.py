@@ -15,12 +15,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 import io
+import logging
 
 import yaml
 from kubernetes import client, config
 
 from ..cluster_execution.kubernetes import apply_manifests, delete_manifests
-
 from .base_config import BaseConfig
 
 NFS_MANIFEST_RKE2 = """---
@@ -142,7 +142,7 @@ class Rke2ClusterConfig(BaseConfig):
         Args:
             **kwargs: Cluster-specific options (ignored for RKE2)
         """
-        print("Setting up RoboVAST in RKE2 cluster...")
+        logging.info("Setting up RoboVAST in RKE2 cluster...")
 
         # Load Kubernetes configuration
         config.load_kube_config()
@@ -150,7 +150,7 @@ class Rke2ClusterConfig(BaseConfig):
         # Initialize API clients
         k8s_client = client.ApiClient()
 
-        print("Applying RoboVAST manifest to Kubernetes cluster...")
+        logging.debug("Applying RoboVAST manifest to Kubernetes cluster...")
         try:
             try:
                 yaml_objects = yaml.safe_load_all(io.StringIO(NFS_MANIFEST_RKE2))
@@ -165,7 +165,7 @@ class Rke2ClusterConfig(BaseConfig):
                 namespace="default"
             )
             server_ip = service.spec.cluster_ip
-            print(f"### RoboVAST ClusterIP: {server_ip}")
+            logging.debug(f"RoboVAST ClusterIP: {server_ip}")
             try:
                 yaml_objects = yaml.safe_load_all(io.StringIO(PVC_MANIFEST_RKE2.format(server_ip=server_ip)))
             except yaml.YAMLError as e:
@@ -176,7 +176,7 @@ class Rke2ClusterConfig(BaseConfig):
 
     def cleanup_cluster(self):
         """Clean up transfer mechanism for RKE2 cluster."""
-        print("Cleaning up RoboVAST in RKE2 cluster...")
+        logging.debug("Cleaning up RoboVAST in RKE2 cluster...")
         # Load Kubernetes configuration
         config.load_kube_config()
 
@@ -189,11 +189,11 @@ class Rke2ClusterConfig(BaseConfig):
             raise RuntimeError(f"Failed to parse PVC manifest YAML: {str(e)}") from e
 
         delete_manifests(core_v1, yaml_objects)
-        print("### RoboVAST manifest deleted successfully!")
+        logging.debug("RoboVAST manifest deleted successfully!")
 
         yaml_objects = yaml.safe_load_all(io.StringIO(PVC_MANIFEST_RKE2))
         delete_manifests(core_v1, yaml_objects)
-        print("### PVC manifest deleted successfully!")
+        logging.debug("PVC manifest deleted successfully!")
 
     def get_job_volumes(self):
         """Get job volumes for Minikube cluster."""

@@ -14,6 +14,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
 import os
 import sys
 import tempfile
@@ -23,8 +24,10 @@ from robovast.common import (get_execution_env_variables, load_config,
 from robovast.common.cli import get_project_config
 from robovast.common.config_generation import generate_scenario_variations
 
+logger = logging.getLogger(__name__)
 
-def initialize_local_execution(config, output_dir, runs, debug=False, feedback_callback=print):
+
+def initialize_local_execution(config, output_dir, runs, feedback_callback=logging.debug):
     """Initialize common setup for local execution commands.
 
     Performs all common setup steps including:
@@ -38,15 +41,19 @@ def initialize_local_execution(config, output_dir, runs, debug=False, feedback_c
         config: The config name to execute
         output_dir: Directory where output files will be written, if none a temporary directory is created
         runs: Number of runs per config
-        debug: Enable debug output
         feedback_callback: Function to call for feedback messages (e.g., print or click.echo)
 
     Raises:
         SystemExit: If initialization fails
     """
+    if output_dir:
+        logger.info(f"Initializing local execution environment in '{output_dir}'...")
+    else:
+        logger.info("Initializing local execution environment in temporary directory...")
     # Load configuration
     project_config = get_project_config()
     config_path = project_config.config_path
+    logger.debug(f"Loading config from: {config_path}")
     execution_parameters = load_config(config_path, "execution")
     docker_image = execution_parameters.get("image", "ghcr.io/cps-test-lab/robovast:latest")
     results_dir = project_config.results_dir
@@ -54,23 +61,25 @@ def initialize_local_execution(config, output_dir, runs, debug=False, feedback_c
     # Use execution_parameters value if runs is not provided
     if runs is None:
         if "runs" not in execution_parameters:
+            logger.error("Number of runs not specified in command or config")
             feedback_callback("Error: Number of runs not specified in command or config.")
             sys.exit(1)
         else:
             runs = execution_parameters["runs"]
 
-    feedback_callback(f"Docker image: {docker_image}")
-    feedback_callback("-" * 60)
+    logger.debug(f"Using Docker image: {docker_image}")
 
     # Generate and filter configs
+    logger.debug("Generating scenario variations")
     temp_dir = tempfile.TemporaryDirectory(prefix="robovast_execution_")
     configs, _ = generate_scenario_variations(
         variation_file=config_path,
-        progress_update_callback=print,
+        progress_update_callback=None,
         output_dir=temp_dir.name
     )
 
     if not configs:
+        logger.error("No configs found in vast-file")
         feedback_callback("Error: No configs found in vast-file.", file=sys.stderr)
         sys.exit(1)
 
@@ -91,19 +100,15 @@ def initialize_local_execution(config, output_dir, runs, debug=False, feedback_c
 
         configs = [found_config]
 
-    feedback_callback(f"Preparing {len(configs)} configs from {config_path}...")
-    feedback_callback(f"Output directory: {output_dir}")
-
-    # Create the output directory
-    feedback_callback("-" * 60)
+    logger.debug(f"Preparing {len(configs)} configs from {config_path}...")
+    logger.debug(f"Output directory: {output_dir}")
 
     # Create temp directory for run() or use output_dir for prepare_run()
     temp_path = None
     if not output_dir:
         temp_path = tempfile.TemporaryDirectory(prefix="robovast_local_", delete=False)
-        feedback_callback(f"Using temporary directory for config files: {temp_path.name}")
-        if debug:
-            feedback_callback(f"Temp path: {temp_path.name}")
+        logger.debug(f"Using temporary directory for config files: {temp_path.name}")
+        logger.debug(f"Temp path: {temp_path.name}")
         config_dir = temp_path.name
     else:
         try:
@@ -116,13 +121,12 @@ def initialize_local_execution(config, output_dir, runs, debug=False, feedback_c
     try:
         prepare_run_configs("local", configs, config_dir)
         config_path_result = os.path.join(config_dir, "config", "local")
-        feedback_callback(f"Config path: {config_path_result}")
+        logger.debug(f"Config path: {config_path_result}")
     except Exception as e:  # pylint: disable=broad-except
         feedback_callback(f"Error preparing run configs: {e}", file=sys.stderr)
         sys.exit(1)
 
-    feedback_callback(f"Configuration files prepared in: {config_dir}")
-    feedback_callback("-" * 60)
+    logger.debug(f"Configuration files prepared in: {config_dir}")
 
     docker_configs = []
     for run_number in range(runs):
@@ -155,11 +159,10 @@ def get_commandline(image, config_path, output_path, config_name, run_num=0, she
     if shell:
         # Interactive shell mode
         docker_cmd.extend(['-it', image, '/bin/bash'])
-        print(f"Opening interactive shell in Docker container: {image}")
+        logger.info(f"Opening interactive shell in Docker container: {image}")
     else:
         # Normal execution mode
         docker_cmd.append(image)
-        print(f"Executing Docker container: {image}")
 
     return docker_cmd
 
@@ -371,5 +374,7 @@ def generate_docker_run_script(configs, results_dir, output_script_path):
         with open(output_script_path, 'w') as f:
             f.write(script)
         os.chmod(output_script_path, 0o755)  # Make the script executable
+        logger.debug(f"Generated Docker run script: {output_script_path}")
     except Exception as e:  # pylint: disable=broad-except
-        print(f"Error writing Docker run script: {e}")
+        logger.error(f"Error writing Docker run script: {e}")
+        raise

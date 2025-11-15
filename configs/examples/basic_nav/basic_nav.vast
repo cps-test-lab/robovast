@@ -1,6 +1,6 @@
 version: 1
 configuration:
-- name: test1
+- name: test
   scenario_file: scenario.osc
   variations:
   - ParameterVariationList:
@@ -14,12 +14,6 @@ configuration:
           y: 4.0
       - position:
           x: 21.0
-          y: 2.0
-      - position:
-          x: 21.0
-          y: 0.0
-      - position:
-          x: 21.0
           y: -2.0
       - position:
           x: 21.0
@@ -31,13 +25,14 @@ execution:
   image: ghcr.io/cps-test-lab/robovast:latest
   kubernetes:
     resources:
-      cpu: 8
-  runs: 10
+      cpu: 6
+  runs: 5
+  test_files_filter:
+  - "**/files/*"
 analysis:
   preprocessing:
-  - ../../tools/ros2_exec.sh rosbags_to_csv.py
-  - ../../tools/ros2_exec.sh rosbags_tf_to_csv.py --frame base_link --frame turtlebot4_base_link_gt
-  - ../../tools/ros2_exec.sh rosbags_bt_to_csv.py
+  - ../../../tools/docker_exec.sh rosbags_tf_to_csv.py --frame base_link --frame turtlebot4_base_link_gt
+  - ../../../tools/docker_exec.sh rosbags_bt_to_csv.py
   visualization:
   - Analysis:
       single_test: analysis/analysis_single_test.ipynb

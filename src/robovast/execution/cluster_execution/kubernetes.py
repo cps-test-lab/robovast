@@ -14,11 +14,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
 import subprocess
 import sys
 
 from kubernetes import client, config, utils
 from kubernetes.client.rest import ApiException
+
+logger = logging.getLogger(__name__)
 
 
 def get_kubernetes_client():
@@ -34,7 +37,7 @@ def get_kubernetes_client():
         # Create API client
         return client.CoreV1Api()
     except Exception as e:
-        print(f"### ERROR: Failed to create Kubernetes client: {str(e)}")
+        logger.error(f"Failed to create Kubernetes client: {str(e)}")
         return None
 
 
@@ -68,11 +71,11 @@ def apply_manifests(k8s_client, manifests: list):
             try:
                 # Use utils.create_from_dict to handle the resource creation
                 utils.create_from_dict(k8s_client, yaml_object)
-                print(f"Created {kind}/{name}")
+                logger.debug(f"Created {kind}/{name}")
 
             except ApiException as e:
                 if e.status == 409:  # Already exists
-                    print(f"{kind}/{name} already exists, skipping creation")
+                    logger.info(f"{kind}/{name} already exists, skipping creation")
                 raise
     except ApiException as e:
         raise RuntimeError(f"Failed to apply NFS manifest: {e.reason}") from e
@@ -96,7 +99,7 @@ def delete_manifests(core_v1, manifests: list):
                     namespace=namespace,
                     body=client.V1DeleteOptions()
                 )
-                print(f"Deleted Pod/{name} from namespace {namespace}")
+                logger.debug(f"Deleted Pod/{name} from namespace {namespace}")
 
             elif kind == 'Service':
                 core_v1.delete_namespaced_service(
@@ -104,40 +107,40 @@ def delete_manifests(core_v1, manifests: list):
                     namespace=namespace,
                     body=client.V1DeleteOptions()
                 )
-                print(f"Deleted Service/{name} from namespace {namespace}")
+                logger.debug(f"Deleted Service/{name} from namespace {namespace}")
             elif kind == 'ConfigMap':
                 core_v1.delete_namespaced_config_map(
                     name=name,
                     namespace=namespace,
                     body=client.V1DeleteOptions()
                 )
-                print(f"Deleted ConfigMap/{name} from namespace {namespace}")
+                logger.debug(f"Deleted ConfigMap/{name} from namespace {namespace}")
             elif kind == 'PersistentVolumeClaim':
                 core_v1.delete_namespaced_persistent_volume_claim(
                     name=name,
                     namespace=namespace,
                     body=client.V1DeleteOptions()
                 )
-                print(f"Deleted PersistentVolumeClaim/{name} from namespace {namespace}")
+                logger.debug(f"Deleted PersistentVolumeClaim/{name} from namespace {namespace}")
             elif kind == 'PersistentVolume':
                 core_v1.delete_persistent_volume(
                     name=name,
                     body=client.V1DeleteOptions()
                 )
-                print(f"Deleted PersistentVolume/{name}")
+                logger.debug(f"Deleted PersistentVolume/{name}")
             elif kind == 'StorageClass':
                 storage_api = client.StorageV1Api()
                 storage_api.delete_storage_class(
                     name=name,
                     body=client.V1DeleteOptions()
                 )
-                print(f"Deleted StorageClass/{name}")
+                logger.debug(f"Deleted StorageClass/{name}")
             else:
                 raise RuntimeError(f"Unsupported kind for deletion: {kind}")
 
         except ApiException as e:
             if e.status == 404:  # Not found
-                print(f"{kind}/{name} not found, skipping deletion")
+                logger.info(f"{kind}/{name} not found, skipping deletion")
             else:
                 raise
 
@@ -146,7 +149,7 @@ def copy_config_to_cluster(config_dir, run_id):
 
     # Use kubectl cp to copy the entire config directory to the transfer pod
     try:
-        print(f"### Copying config files to transfer pod using kubectl cp...")
+        logger.debug(f"Copying config files to transfer pod using kubectl cp...")
 
         # Copy the config directory to the transfer pod at /exports/config/
         cmd = [
@@ -156,7 +159,7 @@ def copy_config_to_cluster(config_dir, run_id):
         ]
 
         subprocess.run(cmd, capture_output=True, text=True, check=True)
-        print(f"### Successfully copied config files to transfer pod")
+        logger.debug(f"Successfully copied config files to transfer pod")
 
         # Verify the copy was successful by listing the directory
         verify_cmd = [
@@ -167,18 +170,19 @@ def copy_config_to_cluster(config_dir, run_id):
 
         verify_result = subprocess.run(verify_cmd, capture_output=True, text=True, check=False)
         if verify_result.returncode == 0:
-            print(f"### Verification: Config files successfully uploaded to /exports/config/{run_id}/")
+            logger.debug(f"Config files successfully uploaded to /exports/config/{run_id}/")
         else:
-            print(f"### Warning: Could not verify config file upload: {verify_result.stderr}")
+            logger.warning(f"Could not verify config file upload: {verify_result.stderr}")
 
     except subprocess.CalledProcessError as e:
-        print(f"### ERROR: Failed to copy config files to transfer pod: {e}")
-        print(f"### stdout: {e.stdout}")
-        print(f"### stderr: {e.stderr}")
+        logger.error(f"Failed to copy config files to transfer pod: {e}")
+        logger.error(f"stdout: {e.stdout}")
+        logger.error(f"stderr: {e.stderr}")
         sys.exit(1)
     except Exception as e:
-        print(f"### ERROR: Unexpected error during config file copy: {e}")
+        logger.error(f"Unexpected error during config file copy: {e}")
         sys.exit(1)
+
 
 def check_kubernetes_access(k8s_client):
     """Check if Kubernetes cluster is accessible.
