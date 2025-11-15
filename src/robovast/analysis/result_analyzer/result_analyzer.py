@@ -20,6 +20,7 @@ import os
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
+import subprocess
 
 from PySide6.QtCore import QSettings, Qt, QThread, QTimer, Slot
 from PySide6.QtGui import QBrush, QColor, QIcon, QPalette
@@ -247,7 +248,6 @@ class TestResultsAnalyzer(QMainWindow):
 
     def open_notebook_in_vscode(self, directory_path):
         """Open the corresponding Jupyter notebook in VS Code"""
-        import subprocess
 
         # Determine the run type
         run_type = self.get_run_type(directory_path)
@@ -260,7 +260,7 @@ class TestResultsAnalyzer(QMainWindow):
         notebook_path = None
         if "visualization" in self.parameters:
             for view in self.parameters["visualization"]:
-                for name, values in view.items():
+                for _, values in view.items():
                     if not isinstance(values, dict):
                         continue
 

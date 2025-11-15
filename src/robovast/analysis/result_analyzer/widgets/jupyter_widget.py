@@ -17,6 +17,7 @@
 import os
 import re
 import tempfile
+import html
 
 import nbformat
 from nbconvert import HTMLExporter
@@ -82,7 +83,6 @@ def format_notebook_error_html(error_str: str) -> str:
     error_line_number = None
 
     # Check if error message contains cell information
-    import re
     cell_match = re.search(r'Error in cell (\d+) of (\d+):', clean_error)
     if cell_match:
         cell_num = cell_match.group(1)
@@ -134,7 +134,6 @@ def format_notebook_error_html(error_str: str) -> str:
 
     # Create a clean HTML error page
     # Escape HTML in cell source and preserve formatting
-    import html
     cell_source_html = ""
     if cell_source:
         # Split into lines and add line numbers with highlighting
@@ -144,10 +143,8 @@ def format_notebook_error_html(error_str: str) -> str:
         # Determine the range of lines to show (max 10 lines before error)
         if error_line_number:
             start_line = max(1, error_line_number - 10)
-            end_line = error_line_number
         else:
             start_line = 1
-            end_line = len(source_lines)
 
         for i, line in enumerate(source_lines, start=1):
             # Skip lines before start_line

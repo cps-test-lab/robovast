@@ -349,7 +349,7 @@ def main():
     load_plugins()
 
     # Run the CLI (logging is configured via the --log-level callback)
-    cli()
+    cli()  # pylint: disable=no-value-for-parameter
 
 
 if __name__ == '__main__':

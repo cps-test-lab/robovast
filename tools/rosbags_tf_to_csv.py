@@ -193,7 +193,7 @@ def main():
 
     if not rosbag_paths:
         print(f"No rosbags found in {args.input}")
-        return
+        return 0
 
     if args.frame == []:
         args.frame = ["base_link"]
@@ -248,7 +248,7 @@ def main():
     empty_frames = [frame for frame, count in total_frame_counts.items() if count == 0]
     if empty_frames:
         print(f"✗ Warning: {args.input} No records found for requested frame(s): {', '.join(empty_frames)}")
-
+    return 0
 
 if __name__ == "__main__":
     # Required for multiprocessing on Windows and some Unix systems
