@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
-from .common import for_each_test, read_output_csv, read_output_files, get_scenario_parameter
+from .common import (for_each_test, get_scenario_parameter, read_output_csv,
+                     read_output_files)
 from .ros2 import (calculate_speeds_from_poses, get_behavior_info,
                    print_bag_topics)
 
