@@ -22,6 +22,7 @@ from typing import Callable
 import pandas as pd
 import yaml
 
+
 def get_scenario_parameter(data_dir: str, parameter_name: str):
     """
     Get a specific scenario parameter from the scenario configuration file.
@@ -44,6 +45,7 @@ def get_scenario_parameter(data_dir: str, parameter_name: str):
             config_content = next(iter(config_content.values()))
 
         return config_content.get(parameter_name, None)
+
 
 def read_output_files(data_dir: str, reader_func: Callable[[Path], pd.DataFrame], debug: bool = False) -> pd.DataFrame:
     """

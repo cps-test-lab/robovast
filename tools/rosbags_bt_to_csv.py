@@ -193,6 +193,7 @@ def main():
           error_bags} errors, {failed_bags} failed, {skipped_bags} skipped), time {elapsed:.2f}s")
     return 0
 
+
 if __name__ == "__main__":
     # Required for multiprocessing on Windows and some Unix systems
     sys.exit(main())
