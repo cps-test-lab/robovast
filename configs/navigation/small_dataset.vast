@@ -5946,7 +5946,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -5956,7 +5956,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -5966,7 +5966,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -5976,7 +5976,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -5986,7 +5986,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -5996,7 +5996,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6031,7 +6031,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6041,7 +6041,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6051,7 +6051,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6061,7 +6061,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6071,7 +6071,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6081,7 +6081,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6121,7 +6121,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6131,7 +6131,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6141,7 +6141,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6151,7 +6151,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6161,7 +6161,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6171,7 +6171,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6206,7 +6206,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6216,7 +6216,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6226,7 +6226,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6261,7 +6261,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6271,7 +6271,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6281,7 +6281,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6291,7 +6291,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6301,7 +6301,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6341,7 +6341,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6351,7 +6351,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6361,7 +6361,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6371,7 +6371,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6406,7 +6406,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6416,7 +6416,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6426,7 +6426,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6436,7 +6436,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6446,7 +6446,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6456,7 +6456,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6466,7 +6466,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle7
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6476,7 +6476,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle8
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6511,7 +6511,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6521,7 +6521,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6531,7 +6531,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6541,7 +6541,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6551,7 +6551,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6586,7 +6586,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6596,7 +6596,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6606,7 +6606,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6616,7 +6616,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6626,7 +6626,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6661,7 +6661,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6671,7 +6671,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6681,7 +6681,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6691,7 +6691,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6701,7 +6701,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6711,7 +6711,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6721,7 +6721,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle7
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6731,7 +6731,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle8
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6741,7 +6741,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle9
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6776,7 +6776,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6786,7 +6786,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6796,7 +6796,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6806,7 +6806,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6816,7 +6816,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6826,7 +6826,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6836,7 +6836,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle7
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6846,7 +6846,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle8
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6856,7 +6856,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle9
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6896,7 +6896,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6906,7 +6906,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6916,7 +6916,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6926,7 +6926,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6936,7 +6936,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6946,7 +6946,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6956,7 +6956,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle7
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6966,7 +6966,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle8
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6976,7 +6976,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle9
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -6986,7 +6986,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle10
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7026,7 +7026,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7036,7 +7036,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7046,7 +7046,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7056,7 +7056,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7066,7 +7066,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7076,7 +7076,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7111,7 +7111,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7121,7 +7121,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7131,7 +7131,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7141,7 +7141,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7151,7 +7151,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7161,7 +7161,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7171,7 +7171,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle7
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7211,7 +7211,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7221,7 +7221,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7231,7 +7231,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7241,7 +7241,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7251,7 +7251,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7261,7 +7261,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7301,7 +7301,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7311,7 +7311,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7321,7 +7321,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7331,7 +7331,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7341,7 +7341,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7351,7 +7351,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7386,7 +7386,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7396,7 +7396,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7406,7 +7406,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7416,7 +7416,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7426,7 +7426,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7461,7 +7461,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7471,7 +7471,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7481,7 +7481,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7491,7 +7491,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7501,7 +7501,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7511,7 +7511,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7546,7 +7546,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7556,7 +7556,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7566,7 +7566,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7576,7 +7576,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7586,7 +7586,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7596,7 +7596,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7636,7 +7636,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7646,7 +7646,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7656,7 +7656,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7666,7 +7666,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7676,7 +7676,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7686,7 +7686,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7731,7 +7731,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7741,7 +7741,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7751,7 +7751,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7761,7 +7761,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7771,7 +7771,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7781,7 +7781,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7791,7 +7791,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle7
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7826,7 +7826,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7836,7 +7836,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7846,7 +7846,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7856,7 +7856,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7866,7 +7866,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7901,7 +7901,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7911,7 +7911,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7921,7 +7921,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7931,7 +7931,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7941,7 +7941,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7981,7 +7981,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -7991,7 +7991,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8001,7 +8001,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8011,7 +8011,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8021,7 +8021,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8031,7 +8031,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8041,7 +8041,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle7
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8051,7 +8051,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle8
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8061,7 +8061,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle9
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8101,7 +8101,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8111,7 +8111,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8121,7 +8121,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8131,7 +8131,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8141,7 +8141,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8151,7 +8151,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8161,7 +8161,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle7
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8201,7 +8201,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8211,7 +8211,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8221,7 +8221,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8231,7 +8231,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8276,7 +8276,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8286,7 +8286,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8296,7 +8296,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8306,7 +8306,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8316,7 +8316,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8326,7 +8326,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle8
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8336,7 +8336,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8346,7 +8346,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle7
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8391,7 +8391,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8401,7 +8401,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8411,7 +8411,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8421,7 +8421,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8431,7 +8431,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8441,7 +8441,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8451,7 +8451,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle7
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8461,7 +8461,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle8
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8471,7 +8471,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle9
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8511,7 +8511,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8521,7 +8521,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8531,7 +8531,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8541,7 +8541,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8551,7 +8551,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8561,7 +8561,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8571,7 +8571,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle7
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8606,7 +8606,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8616,7 +8616,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8626,7 +8626,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8636,7 +8636,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8646,7 +8646,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8656,7 +8656,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8666,7 +8666,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle7
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8711,7 +8711,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8721,7 +8721,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8731,7 +8731,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8741,7 +8741,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8751,7 +8751,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8791,7 +8791,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8801,7 +8801,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8811,7 +8811,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8821,7 +8821,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8831,7 +8831,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8841,7 +8841,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8886,7 +8886,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8896,7 +8896,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8906,7 +8906,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8916,7 +8916,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8926,7 +8926,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8936,7 +8936,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8946,7 +8946,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle7
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -8991,7 +8991,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9001,7 +9001,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9011,7 +9011,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9021,7 +9021,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9031,7 +9031,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9041,7 +9041,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9081,7 +9081,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9091,7 +9091,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9101,7 +9101,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9111,7 +9111,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9121,7 +9121,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9131,7 +9131,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9141,7 +9141,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle7
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9151,7 +9151,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle8
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9186,7 +9186,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9196,7 +9196,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9206,7 +9206,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9216,7 +9216,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9226,7 +9226,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9236,7 +9236,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9246,7 +9246,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle7
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9281,7 +9281,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9291,7 +9291,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9301,7 +9301,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9311,7 +9311,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9346,7 +9346,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9356,7 +9356,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9366,7 +9366,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9376,7 +9376,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9416,7 +9416,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9426,7 +9426,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9466,7 +9466,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9476,7 +9476,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9486,7 +9486,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9526,7 +9526,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9536,7 +9536,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9546,7 +9546,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9586,7 +9586,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9596,7 +9596,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9631,7 +9631,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9666,7 +9666,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9676,7 +9676,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9711,7 +9711,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9721,7 +9721,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9761,7 +9761,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9771,7 +9771,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9781,7 +9781,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9791,7 +9791,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9801,7 +9801,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9811,7 +9811,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9821,7 +9821,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle7
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9856,7 +9856,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9866,7 +9866,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9876,7 +9876,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9886,7 +9886,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9896,7 +9896,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9906,7 +9906,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9916,7 +9916,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle7
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9926,7 +9926,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle8
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9936,7 +9936,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle9
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9971,7 +9971,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9981,7 +9981,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -9991,7 +9991,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10001,7 +10001,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10011,7 +10011,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10021,7 +10021,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10061,7 +10061,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10071,7 +10071,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10081,7 +10081,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10091,7 +10091,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10101,7 +10101,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10111,7 +10111,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10121,7 +10121,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle7
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10131,7 +10131,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle8
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10141,7 +10141,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle9
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10176,7 +10176,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10186,7 +10186,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10196,7 +10196,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10206,7 +10206,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10216,7 +10216,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10226,7 +10226,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10236,7 +10236,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle7
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10271,7 +10271,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10281,7 +10281,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10291,7 +10291,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10301,7 +10301,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10311,7 +10311,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle7
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10321,7 +10321,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10356,7 +10356,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10366,7 +10366,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10376,7 +10376,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10386,7 +10386,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10396,7 +10396,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10436,7 +10436,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10446,7 +10446,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10456,7 +10456,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10466,7 +10466,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10476,7 +10476,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10486,7 +10486,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10496,7 +10496,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle7
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10506,7 +10506,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle8
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10516,7 +10516,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle9
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10526,7 +10526,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle10
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10536,7 +10536,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle11
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10546,7 +10546,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle12
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10556,7 +10556,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle13
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10566,7 +10566,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle14
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10601,7 +10601,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10611,7 +10611,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10621,7 +10621,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10631,7 +10631,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10641,7 +10641,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10651,7 +10651,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10691,7 +10691,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10701,7 +10701,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10711,7 +10711,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10721,7 +10721,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10731,7 +10731,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10741,7 +10741,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10751,7 +10751,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle7
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10761,7 +10761,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle8
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10796,7 +10796,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10806,7 +10806,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10816,7 +10816,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10826,7 +10826,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10836,7 +10836,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10846,7 +10846,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10881,7 +10881,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10891,7 +10891,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10901,7 +10901,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10911,7 +10911,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10936,7 +10936,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10966,7 +10966,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -10996,7 +10996,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -11026,7 +11026,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -11056,7 +11056,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -11086,7 +11086,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -11949,7 +11949,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -11989,7 +11989,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -11999,7 +11999,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12034,7 +12034,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12069,7 +12069,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12427,7 +12427,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12437,7 +12437,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12447,7 +12447,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12457,7 +12457,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12492,7 +12492,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12502,7 +12502,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12512,7 +12512,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12522,7 +12522,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12557,7 +12557,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12567,7 +12567,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12577,7 +12577,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12587,7 +12587,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12622,7 +12622,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12632,7 +12632,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12642,7 +12642,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12652,7 +12652,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12682,7 +12682,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12692,7 +12692,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12702,7 +12702,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12712,7 +12712,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12722,7 +12722,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12732,7 +12732,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12742,7 +12742,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle7
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12772,7 +12772,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12782,7 +12782,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12792,7 +12792,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12802,7 +12802,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12812,7 +12812,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12822,7 +12822,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12832,7 +12832,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle7
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12842,7 +12842,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle8
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12852,7 +12852,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle9
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12862,7 +12862,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle10
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12897,7 +12897,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12907,7 +12907,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12917,7 +12917,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12927,7 +12927,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12937,7 +12937,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12947,7 +12947,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12957,7 +12957,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle7
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12967,7 +12967,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle8
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12977,7 +12977,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle9
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12987,7 +12987,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle10
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -12997,7 +12997,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle11
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13037,7 +13037,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13047,7 +13047,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13057,7 +13057,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13067,7 +13067,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13077,7 +13077,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13112,7 +13112,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13122,7 +13122,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13132,7 +13132,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13142,7 +13142,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13152,7 +13152,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13162,7 +13162,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle6
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13172,7 +13172,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle7
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13212,7 +13212,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13222,7 +13222,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13232,7 +13232,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13242,7 +13242,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13252,7 +13252,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13287,7 +13287,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13297,7 +13297,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13307,7 +13307,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13317,7 +13317,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13347,7 +13347,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13377,7 +13377,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13387,7 +13387,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13397,7 +13397,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13427,7 +13427,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13457,7 +13457,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13492,7 +13492,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13527,7 +13527,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13562,7 +13562,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13592,7 +13592,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13602,7 +13602,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13612,7 +13612,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13642,7 +13642,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13672,7 +13672,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13702,7 +13702,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13737,7 +13737,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13747,7 +13747,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13757,7 +13757,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13767,7 +13767,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13802,7 +13802,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13812,7 +13812,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13822,7 +13822,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle3
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13832,7 +13832,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle4
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13842,7 +13842,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
     - entity_name: obstacle5
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13935,7 +13935,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13945,7 +13945,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.580
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13980,7 +13980,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -13990,7 +13990,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.580
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -14030,7 +14030,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -14040,7 +14040,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.560
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -14080,7 +14080,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -14090,7 +14090,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.560
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -14130,7 +14130,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -14140,7 +14140,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.540
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -14185,7 +14185,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -14195,7 +14195,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.540
     - entity_name: obstacle2
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -14235,7 +14235,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -14270,7 +14270,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -14310,7 +14310,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -14350,7 +14350,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -14385,7 +14385,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -14420,7 +14420,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -14460,7 +14460,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -14500,7 +14500,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -14535,7 +14535,7 @@ configuration:
         y: 0.0
   - static_objects:
     - entity_name: obstacle1
-      model: black_box.sdf
+      model: file:///config/files/models/box.sdf.xacro
       spawn_pose:
         orientation:
           yaw: 0.0
@@ -15939,8 +15939,8 @@ execution:
   image: ghcr.io/cps-test-lab/robovast:latest
   kubernetes:
     resources:
-      cpu: 8
-  runs: 10
+      cpu: 9
+  runs: 3
   test_files_filter:
   - '**/files/*'
   - '**/small_dataset_maps/*.stl'
