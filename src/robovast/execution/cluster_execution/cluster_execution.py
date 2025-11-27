@@ -44,6 +44,9 @@ class JobRunner:
         if not self.cluster_config:
             raise ValueError("Cluster config must be provided to JobRunner")
 
+        # Store config path for later use
+        self.config_path = config_path
+
         # Generate unique run ID
         self.run_id = get_run_id()
 
@@ -56,6 +59,9 @@ class JobRunner:
             self.num_runs = parameters["runs"]
         else:
             self.num_runs = 1
+
+        # Store prepare script if provided
+        self.prepare_script = parameters.get("prepare_script")
 
         self.manifest = self.get_job_manifest(parameters["image"],
                                               parameters["kubernetes"]["resources"],
@@ -166,6 +172,12 @@ class JobRunner:
                     'mountPath': '/out',
                     'subPath': f'out/{self.run_id}/{scenario_key}/{run_number}',
                     'readOnly': False
+                },
+                {
+                    'name': 'data-storage',
+                    'mountPath': '/entrypoint.sh',
+                    'subPath': f'config/{self.run_id}/entrypoint.sh',
+                    'readOnly': True
                 }
             ]
             containers[0]['volumeMounts'].extend(volume_mounts)
@@ -441,7 +453,15 @@ class JobRunner:
         with tempfile.TemporaryDirectory() as temp_dir:
             logger.debug(f"Using temporary directory: {temp_dir}")
 
-            prepare_run_configs(self.run_id, self.configs, temp_dir)
+            prepare_run_configs(self.run_id, self.configs, temp_dir, prepare_script=self.prepare_script, config_base_dir=os.path.dirname(self.config_path))
+
+            # Copy entrypoint.sh to the config directory so it can be uploaded
+            import shutil
+            from importlib.resources import files
+            entrypoint_src = str(files('robovast.execution.data').joinpath('entrypoint.sh'))
+            entrypoint_dst = os.path.join(temp_dir, "config", "entrypoint.sh")
+            shutil.copy2(entrypoint_src, entrypoint_dst)
+            logger.debug(f"Copied entrypoint.sh to {entrypoint_dst}")
 
             copy_config_to_cluster(os.path.join(temp_dir, "config"), self.run_id)
 

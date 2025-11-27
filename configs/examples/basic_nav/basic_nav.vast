@@ -23,6 +23,15 @@ configuration:
           y: -6.0
 execution:
   image: ghcr.io/cps-test-lab/robovast:latest
+  local:
+    additional_docker_run_parameters: |
+      --runtime=nvidia \
+      --gpus all \
+      --network host \
+      -e DISPLAY=${DISPLAY} \
+      -e QT_X11_NO_MITSHM=1 \
+      -e NVIDIA_VISIBLE_DEVICES=all \
+      -e NVIDIA_DRIVER_CAPABILITIES=all
   kubernetes:
     resources:
       cpu: 6

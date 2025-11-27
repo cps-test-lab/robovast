@@ -56,6 +56,9 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
     logger.debug(f"Loading config from: {config_path}")
     execution_parameters = load_config(config_path, "execution")
     docker_image = execution_parameters.get("image", "ghcr.io/cps-test-lab/robovast:latest")
+    prepare_script = execution_parameters.get("prepare_script")
+    local_config = execution_parameters.get("local", {})
+    additional_docker_run_parameters = local_config.get("additional_docker_run_parameters", "")
     results_dir = project_config.results_dir
 
     # Use execution_parameters value if runs is not provided
@@ -119,7 +122,7 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
         config_dir = output_dir
 
     try:
-        prepare_run_configs("local", configs, config_dir)
+        prepare_run_configs("local", configs, config_dir, prepare_script=prepare_script, config_base_dir=os.path.dirname(config_path))
         config_path_result = os.path.join(config_dir, "config", "local")
         logger.debug(f"Config path: {config_path_result}")
     except Exception as e:  # pylint: disable=broad-except
@@ -134,7 +137,7 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
             docker_configs.append((docker_image, os.path.abspath(os.path.join(
                 config_path_result, config_entry["name"])), config_entry['name'], run_number))
 
-    generate_docker_run_script(docker_configs, results_dir, os.path.join(config_dir, "run.sh"))
+    generate_docker_run_script(docker_configs, results_dir, os.path.join(config_dir, "run.sh"), additional_docker_run_parameters)
     return os.path.join(config_dir, "run.sh")
 
 
@@ -144,12 +147,17 @@ def get_commandline(image, config_path, output_path, config_name, run_num=0, she
     uid = os.getuid()
     gid = os.getgid()
 
+    # Get the path to the entrypoint.sh file from package data
+    from importlib.resources import files
+    entrypoint_path = str(files('robovast.execution.data').joinpath('entrypoint.sh'))
+
     docker_cmd = [
         'docker', 'run',
         '--rm',  # Remove container after execution
         '--user', f'{uid}:{gid}',  # Run as host user to avoid permission issues
         '-v', f'{config_path}:/config',  # Bind mount temp_path to /config
         '-v', f'{output_path}:/out',   # Bind mount output to /out
+        '-v', f'{entrypoint_path}:/entrypoint.sh:ro',  # Mount entrypoint.sh
     ]
 
     env_vars = get_execution_env_variables(run_num, config_name)
@@ -177,6 +185,7 @@ USE_SHELL=false
 CONTAINER_NAME="robovast"
 RUN_ID="run-$(date +%Y-%m-%d-%H%M%S)"
 RESULTS_DIR=
+COMMAND="/entrypoint.sh"
 
 # Variable to track if cleanup has run
 CLEANUP_DONE=0
@@ -262,6 +271,9 @@ if [ "$USE_GUI" = true ]; then
     GUI_OPTIONS="--env DISPLAY=$DISPLAY --volume /tmp/.X11-unix:/tmp/.X11-unix:rw --device /dev/dri:/dev/dri --group-add video"
 fi
 
+# Additional Docker parameters from config
+ADDITIONAL_DOCKER_PARAMS=""
+
 # Determine command to run and interactive mode
 if [ "$USE_SHELL" = true ]; then
     COMMAND="/bin/bash"
@@ -269,10 +281,9 @@ if [ "$USE_SHELL" = true ]; then
     echo "--------------------------------------------------------"
     echo "Execute the following command to run the test:"
     echo
-    echo "ros2 run scenario_execution_ros scenario_execution_ros -o /out /config/scenario.osc --scenario-parameter-file /config/scenario.config"
+    echo "/entrypoint.sh"
     echo "--------------------------------------------------------"
 else
-    COMMAND="$*"
     INTERACTIVE=""
 fi
 
@@ -280,12 +291,13 @@ mkdir -p ${RESULTS_DIR}
 """
 
 
-def generate_docker_run_script(configs, results_dir, output_script_path):
+def generate_docker_run_script(configs, results_dir, output_script_path, additional_docker_run_parameters=""):
     """Generate a shell script to run Docker containers sequentially.
 
     Args:
         configs: List of tuples (image, config_path, config_name, run_num)
         output_script_path: Path where the script should be written
+        additional_docker_run_parameters: Additional parameters to pass to docker run command
     """
     if not configs:
         raise ValueError("At least one config configuration is required")
@@ -304,6 +316,19 @@ def generate_docker_run_script(configs, results_dir, output_script_path):
         'RESULTS_DIR=',
         f'RESULTS_DIR="{results_dir}/${{RUN_ID}}"', 1
     )
+
+    # Add the additional docker parameters if provided
+    if additional_docker_run_parameters.strip():
+        # Convert multiline YAML string to single-line bash variable
+        # Remove backslashes and newlines, join with spaces
+        lines = [line.strip().rstrip('\\').strip() for line in additional_docker_run_parameters.strip().split('\n')]
+        single_line_params = ' '.join(line for line in lines if line)
+        # Escape quotes for bash variable assignment
+        escaped_params = single_line_params.replace('"', '\\"')
+        script = script.replace(
+            'ADDITIONAL_DOCKER_PARAMS=""',
+            f'ADDITIONAL_DOCKER_PARAMS="{escaped_params}"', 1
+        )
 
     total_configs = len(configs)
 
@@ -342,6 +367,7 @@ def generate_docker_run_script(configs, results_dir, output_script_path):
         script += f'    --name "$CONTAINER_NAME" \\\n'
         script += '    $NETWORK_MODE \\\n'
         script += '    $GUI_OPTIONS \\\n'
+        script += '    $ADDITIONAL_DOCKER_PARAMS \\\n'
         script += "\n".join(docker_params)
         script += f'\n    "$DOCKER_IMAGE" \\\n    $COMMAND\n\n'
 

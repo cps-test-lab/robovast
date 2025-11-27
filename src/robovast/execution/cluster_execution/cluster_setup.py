@@ -203,7 +203,7 @@ def delete_server(config_name=None):
         else:
             raise ValueError(
                 "No cluster config specified and no saved config found. "
-                "Use --config <name> to select a config, or run setup first."
+                "Use --cluster-config <name> to select a config, or run setup first."
             )
 
     cluster_config = get_cluster_config(config_name)

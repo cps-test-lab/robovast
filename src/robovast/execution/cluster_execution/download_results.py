@@ -284,7 +284,7 @@ class ResultDownloader:
                             downloaded += len(chunk)
                             if total_size > 0:
                                 progress = (downloaded / total_size) * 100
-                                logger.debug(f"Progress: {progress:.1f}% ({downloaded}/{total_size} bytes)")
+                                logger.info(f"Progress: {progress:.1f}% ({downloaded}/{total_size} bytes)")
 
             # Validate the downloaded archive
             logger.debug(f"Validating downloaded archive...")
