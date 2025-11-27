@@ -39,7 +39,7 @@ def get_execution_env_variables(run_num, config_name):
     }
 
 
-def prepare_run_configs(run_id, configs, output_dir):
+def prepare_run_configs(run_id, configs, output_dir, prepare_script=None, config_base_dir=None):
     # Create the config directory structure: /config/$RUN_ID/
     config_dir = os.path.join(output_dir, "config", run_id)
     os.makedirs(config_dir, exist_ok=True)
@@ -50,6 +50,23 @@ def prepare_run_configs(run_id, configs, output_dir):
         # Copy scenario file
         original_scenario_path = config_data.get('_scenario_file')
         shutil.copy2(original_scenario_path, os.path.join(scenario_dir, 'scenario.osc'))
+
+        # Copy prepare script if provided (as a file path)
+        if prepare_script:
+            # Resolve the prepare script path relative to the config file directory
+            if config_base_dir:
+                prepare_script_src = os.path.join(config_base_dir, prepare_script)
+            else:
+                # Fallback: try relative to scenario file
+                prepare_script_src = os.path.join(os.path.dirname(original_scenario_path), prepare_script)
+
+            if os.path.exists(prepare_script_src):
+                prepare_script_dst = os.path.join(scenario_dir, 'prepare_test.sh')
+                shutil.copy2(prepare_script_src, prepare_script_dst)
+                # Make the script executable
+                os.chmod(prepare_script_dst, 0o755)
+            else:
+                raise FileNotFoundError(f"Prepare script not found: {prepare_script_src}")
 
         # Copy filtered files
         for config_file in config_data.get("_scenario_files", []):

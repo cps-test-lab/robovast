@@ -8,30 +8,21 @@ import osc.x11
 scenario test_scenario:
     robot: differential_drive_robot
     goal_pose: pose_3d
-    do serial:           
-        ros_launch('nav2_bringup', 
-            'tb4_simulation_launch.py', [
-            key_value('headless', 'False'),
-            key_value('rviz_config_file', '/config/files/view.rviz')],            
-            wait_for_shutdown: false
-        )
-        ros_launch('gazebo_tf_publisher', 
+    do parallel:           
+        ros_launch('nav2_bringup', 'tb4_simulation_launch.py', 
+            [key_value('headless', 'False')])
+        capture_screen('capture.webm', frame_rate: 2.0)
+        ros_launch('gazebo_tf_publisher',
             'gazebo_tf_publisher_launch.py', [
-            key_value('gz_pose_topic', '/world/depot/dynamic_pose/info')],            
+            key_value('gz_pose_topic', '/world/depot/dynamic_pose/info')],
             wait_for_shutdown: false
         )
-        parallel:
-            capture_screen(frame_rate: 2.0, output_filename: 'capture.webm')
-            serial:
-                robot.init_nav2(pose_3d())
-                bag_record([
-                        '/tf',
-                        '/tf_static',
-                        '/amcl_pose',
-                        '/scenario_execution/snapshots'
-                    ],
-                    use_sim_time: true,
-                    timestamp_suffix: false)
-                robot.nav_to_pose(goal_pose)
-                emit end
+        serial:
+            robot.init_nav2(pose_3d())
+            bag_record(['/tf', '/tf_static', '/amcl_pose',
+                    '/scenario_execution/snapshots'],
+                use_sim_time: true,
+                timestamp_suffix: false)
+            robot.nav_to_pose(goal_pose)
+            emit end
 

@@ -56,6 +56,7 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
     logger.debug(f"Loading config from: {config_path}")
     execution_parameters = load_config(config_path, "execution")
     docker_image = execution_parameters.get("image", "ghcr.io/cps-test-lab/robovast:latest")
+    prepare_script = execution_parameters.get("prepare_script")
     results_dir = project_config.results_dir
 
     # Use execution_parameters value if runs is not provided
@@ -119,7 +120,7 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
         config_dir = output_dir
 
     try:
-        prepare_run_configs("local", configs, config_dir)
+        prepare_run_configs("local", configs, config_dir, prepare_script=prepare_script, config_base_dir=os.path.dirname(config_path))
         config_path_result = os.path.join(config_dir, "config", "local")
         logger.debug(f"Config path: {config_path_result}")
     except Exception as e:  # pylint: disable=broad-except
@@ -144,12 +145,17 @@ def get_commandline(image, config_path, output_path, config_name, run_num=0, she
     uid = os.getuid()
     gid = os.getgid()
 
+    # Get the path to the entrypoint.sh file from package data
+    from importlib.resources import files
+    entrypoint_path = str(files('robovast.execution.data').joinpath('entrypoint.sh'))
+
     docker_cmd = [
         'docker', 'run',
         '--rm',  # Remove container after execution
         '--user', f'{uid}:{gid}',  # Run as host user to avoid permission issues
         '-v', f'{config_path}:/config',  # Bind mount temp_path to /config
         '-v', f'{output_path}:/out',   # Bind mount output to /out
+        '-v', f'{entrypoint_path}:/entrypoint.sh:ro',  # Mount entrypoint.sh
     ]
 
     env_vars = get_execution_env_variables(run_num, config_name)
