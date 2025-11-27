@@ -16,6 +16,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import io
 import logging
+import time
 
 import yaml
 from kubernetes import client, config
@@ -122,7 +123,6 @@ class AzureClusterConfig(BaseConfig):
         # Wait for service to be ready and get its ClusterIP
         core_v1 = client.CoreV1Api()
         try:
-            import time
             max_retries = 30
             for i in range(max_retries):
                 try:
