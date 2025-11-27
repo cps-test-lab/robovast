@@ -205,6 +205,45 @@ Example ``prepare_test.sh`` script:
 - Environment variables set by the script are available to the scenario
 - If the script fails (exits with non-zero), the test fails
 
+local
+^^^^^
+
+**Type:** Dictionary
+
+**Required:** No
+
+Configuration specific to local execution (when using ``vast run`` or ``vast prepare-run``).
+
+local.additional_docker_run_parameters
+"""""""""""""""""""""""""""""""""""""""
+
+**Type:** String (multiline)
+
+**Required:** No
+
+Additional parameters to pass to the ``docker run`` command during local execution. This is useful for adding GPU support, network configuration, display settings, or any other Docker-specific options.
+
+.. code-block:: yaml
+
+   execution:
+     local:
+       additional_docker_run_parameters: |
+         --runtime=nvidia \
+         --gpus all \
+         --network host \
+         -e DISPLAY=${DISPLAY} \
+         -e QT_X11_NO_MITSHM=1 \
+         -e NVIDIA_VISIBLE_DEVICES=all \
+         -e NVIDIA_DRIVER_CAPABILITIES=all
+
+**Notes:**
+
+- Parameters are added to the generated ``run.sh`` script
+- Multiline strings are supported using YAML's ``|`` syntax
+- Line continuation with backslashes (``\``) is supported
+- Environment variable references like ``${DISPLAY}`` are preserved
+- These parameters only affect local execution, not Kubernetes cluster execution
+
 test_files_filter
 ^^^^^^^^^^^^^^^^^
 
@@ -365,6 +404,10 @@ Here's a complete example showing all major configuration options:
      image: ghcr.io/cps-test-lab/robovast:latest
      runs: 20
      prepare_script: prepare_test.sh
+     local:
+       additional_docker_run_parameters: |
+         --runtime=nvidia \
+         --gpus all
      test_files_filter:
      - "**/files/*"
      - "**/models/*.sdf"
