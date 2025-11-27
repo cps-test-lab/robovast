@@ -185,6 +185,7 @@ USE_SHELL=false
 CONTAINER_NAME="robovast"
 RUN_ID="run-$(date +%Y-%m-%d-%H%M%S)"
 RESULTS_DIR=
+COMMAND="/entrypoint.sh"
 
 # Variable to track if cleanup has run
 CLEANUP_DONE=0
@@ -283,7 +284,6 @@ if [ "$USE_SHELL" = true ]; then
     echo "/entrypoint.sh"
     echo "--------------------------------------------------------"
 else
-    COMMAND="$*"
     INTERACTIVE=""
 fi
 

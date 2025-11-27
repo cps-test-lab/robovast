@@ -378,7 +378,6 @@ Here's a complete example showing all major configuration options:
 .. code-block:: yaml
 
    version: 1
-
    configuration:
    - name: parameter-sweep
      scenario_file: scenario.osc
@@ -393,13 +392,11 @@ Here's a complete example showing all major configuration options:
          max: 10
          type: int
          seed: 42
-
    - name: baseline
      scenario_file: scenario.osc
      parameters:
      - velocity: 2.0
      - obstacle_count: 5
-
    execution:
      image: ghcr.io/cps-test-lab/robovast:latest
      runs: 20
@@ -418,7 +415,6 @@ Here's a complete example showing all major configuration options:
        resources:
          cpu: 4
          memory: 8Gi
-
    analysis:
      preprocessing:
      - ../../../tools/docker_exec.sh rosbags_tf_to_csv.py --frame base_link
