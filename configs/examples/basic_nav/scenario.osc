@@ -12,11 +12,6 @@ scenario test_scenario:
         ros_launch('nav2_bringup', 'tb4_simulation_launch.py', 
             [key_value('headless', 'False')])
         capture_screen('capture.webm', frame_rate: 2.0)
-        ros_launch('gazebo_tf_publisher',
-            'gazebo_tf_publisher_launch.py', [
-            key_value('gz_pose_topic', '/world/depot/dynamic_pose/info')],
-            wait_for_shutdown: false
-        )
         serial:
             robot.init_nav2(pose_3d())
             bag_record(['/tf', '/tf_static', '/amcl_pose',

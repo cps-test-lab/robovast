@@ -54,6 +54,7 @@ analysis = "robovast.analysis.result_analyzer.cli:analysis"
 minikube = "robovast.execution.cluster_config.minikube:MinikubeClusterConfig"
 rke2 = "robovast.execution.cluster_config.rke2:Rke2ClusterConfig"
 gcp = "robovast.execution.cluster_config.gcp:GcpClusterConfig"
+azure = "robovast.execution.cluster_config.azure:AzureClusterConfig"
 
 [tool.poetry.plugins."robovast.variation_types"]
 "ParameterVariationList" = "robovast.common.variation.parameter_variation:ParameterVariationList"

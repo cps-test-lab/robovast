@@ -30,7 +30,8 @@ import numpy as np
 from matplotlib import patches
 
 from ..map_loader import Map, load_map
-from ..object_shapes import get_object_type_from_model_path, get_obstacle_dimensions
+from ..object_shapes import (get_object_type_from_model_path,
+                             get_obstacle_dimensions)
 
 
 class MapVisualizer:
@@ -388,7 +389,7 @@ class MapVisualizer:
 
             # Draw the obstacle
             self.draw_obstacle(x, y, draw_args, yaw=yaw, shape=shape,
-                             color=color, alpha=alpha, label=label)
+                               color=color, alpha=alpha, label=label)
 
     def show_legend(self) -> None:
         """Show the legend for all drawn elements."""

@@ -14,10 +14,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import html
 import os
 import re
 import tempfile
-import html
 
 import nbformat
 from nbconvert import HTMLExporter

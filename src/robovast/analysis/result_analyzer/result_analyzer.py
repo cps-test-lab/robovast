@@ -17,10 +17,10 @@
 
 import math
 import os
+import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
-import subprocess
 
 from PySide6.QtCore import QSettings, Qt, QThread, QTimer, Slot
 from PySide6.QtGui import QBrush, QColor, QIcon, QPalette
