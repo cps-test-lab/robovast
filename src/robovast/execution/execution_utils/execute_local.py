@@ -18,6 +18,7 @@ import logging
 import os
 import sys
 import tempfile
+from importlib.resources import files
 
 from robovast.common import (get_execution_env_variables, load_config,
                              prepare_run_configs)
@@ -148,7 +149,6 @@ def get_commandline(image, config_path, output_path, config_name, run_num=0, she
     gid = os.getgid()
 
     # Get the path to the entrypoint.sh file from package data
-    from importlib.resources import files
     entrypoint_path = str(files('robovast.execution.data').joinpath('entrypoint.sh'))
 
     docker_cmd = [

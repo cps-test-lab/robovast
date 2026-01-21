@@ -22,6 +22,8 @@ import os
 import sys
 import tempfile
 import time
+import shutil
+from importlib.resources import files
 
 import yaml
 from kubernetes import client
@@ -456,8 +458,6 @@ class JobRunner:
             prepare_run_configs(self.run_id, self.configs, temp_dir, prepare_script=self.prepare_script, config_base_dir=os.path.dirname(self.config_path))
 
             # Copy entrypoint.sh to the config directory so it can be uploaded
-            import shutil
-            from importlib.resources import files
             entrypoint_src = str(files('robovast.execution.data').joinpath('entrypoint.sh'))
             entrypoint_dst = os.path.join(temp_dir, "config", "entrypoint.sh")
             shutil.copy2(entrypoint_src, entrypoint_dst)
