@@ -321,7 +321,7 @@ def generate_docker_run_script(configs, results_dir, output_script_path, additio
     if additional_docker_run_parameters.strip():
         # Convert multiline YAML string to single-line bash variable
         # Remove backslashes and newlines, join with spaces
-        lines = [line.strip().rstrip('\\').strip() for line in additional_docker_run_parameters.strip().split('\n')]
+        lines = [line.strip().rstrip('\\') for line in additional_docker_run_parameters.strip().split('\n')]
         single_line_params = ' '.join(line for line in lines if line)
         # Escape quotes for bash variable assignment
         escaped_params = single_line_params.replace('"', '\\"')

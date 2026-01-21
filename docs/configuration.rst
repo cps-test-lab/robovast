@@ -174,9 +174,9 @@ prepare_script
 
 **Required:** No
 
-Path to a bash script that should be executed before each test run. The script is sourced (not executed in a subshell) so it can set environment variables.
+Path to a bash script that should be executed before each test run. The script is sourced (not executed in a sub-shell) so it can set environment variables.
 
-The script path is relative to the ``.vast`` configuration file. The script is copied to each test's ``/config/prepare_test.sh`` and executed by the entrypoint before running the scenario.
+The script path is relative to the ``.vast`` configuration file. The script is copied to each test's ``/config/prepare_test.sh`` and executed by the entry-point before running the scenario.
 
 .. code-block:: yaml
 
@@ -217,7 +217,7 @@ Configuration specific to local execution (when using ``vast run`` or ``vast pre
 local.additional_docker_run_parameters
 """""""""""""""""""""""""""""""""""""""
 
-**Type:** String (multiline)
+**Type:** String (multi-line)
 
 **Required:** No
 
@@ -239,7 +239,7 @@ Additional parameters to pass to the ``docker run`` command during local executi
 **Notes:**
 
 - Parameters are added to the generated ``run.sh`` script
-- Multiline strings are supported using YAML's ``|`` syntax
+- Multi-line strings are supported using YAML's ``|`` syntax
 - Line continuation with backslashes (``\``) is supported
 - Environment variable references like ``${DISPLAY}`` are preserved
 - These parameters only affect local execution, not Kubernetes cluster execution
