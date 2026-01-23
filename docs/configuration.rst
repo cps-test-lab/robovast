@@ -1,7 +1,7 @@
-.. _configuration-reference:
+.. _configuration:
 
 Configuration Reference
-========================
+=======================
 
 This page documents all available parameters in the ``.vast`` configuration file format. The configuration file is written in YAML and defines all aspects of the RoboVAST workflow.
 
@@ -166,6 +166,20 @@ Number of times to execute each test configuration. Multiple runs allow for stat
 
    execution:
      runs: 20
+
+run_as_user
+^^^^^^^^^^^
+
+**Type:** Integer
+
+**Required:** No
+
+The user ID (UID) to run the container as. Defaults to ``1000`` if not specified. If your container requires running as root, set this to ``0``.
+
+.. code-block:: yaml
+
+   execution:
+     run_as_user: 1000
 
 prepare_script
 ^^^^^^^^^^^^^^
@@ -401,6 +415,7 @@ Here's a complete example showing all major configuration options:
      image: ghcr.io/cps-test-lab/robovast:latest
      runs: 20
      prepare_script: prepare_test.sh
+     run_as_user: 1000
      local:
        additional_docker_run_parameters: |
          --runtime=nvidia \
