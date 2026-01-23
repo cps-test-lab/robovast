@@ -17,6 +17,7 @@
 import datetime
 import os
 import shutil
+from importlib.resources import files
 
 import yaml
 
@@ -43,6 +44,12 @@ def prepare_run_configs(run_id, configs, output_dir, prepare_script=None, config
     # Create the config directory structure: /config/$RUN_ID/
     config_dir = os.path.join(output_dir, "config", run_id)
     os.makedirs(config_dir, exist_ok=True)
+    
+    # Copy entrypoint.sh to the config directory
+    entrypoint_src = str(files('robovast.execution.data').joinpath('entrypoint.sh'))
+    entrypoint_dst = os.path.join(config_dir, "entrypoint.sh")
+    shutil.copy2(entrypoint_src, entrypoint_dst)
+    
     for config_data in configs:
         scenario_dir = os.path.join(config_dir, config_data.get("name"))
         os.makedirs(scenario_dir, exist_ok=True)

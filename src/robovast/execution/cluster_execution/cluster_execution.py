@@ -457,12 +457,6 @@ class JobRunner:
 
             prepare_run_configs(self.run_id, self.configs, temp_dir, prepare_script=self.prepare_script, config_base_dir=os.path.dirname(self.config_path))
 
-            # Copy entrypoint.sh to the config directory so it can be uploaded
-            entrypoint_src = str(files('robovast.execution.data').joinpath('entrypoint.sh'))
-            entrypoint_dst = os.path.join(temp_dir, "config", "entrypoint.sh")
-            shutil.copy2(entrypoint_src, entrypoint_dst)
-            logger.debug(f"Copied entrypoint.sh to {entrypoint_dst}")
-
             copy_config_to_cluster(os.path.join(temp_dir, "config"), self.run_id)
 
     def get_job_manifest(self, image: str, kubernetes_resources: dict, env: list) -> dict:
