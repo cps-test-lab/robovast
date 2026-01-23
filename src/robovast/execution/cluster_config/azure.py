@@ -143,8 +143,13 @@ class AzureClusterConfig(BaseConfig):
         except Exception as e:
             logging.warning(f"Could not retrieve NFS server IP: {e}")
 
-    def cleanup_cluster(self):
-        """Clean up transfer mechanism for Azure cluster."""
+    def cleanup_cluster(self, storage_size="10Gi", **kwargs):
+        """Clean up transfer mechanism for Azure cluster.
+        
+        Args:
+            storage_size (str): Size of the persistent volume (default: "10Gi")
+            **kwargs: Additional cluster-specific options (ignored)
+        """
         logging.debug("Cleaning up RoboVAST in Azure cluster...")
         # Load Kubernetes configuration
         config.load_kube_config()
@@ -153,7 +158,7 @@ class AzureClusterConfig(BaseConfig):
         core_v1 = client.CoreV1Api()
 
         try:
-            yaml_objects = yaml.safe_load_all(io.StringIO(NFS_MANIFEST_AZURE))
+            yaml_objects = yaml.safe_load_all(io.StringIO(NFS_MANIFEST_AZURE.format(storage_size=storage_size)))
         except yaml.YAMLError as e:
             raise RuntimeError(f"Failed to parse PVC manifest YAML: {str(e)}") from e
 

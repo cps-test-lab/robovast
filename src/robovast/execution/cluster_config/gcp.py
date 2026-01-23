@@ -134,8 +134,13 @@ class GcpClusterConfig(BaseConfig):
         except Exception as e:
             raise RuntimeError(f"Error applying RoboVAST manifest: {str(e)}") from e
 
-    def cleanup_cluster(self):
-        """Clean up transfer mechanism for RKE2 cluster."""
+    def cleanup_cluster(self, storage_size="10Gi", **kwargs):
+        """Clean up transfer mechanism for RKE2 cluster.
+
+        Args:
+            storage_size (str): Size of the persistent volume (default: "10Gi")
+            **kwargs: Additional cluster-specific options (ignored)
+        """
         logging.debug("Cleaning up RoboVAST in GCP cluster...")
         # Load Kubernetes configuration
         config.load_kube_config()
@@ -144,12 +149,15 @@ class GcpClusterConfig(BaseConfig):
         core_v1 = client.CoreV1Api()
 
         try:
-            yaml_objects = yaml.safe_load_all(io.StringIO(NFS_MANIFEST_GCP))
+            yaml_objects = yaml.safe_load_all(io.StringIO(NFS_MANIFEST_GCP.format(storage_size=storage_size)))
         except yaml.YAMLError as e:
             raise RuntimeError(f"Failed to parse PVC manifest YAML: {str(e)}") from e
 
         delete_manifests(core_v1, yaml_objects)
         logging.debug("NFS manifest deleted successfully!")
+        logging.info("-----")
+        logging.info("Warning: Persistent volumes may need to be deleted manually in GCP console.")
+        logging.info("-----")
 
     def get_job_volumes(self):
         """Get job volumes for GCP cluster."""

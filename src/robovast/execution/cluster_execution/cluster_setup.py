@@ -21,6 +21,8 @@ import logging
 import os
 from importlib.metadata import entry_points
 
+import yaml
+
 from robovast.common.cli.project_config import ProjectConfig
 
 logger = logging.getLogger(__name__)
@@ -50,15 +52,46 @@ def get_cluster_config_flag_path():
     return os.path.join(project_dir, CLUSTER_CONFIG_FLAG_FILE)
 
 
-def save_cluster_config_name(config_name):
-    """Save the cluster config name to a flag file.
+def save_cluster_setup_info(config_name, setup_kwargs):
+    """Save the cluster setup info to a flag file.
 
     Args:
         config_name (str): Name of the cluster config plugin used for setup
+        setup_kwargs (dict): Arguments passed to the setup function
     """
     flag_path = get_cluster_config_flag_path()
+    data = {
+        "name": config_name,
+        "kwargs": setup_kwargs
+    }
     with open(flag_path, 'w') as f:
-        f.write(config_name)
+        yaml.dump(data, f, default_flow_style=False)
+
+
+def load_cluster_setup_info():
+    """Load the cluster setup info from the flag file.
+
+    Returns:
+        tuple: (config_name, setup_kwargs)
+    """
+    try:
+        flag_path = get_cluster_config_flag_path()
+        if os.path.exists(flag_path):
+            with open(flag_path, 'r') as f:
+                content = f.read().strip()
+                try:
+                    data = yaml.safe_load(content)
+                    if isinstance(data, dict):
+                        return data.get("name"), data.get("kwargs", {})
+                    # Backward compatibility handling (if it's just the name string)
+                    return str(data) if data else None, {}
+                except yaml.YAMLError:
+                    # Backward compatibility fallback
+                    return content, {}
+    except RuntimeError:
+        # Project not initialized
+        pass
+    return None, {}
 
 
 def load_cluster_config_name():
@@ -67,15 +100,8 @@ def load_cluster_config_name():
     Returns:
         str: Name of the cluster config plugin, or None if file doesn't exist
     """
-    try:
-        flag_path = get_cluster_config_flag_path()
-        if os.path.exists(flag_path):
-            with open(flag_path, 'r') as f:
-                return f.read().strip()
-    except RuntimeError:
-        # Project not initialized
-        pass
-    return None
+    name, _ = load_cluster_setup_info()
+    return name
 
 
 def delete_cluster_config_flag():
@@ -179,9 +205,9 @@ def setup_server(config_name=None, list_configs=False, force=False, **cluster_kw
     cluster_config = get_cluster_config(config_name)
     cluster_config.setup_cluster(**cluster_kwargs)
 
-    # Save the config name to flag file after successful setup
+    # Save the config name and kwargs to flag file after successful setup
     flag_path = get_cluster_config_flag_path()
-    save_cluster_config_name(config_name)
+    save_cluster_setup_info(config_name, cluster_kwargs)
     logger.debug(f"Cluster config '{config_name}' saved to {flag_path}")
 
 
@@ -195,9 +221,17 @@ def delete_server(config_name=None):
     Returns:
         None
     """
+    cluster_kwargs = {}
+    
     # Auto-detect config from flag file if not provided
     if config_name is None:
-        config_name = load_cluster_config_name()
+        name, stored_kwargs = load_cluster_setup_info()
+        config_name = name
+        
+        # Use stored kwargs for cleanup
+        if stored_kwargs:
+            cluster_kwargs = stored_kwargs
+        
         if config_name:
             logger.debug(f"Auto-detected cluster config: {config_name}")
         else:
@@ -207,7 +241,7 @@ def delete_server(config_name=None):
             )
 
     cluster_config = get_cluster_config(config_name)
-    cluster_config.cleanup_cluster()
+    cluster_config.cleanup_cluster(**cluster_kwargs)
 
     # Delete the flag file after successful cleanup
     delete_cluster_config_flag()
