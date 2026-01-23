@@ -61,6 +61,7 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
     local_config = execution_parameters.get("local", {})
     additional_docker_run_parameters = local_config.get("additional_docker_run_parameters", "")
     results_dir = project_config.results_dir
+    run_as_user = execution_parameters.get("run_as_user")
 
     # Use execution_parameters value if runs is not provided
     if runs is None:
@@ -72,6 +73,11 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
             runs = execution_parameters["runs"]
 
     logger.debug(f"Using Docker image: {docker_image}")
+
+    # Check if run_as_user differs from local user
+    host_uid = os.getuid()
+    if run_as_user is not None and run_as_user != host_uid:
+        logger.info(f"Note: config specifies run_as_user={run_as_user}, but local execution will use host user UID={host_uid} to ensure proper file permissions on bind mounts")
 
     # Generate and filter configs
     logger.debug("Generating scenario variations")

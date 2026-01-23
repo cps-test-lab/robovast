@@ -1,27 +1,6 @@
 #!/bin/bash
 set -e
 
-# Handle dynamic user creation for arbitrary UIDs
-CURRENT_UID=$(id -u)
-CURRENT_GID=$(id -g)
-
-if [ "$CURRENT_UID" != "0" ]; then
-    # Running as non-root, check if user exists
-    if ! id -u "$CURRENT_UID" &>/dev/null; then
-        echo "Creating dynamic user with UID=$CURRENT_UID and GID=$CURRENT_GID"
-
-        # Create group if it doesn't exist
-        if ! getent group "$CURRENT_GID" &>/dev/null; then
-            groupadd -g "$CURRENT_GID" dynamicgroup
-        fi
-
-        # Create user and add to sudo group
-        useradd -u "$CURRENT_UID" -g "$CURRENT_GID" -G sudo -m -s /bin/bash dynamicuser
-
-        echo "Dynamic user created successfully"
-    fi
-fi
-
 # Setup
 OUTPUT_DIR="/out"
 LOG_DIR="${OUTPUT_DIR}/logs"
