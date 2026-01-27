@@ -90,6 +90,7 @@ RUN  git clone "https://github.com/cps-test-lab/scenario-execution.git" /ws/src/
 
 COPY container/files/startx11_virtual.sh /
 COPY container/files/entrypoint.sh /
+COPY container/files/xml_to_yaml_converter.py /
 
 # Environment variables
 ENV DISPLAY=:0
