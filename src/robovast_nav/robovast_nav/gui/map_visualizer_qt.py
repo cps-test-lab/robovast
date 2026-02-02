@@ -267,6 +267,27 @@ class MapVisualizerWidget(QWidget):
         self.canvas.draw()
         return obstacle
 
+    def draw_circle(self, x: float, y: float, radius: float = 0.1,
+                    color: str = 'blue', alpha: float = 0.5,
+                    label: Optional[str] = None) -> None:
+        """
+        Draw a simple circle on the map.
+
+        Args:
+            x: Circle x coordinate in world frame
+            y: Circle y coordinate in world frame
+            radius: Radius of the circle in meters
+            color: Color of the circle
+            alpha: Transparency of the circle
+            label: Label for the circle (for legend)
+        """
+        draw_args = {'diameter': radius * 2}
+        obstacle = self.map_visualizer.draw_obstacle(x, y, draw_args, yaw=0.0, 
+                                                     shape='circle', color=color, 
+                                                     alpha=alpha, label=label)
+        self.canvas.draw()
+        return obstacle
+
     def show_legend(self) -> None:
         """Show the legend for all drawn elements."""
         self.map_visualizer.show_legend()

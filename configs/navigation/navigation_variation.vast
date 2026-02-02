@@ -12,7 +12,7 @@ configuration:
       #- floorplans/hallways/hallways.variation
       num_variations: 1
       seed: 1
-  - PathVariation:
+  - PathVariationRandom:
       start_pose: start_pose
       goal_pose: goal_pose
       path_length: 10.0

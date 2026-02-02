@@ -38,7 +38,7 @@ class PoseConfig(BaseModel):
     yaw: float
 
 
-class PathVariationConfig(BaseModel):
+class PathVariationRandomConfig(BaseModel):
     model_config = ConfigDict(extra='forbid')
     start_pose: str | PoseConfig
     goal_pose: str | dict  # Can be a reference like "@goal_pose" or a dict with x, y, yaw
@@ -61,12 +61,26 @@ class PathVariationGuiRenderer(VariationGuiRenderer):
                                       color='red', linewidth=2.0,
                                       alpha=0.8, label='Path',
                                       show_endpoints=True)
+        
+        # Visualize raster points if available
+        raster_points = config.get('_raster_points', None)
+        if raster_points:
+            # Draw all raster points at once for better performance
+            x_coords = [point[0] for point in raster_points]
+            y_coords = [point[1] for point in raster_points]
+            self.gui_object.map_visualizer.ax.scatter(x_coords, y_coords, 
+                                                       s=10,  # marker size
+                                                       c='blue', 
+                                                       alpha=0.5,
+                                                       label='Raster Points',
+                                                       zorder=2)
+            self.gui_object.canvas.draw()
 
 
-class PathVariation(NavVariation):
+class PathVariationRandom(NavVariation):
     """Create random route variations."""
 
-    CONFIG_CLASS = PathVariationConfig
+    CONFIG_CLASS = PathVariationRandomConfig
     GUI_CLASS = NavigationGui
     GUI_RENDERER_CLASS = PathVariationGuiRenderer
 
@@ -95,8 +109,17 @@ class PathVariation(NavVariation):
         return results
 
     def generate_path_for_config(self, cache_path, config, path_index, seed):
-        """Generate a single path for a config."""
-
+        """Generate a single path for a config.
+        
+        Args:
+            cache_path: Path for caching results
+            config: Configuration dictionary
+            path_index: Index of the path being generated
+            seed: Random seed for generation
+        
+        Returns:
+            Tuple of (start_pose, goal_pose, path, map_file_path)
+        """
         try:
             map_file_path = self.get_map_file(self.parameters.map_file, config)
         except Exception as e:  # pylint: disable=broad-except
@@ -111,34 +134,12 @@ class PathVariation(NavVariation):
 
         waypoint_generator = WaypointGenerator(map_file_path)
 
-        if self.parameters.start_pose:
-            if isinstance(self.parameters.start_pose, str):
-                # Reference to a config parameter
-                pose_ref = self.parameters.start_pose.lstrip('@')
-                self.check_scenario_parameter_reference(pose_ref)
-                start_pose = None
-            else:
-                # Directly specified pose
-                start_pose = Pose(
-                    position=Position(
-                        x=self.parameters.start_pose.x,
-                        y=self.parameters.start_pose.y),
-                    orientation=Orientation(
-                        yaw=self.parameters.start_pose.yaw
-                    )
-                )
-                if not waypoint_generator.is_valid_position(start_pose.position.x, start_pose.position.y, self.parameters.robot_diameter/2.):
-                    raise ValueError(f"Start pose {start_pose} is not valid on the map.")
-                self.progress_update(f"Using provided start pose: {start_pose}")
-        else:
-            start_pose = None
-
         file_cache = FileCache(cache_path, "robovast_path_generation_", [self.parameters, seed])
         cache = file_cache.get_cached_file([map_file_path], binary=True)
         if cache:
-            start_pose, goal_pose, path = pickle.loads(cache)
-            self.progress_update(f"Using cached start/goal poses {start_pose} -> {goal_pose}")
-            return start_pose, goal_pose, path, map_file_path
+            cached_start_pose, cached_goal_pose, cached_path = pickle.loads(cache)
+            self.progress_update(f"Using cached start/goal poses {cached_start_pose} -> {cached_goal_pose}")
+            return cached_start_pose, cached_goal_pose, cached_path, map_file_path
 
         path_generator = PathGenerator(map_file_path)
 
@@ -153,13 +154,15 @@ class PathVariation(NavVariation):
                 f"Generating {config['name']}, {path_index} - Attempt {attempt}/{max_attempts}"
             )
 
-            if not start_pose:
-                self.progress_update("  Generating start pose")
-                start_poses_list = waypoint_generator.generate_waypoints(num_waypoints=1,
-                                                                         robot_diameter=self.parameters.robot_diameter)
-                start_pose = start_poses_list[0]
+            # Generate start pose
+            self.progress_update("  Generating start pose")
+            start_poses_list = waypoint_generator.generate_waypoints(num_waypoints=1,
+                                                                     robot_diameter=self.parameters.robot_diameter)
+            start_pose = start_poses_list[0]
 
             waypoints = [start_pose]
+            
+            # Generate goal pose
             goal_poses_list = waypoint_generator.generate_waypoints(
                 num_waypoints=1,
                 robot_diameter=self.parameters.robot_diameter,
@@ -171,10 +174,10 @@ class PathVariation(NavVariation):
                 self.progress_update("   no valid goal poses found")
                 attempt += 1
                 continue
-
             # Take the last goal pose as the final goal
             goal_pose = goal_poses_list[-1]
-            waypoints.extend(goal_poses_list)
+            
+            waypoints.append(goal_pose)
 
             self.progress_update(f"  Generated waypoints: {waypoints}")
             # Generate path considering any existing static objects
@@ -234,3 +237,213 @@ class PathVariation(NavVariation):
             file_content=file_content,
             binary=True)
         return start_pose, goal_pose, path, map_file_path
+
+
+class PathVariationRasterizedConfig(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    start_pose: Optional[str | PoseConfig] = None
+    map_file: Optional[str] = None
+    raster_size: float  # Grid spacing for square rasterization in meters
+    raster_offset_x: float = 0.0  # Offset for raster grid in x direction (meters)
+    raster_offset_y: float = 0.0  # Offset for raster grid in y direction (meters)
+    path_length: float
+    path_length_tolerance: float = 0.5
+    robot_diameter: float
+
+
+class PathVariationRasterized(NavVariation):
+    """Create route variations covering all areas of the map using a square grid."""
+
+    CONFIG_CLASS = PathVariationRasterizedConfig
+    GUI_CLASS = NavigationGui
+    GUI_RENDERER_CLASS = PathVariationGuiRenderer
+
+    def variation(self, in_configs):
+        self.progress_update("Running Rasterized Path Variation...")
+        results = []
+
+        for config in in_configs:
+            # Get the map file and generate raster points
+            try:
+                map_file_path = self.get_map_file(self.parameters.map_file, config)
+            except Exception as e:  # pylint: disable=broad-except
+                raise ValueError(f"Error determining map file for config {config['name']}: {e}") from e
+
+            # Generate raster points for the map (square grid)
+            waypoint_generator = WaypointGenerator(map_file_path)
+            raster_points = self._generate_raster_points(waypoint_generator)
+            
+            self.progress_update(f"Generated {len(raster_points)} valid raster points")
+
+            # Determine start poses
+            if self.parameters.start_pose:
+                if isinstance(self.parameters.start_pose, str):
+                    # Reference to a config parameter
+                    pose_ref = self.parameters.start_pose.lstrip('@')
+                    self.check_scenario_parameter_reference(pose_ref)
+                    start_poses = [None]  # Will be resolved from config later
+                else:
+                    # Directly specified pose
+                    start_pose = Pose(
+                        position=Position(
+                            x=self.parameters.start_pose.x,
+                            y=self.parameters.start_pose.y),
+                        orientation=Orientation(
+                            yaw=self.parameters.start_pose.yaw
+                        )
+                    )
+                    if not waypoint_generator.is_valid_position(
+                        start_pose.position.x, 
+                        start_pose.position.y, 
+                        self.parameters.robot_diameter/2.
+                    ):
+                        raise ValueError(f"Start pose {start_pose} is not valid on the map.")
+                    start_poses = [start_pose]
+                    self.progress_update(f"Using provided start pose: {start_pose}")
+            else:
+                # Use all raster points as start poses
+                start_poses = [
+                    Pose(
+                        position=Position(x=x, y=y),
+                        orientation=Orientation(yaw=0.0)
+                    )
+                    for x, y in raster_points
+                ]
+
+            # Generate paths from each start pose to all reachable raster points
+            path_index = 0
+            for start_idx, start_pose in enumerate(start_poses):
+                for goal_idx, (goal_x, goal_y) in enumerate(raster_points):
+                    # Skip if start and goal are the same raster point
+                    if start_pose is not None and \
+                       abs(start_pose.position.x - goal_x) < self.parameters.raster_size / 2 and \
+                       abs(start_pose.position.y - goal_y) < self.parameters.raster_size / 2:
+                        continue
+                    
+                    # Create goal pose from raster point
+                    goal_pose = Pose(
+                        position=Position(x=goal_x, y=goal_y),
+                        orientation=Orientation(yaw=0.0)
+                    )
+
+                    self.progress_update(
+                        f"Generating path {path_index}: start {start_idx} -> goal raster point {goal_idx}"
+                    )
+                    
+                    # Generate path directly
+                    path_generator = PathGenerator(map_file_path)
+                    waypoints = [start_pose, goal_pose]
+                    path = path_generator.generate_path(waypoints, [])
+                    
+                    if path:
+                        # Calculate path length
+                        path_length = self._calculate_path_length(path)
+                        
+                        # Check if path length is within tolerance
+                        min_length = self.parameters.path_length - self.parameters.path_length_tolerance
+                        max_length = self.parameters.path_length + self.parameters.path_length_tolerance
+                        
+                        if min_length <= path_length <= max_length:
+                            new_config = self.update_config(config, {
+                                'start_pose': start_pose,
+                                'goal_pose': goal_pose},
+                                other_values={
+                                    '_path': path,
+                                    '_map_file': map_file_path,
+                                    '_raster_points': raster_points,
+                                    '_path_length': path_length
+                            })
+                            results.append(new_config)
+                        else:
+                            self.progress_update(
+                                f"  Path length {path_length:.2f}m outside tolerance "
+                                f"[{min_length:.2f}, {max_length:.2f}]"
+                            )
+                    else:
+                        self.progress_update(f"  No path found from {start_pose} to {goal_pose}")
+                    
+                    path_index += 1
+
+        return results
+
+    def _generate_raster_points(self, waypoint_generator):
+        """Generate valid raster points covering the map using a square grid.
+        
+        Args:
+            waypoint_generator: WaypointGenerator instance for the map
+            
+        Returns:
+            List of (x, y) tuples representing valid raster points
+        """
+        # Get map boundaries
+        map_data = waypoint_generator.map.map_array
+        resolution = waypoint_generator.map.resolution
+        origin = waypoint_generator.map.origin
+        
+        height, width = map_data.shape
+        
+        # Calculate map bounds in world coordinates
+        min_x = origin[0]
+        max_x = origin[0] + width * resolution
+        min_y = origin[1]
+        max_y = origin[1] + height * resolution
+        
+        self.progress_update(f"Map bounds: x=[{min_x:.2f}, {max_x:.2f}], y=[{min_y:.2f}, {max_y:.2f}]")
+        
+        # Generate square grid
+        # Points are uniformly spaced by raster_size in both x and y directions
+        
+        raster_points = []
+        grid_spacing = self.parameters.raster_size
+        
+        # Normalize offsets to be within [0, grid_spacing) range
+        # This shifts the grid alignment without skipping map areas
+        normalized_offset_x = self.parameters.raster_offset_x % grid_spacing
+        normalized_offset_y = self.parameters.raster_offset_y % grid_spacing
+        
+        # Adjust starting point to account for normalized offset
+        start_x = min_x + normalized_offset_x
+        start_y = min_y + normalized_offset_y
+        
+        # Calculate the number of grid points needed to cover the entire map
+        num_x_points = int(np.ceil((max_x - start_x) / grid_spacing)) + 1
+        num_y_points = int(np.ceil((max_y - start_y) / grid_spacing)) + 1
+        
+        self.progress_update(f"Grid: {num_x_points}x{num_y_points} points, spacing={grid_spacing:.2f}m, "
+                           f"offset=({normalized_offset_x:.2f}, {normalized_offset_y:.2f})m")
+        
+        for iy in range(num_y_points):
+            y = start_y + iy * grid_spacing
+            if y > max_y:
+                continue
+                
+            for ix in range(num_x_points):
+                x = start_x + ix * grid_spacing
+                if x > max_x:
+                    continue
+                
+                # Check if this point is valid (not in obstacle)
+                if waypoint_generator.is_valid_position(x, y, self.parameters.robot_diameter / 2.):
+                    raster_points.append((float(x), float(y)))
+        
+        return raster_points
+    
+    def _calculate_path_length(self, path):
+        """Calculate the total length of a path.
+        
+        Args:
+            path: List of Position objects representing the path
+            
+        Returns:
+            Total path length in meters
+        """
+        if not path or len(path) < 2:
+            return 0.0
+        
+        total_length = 0.0
+        for i in range(len(path) - 1):
+            dx = path[i + 1].x - path[i].x
+            dy = path[i + 1].y - path[i].y
+            total_length += math.sqrt(dx**2 + dy**2)
+        
+        return total_length
