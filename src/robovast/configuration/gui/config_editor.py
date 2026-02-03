@@ -54,6 +54,10 @@ class GenerationWorker(QObject):
         self._cancelled = False
         self._cancel_message_shown = False
 
+    def cancel(self):
+        """Request cancellation of the generation process."""
+        self._cancelled = True
+
     def _check_interruption(self, msg):
         """Check for interruption request and emit progress.
 
@@ -503,7 +507,7 @@ class ConfigEditor(QMainWindow):
             self.error_display.append("<span style='color: #f48771;'>Cancelling generation...</span>")
             # Set cancellation flag and request thread interruption
             if self.generation_worker:
-                self.generation_worker._cancelled = True
+                self.generation_worker.cancel()
             self.generation_thread.requestInterruption()
             # Give it a moment to stop gracefully
             if not self.generation_thread.wait(1000):  # Wait up to 1 second
