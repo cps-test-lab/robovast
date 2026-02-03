@@ -5,6 +5,9 @@ Convert test.xml to test.yaml with custom format
 
 import sys
 import os
+import glob
+import json
+
 import xml.etree.ElementTree as ET
 import yaml
 from pathlib import Path
@@ -71,6 +74,61 @@ def get_run_data(run_yaml_path):
     return run_data
 
 
+def _gen_jsonld_prov(out_dir, run_data):
+    graph = []
+
+    def _create_run_activity(run_mdata):
+        return {
+            "@id": f"run:{run_mdata['RUN_ID']}",
+            "@type": ["Activity", "TestRun"],
+            "startedAtTime": run_mdata["START_DATE"],
+            "endedAtTime": run_mdata["END_DATE"],
+            "used": f"scenario:{run_mdata['SCENARIO_ID']}",
+            "wasAssociatedWith": f"agents:{run_mdata['ROBOT_ID']}",
+        }
+
+    def _create_artefact(run_id, artefact_id):
+        return {
+            "@id": f"run:{run_id}/{artefact_id}",
+            "@type": ["Entity", "Artefact"],
+            "atLocation": f"{run_id}/{artefact_id}",
+            "wasGeneratedBy": f"run:{run_id}",
+        }
+
+    def _create_concrete_scenario(scenario_id):
+        return {
+            "@id": f"scenarios:{scenario_id}",
+            "@type": ["ConcreteScenario", "Entity"],
+            "atLocation": f"scenarios:{scenario_id}",
+        }
+
+    _scenario_id = run_data["SCENARIO_ID"]
+    scenario = _create_concrete_scenario(_scenario_id)
+    graph.append(scenario)
+
+    _run_id = run_data["RUN_ID"]
+    run = _create_run_activity(run_data)
+    graph.append(run)
+
+    artefact_paths = [
+        f"{run_data['ROSBAG_DIR']}/**",
+        f"{run_data['LOG_DIR']}/**/*.log",
+        "*.webm",
+        "*.xml",
+    ]
+    artefacts = []
+    for artefact_file in artefact_paths:
+        files = glob.glob(os.path.join(out_dir, artefact_file), recursive=True)
+        artefacts.extend(files)
+
+    for rosbag_file in artefacts:
+        bag_path = os.path.relpath(rosbag_file, out_dir)
+        bag = _create_artefact(_run_id, bag_path)
+        graph.append(bag)
+
+    return graph
+
+
 def get_run_prov(run_output_dir):
     # Get run information from run.yaml
     run_yaml_path = os.path.join(run_output_dir, "run.yaml")
@@ -82,11 +140,12 @@ def get_run_prov(run_output_dir):
         rosbag_file = f"rosbag2/"
 
     run_data["ROSBAG_DIR"] = rosbag_file
+    prov_data = _gen_jsonld_prov(run_output_dir, run_data)
 
-    # Write YAML file
-    yaml_file_path = os.path.join(run_output_dir, "test.yaml")
-    with open(yaml_file_path, "w") as f:
-        yaml.dump(run_data, f, default_flow_style=None)
+    # Write JSON file
+    output_path = os.path.join(run_output_dir, "run.prov.json")
+    with open(output_path, "w") as f:
+        json.dump(prov_data, f, indent=4)
 
 
 def main():
@@ -97,7 +156,8 @@ def main():
     output_dir = sys.argv[1]
     xml_file_path = os.path.join(output_dir, "test.xml")
 
-    convert_xml_to_yaml(xml_file_path, output_dir)
+    # convert_xml_to_yaml(xml_file_path, output_dir)
+    get_run_prov(output_dir)
 
 
 if __name__ == "__main__":
