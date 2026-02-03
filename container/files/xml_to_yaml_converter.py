@@ -33,25 +33,7 @@ def convert_xml_to_yaml(xml_file_path, output_dir):
         if testcase is None:
             print("Warning: No testcase element found in XML")
             return
-            
-        # Get run information from run.yaml
-        run_yaml_path = os.path.join(output_dir, 'run.yaml')
-        run_id = "unknown"
-        if os.path.exists(run_yaml_path):
-            try:
-                with open(run_yaml_path, 'r') as f:
-                    run_data = yaml.safe_load(f)
-                    if run_data and 'RUN_ID' in run_data:
-                        run_id = run_data['RUN_ID']
-            except Exception as e:
-                print(f"Warning: Could not read run.yaml: {e}")
-        
-        # Find rosbag directory
-        rosbag_file = "unknown"
-        rosbag_dir = os.path.join(output_dir, 'rosbag2')
-        if os.path.exists(rosbag_dir):
-            rosbag_file = f"rosbag2/"
-        
+
         # Extract failure information
         failure_element = testcase.find('failure')
         failure_data = None
@@ -67,40 +49,52 @@ def convert_xml_to_yaml(xml_file_path, output_dir):
             'errors': int(testsuite.get('errors', 0)),
             'failures': int(testsuite.get('failures', 0)),
             'duration': float(testsuite.get('time', 0)),
-            'rosbag_file': rosbag_file,
-            'testcase': {
-                'name': run_id,
-            }
         }
         
         # Add failure if it exists
         if failure_data:
             test_data['testcase']['failure'] = failure_data
-            
+
+    except Exception as e:
+        print(f"Error converting test.xml to YAML: {e}")
+
+    print(f"Successfully converted test.xml to test.yaml")
+
+
+def get_run_id(run_yaml_path):
+    run_id = None
+    if os.path.exists(run_yaml_path):
+        try:
+            with open(run_yaml_path, 'r') as f:
+                run_data = yaml.safe_load(f)
+        except Exception as e:
+            print(f"Warning: Could not read run.yaml: {e}")
+
+        if run_data and 'RUN_ID' in run_data:
+            run_id = run_data['RUN_ID']
+    return run_id
+
+
+def get_run_prov(output_dir):
+        # Get run information from run.yaml
+        run_yaml_path = os.path.join(output_dir, 'run.yaml')
+        run_id = get_run_id(run_yaml_path)
+
+        # Find rosbag directory
+        rosbag_dir = os.path.join(output_dir, 'rosbag2')
+        if os.path.exists(rosbag_dir):
+            rosbag_file = f"rosbag2/"
+
+        run_data = {
+            'rosbag_file': rosbag_file,
+            'run_id': run_id,
+        }
+
         # Write YAML file
         yaml_file_path = os.path.join(output_dir, 'test.yaml')
         with open(yaml_file_path, 'w') as f:
-            # Write the YAML manually to control the formatting of the message field
-            f.write(f"errors: {test_data['errors']}\n")
-            f.write(f"failures: {test_data['failures']}\n")
-            f.write(f"duration: {test_data['duration']}\n")
-            f.write(f"rosbag_file: {test_data['rosbag_file']}\n")
-            f.write("testcase:\n")
-            f.write(f"  name: {test_data['testcase']['name']}\n")
-            
-            if 'failure' in test_data['testcase']:
-                f.write("  failure:\n")
-                # Use literal block scalar (|) for the message to preserve formatting
-                f.write("    message: |\n")
-                # Indent each line of the message by 6 spaces (4 for testcase.failure + 2 for message)
-                message_lines = test_data['testcase']['failure']['message'].split('\n')
-                for line in message_lines:
-                    f.write(f"      {line}\n")
-            
-        print(f"Successfully converted test.xml to test.yaml")
-        
-    except Exception as e:
-        print(f"Error converting test.xml to YAML: {e}")
+            yaml.dump(run_data, f, default_flow_style=None)
+
 
 def main():
     if len(sys.argv) != 2:
