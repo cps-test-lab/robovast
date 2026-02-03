@@ -36,7 +36,6 @@ from robovast.configuration.gui.config_view import ConfigView
 from robovast.configuration.gui.yaml_editor import YamlEditor
 
 
-
 class GenerationWorker(QObject):
     """Worker class for generating scenario variations in a separate thread."""
 
@@ -57,7 +56,7 @@ class GenerationWorker(QObject):
 
     def _check_interruption(self, msg):
         """Check for interruption request and emit progress.
-        
+
         This method must never raise exceptions to avoid Qt event handler errors.
         """
         try:
@@ -83,12 +82,12 @@ class GenerationWorker(QObject):
                 progress_update_callback=self._check_interruption,
                 output_dir=self.output_dir
             )
-            
+
             # Check if we were cancelled during generation
             if self._cancelled:
                 self.cancelled.emit()
                 return
-                
+
             self.configs = configs
             self.variation_gui_classes = variation_gui_classes
             self.finished.emit()

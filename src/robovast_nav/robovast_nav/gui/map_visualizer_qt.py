@@ -282,8 +282,8 @@ class MapVisualizerWidget(QWidget):
             label: Label for the circle (for legend)
         """
         draw_args = {'diameter': radius * 2}
-        obstacle = self.map_visualizer.draw_obstacle(x, y, draw_args, yaw=0.0, 
-                                                     shape='circle', color=color, 
+        obstacle = self.map_visualizer.draw_obstacle(x, y, draw_args, yaw=0.0,
+                                                     shape='circle', color=color,
                                                      alpha=alpha, label=label)
         self.canvas.draw()
         return obstacle
