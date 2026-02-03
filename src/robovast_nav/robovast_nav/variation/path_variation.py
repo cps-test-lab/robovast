@@ -69,9 +69,9 @@ class PathVariationGuiRenderer(VariationGuiRenderer):
             x_coords = [point[0] for point in raster_points]
             y_coords = [point[1] for point in raster_points]
             self.gui_object.map_visualizer.ax.scatter(x_coords, y_coords,
-                                                      s=10,  # marker size
+                                                      s=3,  # marker size
                                                       c='blue',
-                                                      alpha=0.5,
+                                                      alpha=0.3,
                                                       label='Raster Points',
                                                       zorder=2)
             self.gui_object.canvas.draw()
