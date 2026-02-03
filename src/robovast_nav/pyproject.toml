@@ -18,7 +18,8 @@ pyyaml = "^6.0"
 
 [tool.poetry.plugins."robovast.variation_types"]
 "FloorplanVariation" = "robovast_nav.variation.floorplan_variation:FloorplanVariation"
-"PathVariation" = "robovast_nav.variation.path_variation:PathVariation"
+"PathVariationRandom" = "robovast_nav.variation.path_variation:PathVariationRandom"
+"PathVariationRasterized" = "robovast_nav.variation.path_variation:PathVariationRasterized"
 "ObstacleVariation" = "robovast_nav.variation.obstacle_variation:ObstacleVariation"
 
 [build-system]

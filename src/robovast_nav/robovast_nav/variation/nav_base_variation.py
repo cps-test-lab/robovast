@@ -24,39 +24,64 @@ from robovast.common.variation import Variation
 class NavVariation(Variation):
 
     def get_map_file(self, map_file_parameter, config) -> Optional[str]:
-        """Determine the map file path to use for this config."""
+        """Determine the map file path to use for this config.
+
+        The map file can be specified in two ways:
+        1. As a YAML parameter (map_file_parameter)
+        2. Automatically from another variation via _map_file in config
+
+        If both are defined, an error is raised.
+        """
 
         map_file_path = None
-        # 1. try to get map file from config
+        map_file_from_yaml = None
+        map_file_from_variation = None
+
+        # Check if map file is provided via YAML parameter
         if map_file_parameter:
             temp_path = os.path.join(self.base_path, map_file_parameter)
             if os.path.exists(temp_path):
                 # 1.1. found map file directly
-                self.progress_update(f"Using map file from configuration: {temp_path}")
-                map_file_path = temp_path
+                self.progress_update(f"Using map file from YAML configuration: {temp_path}")
+                map_file_from_yaml = temp_path
             else:
                 # 2. try to resolve from scenario parameter
                 self.progress_update(f"Map file {map_file_parameter} does not exist. Using it as scenario parameter reference.")
                 if not is_scenario_parameter(map_file_parameter, self.scenario_file):
-                    raise ValueError(f"Map file {map_file_path} is not a valid scenario parameter reference.")
+                    raise ValueError(f"Map file {map_file_parameter} is not a valid scenario parameter reference.")
                 if map_file_parameter in config["config"]:
                     temp_path = os.path.join(config["config"][map_file_parameter])
                     if os.path.exists(temp_path):
                         self.progress_update(f"Resolved map file path from scenario parameter: {temp_path}")
-                        map_file_path = temp_path
+                        map_file_from_yaml = temp_path
                     else:
                         raise FileNotFoundError(f"Resolved map file path from scenario parameter does not exist: {temp_path}")
-        else:
-            self.progress_update("No map_file specified in PathVariation configuration.")
-            if "_map_file" in config:
-                temp_path = config["_map_file"]
-                if os.path.exists(temp_path):
-                    self.progress_update(f"Using map file from config._map_file: {temp_path}")
-                    map_file_path = temp_path
-                else:
-                    raise FileNotFoundError(f"Map file from config data does not exist: {temp_path}")
 
-        if not map_file_path:
-            raise ValueError("No valid map file path could be determined.")
+        # Check if map file is provided from another variation
+        if "_map_file" in config:
+            temp_path = config["_map_file"]
+            if os.path.exists(temp_path):
+                self.progress_update(f"Found map file from previous variation (config._map_file): {temp_path}")
+                map_file_from_variation = temp_path
+            else:
+                raise FileNotFoundError(f"Map file from config data does not exist: {temp_path}")
+
+        # Validate that both methods are not used simultaneously
+        if map_file_from_yaml and map_file_from_variation:
+            raise ValueError(
+                f"Map file is defined both in YAML parameter ({map_file_from_yaml}) "
+                f"and from another variation ({map_file_from_variation}). "
+                f"Please use only one method to specify the map file."
+            )
+
+        # Use whichever method provided the map file
+        if map_file_from_yaml:
+            map_file_path = map_file_from_yaml
+        elif map_file_from_variation:
+            self.progress_update(f"Using map file from previous variation: {map_file_from_variation}")
+            map_file_path = map_file_from_variation
+        else:
+            raise ValueError(
+                "No valid map file path could be determined. Please specify map_file in the YAML configuration or ensure a previous variation provides it.")
 
         return map_file_path
