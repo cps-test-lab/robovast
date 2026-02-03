@@ -71,20 +71,20 @@ def get_run_data(run_yaml_path):
     return run_data
 
 
-def get_run_prov(output_dir):
+def get_run_prov(run_output_dir):
     # Get run information from run.yaml
-    run_yaml_path = os.path.join(output_dir, "run.yaml")
+    run_yaml_path = os.path.join(run_output_dir, "run.yaml")
     run_data = get_run_data(run_yaml_path)
 
     # Find rosbag directory
-    rosbag_dir = os.path.join(output_dir, "rosbag2")
+    rosbag_dir = os.path.join(run_output_dir, "rosbag2")
     if os.path.exists(rosbag_dir):
         rosbag_file = f"rosbag2/"
 
     run_data["ROSBAG_DIR"] = rosbag_file
 
     # Write YAML file
-    yaml_file_path = os.path.join(output_dir, "test.yaml")
+    yaml_file_path = os.path.join(run_output_dir, "test.yaml")
     with open(yaml_file_path, "w") as f:
         yaml.dump(run_data, f, default_flow_style=None)
 
