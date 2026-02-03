@@ -43,6 +43,8 @@ echo "RUN_ID: $DESCRIPTIVE_RUN_ID" > ${OUTPUT_DIR}/run.yaml
 echo "RUN_NUM: $RUN_NUM" >> ${OUTPUT_DIR}/run.yaml
 echo "SCENARIO_ID: $SCENARIO_CONFIG" >> ${OUTPUT_DIR}/run.yaml
 echo "LOG_DIR: $LOG_DIR" >> ${OUTPUT_DIR}/run.yaml
+echo "ROBOT_ID: $ROBOT_ID" >> ${OUTPUT_DIR}/run.yaml
+echo "ROBOT_CONFIG: $ROBOT_CONFIG" >> ${OUTPUT_DIR}/run.yaml
 
 if [ -d /config ]; then
   log "Copying configuration files..."
