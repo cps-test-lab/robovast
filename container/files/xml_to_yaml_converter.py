@@ -81,9 +81,7 @@ def get_run_prov(output_dir):
     if os.path.exists(rosbag_dir):
         rosbag_file = f"rosbag2/"
 
-    run_data = {
-        "rosbag_file": rosbag_file,
-    }
+    run_data["ROSBAG_DIR"] = rosbag_file
 
     # Write YAML file
     yaml_file_path = os.path.join(output_dir, "test.yaml")
