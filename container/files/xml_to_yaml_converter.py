@@ -60,8 +60,7 @@ def convert_xml_to_yaml(xml_file_path, output_dir):
     print(f"Successfully converted test.xml to test.yaml")
 
 
-def get_run_id(run_yaml_path):
-    run_id = None
+def get_run_data(run_yaml_path):
     if os.path.exists(run_yaml_path):
         try:
             with open(run_yaml_path, "r") as f:
@@ -69,15 +68,13 @@ def get_run_id(run_yaml_path):
         except Exception as e:
             print(f"Warning: Could not read run.yaml: {e}")
 
-        if run_data and "RUN_ID" in run_data:
-            run_id = run_data["RUN_ID"]
-    return run_id
+    return run_data
 
 
 def get_run_prov(output_dir):
     # Get run information from run.yaml
     run_yaml_path = os.path.join(output_dir, "run.yaml")
-    run_id = get_run_id(run_yaml_path)
+    run_data = get_run_data(run_yaml_path)
 
     # Find rosbag directory
     rosbag_dir = os.path.join(output_dir, "rosbag2")
@@ -86,7 +83,6 @@ def get_run_prov(output_dir):
 
     run_data = {
         "rosbag_file": rosbag_file,
-        "run_id": run_id,
     }
 
     # Write YAML file
