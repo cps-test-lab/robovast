@@ -43,6 +43,11 @@ RUN apt-get update && \
 # Install system dependencies
 # hadolint ignore=DL3008
 RUN \
+    # Add Clearpath repository
+    apt-get update && \
+    apt-get install -y --no-install-recommends curl gnupg2 && \
+    curl -sSL https://packages.clearpathrobotics.com/public.key | apt-key add - && \
+    echo "deb https://packages.clearpathrobotics.com/stable/ubuntu $(lsb_release -cs) main" > /etc/apt/sources.list.d/clearpath-latest.list && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
         python3-pip \
@@ -75,6 +80,9 @@ RUN \
         ros-jazzy-nav2-minimal-tb4-description \
         ros-jazzy-rmw-cyclonedds-cpp \
         ros-jazzy-rmw-zenoh-cpp \
+        ros-jazzy-clearpath-simulator \
+        ros-jazzy-clearpath-nav2-demos \
+        ros-jazzy-clearpath-gz \
         libgl1 && \
     rm -rf /var/lib/apt/lists/*
 
@@ -90,6 +98,10 @@ RUN  git clone "https://github.com/cps-test-lab/scenario-execution.git" /ws/src/
 
 COPY container/files/startx11_virtual.sh /
 COPY container/files/entrypoint.sh /
+COPY clearpath_nav2_demos/config/w200/robot.yaml /etc/clearpath/robot.yaml
+
+# Copy Clearpath configuration files to override the installed package defaults
+COPY clearpath_nav2_demos/config /opt/ros/jazzy/share/clearpath_nav2_demos/config
 
 # Environment variables
 ENV DISPLAY=:0

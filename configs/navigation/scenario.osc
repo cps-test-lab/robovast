@@ -12,7 +12,7 @@ scenario test_scenario:
     mesh_file: string
     map_file: string
     start_pose: pose_3d
-    goal_poses: list of pose_3d
+    goal_pose: pose_3d
     laserscan_random_drop_percentage: string = '0.0'
     laserscan_gaussian_noise_std_deviation: string = '0.0'
     static_objects: list of spawn_entity
@@ -24,15 +24,15 @@ scenario test_scenario:
         wait elapsed(1000s)
         serial:
             floorplan_gen.generate_gazebo_world("files/world.sdf.xacro", [key_value("mesh_file", os.abspath(common.get_scenario_file_directory() + "/" + mesh_file))])
-            ros_launch('', 'files/nav2_launch.py', [
+            ros_launch('', 'files/clearpath_w200_launch.py', [
                 key_value('world', floorplan_gen.generated_gazebo_world_path),
                 key_value('map', os.abspath(common.get_scenario_file_directory() + "/" + map_file)),
                 key_value('x_pose', start_pose.position.x),
                 key_value('y_pose', start_pose.position.y),
                 key_value('yaw', start_pose.orientation.yaw),
-                key_value('headless', 'False'),
                 key_value('laserscan_gaussian_noise_std_deviation', laserscan_gaussian_noise_std_deviation),
-                key_value('laserscan_random_drop_percentage', laserscan_random_drop_percentage)],
+                key_value('laserscan_random_drop_percentage', laserscan_random_drop_percentage),
+                key_value('setup_path', '/etc/clearpath')],
                 wait_for_shutdown: false)
             wait_for_sim()
             parallel:
@@ -47,12 +47,13 @@ scenario test_scenario:
                             '/tf',
                             '/tf_static', 
                             '/scenario_execution/snapshots', 
-                            '/map', 
-                            '/local_costmap/costmap',
-                            '/amcl_pose'
+                            '/w200_0000/map', 
+                            '/w200_0000/local_costmap/costmap',
+                            '/w200_0000/amcl_pose',
+                            '/w200_0000/platform/odom'
                         ],
                         # hidden_topics: true,
                         use_sim_time: true,
                         timestamp_suffix: false)
-                    robot.nav_through_poses(goal_poses)
+                    robot.nav_to_pose(goal_pose)
                     emit end

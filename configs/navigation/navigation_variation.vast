@@ -36,11 +36,11 @@ configuration:
       - 0.0
       - 0.1
 execution:
-  image: ghcr.io/cps-test-lab/robovast:latest
+  image: robovast_jazzy:clearpath
   kubernetes:
     resources:
       cpu: 8
-  runs: 10
+  runs: 1
   test_files_filter:
   - "**/files/*"
 analysis:

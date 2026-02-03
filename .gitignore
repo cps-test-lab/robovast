@@ -8,3 +8,4 @@ venv
 **/.cache
 **/.robovast_*
 results
+configs/navigation/files/nav2/chat.json

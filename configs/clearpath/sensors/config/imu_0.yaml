@@ -1,0 +1,10 @@
+- ros_topic_name: sensors/imu_0/data
+  gz_topic_name: /w200_0000/sensors/imu_0/data
+  ros_type_name: sensor_msgs/msg/Imu
+  gz_type_name: gz.msgs.IMU
+  direction: GZ_TO_ROS
+- ros_topic_name: sensors/imu_0/data_raw
+  gz_topic_name: /w200_0000/sensors/imu_0/data_raw
+  ros_type_name: sensor_msgs/msg/Imu
+  gz_type_name: gz.msgs.IMU
+  direction: GZ_TO_ROS

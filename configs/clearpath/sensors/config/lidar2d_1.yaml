@@ -1,0 +1,5 @@
+- ros_topic_name: lidar2d_1/scan
+  gz_topic_name: /w200_0000/sensors/lidar2d_1/scan
+  ros_type_name: sensor_msgs/msg/LaserScan
+  gz_type_name: gz.msgs.LaserScan
+  direction: GZ_TO_ROS

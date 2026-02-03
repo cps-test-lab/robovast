@@ -1,0 +1,52 @@
+serial_number: w200-0000
+version: 0
+system:
+  hosts:
+    - hostname: cpr-w200-0000
+      ip: 192.168.131.1
+  ros2:
+    namespace: w200_0000
+links:
+  frame:
+    - name: front_left
+      parent: left_diff_unit_link
+      xyz: [0.68, -0.03, 0.35]
+      rpy: [0.0, 1.5707, 0.0]
+    - name: rear_right
+      parent: right_diff_unit_link
+      xyz: [-0.68, 0.03, 0.35]
+      rpy: [3.1415, 1.5707, 0.0]
+mounts:
+  bracket:
+    - model: vertical
+      parent: front_left_link
+    - model: vertical
+      parent: rear_right_link
+sensors:
+  lidar2d:
+  - model: hokuyo_ust
+    urdf_enabled: true
+    launch_enabled: true
+    parent: bracket_0_vertical_mount
+    xyz: [0.0, 0.0, 0.0]
+    rpy: [0.0, 0.0, 0.0]
+    ros_parameters:
+      urg_node:
+        laser_frame_id: lidar2d_0_laser
+        ip_address: 192.168.131.20
+        ip_port: 10940
+        angle_min: -1.5707
+        angle_max: 1.5707
+  - model: hokuyo_ust
+    urdf_enabled: true
+    launch_enabled: true
+    parent: bracket_1_vertical_mount
+    xyz: [0.0, 0.0, 0.0]
+    rpy: [0.0, 0.0, 0.0]
+    ros_parameters:
+      urg_node:
+        laser_frame_id: lidar2d_1_laser
+        ip_address: 192.168.131.21
+        ip_port: 10940
+        angle_min: -1.5707
+        angle_max: 1.5707
