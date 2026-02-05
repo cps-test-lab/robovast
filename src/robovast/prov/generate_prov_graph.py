@@ -22,33 +22,52 @@ def get_run_data(run_yaml_path):
     return run_data
 
 
+def _create_abstract_scenario(scenario_id):
+    return {
+        "@id": f"scenario:{scenario_id}",
+        "@type": ["AbstractScenario", "Entity"],
+        "atLocation": f"scenarios:{scenario_id}",
+    }
+
+
+def _create_concrete_scenario(scenario_id, parent_scenario_id=None):
+    node = {
+        "@id": f"scenarios:{scenario_id}",
+        "@type": ["ConcreteScenario", "Entity"],
+        "atLocation": f"scenarios:{scenario_id}",
+    }
+    if parent_scenario_id is not None:
+        node["specializationOf"] = f"scenarios:{parent_scenario_id}"
+    return node
+
+
+def _create_run_activity(run_mdata):
+    return {
+        "@id": f"run:{run_mdata['RUN_ID']}",
+        "@type": ["Activity", "TestRun"],
+        "startedAtTime": run_mdata["START_DATE"],
+        "endedAtTime": run_mdata["END_DATE"],
+        "used": f"scenario:{run_mdata['SCENARIO_ID']}",
+        "wasAssociatedWith": f"agents:{run_mdata['ROBOT_ID']}",
+    }
+
+
+def _create_generated_artefact(artefact_id, activity=None, source_artefact_id=None):
+    node = {
+        "@id": f"run:{artefact_id}",
+        "@type": ["Entity", "Artefact"],
+        "atLocation": f"{artefact_id}",
+    }
+    if activity is not None:
+        node["wasGeneratedBy"] = f"run:{activity}"
+    if source_artefact_id is not None:
+        node["wasDerivedFrom"] = f"run:{source_artefact_id}"
+
+    return node
+
+
 def _gen_jsonld_prov(out_dir, run_data):
     graph = []
-
-    def _create_run_activity(run_mdata):
-        return {
-            "@id": f"run:{run_mdata['RUN_ID']}",
-            "@type": ["Activity", "TestRun"],
-            "startedAtTime": run_mdata["START_DATE"],
-            "endedAtTime": run_mdata["END_DATE"],
-            "used": f"scenario:{run_mdata['SCENARIO_ID']}",
-            "wasAssociatedWith": f"agents:{run_mdata['ROBOT_ID']}",
-        }
-
-    def _create_artefact(run_id, artefact_id):
-        return {
-            "@id": f"run:{run_id}/{artefact_id}",
-            "@type": ["Entity", "Artefact"],
-            "atLocation": f"{run_id}/{artefact_id}",
-            "wasGeneratedBy": f"run:{run_id}",
-        }
-
-    def _create_concrete_scenario(scenario_id):
-        return {
-            "@id": f"scenarios:{scenario_id}",
-            "@type": ["ConcreteScenario", "Entity"],
-            "atLocation": f"scenarios:{scenario_id}",
-        }
 
     _scenario_id = run_data["SCENARIO_ID"]
     scenario = _create_concrete_scenario(_scenario_id)
@@ -71,7 +90,8 @@ def _gen_jsonld_prov(out_dir, run_data):
 
     for rosbag_file in artefacts:
         bag_path = os.path.relpath(rosbag_file, out_dir)
-        bag = _create_artefact(_run_id, bag_path)
+        art_id = f"{_run_id}/{bag_path}"
+        bag = _create_generated_artefact(art_id, activity=_run_id)
         graph.append(bag)
 
     return graph
