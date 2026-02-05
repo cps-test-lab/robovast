@@ -74,12 +74,6 @@ else
     END_DATE=$(date +"%Y-%m-%dT%H%M%S")
     echo "END_DATE: $END_DATE" >> ${OUTPUT_DIR}/run.yaml
     
-    # Convert test.xml to test.yaml if it exists
-    if [ -f "${OUTPUT_DIR}/test.xml" ]; then
-        log "Converting test.xml to test.yaml..."
-        python3 /xml_to_yaml_converter.py ${OUTPUT_DIR}
-    fi
-    
     # Exit with the same code as the scenario execution
     exit $EXIT_CODE
 fi
