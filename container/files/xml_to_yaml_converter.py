@@ -8,59 +8,7 @@ import os
 import glob
 import json
 
-import xml.etree.ElementTree as ET
 import yaml
-from pathlib import Path
-import html
-
-
-def convert_xml_to_yaml(xml_file_path, output_dir):
-    """Convert test.xml to test.yaml with the specified format"""
-
-    if not os.path.exists(xml_file_path):
-        print(f"Warning: {xml_file_path} not found, skipping conversion")
-        return
-
-    try:
-        # Parse XML
-        tree = ET.parse(xml_file_path)
-        root = tree.getroot()
-
-        # Extract testsuite data
-        testsuite = root if root.tag == "testsuite" else root.find("testsuite")
-        if testsuite is None:
-            print("Warning: No testsuite element found in XML")
-            return
-
-        # Extract testcase data (assuming single testcase)
-        testcase = testsuite.find("testcase")
-        if testcase is None:
-            print("Warning: No testcase element found in XML")
-            return
-
-        # Extract failure information
-        failure_element = testcase.find("failure")
-        failure_data = None
-        if failure_element is not None and failure_element.text:
-            # Decode HTML entities and preserve formatting
-            message_text = html.unescape(failure_element.text.strip())
-            failure_data = {"message": message_text}
-
-        # Create YAML structure
-        test_data = {
-            "errors": int(testsuite.get("errors", 0)),
-            "failures": int(testsuite.get("failures", 0)),
-            "duration": float(testsuite.get("time", 0)),
-        }
-
-        # Add failure if it exists
-        if failure_data:
-            test_data["testcase"]["failure"] = failure_data
-
-    except Exception as e:
-        print(f"Error converting test.xml to YAML: {e}")
-
-    print(f"Successfully converted test.xml to test.yaml")
 
 
 def get_run_data(run_yaml_path):
