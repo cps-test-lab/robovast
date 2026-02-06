@@ -18,6 +18,7 @@ import logging
 import os
 import pickle
 import sys
+from datetime import datetime
 from dataclasses import asdict, is_dataclass
 
 import numpy as np
@@ -27,6 +28,7 @@ from scenario_execution import \
 
 from .config import validate_config
 from .file_cache import FileCache
+from ..prov.generate_prov_graph import _create_concrete_scenario
 
 logger = logging.getLogger(__name__)
 
@@ -114,14 +116,19 @@ def save_scenario_configs_file(configs, output_file):
         converted_config.pop('path', None)
         data_to_save.append(converted_config)
 
+    prov = []
     # Write settings at the top, then configurations
     with open(output_file, "w") as f:
         # Write each config as a separate YAML document
         for idx, config_dict in enumerate(data_to_save):
+            scenario_prov = _create_concrete_scenario(f"{output_file}-{idx:04d}")
+            prov.append(scenario_prov)
             yaml.dump(config_dict, f, default_flow_style=False)
             # separate documents with '---'
             if idx < len(data_to_save) - 1:
                 f.write("---\n")
+
+    return prov
 
 
 def filter_configs(configs):

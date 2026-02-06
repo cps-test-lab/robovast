@@ -21,9 +21,15 @@ import os
 import re
 import tempfile
 from importlib.metadata import entry_points
+from datetime import datetime
+import json
 
 from .common import (get_scenario_parameters, load_config,
                      save_scenario_configs_file)
+from ..prov.generate_prov_graph import (
+    _create_abstract_scenario,
+    _create_concrete_scenario,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -221,6 +227,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     scenarios = parameters.get('configuration', [])
 
     scenario_files = []
+    prov = []
     # Get test_files_filter from config
     test_files_filter = parameters.get("execution", {}).get("test_files_filter", [])
     if test_files_filter:
@@ -232,6 +239,10 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     for scenario in scenarios:
         scenario_file_name = scenario.get('scenario_file')
         scenario_file = os.path.join(os.path.dirname(variation_file), scenario_file_name) if scenario_file_name else None
+        parent_dir = os.path.split(os.path.split(scenario_file)[0])[-1]
+        scenario_id =  f"{parent_dir}/{scenario_file_name}"
+        scenario_prov = _create_abstract_scenario(scenario_id)
+        prov.append(scenario_prov)
 
         if output_dir is None:
             temp_path = tempfile.TemporaryDirectory(prefix="robovast_variation_")
@@ -302,8 +313,28 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                 break
             current_configs = result
 
+        gen_time = datetime.now().isoformat()
+        for c in current_configs:
+            c["abstract_scenario"] = f"scenario:{scenario_id}"
+            c["gen_time"] = gen_time
+            c["parent_dir"] = parent_dir
         configs.extend(current_configs)
     if configs:
         save_scenario_configs_file(configs, os.path.join(output_dir, 'scenario.configs'))
+        prov.extend(scenario_gen_prov(configs))
+        with open(os.path.join(output_dir, f'scenario.prov.json'), 'w') as f:
+            json.dump(prov, f, indent=2)
 
     return configs, variation_gui_classes
+
+def scenario_gen_prov(configs):
+    prov = []
+    for i, config in enumerate(configs):
+        parent_scenario_id = config.get("abstract_scenario")
+        parent_dir = config.get("parent_dir")
+        concr_scenario_id = f"{parent_dir}/configs/{config['name']}-{i:03d}.config"
+        concr_scenario_prov = _create_concrete_scenario(
+            concr_scenario_id, parent_scenario_id
+        )
+        prov.append(concr_scenario_prov)
+    return prov
