@@ -1,0 +1,2482 @@
+{
+    "@context": [
+        {
+          "@base": "https://secorolab.github.io/models/floorplan/hbrs/",
+          "fpm": "https://secorolab.github.io/models/floorplan/hbrs/"
+        },
+        "http://comp-rob2b.github.io/metamodels/qudt.json",
+        "https://comp-rob2b.github.io/metamodels/geometry/coordinates.json",
+        "https://secorolab.github.io/metamodels/geometry/coordinates.json"
+    ],
+    "@graph": [
+        {
+            "@id": "coord-pose-corridor_1-frame-wrt-world-frame",
+            "@type": [
+                "PoseReference", 
+                "PoseCoordinate", 
+                "VectorXYZ",
+                "EulerAngles"
+            ],
+            "of-pose": "pose-corridor_1-frame-wrt-world-frame",
+            "as-seen-by": "world-frame",
+            "unit": [
+                "M",
+                "RAD"
+            ],
+            "alpha": 0.0,
+            "beta": 0.0,
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-corridor_1-corner-0-wrt-corridor_1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-corner-0-wrt-corridor_1-frame",
+            "as-seen-by": "corridor_1-frame",
+            "unit": "M",
+            "x": -1.75,
+            "y": 5.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-corridor_1-corner-1-wrt-corridor_1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-corner-1-wrt-corridor_1-frame",
+            "as-seen-by": "corridor_1-frame",
+            "unit": "M",
+            "x": 1.75,
+            "y": 5.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-corridor_1-corner-2-wrt-corridor_1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-corner-2-wrt-corridor_1-frame",
+            "as-seen-by": "corridor_1-frame",
+            "unit": "M",
+            "x": 1.75,
+            "y": -5.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-corridor_1-corner-3-wrt-corridor_1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-corner-3-wrt-corridor_1-frame",
+            "as-seen-by": "corridor_1-frame",
+            "unit": "M",
+            "x": -1.75,
+            "y": -5.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-pose-corridor_1-wall-0-frame-wrt-corridor_1-frame",
+            "@type": [
+                "PoseReference", 
+                "PoseCoordinate", 
+                "VectorXYZ",
+                "EulerAngles"
+            ],
+            "of-pose": "pose-corridor_1-wall-0-frame-wrt-corridor_1-frame",
+            "as-seen-by": "corridor_1-frame",
+            "unit": [
+                "M",
+                "RAD"
+            ],
+            "alpha": 0.0,
+            "beta": 0.0,
+            "x": 0.0,
+            "y": 5.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-pose-corridor_1-wall-1-frame-wrt-corridor_1-frame",
+            "@type": [
+                "PoseReference", 
+                "PoseCoordinate", 
+                "VectorXYZ",
+                "EulerAngles"
+            ],
+            "of-pose": "pose-corridor_1-wall-1-frame-wrt-corridor_1-frame",
+            "as-seen-by": "corridor_1-frame",
+            "unit": [
+                "M",
+                "RAD"
+            ],
+            "alpha": -1.5707963267948966,
+            "beta": 0.0,
+            "x": 1.75,
+            "y": 0.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-pose-corridor_1-wall-2-frame-wrt-corridor_1-frame",
+            "@type": [
+                "PoseReference", 
+                "PoseCoordinate", 
+                "VectorXYZ",
+                "EulerAngles"
+            ],
+            "of-pose": "pose-corridor_1-wall-2-frame-wrt-corridor_1-frame",
+            "as-seen-by": "corridor_1-frame",
+            "unit": [
+                "M",
+                "RAD"
+            ],
+            "alpha": 3.141592653589793,
+            "beta": 0.0,
+            "x": 0.0,
+            "y": -5.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-pose-corridor_1-wall-3-frame-wrt-corridor_1-frame",
+            "@type": [
+                "PoseReference", 
+                "PoseCoordinate", 
+                "VectorXYZ",
+                "EulerAngles"
+            ],
+            "of-pose": "pose-corridor_1-wall-3-frame-wrt-corridor_1-frame",
+            "as-seen-by": "corridor_1-frame",
+            "unit": [
+                "M",
+                "RAD"
+            ],
+            "alpha": 1.5707963267948966,
+            "beta": 0.0,
+            "x": -1.75,
+            "y": 0.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-corridor_1-wall-0-corner-0-wrt-corridor_1-wall-0-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-wall-0-corner-0-wrt-corridor_1-wall-0-frame",
+            "as-seen-by": "corridor_1-wall-0-frame",
+            "unit": "M",
+            "x": -1.9499999999999995,
+            "y": 0.20000000000000018,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-corridor_1-wall-0-corner-1-wrt-corridor_1-wall-0-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-wall-0-corner-1-wrt-corridor_1-wall-0-frame",
+            "as-seen-by": "corridor_1-wall-0-frame",
+            "unit": "M",
+            "x": 1.9499999999999995,
+            "y": 0.20000000000000018,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-corridor_1-wall-0-corner-2-wrt-corridor_1-wall-0-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-wall-0-corner-2-wrt-corridor_1-wall-0-frame",
+            "as-seen-by": "corridor_1-wall-0-frame",
+            "unit": "M",
+            "x": 1.75,
+            "y": 0.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-corridor_1-wall-0-corner-3-wrt-corridor_1-wall-0-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-wall-0-corner-3-wrt-corridor_1-wall-0-frame",
+            "as-seen-by": "corridor_1-wall-0-frame",
+            "unit": "M",
+            "x": -1.75,
+            "y": 0.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-corridor_1-wall-0-corner-4-wrt-corridor_1-wall-0-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-wall-0-corner-4-wrt-corridor_1-wall-0-frame",
+            "as-seen-by": "corridor_1-wall-0-frame",
+            "unit": "M",
+            "x": -1.9499999999999995,
+            "y": 0.20000000000000018,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-corridor_1-wall-0-corner-5-wrt-corridor_1-wall-0-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-wall-0-corner-5-wrt-corridor_1-wall-0-frame",
+            "as-seen-by": "corridor_1-wall-0-frame",
+            "unit": "M",
+            "x": 1.9499999999999995,
+            "y": 0.20000000000000018,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-corridor_1-wall-0-corner-6-wrt-corridor_1-wall-0-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-wall-0-corner-6-wrt-corridor_1-wall-0-frame",
+            "as-seen-by": "corridor_1-wall-0-frame",
+            "unit": "M",
+            "x": 1.75,
+            "y": 0.0,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-corridor_1-wall-0-corner-7-wrt-corridor_1-wall-0-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-wall-0-corner-7-wrt-corridor_1-wall-0-frame",
+            "as-seen-by": "corridor_1-wall-0-frame",
+            "unit": "M",
+            "x": -1.75,
+            "y": 0.0,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-corridor_1-wall-1-corner-0-wrt-corridor_1-wall-1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-wall-1-corner-0-wrt-corridor_1-wall-1-frame",
+            "as-seen-by": "corridor_1-wall-1-frame",
+            "unit": "M",
+            "x": -5.2,
+            "y": 0.19999999999999982,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-corridor_1-wall-1-corner-1-wrt-corridor_1-wall-1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-wall-1-corner-1-wrt-corridor_1-wall-1-frame",
+            "as-seen-by": "corridor_1-wall-1-frame",
+            "unit": "M",
+            "x": 5.2,
+            "y": 0.2000000000000001,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-corridor_1-wall-1-corner-2-wrt-corridor_1-wall-1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-wall-1-corner-2-wrt-corridor_1-wall-1-frame",
+            "as-seen-by": "corridor_1-wall-1-frame",
+            "unit": "M",
+            "x": 5.0,
+            "y": 0.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-corridor_1-wall-1-corner-3-wrt-corridor_1-wall-1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-wall-1-corner-3-wrt-corridor_1-wall-1-frame",
+            "as-seen-by": "corridor_1-wall-1-frame",
+            "unit": "M",
+            "x": -5.0,
+            "y": 0.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-corridor_1-wall-1-corner-4-wrt-corridor_1-wall-1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-wall-1-corner-4-wrt-corridor_1-wall-1-frame",
+            "as-seen-by": "corridor_1-wall-1-frame",
+            "unit": "M",
+            "x": -5.2,
+            "y": 0.19999999999999982,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-corridor_1-wall-1-corner-5-wrt-corridor_1-wall-1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-wall-1-corner-5-wrt-corridor_1-wall-1-frame",
+            "as-seen-by": "corridor_1-wall-1-frame",
+            "unit": "M",
+            "x": 5.2,
+            "y": 0.2000000000000001,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-corridor_1-wall-1-corner-6-wrt-corridor_1-wall-1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-wall-1-corner-6-wrt-corridor_1-wall-1-frame",
+            "as-seen-by": "corridor_1-wall-1-frame",
+            "unit": "M",
+            "x": 5.0,
+            "y": 0.0,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-corridor_1-wall-1-corner-7-wrt-corridor_1-wall-1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-wall-1-corner-7-wrt-corridor_1-wall-1-frame",
+            "as-seen-by": "corridor_1-wall-1-frame",
+            "unit": "M",
+            "x": -5.0,
+            "y": 0.0,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-corridor_1-wall-2-corner-0-wrt-corridor_1-wall-2-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-wall-2-corner-0-wrt-corridor_1-wall-2-frame",
+            "as-seen-by": "corridor_1-wall-2-frame",
+            "unit": "M",
+            "x": -1.9500000000000004,
+            "y": 0.19999999999999993,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-corridor_1-wall-2-corner-1-wrt-corridor_1-wall-2-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-wall-2-corner-1-wrt-corridor_1-wall-2-frame",
+            "as-seen-by": "corridor_1-wall-2-frame",
+            "unit": "M",
+            "x": 1.9500000000000004,
+            "y": 0.20000000000000043,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-corridor_1-wall-2-corner-2-wrt-corridor_1-wall-2-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-wall-2-corner-2-wrt-corridor_1-wall-2-frame",
+            "as-seen-by": "corridor_1-wall-2-frame",
+            "unit": "M",
+            "x": 1.75,
+            "y": 0.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-corridor_1-wall-2-corner-3-wrt-corridor_1-wall-2-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-wall-2-corner-3-wrt-corridor_1-wall-2-frame",
+            "as-seen-by": "corridor_1-wall-2-frame",
+            "unit": "M",
+            "x": -1.75,
+            "y": 0.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-corridor_1-wall-2-corner-4-wrt-corridor_1-wall-2-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-wall-2-corner-4-wrt-corridor_1-wall-2-frame",
+            "as-seen-by": "corridor_1-wall-2-frame",
+            "unit": "M",
+            "x": -1.9500000000000004,
+            "y": 0.19999999999999993,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-corridor_1-wall-2-corner-5-wrt-corridor_1-wall-2-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-wall-2-corner-5-wrt-corridor_1-wall-2-frame",
+            "as-seen-by": "corridor_1-wall-2-frame",
+            "unit": "M",
+            "x": 1.9500000000000004,
+            "y": 0.20000000000000043,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-corridor_1-wall-2-corner-6-wrt-corridor_1-wall-2-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-wall-2-corner-6-wrt-corridor_1-wall-2-frame",
+            "as-seen-by": "corridor_1-wall-2-frame",
+            "unit": "M",
+            "x": 1.75,
+            "y": 0.0,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-corridor_1-wall-2-corner-7-wrt-corridor_1-wall-2-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-wall-2-corner-7-wrt-corridor_1-wall-2-frame",
+            "as-seen-by": "corridor_1-wall-2-frame",
+            "unit": "M",
+            "x": -1.75,
+            "y": 0.0,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-corridor_1-wall-3-corner-0-wrt-corridor_1-wall-3-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-wall-3-corner-0-wrt-corridor_1-wall-3-frame",
+            "as-seen-by": "corridor_1-wall-3-frame",
+            "unit": "M",
+            "x": -5.2,
+            "y": 0.2000000000000001,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-corridor_1-wall-3-corner-1-wrt-corridor_1-wall-3-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-wall-3-corner-1-wrt-corridor_1-wall-3-frame",
+            "as-seen-by": "corridor_1-wall-3-frame",
+            "unit": "M",
+            "x": 5.2,
+            "y": 0.19999999999999982,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-corridor_1-wall-3-corner-2-wrt-corridor_1-wall-3-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-wall-3-corner-2-wrt-corridor_1-wall-3-frame",
+            "as-seen-by": "corridor_1-wall-3-frame",
+            "unit": "M",
+            "x": 5.0,
+            "y": 0.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-corridor_1-wall-3-corner-3-wrt-corridor_1-wall-3-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-wall-3-corner-3-wrt-corridor_1-wall-3-frame",
+            "as-seen-by": "corridor_1-wall-3-frame",
+            "unit": "M",
+            "x": -5.0,
+            "y": 0.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-corridor_1-wall-3-corner-4-wrt-corridor_1-wall-3-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-wall-3-corner-4-wrt-corridor_1-wall-3-frame",
+            "as-seen-by": "corridor_1-wall-3-frame",
+            "unit": "M",
+            "x": -5.2,
+            "y": 0.2000000000000001,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-corridor_1-wall-3-corner-5-wrt-corridor_1-wall-3-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-wall-3-corner-5-wrt-corridor_1-wall-3-frame",
+            "as-seen-by": "corridor_1-wall-3-frame",
+            "unit": "M",
+            "x": 5.2,
+            "y": 0.19999999999999982,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-corridor_1-wall-3-corner-6-wrt-corridor_1-wall-3-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-wall-3-corner-6-wrt-corridor_1-wall-3-frame",
+            "as-seen-by": "corridor_1-wall-3-frame",
+            "unit": "M",
+            "x": 5.0,
+            "y": 0.0,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-corridor_1-wall-3-corner-7-wrt-corridor_1-wall-3-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-corridor_1-wall-3-corner-7-wrt-corridor_1-wall-3-frame",
+            "as-seen-by": "corridor_1-wall-3-frame",
+            "unit": "M",
+            "x": -5.0,
+            "y": 0.0,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-pose-column-pillar_1-frame-wrt-corridor_1-wall-3-frame",
+            "@type": [
+                "PoseReference", 
+                "PoseCoordinate", 
+                "VectorXYZ",
+                "EulerAngles"
+            ],
+            "of-pose": "pose-column-pillar_1-frame-wrt-corridor_1-wall-3-frame",
+            "as-seen-by": "corridor_1-wall-3-frame",
+            "unit": [
+                "M",
+                "RAD"
+            ],
+            "alpha": 0.8203047484373349,
+            "beta": 0.0,
+            "x": 1.0,
+            "y": 0.0
+        },
+        {
+            "@id": "coord-position-pillar_1-corner-0-wrt-column-pillar_1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-pillar_1-corner-0-wrt-column-pillar_1-frame",
+            "as-seen-by": "column-pillar_1-frame",
+            "unit": "M",
+            "x": -0.2,
+            "y": 0.2,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-pillar_1-corner-1-wrt-column-pillar_1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-pillar_1-corner-1-wrt-column-pillar_1-frame",
+            "as-seen-by": "column-pillar_1-frame",
+            "unit": "M",
+            "x": 0.2,
+            "y": 0.2,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-pillar_1-corner-2-wrt-column-pillar_1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-pillar_1-corner-2-wrt-column-pillar_1-frame",
+            "as-seen-by": "column-pillar_1-frame",
+            "unit": "M",
+            "x": 0.2,
+            "y": -0.2,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-pillar_1-corner-3-wrt-column-pillar_1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-pillar_1-corner-3-wrt-column-pillar_1-frame",
+            "as-seen-by": "column-pillar_1-frame",
+            "unit": "M",
+            "x": -0.2,
+            "y": -0.2,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-pillar_1-corner-4-wrt-column-pillar_1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-pillar_1-corner-4-wrt-column-pillar_1-frame",
+            "as-seen-by": "column-pillar_1-frame",
+            "unit": "M",
+            "x": -0.2,
+            "y": 0.2,
+            "z": 1.5
+        },
+        {
+            "@id": "coord-position-pillar_1-corner-5-wrt-column-pillar_1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-pillar_1-corner-5-wrt-column-pillar_1-frame",
+            "as-seen-by": "column-pillar_1-frame",
+            "unit": "M",
+            "x": 0.2,
+            "y": 0.2,
+            "z": 1.5
+        },
+        {
+            "@id": "coord-position-pillar_1-corner-6-wrt-column-pillar_1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-pillar_1-corner-6-wrt-column-pillar_1-frame",
+            "as-seen-by": "column-pillar_1-frame",
+            "unit": "M",
+            "x": 0.2,
+            "y": -0.2,
+            "z": 1.5
+        },
+        {
+            "@id": "coord-position-pillar_1-corner-7-wrt-column-pillar_1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-pillar_1-corner-7-wrt-column-pillar_1-frame",
+            "as-seen-by": "column-pillar_1-frame",
+            "unit": "M",
+            "x": -0.2,
+            "y": -0.2,
+            "z": 1.5
+        },
+        {
+            "@id": "coord-pose-column-pillar_2-frame-wrt-corridor_1-wall-1-frame",
+            "@type": [
+                "PoseReference", 
+                "PoseCoordinate", 
+                "VectorXYZ",
+                "EulerAngles"
+            ],
+            "of-pose": "pose-column-pillar_2-frame-wrt-corridor_1-wall-1-frame",
+            "as-seen-by": "corridor_1-wall-1-frame",
+            "unit": [
+                "M",
+                "RAD"
+            ],
+            "alpha": 0.8203047484373349,
+            "beta": 0.0,
+            "x": 1.0,
+            "y": 0.0
+        },
+        {
+            "@id": "coord-position-pillar_2-corner-0-wrt-column-pillar_2-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-pillar_2-corner-0-wrt-column-pillar_2-frame",
+            "as-seen-by": "column-pillar_2-frame",
+            "unit": "M",
+            "x": -0.2,
+            "y": 0.2,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-pillar_2-corner-1-wrt-column-pillar_2-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-pillar_2-corner-1-wrt-column-pillar_2-frame",
+            "as-seen-by": "column-pillar_2-frame",
+            "unit": "M",
+            "x": 0.2,
+            "y": 0.2,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-pillar_2-corner-2-wrt-column-pillar_2-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-pillar_2-corner-2-wrt-column-pillar_2-frame",
+            "as-seen-by": "column-pillar_2-frame",
+            "unit": "M",
+            "x": 0.2,
+            "y": -0.2,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-pillar_2-corner-3-wrt-column-pillar_2-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-pillar_2-corner-3-wrt-column-pillar_2-frame",
+            "as-seen-by": "column-pillar_2-frame",
+            "unit": "M",
+            "x": -0.2,
+            "y": -0.2,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-pillar_2-corner-4-wrt-column-pillar_2-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-pillar_2-corner-4-wrt-column-pillar_2-frame",
+            "as-seen-by": "column-pillar_2-frame",
+            "unit": "M",
+            "x": -0.2,
+            "y": 0.2,
+            "z": 1.5
+        },
+        {
+            "@id": "coord-position-pillar_2-corner-5-wrt-column-pillar_2-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-pillar_2-corner-5-wrt-column-pillar_2-frame",
+            "as-seen-by": "column-pillar_2-frame",
+            "unit": "M",
+            "x": 0.2,
+            "y": 0.2,
+            "z": 1.5
+        },
+        {
+            "@id": "coord-position-pillar_2-corner-6-wrt-column-pillar_2-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-pillar_2-corner-6-wrt-column-pillar_2-frame",
+            "as-seen-by": "column-pillar_2-frame",
+            "unit": "M",
+            "x": 0.2,
+            "y": -0.2,
+            "z": 1.5
+        },
+        {
+            "@id": "coord-position-pillar_2-corner-7-wrt-column-pillar_2-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-pillar_2-corner-7-wrt-column-pillar_2-frame",
+            "as-seen-by": "column-pillar_2-frame",
+            "unit": "M",
+            "x": -0.2,
+            "y": -0.2,
+            "z": 1.5
+        },
+        {
+            "@id": "coord-pose-room_c022-wall-0-frame-wrt-corridor_1-wall-3-frame",
+            "@type": [
+                "PoseReference", 
+                "PoseCoordinate", 
+                "VectorXYZ",
+                "EulerAngles"
+            ],
+            "of-pose": "pose-room_c022-wall-0-frame-wrt-corridor_1-wall-3-frame",
+            "as-seen-by": "corridor_1-wall-3-frame",
+            "unit": [
+                "M",
+                "RAD"
+            ],
+            "alpha": 3.141592653589793,
+            "beta": 0.0,
+            "x": 0.5,
+            "y": 0.7,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c022-corner-0-wrt-room_c022-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-corner-0-wrt-room_c022-frame",
+            "as-seen-by": "room_c022-frame",
+            "unit": "M",
+            "x": -1.75,
+            "y": 2.5,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c022-corner-1-wrt-room_c022-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-corner-1-wrt-room_c022-frame",
+            "as-seen-by": "room_c022-frame",
+            "unit": "M",
+            "x": 1.75,
+            "y": 2.5,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c022-corner-2-wrt-room_c022-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-corner-2-wrt-room_c022-frame",
+            "as-seen-by": "room_c022-frame",
+            "unit": "M",
+            "x": 1.75,
+            "y": -2.5,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c022-corner-3-wrt-room_c022-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-corner-3-wrt-room_c022-frame",
+            "as-seen-by": "room_c022-frame",
+            "unit": "M",
+            "x": -1.75,
+            "y": -2.5,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-pose-room_c022-wall-0-frame-wrt-room_c022-frame",
+            "@type": [
+                "PoseReference", 
+                "PoseCoordinate", 
+                "VectorXYZ",
+                "EulerAngles"
+            ],
+            "of-pose": "pose-room_c022-wall-0-frame-wrt-room_c022-frame",
+            "as-seen-by": "room_c022-frame",
+            "unit": [
+                "M",
+                "RAD"
+            ],
+            "alpha": 0.0,
+            "beta": 0.0,
+            "x": 0.0,
+            "y": 2.5,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-pose-room_c022-wall-1-frame-wrt-room_c022-frame",
+            "@type": [
+                "PoseReference", 
+                "PoseCoordinate", 
+                "VectorXYZ",
+                "EulerAngles"
+            ],
+            "of-pose": "pose-room_c022-wall-1-frame-wrt-room_c022-frame",
+            "as-seen-by": "room_c022-frame",
+            "unit": [
+                "M",
+                "RAD"
+            ],
+            "alpha": -1.5707963267948966,
+            "beta": 0.0,
+            "x": 1.75,
+            "y": 0.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-pose-room_c022-wall-2-frame-wrt-room_c022-frame",
+            "@type": [
+                "PoseReference", 
+                "PoseCoordinate", 
+                "VectorXYZ",
+                "EulerAngles"
+            ],
+            "of-pose": "pose-room_c022-wall-2-frame-wrt-room_c022-frame",
+            "as-seen-by": "room_c022-frame",
+            "unit": [
+                "M",
+                "RAD"
+            ],
+            "alpha": 3.141592653589793,
+            "beta": 0.0,
+            "x": 0.0,
+            "y": -2.5,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-pose-room_c022-wall-3-frame-wrt-room_c022-frame",
+            "@type": [
+                "PoseReference", 
+                "PoseCoordinate", 
+                "VectorXYZ",
+                "EulerAngles"
+            ],
+            "of-pose": "pose-room_c022-wall-3-frame-wrt-room_c022-frame",
+            "as-seen-by": "room_c022-frame",
+            "unit": [
+                "M",
+                "RAD"
+            ],
+            "alpha": 1.5707963267948966,
+            "beta": 0.0,
+            "x": -1.75,
+            "y": 0.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c022-wall-0-corner-0-wrt-room_c022-wall-0-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-wall-0-corner-0-wrt-room_c022-wall-0-frame",
+            "as-seen-by": "room_c022-wall-0-frame",
+            "unit": "M",
+            "x": -2.25,
+            "y": 0.5,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c022-wall-0-corner-1-wrt-room_c022-wall-0-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-wall-0-corner-1-wrt-room_c022-wall-0-frame",
+            "as-seen-by": "room_c022-wall-0-frame",
+            "unit": "M",
+            "x": 2.25,
+            "y": 0.5,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c022-wall-0-corner-2-wrt-room_c022-wall-0-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-wall-0-corner-2-wrt-room_c022-wall-0-frame",
+            "as-seen-by": "room_c022-wall-0-frame",
+            "unit": "M",
+            "x": 1.75,
+            "y": 0.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c022-wall-0-corner-3-wrt-room_c022-wall-0-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-wall-0-corner-3-wrt-room_c022-wall-0-frame",
+            "as-seen-by": "room_c022-wall-0-frame",
+            "unit": "M",
+            "x": -1.75,
+            "y": 0.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c022-wall-0-corner-4-wrt-room_c022-wall-0-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-wall-0-corner-4-wrt-room_c022-wall-0-frame",
+            "as-seen-by": "room_c022-wall-0-frame",
+            "unit": "M",
+            "x": -2.25,
+            "y": 0.5,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-room_c022-wall-0-corner-5-wrt-room_c022-wall-0-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-wall-0-corner-5-wrt-room_c022-wall-0-frame",
+            "as-seen-by": "room_c022-wall-0-frame",
+            "unit": "M",
+            "x": 2.25,
+            "y": 0.5,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-room_c022-wall-0-corner-6-wrt-room_c022-wall-0-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-wall-0-corner-6-wrt-room_c022-wall-0-frame",
+            "as-seen-by": "room_c022-wall-0-frame",
+            "unit": "M",
+            "x": 1.75,
+            "y": 0.0,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-room_c022-wall-0-corner-7-wrt-room_c022-wall-0-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-wall-0-corner-7-wrt-room_c022-wall-0-frame",
+            "as-seen-by": "room_c022-wall-0-frame",
+            "unit": "M",
+            "x": -1.75,
+            "y": 0.0,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-room_c022-wall-1-corner-0-wrt-room_c022-wall-1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-wall-1-corner-0-wrt-room_c022-wall-1-frame",
+            "as-seen-by": "room_c022-wall-1-frame",
+            "unit": "M",
+            "x": -3.0,
+            "y": 0.5000000000000002,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c022-wall-1-corner-1-wrt-room_c022-wall-1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-wall-1-corner-1-wrt-room_c022-wall-1-frame",
+            "as-seen-by": "room_c022-wall-1-frame",
+            "unit": "M",
+            "x": 3.0,
+            "y": 0.49999999999999983,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c022-wall-1-corner-2-wrt-room_c022-wall-1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-wall-1-corner-2-wrt-room_c022-wall-1-frame",
+            "as-seen-by": "room_c022-wall-1-frame",
+            "unit": "M",
+            "x": 2.5,
+            "y": 0.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c022-wall-1-corner-3-wrt-room_c022-wall-1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-wall-1-corner-3-wrt-room_c022-wall-1-frame",
+            "as-seen-by": "room_c022-wall-1-frame",
+            "unit": "M",
+            "x": -2.5,
+            "y": 0.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c022-wall-1-corner-4-wrt-room_c022-wall-1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-wall-1-corner-4-wrt-room_c022-wall-1-frame",
+            "as-seen-by": "room_c022-wall-1-frame",
+            "unit": "M",
+            "x": -3.0,
+            "y": 0.5000000000000002,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-room_c022-wall-1-corner-5-wrt-room_c022-wall-1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-wall-1-corner-5-wrt-room_c022-wall-1-frame",
+            "as-seen-by": "room_c022-wall-1-frame",
+            "unit": "M",
+            "x": 3.0,
+            "y": 0.49999999999999983,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-room_c022-wall-1-corner-6-wrt-room_c022-wall-1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-wall-1-corner-6-wrt-room_c022-wall-1-frame",
+            "as-seen-by": "room_c022-wall-1-frame",
+            "unit": "M",
+            "x": 2.5,
+            "y": 0.0,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-room_c022-wall-1-corner-7-wrt-room_c022-wall-1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-wall-1-corner-7-wrt-room_c022-wall-1-frame",
+            "as-seen-by": "room_c022-wall-1-frame",
+            "unit": "M",
+            "x": -2.5,
+            "y": 0.0,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-room_c022-wall-2-corner-0-wrt-room_c022-wall-2-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-wall-2-corner-0-wrt-room_c022-wall-2-frame",
+            "as-seen-by": "room_c022-wall-2-frame",
+            "unit": "M",
+            "x": -2.25,
+            "y": 0.4999999999999997,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c022-wall-2-corner-1-wrt-room_c022-wall-2-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-wall-2-corner-1-wrt-room_c022-wall-2-frame",
+            "as-seen-by": "room_c022-wall-2-frame",
+            "unit": "M",
+            "x": 2.25,
+            "y": 0.5000000000000002,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c022-wall-2-corner-2-wrt-room_c022-wall-2-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-wall-2-corner-2-wrt-room_c022-wall-2-frame",
+            "as-seen-by": "room_c022-wall-2-frame",
+            "unit": "M",
+            "x": 1.75,
+            "y": 0.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c022-wall-2-corner-3-wrt-room_c022-wall-2-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-wall-2-corner-3-wrt-room_c022-wall-2-frame",
+            "as-seen-by": "room_c022-wall-2-frame",
+            "unit": "M",
+            "x": -1.75,
+            "y": 0.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c022-wall-2-corner-4-wrt-room_c022-wall-2-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-wall-2-corner-4-wrt-room_c022-wall-2-frame",
+            "as-seen-by": "room_c022-wall-2-frame",
+            "unit": "M",
+            "x": -2.25,
+            "y": 0.4999999999999997,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-room_c022-wall-2-corner-5-wrt-room_c022-wall-2-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-wall-2-corner-5-wrt-room_c022-wall-2-frame",
+            "as-seen-by": "room_c022-wall-2-frame",
+            "unit": "M",
+            "x": 2.25,
+            "y": 0.5000000000000002,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-room_c022-wall-2-corner-6-wrt-room_c022-wall-2-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-wall-2-corner-6-wrt-room_c022-wall-2-frame",
+            "as-seen-by": "room_c022-wall-2-frame",
+            "unit": "M",
+            "x": 1.75,
+            "y": 0.0,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-room_c022-wall-2-corner-7-wrt-room_c022-wall-2-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-wall-2-corner-7-wrt-room_c022-wall-2-frame",
+            "as-seen-by": "room_c022-wall-2-frame",
+            "unit": "M",
+            "x": -1.75,
+            "y": 0.0,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-room_c022-wall-3-corner-0-wrt-room_c022-wall-3-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-wall-3-corner-0-wrt-room_c022-wall-3-frame",
+            "as-seen-by": "room_c022-wall-3-frame",
+            "unit": "M",
+            "x": -3.0,
+            "y": 0.49999999999999983,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c022-wall-3-corner-1-wrt-room_c022-wall-3-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-wall-3-corner-1-wrt-room_c022-wall-3-frame",
+            "as-seen-by": "room_c022-wall-3-frame",
+            "unit": "M",
+            "x": 3.0,
+            "y": 0.5000000000000002,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c022-wall-3-corner-2-wrt-room_c022-wall-3-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-wall-3-corner-2-wrt-room_c022-wall-3-frame",
+            "as-seen-by": "room_c022-wall-3-frame",
+            "unit": "M",
+            "x": 2.5,
+            "y": 0.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c022-wall-3-corner-3-wrt-room_c022-wall-3-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-wall-3-corner-3-wrt-room_c022-wall-3-frame",
+            "as-seen-by": "room_c022-wall-3-frame",
+            "unit": "M",
+            "x": -2.5,
+            "y": 0.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c022-wall-3-corner-4-wrt-room_c022-wall-3-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-wall-3-corner-4-wrt-room_c022-wall-3-frame",
+            "as-seen-by": "room_c022-wall-3-frame",
+            "unit": "M",
+            "x": -3.0,
+            "y": 0.49999999999999983,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-room_c022-wall-3-corner-5-wrt-room_c022-wall-3-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-wall-3-corner-5-wrt-room_c022-wall-3-frame",
+            "as-seen-by": "room_c022-wall-3-frame",
+            "unit": "M",
+            "x": 3.0,
+            "y": 0.5000000000000002,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-room_c022-wall-3-corner-6-wrt-room_c022-wall-3-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-wall-3-corner-6-wrt-room_c022-wall-3-frame",
+            "as-seen-by": "room_c022-wall-3-frame",
+            "unit": "M",
+            "x": 2.5,
+            "y": 0.0,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-room_c022-wall-3-corner-7-wrt-room_c022-wall-3-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022-wall-3-corner-7-wrt-room_c022-wall-3-frame",
+            "as-seen-by": "room_c022-wall-3-frame",
+            "unit": "M",
+            "x": -2.5,
+            "y": 0.0,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-pose-room_c025-wall-0-frame-wrt-corridor_1-wall-1-frame",
+            "@type": [
+                "PoseReference", 
+                "PoseCoordinate", 
+                "VectorXYZ",
+                "EulerAngles"
+            ],
+            "of-pose": "pose-room_c025-wall-0-frame-wrt-corridor_1-wall-1-frame",
+            "as-seen-by": "corridor_1-wall-1-frame",
+            "unit": [
+                "M",
+                "RAD"
+            ],
+            "alpha": 3.141592653589793,
+            "beta": 0.0,
+            "x": 1.0,
+            "y": 0.2,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c025-corner-0-wrt-room_c025-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-corner-0-wrt-room_c025-frame",
+            "as-seen-by": "room_c025-frame",
+            "unit": "M",
+            "x": -1.75,
+            "y": 2.5,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c025-corner-1-wrt-room_c025-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-corner-1-wrt-room_c025-frame",
+            "as-seen-by": "room_c025-frame",
+            "unit": "M",
+            "x": 1.75,
+            "y": 2.5,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c025-corner-2-wrt-room_c025-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-corner-2-wrt-room_c025-frame",
+            "as-seen-by": "room_c025-frame",
+            "unit": "M",
+            "x": 1.75,
+            "y": -2.5,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c025-corner-3-wrt-room_c025-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-corner-3-wrt-room_c025-frame",
+            "as-seen-by": "room_c025-frame",
+            "unit": "M",
+            "x": -1.75,
+            "y": -2.5,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-pose-room_c025-wall-0-frame-wrt-room_c025-frame",
+            "@type": [
+                "PoseReference", 
+                "PoseCoordinate", 
+                "VectorXYZ",
+                "EulerAngles"
+            ],
+            "of-pose": "pose-room_c025-wall-0-frame-wrt-room_c025-frame",
+            "as-seen-by": "room_c025-frame",
+            "unit": [
+                "M",
+                "RAD"
+            ],
+            "alpha": 0.0,
+            "beta": 0.0,
+            "x": 0.0,
+            "y": 2.5,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-pose-room_c025-wall-1-frame-wrt-room_c025-frame",
+            "@type": [
+                "PoseReference", 
+                "PoseCoordinate", 
+                "VectorXYZ",
+                "EulerAngles"
+            ],
+            "of-pose": "pose-room_c025-wall-1-frame-wrt-room_c025-frame",
+            "as-seen-by": "room_c025-frame",
+            "unit": [
+                "M",
+                "RAD"
+            ],
+            "alpha": -1.5707963267948966,
+            "beta": 0.0,
+            "x": 1.75,
+            "y": 0.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-pose-room_c025-wall-2-frame-wrt-room_c025-frame",
+            "@type": [
+                "PoseReference", 
+                "PoseCoordinate", 
+                "VectorXYZ",
+                "EulerAngles"
+            ],
+            "of-pose": "pose-room_c025-wall-2-frame-wrt-room_c025-frame",
+            "as-seen-by": "room_c025-frame",
+            "unit": [
+                "M",
+                "RAD"
+            ],
+            "alpha": 3.141592653589793,
+            "beta": 0.0,
+            "x": 0.0,
+            "y": -2.5,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-pose-room_c025-wall-3-frame-wrt-room_c025-frame",
+            "@type": [
+                "PoseReference", 
+                "PoseCoordinate", 
+                "VectorXYZ",
+                "EulerAngles"
+            ],
+            "of-pose": "pose-room_c025-wall-3-frame-wrt-room_c025-frame",
+            "as-seen-by": "room_c025-frame",
+            "unit": [
+                "M",
+                "RAD"
+            ],
+            "alpha": 1.5707963267948966,
+            "beta": 0.0,
+            "x": -1.75,
+            "y": 0.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c025-wall-0-corner-0-wrt-room_c025-wall-0-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-wall-0-corner-0-wrt-room_c025-wall-0-frame",
+            "as-seen-by": "room_c025-wall-0-frame",
+            "unit": "M",
+            "x": -2.25,
+            "y": 0.5,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c025-wall-0-corner-1-wrt-room_c025-wall-0-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-wall-0-corner-1-wrt-room_c025-wall-0-frame",
+            "as-seen-by": "room_c025-wall-0-frame",
+            "unit": "M",
+            "x": 2.25,
+            "y": 0.5,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c025-wall-0-corner-2-wrt-room_c025-wall-0-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-wall-0-corner-2-wrt-room_c025-wall-0-frame",
+            "as-seen-by": "room_c025-wall-0-frame",
+            "unit": "M",
+            "x": 1.75,
+            "y": 0.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c025-wall-0-corner-3-wrt-room_c025-wall-0-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-wall-0-corner-3-wrt-room_c025-wall-0-frame",
+            "as-seen-by": "room_c025-wall-0-frame",
+            "unit": "M",
+            "x": -1.75,
+            "y": 0.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c025-wall-0-corner-4-wrt-room_c025-wall-0-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-wall-0-corner-4-wrt-room_c025-wall-0-frame",
+            "as-seen-by": "room_c025-wall-0-frame",
+            "unit": "M",
+            "x": -2.25,
+            "y": 0.5,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-room_c025-wall-0-corner-5-wrt-room_c025-wall-0-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-wall-0-corner-5-wrt-room_c025-wall-0-frame",
+            "as-seen-by": "room_c025-wall-0-frame",
+            "unit": "M",
+            "x": 2.25,
+            "y": 0.5,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-room_c025-wall-0-corner-6-wrt-room_c025-wall-0-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-wall-0-corner-6-wrt-room_c025-wall-0-frame",
+            "as-seen-by": "room_c025-wall-0-frame",
+            "unit": "M",
+            "x": 1.75,
+            "y": 0.0,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-room_c025-wall-0-corner-7-wrt-room_c025-wall-0-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-wall-0-corner-7-wrt-room_c025-wall-0-frame",
+            "as-seen-by": "room_c025-wall-0-frame",
+            "unit": "M",
+            "x": -1.75,
+            "y": 0.0,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-room_c025-wall-1-corner-0-wrt-room_c025-wall-1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-wall-1-corner-0-wrt-room_c025-wall-1-frame",
+            "as-seen-by": "room_c025-wall-1-frame",
+            "unit": "M",
+            "x": -3.0,
+            "y": 0.5000000000000002,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c025-wall-1-corner-1-wrt-room_c025-wall-1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-wall-1-corner-1-wrt-room_c025-wall-1-frame",
+            "as-seen-by": "room_c025-wall-1-frame",
+            "unit": "M",
+            "x": 3.0,
+            "y": 0.49999999999999983,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c025-wall-1-corner-2-wrt-room_c025-wall-1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-wall-1-corner-2-wrt-room_c025-wall-1-frame",
+            "as-seen-by": "room_c025-wall-1-frame",
+            "unit": "M",
+            "x": 2.5,
+            "y": 0.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c025-wall-1-corner-3-wrt-room_c025-wall-1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-wall-1-corner-3-wrt-room_c025-wall-1-frame",
+            "as-seen-by": "room_c025-wall-1-frame",
+            "unit": "M",
+            "x": -2.5,
+            "y": 0.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c025-wall-1-corner-4-wrt-room_c025-wall-1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-wall-1-corner-4-wrt-room_c025-wall-1-frame",
+            "as-seen-by": "room_c025-wall-1-frame",
+            "unit": "M",
+            "x": -3.0,
+            "y": 0.5000000000000002,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-room_c025-wall-1-corner-5-wrt-room_c025-wall-1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-wall-1-corner-5-wrt-room_c025-wall-1-frame",
+            "as-seen-by": "room_c025-wall-1-frame",
+            "unit": "M",
+            "x": 3.0,
+            "y": 0.49999999999999983,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-room_c025-wall-1-corner-6-wrt-room_c025-wall-1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-wall-1-corner-6-wrt-room_c025-wall-1-frame",
+            "as-seen-by": "room_c025-wall-1-frame",
+            "unit": "M",
+            "x": 2.5,
+            "y": 0.0,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-room_c025-wall-1-corner-7-wrt-room_c025-wall-1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-wall-1-corner-7-wrt-room_c025-wall-1-frame",
+            "as-seen-by": "room_c025-wall-1-frame",
+            "unit": "M",
+            "x": -2.5,
+            "y": 0.0,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-room_c025-wall-2-corner-0-wrt-room_c025-wall-2-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-wall-2-corner-0-wrt-room_c025-wall-2-frame",
+            "as-seen-by": "room_c025-wall-2-frame",
+            "unit": "M",
+            "x": -2.25,
+            "y": 0.4999999999999997,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c025-wall-2-corner-1-wrt-room_c025-wall-2-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-wall-2-corner-1-wrt-room_c025-wall-2-frame",
+            "as-seen-by": "room_c025-wall-2-frame",
+            "unit": "M",
+            "x": 2.25,
+            "y": 0.5000000000000002,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c025-wall-2-corner-2-wrt-room_c025-wall-2-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-wall-2-corner-2-wrt-room_c025-wall-2-frame",
+            "as-seen-by": "room_c025-wall-2-frame",
+            "unit": "M",
+            "x": 1.75,
+            "y": 0.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c025-wall-2-corner-3-wrt-room_c025-wall-2-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-wall-2-corner-3-wrt-room_c025-wall-2-frame",
+            "as-seen-by": "room_c025-wall-2-frame",
+            "unit": "M",
+            "x": -1.75,
+            "y": 0.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c025-wall-2-corner-4-wrt-room_c025-wall-2-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-wall-2-corner-4-wrt-room_c025-wall-2-frame",
+            "as-seen-by": "room_c025-wall-2-frame",
+            "unit": "M",
+            "x": -2.25,
+            "y": 0.4999999999999997,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-room_c025-wall-2-corner-5-wrt-room_c025-wall-2-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-wall-2-corner-5-wrt-room_c025-wall-2-frame",
+            "as-seen-by": "room_c025-wall-2-frame",
+            "unit": "M",
+            "x": 2.25,
+            "y": 0.5000000000000002,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-room_c025-wall-2-corner-6-wrt-room_c025-wall-2-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-wall-2-corner-6-wrt-room_c025-wall-2-frame",
+            "as-seen-by": "room_c025-wall-2-frame",
+            "unit": "M",
+            "x": 1.75,
+            "y": 0.0,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-room_c025-wall-2-corner-7-wrt-room_c025-wall-2-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-wall-2-corner-7-wrt-room_c025-wall-2-frame",
+            "as-seen-by": "room_c025-wall-2-frame",
+            "unit": "M",
+            "x": -1.75,
+            "y": 0.0,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-room_c025-wall-3-corner-0-wrt-room_c025-wall-3-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-wall-3-corner-0-wrt-room_c025-wall-3-frame",
+            "as-seen-by": "room_c025-wall-3-frame",
+            "unit": "M",
+            "x": -3.0,
+            "y": 0.49999999999999983,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c025-wall-3-corner-1-wrt-room_c025-wall-3-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-wall-3-corner-1-wrt-room_c025-wall-3-frame",
+            "as-seen-by": "room_c025-wall-3-frame",
+            "unit": "M",
+            "x": 3.0,
+            "y": 0.5000000000000002,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c025-wall-3-corner-2-wrt-room_c025-wall-3-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-wall-3-corner-2-wrt-room_c025-wall-3-frame",
+            "as-seen-by": "room_c025-wall-3-frame",
+            "unit": "M",
+            "x": 2.5,
+            "y": 0.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c025-wall-3-corner-3-wrt-room_c025-wall-3-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-wall-3-corner-3-wrt-room_c025-wall-3-frame",
+            "as-seen-by": "room_c025-wall-3-frame",
+            "unit": "M",
+            "x": -2.5,
+            "y": 0.0,
+            "z": 0.0
+        },
+        {
+            "@id": "coord-position-room_c025-wall-3-corner-4-wrt-room_c025-wall-3-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-wall-3-corner-4-wrt-room_c025-wall-3-frame",
+            "as-seen-by": "room_c025-wall-3-frame",
+            "unit": "M",
+            "x": -3.0,
+            "y": 0.49999999999999983,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-room_c025-wall-3-corner-5-wrt-room_c025-wall-3-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-wall-3-corner-5-wrt-room_c025-wall-3-frame",
+            "as-seen-by": "room_c025-wall-3-frame",
+            "unit": "M",
+            "x": 3.0,
+            "y": 0.5000000000000002,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-room_c025-wall-3-corner-6-wrt-room_c025-wall-3-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-wall-3-corner-6-wrt-room_c025-wall-3-frame",
+            "as-seen-by": "room_c025-wall-3-frame",
+            "unit": "M",
+            "x": 2.5,
+            "y": 0.0,
+            "z": 3.0
+        },
+        {
+            "@id": "coord-position-room_c025-wall-3-corner-7-wrt-room_c025-wall-3-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025-wall-3-corner-7-wrt-room_c025-wall-3-frame",
+            "as-seen-by": "room_c025-wall-3-frame",
+            "unit": "M",
+            "x": -2.5,
+            "y": 0.0,
+            "z": 3.0
+        },        {
+            "@id": "coord-pose-entryway-room_c022_door_1-frame-wrt-room_c022-wall-0-frame",
+            "@type": [
+                "PoseReference", 
+                "PoseCoordinate", 
+                "VectorXYZ",
+                "EulerAngles"
+            ],
+            "of-pose": "pose-entryway-room_c022_door_1-frame-wrt-room_c022-wall-0-frame",
+            "as-seen-by": "room_c022-wall-0-frame",
+            "unit": [
+                "M",
+                "RAD"
+            ],
+            "alpha": 0.0,
+            "beta": 0.0,
+            "x": 1.0,
+            "y": 0.0,
+            "z": 1.1
+        },
+        {
+            "@id": "coord-position-room_c022_door_1-corner-0-wrt-entryway-room_c022_door_1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022_door_1-corner-0-wrt-entryway-room_c022_door_1-frame",
+            "as-seen-by": "entryway-room_c022_door_1-frame",
+            "unit": "M",
+            "x": -0.4,
+            "y": 0.0,
+            "z": 1.1
+        },
+        {
+            "@id": "coord-position-room_c022_door_1-corner-1-wrt-entryway-room_c022_door_1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022_door_1-corner-1-wrt-entryway-room_c022_door_1-frame",
+            "as-seen-by": "entryway-room_c022_door_1-frame",
+            "unit": "M",
+            "x": 0.4,
+            "y": 0.0,
+            "z": 1.1
+        },
+        {
+            "@id": "coord-position-room_c022_door_1-corner-2-wrt-entryway-room_c022_door_1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022_door_1-corner-2-wrt-entryway-room_c022_door_1-frame",
+            "as-seen-by": "entryway-room_c022_door_1-frame",
+            "unit": "M",
+            "x": 0.4,
+            "y": 0.0,
+            "z": -1.1
+        },
+        {
+            "@id": "coord-position-room_c022_door_1-corner-3-wrt-entryway-room_c022_door_1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022_door_1-corner-3-wrt-entryway-room_c022_door_1-frame",
+            "as-seen-by": "entryway-room_c022_door_1-frame",
+            "unit": "M",
+            "x": -0.4,
+            "y": 0.0,
+            "z": -1.1
+        },
+        {
+            "@id": "coord-position-room_c022_door_1-corner-4-wrt-entryway-room_c022_door_1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022_door_1-corner-4-wrt-entryway-room_c022_door_1-frame",
+            "as-seen-by": "entryway-room_c022_door_1-frame",
+            "unit": "M",
+            "x": -0.4,
+            "y": 0.7,
+            "z": 1.1
+        },
+        {
+            "@id": "coord-position-room_c022_door_1-corner-5-wrt-entryway-room_c022_door_1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022_door_1-corner-5-wrt-entryway-room_c022_door_1-frame",
+            "as-seen-by": "entryway-room_c022_door_1-frame",
+            "unit": "M",
+            "x": 0.4,
+            "y": 0.7,
+            "z": 1.1
+        },
+        {
+            "@id": "coord-position-room_c022_door_1-corner-6-wrt-entryway-room_c022_door_1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022_door_1-corner-6-wrt-entryway-room_c022_door_1-frame",
+            "as-seen-by": "entryway-room_c022_door_1-frame",
+            "unit": "M",
+            "x": 0.4,
+            "y": 0.7,
+            "z": -1.1
+        },
+        {
+            "@id": "coord-position-room_c022_door_1-corner-7-wrt-entryway-room_c022_door_1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c022_door_1-corner-7-wrt-entryway-room_c022_door_1-frame",
+            "as-seen-by": "entryway-room_c022_door_1-frame",
+            "unit": "M",
+            "x": -0.4,
+            "y": 0.7,
+            "z": -1.1
+        },
+        {
+            "@id": "coord-pose-entryway-room_c025_door_1-frame-wrt-room_c025-wall-0-frame",
+            "@type": [
+                "PoseReference", 
+                "PoseCoordinate", 
+                "VectorXYZ",
+                "EulerAngles"
+            ],
+            "of-pose": "pose-entryway-room_c025_door_1-frame-wrt-room_c025-wall-0-frame",
+            "as-seen-by": "room_c025-wall-0-frame",
+            "unit": [
+                "M",
+                "RAD"
+            ],
+            "alpha": 0.0,
+            "beta": 0.0,
+            "x": -1.0,
+            "y": 0.0,
+            "z": 1.1
+        },
+        {
+            "@id": "coord-position-room_c025_door_1-corner-0-wrt-entryway-room_c025_door_1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025_door_1-corner-0-wrt-entryway-room_c025_door_1-frame",
+            "as-seen-by": "entryway-room_c025_door_1-frame",
+            "unit": "M",
+            "x": -0.4,
+            "y": 0.0,
+            "z": 1.1
+        },
+        {
+            "@id": "coord-position-room_c025_door_1-corner-1-wrt-entryway-room_c025_door_1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025_door_1-corner-1-wrt-entryway-room_c025_door_1-frame",
+            "as-seen-by": "entryway-room_c025_door_1-frame",
+            "unit": "M",
+            "x": 0.4,
+            "y": 0.0,
+            "z": 1.1
+        },
+        {
+            "@id": "coord-position-room_c025_door_1-corner-2-wrt-entryway-room_c025_door_1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025_door_1-corner-2-wrt-entryway-room_c025_door_1-frame",
+            "as-seen-by": "entryway-room_c025_door_1-frame",
+            "unit": "M",
+            "x": 0.4,
+            "y": 0.0,
+            "z": -1.1
+        },
+        {
+            "@id": "coord-position-room_c025_door_1-corner-3-wrt-entryway-room_c025_door_1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025_door_1-corner-3-wrt-entryway-room_c025_door_1-frame",
+            "as-seen-by": "entryway-room_c025_door_1-frame",
+            "unit": "M",
+            "x": -0.4,
+            "y": 0.0,
+            "z": -1.1
+        },
+        {
+            "@id": "coord-position-room_c025_door_1-corner-4-wrt-entryway-room_c025_door_1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025_door_1-corner-4-wrt-entryway-room_c025_door_1-frame",
+            "as-seen-by": "entryway-room_c025_door_1-frame",
+            "unit": "M",
+            "x": -0.4,
+            "y": 0.7,
+            "z": 1.1
+        },
+        {
+            "@id": "coord-position-room_c025_door_1-corner-5-wrt-entryway-room_c025_door_1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025_door_1-corner-5-wrt-entryway-room_c025_door_1-frame",
+            "as-seen-by": "entryway-room_c025_door_1-frame",
+            "unit": "M",
+            "x": 0.4,
+            "y": 0.7,
+            "z": 1.1
+        },
+        {
+            "@id": "coord-position-room_c025_door_1-corner-6-wrt-entryway-room_c025_door_1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025_door_1-corner-6-wrt-entryway-room_c025_door_1-frame",
+            "as-seen-by": "entryway-room_c025_door_1-frame",
+            "unit": "M",
+            "x": 0.4,
+            "y": 0.7,
+            "z": -1.1
+        },
+        {
+            "@id": "coord-position-room_c025_door_1-corner-7-wrt-entryway-room_c025_door_1-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-room_c025_door_1-corner-7-wrt-entryway-room_c025_door_1-frame",
+            "as-seen-by": "entryway-room_c025_door_1-frame",
+            "unit": "M",
+            "x": -0.4,
+            "y": 0.7,
+            "z": -1.1
+        },
+        {
+            "@id": "coord-pose-entryway-junction_corridor_1_transition-frame-wrt-corridor_1-wall-0-frame",
+            "@type": [
+                "PoseReference", 
+                "PoseCoordinate", 
+                "VectorXYZ",
+                "EulerAngles"
+            ],
+            "of-pose": "pose-entryway-junction_corridor_1_transition-frame-wrt-corridor_1-wall-0-frame",
+            "as-seen-by": "corridor_1-wall-0-frame",
+            "unit": [
+                "M",
+                "RAD"
+            ],
+            "alpha": 0.0,
+            "beta": 0.0,
+            "x": 0.0,
+            "y": 0.0,
+            "z": 1.5
+        },
+        {
+            "@id": "coord-position-junction_corridor_1_transition-corner-0-wrt-entryway-junction_corridor_1_transition-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-junction_corridor_1_transition-corner-0-wrt-entryway-junction_corridor_1_transition-frame",
+            "as-seen-by": "entryway-junction_corridor_1_transition-frame",
+            "unit": "M",
+            "x": -1.7495,
+            "y": 0.0,
+            "z": 1.5
+        },
+        {
+            "@id": "coord-position-junction_corridor_1_transition-corner-1-wrt-entryway-junction_corridor_1_transition-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-junction_corridor_1_transition-corner-1-wrt-entryway-junction_corridor_1_transition-frame",
+            "as-seen-by": "entryway-junction_corridor_1_transition-frame",
+            "unit": "M",
+            "x": 1.7495,
+            "y": 0.0,
+            "z": 1.5
+        },
+        {
+            "@id": "coord-position-junction_corridor_1_transition-corner-2-wrt-entryway-junction_corridor_1_transition-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-junction_corridor_1_transition-corner-2-wrt-entryway-junction_corridor_1_transition-frame",
+            "as-seen-by": "entryway-junction_corridor_1_transition-frame",
+            "unit": "M",
+            "x": 1.7495,
+            "y": 0.0,
+            "z": -1.5
+        },
+        {
+            "@id": "coord-position-junction_corridor_1_transition-corner-3-wrt-entryway-junction_corridor_1_transition-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-junction_corridor_1_transition-corner-3-wrt-entryway-junction_corridor_1_transition-frame",
+            "as-seen-by": "entryway-junction_corridor_1_transition-frame",
+            "unit": "M",
+            "x": -1.7495,
+            "y": 0.0,
+            "z": -1.5
+        },
+        {
+            "@id": "coord-position-junction_corridor_1_transition-corner-4-wrt-entryway-junction_corridor_1_transition-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-junction_corridor_1_transition-corner-4-wrt-entryway-junction_corridor_1_transition-frame",
+            "as-seen-by": "entryway-junction_corridor_1_transition-frame",
+            "unit": "M",
+            "x": -1.7495,
+            "y": 0.2,
+            "z": 1.5
+        },
+        {
+            "@id": "coord-position-junction_corridor_1_transition-corner-5-wrt-entryway-junction_corridor_1_transition-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-junction_corridor_1_transition-corner-5-wrt-entryway-junction_corridor_1_transition-frame",
+            "as-seen-by": "entryway-junction_corridor_1_transition-frame",
+            "unit": "M",
+            "x": 1.7495,
+            "y": 0.2,
+            "z": 1.5
+        },
+        {
+            "@id": "coord-position-junction_corridor_1_transition-corner-6-wrt-entryway-junction_corridor_1_transition-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-junction_corridor_1_transition-corner-6-wrt-entryway-junction_corridor_1_transition-frame",
+            "as-seen-by": "entryway-junction_corridor_1_transition-frame",
+            "unit": "M",
+            "x": 1.7495,
+            "y": 0.2,
+            "z": -1.5
+        },
+        {
+            "@id": "coord-position-junction_corridor_1_transition-corner-7-wrt-entryway-junction_corridor_1_transition-frame",
+            "@type": [
+                "PositionReference", 
+                "PositionCoordinate", 
+                "VectorXYZ"
+            ],
+            "of-position": "position-junction_corridor_1_transition-corner-7-wrt-entryway-junction_corridor_1_transition-frame",
+            "as-seen-by": "entryway-junction_corridor_1_transition-frame",
+            "unit": "M",
+            "x": -1.7495,
+            "y": 0.2,
+            "z": -1.5
+        }
+    ]
+}
