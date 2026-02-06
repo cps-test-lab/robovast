@@ -316,10 +316,10 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
 
         gen_time = datetime.now().isoformat()
         for c in current_configs:
-            c["abstract_scenario"] = f"scenarios:{scenario_id}"
+            c["abstract_scenario"] = scenario_id
             c["gen_time"] = gen_time
             c["parent_dir"] = parent_dir
-            c["source_files"] = [f"scenarios:{scenario_id}", f"scenarios:{vast_file}"]
+            c["source_files"] = [scenario_id, vast_file]
         configs.extend(current_configs)
     if configs:
         save_scenario_configs_file(configs, os.path.join(output_dir, 'scenario.configs'))
@@ -335,10 +335,15 @@ def scenario_gen_prov(configs):
         parent_scenario_id = config.get("abstract_scenario")
         parent_dir = config.get("parent_dir")
         concr_scenario_id = f"{parent_dir}/configs/{config['name']}-{i:03d}.config"
+
+        envmnt = [i[1] for i in config.get("_config_files", [])]
+        prefix = os.path.commonpath(envmnt)
+
         concr_scenario_prov = _create_concrete_scenario(
             concr_scenario_id, parent_scenario_id,
             gen_time=config.get("gen_time"),
             source_files=config.get("source_files"),
+            references=[os.path.join(os.path.basename(prefix), os.path.relpath(e, prefix)) for e in envmnt]
         )
         prov.append(concr_scenario_prov)
     return prov
