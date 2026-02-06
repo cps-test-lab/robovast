@@ -30,11 +30,17 @@ def _create_abstract_scenario(scenario_id):
     }
 
 
-def _create_concrete_scenario(scenario_id, location=None, parent_scenario_id=None):
+def _create_concrete_scenario(scenario_id, location=None, parent_scenario_id=None, **kwargs):
     node = {
         "@id": f"scenarios:{scenario_id}",
         "@type": ["ConcreteScenario", "Entity"],
     }
+    if kwargs.get("gen_time") is not None:
+        node["generatedAtTime"] = kwargs["gen_time"]
+    if kwargs.get("source_files") is not None:
+        node["wasGeneratedBy"] = {
+            "uses": kwargs.get("source_files"),
+        }
     if location is not None:
         node["atLocation"] = f"scenarios:{scenario_id}"
     if parent_scenario_id is not None:

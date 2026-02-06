@@ -233,13 +233,14 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     if test_files_filter:
         scenario_files = collect_filtered_files(test_files_filter, os.path.dirname(variation_file))
         progress_update_callback(f"Loaded {len(test_files_filter)} filter patterns (found {len(scenario_files)} files).")
+    parent_dir = os.path.split(os.path.split(variation_file)[0])[-1]
+    vast_file = f"{parent_dir}/{os.path.split(variation_file)[-1]}"
 
     configs = []
     variation_gui_classes = {}
     for scenario in scenarios:
         scenario_file_name = scenario.get('scenario_file')
         scenario_file = os.path.join(os.path.dirname(variation_file), scenario_file_name) if scenario_file_name else None
-        parent_dir = os.path.split(os.path.split(scenario_file)[0])[-1]
         scenario_id =  f"{parent_dir}/{scenario_file_name}"
         scenario_prov = _create_abstract_scenario(scenario_id)
         prov.append(scenario_prov)
@@ -315,9 +316,10 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
 
         gen_time = datetime.now().isoformat()
         for c in current_configs:
-            c["abstract_scenario"] = f"scenario:{scenario_id}"
+            c["abstract_scenario"] = f"scenarios:{scenario_id}"
             c["gen_time"] = gen_time
             c["parent_dir"] = parent_dir
+            c["source_files"] = [f"scenarios:{scenario_id}", f"scenarios:{vast_file}"]
         configs.extend(current_configs)
     if configs:
         save_scenario_configs_file(configs, os.path.join(output_dir, 'scenario.configs'))
@@ -334,7 +336,9 @@ def scenario_gen_prov(configs):
         parent_dir = config.get("parent_dir")
         concr_scenario_id = f"{parent_dir}/configs/{config['name']}-{i:03d}.config"
         concr_scenario_prov = _create_concrete_scenario(
-            concr_scenario_id, parent_scenario_id
+            concr_scenario_id, parent_scenario_id,
+            gen_time=config.get("gen_time"),
+            source_files=config.get("source_files"),
         )
         prov.append(concr_scenario_prov)
     return prov
