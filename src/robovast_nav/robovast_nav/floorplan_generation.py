@@ -66,6 +66,7 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
             cmd1 = [
                 script_path,
                 "variation",
+                "--prov",
                 "-i",
                 variation_file_path,
                 "-o",
@@ -115,6 +116,7 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
                 cmd2 = [
                     script_path,
                     "transform",
+                    "--prov",
                     "-i",
                     fpm_path,
                     "-o",
@@ -149,6 +151,7 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
                 cmd3 = [
                     script_path,
                     "generate",
+                    "--prov",
                     "-i",
                     temp_transform_path,
                     "-o",
