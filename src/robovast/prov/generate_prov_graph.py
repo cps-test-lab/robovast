@@ -144,9 +144,6 @@ def main():
         sys.exit(1)
 
     output_dir = sys.argv[1]
-    xml_file_path = os.path.join(output_dir, "test.xml")
-
-    # convert_xml_to_yaml(xml_file_path, output_dir)
     get_run_prov(output_dir)
 
 
