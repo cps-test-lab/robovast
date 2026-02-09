@@ -156,3 +156,7 @@ class ConfigList(QWidget):
             self.table_view.selectRow(index)
             # Ensure the selected row is visible
             self.table_view.scrollTo(model_index)
+
+    def clear(self):
+        """Clear all configs from the list."""
+        self.model.update_configs([])

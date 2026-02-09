@@ -26,8 +26,13 @@ from multiprocessing import Pool, cpu_count
 import rosbag2_py
 from py_trees_ros_interfaces.msg import BehaviourTree
 from rclpy.serialization import deserialize_message
-from rosbags_common import (find_rosbags, should_skip_processing,
-                            write_hash_file)
+
+from rosbags_common import (
+    find_rosbags,
+    should_skip_processing,
+    write_hash_file,
+    create_rosbag_prov,
+)
 
 # Get script name without extension to use as prefix
 SCRIPT_NAME = os.path.splitext(os.path.basename(__file__))[0]
@@ -101,7 +106,7 @@ def process_rosbag_wrapper(args):
     return process_rosbag(*args)
 
 
-def process_rosbag(bag_path, csv_filename):
+def process_rosbag(bag_path, csv_filename, root_folder):
     """Process a single rosbag and extract behavior status changes to CSV."""
     try:
         # Check if we should skip processing based on hash
@@ -112,6 +117,7 @@ def process_rosbag(bag_path, csv_filename):
         output_file = os.path.join(parent_folder, csv_filename)
 
         record_count = reconstruct_behavior_timeline(bag_path, output_file)
+        create_rosbag_prov(bag_path, output_file, root_folder)
 
         # Write hash file after successful processing
         write_hash_file(bag_path, prefix=SCRIPT_NAME)
@@ -163,7 +169,9 @@ def main():
     processed_bags = 0
 
     # Prepare arguments for parallel processing
-    process_args = [(bag_path, args.csv_filename) for bag_path in rosbag_paths]
+    process_args = [
+        (bag_path, args.csv_filename, args.input) for bag_path in rosbag_paths
+    ]
 
     # Process rosbags in parallel
     try:

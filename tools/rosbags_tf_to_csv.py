@@ -26,8 +26,12 @@ from multiprocessing import Pool, cpu_count
 
 import rosbag2_py
 from rclpy.serialization import deserialize_message
-from rosbags_common import (find_rosbags, should_skip_processing,
-                            write_hash_file)
+from rosbags_common import (
+    find_rosbags,
+    should_skip_processing,
+    write_hash_file,
+    create_rosbag_prov,
+)
 from rosidl_runtime_py.utilities import get_message
 from tf2_py import (ConnectivityException, ExtrapolationException,
                     LookupException)
@@ -39,8 +43,8 @@ SCRIPT_NAME = os.path.splitext(os.path.basename(__file__))[0]
 
 def process_rosbag_wrapper(args):
     """Wrapper function for multiprocessing that unpacks arguments."""
-    bag_path, frames, csv_filename = args
-    return process_rosbag(bag_path, frames, csv_filename)
+    bag_path, frames, csv_filename, root_folder = args
+    return process_rosbag(bag_path, frames, csv_filename, root_folder)
 
 
 def quat_to_rpy(x, y, z, w):
@@ -51,7 +55,7 @@ def quat_to_rpy(x, y, z, w):
     return roll, pitch, yaw
 
 
-def process_rosbag(bag_path, frames, csv_filename):
+def process_rosbag(bag_path, frames, csv_filename, root_folder):
     """Process a single rosbag and write pose records directly to CSV file."""
     try:
         # Check if we should skip processing based on hash
@@ -137,6 +141,8 @@ def process_rosbag(bag_path, frames, csv_filename):
         finally:
             csvfile.close()
 
+        create_rosbag_prov(bag_path, csv_file_path, root_folder)
+
         # Write hash file after successful processing
         write_hash_file(bag_path, prefix=SCRIPT_NAME)
 
@@ -209,7 +215,7 @@ def main():
     # Prepare arguments for parallel processing
     process_args = []
     for bag_path in rosbag_paths:
-        process_args.append((bag_path, args.frame, args.csv_filename))
+        process_args.append((bag_path, args.frame, args.csv_filename, args.input))
 
     # Process rosbags in parallel
     try:

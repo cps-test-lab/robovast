@@ -21,6 +21,8 @@ import os
 import time
 from pathlib import Path
 
+from robovast.prov.generate_prov_graph import _create_generated_artefact
+
 
 def compute_rosbag_hash(bag_path):
     """Compute a hash for a rosbag based on modification time and file sizes."""
@@ -112,10 +114,19 @@ def find_rosbags(directory):
     rosbag_dirs = []
     for root, _, files in os.walk(directory):
         # Check if this directory contains .mcap files or metadata.yaml (rosbag indicators)
-        has_mcap = any(f.endswith('.mcap') for f in files)
-        has_metadata = 'metadata.yaml' in files
+        has_mcap = any(f.endswith(".mcap") for f in files)
+        has_metadata = "metadata.yaml" in files
 
         if has_mcap or has_metadata:
             rosbag_dirs.append(root)
 
     return rosbag_dirs
+
+
+def create_rosbag_prov(bag_path, output_file, root_folder):
+    output_file_rel = os.path.relpath(output_file, os.path.abspath(root_folder))
+    bag_path_rel = os.path.relpath(bag_path, root_folder)
+
+    prov = _create_generated_artefact(output_file_rel, source_artefact_id=bag_path_rel)
+    with open(output_file + ".prov.json", "r") as f:
+        json.dump(prov, f, indent=2)

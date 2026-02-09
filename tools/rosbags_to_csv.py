@@ -25,8 +25,13 @@ from multiprocessing import Pool, cpu_count
 
 import rosbag2_py
 from rclpy.serialization import deserialize_message
-from rosbags_common import (find_rosbags, gen_msg_values,
-                            should_skip_processing, write_hash_file)
+from rosbags_common import (
+    find_rosbags,
+    gen_msg_values,
+    should_skip_processing,
+    write_hash_file,
+    create_rosbag_prov,
+)
 from rosidl_runtime_py.utilities import get_message
 
 # Get script name without extension to use as prefix
@@ -35,11 +40,11 @@ SCRIPT_NAME = os.path.splitext(os.path.basename(__file__))[0]
 
 def process_rosbag_wrapper(args):
     """Wrapper function for multiprocessing that unpacks arguments."""
-    bag_path, skipped_topics = args
-    return process_rosbag(bag_path, skipped_topics)
+    bag_path, skipped_topics, root_folder = args
+    return process_rosbag(bag_path, skipped_topics, root_folder)
 
 
-def process_rosbag(bag_path, skipped_topics):
+def process_rosbag(bag_path, skipped_topics, root_folder):
     """Process a single rosbag and save to CSV in the output directory."""
     try:
         # Check if we should skip processing based on hash
@@ -103,6 +108,8 @@ def process_rosbag(bag_path, skipped_topics):
                 for record in records:
                     writer.writerow(record)
 
+            create_rosbag_prov(bag_path, output_file, root_folder)
+
             print(f"✓ {output_file}: {len(records)} messages")
             return len(records)
         else:
@@ -152,7 +159,7 @@ def main():
     # Prepare arguments for parallel processing
     process_args = []
     for bag_path in rosbag_paths:
-        process_args.append((bag_path, skipped_topics))
+        process_args.append((bag_path, skipped_topics, args.input))
 
     # Process rosbags in parallel
     try:

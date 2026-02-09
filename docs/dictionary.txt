@@ -20,3 +20,6 @@ tf
 overwritable
 gui
 configs
+rasterization
+xacro
+waypoints
