@@ -262,6 +262,32 @@ class ConfigEditor(QMainWindow):
         """)
         button_layout.addWidget(self.save_button)
 
+        # Add Save As button
+        self.save_as_button = QPushButton("Save As")
+        self.save_as_button.setMaximumWidth(150)
+        self.save_as_button.clicked.connect(self.on_save_as_clicked)
+        self.save_as_button.setStyleSheet("""
+            QPushButton {
+                background-color: #2d7d2d;
+                color: white;
+                border: 1px solid #3a9a3a;
+                padding: 5px 15px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #3a9a3a;
+            }
+            QPushButton:pressed {
+                background-color: #246624;
+            }
+            QPushButton:disabled {
+                background-color: #555555;
+                color: #888888;
+                border: 1px solid #444444;
+            }
+        """)
+        button_layout.addWidget(self.save_as_button)
+
         # Add spacer to push buttons to the left
         button_layout.addStretch()
 
@@ -535,6 +561,21 @@ class ConfigEditor(QMainWindow):
             if self.save_to_file(self.current_file):
                 self.error_display.append(f"<span style='color: #4ec9b0;'>✓ Saved to {Path(self.current_file).name}</span>")
 
+    def on_save_as_clicked(self):
+        """Handle Save As button click - always prompt for a new filename."""
+        # Prompt for save location
+        file_name, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Configuration As",
+            self.current_file or "",
+            "VAST Files (*.vast);;YAML Files (*.yaml *.yml);;All Files (*)"
+        )
+        if file_name:
+            if self.save_to_file(file_name):
+                self.current_file = file_name
+                self.setWindowTitle(f"Configuration Editor - {Path(file_name).name}")
+                self.error_display.append(f"<span style='color: #4ec9b0;'>✓ Saved to {Path(file_name).name}</span>")
+
     def on_generation_progress(self, message):
         """Handle progress updates from the worker."""
         self.error_display.append(f"<span style='color: #dcdcaa;'>{message}</span>")
@@ -617,8 +658,13 @@ class ConfigEditor(QMainWindow):
     def keyPressEvent(self, event: QKeyEvent):
         """Handle key press events."""
         # Check for Ctrl+S to save
+        # Ctrl+S => Save
         if event.key() == Qt.Key_S and event.modifiers() == Qt.ControlModifier:
             self.on_save_clicked()
+            event.accept()
+        # Ctrl+Shift+S => Save As
+        elif event.key() == Qt.Key_S and (event.modifiers() & (Qt.ControlModifier | Qt.ShiftModifier)) == (Qt.ControlModifier | Qt.ShiftModifier):
+            self.on_save_as_clicked()
             event.accept()
         else:
             # Pass other key events to the base class
