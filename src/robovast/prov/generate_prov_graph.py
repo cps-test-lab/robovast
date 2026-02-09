@@ -30,7 +30,9 @@ def _create_abstract_scenario(scenario_id):
     }
 
 
-def _create_concrete_scenario(scenario_id, location=None, parent_scenario_id=None, **kwargs):
+def _create_concrete_scenario(
+    scenario_id, location=None, parent_scenario_id=None, **kwargs
+):
     node = {
         "@id": f"scenarios:{scenario_id}",
         "@type": ["ConcreteScenario", "Entity"],
@@ -39,7 +41,7 @@ def _create_concrete_scenario(scenario_id, location=None, parent_scenario_id=Non
         node["generatedAtTime"] = kwargs["gen_time"]
     if kwargs.get("source_files") is not None:
         node["wasGeneratedBy"] = {
-            "uses": [f"scenarios:{s}" for s in kwargs.get("source_files")],
+            "uses": [f"scenarios:{s}" for s in kwargs.get("source_files")]
         }
     if kwargs.get("references") is not None:
         node["dc:references"] = [f"env:{r}" for r in kwargs.get("references")]
@@ -56,7 +58,10 @@ def _create_run_activity(run_mdata):
         "@type": ["Activity", "TestRun"],
         "startedAtTime": run_mdata["START_DATE"],
         "endedAtTime": run_mdata["END_DATE"],
-        "used": [f"scenario:{run_mdata['SCENARIO_ID']}", f"agents:{run_mdata['ROBOT_ID']}/{run_mdata['ROBOT_CONFIG']}"],
+        "used": [
+            f"scenario:{run_mdata['SCENARIO_ID']}",
+            f"agents:{run_mdata['ROBOT_ID']}/{run_mdata['ROBOT_CONFIG']}",
+        ],
         "wasAssociatedWith": f"agents:{run_mdata['ROBOT_ID']}",
     }
 
@@ -84,6 +89,7 @@ def _create_agent_config(run_mdata):
         "wasAssociatedWith": f"agents:{run_mdata['ROBOT_ID']}",
     }
     return node
+
 
 def _gen_jsonld_prov(out_dir, run_data):
     graph = []
