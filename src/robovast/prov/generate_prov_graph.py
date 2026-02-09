@@ -56,7 +56,7 @@ def _create_run_activity(run_mdata):
         "@type": ["Activity", "TestRun"],
         "startedAtTime": run_mdata["START_DATE"],
         "endedAtTime": run_mdata["END_DATE"],
-        "used": f"scenario:{run_mdata['SCENARIO_ID']}",
+        "used": [f"scenario:{run_mdata['SCENARIO_ID']}", f"agents:{run_mdata['ROBOT_ID']}/{run_mdata['ROBOT_CONFIG']}"],
         "wasAssociatedWith": f"agents:{run_mdata['ROBOT_ID']}",
     }
 
@@ -75,6 +75,16 @@ def _create_generated_artefact(artefact_id, activity=None, source_artefact_id=No
     return node
 
 
+def _create_agent_config(run_mdata):
+    node = {
+        "used": {
+            "@id": f"agents:{run_mdata['ROBOT_ID']}/{run_mdata['ROBOT_CONFIG']}",
+            "@type": ["Entity", "Configuration"],
+        },
+        "wasAssociatedWith": f"agents:{run_mdata['ROBOT_ID']}",
+    }
+    return node
+
 def _gen_jsonld_prov(out_dir, run_data):
     graph = []
 
@@ -85,6 +95,9 @@ def _gen_jsonld_prov(out_dir, run_data):
     _run_id = run_data["RUN_ID"]
     run = _create_run_activity(run_data)
     graph.append(run)
+
+    robot_config = _create_agent_config(run_data)
+    graph.append(robot_config)
 
     artefact_paths = [
         f"{run_data['ROSBAG_DIR']}/**",
