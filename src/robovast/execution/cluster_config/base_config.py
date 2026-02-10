@@ -26,8 +26,12 @@ class BaseConfig(object):
         """
         raise NotImplementedError("setup_cluster method must be implemented by subclasses.")
 
-    def cleanup_cluster(self):
-        """Clean up transfer mechanism for the cluster."""
+    def cleanup_cluster(self, **kwargs):
+        """Clean up transfer mechanism for the cluster.
+        
+        Args:
+            **kwargs: Cluster-specific configuration options
+        """
         raise NotImplementedError("cleanup_cluster method must be implemented by subclasses.")
 
     def get_job_volumes(self):

@@ -18,6 +18,7 @@ import logging
 import os
 import sys
 import tempfile
+from importlib.resources import files
 
 from robovast.common import (get_execution_env_variables, load_config,
                              prepare_run_configs)
@@ -56,7 +57,10 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
     logger.debug(f"Loading config from: {config_path}")
     execution_parameters = load_config(config_path, "execution")
     docker_image = execution_parameters.get("image", "ghcr.io/cps-test-lab/robovast:latest")
+    pre_command = execution_parameters.get("pre_command")
+    post_command = execution_parameters.get("post_command")
     results_dir = project_config.results_dir
+    run_as_user = execution_parameters.get("run_as_user")
 
     # Use execution_parameters value if runs is not provided
     if runs is None:
@@ -68,6 +72,11 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
             runs = execution_parameters["runs"]
 
     logger.debug(f"Using Docker image: {docker_image}")
+
+    # Check if run_as_user differs from local user
+    host_uid = os.getuid()
+    if run_as_user is not None and run_as_user != host_uid:
+        logger.info(f"Note: config specifies run_as_user={run_as_user}, but local execution will use host user UID={host_uid} to ensure proper file permissions on bind mounts")
 
     # Generate and filter configs
     logger.debug("Generating scenario variations")
@@ -132,17 +141,20 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
     for run_number in range(runs):
         for config_entry in configs:
             docker_configs.append((docker_image, os.path.abspath(os.path.join(
-                config_path_result, config_entry["name"])), config_entry['name'], run_number))
+                config_path_result, config_entry["name"])), config_entry['name'], run_number, pre_command, post_command))
 
     generate_docker_run_script(docker_configs, results_dir, os.path.join(config_dir, "run.sh"))
     return os.path.join(config_dir, "run.sh")
 
 
-def get_commandline(image, config_path, output_path, config_name, run_num=0, shell=False):
+def get_commandline(image, config_path, output_path, config_name, run_num=0, shell=False, pre_command=None, post_command=None):
 
     # Get the current user and group IDs to run docker with the same permissions
     uid = os.getuid()
     gid = os.getgid()
+
+    # Get the path to the entrypoint.sh file from package data
+    entrypoint_path = str(files('robovast.execution.data').joinpath('entrypoint.sh'))
 
     docker_cmd = [
         'docker', 'run',
@@ -150,11 +162,18 @@ def get_commandline(image, config_path, output_path, config_name, run_num=0, she
         '--user', f'{uid}:{gid}',  # Run as host user to avoid permission issues
         '-v', f'{config_path}:/config',  # Bind mount temp_path to /config
         '-v', f'{output_path}:/out',   # Bind mount output to /out
+        '-v', f'{entrypoint_path}:/entrypoint.sh:ro',  # Mount entrypoint.sh
     ]
 
     env_vars = get_execution_env_variables(run_num, config_name)
     for key, value in env_vars.items():
         docker_cmd.extend(['-e', f'{key}={value}'])
+    
+    # Add PRE_COMMAND and POST_COMMAND if specified
+    if pre_command:
+        docker_cmd.extend(['-e', f'PRE_COMMAND="{pre_command}"'])
+    if post_command:
+        docker_cmd.extend(['-e', f'POST_COMMAND="{post_command}"'])
 
     if shell:
         # Interactive shell mode
@@ -177,6 +196,7 @@ USE_SHELL=false
 CONTAINER_NAME="robovast"
 RUN_ID="run-$(date +%Y-%m-%d-%H%M%S)"
 RESULTS_DIR=
+COMMAND="/entrypoint.sh"
 
 # Variable to track if cleanup has run
 CLEANUP_DONE=0
@@ -269,10 +289,9 @@ if [ "$USE_SHELL" = true ]; then
     echo "--------------------------------------------------------"
     echo "Execute the following command to run the test:"
     echo
-    echo "ros2 run scenario_execution_ros scenario_execution_ros -o /out /config/scenario.osc --scenario-parameter-file /config/scenario.config"
+    echo "/entrypoint.sh"
     echo "--------------------------------------------------------"
 else
-    COMMAND="$*"
     INTERACTIVE=""
 fi
 
@@ -284,7 +303,7 @@ def generate_docker_run_script(configs, results_dir, output_script_path):
     """Generate a shell script to run Docker containers sequentially.
 
     Args:
-        configs: List of tuples (image, config_path, config_name, run_num)
+        configs: List of tuples (image, config_path, config_name, run_num, pre_command, post_command)
         output_script_path: Path where the script should be written
     """
     if not configs:
@@ -308,9 +327,10 @@ def generate_docker_run_script(configs, results_dir, output_script_path):
     total_configs = len(configs)
 
     # Generate docker run commands for each config
-    for idx, (image, config_path, config_name, run_num) in enumerate(configs, 1):
+    for idx, config_tuple in enumerate(configs, 1):
+        image, config_path, config_name, run_num, pre_command, post_command = config_tuple
         test_path = os.path.join("${RESULTS_DIR}", config_name, str(run_num))
-        cmd_line = get_commandline(image, config_path, test_path, config_name, run_num)
+        cmd_line = get_commandline(image, config_path, test_path, config_name, run_num, pre_command=pre_command, post_command=post_command)
 
         # Add progress message
         script += f'\necho ""\n'

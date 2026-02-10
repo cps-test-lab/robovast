@@ -48,6 +48,7 @@ The dataset serves as a comprehensive validation tool for navigation stacks such
 
    setup
    how_to_run
+   configuration
    example
    variation
    developer_guide

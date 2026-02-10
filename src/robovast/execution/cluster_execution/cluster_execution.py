@@ -44,6 +44,9 @@ class JobRunner:
         if not self.cluster_config:
             raise ValueError("Cluster config must be provided to JobRunner")
 
+        # Store config path for later use
+        self.config_path = config_path
+
         # Generate unique run ID
         self.run_id = get_run_id()
 
@@ -57,9 +60,16 @@ class JobRunner:
         else:
             self.num_runs = 1
 
+        # Store pre_command and post_command if provided
+        self.pre_command = parameters.get("pre_command")
+        self.post_command = parameters.get("post_command")
+
+        self.run_as_user = parameters.get("run_as_user", 1000)
+
         self.manifest = self.get_job_manifest(parameters["image"],
                                               parameters["kubernetes"]["resources"],
-                                              parameters.get("env", []))
+                                              parameters.get("env", []),
+                                              self.run_as_user)
 
         # Generate configs with filtered files
         self.config_output_file_dir = tempfile.TemporaryDirectory(prefix="robovast_execution_")
@@ -149,6 +159,18 @@ class JobRunner:
                     'name': str(name),
                     'value': "" if val is None else str(val)
                 })
+            
+            # Add PRE_COMMAND and POST_COMMAND if specified
+            if self.pre_command:
+                containers[0]['env'].append({
+                    'name': 'PRE_COMMAND',
+                    'value': str(self.pre_command)
+                })
+            if self.post_command:
+                containers[0]['env'].append({
+                    'name': 'POST_COMMAND',
+                    'value': str(self.post_command)
+                })
 
             # Add volume mounts
             if 'volumeMounts' not in containers[0]:
@@ -166,9 +188,39 @@ class JobRunner:
                     'mountPath': '/out',
                     'subPath': f'out/{self.run_id}/{scenario_key}/{run_number}',
                     'readOnly': False
+                },
+                {
+                    'name': 'data-storage',
+                    'mountPath': '/entrypoint.sh',
+                    'subPath': f'config/{self.run_id}/entrypoint.sh',
+                    'readOnly': True
                 }
             ]
             containers[0]['volumeMounts'].extend(volume_mounts)
+
+        # Get runAsUser from container to match ownership in initContainer
+        run_as_user = 1000
+        if containers and 'securityContext' in containers[0] and 'runAsUser' in containers[0]['securityContext']:
+            run_as_user = containers[0]['securityContext']['runAsUser']
+
+        # Add initContainer to fix permissions
+        job_manifest['spec']['template']['spec']['initContainers'] = [
+            {
+                'name': 'fix-permissions',
+                'image': 'alpine:latest',
+                'command': ['sh', '-c', f'chown -R {run_as_user}:{run_as_user} /out'],
+                'securityContext': {
+                    'runAsUser': 0
+                },
+                'volumeMounts': [
+                    {
+                        'name': 'data-storage',
+                        'mountPath': '/out',
+                        'subPath': f'out/{self.run_id}/{scenario_key}/{run_number}'
+                    }
+                ]
+            }
+        ]
 
         return job_manifest
 
@@ -445,9 +497,28 @@ class JobRunner:
 
             copy_config_to_cluster(os.path.join(temp_dir, "config"), self.run_id)
 
-    def get_job_manifest(self, image: str, kubernetes_resources: dict, env: list) -> dict:
+    def get_job_manifest(self, image: str, kubernetes_resources: dict, env: list, run_as_user: int = None) -> dict:
+        """Generate the base Kubernetes job manifest from templates.
+
+        Args:
+            image: Docker image to use
+            kubernetes_resources: Resource limits/requests
+            env: List of environment variables
+            run_as_user: UID to run container as (defaults to 1000 if None)
+
+        Returns:
+            Dictionary containing the job manifest
+        """
+        if run_as_user is None:
+            run_as_user = 1000
+
+        logger.debug(f"Using run_as_user={run_as_user} for job containers")
+
         yaml_str = JOB_TEMPLATE.format(image=image, cpu=kubernetes_resources["cpu"], volumes=self.cluster_config.get_job_volumes())
         manifest = yaml.safe_load(yaml_str)
+        
+        manifest['spec']['template']['spec']['containers'][0]['securityContext']['runAsUser'] = run_as_user
+
         if "memory" in kubernetes_resources:
             # Add memory resource if specified
             manifest['spec']['template']['spec']['containers'][0]['resources'] = {

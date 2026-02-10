@@ -174,8 +174,12 @@ class Rke2ClusterConfig(BaseConfig):
         except Exception as e:
             raise RuntimeError(f"Error applying NFS manifest: {str(e)}") from e
 
-    def cleanup_cluster(self):
-        """Clean up transfer mechanism for RKE2 cluster."""
+    def cleanup_cluster(self, **kwargs):
+        """Clean up transfer mechanism for RKE2 cluster.
+        
+        Args:
+            **kwargs: Additional cluster-specific options (ignored)
+        """
         logging.debug("Cleaning up RoboVAST in RKE2 cluster...")
         # Load Kubernetes configuration
         config.load_kube_config()

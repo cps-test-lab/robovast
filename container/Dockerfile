@@ -48,19 +48,19 @@ RUN \
         python3-pip \
         tk \
         python3-docker \
-        ros-jazzy-moveit \
-        ros-jazzy-moveit-resources \
-        ros-jazzy-moveit-planners-chomp \
-        ros-jazzy-controller-manager \
-        ros-jazzy-gripper-controllers \
-        ros-jazzy-joint-trajectory-controller \
-        ros-jazzy-gz-ros2-control \
-        ros-jazzy-ros2-control \
-        ros-jazzy-moveit-msgs \
-        ros-jazzy-py-trees-ros \
-        ros-jazzy-py-trees-ros-interfaces \
-        ros-jazzy-nav2-bringup \
-        ros-jazzy-nav2-route \
+        ros-${ROS_DISTRO}-moveit \
+        ros-${ROS_DISTRO}-moveit-resources \
+        ros-${ROS_DISTRO}-moveit-planners-chomp \
+        ros-${ROS_DISTRO}-controller-manager \
+        ros-${ROS_DISTRO}-gripper-controllers \
+        ros-${ROS_DISTRO}-joint-trajectory-controller \
+        ros-${ROS_DISTRO}-gz-ros2-control \
+        ros-${ROS_DISTRO}-ros2-control \
+        ros-${ROS_DISTRO}-moveit-msgs \
+        ros-${ROS_DISTRO}-py-trees-ros \
+        ros-${ROS_DISTRO}-py-trees-ros-interfaces \
+        ros-${ROS_DISTRO}-nav2-bringup \
+        ros-${ROS_DISTRO}-nav2-route \
         python3-autopep8 \
         python3-transforms3d \
         python3-antlr4 \
@@ -72,9 +72,9 @@ RUN \
         python3-gridfs \
         python3-defusedxml \
         ffmpeg \
-        ros-jazzy-nav2-minimal-tb4-description \
-        ros-jazzy-rmw-cyclonedds-cpp \
-        ros-jazzy-rmw-zenoh-cpp \
+        ros-${ROS_DISTRO}-nav2-minimal-tb4-description \
+        ros-${ROS_DISTRO}-rmw-cyclonedds-cpp \
+        ros-${ROS_DISTRO}-rmw-zenoh-cpp \
         libgl1 && \
     rm -rf /var/lib/apt/lists/*
 
@@ -88,9 +88,6 @@ RUN  git clone "https://github.com/cps-test-lab/scenario-execution.git" /ws/src/
      cd /ws && \
      colcon build
 
-COPY container/files/startx11_virtual.sh /
-COPY container/files/entrypoint.sh /
-
 # Environment variables
 ENV DISPLAY=:0
 ENV XDG_RUNTIME_DIR=/tmp/runtime-user
@@ -101,5 +98,3 @@ ENV CDEPTH=24
 ENV QT_X11_NO_MITSHM=1
 
 RUN mkdir -p /out && chmod 777 /out
-
-ENTRYPOINT [ "/entrypoint.sh" ]
