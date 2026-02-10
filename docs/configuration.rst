@@ -1,7 +1,7 @@
 .. _configuration:
 
-Configuration Reference
-=======================
+Configuration
+=============
 
 This page documents all available parameters in the ``.vast`` configuration file format. The configuration file is written in YAML and defines all aspects of the RoboVAST workflow.
 
@@ -184,18 +184,17 @@ The user ID (UID) to run the container as. Defaults to ``1000`` if not specified
 pre_command
 ^^^^^^^^^^^
 
-**Type:** String (shell command)
+**Type:** String (path to executable script)
 
 **Required:** No
 
-Shell command that should be executed before each test run. The command is evaluated using ``eval`` so it can set environment variables, source scripts, or run any bash commands.
+Path to an executable script that will be sourced before each test run. The file is executed using ``source <pre_command>``, allowing environment variables to be set and made available to the scenario execution.
 
-.. code-block:: yaml
+**Important constraints:**
 
-   execution:
-     pre_command: source /config/prepare_test.sh
-
-Example using a script file:
+- Must be a path to an existing executable file
+- No command line parameters are allowed
+- The file is sourced (not executed in a subshell), so environment variable changes persist
 
 .. code-block:: yaml
 
@@ -204,53 +203,45 @@ Example using a script file:
      test_files_filter:
      - "**/files/*.sh"
 
-Example with inline commands:
-
-.. code-block:: yaml
-
-   execution:
-     pre_command: export CUSTOM_VAR=value && echo "Test environment prepared"
-
 **Command execution context:**
 
-- Runs before the scenario execution
-- Has access to all files in ``/config/``
+- Runs before the scenario execution via ``source <pre_command>``
 - Can modify the container environment
-- Environment variables set by the command are available to the scenario
-- If the command fails (exits with non-zero), the test fails
+- Environment variables set by the script are available to the scenario
+- If the script fails (exits with non-zero), the test fails
+
+.. note::
+
+   Custom scripts can be included in the container using ``test_files_filter`` (see below) to make them available at the specified path.
 
 post_command
 ^^^^^^^^^^^^
 
-**Type:** String (shell command)
+**Type:** String (path to executable)
 
 **Required:** No
 
-Shell command that should be executed after the scenario completes. This is passed to the scenario execution as the ``--post-run`` parameter.
+Path to an executable file that should be executed after the scenario completes. This is passed to the scenario execution as the ``--post-run`` parameter.
+
+**Important constraints:**
+
+- Must be a path to an existing executable file
+- No command line parameters are allowed
+- No shell commands or piping allowed
+- The file must have executable permissions
 
 .. code-block:: yaml
 
    execution:
-     post_command: touch /out/post_cmd_executed
+     post_command: /config/files/post_command.sh
+     test_files_filter:
+     - "**/files/*.sh"
 
-The post command is executed by the scenario execution framework after the scenario finishes, allowing for cleanup or post-processing tasks.
+The post command script is executed by the scenario execution framework after the scenario finishes, allowing for cleanup or post-processing tasks.
 
-local
-^^^^^
+.. note::
 
-**Type:** Dictionary
-
-**Required:** No
-
-Configuration specific to local execution (when using ``vast run`` or ``vast prepare-run``).
-
-**Notes:**
-
-- Parameters are added to the generated ``run.sh`` script
-- Multi-line strings are supported using YAML's ``|`` syntax
-- Line continuation with backslashes (``\``) is supported
-- Environment variable references like ``${DISPLAY}`` are preserved
-- These parameters only affect local execution, not Kubernetes cluster execution
+   Custom scripts can be included in the container using ``test_files_filter`` (see below) to make them available at the specified path.
 
 test_files_filter
 ^^^^^^^^^^^^^^^^^
@@ -408,8 +399,8 @@ Here's a complete example showing all major configuration options:
    execution:
      image: ghcr.io/cps-test-lab/robovast:latest
      runs: 20
-     pre_command: source /config/prepare_test.sh
-     post_command: echo "Scenario completed"
+     pre_command: /config/files/prepare_test.sh
+     post_command: /config/files/post_command.sh
      run_as_user: 1000
      test_files_filter:
      - "**/files/*"
