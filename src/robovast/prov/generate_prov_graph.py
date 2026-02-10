@@ -40,9 +40,7 @@ def _create_concrete_scenario(
     if kwargs.get("gen_time") is not None:
         node["generatedAtTime"] = kwargs["gen_time"]
     if kwargs.get("source_files") is not None:
-        node["wasGeneratedBy"] = {
-            "uses": [f"scenarios:{s}" for s in kwargs.get("source_files")]
-        }
+        node["wasDerivedFrom"] = [f"scenarios:{s}" for s in kwargs.get("source_files")]
     if kwargs.get("references") is not None:
         node["dc:references"] = [f"env:{r}" for r in kwargs.get("references")]
     if location is not None:
