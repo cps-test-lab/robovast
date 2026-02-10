@@ -59,7 +59,6 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
     docker_image = execution_parameters.get("image", "ghcr.io/cps-test-lab/robovast:latest")
     pre_command = execution_parameters.get("pre_command")
     post_command = execution_parameters.get("post_command")
-    local_config = execution_parameters.get("local", {})
     results_dir = project_config.results_dir
     run_as_user = execution_parameters.get("run_as_user")
 
@@ -283,9 +282,6 @@ if [ "$USE_GUI" = true ]; then
     GUI_OPTIONS="--env DISPLAY=$DISPLAY --volume /tmp/.X11-unix:/tmp/.X11-unix:rw --device /dev/dri:/dev/dri --group-add video"
 fi
 
-# Additional Docker parameters from config
-ADDITIONAL_DOCKER_PARAMS=""
-
 # Determine command to run and interactive mode
 if [ "$USE_SHELL" = true ]; then
     COMMAND="/bin/bash"
@@ -366,7 +362,6 @@ def generate_docker_run_script(configs, results_dir, output_script_path):
         script += f'    --name "$CONTAINER_NAME" \\\n'
         script += '    $NETWORK_MODE \\\n'
         script += '    $GUI_OPTIONS \\\n'
-        script += '    $ADDITIONAL_DOCKER_PARAMS \\\n'
         script += "\n".join(docker_params)
         script += f'\n    "$DOCKER_IMAGE" \\\n    $COMMAND\n\n'
 
