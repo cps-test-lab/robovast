@@ -1,0 +1,9 @@
+free_thresh: 0.196
+image: frontiers_brsu_building_c.pgm
+negate: 0
+occupied_thresh: 0.65
+origin:
+- -24.801955541559526
+- -19.006371194224002
+- 0
+resolution: 0.05
