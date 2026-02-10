@@ -29,6 +29,7 @@ from .common import (get_scenario_parameters, load_config,
 from ..prov.generate_prov_graph import (
     _create_abstract_scenario,
     _create_concrete_scenario,
+    save_scenario_prov,
 )
 
 logger = logging.getLogger(__name__)
@@ -326,8 +327,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     if configs:
         save_scenario_configs_file(configs, os.path.join(output_dir, 'scenario.configs'))
         prov.extend(scenario_gen_prov(configs))
-        with open(os.path.join(output_dir, f'scenario.prov.json'), 'w') as f:
-            json.dump(prov, f, indent=2)
+        save_scenario_prov(prov, prov_config, output_dir)
 
     return configs, variation_gui_classes
 

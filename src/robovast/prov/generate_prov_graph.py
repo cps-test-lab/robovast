@@ -125,6 +125,35 @@ def _gen_jsonld_prov(out_dir, run_data):
     return graph
 
 
+def _get_jsonld_context(dataset_iri, **kwargs):
+    return {
+        "@context": [
+            {
+                "prov": "http://www.w3.org/ns/prov#",
+                "dataset": dataset_iri,
+                "scenarios": os.path.join(
+                    dataset_iri, kwargs.get("scenarios", "scenarios") + "/"
+                ),
+                "env": os.path.join(
+                    dataset_iri, kwargs.get("environments", "environments") + "/"
+                ),
+                "run": os.path.join(dataset_iri, kwargs.get("runs", "runs") + "/"),
+                "agents": os.path.join(
+                    dataset_iri, kwargs.get("agents", "agents") + "/"
+                ),
+            },
+            "https://secorolab.github.io/metamodels/prov.json",
+        ],
+    }
+
+
+def save_scenario_prov(graph, config, output_dir):
+    doc = _get_jsonld_context(**config)
+    doc["@graph"] = graph
+    with open(os.path.join(output_dir, f"scenario.prov.json"), "w") as f:
+        json.dump(doc, f, indent=2)
+
+
 def get_run_prov(run_output_dir):
     # Get run information from run.yaml
     run_yaml_path = os.path.join(run_output_dir, "run.yaml")
