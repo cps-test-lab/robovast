@@ -1,0 +1,2430 @@
+{
+    "@context": [
+        {
+          "@base": "https://secorolab.github.io/models/floorplan/rooms/",
+          "fpm": "https://secorolab.github.io/models/floorplan/rooms/"
+        },
+        "https://comp-rob2b.github.io/metamodels/geometry/structural-entities.json"
+    ],
+    "@graph": [
+        {
+            "@id": "world-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "world-frame",
+            "@type": "Frame",
+            "origin": "world-origin"
+        },
+        {
+            "@id": "big_room-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-frame",
+            "@type": "Frame",
+            "origin": "big_room-origin"
+        },
+        {
+            "@id": "big_room-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-corner-8",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-corner-9",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-corner-10",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-corner-11",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-corner-12",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-corner-13",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-corner-14",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-corner-15",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-0-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-0-frame",
+            "@type": "Frame",
+            "origin": "big_room-wall-0-origin"
+        },
+        {
+            "@id": "big_room-wall-0-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-0-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-0-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-0-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-0-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-0-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-0-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-0-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-1-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-1-frame",
+            "@type": "Frame",
+            "origin": "big_room-wall-1-origin"
+        },
+        {
+            "@id": "big_room-wall-1-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-1-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-1-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-1-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-1-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-1-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-1-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-1-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-2-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-2-frame",
+            "@type": "Frame",
+            "origin": "big_room-wall-2-origin"
+        },
+        {
+            "@id": "big_room-wall-2-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-2-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-2-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-2-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-2-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-2-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-2-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-2-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-3-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-3-frame",
+            "@type": "Frame",
+            "origin": "big_room-wall-3-origin"
+        },
+        {
+            "@id": "big_room-wall-3-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-3-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-3-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-3-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-3-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-3-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-3-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-3-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-4-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-4-frame",
+            "@type": "Frame",
+            "origin": "big_room-wall-4-origin"
+        },
+        {
+            "@id": "big_room-wall-4-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-4-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-4-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-4-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-4-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-4-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-4-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-4-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-5-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-5-frame",
+            "@type": "Frame",
+            "origin": "big_room-wall-5-origin"
+        },
+        {
+            "@id": "big_room-wall-5-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-5-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-5-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-5-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-5-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-5-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-5-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-5-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-6-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-6-frame",
+            "@type": "Frame",
+            "origin": "big_room-wall-6-origin"
+        },
+        {
+            "@id": "big_room-wall-6-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-6-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-6-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-6-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-6-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-6-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-6-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-6-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-7-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-7-frame",
+            "@type": "Frame",
+            "origin": "big_room-wall-7-origin"
+        },
+        {
+            "@id": "big_room-wall-7-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-7-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-7-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-7-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-7-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-7-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-7-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-7-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-8-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-8-frame",
+            "@type": "Frame",
+            "origin": "big_room-wall-8-origin"
+        },
+        {
+            "@id": "big_room-wall-8-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-8-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-8-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-8-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-8-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-8-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-8-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-8-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-9-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-9-frame",
+            "@type": "Frame",
+            "origin": "big_room-wall-9-origin"
+        },
+        {
+            "@id": "big_room-wall-9-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-9-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-9-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-9-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-9-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-9-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-9-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-9-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-10-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-10-frame",
+            "@type": "Frame",
+            "origin": "big_room-wall-10-origin"
+        },
+        {
+            "@id": "big_room-wall-10-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-10-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-10-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-10-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-10-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-10-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-10-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-10-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-11-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-11-frame",
+            "@type": "Frame",
+            "origin": "big_room-wall-11-origin"
+        },
+        {
+            "@id": "big_room-wall-11-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-11-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-11-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-11-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-11-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-11-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-11-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-11-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-12-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-12-frame",
+            "@type": "Frame",
+            "origin": "big_room-wall-12-origin"
+        },
+        {
+            "@id": "big_room-wall-12-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-12-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-12-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-12-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-12-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-12-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-12-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-12-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-13-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-13-frame",
+            "@type": "Frame",
+            "origin": "big_room-wall-13-origin"
+        },
+        {
+            "@id": "big_room-wall-13-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-13-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-13-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-13-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-13-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-13-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-13-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-13-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-14-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-14-frame",
+            "@type": "Frame",
+            "origin": "big_room-wall-14-origin"
+        },
+        {
+            "@id": "big_room-wall-14-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-14-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-14-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-14-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-14-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-14-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-14-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-14-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-15-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-15-frame",
+            "@type": "Frame",
+            "origin": "big_room-wall-15-origin"
+        },
+        {
+            "@id": "big_room-wall-15-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-15-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-15-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-15-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-15-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-15-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-15-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "big_room-wall-15-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-frame",
+            "@type": "Frame",
+            "origin": "lower_left_room-origin"
+        },
+        {
+            "@id": "lower_left_room-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-0-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-0-frame",
+            "@type": "Frame",
+            "origin": "lower_left_room-wall-0-origin"
+        },
+        {
+            "@id": "lower_left_room-wall-0-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-0-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-0-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-0-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-0-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-0-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-0-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-0-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-1-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-1-frame",
+            "@type": "Frame",
+            "origin": "lower_left_room-wall-1-origin"
+        },
+        {
+            "@id": "lower_left_room-wall-1-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-1-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-1-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-1-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-1-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-1-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-1-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-1-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-2-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-2-frame",
+            "@type": "Frame",
+            "origin": "lower_left_room-wall-2-origin"
+        },
+        {
+            "@id": "lower_left_room-wall-2-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-2-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-2-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-2-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-2-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-2-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-2-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-2-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-3-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-3-frame",
+            "@type": "Frame",
+            "origin": "lower_left_room-wall-3-origin"
+        },
+        {
+            "@id": "lower_left_room-wall-3-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-3-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-3-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-3-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-3-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-3-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-3-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_left_room-wall-3-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-frame",
+            "@type": "Frame",
+            "origin": "upper_left_room-origin"
+        },
+        {
+            "@id": "upper_left_room-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-0-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-0-frame",
+            "@type": "Frame",
+            "origin": "upper_left_room-wall-0-origin"
+        },
+        {
+            "@id": "upper_left_room-wall-0-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-0-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-0-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-0-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-0-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-0-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-0-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-0-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-1-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-1-frame",
+            "@type": "Frame",
+            "origin": "upper_left_room-wall-1-origin"
+        },
+        {
+            "@id": "upper_left_room-wall-1-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-1-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-1-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-1-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-1-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-1-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-1-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-1-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-2-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-2-frame",
+            "@type": "Frame",
+            "origin": "upper_left_room-wall-2-origin"
+        },
+        {
+            "@id": "upper_left_room-wall-2-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-2-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-2-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-2-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-2-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-2-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-2-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-2-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-3-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-3-frame",
+            "@type": "Frame",
+            "origin": "upper_left_room-wall-3-origin"
+        },
+        {
+            "@id": "upper_left_room-wall-3-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-3-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-3-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-3-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-3-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-3-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-3-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_left_room-wall-3-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-frame",
+            "@type": "Frame",
+            "origin": "lower_right_room-origin"
+        },
+        {
+            "@id": "lower_right_room-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-corner-8",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-corner-9",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-0-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-0-frame",
+            "@type": "Frame",
+            "origin": "lower_right_room-wall-0-origin"
+        },
+        {
+            "@id": "lower_right_room-wall-0-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-0-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-0-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-0-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-0-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-0-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-0-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-0-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-1-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-1-frame",
+            "@type": "Frame",
+            "origin": "lower_right_room-wall-1-origin"
+        },
+        {
+            "@id": "lower_right_room-wall-1-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-1-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-1-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-1-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-1-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-1-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-1-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-1-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-2-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-2-frame",
+            "@type": "Frame",
+            "origin": "lower_right_room-wall-2-origin"
+        },
+        {
+            "@id": "lower_right_room-wall-2-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-2-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-2-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-2-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-2-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-2-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-2-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-2-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-3-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-3-frame",
+            "@type": "Frame",
+            "origin": "lower_right_room-wall-3-origin"
+        },
+        {
+            "@id": "lower_right_room-wall-3-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-3-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-3-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-3-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-3-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-3-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-3-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-3-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-4-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-4-frame",
+            "@type": "Frame",
+            "origin": "lower_right_room-wall-4-origin"
+        },
+        {
+            "@id": "lower_right_room-wall-4-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-4-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-4-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-4-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-4-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-4-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-4-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-4-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-5-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-5-frame",
+            "@type": "Frame",
+            "origin": "lower_right_room-wall-5-origin"
+        },
+        {
+            "@id": "lower_right_room-wall-5-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-5-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-5-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-5-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-5-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-5-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-5-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-5-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-6-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-6-frame",
+            "@type": "Frame",
+            "origin": "lower_right_room-wall-6-origin"
+        },
+        {
+            "@id": "lower_right_room-wall-6-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-6-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-6-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-6-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-6-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-6-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-6-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-6-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-7-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-7-frame",
+            "@type": "Frame",
+            "origin": "lower_right_room-wall-7-origin"
+        },
+        {
+            "@id": "lower_right_room-wall-7-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-7-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-7-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-7-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-7-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-7-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-7-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-7-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-8-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-8-frame",
+            "@type": "Frame",
+            "origin": "lower_right_room-wall-8-origin"
+        },
+        {
+            "@id": "lower_right_room-wall-8-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-8-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-8-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-8-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-8-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-8-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-8-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-8-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-9-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-9-frame",
+            "@type": "Frame",
+            "origin": "lower_right_room-wall-9-origin"
+        },
+        {
+            "@id": "lower_right_room-wall-9-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-9-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-9-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-9-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-9-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-9-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-9-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "lower_right_room-wall-9-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-frame",
+            "@type": "Frame",
+            "origin": "upper_right_room-origin"
+        },
+        {
+            "@id": "upper_right_room-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-0-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-0-frame",
+            "@type": "Frame",
+            "origin": "upper_right_room-wall-0-origin"
+        },
+        {
+            "@id": "upper_right_room-wall-0-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-0-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-0-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-0-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-0-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-0-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-0-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-0-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-1-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-1-frame",
+            "@type": "Frame",
+            "origin": "upper_right_room-wall-1-origin"
+        },
+        {
+            "@id": "upper_right_room-wall-1-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-1-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-1-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-1-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-1-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-1-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-1-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-1-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-2-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-2-frame",
+            "@type": "Frame",
+            "origin": "upper_right_room-wall-2-origin"
+        },
+        {
+            "@id": "upper_right_room-wall-2-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-2-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-2-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-2-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-2-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-2-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-2-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-2-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-3-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-3-frame",
+            "@type": "Frame",
+            "origin": "upper_right_room-wall-3-origin"
+        },
+        {
+            "@id": "upper_right_room-wall-3-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-3-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-3-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-3-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-3-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-3-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-3-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "upper_right_room-wall-3-corner-7",
+            "@type": "Point"
+        },        {
+            "@id": "entryway-door_lower_left1-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_lower_left1-frame",
+            "@type": "Frame",
+            "origin": "entryway-door_lower_left1-origin"
+        },
+        {
+            "@id": "door_lower_left1-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_left1-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_left1-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_left1-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_left1-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_left1-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_left1-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_left1-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_lower_left2-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_lower_left2-frame",
+            "@type": "Frame",
+            "origin": "entryway-door_lower_left2-origin"
+        },
+        {
+            "@id": "door_lower_left2-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_left2-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_left2-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_left2-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_left2-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_left2-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_left2-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_left2-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_lower_left3-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_lower_left3-frame",
+            "@type": "Frame",
+            "origin": "entryway-door_lower_left3-origin"
+        },
+        {
+            "@id": "door_lower_left3-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_left3-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_left3-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_left3-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_left3-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_left3-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_left3-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_left3-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_lower_left4-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_lower_left4-frame",
+            "@type": "Frame",
+            "origin": "entryway-door_lower_left4-origin"
+        },
+        {
+            "@id": "door_lower_left4-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_left4-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_left4-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_left4-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_left4-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_left4-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_left4-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_left4-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_upper_left1-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_upper_left1-frame",
+            "@type": "Frame",
+            "origin": "entryway-door_upper_left1-origin"
+        },
+        {
+            "@id": "door_upper_left1-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_left1-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_left1-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_left1-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_left1-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_left1-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_left1-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_left1-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_upper_left2-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_upper_left2-frame",
+            "@type": "Frame",
+            "origin": "entryway-door_upper_left2-origin"
+        },
+        {
+            "@id": "door_upper_left2-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_left2-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_left2-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_left2-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_left2-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_left2-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_left2-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_left2-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_upper_left3-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_upper_left3-frame",
+            "@type": "Frame",
+            "origin": "entryway-door_upper_left3-origin"
+        },
+        {
+            "@id": "door_upper_left3-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_left3-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_left3-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_left3-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_left3-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_left3-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_left3-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_left3-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_upper_left4-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_upper_left4-frame",
+            "@type": "Frame",
+            "origin": "entryway-door_upper_left4-origin"
+        },
+        {
+            "@id": "door_upper_left4-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_left4-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_left4-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_left4-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_left4-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_left4-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_left4-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_left4-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_upper_right1-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_upper_right1-frame",
+            "@type": "Frame",
+            "origin": "entryway-door_upper_right1-origin"
+        },
+        {
+            "@id": "door_upper_right1-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_right1-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_right1-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_right1-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_right1-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_right1-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_right1-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_right1-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_upper_right2-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_upper_right2-frame",
+            "@type": "Frame",
+            "origin": "entryway-door_upper_right2-origin"
+        },
+        {
+            "@id": "door_upper_right2-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_right2-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_right2-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_right2-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_right2-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_right2-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_right2-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_right2-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_upper_right3-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_upper_right3-frame",
+            "@type": "Frame",
+            "origin": "entryway-door_upper_right3-origin"
+        },
+        {
+            "@id": "door_upper_right3-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_right3-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_right3-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_right3-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_right3-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_right3-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_right3-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_right3-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_upper_right4-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_upper_right4-frame",
+            "@type": "Frame",
+            "origin": "entryway-door_upper_right4-origin"
+        },
+        {
+            "@id": "door_upper_right4-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_right4-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_right4-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_right4-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_right4-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_right4-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_right4-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_upper_right4-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_lower_right1-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_lower_right1-frame",
+            "@type": "Frame",
+            "origin": "entryway-door_lower_right1-origin"
+        },
+        {
+            "@id": "door_lower_right1-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_right1-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_right1-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_right1-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_right1-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_right1-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_right1-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_right1-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_lower_right2-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_lower_right2-frame",
+            "@type": "Frame",
+            "origin": "entryway-door_lower_right2-origin"
+        },
+        {
+            "@id": "door_lower_right2-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_right2-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_right2-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_right2-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_right2-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_right2-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_right2-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_right2-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_lower_right3-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_lower_right3-frame",
+            "@type": "Frame",
+            "origin": "entryway-door_lower_right3-origin"
+        },
+        {
+            "@id": "door_lower_right3-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_right3-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_right3-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_right3-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_right3-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_right3-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_right3-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_right3-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_lower_right4-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_lower_right4-frame",
+            "@type": "Frame",
+            "origin": "entryway-door_lower_right4-origin"
+        },
+        {
+            "@id": "door_lower_right4-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_right4-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_right4-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_right4-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_right4-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_right4-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_right4-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_lower_right4-corner-7",
+            "@type": "Point"
+        }
+    ]
+}

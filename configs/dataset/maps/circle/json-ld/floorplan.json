@@ -1,0 +1,488 @@
+{
+    "@context": [
+        {
+            "@base": "https://secorolab.github.io/models/floorplan/circle/",
+          "fpm": "https://secorolab.github.io/models/floorplan/circle/"
+        },
+        "https://secorolab.github.io/metamodels/floorplan/floorplan.json"
+    ],
+    "@graph": [
+        {
+            "@id": "circle",
+            "@type": "FloorPlan",
+            "spaces": [
+                "inner_room",
+                "outer_room"
+            ],
+            "openings": [
+                "door_inner_room"
+            ]
+        },
+        {
+            "@id": "inner_room",
+            "@type": "Space",
+            "walls": [
+                "inner_room-wall-0",
+                "inner_room-wall-1",
+                "inner_room-wall-2",
+                "inner_room-wall-3",
+                "inner_room-wall-4",
+                "inner_room-wall-5",
+                "inner_room-wall-6",
+                "inner_room-wall-7",
+                "inner_room-wall-8",
+                "inner_room-wall-9",
+                "inner_room-wall-10",
+                "inner_room-wall-11",
+                "inner_room-wall-12",
+                "inner_room-wall-13",
+                "inner_room-wall-14",
+                "inner_room-wall-15",
+                "inner_room-wall-16"
+            ],
+            "feature": [
+
+            ],
+            "shape": "inner_room-polygon"
+        },        {
+            "@id": "inner_room-wall-0",
+            "@type": "Wall",
+            "shape": "inner_room-wall-0-polygon",
+            "3d-shape": "inner_room-wall-0-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "inner_room-wall-1",
+            "@type": "Wall",
+            "shape": "inner_room-wall-1-polygon",
+            "3d-shape": "inner_room-wall-1-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "inner_room-wall-2",
+            "@type": "Wall",
+            "shape": "inner_room-wall-2-polygon",
+            "3d-shape": "inner_room-wall-2-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "inner_room-wall-3",
+            "@type": "Wall",
+            "shape": "inner_room-wall-3-polygon",
+            "3d-shape": "inner_room-wall-3-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "inner_room-wall-4",
+            "@type": "Wall",
+            "shape": "inner_room-wall-4-polygon",
+            "3d-shape": "inner_room-wall-4-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "inner_room-wall-5",
+            "@type": "Wall",
+            "shape": "inner_room-wall-5-polygon",
+            "3d-shape": "inner_room-wall-5-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "inner_room-wall-6",
+            "@type": "Wall",
+            "shape": "inner_room-wall-6-polygon",
+            "3d-shape": "inner_room-wall-6-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "inner_room-wall-7",
+            "@type": "Wall",
+            "shape": "inner_room-wall-7-polygon",
+            "3d-shape": "inner_room-wall-7-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "inner_room-wall-8",
+            "@type": "Wall",
+            "shape": "inner_room-wall-8-polygon",
+            "3d-shape": "inner_room-wall-8-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "inner_room-wall-9",
+            "@type": "Wall",
+            "shape": "inner_room-wall-9-polygon",
+            "3d-shape": "inner_room-wall-9-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "inner_room-wall-10",
+            "@type": "Wall",
+            "shape": "inner_room-wall-10-polygon",
+            "3d-shape": "inner_room-wall-10-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "inner_room-wall-11",
+            "@type": "Wall",
+            "shape": "inner_room-wall-11-polygon",
+            "3d-shape": "inner_room-wall-11-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "inner_room-wall-12",
+            "@type": "Wall",
+            "shape": "inner_room-wall-12-polygon",
+            "3d-shape": "inner_room-wall-12-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "inner_room-wall-13",
+            "@type": "Wall",
+            "shape": "inner_room-wall-13-polygon",
+            "3d-shape": "inner_room-wall-13-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "inner_room-wall-14",
+            "@type": "Wall",
+            "shape": "inner_room-wall-14-polygon",
+            "3d-shape": "inner_room-wall-14-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "inner_room-wall-15",
+            "@type": "Wall",
+            "shape": "inner_room-wall-15-polygon",
+            "3d-shape": "inner_room-wall-15-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "inner_room-wall-16",
+            "@type": "Wall",
+            "shape": "inner_room-wall-16-polygon",
+            "3d-shape": "inner_room-wall-16-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "outer_room",
+            "@type": "Space",
+            "walls": [
+                "outer_room-wall-0",
+                "outer_room-wall-1",
+                "outer_room-wall-2",
+                "outer_room-wall-3",
+                "outer_room-wall-4",
+                "outer_room-wall-5",
+                "outer_room-wall-6",
+                "outer_room-wall-7",
+                "outer_room-wall-8",
+                "outer_room-wall-9",
+                "outer_room-wall-10",
+                "outer_room-wall-11",
+                "outer_room-wall-12",
+                "outer_room-wall-13",
+                "outer_room-wall-14",
+                "outer_room-wall-15",
+                "outer_room-wall-16",
+                "outer_room-wall-17",
+                "outer_room-wall-18",
+                "outer_room-wall-19",
+                "outer_room-wall-20"
+            ],
+            "feature": [
+                "col12",
+                "col13",
+                "col21",
+                "col22",
+                "col23",
+                "col24",
+                "col31",
+                "col32",
+                "col33",
+                "col34",
+                "col42",
+                "col43"
+            ],
+            "shape": "outer_room-polygon"
+        },        {
+            "@id": "outer_room-wall-0",
+            "@type": "Wall",
+            "shape": "outer_room-wall-0-polygon",
+            "3d-shape": "outer_room-wall-0-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "outer_room-wall-1",
+            "@type": "Wall",
+            "shape": "outer_room-wall-1-polygon",
+            "3d-shape": "outer_room-wall-1-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "outer_room-wall-2",
+            "@type": "Wall",
+            "shape": "outer_room-wall-2-polygon",
+            "3d-shape": "outer_room-wall-2-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "outer_room-wall-3",
+            "@type": "Wall",
+            "shape": "outer_room-wall-3-polygon",
+            "3d-shape": "outer_room-wall-3-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "outer_room-wall-4",
+            "@type": "Wall",
+            "shape": "outer_room-wall-4-polygon",
+            "3d-shape": "outer_room-wall-4-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "outer_room-wall-5",
+            "@type": "Wall",
+            "shape": "outer_room-wall-5-polygon",
+            "3d-shape": "outer_room-wall-5-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "outer_room-wall-6",
+            "@type": "Wall",
+            "shape": "outer_room-wall-6-polygon",
+            "3d-shape": "outer_room-wall-6-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "outer_room-wall-7",
+            "@type": "Wall",
+            "shape": "outer_room-wall-7-polygon",
+            "3d-shape": "outer_room-wall-7-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "outer_room-wall-8",
+            "@type": "Wall",
+            "shape": "outer_room-wall-8-polygon",
+            "3d-shape": "outer_room-wall-8-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "outer_room-wall-9",
+            "@type": "Wall",
+            "shape": "outer_room-wall-9-polygon",
+            "3d-shape": "outer_room-wall-9-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "outer_room-wall-10",
+            "@type": "Wall",
+            "shape": "outer_room-wall-10-polygon",
+            "3d-shape": "outer_room-wall-10-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "outer_room-wall-11",
+            "@type": "Wall",
+            "shape": "outer_room-wall-11-polygon",
+            "3d-shape": "outer_room-wall-11-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "outer_room-wall-12",
+            "@type": "Wall",
+            "shape": "outer_room-wall-12-polygon",
+            "3d-shape": "outer_room-wall-12-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "outer_room-wall-13",
+            "@type": "Wall",
+            "shape": "outer_room-wall-13-polygon",
+            "3d-shape": "outer_room-wall-13-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "outer_room-wall-14",
+            "@type": "Wall",
+            "shape": "outer_room-wall-14-polygon",
+            "3d-shape": "outer_room-wall-14-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "outer_room-wall-15",
+            "@type": "Wall",
+            "shape": "outer_room-wall-15-polygon",
+            "3d-shape": "outer_room-wall-15-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "outer_room-wall-16",
+            "@type": "Wall",
+            "shape": "outer_room-wall-16-polygon",
+            "3d-shape": "outer_room-wall-16-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "outer_room-wall-17",
+            "@type": "Wall",
+            "shape": "outer_room-wall-17-polygon",
+            "3d-shape": "outer_room-wall-17-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "outer_room-wall-18",
+            "@type": "Wall",
+            "shape": "outer_room-wall-18-polygon",
+            "3d-shape": "outer_room-wall-18-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "outer_room-wall-19",
+            "@type": "Wall",
+            "shape": "outer_room-wall-19-polygon",
+            "3d-shape": "outer_room-wall-19-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "outer_room-wall-20",
+            "@type": "Wall",
+            "shape": "outer_room-wall-20-polygon",
+            "3d-shape": "outer_room-wall-20-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "col12",
+            "@type": "Column",
+            "shape": "col12-polygon",
+            "3d-shape": "col12-polyhedron",
+            "height": 2.0
+        },
+        {
+            "@id": "col13",
+            "@type": "Column",
+            "shape": "col13-polygon",
+            "3d-shape": "col13-polyhedron",
+            "height": 2.0
+        },
+        {
+            "@id": "col21",
+            "@type": "Column",
+            "shape": "col21-polygon",
+            "3d-shape": "col21-polyhedron",
+            "height": 2.0
+        },
+        {
+            "@id": "col22",
+            "@type": "Column",
+            "shape": "col22-polygon",
+            "3d-shape": "col22-polyhedron",
+            "height": 2.0
+        },
+        {
+            "@id": "col23",
+            "@type": "Column",
+            "shape": "col23-polygon",
+            "3d-shape": "col23-polyhedron",
+            "height": 2.0
+        },
+        {
+            "@id": "col24",
+            "@type": "Column",
+            "shape": "col24-polygon",
+            "3d-shape": "col24-polyhedron",
+            "height": 2.0
+        },
+        {
+            "@id": "col31",
+            "@type": "Column",
+            "shape": "col31-polygon",
+            "3d-shape": "col31-polyhedron",
+            "height": 2.0
+        },
+        {
+            "@id": "col32",
+            "@type": "Column",
+            "shape": "col32-polygon",
+            "3d-shape": "col32-polyhedron",
+            "height": 2.0
+        },
+        {
+            "@id": "col33",
+            "@type": "Column",
+            "shape": "col33-polygon",
+            "3d-shape": "col33-polyhedron",
+            "height": 2.0
+        },
+        {
+            "@id": "col34",
+            "@type": "Column",
+            "shape": "col34-polygon",
+            "3d-shape": "col34-polyhedron",
+            "height": 2.0
+        },
+        {
+            "@id": "col42",
+            "@type": "Column",
+            "shape": "col42-polygon",
+            "3d-shape": "col42-polyhedron",
+            "height": 2.0
+        },
+        {
+            "@id": "col43",
+            "@type": "Column",
+            "shape": "col43-polygon",
+            "3d-shape": "col43-polyhedron",
+            "height": 2.0
+        },{
+  "@id": "door_inner_room",
+  "@type": "Entryway",
+  "shape": "door_inner_room-polygon",
+  "3d-shape": "door_inner_room-polyhedron",
+  "thickness": 0.2,
+  "voids": [
+      "inner_room-wall-0",
+      "outer_room-wall-3"
+  ]
+}
+
+    ]
+}

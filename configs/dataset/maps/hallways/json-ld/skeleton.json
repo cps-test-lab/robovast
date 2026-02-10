@@ -1,0 +1,1818 @@
+{
+    "@context": [
+        {
+          "@base": "https://secorolab.github.io/models/floorplan/hallways/",
+          "fpm": "https://secorolab.github.io/models/floorplan/hallways/"
+        },
+        "https://comp-rob2b.github.io/metamodels/geometry/structural-entities.json"
+    ],
+    "@graph": [
+        {
+            "@id": "world-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "world-frame",
+            "@type": "Frame",
+            "origin": "world-origin"
+        },
+        {
+            "@id": "hallway1-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-frame",
+            "@type": "Frame",
+            "origin": "hallway1-origin"
+        },
+        {
+            "@id": "hallway1-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-0-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-0-frame",
+            "@type": "Frame",
+            "origin": "hallway1-wall-0-origin"
+        },
+        {
+            "@id": "hallway1-wall-0-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-0-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-0-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-0-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-0-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-0-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-0-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-0-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-1-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-1-frame",
+            "@type": "Frame",
+            "origin": "hallway1-wall-1-origin"
+        },
+        {
+            "@id": "hallway1-wall-1-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-1-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-1-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-1-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-1-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-1-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-1-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-1-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-2-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-2-frame",
+            "@type": "Frame",
+            "origin": "hallway1-wall-2-origin"
+        },
+        {
+            "@id": "hallway1-wall-2-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-2-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-2-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-2-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-2-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-2-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-2-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-2-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-3-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-3-frame",
+            "@type": "Frame",
+            "origin": "hallway1-wall-3-origin"
+        },
+        {
+            "@id": "hallway1-wall-3-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-3-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-3-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-3-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-3-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-3-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-3-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway1-wall-3-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-frame",
+            "@type": "Frame",
+            "origin": "hallway2-origin"
+        },
+        {
+            "@id": "hallway2-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-0-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-0-frame",
+            "@type": "Frame",
+            "origin": "hallway2-wall-0-origin"
+        },
+        {
+            "@id": "hallway2-wall-0-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-0-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-0-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-0-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-0-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-0-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-0-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-0-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-1-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-1-frame",
+            "@type": "Frame",
+            "origin": "hallway2-wall-1-origin"
+        },
+        {
+            "@id": "hallway2-wall-1-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-1-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-1-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-1-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-1-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-1-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-1-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-1-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-2-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-2-frame",
+            "@type": "Frame",
+            "origin": "hallway2-wall-2-origin"
+        },
+        {
+            "@id": "hallway2-wall-2-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-2-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-2-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-2-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-2-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-2-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-2-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-2-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-3-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-3-frame",
+            "@type": "Frame",
+            "origin": "hallway2-wall-3-origin"
+        },
+        {
+            "@id": "hallway2-wall-3-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-3-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-3-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-3-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-3-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-3-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-3-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway2-wall-3-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-frame",
+            "@type": "Frame",
+            "origin": "hallway3-origin"
+        },
+        {
+            "@id": "hallway3-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-0-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-0-frame",
+            "@type": "Frame",
+            "origin": "hallway3-wall-0-origin"
+        },
+        {
+            "@id": "hallway3-wall-0-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-0-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-0-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-0-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-0-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-0-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-0-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-0-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-1-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-1-frame",
+            "@type": "Frame",
+            "origin": "hallway3-wall-1-origin"
+        },
+        {
+            "@id": "hallway3-wall-1-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-1-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-1-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-1-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-1-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-1-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-1-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-1-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-2-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-2-frame",
+            "@type": "Frame",
+            "origin": "hallway3-wall-2-origin"
+        },
+        {
+            "@id": "hallway3-wall-2-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-2-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-2-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-2-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-2-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-2-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-2-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-2-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-3-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-3-frame",
+            "@type": "Frame",
+            "origin": "hallway3-wall-3-origin"
+        },
+        {
+            "@id": "hallway3-wall-3-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-3-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-3-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-3-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-3-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-3-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-3-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway3-wall-3-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-frame",
+            "@type": "Frame",
+            "origin": "hallway4-origin"
+        },
+        {
+            "@id": "hallway4-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-0-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-0-frame",
+            "@type": "Frame",
+            "origin": "hallway4-wall-0-origin"
+        },
+        {
+            "@id": "hallway4-wall-0-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-0-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-0-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-0-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-0-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-0-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-0-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-0-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-1-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-1-frame",
+            "@type": "Frame",
+            "origin": "hallway4-wall-1-origin"
+        },
+        {
+            "@id": "hallway4-wall-1-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-1-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-1-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-1-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-1-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-1-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-1-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-1-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-2-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-2-frame",
+            "@type": "Frame",
+            "origin": "hallway4-wall-2-origin"
+        },
+        {
+            "@id": "hallway4-wall-2-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-2-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-2-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-2-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-2-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-2-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-2-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-2-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-3-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-3-frame",
+            "@type": "Frame",
+            "origin": "hallway4-wall-3-origin"
+        },
+        {
+            "@id": "hallway4-wall-3-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-3-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-3-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-3-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-3-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-3-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-3-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway4-wall-3-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-frame",
+            "@type": "Frame",
+            "origin": "hallway5-origin"
+        },
+        {
+            "@id": "hallway5-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-0-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-0-frame",
+            "@type": "Frame",
+            "origin": "hallway5-wall-0-origin"
+        },
+        {
+            "@id": "hallway5-wall-0-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-0-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-0-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-0-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-0-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-0-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-0-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-0-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-1-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-1-frame",
+            "@type": "Frame",
+            "origin": "hallway5-wall-1-origin"
+        },
+        {
+            "@id": "hallway5-wall-1-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-1-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-1-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-1-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-1-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-1-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-1-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-1-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-2-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-2-frame",
+            "@type": "Frame",
+            "origin": "hallway5-wall-2-origin"
+        },
+        {
+            "@id": "hallway5-wall-2-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-2-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-2-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-2-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-2-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-2-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-2-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-2-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-3-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-3-frame",
+            "@type": "Frame",
+            "origin": "hallway5-wall-3-origin"
+        },
+        {
+            "@id": "hallway5-wall-3-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-3-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-3-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-3-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-3-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-3-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-3-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway5-wall-3-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-frame",
+            "@type": "Frame",
+            "origin": "hallway6-origin"
+        },
+        {
+            "@id": "hallway6-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-0-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-0-frame",
+            "@type": "Frame",
+            "origin": "hallway6-wall-0-origin"
+        },
+        {
+            "@id": "hallway6-wall-0-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-0-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-0-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-0-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-0-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-0-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-0-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-0-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-1-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-1-frame",
+            "@type": "Frame",
+            "origin": "hallway6-wall-1-origin"
+        },
+        {
+            "@id": "hallway6-wall-1-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-1-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-1-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-1-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-1-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-1-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-1-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-1-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-2-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-2-frame",
+            "@type": "Frame",
+            "origin": "hallway6-wall-2-origin"
+        },
+        {
+            "@id": "hallway6-wall-2-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-2-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-2-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-2-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-2-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-2-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-2-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-2-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-3-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-3-frame",
+            "@type": "Frame",
+            "origin": "hallway6-wall-3-origin"
+        },
+        {
+            "@id": "hallway6-wall-3-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-3-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-3-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-3-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-3-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-3-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-3-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "hallway6-wall-3-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-frame",
+            "@type": "Frame",
+            "origin": "angled_hallway_entry-origin"
+        },
+        {
+            "@id": "angled_hallway_entry-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-0-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-0-frame",
+            "@type": "Frame",
+            "origin": "angled_hallway_entry-wall-0-origin"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-0-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-0-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-0-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-0-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-0-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-0-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-0-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-0-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-1-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-1-frame",
+            "@type": "Frame",
+            "origin": "angled_hallway_entry-wall-1-origin"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-1-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-1-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-1-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-1-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-1-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-1-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-1-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-1-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-2-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-2-frame",
+            "@type": "Frame",
+            "origin": "angled_hallway_entry-wall-2-origin"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-2-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-2-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-2-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-2-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-2-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-2-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-2-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-2-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-3-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-3-frame",
+            "@type": "Frame",
+            "origin": "angled_hallway_entry-wall-3-origin"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-3-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-3-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-3-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-3-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-3-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-3-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-3-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway_entry-wall-3-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-frame",
+            "@type": "Frame",
+            "origin": "angled_hallway-origin"
+        },
+        {
+            "@id": "angled_hallway-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-0-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-0-frame",
+            "@type": "Frame",
+            "origin": "angled_hallway-wall-0-origin"
+        },
+        {
+            "@id": "angled_hallway-wall-0-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-0-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-0-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-0-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-0-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-0-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-0-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-0-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-1-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-1-frame",
+            "@type": "Frame",
+            "origin": "angled_hallway-wall-1-origin"
+        },
+        {
+            "@id": "angled_hallway-wall-1-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-1-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-1-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-1-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-1-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-1-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-1-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-1-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-2-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-2-frame",
+            "@type": "Frame",
+            "origin": "angled_hallway-wall-2-origin"
+        },
+        {
+            "@id": "angled_hallway-wall-2-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-2-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-2-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-2-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-2-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-2-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-2-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-2-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-3-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-3-frame",
+            "@type": "Frame",
+            "origin": "angled_hallway-wall-3-origin"
+        },
+        {
+            "@id": "angled_hallway-wall-3-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-3-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-3-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-3-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-3-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-3-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-3-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "angled_hallway-wall-3-corner-7",
+            "@type": "Point"
+        },        {
+            "@id": "entryway-door_1_2-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_1_2-frame",
+            "@type": "Frame",
+            "origin": "entryway-door_1_2-origin"
+        },
+        {
+            "@id": "door_1_2-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_1_2-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_1_2-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_1_2-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_1_2-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_1_2-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_1_2-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_1_2-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_2_3-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_2_3-frame",
+            "@type": "Frame",
+            "origin": "entryway-door_2_3-origin"
+        },
+        {
+            "@id": "door_2_3-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_2_3-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_2_3-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_2_3-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_2_3-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_2_3-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_2_3-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_2_3-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_3_4-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_3_4-frame",
+            "@type": "Frame",
+            "origin": "entryway-door_3_4-origin"
+        },
+        {
+            "@id": "door_3_4-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_3_4-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_3_4-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_3_4-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_3_4-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_3_4-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_3_4-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_3_4-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_4_5-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_4_5-frame",
+            "@type": "Frame",
+            "origin": "entryway-door_4_5-origin"
+        },
+        {
+            "@id": "door_4_5-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_4_5-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_4_5-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_4_5-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_4_5-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_4_5-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_4_5-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_4_5-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_5_6-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_5_6-frame",
+            "@type": "Frame",
+            "origin": "entryway-door_5_6-origin"
+        },
+        {
+            "@id": "door_5_6-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_5_6-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_5_6-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_5_6-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_5_6-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_5_6-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_5_6-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_5_6-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_6_angled_hallway_entry-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_6_angled_hallway_entry-frame",
+            "@type": "Frame",
+            "origin": "entryway-door_6_angled_hallway_entry-origin"
+        },
+        {
+            "@id": "door_6_angled_hallway_entry-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_6_angled_hallway_entry-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_6_angled_hallway_entry-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_6_angled_hallway_entry-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_6_angled_hallway_entry-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_6_angled_hallway_entry-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_6_angled_hallway_entry-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_6_angled_hallway_entry-corner-7",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_angled_hallway-origin",
+            "@type": "Point"
+        },
+        {
+            "@id": "entryway-door_angled_hallway-frame",
+            "@type": "Frame",
+            "origin": "entryway-door_angled_hallway-origin"
+        },
+        {
+            "@id": "door_angled_hallway-corner-0",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_angled_hallway-corner-1",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_angled_hallway-corner-2",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_angled_hallway-corner-3",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_angled_hallway-corner-4",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_angled_hallway-corner-5",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_angled_hallway-corner-6",
+            "@type": "Point"
+        },
+        {
+            "@id": "door_angled_hallway-corner-7",
+            "@type": "Point"
+        }
+    ]
+}

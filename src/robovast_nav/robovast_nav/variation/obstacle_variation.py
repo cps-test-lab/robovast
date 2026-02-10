@@ -27,6 +27,7 @@ from ..gui.navigation_gui import NavigationGui
 from ..obstacle_placer import ObstaclePlacer
 from .nav_base_variation import NavVariation
 from ..path_generator import PathGenerator
+from ..object_shapes import get_obstacle_dimensions, get_object_type_from_model_path
 
 
 class ObstacleConfig(BaseModel):
@@ -65,17 +66,36 @@ class ObstacleVariationGuiRenderer(VariationGuiRenderer):
 
     def update_gui(self, config, path):
         for obstacle in config["config"].get('static_objects', []):
-            shape = None
-            if "box" in obstacle["model"]:
-                shape = "box"
-            elif "cylinder" in obstacle["model"]:
-                shape = "cylinder"
-            if shape == 'box':
-                pose = obstacle['spawn_pose']
-                x = pose['position']['x']
-                y = pose['position']['y']
-                yaw = pose['orientation']['yaw']
-                self.gui_object.draw_obstacle(x, y, {'width': 1, 'length': 1, 'height': 1}, yaw, shape=shape)
+            # Get model path and determine shape
+            model_path = obstacle.get('model', '')
+            object_type = get_object_type_from_model_path(model_path)
+            
+            if object_type == 'cylinder':
+                shape = 'circle'
+            else:
+                shape = 'box'
+            
+            # Parse xacro_arguments to get actual dimensions
+            xacro_args_str = obstacle.get('xacro_arguments', '')
+            dimensions = get_obstacle_dimensions(xacro_args_str)
+            
+            # Prepare draw_args based on object type
+            if object_type == 'cylinder':
+                # For cylinder, use diameter
+                radius = dimensions.get('radius', 0.25)
+                draw_args = {'diameter': radius * 2}
+            else:
+                # Default to box with parsed dimensions
+                draw_args = {
+                    'width': dimensions.get('width', 0.5),
+                    'length': dimensions.get('length', 0.5)
+                }
+            
+            pose = obstacle['spawn_pose']
+            x = pose['position']['x']
+            y = pose['position']['y']
+            yaw = pose['orientation']['yaw']
+            self.gui_object.draw_obstacle(x, y, draw_args, yaw, shape=shape)
 
 
 class ObstacleVariation(NavVariation):

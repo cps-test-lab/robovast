@@ -1,0 +1,471 @@
+{
+    "@context": [
+        {
+            "@base": "https://secorolab.github.io/models/floorplan/hallways/",
+          "fpm": "https://secorolab.github.io/models/floorplan/hallways/"
+        },
+        "https://secorolab.github.io/metamodels/floorplan/floorplan.json"
+    ],
+    "@graph": [
+        {
+            "@id": "hallways",
+            "@type": "FloorPlan",
+            "spaces": [
+                "hallway1",
+                "hallway2",
+                "hallway3",
+                "hallway4",
+                "hallway5",
+                "hallway6",
+                "angled_hallway_entry",
+                "angled_hallway"
+            ],
+            "openings": [
+                "door_1_2",
+                "door_2_3",
+                "door_3_4",
+                "door_4_5",
+                "door_5_6",
+                "door_6_angled_hallway_entry",
+                "door_angled_hallway"
+            ]
+        },
+        {
+            "@id": "hallway1",
+            "@type": "Space",
+            "walls": [
+                "hallway1-wall-0",
+                "hallway1-wall-1",
+                "hallway1-wall-2",
+                "hallway1-wall-3"
+            ],
+            "feature": [
+
+            ],
+            "shape": "hallway1-polygon"
+        },        {
+            "@id": "hallway1-wall-0",
+            "@type": "Wall",
+            "shape": "hallway1-wall-0-polygon",
+            "3d-shape": "hallway1-wall-0-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "hallway1-wall-1",
+            "@type": "Wall",
+            "shape": "hallway1-wall-1-polygon",
+            "3d-shape": "hallway1-wall-1-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "hallway1-wall-2",
+            "@type": "Wall",
+            "shape": "hallway1-wall-2-polygon",
+            "3d-shape": "hallway1-wall-2-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "hallway1-wall-3",
+            "@type": "Wall",
+            "shape": "hallway1-wall-3-polygon",
+            "3d-shape": "hallway1-wall-3-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "hallway2",
+            "@type": "Space",
+            "walls": [
+                "hallway2-wall-0",
+                "hallway2-wall-1",
+                "hallway2-wall-2",
+                "hallway2-wall-3"
+            ],
+            "feature": [
+
+            ],
+            "shape": "hallway2-polygon"
+        },        {
+            "@id": "hallway2-wall-0",
+            "@type": "Wall",
+            "shape": "hallway2-wall-0-polygon",
+            "3d-shape": "hallway2-wall-0-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "hallway2-wall-1",
+            "@type": "Wall",
+            "shape": "hallway2-wall-1-polygon",
+            "3d-shape": "hallway2-wall-1-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "hallway2-wall-2",
+            "@type": "Wall",
+            "shape": "hallway2-wall-2-polygon",
+            "3d-shape": "hallway2-wall-2-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "hallway2-wall-3",
+            "@type": "Wall",
+            "shape": "hallway2-wall-3-polygon",
+            "3d-shape": "hallway2-wall-3-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "hallway3",
+            "@type": "Space",
+            "walls": [
+                "hallway3-wall-0",
+                "hallway3-wall-1",
+                "hallway3-wall-2",
+                "hallway3-wall-3"
+            ],
+            "feature": [
+
+            ],
+            "shape": "hallway3-polygon"
+        },        {
+            "@id": "hallway3-wall-0",
+            "@type": "Wall",
+            "shape": "hallway3-wall-0-polygon",
+            "3d-shape": "hallway3-wall-0-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "hallway3-wall-1",
+            "@type": "Wall",
+            "shape": "hallway3-wall-1-polygon",
+            "3d-shape": "hallway3-wall-1-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "hallway3-wall-2",
+            "@type": "Wall",
+            "shape": "hallway3-wall-2-polygon",
+            "3d-shape": "hallway3-wall-2-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "hallway3-wall-3",
+            "@type": "Wall",
+            "shape": "hallway3-wall-3-polygon",
+            "3d-shape": "hallway3-wall-3-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "hallway4",
+            "@type": "Space",
+            "walls": [
+                "hallway4-wall-0",
+                "hallway4-wall-1",
+                "hallway4-wall-2",
+                "hallway4-wall-3"
+            ],
+            "feature": [
+
+            ],
+            "shape": "hallway4-polygon"
+        },        {
+            "@id": "hallway4-wall-0",
+            "@type": "Wall",
+            "shape": "hallway4-wall-0-polygon",
+            "3d-shape": "hallway4-wall-0-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "hallway4-wall-1",
+            "@type": "Wall",
+            "shape": "hallway4-wall-1-polygon",
+            "3d-shape": "hallway4-wall-1-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "hallway4-wall-2",
+            "@type": "Wall",
+            "shape": "hallway4-wall-2-polygon",
+            "3d-shape": "hallway4-wall-2-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "hallway4-wall-3",
+            "@type": "Wall",
+            "shape": "hallway4-wall-3-polygon",
+            "3d-shape": "hallway4-wall-3-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "hallway5",
+            "@type": "Space",
+            "walls": [
+                "hallway5-wall-0",
+                "hallway5-wall-1",
+                "hallway5-wall-2",
+                "hallway5-wall-3"
+            ],
+            "feature": [
+
+            ],
+            "shape": "hallway5-polygon"
+        },        {
+            "@id": "hallway5-wall-0",
+            "@type": "Wall",
+            "shape": "hallway5-wall-0-polygon",
+            "3d-shape": "hallway5-wall-0-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "hallway5-wall-1",
+            "@type": "Wall",
+            "shape": "hallway5-wall-1-polygon",
+            "3d-shape": "hallway5-wall-1-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "hallway5-wall-2",
+            "@type": "Wall",
+            "shape": "hallway5-wall-2-polygon",
+            "3d-shape": "hallway5-wall-2-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "hallway5-wall-3",
+            "@type": "Wall",
+            "shape": "hallway5-wall-3-polygon",
+            "3d-shape": "hallway5-wall-3-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "hallway6",
+            "@type": "Space",
+            "walls": [
+                "hallway6-wall-0",
+                "hallway6-wall-1",
+                "hallway6-wall-2",
+                "hallway6-wall-3"
+            ],
+            "feature": [
+
+            ],
+            "shape": "hallway6-polygon"
+        },        {
+            "@id": "hallway6-wall-0",
+            "@type": "Wall",
+            "shape": "hallway6-wall-0-polygon",
+            "3d-shape": "hallway6-wall-0-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "hallway6-wall-1",
+            "@type": "Wall",
+            "shape": "hallway6-wall-1-polygon",
+            "3d-shape": "hallway6-wall-1-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "hallway6-wall-2",
+            "@type": "Wall",
+            "shape": "hallway6-wall-2-polygon",
+            "3d-shape": "hallway6-wall-2-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "hallway6-wall-3",
+            "@type": "Wall",
+            "shape": "hallway6-wall-3-polygon",
+            "3d-shape": "hallway6-wall-3-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "angled_hallway_entry",
+            "@type": "Space",
+            "walls": [
+                "angled_hallway_entry-wall-0",
+                "angled_hallway_entry-wall-1",
+                "angled_hallway_entry-wall-2",
+                "angled_hallway_entry-wall-3"
+            ],
+            "feature": [
+
+            ],
+            "shape": "angled_hallway_entry-polygon"
+        },        {
+            "@id": "angled_hallway_entry-wall-0",
+            "@type": "Wall",
+            "shape": "angled_hallway_entry-wall-0-polygon",
+            "3d-shape": "angled_hallway_entry-wall-0-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "angled_hallway_entry-wall-1",
+            "@type": "Wall",
+            "shape": "angled_hallway_entry-wall-1-polygon",
+            "3d-shape": "angled_hallway_entry-wall-1-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "angled_hallway_entry-wall-2",
+            "@type": "Wall",
+            "shape": "angled_hallway_entry-wall-2-polygon",
+            "3d-shape": "angled_hallway_entry-wall-2-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "angled_hallway_entry-wall-3",
+            "@type": "Wall",
+            "shape": "angled_hallway_entry-wall-3-polygon",
+            "3d-shape": "angled_hallway_entry-wall-3-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "angled_hallway",
+            "@type": "Space",
+            "walls": [
+                "angled_hallway-wall-0",
+                "angled_hallway-wall-1",
+                "angled_hallway-wall-2",
+                "angled_hallway-wall-3"
+            ],
+            "feature": [
+
+            ],
+            "shape": "angled_hallway-polygon"
+        },        {
+            "@id": "angled_hallway-wall-0",
+            "@type": "Wall",
+            "shape": "angled_hallway-wall-0-polygon",
+            "3d-shape": "angled_hallway-wall-0-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "angled_hallway-wall-1",
+            "@type": "Wall",
+            "shape": "angled_hallway-wall-1-polygon",
+            "3d-shape": "angled_hallway-wall-1-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "angled_hallway-wall-2",
+            "@type": "Wall",
+            "shape": "angled_hallway-wall-2-polygon",
+            "3d-shape": "angled_hallway-wall-2-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },
+        {
+            "@id": "angled_hallway-wall-3",
+            "@type": "Wall",
+            "shape": "angled_hallway-wall-3-polygon",
+            "3d-shape": "angled_hallway-wall-3-polyhedron",
+            "thickness": 0.1,
+            "height": 2.0
+        },{
+  "@id": "door_1_2",
+  "@type": "Entryway",
+  "shape": "door_1_2-polygon",
+  "3d-shape": "door_1_2-polyhedron",
+  "thickness": 0.2,
+  "voids": [
+      "hallway1-wall-1",
+      "hallway2-wall-3"
+  ]
+},
+{
+  "@id": "door_2_3",
+  "@type": "Entryway",
+  "shape": "door_2_3-polygon",
+  "3d-shape": "door_2_3-polyhedron",
+  "thickness": 0.2,
+  "voids": [
+      "hallway2-wall-1",
+      "hallway3-wall-3"
+  ]
+},
+{
+  "@id": "door_3_4",
+  "@type": "Entryway",
+  "shape": "door_3_4-polygon",
+  "3d-shape": "door_3_4-polyhedron",
+  "thickness": 0.2,
+  "voids": [
+      "hallway3-wall-1",
+      "hallway4-wall-3"
+  ]
+},
+{
+  "@id": "door_4_5",
+  "@type": "Entryway",
+  "shape": "door_4_5-polygon",
+  "3d-shape": "door_4_5-polyhedron",
+  "thickness": 0.2,
+  "voids": [
+      "hallway4-wall-1",
+      "hallway5-wall-3"
+  ]
+},
+{
+  "@id": "door_5_6",
+  "@type": "Entryway",
+  "shape": "door_5_6-polygon",
+  "3d-shape": "door_5_6-polyhedron",
+  "thickness": 0.2,
+  "voids": [
+      "hallway5-wall-1",
+      "hallway6-wall-3"
+  ]
+},
+{
+  "@id": "door_6_angled_hallway_entry",
+  "@type": "Entryway",
+  "shape": "door_6_angled_hallway_entry-polygon",
+  "3d-shape": "door_6_angled_hallway_entry-polyhedron",
+  "thickness": 0.2,
+  "voids": [
+      "hallway6-wall-1",
+      "angled_hallway_entry-wall-3"
+  ]
+},
+{
+  "@id": "door_angled_hallway",
+  "@type": "Entryway",
+  "shape": "door_angled_hallway-polygon",
+  "3d-shape": "door_angled_hallway-polyhedron",
+  "thickness": 0.2,
+  "voids": [
+      "angled_hallway_entry-wall-0",
+      "angled_hallway-wall-0"
+  ]
+}
+
+    ]
+}

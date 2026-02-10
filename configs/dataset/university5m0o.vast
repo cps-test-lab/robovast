@@ -8,7 +8,7 @@ configuration:
       start_pose: start_pose
       goal_pose: goal_pose
       path_length: 5.0
-      num_paths: 50
+      num_paths: 25
       path_length_tolerance: 1.0
       min_distance: 1.0
       seed: 42

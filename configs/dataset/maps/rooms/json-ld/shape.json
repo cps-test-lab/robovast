@@ -1,0 +1,618 @@
+{
+    "@context": [
+        {
+          "@base": "https://secorolab.github.io/models/floorplan/rooms/",
+          "fpm": "https://secorolab.github.io/models/floorplan/rooms/"
+        },
+        "https://secorolab.github.io/metamodels/geometry/polytope.json"
+    ],
+    "@graph": [
+        {
+            "@id": "big_room-polygon",
+            "@type": "Polygon",
+            "points": [
+            "big_room-corner-0",
+            "big_room-corner-1",
+            "big_room-corner-2",
+            "big_room-corner-3",
+            "big_room-corner-4",
+            "big_room-corner-5",
+            "big_room-corner-6",
+            "big_room-corner-7",
+            "big_room-corner-8",
+            "big_room-corner-9",
+            "big_room-corner-10",
+            "big_room-corner-11",
+            "big_room-corner-12",
+            "big_room-corner-13",
+            "big_room-corner-14",
+            "big_room-corner-15"
+            ]
+        },
+        {
+            "@id": "big_room-wall-0-polygon",
+            "@type": "Polygon",
+            "points": [
+            "big_room-wall-0-corner-0",
+            "big_room-wall-0-corner-1",
+            "big_room-wall-0-corner-2",
+            "big_room-wall-0-corner-3"
+            ]
+        },
+        {
+            "@id": "big_room-wall-1-polygon",
+            "@type": "Polygon",
+            "points": [
+            "big_room-wall-1-corner-0",
+            "big_room-wall-1-corner-1",
+            "big_room-wall-1-corner-2",
+            "big_room-wall-1-corner-3"
+            ]
+        },
+        {
+            "@id": "big_room-wall-2-polygon",
+            "@type": "Polygon",
+            "points": [
+            "big_room-wall-2-corner-0",
+            "big_room-wall-2-corner-1",
+            "big_room-wall-2-corner-2",
+            "big_room-wall-2-corner-3"
+            ]
+        },
+        {
+            "@id": "big_room-wall-3-polygon",
+            "@type": "Polygon",
+            "points": [
+            "big_room-wall-3-corner-0",
+            "big_room-wall-3-corner-1",
+            "big_room-wall-3-corner-2",
+            "big_room-wall-3-corner-3"
+            ]
+        },
+        {
+            "@id": "big_room-wall-4-polygon",
+            "@type": "Polygon",
+            "points": [
+            "big_room-wall-4-corner-0",
+            "big_room-wall-4-corner-1",
+            "big_room-wall-4-corner-2",
+            "big_room-wall-4-corner-3"
+            ]
+        },
+        {
+            "@id": "big_room-wall-5-polygon",
+            "@type": "Polygon",
+            "points": [
+            "big_room-wall-5-corner-0",
+            "big_room-wall-5-corner-1",
+            "big_room-wall-5-corner-2",
+            "big_room-wall-5-corner-3"
+            ]
+        },
+        {
+            "@id": "big_room-wall-6-polygon",
+            "@type": "Polygon",
+            "points": [
+            "big_room-wall-6-corner-0",
+            "big_room-wall-6-corner-1",
+            "big_room-wall-6-corner-2",
+            "big_room-wall-6-corner-3"
+            ]
+        },
+        {
+            "@id": "big_room-wall-7-polygon",
+            "@type": "Polygon",
+            "points": [
+            "big_room-wall-7-corner-0",
+            "big_room-wall-7-corner-1",
+            "big_room-wall-7-corner-2",
+            "big_room-wall-7-corner-3"
+            ]
+        },
+        {
+            "@id": "big_room-wall-8-polygon",
+            "@type": "Polygon",
+            "points": [
+            "big_room-wall-8-corner-0",
+            "big_room-wall-8-corner-1",
+            "big_room-wall-8-corner-2",
+            "big_room-wall-8-corner-3"
+            ]
+        },
+        {
+            "@id": "big_room-wall-9-polygon",
+            "@type": "Polygon",
+            "points": [
+            "big_room-wall-9-corner-0",
+            "big_room-wall-9-corner-1",
+            "big_room-wall-9-corner-2",
+            "big_room-wall-9-corner-3"
+            ]
+        },
+        {
+            "@id": "big_room-wall-10-polygon",
+            "@type": "Polygon",
+            "points": [
+            "big_room-wall-10-corner-0",
+            "big_room-wall-10-corner-1",
+            "big_room-wall-10-corner-2",
+            "big_room-wall-10-corner-3"
+            ]
+        },
+        {
+            "@id": "big_room-wall-11-polygon",
+            "@type": "Polygon",
+            "points": [
+            "big_room-wall-11-corner-0",
+            "big_room-wall-11-corner-1",
+            "big_room-wall-11-corner-2",
+            "big_room-wall-11-corner-3"
+            ]
+        },
+        {
+            "@id": "big_room-wall-12-polygon",
+            "@type": "Polygon",
+            "points": [
+            "big_room-wall-12-corner-0",
+            "big_room-wall-12-corner-1",
+            "big_room-wall-12-corner-2",
+            "big_room-wall-12-corner-3"
+            ]
+        },
+        {
+            "@id": "big_room-wall-13-polygon",
+            "@type": "Polygon",
+            "points": [
+            "big_room-wall-13-corner-0",
+            "big_room-wall-13-corner-1",
+            "big_room-wall-13-corner-2",
+            "big_room-wall-13-corner-3"
+            ]
+        },
+        {
+            "@id": "big_room-wall-14-polygon",
+            "@type": "Polygon",
+            "points": [
+            "big_room-wall-14-corner-0",
+            "big_room-wall-14-corner-1",
+            "big_room-wall-14-corner-2",
+            "big_room-wall-14-corner-3"
+            ]
+        },
+        {
+            "@id": "big_room-wall-15-polygon",
+            "@type": "Polygon",
+            "points": [
+            "big_room-wall-15-corner-0",
+            "big_room-wall-15-corner-1",
+            "big_room-wall-15-corner-2",
+            "big_room-wall-15-corner-3"
+            ]
+        },
+        {
+            "@id": "lower_left_room-polygon",
+            "@type": "Polygon",
+            "points": [
+            "lower_left_room-corner-0",
+            "lower_left_room-corner-1",
+            "lower_left_room-corner-2",
+            "lower_left_room-corner-3"
+            ]
+        },
+        {
+            "@id": "lower_left_room-wall-0-polygon",
+            "@type": "Polygon",
+            "points": [
+            "lower_left_room-wall-0-corner-0",
+            "lower_left_room-wall-0-corner-1",
+            "lower_left_room-wall-0-corner-2",
+            "lower_left_room-wall-0-corner-3"
+            ]
+        },
+        {
+            "@id": "lower_left_room-wall-1-polygon",
+            "@type": "Polygon",
+            "points": [
+            "lower_left_room-wall-1-corner-0",
+            "lower_left_room-wall-1-corner-1",
+            "lower_left_room-wall-1-corner-2",
+            "lower_left_room-wall-1-corner-3"
+            ]
+        },
+        {
+            "@id": "lower_left_room-wall-2-polygon",
+            "@type": "Polygon",
+            "points": [
+            "lower_left_room-wall-2-corner-0",
+            "lower_left_room-wall-2-corner-1",
+            "lower_left_room-wall-2-corner-2",
+            "lower_left_room-wall-2-corner-3"
+            ]
+        },
+        {
+            "@id": "lower_left_room-wall-3-polygon",
+            "@type": "Polygon",
+            "points": [
+            "lower_left_room-wall-3-corner-0",
+            "lower_left_room-wall-3-corner-1",
+            "lower_left_room-wall-3-corner-2",
+            "lower_left_room-wall-3-corner-3"
+            ]
+        },
+        {
+            "@id": "upper_left_room-polygon",
+            "@type": "Polygon",
+            "points": [
+            "upper_left_room-corner-0",
+            "upper_left_room-corner-1",
+            "upper_left_room-corner-2",
+            "upper_left_room-corner-3"
+            ]
+        },
+        {
+            "@id": "upper_left_room-wall-0-polygon",
+            "@type": "Polygon",
+            "points": [
+            "upper_left_room-wall-0-corner-0",
+            "upper_left_room-wall-0-corner-1",
+            "upper_left_room-wall-0-corner-2",
+            "upper_left_room-wall-0-corner-3"
+            ]
+        },
+        {
+            "@id": "upper_left_room-wall-1-polygon",
+            "@type": "Polygon",
+            "points": [
+            "upper_left_room-wall-1-corner-0",
+            "upper_left_room-wall-1-corner-1",
+            "upper_left_room-wall-1-corner-2",
+            "upper_left_room-wall-1-corner-3"
+            ]
+        },
+        {
+            "@id": "upper_left_room-wall-2-polygon",
+            "@type": "Polygon",
+            "points": [
+            "upper_left_room-wall-2-corner-0",
+            "upper_left_room-wall-2-corner-1",
+            "upper_left_room-wall-2-corner-2",
+            "upper_left_room-wall-2-corner-3"
+            ]
+        },
+        {
+            "@id": "upper_left_room-wall-3-polygon",
+            "@type": "Polygon",
+            "points": [
+            "upper_left_room-wall-3-corner-0",
+            "upper_left_room-wall-3-corner-1",
+            "upper_left_room-wall-3-corner-2",
+            "upper_left_room-wall-3-corner-3"
+            ]
+        },
+        {
+            "@id": "lower_right_room-polygon",
+            "@type": "Polygon",
+            "points": [
+            "lower_right_room-corner-0",
+            "lower_right_room-corner-1",
+            "lower_right_room-corner-2",
+            "lower_right_room-corner-3",
+            "lower_right_room-corner-4",
+            "lower_right_room-corner-5",
+            "lower_right_room-corner-6",
+            "lower_right_room-corner-7",
+            "lower_right_room-corner-8",
+            "lower_right_room-corner-9"
+            ]
+        },
+        {
+            "@id": "lower_right_room-wall-0-polygon",
+            "@type": "Polygon",
+            "points": [
+            "lower_right_room-wall-0-corner-0",
+            "lower_right_room-wall-0-corner-1",
+            "lower_right_room-wall-0-corner-2",
+            "lower_right_room-wall-0-corner-3"
+            ]
+        },
+        {
+            "@id": "lower_right_room-wall-1-polygon",
+            "@type": "Polygon",
+            "points": [
+            "lower_right_room-wall-1-corner-0",
+            "lower_right_room-wall-1-corner-1",
+            "lower_right_room-wall-1-corner-2",
+            "lower_right_room-wall-1-corner-3"
+            ]
+        },
+        {
+            "@id": "lower_right_room-wall-2-polygon",
+            "@type": "Polygon",
+            "points": [
+            "lower_right_room-wall-2-corner-0",
+            "lower_right_room-wall-2-corner-1",
+            "lower_right_room-wall-2-corner-2",
+            "lower_right_room-wall-2-corner-3"
+            ]
+        },
+        {
+            "@id": "lower_right_room-wall-3-polygon",
+            "@type": "Polygon",
+            "points": [
+            "lower_right_room-wall-3-corner-0",
+            "lower_right_room-wall-3-corner-1",
+            "lower_right_room-wall-3-corner-2",
+            "lower_right_room-wall-3-corner-3"
+            ]
+        },
+        {
+            "@id": "lower_right_room-wall-4-polygon",
+            "@type": "Polygon",
+            "points": [
+            "lower_right_room-wall-4-corner-0",
+            "lower_right_room-wall-4-corner-1",
+            "lower_right_room-wall-4-corner-2",
+            "lower_right_room-wall-4-corner-3"
+            ]
+        },
+        {
+            "@id": "lower_right_room-wall-5-polygon",
+            "@type": "Polygon",
+            "points": [
+            "lower_right_room-wall-5-corner-0",
+            "lower_right_room-wall-5-corner-1",
+            "lower_right_room-wall-5-corner-2",
+            "lower_right_room-wall-5-corner-3"
+            ]
+        },
+        {
+            "@id": "lower_right_room-wall-6-polygon",
+            "@type": "Polygon",
+            "points": [
+            "lower_right_room-wall-6-corner-0",
+            "lower_right_room-wall-6-corner-1",
+            "lower_right_room-wall-6-corner-2",
+            "lower_right_room-wall-6-corner-3"
+            ]
+        },
+        {
+            "@id": "lower_right_room-wall-7-polygon",
+            "@type": "Polygon",
+            "points": [
+            "lower_right_room-wall-7-corner-0",
+            "lower_right_room-wall-7-corner-1",
+            "lower_right_room-wall-7-corner-2",
+            "lower_right_room-wall-7-corner-3"
+            ]
+        },
+        {
+            "@id": "lower_right_room-wall-8-polygon",
+            "@type": "Polygon",
+            "points": [
+            "lower_right_room-wall-8-corner-0",
+            "lower_right_room-wall-8-corner-1",
+            "lower_right_room-wall-8-corner-2",
+            "lower_right_room-wall-8-corner-3"
+            ]
+        },
+        {
+            "@id": "lower_right_room-wall-9-polygon",
+            "@type": "Polygon",
+            "points": [
+            "lower_right_room-wall-9-corner-0",
+            "lower_right_room-wall-9-corner-1",
+            "lower_right_room-wall-9-corner-2",
+            "lower_right_room-wall-9-corner-3"
+            ]
+        },
+        {
+            "@id": "upper_right_room-polygon",
+            "@type": "Polygon",
+            "points": [
+            "upper_right_room-corner-0",
+            "upper_right_room-corner-1",
+            "upper_right_room-corner-2",
+            "upper_right_room-corner-3"
+            ]
+        },
+        {
+            "@id": "upper_right_room-wall-0-polygon",
+            "@type": "Polygon",
+            "points": [
+            "upper_right_room-wall-0-corner-0",
+            "upper_right_room-wall-0-corner-1",
+            "upper_right_room-wall-0-corner-2",
+            "upper_right_room-wall-0-corner-3"
+            ]
+        },
+        {
+            "@id": "upper_right_room-wall-1-polygon",
+            "@type": "Polygon",
+            "points": [
+            "upper_right_room-wall-1-corner-0",
+            "upper_right_room-wall-1-corner-1",
+            "upper_right_room-wall-1-corner-2",
+            "upper_right_room-wall-1-corner-3"
+            ]
+        },
+        {
+            "@id": "upper_right_room-wall-2-polygon",
+            "@type": "Polygon",
+            "points": [
+            "upper_right_room-wall-2-corner-0",
+            "upper_right_room-wall-2-corner-1",
+            "upper_right_room-wall-2-corner-2",
+            "upper_right_room-wall-2-corner-3"
+            ]
+        },
+        {
+            "@id": "upper_right_room-wall-3-polygon",
+            "@type": "Polygon",
+            "points": [
+            "upper_right_room-wall-3-corner-0",
+            "upper_right_room-wall-3-corner-1",
+            "upper_right_room-wall-3-corner-2",
+            "upper_right_room-wall-3-corner-3"
+            ]
+        },        {
+            "@id": "door_lower_left1-polygon",
+            "@type": "Polygon",
+            "points": [
+            "door_lower_left1-corner-0",
+            "door_lower_left1-corner-1",
+            "door_lower_left1-corner-2",
+            "door_lower_left1-corner-3"
+            ]
+        },
+        {
+            "@id": "door_lower_left2-polygon",
+            "@type": "Polygon",
+            "points": [
+            "door_lower_left2-corner-0",
+            "door_lower_left2-corner-1",
+            "door_lower_left2-corner-2",
+            "door_lower_left2-corner-3"
+            ]
+        },
+        {
+            "@id": "door_lower_left3-polygon",
+            "@type": "Polygon",
+            "points": [
+            "door_lower_left3-corner-0",
+            "door_lower_left3-corner-1",
+            "door_lower_left3-corner-2",
+            "door_lower_left3-corner-3"
+            ]
+        },
+        {
+            "@id": "door_lower_left4-polygon",
+            "@type": "Polygon",
+            "points": [
+            "door_lower_left4-corner-0",
+            "door_lower_left4-corner-1",
+            "door_lower_left4-corner-2",
+            "door_lower_left4-corner-3"
+            ]
+        },
+        {
+            "@id": "door_upper_left1-polygon",
+            "@type": "Polygon",
+            "points": [
+            "door_upper_left1-corner-0",
+            "door_upper_left1-corner-1",
+            "door_upper_left1-corner-2",
+            "door_upper_left1-corner-3"
+            ]
+        },
+        {
+            "@id": "door_upper_left2-polygon",
+            "@type": "Polygon",
+            "points": [
+            "door_upper_left2-corner-0",
+            "door_upper_left2-corner-1",
+            "door_upper_left2-corner-2",
+            "door_upper_left2-corner-3"
+            ]
+        },
+        {
+            "@id": "door_upper_left3-polygon",
+            "@type": "Polygon",
+            "points": [
+            "door_upper_left3-corner-0",
+            "door_upper_left3-corner-1",
+            "door_upper_left3-corner-2",
+            "door_upper_left3-corner-3"
+            ]
+        },
+        {
+            "@id": "door_upper_left4-polygon",
+            "@type": "Polygon",
+            "points": [
+            "door_upper_left4-corner-0",
+            "door_upper_left4-corner-1",
+            "door_upper_left4-corner-2",
+            "door_upper_left4-corner-3"
+            ]
+        },
+        {
+            "@id": "door_upper_right1-polygon",
+            "@type": "Polygon",
+            "points": [
+            "door_upper_right1-corner-0",
+            "door_upper_right1-corner-1",
+            "door_upper_right1-corner-2",
+            "door_upper_right1-corner-3"
+            ]
+        },
+        {
+            "@id": "door_upper_right2-polygon",
+            "@type": "Polygon",
+            "points": [
+            "door_upper_right2-corner-0",
+            "door_upper_right2-corner-1",
+            "door_upper_right2-corner-2",
+            "door_upper_right2-corner-3"
+            ]
+        },
+        {
+            "@id": "door_upper_right3-polygon",
+            "@type": "Polygon",
+            "points": [
+            "door_upper_right3-corner-0",
+            "door_upper_right3-corner-1",
+            "door_upper_right3-corner-2",
+            "door_upper_right3-corner-3"
+            ]
+        },
+        {
+            "@id": "door_upper_right4-polygon",
+            "@type": "Polygon",
+            "points": [
+            "door_upper_right4-corner-0",
+            "door_upper_right4-corner-1",
+            "door_upper_right4-corner-2",
+            "door_upper_right4-corner-3"
+            ]
+        },
+        {
+            "@id": "door_lower_right1-polygon",
+            "@type": "Polygon",
+            "points": [
+            "door_lower_right1-corner-0",
+            "door_lower_right1-corner-1",
+            "door_lower_right1-corner-2",
+            "door_lower_right1-corner-3"
+            ]
+        },
+        {
+            "@id": "door_lower_right2-polygon",
+            "@type": "Polygon",
+            "points": [
+            "door_lower_right2-corner-0",
+            "door_lower_right2-corner-1",
+            "door_lower_right2-corner-2",
+            "door_lower_right2-corner-3"
+            ]
+        },
+        {
+            "@id": "door_lower_right3-polygon",
+            "@type": "Polygon",
+            "points": [
+            "door_lower_right3-corner-0",
+            "door_lower_right3-corner-1",
+            "door_lower_right3-corner-2",
+            "door_lower_right3-corner-3"
+            ]
+        },
+        {
+            "@id": "door_lower_right4-polygon",
+            "@type": "Polygon",
+            "points": [
+            "door_lower_right4-corner-0",
+            "door_lower_right4-corner-1",
+            "door_lower_right4-corner-2",
+            "door_lower_right4-corner-3"
+            ]
+        }
+    ]
+}

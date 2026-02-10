@@ -1,0 +1,480 @@
+{
+    "@context": [
+        {
+          "@base": "https://secorolab.github.io/models/floorplan/hallways/",
+          "fpm": "https://secorolab.github.io/models/floorplan/hallways/"
+        },
+        "https://secorolab.github.io/metamodels/geometry/polytope.json"
+    ],
+    "@graph": [
+        {
+            "@id": "hallway1-polygon",
+            "@type": "Polygon",
+            "points": [
+            "hallway1-corner-0",
+            "hallway1-corner-1",
+            "hallway1-corner-2",
+            "hallway1-corner-3"
+            ]
+        },
+        {
+            "@id": "hallway1-wall-0-polygon",
+            "@type": "Polygon",
+            "points": [
+            "hallway1-wall-0-corner-0",
+            "hallway1-wall-0-corner-1",
+            "hallway1-wall-0-corner-2",
+            "hallway1-wall-0-corner-3"
+            ]
+        },
+        {
+            "@id": "hallway1-wall-1-polygon",
+            "@type": "Polygon",
+            "points": [
+            "hallway1-wall-1-corner-0",
+            "hallway1-wall-1-corner-1",
+            "hallway1-wall-1-corner-2",
+            "hallway1-wall-1-corner-3"
+            ]
+        },
+        {
+            "@id": "hallway1-wall-2-polygon",
+            "@type": "Polygon",
+            "points": [
+            "hallway1-wall-2-corner-0",
+            "hallway1-wall-2-corner-1",
+            "hallway1-wall-2-corner-2",
+            "hallway1-wall-2-corner-3"
+            ]
+        },
+        {
+            "@id": "hallway1-wall-3-polygon",
+            "@type": "Polygon",
+            "points": [
+            "hallway1-wall-3-corner-0",
+            "hallway1-wall-3-corner-1",
+            "hallway1-wall-3-corner-2",
+            "hallway1-wall-3-corner-3"
+            ]
+        },
+        {
+            "@id": "hallway2-polygon",
+            "@type": "Polygon",
+            "points": [
+            "hallway2-corner-0",
+            "hallway2-corner-1",
+            "hallway2-corner-2",
+            "hallway2-corner-3"
+            ]
+        },
+        {
+            "@id": "hallway2-wall-0-polygon",
+            "@type": "Polygon",
+            "points": [
+            "hallway2-wall-0-corner-0",
+            "hallway2-wall-0-corner-1",
+            "hallway2-wall-0-corner-2",
+            "hallway2-wall-0-corner-3"
+            ]
+        },
+        {
+            "@id": "hallway2-wall-1-polygon",
+            "@type": "Polygon",
+            "points": [
+            "hallway2-wall-1-corner-0",
+            "hallway2-wall-1-corner-1",
+            "hallway2-wall-1-corner-2",
+            "hallway2-wall-1-corner-3"
+            ]
+        },
+        {
+            "@id": "hallway2-wall-2-polygon",
+            "@type": "Polygon",
+            "points": [
+            "hallway2-wall-2-corner-0",
+            "hallway2-wall-2-corner-1",
+            "hallway2-wall-2-corner-2",
+            "hallway2-wall-2-corner-3"
+            ]
+        },
+        {
+            "@id": "hallway2-wall-3-polygon",
+            "@type": "Polygon",
+            "points": [
+            "hallway2-wall-3-corner-0",
+            "hallway2-wall-3-corner-1",
+            "hallway2-wall-3-corner-2",
+            "hallway2-wall-3-corner-3"
+            ]
+        },
+        {
+            "@id": "hallway3-polygon",
+            "@type": "Polygon",
+            "points": [
+            "hallway3-corner-0",
+            "hallway3-corner-1",
+            "hallway3-corner-2",
+            "hallway3-corner-3"
+            ]
+        },
+        {
+            "@id": "hallway3-wall-0-polygon",
+            "@type": "Polygon",
+            "points": [
+            "hallway3-wall-0-corner-0",
+            "hallway3-wall-0-corner-1",
+            "hallway3-wall-0-corner-2",
+            "hallway3-wall-0-corner-3"
+            ]
+        },
+        {
+            "@id": "hallway3-wall-1-polygon",
+            "@type": "Polygon",
+            "points": [
+            "hallway3-wall-1-corner-0",
+            "hallway3-wall-1-corner-1",
+            "hallway3-wall-1-corner-2",
+            "hallway3-wall-1-corner-3"
+            ]
+        },
+        {
+            "@id": "hallway3-wall-2-polygon",
+            "@type": "Polygon",
+            "points": [
+            "hallway3-wall-2-corner-0",
+            "hallway3-wall-2-corner-1",
+            "hallway3-wall-2-corner-2",
+            "hallway3-wall-2-corner-3"
+            ]
+        },
+        {
+            "@id": "hallway3-wall-3-polygon",
+            "@type": "Polygon",
+            "points": [
+            "hallway3-wall-3-corner-0",
+            "hallway3-wall-3-corner-1",
+            "hallway3-wall-3-corner-2",
+            "hallway3-wall-3-corner-3"
+            ]
+        },
+        {
+            "@id": "hallway4-polygon",
+            "@type": "Polygon",
+            "points": [
+            "hallway4-corner-0",
+            "hallway4-corner-1",
+            "hallway4-corner-2",
+            "hallway4-corner-3"
+            ]
+        },
+        {
+            "@id": "hallway4-wall-0-polygon",
+            "@type": "Polygon",
+            "points": [
+            "hallway4-wall-0-corner-0",
+            "hallway4-wall-0-corner-1",
+            "hallway4-wall-0-corner-2",
+            "hallway4-wall-0-corner-3"
+            ]
+        },
+        {
+            "@id": "hallway4-wall-1-polygon",
+            "@type": "Polygon",
+            "points": [
+            "hallway4-wall-1-corner-0",
+            "hallway4-wall-1-corner-1",
+            "hallway4-wall-1-corner-2",
+            "hallway4-wall-1-corner-3"
+            ]
+        },
+        {
+            "@id": "hallway4-wall-2-polygon",
+            "@type": "Polygon",
+            "points": [
+            "hallway4-wall-2-corner-0",
+            "hallway4-wall-2-corner-1",
+            "hallway4-wall-2-corner-2",
+            "hallway4-wall-2-corner-3"
+            ]
+        },
+        {
+            "@id": "hallway4-wall-3-polygon",
+            "@type": "Polygon",
+            "points": [
+            "hallway4-wall-3-corner-0",
+            "hallway4-wall-3-corner-1",
+            "hallway4-wall-3-corner-2",
+            "hallway4-wall-3-corner-3"
+            ]
+        },
+        {
+            "@id": "hallway5-polygon",
+            "@type": "Polygon",
+            "points": [
+            "hallway5-corner-0",
+            "hallway5-corner-1",
+            "hallway5-corner-2",
+            "hallway5-corner-3"
+            ]
+        },
+        {
+            "@id": "hallway5-wall-0-polygon",
+            "@type": "Polygon",
+            "points": [
+            "hallway5-wall-0-corner-0",
+            "hallway5-wall-0-corner-1",
+            "hallway5-wall-0-corner-2",
+            "hallway5-wall-0-corner-3"
+            ]
+        },
+        {
+            "@id": "hallway5-wall-1-polygon",
+            "@type": "Polygon",
+            "points": [
+            "hallway5-wall-1-corner-0",
+            "hallway5-wall-1-corner-1",
+            "hallway5-wall-1-corner-2",
+            "hallway5-wall-1-corner-3"
+            ]
+        },
+        {
+            "@id": "hallway5-wall-2-polygon",
+            "@type": "Polygon",
+            "points": [
+            "hallway5-wall-2-corner-0",
+            "hallway5-wall-2-corner-1",
+            "hallway5-wall-2-corner-2",
+            "hallway5-wall-2-corner-3"
+            ]
+        },
+        {
+            "@id": "hallway5-wall-3-polygon",
+            "@type": "Polygon",
+            "points": [
+            "hallway5-wall-3-corner-0",
+            "hallway5-wall-3-corner-1",
+            "hallway5-wall-3-corner-2",
+            "hallway5-wall-3-corner-3"
+            ]
+        },
+        {
+            "@id": "hallway6-polygon",
+            "@type": "Polygon",
+            "points": [
+            "hallway6-corner-0",
+            "hallway6-corner-1",
+            "hallway6-corner-2",
+            "hallway6-corner-3"
+            ]
+        },
+        {
+            "@id": "hallway6-wall-0-polygon",
+            "@type": "Polygon",
+            "points": [
+            "hallway6-wall-0-corner-0",
+            "hallway6-wall-0-corner-1",
+            "hallway6-wall-0-corner-2",
+            "hallway6-wall-0-corner-3"
+            ]
+        },
+        {
+            "@id": "hallway6-wall-1-polygon",
+            "@type": "Polygon",
+            "points": [
+            "hallway6-wall-1-corner-0",
+            "hallway6-wall-1-corner-1",
+            "hallway6-wall-1-corner-2",
+            "hallway6-wall-1-corner-3"
+            ]
+        },
+        {
+            "@id": "hallway6-wall-2-polygon",
+            "@type": "Polygon",
+            "points": [
+            "hallway6-wall-2-corner-0",
+            "hallway6-wall-2-corner-1",
+            "hallway6-wall-2-corner-2",
+            "hallway6-wall-2-corner-3"
+            ]
+        },
+        {
+            "@id": "hallway6-wall-3-polygon",
+            "@type": "Polygon",
+            "points": [
+            "hallway6-wall-3-corner-0",
+            "hallway6-wall-3-corner-1",
+            "hallway6-wall-3-corner-2",
+            "hallway6-wall-3-corner-3"
+            ]
+        },
+        {
+            "@id": "angled_hallway_entry-polygon",
+            "@type": "Polygon",
+            "points": [
+            "angled_hallway_entry-corner-0",
+            "angled_hallway_entry-corner-1",
+            "angled_hallway_entry-corner-2",
+            "angled_hallway_entry-corner-3"
+            ]
+        },
+        {
+            "@id": "angled_hallway_entry-wall-0-polygon",
+            "@type": "Polygon",
+            "points": [
+            "angled_hallway_entry-wall-0-corner-0",
+            "angled_hallway_entry-wall-0-corner-1",
+            "angled_hallway_entry-wall-0-corner-2",
+            "angled_hallway_entry-wall-0-corner-3"
+            ]
+        },
+        {
+            "@id": "angled_hallway_entry-wall-1-polygon",
+            "@type": "Polygon",
+            "points": [
+            "angled_hallway_entry-wall-1-corner-0",
+            "angled_hallway_entry-wall-1-corner-1",
+            "angled_hallway_entry-wall-1-corner-2",
+            "angled_hallway_entry-wall-1-corner-3"
+            ]
+        },
+        {
+            "@id": "angled_hallway_entry-wall-2-polygon",
+            "@type": "Polygon",
+            "points": [
+            "angled_hallway_entry-wall-2-corner-0",
+            "angled_hallway_entry-wall-2-corner-1",
+            "angled_hallway_entry-wall-2-corner-2",
+            "angled_hallway_entry-wall-2-corner-3"
+            ]
+        },
+        {
+            "@id": "angled_hallway_entry-wall-3-polygon",
+            "@type": "Polygon",
+            "points": [
+            "angled_hallway_entry-wall-3-corner-0",
+            "angled_hallway_entry-wall-3-corner-1",
+            "angled_hallway_entry-wall-3-corner-2",
+            "angled_hallway_entry-wall-3-corner-3"
+            ]
+        },
+        {
+            "@id": "angled_hallway-polygon",
+            "@type": "Polygon",
+            "points": [
+            "angled_hallway-corner-0",
+            "angled_hallway-corner-1",
+            "angled_hallway-corner-2",
+            "angled_hallway-corner-3"
+            ]
+        },
+        {
+            "@id": "angled_hallway-wall-0-polygon",
+            "@type": "Polygon",
+            "points": [
+            "angled_hallway-wall-0-corner-0",
+            "angled_hallway-wall-0-corner-1",
+            "angled_hallway-wall-0-corner-2",
+            "angled_hallway-wall-0-corner-3"
+            ]
+        },
+        {
+            "@id": "angled_hallway-wall-1-polygon",
+            "@type": "Polygon",
+            "points": [
+            "angled_hallway-wall-1-corner-0",
+            "angled_hallway-wall-1-corner-1",
+            "angled_hallway-wall-1-corner-2",
+            "angled_hallway-wall-1-corner-3"
+            ]
+        },
+        {
+            "@id": "angled_hallway-wall-2-polygon",
+            "@type": "Polygon",
+            "points": [
+            "angled_hallway-wall-2-corner-0",
+            "angled_hallway-wall-2-corner-1",
+            "angled_hallway-wall-2-corner-2",
+            "angled_hallway-wall-2-corner-3"
+            ]
+        },
+        {
+            "@id": "angled_hallway-wall-3-polygon",
+            "@type": "Polygon",
+            "points": [
+            "angled_hallway-wall-3-corner-0",
+            "angled_hallway-wall-3-corner-1",
+            "angled_hallway-wall-3-corner-2",
+            "angled_hallway-wall-3-corner-3"
+            ]
+        },        {
+            "@id": "door_1_2-polygon",
+            "@type": "Polygon",
+            "points": [
+            "door_1_2-corner-0",
+            "door_1_2-corner-1",
+            "door_1_2-corner-2",
+            "door_1_2-corner-3"
+            ]
+        },
+        {
+            "@id": "door_2_3-polygon",
+            "@type": "Polygon",
+            "points": [
+            "door_2_3-corner-0",
+            "door_2_3-corner-1",
+            "door_2_3-corner-2",
+            "door_2_3-corner-3"
+            ]
+        },
+        {
+            "@id": "door_3_4-polygon",
+            "@type": "Polygon",
+            "points": [
+            "door_3_4-corner-0",
+            "door_3_4-corner-1",
+            "door_3_4-corner-2",
+            "door_3_4-corner-3"
+            ]
+        },
+        {
+            "@id": "door_4_5-polygon",
+            "@type": "Polygon",
+            "points": [
+            "door_4_5-corner-0",
+            "door_4_5-corner-1",
+            "door_4_5-corner-2",
+            "door_4_5-corner-3"
+            ]
+        },
+        {
+            "@id": "door_5_6-polygon",
+            "@type": "Polygon",
+            "points": [
+            "door_5_6-corner-0",
+            "door_5_6-corner-1",
+            "door_5_6-corner-2",
+            "door_5_6-corner-3"
+            ]
+        },
+        {
+            "@id": "door_6_angled_hallway_entry-polygon",
+            "@type": "Polygon",
+            "points": [
+            "door_6_angled_hallway_entry-corner-0",
+            "door_6_angled_hallway_entry-corner-1",
+            "door_6_angled_hallway_entry-corner-2",
+            "door_6_angled_hallway_entry-corner-3"
+            ]
+        },
+        {
+            "@id": "door_angled_hallway-polygon",
+            "@type": "Polygon",
+            "points": [
+            "door_angled_hallway-corner-0",
+            "door_angled_hallway-corner-1",
+            "door_angled_hallway-corner-2",
+            "door_angled_hallway-corner-3"
+            ]
+        }
+    ]
+}

@@ -4,7 +4,7 @@ configuration:
   scenario_file: scenario.osc
   variations:
   - PathVariationRasterized:
-      map_file: /home/swiest/robovast/configs/dataset/maps/hospital/maps/hospital.yaml
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hospital/maps/hospital.yaml
       raster_size: 4.0
       path_length: 10
       path_length_tolerance: 2

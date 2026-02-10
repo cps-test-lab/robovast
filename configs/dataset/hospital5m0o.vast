@@ -4,7 +4,7 @@ configuration:
   scenario_file: scenario.osc
   variations:
   - PathVariationRasterized:
-      map_file: /home/swiest/robovast/configs/dataset/maps/hospital/maps/hospital.yaml
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hospital/maps/hospital.yaml
       raster_size: 4.0
       path_length: 5
       path_length_tolerance: 2
@@ -17,7 +17,7 @@ configuration:
         max_distance: 1.0
         model: file:///config/files/models/box.sdf.xacro
         xacro_arguments: width:=0.5, length:=0.5, height:=1.0
-      seed: 100
+      seed: 103
       robot_diameter: 0.35
   - ParameterVariationList:
       name: laserscan_gaussian_noise_std_deviation
