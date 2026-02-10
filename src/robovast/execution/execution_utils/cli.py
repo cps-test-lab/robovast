@@ -117,6 +117,16 @@ def run(config, runs, output, shell, no_gui, network_host, image):
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
+@local.command()
+@click.argument("run_path", type=click.Path(exists=True))
+@click.argument("dataset_iri", type=click.STRING)
+@click.option('--scenarios', default="scenarios")
+@click.option('--environments', default="environments")
+@click.option('--runs', default="runs")
+@click.option('--agents', default="agents")
+def prov(run_path, dataset_iri, **kwargs):
+    from robovast.prov.generate_prov_graph import get_run_prov
+    get_run_prov(run_path, dataset_iri, **kwargs)
 
 @local.command()
 @click.argument('output-dir', type=click.Path())

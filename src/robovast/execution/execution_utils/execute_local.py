@@ -55,6 +55,7 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
     config_path = project_config.config_path
     logger.debug(f"Loading config from: {config_path}")
     execution_parameters = load_config(config_path, "execution")
+    prov_config = load_config(config_path, "provenance")
     docker_image = execution_parameters.get("image", "ghcr.io/cps-test-lab/robovast:latest")
     results_dir = project_config.results_dir
 
@@ -134,7 +135,7 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
             docker_configs.append((docker_image, os.path.abspath(os.path.join(
                 config_path_result, config_entry["name"])), config_entry['name'], run_number))
 
-    generate_docker_run_script(docker_configs, results_dir, os.path.join(config_dir, "run.sh"))
+    generate_docker_run_script(docker_configs, results_dir, os.path.join(config_dir, "run.sh"), prov_config)
     return os.path.join(config_dir, "run.sh")
 
 
@@ -280,7 +281,7 @@ mkdir -p ${RESULTS_DIR}
 """
 
 
-def generate_docker_run_script(configs, results_dir, output_script_path):
+def generate_docker_run_script(configs, results_dir, output_script_path, prov_config):
     """Generate a shell script to run Docker containers sequentially.
 
     Args:
@@ -306,6 +307,8 @@ def generate_docker_run_script(configs, results_dir, output_script_path):
     )
 
     total_configs = len(configs)
+
+    dataset_iri = prov_config.pop("dataset_iri")
 
     # Generate docker run commands for each config
     for idx, (image, config_path, config_name, run_num) in enumerate(configs, 1):
@@ -344,6 +347,10 @@ def generate_docker_run_script(configs, results_dir, output_script_path):
         script += '    $GUI_OPTIONS \\\n'
         script += "\n".join(docker_params)
         script += f'\n    "$DOCKER_IMAGE" \\\n    $COMMAND\n\n'
+
+        # Add prov command for this config
+        prov_args = " ".join([f"--{parg} {v}" for parg, v in prov_config.items()])
+        script += f"vast execution local prov {test_path} {dataset_iri} {prov_args}\n\n"
 
         # Check exit code after each run
         if idx < total_configs:
