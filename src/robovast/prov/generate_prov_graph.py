@@ -25,7 +25,7 @@ def get_run_data(run_yaml_path):
 def _create_abstract_scenario(scenario_id):
     return {
         "@id": f"scenarios:{scenario_id}",
-        "@type": ["AbstractScenario", "Entity"],
+        "@type": ["smm:AbstractScenario", "Entity"],
         "atLocation": f"scenarios:{scenario_id}",
     }
 
@@ -35,7 +35,7 @@ def _create_concrete_scenario(
 ):
     node = {
         "@id": f"scenarios:{scenario_id}",
-        "@type": ["ConcreteScenario", "Entity"],
+        "@type": ["smm:ConcreteScenario", "Entity"],
     }
     if kwargs.get("gen_time") is not None:
         node["generatedAtTime"] = kwargs["gen_time"]
@@ -53,7 +53,7 @@ def _create_concrete_scenario(
 def _create_run_activity(run_mdata):
     return {
         "@id": f"run:{run_mdata['RUN_ID']}",
-        "@type": ["Activity", "TestRun"],
+        "@type": ["Activity", "smm:TestRun"],
         "startedAtTime": run_mdata["START_DATE"],
         "endedAtTime": run_mdata["END_DATE"],
         "used": [
@@ -67,7 +67,7 @@ def _create_run_activity(run_mdata):
 def _create_generated_artefact(artefact_id, activity=None, source_artefact_id=None):
     node = {
         "@id": f"run:{artefact_id}",
-        "@type": ["Entity", "Artefact"],
+        "@type": ["Entity", "smm:Artefact"],
         "atLocation": f"{artefact_id}",
     }
     if activity is not None:
@@ -82,7 +82,7 @@ def _create_agent_config(run_mdata):
     node = {
         "used": {
             "@id": f"agents:{run_mdata['ROBOT_ID']}/{run_mdata['ROBOT_CONFIG']}",
-            "@type": ["Entity", "Configuration"],
+            "@type": ["Entity", "smm:Configuration"],
         },
         "wasAssociatedWith": f"agents:{run_mdata['ROBOT_ID']}",
     }
@@ -128,6 +128,7 @@ def _get_jsonld_context(dataset_iri, **kwargs):
         "@context": [
             {
                 "prov": "http://www.w3.org/ns/prov#",
+                "smm": "https://secorolab.github.io/metamodels/scenarios/scenarios#",
                 "dataset": dataset_iri,
                 "scenarios": os.path.join(
                     dataset_iri, kwargs.get("scenarios", "scenarios") + "/"
