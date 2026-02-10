@@ -244,28 +244,6 @@ local
 
 Configuration specific to local execution (when using ``vast run`` or ``vast prepare-run``).
 
-local.additional_docker_run_parameters
-"""""""""""""""""""""""""""""""""""""""
-
-**Type:** String (multi-line)
-
-**Required:** No
-
-Additional parameters to pass to the ``docker run`` command during local execution. This is useful for adding GPU support, network configuration, display settings, or any other Docker-specific options.
-
-.. code-block:: yaml
-
-   execution:
-     local:
-       additional_docker_run_parameters: |
-         --runtime=nvidia \
-         --gpus all \
-         --network host \
-         -e DISPLAY=${DISPLAY} \
-         -e QT_X11_NO_MITSHM=1 \
-         -e NVIDIA_VISIBLE_DEVICES=all \
-         -e NVIDIA_DRIVER_CAPABILITIES=all
-
 **Notes:**
 
 - Parameters are added to the generated ``run.sh`` script
@@ -433,10 +411,6 @@ Here's a complete example showing all major configuration options:
      pre_command: source /config/prepare_test.sh
      post_command: echo "Scenario completed"
      run_as_user: 1000
-     local:
-       additional_docker_run_parameters: |
-         --runtime=nvidia \
-         --gpus all
      test_files_filter:
      - "**/files/*"
      - "**/models/*.sdf"
