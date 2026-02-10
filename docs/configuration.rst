@@ -194,7 +194,7 @@ Path to an executable script that will be sourced before each test run. The file
 
 - Must be a path to an existing executable file
 - No command line parameters are allowed
-- The file is sourced (not executed in a subshell), so environment variable changes persist
+- The file is sourced (not executed in a sub-shell), so environment variable changes persist
 
 .. code-block:: yaml
 
