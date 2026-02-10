@@ -22,7 +22,7 @@ import tempfile
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QSettings, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QIcon, QKeyEvent
 from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel,
                                QMainWindow, QMessageBox, QPushButton,
                                QSplitter, QTextEdit, QVBoxLayout, QWidget)
@@ -43,6 +43,7 @@ class GenerationWorker(QObject):
     progress = Signal(str)  # Progress message
     finished = Signal()  # Configs list, GUI classes dict
     error = Signal(str)  # Error message
+    cancelled = Signal()  # Cancellation signal
 
     def __init__(self, yaml_path, output_dir):
         super().__init__()
@@ -50,20 +51,53 @@ class GenerationWorker(QObject):
         self.output_dir = output_dir
         self.configs = []
         self.variation_gui_classes = {}
+        self._cancelled = False
+        self._cancel_message_shown = False
+
+    def cancel(self):
+        """Request cancellation of the generation process."""
+        self._cancelled = True
+
+    def _check_interruption(self, msg):
+        """Check for interruption request and emit progress.
+
+        This method must never raise exceptions to avoid Qt event handler errors.
+        """
+        try:
+            # Check if cancellation was requested
+            if self._cancelled or QThread.currentThread().isInterruptionRequested():
+                self._cancelled = True
+                # Emit progress message about cancellation only once
+                if not self._cancel_message_shown:
+                    self.progress.emit("Generation cancelled by user")
+                    self._cancel_message_shown = True
+                return
+            # Emit normal progress message
+            self.progress.emit(msg)
+        except Exception:
+            # Catch any exception to prevent it from propagating through Qt
+            pass
 
     def run(self):
         """Run the generation process."""
         try:
             configs, variation_gui_classes = generate_scenario_variations(
                 variation_file=self.yaml_path,
-                progress_update_callback=self.progress.emit,
+                progress_update_callback=self._check_interruption,
                 output_dir=self.output_dir
             )
+
+            # Check if we were cancelled during generation
+            if self._cancelled:
+                self.cancelled.emit()
+                return
+
             self.configs = configs
             self.variation_gui_classes = variation_gui_classes
             self.finished.emit()
         except Exception as e:
-            self.error.emit(str(e))
+            if not self._cancelled:
+                self.error.emit(str(e))
 
 
 class ConfigEditor(QMainWindow):
@@ -227,6 +261,32 @@ class ConfigEditor(QMainWindow):
             }
         """)
         button_layout.addWidget(self.save_button)
+
+        # Add Save As button
+        self.save_as_button = QPushButton("Save As")
+        self.save_as_button.setMaximumWidth(150)
+        self.save_as_button.clicked.connect(self.on_save_as_clicked)
+        self.save_as_button.setStyleSheet("""
+            QPushButton {
+                background-color: #2d7d2d;
+                color: white;
+                border: 1px solid #3a9a3a;
+                padding: 5px 15px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #3a9a3a;
+            }
+            QPushButton:pressed {
+                background-color: #246624;
+            }
+            QPushButton:disabled {
+                background-color: #555555;
+                color: #888888;
+                border: 1px solid #444444;
+            }
+        """)
+        button_layout.addWidget(self.save_as_button)
 
         # Add spacer to push buttons to the left
         button_layout.addStretch()
@@ -403,6 +463,7 @@ class ConfigEditor(QMainWindow):
         self.error_display.append("<span style='color: #4ec9b0;'>Starting generation...</span>")
 
         # Clear config list and config view
+        self.config_list.clear()
         self.config_view.clear()
 
         # Update button states for generation
@@ -442,10 +503,12 @@ class ConfigEditor(QMainWindow):
             self.generation_worker.progress.connect(self.on_generation_progress)
             self.generation_worker.finished.connect(self.on_generation_finished)
             self.generation_worker.error.connect(self.on_generation_error)
+            self.generation_worker.cancelled.connect(self.on_generation_cancelled)
 
             # Clean up thread when finished
             self.generation_worker.finished.connect(self.generation_thread.quit)
             self.generation_worker.error.connect(self.generation_thread.quit)
+            self.generation_worker.cancelled.connect(self.generation_thread.quit)
             self.generation_thread.finished.connect(self.reset_buttons_to_idle)
 
             # Start the thread
@@ -468,14 +531,15 @@ class ConfigEditor(QMainWindow):
         """Handle Cancel button click."""
         if self.generation_thread and self.generation_thread.isRunning():
             self.error_display.append("<span style='color: #f48771;'>Cancelling generation...</span>")
-            # Request thread interruption
+            # Set cancellation flag and request thread interruption
+            if self.generation_worker:
+                self.generation_worker.cancel()
             self.generation_thread.requestInterruption()
             # Give it a moment to stop gracefully
             if not self.generation_thread.wait(1000):  # Wait up to 1 second
                 # Force terminate if it doesn't stop
                 self.generation_thread.terminate()
-                self.generation_thread.wait()
-            self.error_display.append("<span style='color: #f48771;'><b>✗ Generation cancelled</b></span>")
+                # Do not wait indefinitely here to avoid blocking the GUI
 
     def on_save_clicked(self):
         """Handle Save button click."""
@@ -496,6 +560,21 @@ class ConfigEditor(QMainWindow):
             # Save to the original vast file
             if self.save_to_file(self.current_file):
                 self.error_display.append(f"<span style='color: #4ec9b0;'>✓ Saved to {Path(self.current_file).name}</span>")
+
+    def on_save_as_clicked(self):
+        """Handle Save As button click - always prompt for a new filename."""
+        # Prompt for save location
+        file_name, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Configuration As",
+            self.current_file or "",
+            "VAST Files (*.vast);;YAML Files (*.yaml *.yml);;All Files (*)"
+        )
+        if file_name:
+            if self.save_to_file(file_name):
+                self.current_file = file_name
+                self.setWindowTitle(f"Configuration Editor - {Path(file_name).name}")
+                self.error_display.append(f"<span style='color: #4ec9b0;'>✓ Saved to {Path(file_name).name}</span>")
 
     def on_generation_progress(self, message):
         """Handle progress updates from the worker."""
@@ -527,6 +606,10 @@ class ConfigEditor(QMainWindow):
         error_msg = f"<span style='color: #f48771;'><b>Generation Error:</b></span><br>"
         error_msg += f"<span style='color: #dcdcaa;'>{error_message}</span>"
         self.error_display.append(error_msg)
+
+    def on_generation_cancelled(self):
+        """Handle generation cancellation."""
+        self.error_display.append("<span style='color: #f48771;'><b>✗ Generation cancelled</b></span>")
 
     def cleanup_generation(self):
 
@@ -571,6 +654,21 @@ class ConfigEditor(QMainWindow):
             error_msg = f"<span style='color: #f48771;'><b>Unexpected Error:</b></span><br>"
             error_msg += f"<span style='color: #dcdcaa;'>{str(e)}</span>"
             self.error_display.setHtml(error_msg)
+
+    def keyPressEvent(self, event: QKeyEvent):
+        """Handle key press events."""
+        # Check for Ctrl+S to save
+        # Ctrl+S => Save
+        if event.key() == Qt.Key_S and event.modifiers() == Qt.ControlModifier:
+            self.on_save_clicked()
+            event.accept()
+        # Ctrl+Shift+S => Save As
+        elif event.key() == Qt.Key_S and (event.modifiers() & (Qt.ControlModifier | Qt.ShiftModifier)) == (Qt.ControlModifier | Qt.ShiftModifier):
+            self.on_save_as_clicked()
+            event.accept()
+        else:
+            # Pass other key events to the base class
+            super().keyPressEvent(event)
 
 
 def main():

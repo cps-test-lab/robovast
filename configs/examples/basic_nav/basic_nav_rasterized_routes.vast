@@ -1,0 +1,33 @@
+version: 1
+configuration:
+- name: test
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRasterized:
+      map_file: /opt/ros/jazzy/share/nav2_bringup/maps/depot.yaml
+      start_pose:
+        x: 0.0
+        y: 0.0
+        yaw: 0.0
+      raster_size: 5.0
+      path_length: 10.0
+      path_length_tolerance: 2.5
+      robot_diameter: 0.35
+      raster_offset_y: 4.5
+execution:
+  image: ghcr.io/cps-test-lab/robovast:latest
+  kubernetes:
+    resources:
+      cpu: 6
+  runs: 5
+  test_files_filter:
+  - "**/files/*"
+analysis:
+  preprocessing:
+  - ../../../tools/docker_exec.sh rosbags_tf_to_csv.py --frame base_link --frame turtlebot4_base_link_gt
+  - ../../../tools/docker_exec.sh rosbags_bt_to_csv.py
+  visualization:
+  - Analysis:
+      single_test: analysis/analysis_single_test.ipynb
+      config: analysis/analysis_config.ipynb
+      run: analysis/analysis_run.ipynb

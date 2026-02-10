@@ -1,0 +1,222 @@
+{
+    "@context": [
+        {
+            "@base": "https://secorolab.github.io/models/floorplan/hbrs/",
+          "fpm": "https://secorolab.github.io/models/floorplan/hbrs/"
+        },
+        "http://comp-rob2b.github.io/metamodels/qudt.json",
+        "https://secorolab.github.io/metamodels/floorplan/floorplan.json"
+    ],
+    "@graph": [
+        {
+            "@id": "hbrs",
+            "@type": "FloorPlan",
+            "spaces": [
+                "corridor_1",
+                "room_c022",
+                "room_c025"
+            ],
+            "openings": [
+                "room_c022_door_1",
+                "room_c025_door_1",
+                "junction_corridor_1_transition"
+            ]
+        },
+        {
+            "@id": "corridor_1",
+            "@type": "Space",
+            "walls": [
+                "corridor_1-wall-0",
+                "corridor_1-wall-1",
+                "corridor_1-wall-2",
+                "corridor_1-wall-3"
+            ],
+            "feature": [
+                "pillar_1",
+                "pillar_2"
+            ],
+            "shape": "corridor_1-polygon"
+        },        {
+            "@id": "corridor_1-wall-0",
+            "@type": "Wall",
+            "shape": "corridor_1-wall-0-polygon",
+            "3d-shape": "corridor_1-wall-0-polyhedron",
+            "thickness": 0.2,
+            "height": 3.0,
+            "unit": "M"
+        },
+        {
+            "@id": "corridor_1-wall-1",
+            "@type": "Wall",
+            "shape": "corridor_1-wall-1-polygon",
+            "3d-shape": "corridor_1-wall-1-polyhedron",
+            "thickness": 0.2,
+            "height": 3.0,
+            "unit": "M"
+        },
+        {
+            "@id": "corridor_1-wall-2",
+            "@type": "Wall",
+            "shape": "corridor_1-wall-2-polygon",
+            "3d-shape": "corridor_1-wall-2-polyhedron",
+            "thickness": 0.2,
+            "height": 3.0,
+            "unit": "M"
+        },
+        {
+            "@id": "corridor_1-wall-3",
+            "@type": "Wall",
+            "shape": "corridor_1-wall-3-polygon",
+            "3d-shape": "corridor_1-wall-3-polyhedron",
+            "thickness": 0.2,
+            "height": 3.0,
+            "unit": "M"
+        },
+        {
+            "@id": "pillar_1",
+            "@type": "Column",
+            "shape": "pillar_1-polygon",
+            "3d-shape": "pillar_1-polyhedron",
+            "height": 1.5,
+            "unit": "M"
+        },
+        {
+            "@id": "pillar_2",
+            "@type": "Column",
+            "shape": "pillar_2-polygon",
+            "3d-shape": "pillar_2-polyhedron",
+            "height": 1.5,
+            "unit": "M"
+        },
+        {
+            "@id": "room_c022",
+            "@type": "Space",
+            "walls": [
+                "room_c022-wall-0",
+                "room_c022-wall-1",
+                "room_c022-wall-2",
+                "room_c022-wall-3"
+            ],
+            "feature": [
+
+            ],
+            "shape": "room_c022-polygon"
+        },        {
+            "@id": "room_c022-wall-0",
+            "@type": "Wall",
+            "shape": "room_c022-wall-0-polygon",
+            "3d-shape": "room_c022-wall-0-polyhedron",
+            "thickness": 0.5,
+            "height": 3.0,
+            "unit": "M"
+        },
+        {
+            "@id": "room_c022-wall-1",
+            "@type": "Wall",
+            "shape": "room_c022-wall-1-polygon",
+            "3d-shape": "room_c022-wall-1-polyhedron",
+            "thickness": 0.5,
+            "height": 3.0,
+            "unit": "M"
+        },
+        {
+            "@id": "room_c022-wall-2",
+            "@type": "Wall",
+            "shape": "room_c022-wall-2-polygon",
+            "3d-shape": "room_c022-wall-2-polyhedron",
+            "thickness": 0.5,
+            "height": 3.0,
+            "unit": "M"
+        },
+        {
+            "@id": "room_c022-wall-3",
+            "@type": "Wall",
+            "shape": "room_c022-wall-3-polygon",
+            "3d-shape": "room_c022-wall-3-polyhedron",
+            "thickness": 0.5,
+            "height": 3.0,
+            "unit": "M"
+        },
+        {
+            "@id": "room_c025",
+            "@type": "Space",
+            "walls": [
+                "room_c025-wall-0",
+                "room_c025-wall-1",
+                "room_c025-wall-2",
+                "room_c025-wall-3"
+            ],
+            "feature": [
+
+            ],
+            "shape": "room_c025-polygon"
+        },        {
+            "@id": "room_c025-wall-0",
+            "@type": "Wall",
+            "shape": "room_c025-wall-0-polygon",
+            "3d-shape": "room_c025-wall-0-polyhedron",
+            "thickness": 0.5,
+            "height": 3.0,
+            "unit": "M"
+        },
+        {
+            "@id": "room_c025-wall-1",
+            "@type": "Wall",
+            "shape": "room_c025-wall-1-polygon",
+            "3d-shape": "room_c025-wall-1-polyhedron",
+            "thickness": 0.5,
+            "height": 3.0,
+            "unit": "M"
+        },
+        {
+            "@id": "room_c025-wall-2",
+            "@type": "Wall",
+            "shape": "room_c025-wall-2-polygon",
+            "3d-shape": "room_c025-wall-2-polyhedron",
+            "thickness": 0.5,
+            "height": 3.0,
+            "unit": "M"
+        },
+        {
+            "@id": "room_c025-wall-3",
+            "@type": "Wall",
+            "shape": "room_c025-wall-3-polygon",
+            "3d-shape": "room_c025-wall-3-polyhedron",
+            "thickness": 0.5,
+            "height": 3.0,
+            "unit": "M"
+        },{
+  "@id": "room_c022_door_1",
+  "@type": "Entryway",
+  "shape": "room_c022_door_1-polygon",
+  "3d-shape": "room_c022_door_1-polyhedron",
+  "thickness": 0.7,
+  "voids": [
+      "room_c022-wall-0",
+      "corridor_1-wall-3"
+  ]
+},
+{
+  "@id": "room_c025_door_1",
+  "@type": "Entryway",
+  "shape": "room_c025_door_1-polygon",
+  "3d-shape": "room_c025_door_1-polyhedron",
+  "thickness": 0.7,
+  "voids": [
+      "room_c025-wall-0",
+      "corridor_1-wall-1"
+  ]
+},
+{
+  "@id": "junction_corridor_1_transition",
+  "@type": "Entryway",
+  "shape": "junction_corridor_1_transition-polygon",
+  "3d-shape": "junction_corridor_1_transition-polyhedron",
+  "thickness": 0.2,
+  "voids": [
+      "corridor_1-wall-0"
+  ]
+}
+
+    ]
+}

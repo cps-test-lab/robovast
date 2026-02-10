@@ -1,53 +1,41 @@
 version: 1
 configuration:
-- name: navigation
+- name: hospital5m0o
   scenario_file: scenario.osc
   variations:
-  - FloorplanVariation:
-      name:
-      - map_file
-      - mesh_file
-      variation_files:
-      - floorplans/rooms/rooms.variation
-      #- floorplans/hallways/hallways.variation
-      num_variations: 1
-      seed: 1
-  - PathVariationRandom:
-      start_pose: start_pose
-      goal_pose: goal_pose
-      path_length: 10.0
-      num_paths: 2
-      path_length_tolerance: 0.5
-      min_distance: 1.0
-      seed: 42
+  - PathVariationRasterized:
+      map_file: /home/swiest/robovast/configs/dataset/maps/hospital/maps/hospital.yaml
+      raster_size: 4.0
+      path_length: 5
+      path_length_tolerance: 2
       robot_diameter: 0.35
+      raster_offset_y: 1.0
   - ObstacleVariation:
       name: static_objects
       obstacle_configs:
-      - amount: 1
-        max_distance: 0.1
+      - amount: 3
+        max_distance: 1.0
         model: file:///config/files/models/box.sdf.xacro
         xacro_arguments: width:=0.5, length:=0.5, height:=1.0
-      seed: 42
+      seed: 111
       robot_diameter: 0.35
   - ParameterVariationList:
       name: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
+      - 0.05
       - 0.1
 execution:
   image: ghcr.io/cps-test-lab/robovast:latest
   kubernetes:
     resources:
-      cpu: 8
-  runs: 10
+      cpu: 6
+  runs: 1
   test_files_filter:
   - "**/files/*"
 analysis:
   preprocessing:
   - ../../tools/ros2_exec.sh rosbags_to_csv.py
-  - ../../tools/ros2_exec.sh rosbags_tf_to_csv.py --frame base_link --frame turtlebot4_base_link_gt
-  - ../../tools/ros2_exec.sh rosbags_bt_to_csv.py
   visualization:
   - Analysis:
       single_test: analysis/analysis_single_test.ipynb

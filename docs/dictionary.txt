@@ -21,3 +21,6 @@ overwritable
 gui
 configs
 env
+rasterization
+xacro
+waypoints

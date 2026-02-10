@@ -1,0 +1,791 @@
+{
+    "@context": [
+        {
+          "@base": "https://secorolab.github.io/models/floorplan/hbrs/",
+          "fpm": "https://secorolab.github.io/models/floorplan/hbrs/"
+        },
+        "https://comp-rob2b.github.io/metamodels/geometry/structural-entities.json"
+    ],
+    "@graph": [
+        {
+            "@id": "world-origin",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "world-frame",
+            "@type": "Frame",
+            "origin": "world-origin"
+        },
+        {
+            "@id": "corridor_1-origin",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-frame",
+            "@type": "Frame",
+            "origin": "corridor_1-origin"
+        },
+        {
+            "@id": "corridor_1-corner-0",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-corner-1",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-corner-2",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-corner-3",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-0-origin",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-0-frame",
+            "@type": "Frame",
+            "origin": "corridor_1-wall-0-origin"
+        },
+        {
+            "@id": "corridor_1-wall-0-corner-0",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-0-corner-1",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-0-corner-2",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-0-corner-3",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-0-corner-4",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-0-corner-5",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-0-corner-6",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-0-corner-7",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-1-origin",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-1-frame",
+            "@type": "Frame",
+            "origin": "corridor_1-wall-1-origin"
+        },
+        {
+            "@id": "corridor_1-wall-1-corner-0",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-1-corner-1",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-1-corner-2",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-1-corner-3",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-1-corner-4",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-1-corner-5",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-1-corner-6",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-1-corner-7",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-2-origin",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-2-frame",
+            "@type": "Frame",
+            "origin": "corridor_1-wall-2-origin"
+        },
+        {
+            "@id": "corridor_1-wall-2-corner-0",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-2-corner-1",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-2-corner-2",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-2-corner-3",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-2-corner-4",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-2-corner-5",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-2-corner-6",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-2-corner-7",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-3-origin",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-3-frame",
+            "@type": "Frame",
+            "origin": "corridor_1-wall-3-origin"
+        },
+        {
+            "@id": "corridor_1-wall-3-corner-0",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-3-corner-1",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-3-corner-2",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-3-corner-3",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-3-corner-4",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-3-corner-5",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-3-corner-6",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "corridor_1-wall-3-corner-7",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "column-pillar_1-origin",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "column-pillar_1-frame",
+            "@type": "Frame",
+            "origin": "column-pillar_1-origin"
+        },
+        {
+            "@id": "pillar_1-corner-0",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "pillar_1-corner-1",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "pillar_1-corner-2",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "pillar_1-corner-3",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "pillar_1-corner-4",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "pillar_1-corner-5",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "pillar_1-corner-6",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "pillar_1-corner-7",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "column-pillar_2-origin",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "column-pillar_2-frame",
+            "@type": "Frame",
+            "origin": "column-pillar_2-origin"
+        },
+        {
+            "@id": "pillar_2-corner-0",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "pillar_2-corner-1",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "pillar_2-corner-2",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "pillar_2-corner-3",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "pillar_2-corner-4",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "pillar_2-corner-5",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "pillar_2-corner-6",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "pillar_2-corner-7",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-origin",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-frame",
+            "@type": "Frame",
+            "origin": "room_c022-origin"
+        },
+        {
+            "@id": "room_c022-corner-0",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-corner-1",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-corner-2",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-corner-3",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-0-origin",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-0-frame",
+            "@type": "Frame",
+            "origin": "room_c022-wall-0-origin"
+        },
+        {
+            "@id": "room_c022-wall-0-corner-0",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-0-corner-1",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-0-corner-2",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-0-corner-3",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-0-corner-4",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-0-corner-5",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-0-corner-6",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-0-corner-7",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-1-origin",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-1-frame",
+            "@type": "Frame",
+            "origin": "room_c022-wall-1-origin"
+        },
+        {
+            "@id": "room_c022-wall-1-corner-0",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-1-corner-1",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-1-corner-2",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-1-corner-3",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-1-corner-4",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-1-corner-5",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-1-corner-6",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-1-corner-7",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-2-origin",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-2-frame",
+            "@type": "Frame",
+            "origin": "room_c022-wall-2-origin"
+        },
+        {
+            "@id": "room_c022-wall-2-corner-0",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-2-corner-1",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-2-corner-2",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-2-corner-3",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-2-corner-4",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-2-corner-5",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-2-corner-6",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-2-corner-7",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-3-origin",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-3-frame",
+            "@type": "Frame",
+            "origin": "room_c022-wall-3-origin"
+        },
+        {
+            "@id": "room_c022-wall-3-corner-0",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-3-corner-1",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-3-corner-2",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-3-corner-3",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-3-corner-4",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-3-corner-5",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-3-corner-6",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022-wall-3-corner-7",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-origin",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-frame",
+            "@type": "Frame",
+            "origin": "room_c025-origin"
+        },
+        {
+            "@id": "room_c025-corner-0",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-corner-1",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-corner-2",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-corner-3",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-0-origin",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-0-frame",
+            "@type": "Frame",
+            "origin": "room_c025-wall-0-origin"
+        },
+        {
+            "@id": "room_c025-wall-0-corner-0",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-0-corner-1",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-0-corner-2",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-0-corner-3",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-0-corner-4",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-0-corner-5",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-0-corner-6",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-0-corner-7",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-1-origin",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-1-frame",
+            "@type": "Frame",
+            "origin": "room_c025-wall-1-origin"
+        },
+        {
+            "@id": "room_c025-wall-1-corner-0",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-1-corner-1",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-1-corner-2",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-1-corner-3",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-1-corner-4",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-1-corner-5",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-1-corner-6",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-1-corner-7",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-2-origin",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-2-frame",
+            "@type": "Frame",
+            "origin": "room_c025-wall-2-origin"
+        },
+        {
+            "@id": "room_c025-wall-2-corner-0",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-2-corner-1",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-2-corner-2",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-2-corner-3",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-2-corner-4",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-2-corner-5",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-2-corner-6",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-2-corner-7",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-3-origin",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-3-frame",
+            "@type": "Frame",
+            "origin": "room_c025-wall-3-origin"
+        },
+        {
+            "@id": "room_c025-wall-3-corner-0",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-3-corner-1",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-3-corner-2",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-3-corner-3",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-3-corner-4",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-3-corner-5",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-3-corner-6",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025-wall-3-corner-7",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },        {
+            "@id": "entryway-room_c022_door_1-origin",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "entryway-room_c022_door_1-frame",
+            "@type": "Frame",
+            "origin": "entryway-room_c022_door_1-origin"
+        },
+        {
+            "@id": "room_c022_door_1-corner-0",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022_door_1-corner-1",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022_door_1-corner-2",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022_door_1-corner-3",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022_door_1-corner-4",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022_door_1-corner-5",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022_door_1-corner-6",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c022_door_1-corner-7",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "entryway-room_c025_door_1-origin",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "entryway-room_c025_door_1-frame",
+            "@type": "Frame",
+            "origin": "entryway-room_c025_door_1-origin"
+        },
+        {
+            "@id": "room_c025_door_1-corner-0",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025_door_1-corner-1",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025_door_1-corner-2",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025_door_1-corner-3",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025_door_1-corner-4",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025_door_1-corner-5",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025_door_1-corner-6",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "room_c025_door_1-corner-7",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "entryway-junction_corridor_1_transition-origin",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "entryway-junction_corridor_1_transition-frame",
+            "@type": "Frame",
+            "origin": "entryway-junction_corridor_1_transition-origin"
+        },
+        {
+            "@id": "junction_corridor_1_transition-corner-0",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "junction_corridor_1_transition-corner-1",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "junction_corridor_1_transition-corner-2",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "junction_corridor_1_transition-corner-3",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "junction_corridor_1_transition-corner-4",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "junction_corridor_1_transition-corner-5",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "junction_corridor_1_transition-corner-6",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        },
+        {
+            "@id": "junction_corridor_1_transition-corner-7",
+            "@type": [ "3D", "Euclidean", "Point" ]
+        }
+    ]
+}

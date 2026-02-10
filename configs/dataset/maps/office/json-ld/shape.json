@@ -1,0 +1,489 @@
+{
+    "@context": [
+        {
+          "@base": "https://secorolab.github.io/models/floorplan/office/",
+          "fpm": "https://secorolab.github.io/models/floorplan/office/"
+        },
+        "https://secorolab.github.io/metamodels/geometry/polytope.json"
+    ],
+    "@graph": [
+        {
+            "@id": "junction1-polygon",
+            "@type": "Polygon",
+            "points": [
+            "junction1-corner-0",
+            "junction1-corner-1",
+            "junction1-corner-2"
+            ]
+        },
+        {
+            "@id": "junction1-wall-0-polygon",
+            "@type": "Polygon",
+            "points": [
+            "junction1-wall-0-corner-0",
+            "junction1-wall-0-corner-1",
+            "junction1-wall-0-corner-2",
+            "junction1-wall-0-corner-3"
+            ]
+        },
+        {
+            "@id": "junction1-wall-1-polygon",
+            "@type": "Polygon",
+            "points": [
+            "junction1-wall-1-corner-0",
+            "junction1-wall-1-corner-1",
+            "junction1-wall-1-corner-2",
+            "junction1-wall-1-corner-3"
+            ]
+        },
+        {
+            "@id": "junction1-wall-2-polygon",
+            "@type": "Polygon",
+            "points": [
+            "junction1-wall-2-corner-0",
+            "junction1-wall-2-corner-1",
+            "junction1-wall-2-corner-2",
+            "junction1-wall-2-corner-3"
+            ]
+        },
+        {
+            "@id": "corridor1-polygon",
+            "@type": "Polygon",
+            "points": [
+            "corridor1-corner-0",
+            "corridor1-corner-1",
+            "corridor1-corner-2",
+            "corridor1-corner-3"
+            ]
+        },
+        {
+            "@id": "corridor1-wall-0-polygon",
+            "@type": "Polygon",
+            "points": [
+            "corridor1-wall-0-corner-0",
+            "corridor1-wall-0-corner-1",
+            "corridor1-wall-0-corner-2",
+            "corridor1-wall-0-corner-3"
+            ]
+        },
+        {
+            "@id": "corridor1-wall-1-polygon",
+            "@type": "Polygon",
+            "points": [
+            "corridor1-wall-1-corner-0",
+            "corridor1-wall-1-corner-1",
+            "corridor1-wall-1-corner-2",
+            "corridor1-wall-1-corner-3"
+            ]
+        },
+        {
+            "@id": "corridor1-wall-2-polygon",
+            "@type": "Polygon",
+            "points": [
+            "corridor1-wall-2-corner-0",
+            "corridor1-wall-2-corner-1",
+            "corridor1-wall-2-corner-2",
+            "corridor1-wall-2-corner-3"
+            ]
+        },
+        {
+            "@id": "corridor1-wall-3-polygon",
+            "@type": "Polygon",
+            "points": [
+            "corridor1-wall-3-corner-0",
+            "corridor1-wall-3-corner-1",
+            "corridor1-wall-3-corner-2",
+            "corridor1-wall-3-corner-3"
+            ]
+        },
+        {
+            "@id": "corridor2-polygon",
+            "@type": "Polygon",
+            "points": [
+            "corridor2-corner-0",
+            "corridor2-corner-1",
+            "corridor2-corner-2",
+            "corridor2-corner-3"
+            ]
+        },
+        {
+            "@id": "corridor2-wall-0-polygon",
+            "@type": "Polygon",
+            "points": [
+            "corridor2-wall-0-corner-0",
+            "corridor2-wall-0-corner-1",
+            "corridor2-wall-0-corner-2",
+            "corridor2-wall-0-corner-3"
+            ]
+        },
+        {
+            "@id": "corridor2-wall-1-polygon",
+            "@type": "Polygon",
+            "points": [
+            "corridor2-wall-1-corner-0",
+            "corridor2-wall-1-corner-1",
+            "corridor2-wall-1-corner-2",
+            "corridor2-wall-1-corner-3"
+            ]
+        },
+        {
+            "@id": "corridor2-wall-2-polygon",
+            "@type": "Polygon",
+            "points": [
+            "corridor2-wall-2-corner-0",
+            "corridor2-wall-2-corner-1",
+            "corridor2-wall-2-corner-2",
+            "corridor2-wall-2-corner-3"
+            ]
+        },
+        {
+            "@id": "corridor2-wall-3-polygon",
+            "@type": "Polygon",
+            "points": [
+            "corridor2-wall-3-corner-0",
+            "corridor2-wall-3-corner-1",
+            "corridor2-wall-3-corner-2",
+            "corridor2-wall-3-corner-3"
+            ]
+        },
+        {
+            "@id": "corridor3-polygon",
+            "@type": "Polygon",
+            "points": [
+            "corridor3-corner-0",
+            "corridor3-corner-1",
+            "corridor3-corner-2",
+            "corridor3-corner-3"
+            ]
+        },
+        {
+            "@id": "corridor3-wall-0-polygon",
+            "@type": "Polygon",
+            "points": [
+            "corridor3-wall-0-corner-0",
+            "corridor3-wall-0-corner-1",
+            "corridor3-wall-0-corner-2",
+            "corridor3-wall-0-corner-3"
+            ]
+        },
+        {
+            "@id": "corridor3-wall-1-polygon",
+            "@type": "Polygon",
+            "points": [
+            "corridor3-wall-1-corner-0",
+            "corridor3-wall-1-corner-1",
+            "corridor3-wall-1-corner-2",
+            "corridor3-wall-1-corner-3"
+            ]
+        },
+        {
+            "@id": "corridor3-wall-2-polygon",
+            "@type": "Polygon",
+            "points": [
+            "corridor3-wall-2-corner-0",
+            "corridor3-wall-2-corner-1",
+            "corridor3-wall-2-corner-2",
+            "corridor3-wall-2-corner-3"
+            ]
+        },
+        {
+            "@id": "corridor3-wall-3-polygon",
+            "@type": "Polygon",
+            "points": [
+            "corridor3-wall-3-corner-0",
+            "corridor3-wall-3-corner-1",
+            "corridor3-wall-3-corner-2",
+            "corridor3-wall-3-corner-3"
+            ]
+        },
+        {
+            "@id": "room1-polygon",
+            "@type": "Polygon",
+            "points": [
+            "room1-corner-0",
+            "room1-corner-1",
+            "room1-corner-2",
+            "room1-corner-3"
+            ]
+        },
+        {
+            "@id": "room1-wall-0-polygon",
+            "@type": "Polygon",
+            "points": [
+            "room1-wall-0-corner-0",
+            "room1-wall-0-corner-1",
+            "room1-wall-0-corner-2",
+            "room1-wall-0-corner-3"
+            ]
+        },
+        {
+            "@id": "room1-wall-1-polygon",
+            "@type": "Polygon",
+            "points": [
+            "room1-wall-1-corner-0",
+            "room1-wall-1-corner-1",
+            "room1-wall-1-corner-2",
+            "room1-wall-1-corner-3"
+            ]
+        },
+        {
+            "@id": "room1-wall-2-polygon",
+            "@type": "Polygon",
+            "points": [
+            "room1-wall-2-corner-0",
+            "room1-wall-2-corner-1",
+            "room1-wall-2-corner-2",
+            "room1-wall-2-corner-3"
+            ]
+        },
+        {
+            "@id": "room1-wall-3-polygon",
+            "@type": "Polygon",
+            "points": [
+            "room1-wall-3-corner-0",
+            "room1-wall-3-corner-1",
+            "room1-wall-3-corner-2",
+            "room1-wall-3-corner-3"
+            ]
+        },
+        {
+            "@id": "room2-polygon",
+            "@type": "Polygon",
+            "points": [
+            "room2-corner-0",
+            "room2-corner-1",
+            "room2-corner-2",
+            "room2-corner-3"
+            ]
+        },
+        {
+            "@id": "room2-wall-0-polygon",
+            "@type": "Polygon",
+            "points": [
+            "room2-wall-0-corner-0",
+            "room2-wall-0-corner-1",
+            "room2-wall-0-corner-2",
+            "room2-wall-0-corner-3"
+            ]
+        },
+        {
+            "@id": "room2-wall-1-polygon",
+            "@type": "Polygon",
+            "points": [
+            "room2-wall-1-corner-0",
+            "room2-wall-1-corner-1",
+            "room2-wall-1-corner-2",
+            "room2-wall-1-corner-3"
+            ]
+        },
+        {
+            "@id": "room2-wall-2-polygon",
+            "@type": "Polygon",
+            "points": [
+            "room2-wall-2-corner-0",
+            "room2-wall-2-corner-1",
+            "room2-wall-2-corner-2",
+            "room2-wall-2-corner-3"
+            ]
+        },
+        {
+            "@id": "room2-wall-3-polygon",
+            "@type": "Polygon",
+            "points": [
+            "room2-wall-3-corner-0",
+            "room2-wall-3-corner-1",
+            "room2-wall-3-corner-2",
+            "room2-wall-3-corner-3"
+            ]
+        },
+        {
+            "@id": "lab1-polygon",
+            "@type": "Polygon",
+            "points": [
+            "lab1-corner-0",
+            "lab1-corner-1",
+            "lab1-corner-2",
+            "lab1-corner-3"
+            ]
+        },
+        {
+            "@id": "lab1-wall-0-polygon",
+            "@type": "Polygon",
+            "points": [
+            "lab1-wall-0-corner-0",
+            "lab1-wall-0-corner-1",
+            "lab1-wall-0-corner-2",
+            "lab1-wall-0-corner-3"
+            ]
+        },
+        {
+            "@id": "lab1-wall-1-polygon",
+            "@type": "Polygon",
+            "points": [
+            "lab1-wall-1-corner-0",
+            "lab1-wall-1-corner-1",
+            "lab1-wall-1-corner-2",
+            "lab1-wall-1-corner-3"
+            ]
+        },
+        {
+            "@id": "lab1-wall-2-polygon",
+            "@type": "Polygon",
+            "points": [
+            "lab1-wall-2-corner-0",
+            "lab1-wall-2-corner-1",
+            "lab1-wall-2-corner-2",
+            "lab1-wall-2-corner-3"
+            ]
+        },
+        {
+            "@id": "lab1-wall-3-polygon",
+            "@type": "Polygon",
+            "points": [
+            "lab1-wall-3-corner-0",
+            "lab1-wall-3-corner-1",
+            "lab1-wall-3-corner-2",
+            "lab1-wall-3-corner-3"
+            ]
+        },
+        {
+            "@id": "lab2-polygon",
+            "@type": "Polygon",
+            "points": [
+            "lab2-corner-0",
+            "lab2-corner-1",
+            "lab2-corner-2",
+            "lab2-corner-3"
+            ]
+        },
+        {
+            "@id": "lab2-wall-0-polygon",
+            "@type": "Polygon",
+            "points": [
+            "lab2-wall-0-corner-0",
+            "lab2-wall-0-corner-1",
+            "lab2-wall-0-corner-2",
+            "lab2-wall-0-corner-3"
+            ]
+        },
+        {
+            "@id": "lab2-wall-1-polygon",
+            "@type": "Polygon",
+            "points": [
+            "lab2-wall-1-corner-0",
+            "lab2-wall-1-corner-1",
+            "lab2-wall-1-corner-2",
+            "lab2-wall-1-corner-3"
+            ]
+        },
+        {
+            "@id": "lab2-wall-2-polygon",
+            "@type": "Polygon",
+            "points": [
+            "lab2-wall-2-corner-0",
+            "lab2-wall-2-corner-1",
+            "lab2-wall-2-corner-2",
+            "lab2-wall-2-corner-3"
+            ]
+        },
+        {
+            "@id": "lab2-wall-3-polygon",
+            "@type": "Polygon",
+            "points": [
+            "lab2-wall-3-corner-0",
+            "lab2-wall-3-corner-1",
+            "lab2-wall-3-corner-2",
+            "lab2-wall-3-corner-3"
+            ]
+        },        {
+            "@id": "room1_door-polygon",
+            "@type": "Polygon",
+            "points": [
+            "room1_door-corner-0",
+            "room1_door-corner-1",
+            "room1_door-corner-2",
+            "room1_door-corner-3"
+            ]
+        },
+        {
+            "@id": "room2_door-polygon",
+            "@type": "Polygon",
+            "points": [
+            "room2_door-corner-0",
+            "room2_door-corner-1",
+            "room2_door-corner-2",
+            "room2_door-corner-3"
+            ]
+        },
+        {
+            "@id": "lab1_door1-polygon",
+            "@type": "Polygon",
+            "points": [
+            "lab1_door1-corner-0",
+            "lab1_door1-corner-1",
+            "lab1_door1-corner-2",
+            "lab1_door1-corner-3"
+            ]
+        },
+        {
+            "@id": "lab1_door2-polygon",
+            "@type": "Polygon",
+            "points": [
+            "lab1_door2-corner-0",
+            "lab1_door2-corner-1",
+            "lab1_door2-corner-2",
+            "lab1_door2-corner-3"
+            ]
+        },
+        {
+            "@id": "lab2_door1-polygon",
+            "@type": "Polygon",
+            "points": [
+            "lab2_door1-corner-0",
+            "lab2_door1-corner-1",
+            "lab2_door1-corner-2",
+            "lab2_door1-corner-3"
+            ]
+        },
+        {
+            "@id": "lab2_door2-polygon",
+            "@type": "Polygon",
+            "points": [
+            "lab2_door2-corner-0",
+            "lab2_door2-corner-1",
+            "lab2_door2-corner-2",
+            "lab2_door2-corner-3"
+            ]
+        },
+        {
+            "@id": "corridor1_mainopening-polygon",
+            "@type": "Polygon",
+            "points": [
+            "corridor1_mainopening-corner-0",
+            "corridor1_mainopening-corner-1",
+            "corridor1_mainopening-corner-2",
+            "corridor1_mainopening-corner-3"
+            ]
+        },
+        {
+            "@id": "corridor2_mainopening-polygon",
+            "@type": "Polygon",
+            "points": [
+            "corridor2_mainopening-corner-0",
+            "corridor2_mainopening-corner-1",
+            "corridor2_mainopening-corner-2",
+            "corridor2_mainopening-corner-3"
+            ]
+        },
+        {
+            "@id": "corridor3_mainopening-polygon",
+            "@type": "Polygon",
+            "points": [
+            "corridor3_mainopening-corner-0",
+            "corridor3_mainopening-corner-1",
+            "corridor3_mainopening-corner-2",
+            "corridor3_mainopening-corner-3"
+            ]
+        }
+    ]
+}
