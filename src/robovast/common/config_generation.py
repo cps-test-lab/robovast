@@ -29,6 +29,7 @@ from .common import (get_scenario_parameters, load_config,
 from ..prov.generate_prov_graph import (
     _create_abstract_scenario,
     _create_concrete_scenario,
+    save_scenario_prov,
 )
 
 logger = logging.getLogger(__name__)
@@ -226,6 +227,8 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     # Get scenario file from configuration section
     scenarios = parameters.get('configuration', [])
 
+    prov_config = parameters.get('provenance', {})
+
     scenario_files = []
     prov = []
     # Get test_files_filter from config
@@ -324,26 +327,35 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     if configs:
         save_scenario_configs_file(configs, os.path.join(output_dir, 'scenario.configs'))
         prov.extend(scenario_gen_prov(configs))
-        with open(os.path.join(output_dir, f'scenario.prov.json'), 'w') as f:
-            json.dump(prov, f, indent=2)
+        save_scenario_prov(prov, prov_config, output_dir)
 
     return configs, variation_gui_classes
 
 def scenario_gen_prov(configs):
     prov = []
+    source_files = set()
     for i, config in enumerate(configs):
         parent_scenario_id = config.get("abstract_scenario")
         parent_dir = config.get("parent_dir")
         concr_scenario_id = f"{parent_dir}/configs/{config['name']}-{i:03d}.config"
 
-        envmnt = [i[1] for i in config.get("_config_files", [])]
-        prefix = os.path.commonpath(envmnt)
+        for s in config.get("source_files", []):
+            source_files.add(s)
+
+        assert len(source_files) == 2
+
+        if config.get("_config_files"):
+            envmnt = [i[1] for i in config.get("_config_files", [])]
+            prefix = os.path.commonpath(envmnt)
+            references = [os.path.join(os.path.basename(prefix), os.path.relpath(e, prefix)) for e in envmnt]
+        else:
+            references = None
 
         concr_scenario_prov = _create_concrete_scenario(
-            concr_scenario_id, parent_scenario_id,
+            concr_scenario_id, parent_scenario_id=parent_scenario_id,
             gen_time=config.get("gen_time"),
-            source_files=config.get("source_files"),
-            references=[os.path.join(os.path.basename(prefix), os.path.relpath(e, prefix)) for e in envmnt]
+            source_files=list(source_files),
+            references=references
         )
         prov.append(concr_scenario_prov)
     return prov

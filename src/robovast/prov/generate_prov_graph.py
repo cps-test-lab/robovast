@@ -25,22 +25,22 @@ def get_run_data(run_yaml_path):
 def _create_abstract_scenario(scenario_id):
     return {
         "@id": f"scenarios:{scenario_id}",
-        "@type": ["AbstractScenario", "Entity"],
+        "@type": ["smm:AbstractScenario", "Entity"],
         "atLocation": f"scenarios:{scenario_id}",
     }
 
 
-def _create_concrete_scenario(scenario_id, location=None, parent_scenario_id=None, **kwargs):
+def _create_concrete_scenario(
+    scenario_id, location=None, parent_scenario_id=None, **kwargs
+):
     node = {
         "@id": f"scenarios:{scenario_id}",
-        "@type": ["ConcreteScenario", "Entity"],
+        "@type": ["smm:ConcreteScenario", "Entity"],
     }
     if kwargs.get("gen_time") is not None:
         node["generatedAtTime"] = kwargs["gen_time"]
     if kwargs.get("source_files") is not None:
-        node["wasGeneratedBy"] = {
-            "uses": [f"scenarios:{s}" for s in kwargs.get("source_files")],
-        }
+        node["wasDerivedFrom"] = [f"scenarios:{s}" for s in kwargs.get("source_files")]
     if kwargs.get("references") is not None:
         node["dc:references"] = [f"env:{r}" for r in kwargs.get("references")]
     if location is not None:
@@ -53,10 +53,13 @@ def _create_concrete_scenario(scenario_id, location=None, parent_scenario_id=Non
 def _create_run_activity(run_mdata):
     return {
         "@id": f"run:{run_mdata['RUN_ID']}",
-        "@type": ["Activity", "TestRun"],
+        "@type": ["Activity", "smm:TestRun"],
         "startedAtTime": run_mdata["START_DATE"],
         "endedAtTime": run_mdata["END_DATE"],
-        "used": [f"scenario:{run_mdata['SCENARIO_ID']}", f"agents:{run_mdata['ROBOT_ID']}/{run_mdata['ROBOT_CONFIG']}"],
+        "used": [
+            f"scenarios:{run_mdata['SCENARIO_CONFIG']}",
+            f"agents:{run_mdata['ROBOT_ID']}/{run_mdata['ROBOT_CONFIG']}",
+        ],
         "wasAssociatedWith": f"agents:{run_mdata['ROBOT_ID']}",
     }
 
@@ -64,7 +67,7 @@ def _create_run_activity(run_mdata):
 def _create_generated_artefact(artefact_id, activity=None, source_artefact_id=None):
     node = {
         "@id": f"run:{artefact_id}",
-        "@type": ["Entity", "Artefact"],
+        "@type": ["Entity", "smm:Artefact"],
         "atLocation": f"{artefact_id}",
     }
     if activity is not None:
@@ -79,16 +82,17 @@ def _create_agent_config(run_mdata):
     node = {
         "used": {
             "@id": f"agents:{run_mdata['ROBOT_ID']}/{run_mdata['ROBOT_CONFIG']}",
-            "@type": ["Entity", "Configuration"],
+            "@type": ["Entity", "smm:Configuration"],
         },
         "wasAssociatedWith": f"agents:{run_mdata['ROBOT_ID']}",
     }
     return node
 
+
 def _gen_jsonld_prov(out_dir, run_data):
     graph = []
 
-    _scenario_id = run_data["SCENARIO_ID"]
+    _scenario_id = run_data["SCENARIO_CONFIG"]
     scenario = _create_concrete_scenario(_scenario_id)
     graph.append(scenario)
 
@@ -119,6 +123,36 @@ def _gen_jsonld_prov(out_dir, run_data):
     return graph
 
 
+def _get_jsonld_context(dataset_iri, **kwargs):
+    return {
+        "@context": [
+            {
+                "prov": "http://www.w3.org/ns/prov#",
+                "smm": "https://secorolab.github.io/metamodels/scenarios/scenarios#",
+                "dataset": dataset_iri,
+                "scenarios": os.path.join(
+                    dataset_iri, kwargs.get("scenarios", "scenarios") + "/"
+                ),
+                "env": os.path.join(
+                    dataset_iri, kwargs.get("environments", "environments") + "/"
+                ),
+                "run": os.path.join(dataset_iri, kwargs.get("runs", "runs") + "/"),
+                "agents": os.path.join(
+                    dataset_iri, kwargs.get("agents", "agents") + "/"
+                ),
+            },
+            "https://secorolab.github.io/metamodels/prov.json",
+        ],
+    }
+
+
+def save_scenario_prov(graph, config, output_dir):
+    doc = _get_jsonld_context(**config)
+    doc["@graph"] = graph
+    with open(os.path.join(output_dir, f"scenario.prov.json"), "w") as f:
+        json.dump(doc, f, indent=2)
+
+
 def get_run_prov(run_output_dir):
     # Get run information from run.yaml
     run_yaml_path = os.path.join(run_output_dir, "run.yaml")
@@ -144,9 +178,6 @@ def main():
         sys.exit(1)
 
     output_dir = sys.argv[1]
-    xml_file_path = os.path.join(output_dir, "test.xml")
-
-    # convert_xml_to_yaml(xml_file_path, output_dir)
     get_run_prov(output_dir)
 
 
