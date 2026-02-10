@@ -336,14 +336,18 @@ def scenario_gen_prov(configs):
         parent_dir = config.get("parent_dir")
         concr_scenario_id = f"{parent_dir}/configs/{config['name']}-{i:03d}.config"
 
-        envmnt = [i[1] for i in config.get("_config_files", [])]
-        prefix = os.path.commonpath(envmnt)
+        if config.get("_config_files"):
+            envmnt = [i[1] for i in config.get("_config_files", [])]
+            prefix = os.path.commonpath(envmnt)
+            references = [os.path.join(os.path.basename(prefix), os.path.relpath(e, prefix)) for e in envmnt]
+        else:
+            references = None
 
         concr_scenario_prov = _create_concrete_scenario(
             concr_scenario_id, parent_scenario_id,
             gen_time=config.get("gen_time"),
             source_files=config.get("source_files"),
-            references=[os.path.join(os.path.basename(prefix), os.path.relpath(e, prefix)) for e in envmnt]
+            references=references
         )
         prov.append(concr_scenario_prov)
     return prov
