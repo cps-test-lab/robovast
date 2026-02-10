@@ -57,7 +57,7 @@ def _create_run_activity(run_mdata):
         "startedAtTime": run_mdata["START_DATE"],
         "endedAtTime": run_mdata["END_DATE"],
         "used": [
-            f"scenario:{run_mdata['SCENARIO_CONFIG']}",
+            f"scenarios:{run_mdata['SCENARIO_CONFIG']}",
             f"agents:{run_mdata['ROBOT_ID']}/{run_mdata['ROBOT_CONFIG']}",
         ],
         "wasAssociatedWith": f"agents:{run_mdata['ROBOT_ID']}",
