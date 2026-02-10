@@ -226,6 +226,8 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     # Get scenario file from configuration section
     scenarios = parameters.get('configuration', [])
 
+    prov_config = parameters.get('provenance', {})
+
     scenario_files = []
     prov = []
     # Get test_files_filter from config

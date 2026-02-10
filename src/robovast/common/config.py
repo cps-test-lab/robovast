@@ -80,6 +80,13 @@ class AnalysisConfig(BaseModel):
     preprocessing: Optional[list[str]] = None
     visualization: Optional[list[dict[str, Any]]] = None
 
+class ProvConfig(BaseModel):
+    dataset_iri: str
+    scenarios: str
+    runs: str
+    agents: str
+    environments: str
+
 
 class ConfigV1(BaseModel):
     model_config = ConfigDict(extra='forbid')
@@ -88,6 +95,7 @@ class ConfigV1(BaseModel):
     configuration: Optional[list[ConfigurationConfig]] = None
     execution: ExecutionConfig
     analysis: Optional[AnalysisConfig] = None
+    provenance: Optional[ProvConfig] = None
 
 
 def validate_config(config: dict):
