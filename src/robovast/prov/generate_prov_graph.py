@@ -57,7 +57,7 @@ def _create_run_activity(run_mdata):
         "startedAtTime": run_mdata["START_DATE"],
         "endedAtTime": run_mdata["END_DATE"],
         "used": [
-            f"scenario:{run_mdata['SCENARIO_ID']}",
+            f"scenario:{run_mdata['SCENARIO_CONFIG']}",
             f"agents:{run_mdata['ROBOT_ID']}/{run_mdata['ROBOT_CONFIG']}",
         ],
         "wasAssociatedWith": f"agents:{run_mdata['ROBOT_ID']}",
@@ -92,7 +92,7 @@ def _create_agent_config(run_mdata):
 def _gen_jsonld_prov(out_dir, run_data):
     graph = []
 
-    _scenario_id = run_data["SCENARIO_ID"]
+    _scenario_id = run_data["SCENARIO_CONFIG"]
     scenario = _create_concrete_scenario(_scenario_id)
     graph.append(scenario)
 
