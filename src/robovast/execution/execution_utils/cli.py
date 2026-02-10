@@ -434,9 +434,7 @@ def prepare_run(output, config, runs, cluster_config, options):  # pylint: disab
     prepare_run_configs(
         job_runner.run_id,
         job_runner.configs,
-        output,
-        prepare_script=job_runner.prepare_script,
-        config_base_dir=os.path.dirname(job_runner.config_path)
+        output
     )
 
     # Create jobs directory

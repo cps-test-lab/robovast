@@ -62,8 +62,9 @@ class JobRunner:
         else:
             self.num_runs = 1
 
-        # Store prepare script if provided
-        self.prepare_script = parameters.get("prepare_script")
+        # Store pre_command and post_command if provided
+        self.pre_command = parameters.get("pre_command")
+        self.post_command = parameters.get("post_command")
 
         self.run_as_user = parameters.get("run_as_user", 1000)
 
@@ -159,6 +160,18 @@ class JobRunner:
                 containers[0]['env'].append({
                     'name': str(name),
                     'value': "" if val is None else str(val)
+                })
+            
+            # Add PRE_COMMAND and POST_COMMAND if specified
+            if self.pre_command:
+                containers[0]['env'].append({
+                    'name': 'PRE_COMMAND',
+                    'value': str(self.pre_command)
+                })
+            if self.post_command:
+                containers[0]['env'].append({
+                    'name': 'POST_COMMAND',
+                    'value': str(self.post_command)
                 })
 
             # Add volume mounts
@@ -482,7 +495,7 @@ class JobRunner:
         with tempfile.TemporaryDirectory() as temp_dir:
             logger.debug(f"Using temporary directory: {temp_dir}")
 
-            prepare_run_configs(self.run_id, self.configs, temp_dir, prepare_script=self.prepare_script, config_base_dir=os.path.dirname(self.config_path))
+            prepare_run_configs(self.run_id, self.configs, temp_dir)
 
             copy_config_to_cluster(os.path.join(temp_dir, "config"), self.run_id)
 

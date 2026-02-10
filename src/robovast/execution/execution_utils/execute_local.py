@@ -57,7 +57,8 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
     logger.debug(f"Loading config from: {config_path}")
     execution_parameters = load_config(config_path, "execution")
     docker_image = execution_parameters.get("image", "ghcr.io/cps-test-lab/robovast:latest")
-    prepare_script = execution_parameters.get("prepare_script")
+    pre_command = execution_parameters.get("pre_command")
+    post_command = execution_parameters.get("post_command")
     local_config = execution_parameters.get("local", {})
     additional_docker_run_parameters = local_config.get("additional_docker_run_parameters", "")
     results_dir = project_config.results_dir
@@ -129,7 +130,7 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
         config_dir = output_dir
 
     try:
-        prepare_run_configs("local", configs, config_dir, prepare_script=prepare_script, config_base_dir=os.path.dirname(config_path))
+        prepare_run_configs("local", configs, config_dir)
         config_path_result = os.path.join(config_dir, "config", "local")
         logger.debug(f"Config path: {config_path_result}")
     except Exception as e:  # pylint: disable=broad-except
@@ -142,13 +143,13 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
     for run_number in range(runs):
         for config_entry in configs:
             docker_configs.append((docker_image, os.path.abspath(os.path.join(
-                config_path_result, config_entry["name"])), config_entry['name'], run_number))
+                config_path_result, config_entry["name"])), config_entry['name'], run_number, pre_command, post_command))
 
     generate_docker_run_script(docker_configs, results_dir, os.path.join(config_dir, "run.sh"), additional_docker_run_parameters)
     return os.path.join(config_dir, "run.sh")
 
 
-def get_commandline(image, config_path, output_path, config_name, run_num=0, shell=False):
+def get_commandline(image, config_path, output_path, config_name, run_num=0, shell=False, pre_command=None, post_command=None):
 
     # Get the current user and group IDs to run docker with the same permissions
     uid = os.getuid()
@@ -169,6 +170,12 @@ def get_commandline(image, config_path, output_path, config_name, run_num=0, she
     env_vars = get_execution_env_variables(run_num, config_name)
     for key, value in env_vars.items():
         docker_cmd.extend(['-e', f'{key}={value}'])
+    
+    # Add PRE_COMMAND and POST_COMMAND if specified
+    if pre_command:
+        docker_cmd.extend(['-e', f'PRE_COMMAND="{pre_command}"'])
+    if post_command:
+        docker_cmd.extend(['-e', f'POST_COMMAND="{post_command}"'])
 
     if shell:
         # Interactive shell mode
@@ -301,7 +308,7 @@ def generate_docker_run_script(configs, results_dir, output_script_path, additio
     """Generate a shell script to run Docker containers sequentially.
 
     Args:
-        configs: List of tuples (image, config_path, config_name, run_num)
+        configs: List of tuples (image, config_path, config_name, run_num, pre_command, post_command)
         output_script_path: Path where the script should be written
         additional_docker_run_parameters: Additional parameters to pass to docker run command
     """
@@ -339,9 +346,10 @@ def generate_docker_run_script(configs, results_dir, output_script_path, additio
     total_configs = len(configs)
 
     # Generate docker run commands for each config
-    for idx, (image, config_path, config_name, run_num) in enumerate(configs, 1):
+    for idx, config_tuple in enumerate(configs, 1):
+        image, config_path, config_name, run_num, pre_command, post_command = config_tuple
         test_path = os.path.join("${RESULTS_DIR}", config_name, str(run_num))
-        cmd_line = get_commandline(image, config_path, test_path, config_name, run_num)
+        cmd_line = get_commandline(image, config_path, test_path, config_name, run_num, pre_command=pre_command, post_command=post_command)
 
         # Add progress message
         script += f'\necho ""\n'

@@ -181,43 +181,59 @@ The user ID (UID) to run the container as. Defaults to ``1000`` if not specified
    execution:
      run_as_user: 1000
 
-prepare_script
-^^^^^^^^^^^^^^
+pre_command
+^^^^^^^^^^^
 
-**Type:** String (file path)
+**Type:** String (shell command)
 
 **Required:** No
 
-Path to a bash script that should be executed before each test run. The script is sourced (not executed in a sub-shell) so it can set environment variables.
-
-The script path is relative to the ``.vast`` configuration file. The script is copied to each test's ``/config/prepare_test.sh`` and executed by the entry-point before running the scenario.
+Shell command that should be executed before each test run. The command is evaluated using ``eval`` so it can set environment variables, source scripts, or run any bash commands.
 
 .. code-block:: yaml
 
    execution:
-     prepare_script: prepare_test.sh
+     pre_command: source /config/prepare_test.sh
 
-Example ``prepare_test.sh`` script:
+Example using a script file:
 
-.. code-block:: bash
+.. code-block:: yaml
 
-   #!/bin/bash -e
-   # Copy custom files to simulation environment
-   cp -r /config/files/EmptyWarehouse /root/Projects/SimulationProject/Levels
+   execution:
+     pre_command: /config/files/pre_command.sh
+     test_files_filter:
+     - "**/files/*.sh"
 
-   # Set environment variables
-   export CUSTOM_VAR="value"
+Example with inline commands:
 
-   # Run preparation commands
-   echo "Test environment prepared"
+.. code-block:: yaml
 
-**Script execution context:**
+   execution:
+     pre_command: export CUSTOM_VAR=value && echo "Test environment prepared"
+
+**Command execution context:**
 
 - Runs before the scenario execution
 - Has access to all files in ``/config/``
 - Can modify the container environment
-- Environment variables set by the script are available to the scenario
-- If the script fails (exits with non-zero), the test fails
+- Environment variables set by the command are available to the scenario
+- If the command fails (exits with non-zero), the test fails
+
+post_command
+^^^^^^^^^^^^
+
+**Type:** String (shell command)
+
+**Required:** No
+
+Shell command that should be executed after the scenario completes. This is passed to the scenario execution as the ``--post-run`` parameter.
+
+.. code-block:: yaml
+
+   execution:
+     post_command: touch /out/post_cmd_executed
+
+The post command is executed by the scenario execution framework after the scenario finishes, allowing for cleanup or post-processing tasks.
 
 local
 ^^^^^
@@ -414,7 +430,8 @@ Here's a complete example showing all major configuration options:
    execution:
      image: ghcr.io/cps-test-lab/robovast:latest
      runs: 20
-     prepare_script: prepare_test.sh
+     pre_command: source /config/prepare_test.sh
+     post_command: echo "Scenario completed"
      run_as_user: 1000
      local:
        additional_docker_run_parameters: |

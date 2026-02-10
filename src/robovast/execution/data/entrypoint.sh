@@ -78,15 +78,30 @@ if [ "$#" -ne 0 ]; then
     log "Executing custom command: $@"
     exec "$@"
 else
-    if [ -e /config/prepare_test.sh ]; then
-        log "Sourcing custom prepare script..."
-        source /config/prepare_test.sh
+    # Validate PRE_COMMAND exists if specified
+    if [ -e "${PRE_COMMAND}" ]; then
+        log "Executing pre-command: ${PRE_COMMAND}"
+        source "${PRE_COMMAND}"
+    else
+        log "ERROR: Pre-command '${PRE_COMMAND}' does not exist."
+        exit 1
     fi
+    
+    # Validate POST_COMMAND exists if specified
+    POST_COMMAND_PARAM=""
+    if [ -e "${POST_COMMAND}" ]; then
+        POST_COMMAND_PARAM="--post-run ${POST_COMMAND}"
+        log "Post-command '${POST_COMMAND}' will be executed after scenario execution."
+    else
+        log "ERROR: Post-command '${POST_COMMAND}' does not exist."
+        exit 1
+    fi
+    
     if [ -e /config/scenario.config ]; then
         log "Starting scenario execution with config file..."
-        exec ros2 run scenario_execution_ros scenario_execution_ros -o ${OUTPUT_DIR} /config/scenario.osc --scenario-parameter-file /config/scenario.config ${SCENARIO_EXECUTION_PARAMETERS}
+        exec ros2 run scenario_execution_ros scenario_execution_ros -o ${OUTPUT_DIR} /config/scenario.osc ${POST_COMMAND_PARAM} --scenario-parameter-file /config/scenario.config ${SCENARIO_EXECUTION_PARAMETERS}
     else
         log "Starting scenario execution without config file..."
-        exec ros2 run scenario_execution_ros scenario_execution_ros -o ${OUTPUT_DIR} /config/scenario.osc ${SCENARIO_EXECUTION_PARAMETERS}
+        exec ros2 run scenario_execution_ros scenario_execution_ros -o ${OUTPUT_DIR} /config/scenario.osc ${POST_COMMAND_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
     fi
 fi
