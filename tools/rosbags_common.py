@@ -21,7 +21,10 @@ import os
 import time
 from pathlib import Path
 
-from robovast.prov.generate_prov_graph import _create_generated_artefact
+from robovast.prov.generate_prov_graph import (
+    _create_generated_artefact,
+    _get_jsonld_context,
+)
 
 
 def compute_rosbag_hash(bag_path):
@@ -127,6 +130,12 @@ def create_rosbag_prov(bag_path, output_file, root_folder):
     output_file_rel = os.path.relpath(output_file, os.path.abspath(root_folder))
     bag_path_rel = os.path.relpath(bag_path, root_folder)
 
+    run_dir = os.path.dirname(output_file)
+    with open(os.path.join(run_dir, "run.prov.json"), "r") as f:
+        run_prov = json.load(f)
+
     prov = _create_generated_artefact(output_file_rel, source_artefact_id=bag_path_rel)
-    with open(output_file + ".prov.json", "r") as f:
-        json.dump(prov, f, indent=2)
+    doc = {"@context": run_prov.get("@context"), "@graph": prov}
+
+    with open(output_file + ".prov.json", "w") as f:
+        json.dump(doc, f, indent=2)
