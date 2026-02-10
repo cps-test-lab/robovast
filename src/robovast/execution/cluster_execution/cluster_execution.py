@@ -22,8 +22,6 @@ import os
 import sys
 import tempfile
 import time
-import shutil
-from importlib.resources import files
 
 import yaml
 from kubernetes import client
