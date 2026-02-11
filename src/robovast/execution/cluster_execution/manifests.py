@@ -18,7 +18,7 @@ spec:
       containers:
         - name: test-container
           image: {image}
-          # command: ["/bin/bash", "-c", "sleep 1000"]
+          command: ["/entrypoint.sh"]
           securityContext: # required for rke2
             privileged: true
           resources:

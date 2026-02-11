@@ -69,32 +69,31 @@ echo "RUN_NUM: $RUN_NUM" >> ${OUTPUT_DIR}/run.yaml
 echo "SCENARIO_ID: $SCENARIO_ID" >> ${OUTPUT_DIR}/run.yaml
 echo "SCENARIO_CONFIG: $SCENARIO_CONFIG" >> ${OUTPUT_DIR}/run.yaml
 
-if [ -d /config ]; then
-  log "Copying configuration files..."
-  cp -r /config/* ${OUTPUT_DIR}/
-fi
-
 if [ "$#" -ne 0 ]; then
     log "Executing custom command: $@"
     exec "$@"
 else
     # Validate PRE_COMMAND exists if specified
-    if [ -e "${PRE_COMMAND}" ]; then
-        log "Executing pre-command: ${PRE_COMMAND}"
-        source "${PRE_COMMAND}"
-    else
-        log "ERROR: Pre-command '${PRE_COMMAND}' does not exist."
-        exit 1
+    if [ -n "${PRE_COMMAND}" ]; then
+        if [ -e "${PRE_COMMAND}" ]; then
+            log "Executing pre-command: ${PRE_COMMAND}"
+            source "${PRE_COMMAND}"
+        else
+            log "ERROR: Pre-command '${PRE_COMMAND}' does not exist."
+            exit 1
+        fi
     fi
     
     # Validate POST_COMMAND exists if specified
     POST_COMMAND_PARAM=""
-    if [ -e "${POST_COMMAND}" ]; then
-        POST_COMMAND_PARAM="--post-run ${POST_COMMAND}"
-        log "Post-command '${POST_COMMAND}' will be executed after scenario execution."
-    else
-        log "ERROR: Post-command '${POST_COMMAND}' does not exist."
-        exit 1
+    if [ -n "${POST_COMMAND}" ]; then
+        if [ -e "${POST_COMMAND}" ]; then
+            POST_COMMAND_PARAM="--post-run ${POST_COMMAND}"
+            log "Post-command '${POST_COMMAND}' will be executed after scenario execution."
+        else
+            log "ERROR: Post-command '${POST_COMMAND}' does not exist."
+            exit 1
+        fi
     fi
     
     if [ -e /config/scenario.config ]; then

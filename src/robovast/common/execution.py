@@ -41,17 +41,18 @@ def get_execution_env_variables(run_num, config_name):
 
 
 def prepare_run_configs(run_id, configs, output_dir):
-    # Create the config directory structure: /config/$RUN_ID/
-    config_dir = os.path.join(output_dir, "config", run_id)
-    os.makedirs(config_dir, exist_ok=True)
+    # Create the out directory structure: /out/$RUN_ID/
+    out_dir = os.path.join(output_dir, "out", run_id)
+    os.makedirs(out_dir, exist_ok=True)
     
-    # Copy entrypoint.sh to the config directory
+    # Copy entrypoint.sh to the out directory
     entrypoint_src = str(files('robovast.execution.data').joinpath('entrypoint.sh'))
-    entrypoint_dst = os.path.join(config_dir, "entrypoint.sh")
+    entrypoint_dst = os.path.join(out_dir, "entrypoint.sh")
     shutil.copy2(entrypoint_src, entrypoint_dst)
     
     for config_data in configs:
-        scenario_dir = os.path.join(config_dir, config_data.get("name"))
+        # Create _config subdirectory for each config
+        scenario_dir = os.path.join(out_dir, config_data.get("name"), "_config")
         os.makedirs(scenario_dir, exist_ok=True)
 
         # Copy scenario file

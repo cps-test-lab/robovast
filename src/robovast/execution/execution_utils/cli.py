@@ -496,7 +496,7 @@ def main():
     """Main function to copy configs to cluster."""
     # Get the directory where this script is located
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    config_dir = os.path.join(script_dir, "config")
+    config_dir = os.path.join(script_dir, "out")
     run_id = "{run_id}"
 
     if not os.path.exists(config_dir):

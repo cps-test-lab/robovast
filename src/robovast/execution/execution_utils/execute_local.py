@@ -329,8 +329,16 @@ def generate_docker_run_script(configs, results_dir, output_script_path):
     # Generate docker run commands for each config
     for idx, config_tuple in enumerate(configs, 1):
         image, config_path, config_name, run_num, pre_command, post_command = config_tuple
+        result_config_path = os.path.join("${RESULTS_DIR}", config_name, "_config")
         test_path = os.path.join("${RESULTS_DIR}", config_name, str(run_num))
         cmd_line = get_commandline(image, config_path, test_path, config_name, run_num, pre_command=pre_command, post_command=post_command)
+
+        # copy config files to output directory only for the first run
+        if run_num == 0:
+            script += f'echo "Copying configuration files to {result_config_path}..."\n'
+            script += f'mkdir -p "{result_config_path}"\n'
+            script += f'cp -r "{config_path}/"* "{result_config_path}" 2>/dev/null || true\n'
+            script += f'echo ""\n\n'
 
         # Add progress message
         script += f'\necho ""\n'

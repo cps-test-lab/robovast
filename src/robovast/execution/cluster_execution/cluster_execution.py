@@ -180,8 +180,8 @@ class JobRunner:
                 {
                     'name': 'data-storage',
                     'mountPath': '/config',
-                    'subPath': f'config/{self.run_id}/{scenario_key}',
-                    'readOnly': False
+                    'subPath': f'out/{self.run_id}/{scenario_key}/_config',
+                    'readOnly': True
                 },
                 {
                     'name': 'data-storage',
@@ -192,7 +192,7 @@ class JobRunner:
                 {
                     'name': 'data-storage',
                     'mountPath': '/entrypoint.sh',
-                    'subPath': f'config/{self.run_id}/entrypoint.sh',
+                    'subPath': f'out/{self.run_id}/entrypoint.sh',
                     'readOnly': True
                 }
             ]
@@ -495,7 +495,7 @@ class JobRunner:
 
             prepare_run_configs(self.run_id, self.configs, temp_dir)
 
-            copy_config_to_cluster(os.path.join(temp_dir, "config"), self.run_id)
+            copy_config_to_cluster(os.path.join(temp_dir, "out"), self.run_id)
 
     def get_job_manifest(self, image: str, kubernetes_resources: dict, env: list, run_as_user: int = None) -> dict:
         """Generate the base Kubernetes job manifest from templates.

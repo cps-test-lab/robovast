@@ -15,6 +15,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
+import os
 import subprocess
 import sys
 
@@ -147,32 +148,32 @@ def delete_manifests(core_v1, manifests: list):
 
 def copy_config_to_cluster(config_dir, run_id):
 
-    # Use kubectl cp to copy the entire config directory to the transfer pod
     try:
-        logger.debug(f"Copying config files to transfer pod using kubectl cp...")
+        logger.debug(f"Copying config files to transfer pod...")
 
-        # Copy the config directory to the transfer pod at /exports/config/
-        cmd = [
+        # Discover config names from local config directory
+        local_run_config_dir = os.path.join(config_dir, run_id)
+        entrypoint_path = None
+        
+        # Copy config files directly to _config folder
+        copy_cmd = [
             "kubectl", "cp",
-            config_dir,
-            f"default/robovast:/exports/"
+            local_run_config_dir,
+            f"default/robovast:/exports/out/"
         ]
-
-        subprocess.run(cmd, capture_output=True, text=True, check=True)
-        logger.debug(f"Successfully copied config files to transfer pod")
-
-        # Verify the copy was successful by listing the directory
-        verify_cmd = [
-            "kubectl", "exec", "-n", "default", "robovast",
-            "--",
-            "ls", "-la", f"/exports/config/{run_id}"
-        ]
-
-        verify_result = subprocess.run(verify_cmd, capture_output=True, text=True, check=False)
-        if verify_result.returncode == 0:
-            logger.debug(f"Config files successfully uploaded to /exports/config/{run_id}/")
-        else:
-            logger.warning(f"Could not verify config file upload: {verify_result.stderr}")
+        subprocess.run(copy_cmd, capture_output=True, text=True, check=True)
+        
+        # Copy entrypoint.sh to out/{run_id}/ if it exists
+        if entrypoint_path:
+            entrypoint_cmd = [
+                "kubectl", "cp",
+                entrypoint_path,
+                f"default/robovast:/exports/out/{run_id}/entrypoint.sh"
+            ]
+            subprocess.run(entrypoint_cmd, capture_output=True, text=True, check=True)
+            logger.debug(f"Entrypoint script copied to /exports/out/{run_id}/entrypoint.sh")
+        
+        logger.debug(f"Successfully copied all config files to transfer pod")
 
     except subprocess.CalledProcessError as e:
         logger.error(f"Failed to copy config files to transfer pod: {e}")
