@@ -153,7 +153,7 @@ def save_scenario_prov(graph, config, output_dir):
         json.dump(doc, f, indent=2)
 
 
-def get_run_prov(run_output_dir):
+def get_run_prov(run_output_dir, dataset_iri, **kwargs):
     # Get run information from run.yaml
     run_yaml_path = os.path.join(run_output_dir, "run.yaml")
     run_data = get_run_data(run_yaml_path)
@@ -166,10 +166,13 @@ def get_run_prov(run_output_dir):
     run_data["ROSBAG_DIR"] = rosbag_file
     prov_data = _gen_jsonld_prov(run_output_dir, run_data)
 
+    doc = _get_jsonld_context(dataset_iri, **kwargs)
+    doc["@graph"] = prov_data
+
     # Write JSON file
     output_path = os.path.join(run_output_dir, "run.prov.json")
     with open(output_path, "w") as f:
-        json.dump(prov_data, f, indent=4)
+        json.dump(doc, f, indent=4)
 
 
 def main():
