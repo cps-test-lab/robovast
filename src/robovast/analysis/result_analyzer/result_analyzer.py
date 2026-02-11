@@ -413,6 +413,9 @@ class TestResultsAnalyzer(QMainWindow):
                 # Skip hidden files and directories
                 if item_path.name.startswith('.'):
                     continue
+                # Skip folders named "_config"
+                if item_path.name == "_config" and item_path.is_dir():
+                    continue
                 # At root level, only show run- directories
                 if current_depth == 0 and item_path.is_dir() and not item_path.name.startswith('run-'):
                     continue

@@ -136,7 +136,7 @@ def run_preprocessing(config_path: str, results_dir: str, output_callback=None):
     commands = get_preprocessing_commands(config_path)
 
     if not commands:
-        return False, "No preprocessing commands defined in configuration."
+        return True, "No preprocessing commands defined."
 
     output(f"Checking if preprocessing is needed...")
     # Compute hash of results directory
