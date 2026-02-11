@@ -41,8 +41,8 @@ def get_execution_env_variables(run_num, config_name):
 
 
 def prepare_run_configs(run_id, run_data, output_dir):
-    # Create the out directory structure: /out/$RUN_ID/
-    out_dir = os.path.join(output_dir, "out", run_id)
+    # Create the out_template directory structure: /out_template/$RUN_ID/
+    out_dir = os.path.join(output_dir, "out_template", run_id)
     os.makedirs(out_dir, exist_ok=True)
     
     # Copy entrypoint.sh to the out directory
@@ -93,10 +93,12 @@ def prepare_run_configs(run_id, run_data, output_dir):
                 shutil.copy2(src_path, dst_path)
 
         # Create config file if needed
-        config = config_data.get('config')
-        if config is not None:
-            wrapped_config_data = {scenario_name: config}
-
-            with open(os.path.join(out_dir, config_data.get("name"), 'scenario.config'), 'w') as f:
-                converted_config_data = convert_dataclasses_to_dict(wrapped_config_data)
-                yaml.dump(converted_config_data, f, default_flow_style=False, sort_keys=False)
+        if "config" in config_data:
+            config = config_data.get('config')
+            if config is not None:
+                wrapped_config_data = {scenario_name: config}
+                dst_path = os.path.join(out_dir, config_data.get("name"), 'scenario.config')
+                os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+                with open(dst_path, 'w') as f:
+                    converted_config_data = convert_dataclasses_to_dict(wrapped_config_data)
+                    yaml.dump(converted_config_data, f, default_flow_style=False, sort_keys=False)

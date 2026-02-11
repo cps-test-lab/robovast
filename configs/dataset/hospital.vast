@@ -3,7 +3,7 @@ configuration:
 - name: hospital5m0o
   variations:
   - PathVariationRasterized:
-      map_file: /home/swiest/robovast/configs/dataset/maps/hospital/maps/hospital.yaml
+      map_file: maps/hospital/maps/hospital.yaml
       start_pose:
         x: 7.7
         y: 7.7

@@ -107,7 +107,7 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
                 feedback_callback(f"  - {cfg['name']}")
             sys.exit(1)
 
-        configs = [found_config]
+        run_data["configs"] = [found_config]
 
     logger.debug(f"Preparing {len(run_data['configs'])} configs from {config_path}...")
     logger.debug(f"Output directory: {output_dir}")
@@ -128,8 +128,8 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
         config_dir = output_dir
 
     try:
-        prepare_run_configs("local", run_data, config_dir)
-        config_path_result = os.path.join(config_dir, "config", "local")
+        prepare_run_configs("config", run_data, config_dir)
+        config_path_result = os.path.join(config_dir, "out_template", "config")
         logger.debug(f"Config path: {config_path_result}")
     except Exception as e:  # pylint: disable=broad-except
         feedback_callback(f"Error preparing run configs: {e}", file=sys.stderr)
@@ -137,17 +137,11 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
 
     logger.debug(f"Configuration files prepared in: {config_dir}")
 
-    docker_configs = []
-    for run_number in range(runs):
-        for config_entry in run_data["configs"]:
-            docker_configs.append((docker_image, os.path.abspath(os.path.join(
-                config_path_result, config_entry["name"])), config_entry['name'], run_number, pre_command, post_command))
-
-    generate_docker_run_script(docker_configs, results_dir, os.path.join(config_dir, "run.sh"))
+    generate_docker_run_script(runs, run_data, config_path_result, pre_command, post_command, docker_image, results_dir, os.path.join(config_dir, "run.sh"))
     return os.path.join(config_dir, "run.sh")
 
 
-def get_commandline(image, config_path, output_path, config_name, run_num=0, shell=False, pre_command=None, post_command=None):
+def get_commandline(image, config_path, output_path, config_name, config_files, run_files, run_num=0, shell=False, pre_command=None, post_command=None):
 
     # Get the current user and group IDs to run docker with the same permissions
     uid = os.getuid()
@@ -160,10 +154,19 @@ def get_commandline(image, config_path, output_path, config_name, run_num=0, she
         'docker', 'run',
         '--rm',  # Remove container after execution
         '--user', f'{uid}:{gid}',  # Run as host user to avoid permission issues
-        '-v', f'{config_path}:/config',  # Bind mount temp_path to /config
         '-v', f'{output_path}:/out',   # Bind mount output to /out
         '-v', f'{entrypoint_path}:/entrypoint.sh:ro',  # Mount entrypoint.sh
     ]
+
+    # config_path points to the specific config folder (e.g., test-1-1)
+    # scenario.osc and run_files are at the parent level
+    parent_path = os.path.dirname(config_path)
+    docker_cmd.extend(['-v', f'{os.path.join(parent_path, "scenario.osc")}:/config/scenario.osc:ro'])
+    docker_cmd.extend(['-v', f'{os.path.join(config_path, "scenario.config")}:/config/scenario.config:ro'])
+    for run_file in run_files:
+        docker_cmd.extend(['-v', f'{os.path.join(parent_path, "_config", run_file)}:/config/{run_file}:ro'])
+    for config_file in config_files:
+        docker_cmd.extend(['-v', f'{os.path.join(config_path, config_file)}:/config/{config_file}:ro'])
 
     env_vars = get_execution_env_variables(run_num, config_name)
     for key, value in env_vars.items():
@@ -299,13 +302,21 @@ mkdir -p ${RESULTS_DIR}
 """
 
 
-def generate_docker_run_script(configs, results_dir, output_script_path):
+def generate_docker_run_script(runs, run_data, config_path_result, pre_command, post_command, docker_image, results_dir, output_script_path):
     """Generate a shell script to run Docker containers sequentially.
 
     Args:
-        configs: List of tuples (image, config_path, config_name, run_num, pre_command, post_command)
+        results_dir: Directory where results are stored
         output_script_path: Path where the script should be written
     """
+
+    configs = []
+    for run_number in range(runs):
+        for config_entry in run_data["configs"]:
+            configs.append((docker_image, os.path.abspath(os.path.join(
+                config_path_result, config_entry["name"])), config_entry['name'], run_number, pre_command, post_command, config_entry.get("_config_files", [])))
+
+
     if not configs:
         raise ValueError("At least one config configuration is required")
 
@@ -328,10 +339,11 @@ def generate_docker_run_script(configs, results_dir, output_script_path):
 
     # Generate docker run commands for each config
     for idx, config_tuple in enumerate(configs, 1):
-        image, config_path, config_name, run_num, pre_command, post_command = config_tuple
+        image, config_path, config_name, run_num, pre_command, post_command, config_files = config_tuple
         result_config_path = os.path.join("${RESULTS_DIR}", config_name, "_config")
         test_path = os.path.join("${RESULTS_DIR}", config_name, str(run_num))
-        cmd_line = get_commandline(image, config_path, test_path, config_name, run_num, pre_command=pre_command, post_command=post_command)
+        run_files = run_data.get("_test_files", [])
+        cmd_line = get_commandline(image, config_path, test_path, config_name, config_files, run_files, run_num, pre_command=pre_command, post_command=post_command)
 
         # copy config files to output directory only for the first run
         if run_num == 0:
