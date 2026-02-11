@@ -43,7 +43,7 @@ def get_execution_env_variables(run_num, config_name):
 def prepare_run_configs(out_dir, run_data):
     # Create the output directory structure
     os.makedirs(out_dir, exist_ok=True)
-    
+
     # Copy entrypoint.sh to the out directory
     entrypoint_src = str(files('robovast.execution.data').joinpath('entrypoint.sh'))
     entrypoint_dst = os.path.join(out_dir, "entrypoint.sh")
@@ -54,7 +54,7 @@ def prepare_run_configs(out_dir, run_data):
 
     run_config_dir = os.path.join(out_dir, "_config")
     os.makedirs(run_config_dir, exist_ok=True)
-    
+
     vast_file_path = os.path.dirname(run_data["vast"])
     # copy scenario_file
     scenario_file_path = os.path.join(vast_file_path, run_data["scenario_file"])
@@ -66,7 +66,7 @@ def prepare_run_configs(out_dir, run_data):
         dst_path = os.path.join(run_config_dir, config_file)
         os.makedirs(os.path.dirname(dst_path), exist_ok=True)
         shutil.copy2(src_path, dst_path)
-    
+
     # get scenario name
     original_scenario_path = os.path.join(vast_file_path, run_data.get("scenario_file"))
     try:
@@ -77,17 +77,22 @@ def prepare_run_configs(out_dir, run_data):
             raise ValueError(f"Scenario name not found in {original_scenario_path}")
     except Exception as e:
         raise RuntimeError(f"Could not get scenario name from {original_scenario_path}: {e}") from e
-    
-    for config_data in run_data["configs"]:        
+
+    for config_data in run_data["configs"]:
         test_config_dir = os.path.join(out_dir, config_data.get("name"), "_config")
-        
+
         # Copy config files
         if "_config_files" in config_data:
             for config_rel_path, config_path in config_data["_config_files"]:
                 if not os.path.exists(config_path):
                     raise FileNotFoundError(f"Config file {config_path} does not exist.")
                 src_path = config_path
-                dst_path = os.path.join(test_config_dir, config_rel_path)
+                # Sanitize config_rel_path to prevent directory traversal
+                # Normalize the path and ensure it doesn't escape the _config directory
+                normalized_rel_path = os.path.normpath(config_rel_path)
+                if normalized_rel_path.startswith('..') or os.path.isabs(normalized_rel_path):
+                    raise ValueError(f"Invalid config file path '{config_rel_path}': paths cannot escape the _config directory")
+                dst_path = os.path.join(test_config_dir, normalized_rel_path)
                 os.makedirs(os.path.dirname(dst_path), exist_ok=True)
                 shutil.copy2(src_path, dst_path)
 

@@ -416,8 +416,14 @@ class TestResultsAnalyzer(QMainWindow):
                 # Skip folders named "_config"
                 if item_path.name == "_config" and item_path.is_dir():
                     continue
-                # At root level, only show run- directories
-                if current_depth == 0 and item_path.is_dir() and not item_path.name.startswith('run-'):
+                # At root level, only show run- directories (skip all files and non-run directories)
+                if current_depth == 0 and (not item_path.is_dir() or not item_path.name.startswith('run-')):
+                    continue
+                # At config level (depth 1), skip all files
+                if current_depth == 1 and not item_path.is_dir():
+                    continue
+                # At test level (depth 2), only show directories with numbers-only names
+                if current_depth == 2 and (not item_path.is_dir() or not item_path.name.isdigit()):
                     continue
                 # Create tree item for visible path
                 tree_item = QTreeWidgetItem(parent_item)
@@ -656,10 +662,7 @@ class TestResultsAnalyzer(QMainWindow):
 
     def is_test_directory(self, directory_path):
         """Check if directory is a test directory"""
-        test_indicators = ["test.xml", "capture.mp4", "scenario.osc", "scenario.config"]
-        indicator_count = sum(1 for indicator in test_indicators
-                              if (directory_path / indicator).exists())
-        return indicator_count >= 2
+        return (directory_path / "test.xml").exists()
 
     @staticmethod
     def format_size(size_bytes):

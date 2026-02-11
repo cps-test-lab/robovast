@@ -73,12 +73,13 @@ class JobRunner:
 
         # Generate configs with filtered files
         self.config_output_file_dir = tempfile.TemporaryDirectory(prefix="robovast_execution_")
-        self.configs, _ = generate_scenario_variations(
+        self.run_data, _ = generate_scenario_variations(
             config_path,
             None,
             variation_classes=None,
             output_dir=self.config_output_file_dir.name,
         )
+        self.configs = self.run_data["configs"]
 
         if not self.configs:
             raise ValueError("No scenario configs generated.")
@@ -96,6 +97,7 @@ class JobRunner:
                 for v in self.configs:
                     logger.error(f"   - {v["name"]}")
                 sys.exit(1)
+            self.run_data["configs"] = [found_config]
             self.configs = [found_config]
 
         kube_config.load_kube_config()
@@ -159,7 +161,7 @@ class JobRunner:
                     'name': str(name),
                     'value': "" if val is None else str(val)
                 })
-            
+
             # Add PRE_COMMAND and POST_COMMAND if specified
             if self.pre_command:
                 containers[0]['env'].append({
@@ -179,23 +181,61 @@ class JobRunner:
             volume_mounts = [
                 {
                     'name': 'data-storage',
-                    'mountPath': '/config',
-                    'subPath': f'out/{self.run_id}/{scenario_key}/_config',
-                    'readOnly': True
-                },
-                {
-                    'name': 'data-storage',
                     'mountPath': '/out',
                     'subPath': f'out/{self.run_id}/{scenario_key}/{run_number}',
                     'readOnly': False
-                },
-                {
-                    'name': 'data-storage',
-                    'mountPath': '/entrypoint.sh',
-                    'subPath': f'out/{self.run_id}/entrypoint.sh',
-                    'readOnly': True
                 }
             ]
+
+            # Add mounts for _test_files (shared across all configs)
+            for test_file in self.run_data.get("_test_files", []):
+                volume_mounts.append({
+                    'name': 'data-storage',
+                    'mountPath': f'/config/{test_file}',
+                    'subPath': f'out/{self.run_id}/_config/{test_file}',
+                    'readOnly': True
+                })
+
+            # Add entrypoint mount
+            volume_mounts.append({
+                'name': 'data-storage',
+                'mountPath': '/entrypoint.sh',
+                'subPath': f'out/{self.run_id}/entrypoint.sh',
+                'readOnly': True
+            })
+
+            # Add scenario.osc mount
+            volume_mounts.append({
+                'name': 'data-storage',
+                'mountPath': '/config/scenario.osc',
+                'subPath': f'out/{self.run_id}/scenario.osc',
+                'readOnly': True
+            })
+
+            # Find the current config and add mounts for its _config_files
+            current_config = None
+            for config in self.configs:
+                if config.get("name") == scenario_key:
+                    current_config = config
+                    break
+
+            if current_config and "_config_files" in current_config:
+                for config_rel_path, _ in current_config["_config_files"]:
+                    volume_mounts.append({
+                        'name': 'data-storage',
+                        'mountPath': f'/config/{config_rel_path}',
+                        'subPath': f'out/{self.run_id}/{scenario_key}/_config/{config_rel_path}',
+                        'readOnly': True
+                    })
+
+            # Add scenario.config mount
+            volume_mounts.append({
+                'name': 'data-storage',
+                'mountPath': '/config/scenario.config',
+                'subPath': f'out/{self.run_id}/{scenario_key}/scenario.config',
+                'readOnly': True
+            })
+
             containers[0]['volumeMounts'].extend(volume_mounts)
 
         # Get runAsUser from container to match ownership in initContainer
@@ -494,7 +534,7 @@ class JobRunner:
             logger.debug(f"Using temporary directory: {temp_dir}")
 
             out_dir = os.path.join(temp_dir, "out_template", self.run_id)
-            prepare_run_configs(out_dir, self.configs)
+            prepare_run_configs(out_dir, self.run_data)
 
             copy_config_to_cluster(os.path.join(temp_dir, "out_template"), self.run_id)
 
@@ -517,7 +557,7 @@ class JobRunner:
 
         yaml_str = JOB_TEMPLATE.format(image=image, cpu=kubernetes_resources["cpu"], volumes=self.cluster_config.get_job_volumes())
         manifest = yaml.safe_load(yaml_str)
-        
+
         manifest['spec']['template']['spec']['containers'][0]['securityContext']['runAsUser'] = run_as_user
 
         if "memory" in kubernetes_resources:

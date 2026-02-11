@@ -6,26 +6,17 @@ configuration:
       name: goal_pose
       values:
       - position:
-          x: 21.0
-          y: 6.0
-      - position:
-          x: 21.0
-          y: 4.0
-      - position:
-          x: 21.0
+          x: 11.0
           y: -2.0
       - position:
-          x: 21.0
-          y: -4.0
-      - position:
-          x: 21.0
-          y: -6.0
+          x: 11.0
+          y: 6.0
 execution:
   image: ghcr.io/cps-test-lab/robovast:latest
   kubernetes:
     resources:
-      cpu: 6
-  runs: 5
+      cpu: 10
+  runs: 2
   scenario_file: scenario.osc
   test_files_filter:
   - "**/files/*"

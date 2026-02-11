@@ -230,7 +230,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
 
     configs = []
     variation_gui_classes = {}
-    
+
     # Get scenario_file from execution section
     execution_scenario_file_name = parameters.get('execution', {}).get('scenario_file')
     scenario_file = os.path.join(os.path.dirname(variation_file), execution_scenario_file_name) if execution_scenario_file_name else None
@@ -240,11 +240,11 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         output_dir = temp_path.name
 
     general_parameters = parameters.get('general', {})
-    
+
     # Get scenario parameters once (same for all configurations)
     scenario_param_dict = get_scenario_parameters(scenario_file)
     existing_scenario_parameters = next(iter(scenario_param_dict.values())) if scenario_param_dict else []
-    
+
     for config in configurations:
         if variation_classes is None:
             # Read variation classes from the variation file
@@ -312,4 +312,4 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         "scenario_file": scenario_file,
         "configs": configs,
         "_test_files": test_files
-        }, variation_gui_classes
+    }, variation_gui_classes

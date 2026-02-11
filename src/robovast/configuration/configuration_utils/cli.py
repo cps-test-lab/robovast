@@ -81,11 +81,12 @@ def list_cmd(debug):
 
     with tempfile.TemporaryDirectory(prefix="robovast_list_configs_") as temp_dir:
         try:
-            configs, _ = generate_scenario_variations(
+            run_data, _ = generate_scenario_variations(
                 variation_file=config,
                 progress_update_callback=None,
                 output_dir=temp_dir
             )
+            configs = run_data["configs"]
             if configs:
                 configs_file = os.path.join(temp_dir, "scenario.configs")
                 if os.path.exists(configs_file):
@@ -138,11 +139,12 @@ def generate(output_dir):
     click.echo(f"Generating scenario configurations...")
 
     try:
-        configs, _ = generate_scenario_variations(
+        run_data, _ = generate_scenario_variations(
             variation_file=config,
             progress_update_callback=None,
             output_dir=output_dir
         )
+        configs = run_data["configs"]
 
         if configs:
             click.echo(f"✓ Successfully generated {len(configs)} scenario configurations in directory '{output_dir}'.")
@@ -211,11 +213,12 @@ def variation_points():
 
     with tempfile.TemporaryDirectory(prefix="robovast_list_configs_") as temp_dir:
         try:
-            configs, _ = generate_scenario_variations(
+            run_data, _ = generate_scenario_variations(
                 variation_file=config,
                 progress_update_callback=None,
                 output_dir=temp_dir
             )
+            configs = run_data["configs"]
         except Exception as e:
             click.echo(f"Error: {e}", err=True)
             sys.exit(1)
