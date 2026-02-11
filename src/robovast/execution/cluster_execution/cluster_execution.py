@@ -493,9 +493,10 @@ class JobRunner:
         with tempfile.TemporaryDirectory() as temp_dir:
             logger.debug(f"Using temporary directory: {temp_dir}")
 
-            prepare_run_configs(self.run_id, self.configs, temp_dir)
+            out_dir = os.path.join(temp_dir, "out_template", self.run_id)
+            prepare_run_configs(out_dir, self.configs)
 
-            copy_config_to_cluster(os.path.join(temp_dir, "out"), self.run_id)
+            copy_config_to_cluster(os.path.join(temp_dir, "out_template"), self.run_id)
 
     def get_job_manifest(self, image: str, kubernetes_resources: dict, env: list, run_as_user: int = None) -> dict:
         """Generate the base Kubernetes job manifest from templates.

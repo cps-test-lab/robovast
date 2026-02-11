@@ -40,9 +40,8 @@ def get_execution_env_variables(run_num, config_name):
     }
 
 
-def prepare_run_configs(run_id, run_data, output_dir):
-    # Create the out_template directory structure: /out_template/$RUN_ID/
-    out_dir = os.path.join(output_dir, "out_template", run_id)
+def prepare_run_configs(out_dir, run_data):
+    # Create the output directory structure
     os.makedirs(out_dir, exist_ok=True)
     
     # Copy entrypoint.sh to the out directory
