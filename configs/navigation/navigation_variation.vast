@@ -9,7 +9,7 @@ configuration:
       variation_files:
       - floorplans/rooms/rooms.variation
       #- floorplans/hallways/hallways.variation
-      num_variations: 2
+      num_variations: 1
       seed: 1
   - PathVariationRandom:
       start_pose: start_pose

@@ -37,7 +37,6 @@ class ScenarioParameterConfig(BaseModel):
 
 class ConfigurationConfig(BaseModel):
     name: str
-    description: Optional[dict[str, Any]] = None
     parameters: Optional[list[ScenarioParameterConfig]] = None
     variations: Optional[list[VariationConfig]] = None
 
@@ -85,7 +84,6 @@ class AnalysisConfig(BaseModel):
 class ConfigV1(BaseModel):
     model_config = ConfigDict(extra='forbid')
     version: int = 1
-    description: Optional[dict[str, Any]] = None
     general: Optional[GeneralConfig] = None
     configuration: Optional[list[ConfigurationConfig]] = None
     execution: ExecutionConfig

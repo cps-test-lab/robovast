@@ -1,22 +1,6 @@
 version: 1
-description:
-  my: RUNdata
-  val1: 9999
-  dict_data: 
-    dict_val: RUN
-  list_data:
-    - 11111
-    - 55555
 configuration:
 - name: test
-  description:
-    my: data
-    val1: 2
-    dict_data: 
-      dict_val: 1
-    list_data:
-      - 1
-      - 5
   variations:
   - ParameterVariationList:
       name: growth_rate
