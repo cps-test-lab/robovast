@@ -18,11 +18,13 @@ import datetime
 import os
 import shutil
 from importlib.resources import files
-
+import logging
+from pprint import pformat
 import yaml
 
 from .common import convert_dataclasses_to_dict, get_scenario_parameters
 
+logger = logging.getLogger(__name__)
 
 def get_run_id():
     return f"run-{datetime.datetime.now().strftime('%Y-%m-%d-%H%M%S')}"
@@ -42,6 +44,7 @@ def get_execution_env_variables(run_num, config_name):
 
 def prepare_run_configs(out_dir, run_data):
     # Create the output directory structure
+    logger.debug(f"Run Configs: {pformat(run_data)}")
     os.makedirs(out_dir, exist_ok=True)
 
     # Copy entrypoint.sh to the out directory
@@ -87,12 +90,7 @@ def prepare_run_configs(out_dir, run_data):
                 if not os.path.exists(config_path):
                     raise FileNotFoundError(f"Config file {config_path} does not exist.")
                 src_path = config_path
-                # Sanitize config_rel_path to prevent directory traversal
-                # Normalize the path and ensure it doesn't escape the _config directory
-                normalized_rel_path = os.path.normpath(config_rel_path)
-                if normalized_rel_path.startswith('..') or os.path.isabs(normalized_rel_path):
-                    raise ValueError(f"Invalid config file path '{config_rel_path}': paths cannot escape the _config directory")
-                dst_path = os.path.join(test_config_dir, normalized_rel_path)
+                dst_path = os.path.join(test_config_dir, config_rel_path)
                 os.makedirs(os.path.dirname(dst_path), exist_ok=True)
                 shutil.copy2(src_path, dst_path)
 

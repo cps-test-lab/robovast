@@ -12,7 +12,7 @@ scenario test_scenario:
     mesh_file: string
     map_file: string
     start_pose: pose_3d
-    goal_poses: list of pose_3d
+    goal_pose: pose_3d
     laserscan_random_drop_percentage: string = '0.0'
     laserscan_gaussian_noise_std_deviation: string = '0.0'
     static_objects: list of spawn_entity
@@ -54,5 +54,5 @@ scenario test_scenario:
                         # hidden_topics: true,
                         use_sim_time: true,
                         timestamp_suffix: false)
-                    robot.nav_through_poses(goal_poses)
+                    robot.nav_to_pose(goal_pose)
                     emit end

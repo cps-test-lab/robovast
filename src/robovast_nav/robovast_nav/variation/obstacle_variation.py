@@ -104,16 +104,21 @@ class ObstacleVariation(NavVariation):
         except Exception as e:  # pylint: disable=broad-except
             raise ValueError(f"Error determining map file for config {config['name']}: {e}") from e
 
+        # Initialize obstacle_objects as an empty list to accumulate all obstacles
+        obstacle_objects = []
+
         if 'start_pose' not in config['config'] or 'goal_poses' not in config['config']:
             self.progress_update("start_pose and/or goal_poses not defined in config, placing obstacles randomly (idependent of path)...")
 
             for obstacle_config in obstacle_configs:
-                obstacle_objects = placer.place_obstacles_random(
+                # Accumulate obstacles from each obstacle_config
+                obstacles = placer.place_obstacles_random(
                     map_file_path,
                     obstacle_config.amount,
                     obstacle_config.model,
                     obstacle_config.xacro_arguments,
                 )
+                obstacle_objects.extend(obstacles)
         else:
             raise NotImplementedError("Path-dependent obstacle placement is not implemented yet.")
             # waypoints = [
@@ -196,14 +201,13 @@ class ObstacleVariation(NavVariation):
             #                     )
             #                     raise ValueError("Could not place obstacles while maintaining navigation")
 
-        if obstacle_objects:
-            static_objects_parameter_name = self.parameters.name
-            result_config = self.update_config(config, {
-                static_objects_parameter_name: convert_dataclasses_to_dict(obstacle_objects)
-            })
+        # Always create variation with parameter, even if obstacle_objects is empty
+        # This ensures consistent naming and parameters in scenario.config
+        static_objects_parameter_name = self.parameters.name
+        result_config = self.update_config(config, {
+            static_objects_parameter_name: convert_dataclasses_to_dict(obstacle_objects) if obstacle_objects else []
+        })
 
-            resulting_configs.append(result_config)
-        else:
-            resulting_configs.append(config)
+        resulting_configs.append(result_config)
 
         return resulting_configs
