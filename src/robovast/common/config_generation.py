@@ -231,7 +231,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     configs = []
     variation_gui_classes = {}
     
-    # Get scenario_file from execution section (preferred) or fall back to configuration section
+    # Get scenario_file from execution section
     execution_scenario_file_name = parameters.get('execution', {}).get('scenario_file')
     scenario_file = os.path.join(os.path.dirname(variation_file), execution_scenario_file_name) if execution_scenario_file_name else None
 
