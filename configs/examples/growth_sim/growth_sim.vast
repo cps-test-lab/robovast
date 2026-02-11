@@ -1,7 +1,6 @@
 version: 1
 configuration:
 - name: test
-  scenario_file: scenario.osc
   variations:
   - ParameterVariationList:
       name: growth_rate
@@ -17,7 +16,6 @@ configuration:
       - 100
       - 200
 - name: test-fixed-values
-  scenario_file: scenario.osc
   parameters:
   - growth_rate: 0.07
   - initial_population: 123
@@ -27,6 +25,7 @@ execution:
     resources:
       cpu: 1
   runs: 20
+  scenario_file: scenario.osc
   test_files_filter:
   - "**/files/*.py"
 analysis:

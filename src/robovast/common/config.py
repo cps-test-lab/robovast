@@ -37,7 +37,6 @@ class ScenarioParameterConfig(BaseModel):
 
 class ConfigurationConfig(BaseModel):
     name: str
-    scenario_file: str
     parameters: Optional[list[ScenarioParameterConfig]] = None
     variations: Optional[list[VariationConfig]] = None
 
@@ -65,6 +64,7 @@ class ExecutionConfig(BaseModel):
     kubernetes: KubernetesConfig
     env: Optional[list[dict[str, str]]] = None
     runs: int
+    scenario_file: Optional[str] = None
     test_files_filter: Optional[list[str]] = None
 
 

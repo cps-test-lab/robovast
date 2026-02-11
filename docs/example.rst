@@ -80,7 +80,6 @@ Configuration
 The ``configuration`` section defines the test scenarios to be executed. Each scenario specifies:
 
 - ``name``: A unique identifier for the scenario
-- ``scenario_file``: The path to the scenario file (e.g., ``scenario.osc``)
 - ``parameters``: (Optional) Fixed parameters that apply to all configurations of this scenario
 - ``variations``: (Optional) Advanced variation types for complex test generation
 
@@ -91,7 +90,7 @@ In this example, we define two scenarios:
 
 .. literalinclude:: ../configs/examples/growth_sim/growth_sim.vast
    :language: yaml
-   :lines: 2-23
+   :lines: 2-21
    :caption: Configuration section of RoboVAST Configuration File
 
 
@@ -102,13 +101,14 @@ Execution
 
      For the execution, it is expected that the connection to the Kubernetes cluster is set up properly.
 
-The ``execution`` section of the ``.vast`` configuration specifies all necessary parameters for running the tests:
+The ``execution`` section of the ``.vast`` configuration specifies all necessary parameters for running the tests, including the scenario file to execute:
 
 .. literalinclude:: ../configs/examples/growth_sim/growth_sim.vast
    :language: yaml
-   :lines: 24-31
+   :lines: 22-29
    :caption: Execution section of RoboVAST Configuration File
 
+The ``scenario_file`` parameter specifies which OpenSCENARIO 2 file to execute (``scenario.osc``).
 In this example, we configure 20 runs for each config to ensure statistically meaningful results.
 In this basic example we hand in the system-under-test ``growth_sim.py`` directly by specifying the pattern ``**/files/*.py`` in the ``test_files_filter``. In larger setups, it might be required to use a custom container image.
 

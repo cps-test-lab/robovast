@@ -1,7 +1,6 @@
 version: 1
 configuration:
 - name: test
-  scenario_file: scenario.osc
   variations:
   - ParameterVariationList:
       name: goal_pose
@@ -27,6 +26,7 @@ execution:
     resources:
       cpu: 6
   runs: 5
+  scenario_file: scenario.osc
   test_files_filter:
   - "**/files/*"
 analysis:

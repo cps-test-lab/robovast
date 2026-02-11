@@ -1,7 +1,6 @@
 version: 1
 configuration:
 - name: test
-  scenario_file: scenario.osc
   variations:
   - PathVariationRasterized:
       map_file: /opt/ros/jazzy/share/nav2_bringup/maps/depot.yaml
@@ -20,6 +19,7 @@ execution:
     resources:
       cpu: 6
   runs: 5
+  scenario_file: scenario.osc
   test_files_filter:
   - "**/files/*"
 analysis:

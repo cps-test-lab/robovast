@@ -1,7 +1,6 @@
 version: 1
 configuration:
 - name: example
-  scenario_file: scenario.osc
   parameters:
   - goal_poses:
     - orientation:
@@ -41,7 +40,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: example-33-door
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -60,7 +59,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: example-30-door
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -79,7 +78,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: example-36-door
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -98,7 +97,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: example-44-door
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -117,7 +116,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: example-47-door
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -136,7 +135,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: example-51-door
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -155,7 +154,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: example-52-door
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -174,7 +173,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: example-53-door
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -193,7 +192,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: example-54-door
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -212,7 +211,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: example-50-door
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -231,7 +230,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: example-everything-failure
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -250,7 +249,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: example-hallway-window-0-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -269,7 +268,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: example-room-size-less-50
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -288,7 +287,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: example-slunk-room
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -307,7 +306,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-0-3-door-width-1f1-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -336,7 +335,7 @@ configuration:
         x: 3.3
         y: 3.0
 - name: small-dataset-maps-0-33-door-width-1f1-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -360,7 +359,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-0-36-door-width-1f1-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -389,7 +388,7 @@ configuration:
         x: -4.0
         y: -1.5
 - name: small-dataset-maps-0-44-door-width-1f1-4
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -418,7 +417,7 @@ configuration:
         x: 4.2
         y: 3.5
 - name: small-dataset-maps-0-47-door-width-1f1-5
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -447,7 +446,7 @@ configuration:
         x: -5.0
         y: -4.0
 - name: small-dataset-maps-door-size-0-5-1s2-14
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -527,7 +526,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-door-size-0-5-1s2-13
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -627,7 +626,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-door-size-0-5-1s2-12
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -717,7 +716,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-door-size-0-5-1s2-11
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -777,7 +776,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-door-size-0-5-1s2-10
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -837,7 +836,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=1.000
 - name: small-dataset-maps-door-size-0-5-1s2-9
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -907,7 +906,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-door-size-0-5-1s2-8
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -1007,7 +1006,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-door-size-0-5-1s2-7
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -1107,7 +1106,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-door-size-0-5-1s2-6
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -1207,7 +1206,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-door-size-0-5-1s2-5
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -1287,7 +1286,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-door-size-0-5-1s2-4
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -1332,7 +1331,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-door-size-0-5-1s2-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -1377,7 +1376,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-door-size-0-5-1s2-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -1401,7 +1400,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-door-size-0-5-1s2-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -1425,7 +1424,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-door-size-0-5-1s1-10
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -1449,7 +1448,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-door-size-0-5-1s1-9
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -1473,7 +1472,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-door-size-0-5-1s1-8
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -1497,7 +1496,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-door-size-0-5-1s1-7
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -1521,7 +1520,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-door-size-0-5-1s1-6
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -1545,7 +1544,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-door-size-0-5-1f3-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -1575,7 +1574,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=0.58
 - name: small-dataset-maps-door-size-0-5-1f1-6
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -1604,7 +1603,7 @@ configuration:
         x: -4.0
         y: 3.5
 - name: small-dataset-maps-door-size-0-5-1f2-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -1669,7 +1668,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-door-size-0-5-1s1-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -1698,7 +1697,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-door-size-0-5-1s1-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -1727,7 +1726,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-door-size-0-5-1s1-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -1756,7 +1755,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-door-size-0-5-1s1-4
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -1785,7 +1784,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-door-size-0-5-1s1-5
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -1814,7 +1813,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-door-size-0-5-1f2-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -1869,7 +1868,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-door-size-0-5-1f2-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -1934,7 +1933,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-door-size-0-5-1f2-4
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -1969,7 +1968,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-door-size-0-5-1f2-5
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -2004,7 +2003,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-door-size-0-5-1f2-6
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -2064,7 +2063,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-door-size-0-5-1f3-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -2094,7 +2093,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=0.54
 - name: small-dataset-maps-door-size-0-5-1f4-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -2123,7 +2122,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-door-size-0-5-1f4-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -2152,7 +2151,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-everything-failure-3s3-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -2176,7 +2175,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-everything-failure-3s3-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -2200,7 +2199,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-everything-failure-3s3-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -2229,7 +2228,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-everything-failure-3s2-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -2319,7 +2318,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-everything-failure-3s2-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -2419,7 +2418,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-everything-failure-3s2-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -2499,7 +2498,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-everything-failure-3s1-6
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -2589,7 +2588,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-everything-failure-3s1-5
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -2684,7 +2683,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-everything-failure-3s1-4
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -2769,7 +2768,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-everything-failure-3s1-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -2849,7 +2848,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-everything-failure-3s1-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -2924,7 +2923,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-everything-failure-3s1-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -3004,7 +3003,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-everything-failure-3f2-8
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -3054,7 +3053,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-everything-failure-3f2-7
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -3104,7 +3103,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-everything-failure-3f2-6
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -3133,7 +3132,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-everything-failure-3f2-5
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -3162,7 +3161,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-everything-failure-3f2-4
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -3186,7 +3185,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-everything-failure-3f2-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -3210,7 +3209,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-everything-failure-3f2-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -3265,7 +3264,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-everything-failure-3f2-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -3330,7 +3329,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-hallway-window-0-2-2s2-14
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -3405,7 +3404,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-hallway-window-0-2-2s2-13
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -3480,7 +3479,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-hallway-window-0-2-2s2-12
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -3555,7 +3554,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-hallway-window-0-2-2s2-11
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -3630,7 +3629,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-hallway-window-0-2-2s2-10
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -3685,7 +3684,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-hallway-window-0-2-2s2-9
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -3745,7 +3744,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-hallway-window-0-2-2s2-8
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -3840,7 +3839,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-hallway-window-0-2-2s2-7
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -3935,7 +3934,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-hallway-window-0-2-2s2-6
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -4005,7 +4004,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-hallway-window-0-2-2s2-5
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -4095,7 +4094,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-hallway-window-0-2-2s2-4
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -4145,7 +4144,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-hallway-window-0-2-2s2-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -4200,7 +4199,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-hallway-window-0-2-2s2-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -4229,7 +4228,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-hallway-window-0-2-2s2-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -4253,7 +4252,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-hallway-window-0-2-2s1-10
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -4282,7 +4281,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-hallway-window-0-2-2s1-9
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -4306,7 +4305,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-hallway-window-0-2-2s1-8
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -4330,7 +4329,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-hallway-window-0-2-2s1-7
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -4354,7 +4353,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-hallway-window-0-2-2s1-6
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -4378,7 +4377,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-hallway-window-0-2-2s1-5
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -4402,7 +4401,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-hallway-window-0-2-2s1-4
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -4441,7 +4440,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-hallway-window-0-2-2s1-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -4475,7 +4474,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-hallway-window-0-2-2s1-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -4509,7 +4508,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-hallway-window-0-2-2s1-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -4543,7 +4542,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-hallway-window-0-2-2f4-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -4643,7 +4642,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-hallway-window-0-2-2f4-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -4713,7 +4712,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-hallway-window-0-2-2f4-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -4773,7 +4772,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-hallway-window-0-2-2f3-6
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -4803,7 +4802,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-hallway-window-0-2-2f3-5
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -4833,7 +4832,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-hallway-window-0-2-2f3-4
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -4878,7 +4877,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-hallway-window-0-2-2f3-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -4933,7 +4932,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-hallway-window-0-2-2f3-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -4988,7 +4987,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-hallway-window-0-2-2f3-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -5043,7 +5042,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-hallway-window-0-2-2f2-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -5093,7 +5092,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-hallway-window-0-2-2f2-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -5123,7 +5122,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=2.000, width:=2.000, height:=1.000
 - name: small-dataset-maps-hallway-window-0-2-2f1-5
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -5238,7 +5237,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-hallway-window-0-2-2f1-4
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -5313,7 +5312,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-hallway-window-0-2-2f1-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -5342,7 +5341,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-hallway-window-0-2-2f1-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -5371,7 +5370,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-hallway-window-0-2-2f1-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -5395,7 +5394,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s7-9
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -5424,7 +5423,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s7-8
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -5453,7 +5452,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s7-7
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -5477,7 +5476,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s7-6
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -5506,7 +5505,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s7-5
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -5535,7 +5534,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s7-4
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -5564,7 +5563,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s7-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -5593,7 +5592,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s7-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -5622,7 +5621,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s7-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -5651,7 +5650,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s6-10
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -5680,7 +5679,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s6-9
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -5704,7 +5703,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s6-8
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -5728,7 +5727,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s6-7
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -5757,7 +5756,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s5-6
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -5786,7 +5785,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s5-5
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -5810,7 +5809,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s5-4
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -5839,7 +5838,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s5-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -5863,7 +5862,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s5-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -5887,7 +5886,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s5-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -5916,7 +5915,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s4-9
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -6006,7 +6005,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-floorplan-failure-4s4-8
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -6091,7 +6090,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-floorplan-failure-4s4-7
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -6181,7 +6180,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-floorplan-failure-4s4-6
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -6236,7 +6235,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-floorplan-failure-4s4-5
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -6311,7 +6310,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-floorplan-failure-4s4-4
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -6381,7 +6380,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-floorplan-failure-4s4-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -6486,7 +6485,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-floorplan-failure-4s4-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -6561,7 +6560,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-floorplan-failure-4s4-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -6636,7 +6635,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-floorplan-failure-4s3-20
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -6751,7 +6750,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s3-19
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -6866,7 +6865,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s3-18
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -6996,7 +6995,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s3-17
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -7086,7 +7085,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s3-16
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -7181,7 +7180,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s3-15
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -7271,7 +7270,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s3-14
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -7361,7 +7360,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s3-13
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -7436,7 +7435,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s3-12
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -7521,7 +7520,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s3-11
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -7606,7 +7605,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s3-10
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -7696,7 +7695,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s3-9
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -7801,7 +7800,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s3-8
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -7876,7 +7875,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s3-7
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -7951,7 +7950,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s3-6
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -8071,7 +8070,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s3-5
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -8171,7 +8170,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s3-4
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -8241,7 +8240,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s3-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -8356,7 +8355,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s3-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -8481,7 +8480,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s3-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -8581,7 +8580,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s2-40
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -8676,7 +8675,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-floorplan-failure-4s2-39
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -8761,7 +8760,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-floorplan-failure-4s2-38
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -8851,7 +8850,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-floorplan-failure-4s2-37
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -8956,7 +8955,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-floorplan-failure-4s2-36
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -9051,7 +9050,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-floorplan-failure-4s2-35
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -9161,7 +9160,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-floorplan-failure-4s2-34
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -9256,7 +9255,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-floorplan-failure-4s2-33
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -9321,7 +9320,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-floorplan-failure-4s2-32
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -9386,7 +9385,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s2-31
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -9436,7 +9435,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s2-30
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -9496,7 +9495,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s2-29
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -9556,7 +9555,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s2-28
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -9606,7 +9605,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s2-27
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -9641,7 +9640,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s2-26
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -9686,7 +9685,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s2-25
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -9731,7 +9730,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s2-24
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -9831,7 +9830,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s2-23
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -9946,7 +9945,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s2-22
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -10031,7 +10030,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s2-21
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -10151,7 +10150,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s2-20
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -10246,7 +10245,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s2-19
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -10331,7 +10330,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s2-18
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -10406,7 +10405,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s2-17
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -10576,7 +10575,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s2-16
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -10661,7 +10660,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s2-15
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -10771,7 +10770,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s2-14
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -10856,7 +10855,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s2-13
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -10921,7 +10920,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s2-12
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses: []
   - laserscan_gaussian_noise_std_deviation: '0.0'
@@ -10946,7 +10945,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=1.000
 - name: small-dataset-maps-floorplan-failure-4s2-11
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -10976,7 +10975,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s2-10
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11006,7 +11005,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s2-9
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11036,7 +11035,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s2-8
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11066,7 +11065,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4s2-7
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11096,7 +11095,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=1.000
 - name: small-dataset-maps-floorplan-failure-4s2-6
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11120,7 +11119,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s2-5
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11144,7 +11143,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s2-4
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11168,7 +11167,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s2-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11192,7 +11191,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s2-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11216,7 +11215,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s2-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11240,7 +11239,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s1-20
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11269,7 +11268,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s1-19
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11298,7 +11297,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s1-18
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11327,7 +11326,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s1-17
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11361,7 +11360,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s1-16
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11390,7 +11389,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s1-15
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11424,7 +11423,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s1-14
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11448,7 +11447,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s1-13
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11472,7 +11471,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s1-12
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11496,7 +11495,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s1-11
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11520,7 +11519,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s1-10
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11544,7 +11543,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s1-9
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11568,7 +11567,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s1-8
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11597,7 +11596,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s1-7
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11621,7 +11620,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s1-6
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11645,7 +11644,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s1-5
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11669,7 +11668,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s1-4
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11693,7 +11692,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s1-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11717,7 +11716,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s1-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11746,7 +11745,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4s1-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11775,7 +11774,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4f15-6
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11799,7 +11798,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4f15-5
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11828,7 +11827,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4f15-4
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11852,7 +11851,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4f15-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11881,7 +11880,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4f15-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11905,7 +11904,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4f15-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11929,7 +11928,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4f14-4
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -11959,7 +11958,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-floorplan-failure-4f14-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -12009,7 +12008,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-floorplan-failure-4f14-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -12044,7 +12043,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-floorplan-failure-4f14-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -12079,7 +12078,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-floorplan-failure-4f13-6
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -12103,7 +12102,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4f13-5
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -12137,7 +12136,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4f13-4
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -12161,7 +12160,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4f13-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -12190,7 +12189,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4f13-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -12219,7 +12218,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4f13-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -12248,7 +12247,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4f12-6
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -12277,7 +12276,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4f12-5
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -12301,7 +12300,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4f12-4
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -12320,7 +12319,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4f12-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -12349,7 +12348,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4f12-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -12378,7 +12377,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4f12-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -12402,7 +12401,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4f11-4
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -12467,7 +12466,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4f11-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -12532,7 +12531,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4f11-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -12597,7 +12596,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4f11-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -12662,7 +12661,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4f10-4
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -12752,7 +12751,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4f10-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -12872,7 +12871,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4f10-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -13007,7 +13006,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4f10-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -13087,7 +13086,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4f9-4
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -13182,7 +13181,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4f9-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -13262,7 +13261,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4f9-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -13327,7 +13326,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4f8-6
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -13357,7 +13356,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4f9-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -13407,7 +13406,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4f8-5
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -13437,7 +13436,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4f8-4
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -13467,7 +13466,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.580
 - name: small-dataset-maps-floorplan-failure-4f8-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -13502,7 +13501,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.560
 - name: small-dataset-maps-floorplan-failure-4f8-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -13537,7 +13536,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4f8-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -13572,7 +13571,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4f7-4
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -13622,7 +13621,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4f7-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -13652,7 +13651,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=1.700, width:=1.700, height:=1.000
 - name: small-dataset-maps-floorplan-failure-4f7-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -13682,7 +13681,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=1.300, width:=1.300, height:=1.000
 - name: small-dataset-maps-floorplan-failure-4f7-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -13712,7 +13711,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=1.500, width:=1.500, height:=1.000
 - name: small-dataset-maps-floorplan-failure-4f6-4
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -13777,7 +13776,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4f6-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -13852,7 +13851,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4f6-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -13876,7 +13875,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4f6-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -13905,7 +13904,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4f5-6
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -13955,7 +13954,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.580
 - name: small-dataset-maps-floorplan-failure-4f5-5
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -14000,7 +13999,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.580
 - name: small-dataset-maps-floorplan-failure-4f5-4
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -14050,7 +14049,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.560
 - name: small-dataset-maps-floorplan-failure-4f5-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -14100,7 +14099,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.560
 - name: small-dataset-maps-floorplan-failure-4f5-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -14150,7 +14149,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.540
 - name: small-dataset-maps-floorplan-failure-4f5-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -14205,7 +14204,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.540
 - name: small-dataset-maps-floorplan-failure-4f4-9
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -14245,7 +14244,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4f4-8
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -14280,7 +14279,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4f4-7
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -14320,7 +14319,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4f4-6
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -14360,7 +14359,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4f4-5
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -14395,7 +14394,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4f4-4
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -14430,7 +14429,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=1.000
 - name: small-dataset-maps-floorplan-failure-4f4-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -14470,7 +14469,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-floorplan-failure-4f4-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -14510,7 +14509,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=1.000
 - name: small-dataset-maps-floorplan-failure-4f4-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -14545,7 +14544,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=1.000
 - name: small-dataset-maps-floorplan-failure-4f3-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -14569,7 +14568,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4f3-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -14593,7 +14592,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4f3-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -14617,7 +14616,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4f2-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -14641,7 +14640,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4f2-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -14665,7 +14664,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4f2-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -14689,7 +14688,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4f1-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -14723,7 +14722,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4f1-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -14757,7 +14756,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-floorplan-failure-4f1-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -14791,7 +14790,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-room-size-less-50-3s3-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -14815,7 +14814,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-room-size-less-50-3s3-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -14844,7 +14843,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-room-size-less-50-3s3-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -14873,7 +14872,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-room-size-less-50-3s2-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -14958,7 +14957,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-room-size-less-50-3s2-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -15028,7 +15027,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-room-size-less-50-3s2-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -15098,7 +15097,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-room-size-less-50-3s1-6
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -15178,7 +15177,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-room-size-less-50-3s1-5
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -15258,7 +15257,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-room-size-less-50-3s1-4
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -15368,7 +15367,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-room-size-less-50-3s1-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -15428,7 +15427,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-room-size-less-50-3s1-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -15483,7 +15482,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-room-size-less-50-3s1-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -15553,7 +15552,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-room-size-less-50-3f1-8
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -15598,7 +15597,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-room-size-less-50-3f1-7
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -15638,7 +15637,7 @@ configuration:
           z: 0.5
       xacro_arguments: length:=0.500, width:=0.500, height:=0.500
 - name: small-dataset-maps-room-size-less-50-3f1-6
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -15662,7 +15661,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-room-size-less-50-3f1-5
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -15686,7 +15685,7 @@ configuration:
         x: 0.0
         y: 0.0
 - name: small-dataset-maps-room-size-less-50-3f1-4
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -15756,7 +15755,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-room-size-less-50-3f1-3
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -15806,7 +15805,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-room-size-less-50-3f1-2
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -15891,7 +15890,7 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 - name: small-dataset-maps-room-size-less-50-3f1-1
-  scenario_file: scenario.osc
+
   parameters:
   - goal_poses:
     - orientation:
@@ -15941,6 +15940,7 @@ execution:
     resources:
       cpu: 9
   runs: 3
+  scenario_file: scenario.osc
   test_files_filter:
   - '**/files/*'
   - '**/small_dataset_maps/*.stl'
