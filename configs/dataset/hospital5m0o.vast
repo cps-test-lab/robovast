@@ -3,7 +3,7 @@ configuration:
 - name: hospital5m0o
   variations:
   - PathVariationRasterized:
-      map_file: /home/swiest/robovast/configs/dataset/maps/hospital/maps/hospital.yaml
+      map_file: maps/hospital/maps/hospital.yaml
       raster_size: 4.0
       path_length: 5
       path_length_tolerance: 2

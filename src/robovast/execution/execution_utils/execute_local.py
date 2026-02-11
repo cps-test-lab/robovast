@@ -81,13 +81,13 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
     # Generate and filter configs
     logger.debug("Generating scenario variations")
     temp_dir = tempfile.TemporaryDirectory(prefix="robovast_execution_")
-    configs, _ = generate_scenario_variations(
+    run_data, _ = generate_scenario_variations(
         variation_file=config_path,
         progress_update_callback=None,
         output_dir=temp_dir.name
     )
 
-    if not configs:
+    if not run_data["configs"]:
         logger.error("No configs found in vast-file")
         feedback_callback("Error: No configs found in vast-file.", file=sys.stderr)
         sys.exit(1)
@@ -95,7 +95,7 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
     # Filter to specific config if requested
     if config:
         found_config = None
-        for cfg in configs:
+        for cfg in run_data["configs"]:
             if cfg['name'] == config:
                 found_config = cfg
                 break
@@ -103,13 +103,13 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
         if not found_config:
             feedback_callback(f"Error: Config '{config}' not found in config.", file=sys.stderr)
             feedback_callback("Available configs:")
-            for cfg in configs:
+            for cfg in run_data["configs"]:
                 feedback_callback(f"  - {cfg['name']}")
             sys.exit(1)
 
         configs = [found_config]
 
-    logger.debug(f"Preparing {len(configs)} configs from {config_path}...")
+    logger.debug(f"Preparing {len(run_data['configs'])} configs from {config_path}...")
     logger.debug(f"Output directory: {output_dir}")
 
     # Create temp directory for run() or use output_dir for prepare_run()
@@ -128,7 +128,7 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
         config_dir = output_dir
 
     try:
-        prepare_run_configs("local", configs, config_dir)
+        prepare_run_configs("local", run_data, config_dir)
         config_path_result = os.path.join(config_dir, "config", "local")
         logger.debug(f"Config path: {config_path_result}")
     except Exception as e:  # pylint: disable=broad-except
@@ -139,7 +139,7 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
 
     docker_configs = []
     for run_number in range(runs):
-        for config_entry in configs:
+        for config_entry in run_data["configs"]:
             docker_configs.append((docker_image, os.path.abspath(os.path.join(
                 config_path_result, config_entry["name"])), config_entry['name'], run_number, pre_command, post_command))
 

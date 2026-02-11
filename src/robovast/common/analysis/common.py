@@ -91,7 +91,7 @@ def read_output_files(data_dir: str, reader_func: Callable[[Path], pd.DataFrame]
                 df = reader_func(test_dir)
             else:
                 df = pd.DataFrame()
-            scenario_config_path = test_dir.parent / "_config" / "scenario.config"
+            scenario_config_path = test_dir.parent / "scenario.config"
             config_parameters = {}
             try:
                 with open(scenario_config_path, 'r') as f:
