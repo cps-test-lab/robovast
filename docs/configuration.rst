@@ -59,21 +59,6 @@ A unique identifier for the scenario. This name will be used as the directory na
    configuration:
    - name: test-scenario-1
 
-scenario_file
-"""""""""""""
-
-**Type:** String (file path)
-
-**Required:** Yes
-
-Path to the OpenSCENARIO 2 scenario file (``.osc``), relative to the ``.vast`` configuration file.
-
-.. code-block:: yaml
-
-   configuration:
-   - name: test
-     scenario_file: scenario.osc
-
 parameters
 """"""""""
 
@@ -89,7 +74,6 @@ This is useful when you want to define a single configuration with specific valu
 
    configuration:
    - name: test-fixed
-     scenario_file: scenario.osc
      parameters:
      - growth_rate: 0.07
      - initial_population: 123
@@ -113,7 +97,6 @@ Multiple variations are combined using Cartesian product to generate all possibl
 
    configuration:
    - name: test-variations
-     scenario_file: scenario.osc
      variations:
      - ParameterVariationList:
          name: speed
@@ -166,6 +149,20 @@ Number of times to execute each test configuration. Multiple runs allow for stat
 
    execution:
      runs: 20
+
+scenario_file
+^^^^^^^^^^^^^
+
+**Type:** String (file path)
+
+**Required:** Yes
+
+Path to the OpenSCENARIO 2 scenario file (``.osc``), relative to the ``.vast`` configuration file. This defines the scenario to execute for all configurations.
+
+.. code-block:: yaml
+
+   execution:
+     scenario_file: scenario.osc
 
 run_as_user
 ^^^^^^^^^^^

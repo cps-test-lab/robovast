@@ -1,7 +1,6 @@
 version: 1
 configuration:
 - name: hospital5m0o
-  scenario_file: scenario.osc
   variations:
   - PathVariationRasterized:
       map_file: /home/swiest/robovast/configs/dataset/maps/hospital/maps/hospital.yaml
@@ -31,6 +30,7 @@ execution:
     resources:
       cpu: 6
   runs: 1
+  scenario_file: scenario.osc
   test_files_filter:
   - "**/files/*"
 analysis:

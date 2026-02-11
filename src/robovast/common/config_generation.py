@@ -229,8 +229,10 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
 
     configs = []
     variation_gui_classes = {}
+    # Get scenario_file from execution section (preferred) or fall back to configuration section
+    execution_scenario_file_name = parameters.get('execution', {}).get('scenario_file')
     for scenario in scenarios:
-        scenario_file_name = scenario.get('scenario_file')
+        scenario_file_name = execution_scenario_file_name
         scenario_file = os.path.join(os.path.dirname(variation_file), scenario_file_name) if scenario_file_name else None
 
         if output_dir is None:

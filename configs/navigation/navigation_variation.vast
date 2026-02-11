@@ -1,7 +1,6 @@
 version: 1
 configuration:
 - name: navigation
-  scenario_file: scenario.osc
   variations:
   - FloorplanVariation:
       name:
@@ -41,6 +40,7 @@ execution:
     resources:
       cpu: 8
   runs: 10
+  scenario_file: scenario.osc
   test_files_filter:
   - "**/files/*"
 analysis:
