@@ -15,16 +15,18 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import datetime
+import logging
 import os
 import shutil
 from importlib.resources import files
-import logging
 from pprint import pformat
+
 import yaml
 
 from .common import convert_dataclasses_to_dict, get_scenario_parameters
 
 logger = logging.getLogger(__name__)
+
 
 def get_run_id():
     return f"run-{datetime.datetime.now().strftime('%Y-%m-%d-%H%M%S')}"
