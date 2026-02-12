@@ -304,8 +304,6 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
             current_configs = result
 
         configs.extend(current_configs)
-    if configs:
-        save_scenario_configs_file(configs, os.path.join(output_dir, 'scenario.configs'))
 
     return {
         "vast": variation_file,

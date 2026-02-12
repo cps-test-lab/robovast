@@ -195,7 +195,6 @@ The resulting folder structure looks like this:
     |   |   ├── <test_number>         <-- Each run of a configuration is stored in a separate folder. It contains all input- and output-files of a single test run
     |   |   |   ├── logs             <-- Logs folder (e.g. for ROS_LOG_DIR)
     |   |   |   |   ├── system.log   <-- The complete system log
-    |   |   |   ├── run.yaml         <-- Details about the run (e.g. RUN_ID)
     |   |   |   ├── test.xml         <-- Scenario result, in junitxml format
     |   |   |   ├── <test-specifics> <-- Any test-specific files, stored during the test run within /out (e.g. rosbag)
 

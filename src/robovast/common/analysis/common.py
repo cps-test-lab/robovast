@@ -60,7 +60,7 @@ def read_output_files(data_dir: str, reader_func: Callable[[Path], pd.DataFrame]
         pd.DataFrame: Combined DataFrame containing all test data, with additional columns for test, config, and scenario parameters.
 
     Raises:
-        ValueError: If data_dir does not exist, no run.yaml files are found, or no valid test data could be read.
+        ValueError: If data_dir does not exist, no test.xml files are found, or no valid test data could be read.
     """
     data_path = Path(data_dir)
 
@@ -69,20 +69,20 @@ def read_output_files(data_dir: str, reader_func: Callable[[Path], pd.DataFrame]
 
     all_dataframes = []
 
-    # Find all run.yaml files in subdirectories
-    run_yaml_files = list(data_path.rglob("run.yaml"))
+    # Find all test.xml files in subdirectories
+    test_xml_files = list(data_path.rglob("test.xml"))
 
-    if not run_yaml_files:
-        raise ValueError(f"No run.yaml files found in subdirectories of {data_dir}")
+    if not test_xml_files:
+        raise ValueError(f"No test.xml files found in subdirectories of {data_dir}")
 
     if debug:
-        print(f"Found {len(run_yaml_files)} test directories")
+        print(f"Found {len(test_xml_files)} test directories")
 
     category_names = set({'test', 'config'})
-    for run_yaml in run_yaml_files:
+    for test_xml in test_xml_files:
         if debug:
-            print(f"Reading data from: {run_yaml}")
-        test_dir = run_yaml.parent
+            print(f"Reading data from: {test_xml}")
+        test_dir = test_xml.parent
         test_name = test_dir.name
 
         try:
@@ -165,24 +165,24 @@ def for_each_test(data_dir: str, func: Callable[[Path], None], debug=False) -> N
         debug (bool, optional): If True, prints debug information. Defaults to False.
 
     Raises:
-        ValueError: If data_dir does not exist or no run.yaml files are found.
+        ValueError: If data_dir does not exist or no test.xml files are found.
     """
     data_path = Path(data_dir)
 
     if not data_path.exists():
         raise ValueError(f"Data directory does not exist: {data_dir}")
 
-    # Find all run.yaml files in subdirectories
-    run_yaml_files = list(data_path.rglob("run.yaml"))
+    # Find all test.xml files in subdirectories
+    test_xml_files = list(data_path.rglob("test.xml"))
 
-    if not run_yaml_files:
-        raise ValueError(f"No run.yaml files found in subdirectories of {data_dir}")
+    if not test_xml_files:
+        raise ValueError(f"No test.xml files found in subdirectories of {data_dir}")
 
     if debug:
-        print(f"Found {len(run_yaml_files)} test directories")
+        print(f"Found {len(test_xml_files)} test directories")
 
-    for run_yaml in run_yaml_files:
-        test_dir = run_yaml.parent
+    for test_xml in test_xml_files:
+        test_dir = test_xml.parent
         if debug:
             print(f"Applying function to: {test_dir}")
         try:

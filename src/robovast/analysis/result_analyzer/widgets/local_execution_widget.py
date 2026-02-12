@@ -246,7 +246,7 @@ class LocalExecutionWidget(QWidget):
             return
 
         # Check if this is a valid test directory
-        scenario_file = self.current_test_dir / "run.yaml"
+        scenario_file = self.current_test_dir / "test.xml"
         if not scenario_file.exists():
             self.execute_btn.setEnabled(False)
             return

@@ -27,7 +27,7 @@ class RunType(Enum):
 
 
 def clean_test_name(test_file_path):
-    run_file = test_file_path / "run.yaml"
+    run_file = test_file_path / "test.xml"
 
     if not run_file.exists():
         print(f"Run file not found: {run_file}")

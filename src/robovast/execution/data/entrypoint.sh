@@ -63,12 +63,6 @@ fi
 
 log "Entrypoint script initialized"
 
-# Write run information
-echo "RUN_ID: $RUN_ID" > ${OUTPUT_DIR}/run.yaml
-echo "RUN_NUM: $RUN_NUM" >> ${OUTPUT_DIR}/run.yaml
-echo "SCENARIO_ID: $SCENARIO_ID" >> ${OUTPUT_DIR}/run.yaml
-echo "SCENARIO_CONFIG: $SCENARIO_CONFIG" >> ${OUTPUT_DIR}/run.yaml
-
 if [ "$#" -ne 0 ]; then
     log "Executing custom command: $@"
     exec "$@"

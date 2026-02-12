@@ -305,7 +305,7 @@ def generate_docker_run_script(runs, run_data, config_path_result, pre_command, 
     script += f'echo ""\n\n'
     
     # Create execution.yaml with ISO formatted timestamp
-    script += generate_execution_yaml_script()
+    script += generate_execution_yaml_script(runs)
 
     # Generate docker run commands for each task
     for idx, task in enumerate(execution_tasks, 1):

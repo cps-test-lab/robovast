@@ -61,10 +61,10 @@ def prepare_run_configs(out_dir, run_data):
     os.makedirs(run_config_dir, exist_ok=True)
 
     # Save scenario variations as YAML in _config subdirectory
-    scenario_variations_path = os.path.join(run_config_dir, "scenario_variations.yaml")
+    scenario_variations_path = os.path.join(run_config_dir, "configurations.yaml")
     with open(scenario_variations_path, 'w') as f:
-        yaml.dump(run_data, f, default_flow_style=False, sort_keys=False)
-    logger.debug(f"Saved scenario variations to {scenario_variations_path}")
+        yaml.dump(convert_dataclasses_to_dict(run_data), f, default_flow_style=False, sort_keys=False)
+    logger.debug(f"Saved configurations to {scenario_variations_path}")
 
     vast_file_path = os.path.dirname(run_data["vast"])
     # copy scenario_file
@@ -114,7 +114,7 @@ def prepare_run_configs(out_dir, run_data):
                     yaml.dump(converted_config_data, f, default_flow_style=False, sort_keys=False)
 
 
-def generate_execution_yaml_script(output_dir_var="${RESULTS_DIR}"):
+def generate_execution_yaml_script(runs, output_dir_var="${RESULTS_DIR}"):
     """Generate shell script code to create execution.yaml with ISO formatted timestamp.
     
     Args:
@@ -127,19 +127,24 @@ def generate_execution_yaml_script(output_dir_var="${RESULTS_DIR}"):
     script += f'EXECUTION_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")\n'
     script += f'cat > "{output_dir_var}/execution.yaml" << EOF\n'
     script += 'execution_time: ${EXECUTION_TIME}\n'
+    script += f'runs: {runs}\n'
+    script += f'execution_type: local\n'
     script += 'EOF\n'
     script += f'echo ""\n\n'
     return script
 
 
-def create_execution_yaml(output_dir):
+def create_execution_yaml(runs, output_dir):
     """Create execution.yaml file with ISO formatted timestamp.
     
     Args:
+        runs: Number of runs to include in execution.yaml
         output_dir: Directory where execution.yaml will be created
     """
     execution_yaml_path = os.path.join(output_dir, "execution.yaml")
     execution_time = datetime.datetime.now(datetime.timezone.utc).isoformat() + 'Z'
     with open(execution_yaml_path, 'w') as f:
         f.write(f"execution_time: {execution_time}\n")
+        f.write(f"runs: {runs}\n")
+        f.write(f"execution_type: cluster\n")
     logger.debug(f"Created execution.yaml with timestamp: {execution_time}")
