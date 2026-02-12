@@ -43,6 +43,10 @@ jobs:
         run: |
           bash .github/test_commands.sh
 
+      - name: Diagnose plugin registration
+        run: |
+          poetry run .github/diagnose_plugins.py
+
       - name: Run Example tests
         run: |
           poetry run .github/test_growth_sim.py

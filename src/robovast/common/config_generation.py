@@ -185,14 +185,23 @@ def _get_variation_classes(scenario_config):
     try:
         eps = entry_points()
         variation_eps = eps.select(group='robovast.variation_types')
+        
+        ep_list = list(variation_eps)
+        if not ep_list:
+            logger.warning("No variation types found in entry points. This usually means the package is not properly installed.")
+            logger.warning("Try running: poetry install")
+            print("WARNING: No variation type plugins found! Run 'poetry install' to register plugins.")
 
-        for ep in variation_eps:
+        for ep in ep_list:
             try:
                 variation_class = ep.load()
                 available_classes[ep.name] = variation_class
+                logger.debug(f"Loaded variation type: {ep.name}")
             except Exception as e:
+                logger.warning(f"Failed to load variation type '{ep.name}': {e}")
                 print(f"Warning: Failed to load variation type '{ep.name}': {e}")
     except Exception as e:
+        logger.error(f"Failed to load variation types from entry points: {e}")
         print(f"Warning: Failed to load variation types from entry points: {e}")
 
     # Extract variation class names from the list
@@ -204,7 +213,14 @@ def _get_variation_classes(scenario_config):
                 if class_name in available_classes:
                     variation_classes.append((available_classes[class_name], item[class_name]))
                 else:
-                    raise ValueError(f"Unknown variation class '{class_name}' found in variation file")
+                    error_msg = f"Unknown variation class '{class_name}' found in variation file.\n"
+                    if not available_classes:
+                        error_msg += "No variation plugins are registered. This usually means the robovast package is not properly installed.\n"
+                        error_msg += "To fix this, run: poetry install\n"
+                        error_msg += "If you're in a CI environment, ensure 'poetry install' (without --no-root) has been executed."
+                    else:
+                        error_msg += f"Available variation types: {', '.join(available_classes.keys())}"
+                    raise ValueError(error_msg)
 
     return variation_classes
 
