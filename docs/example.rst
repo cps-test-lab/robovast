@@ -158,10 +158,11 @@ The resulting folder structure looks like this:
 
     growth_sim_results/
     ├── run_<timestamp>/             <-- Each cluster execution creates a new folder 
-    |   ├── <test-name>              <-- Each configuration is stored within a separate folder (example: config42)
-    |   |   ├── _config/             <-- Config files are stored here
-    |   |   |   ├── scenario.osc     <-- The scenario used within this test
-    |   |   |   ├── scenario.config  <-- The parameter set used within this test
+    |   ├── _config/                 <-- Test files are stored here (as defined by test_files_filter in the .vast configuration)
+    |   ├── scenario.osc             <-- The scenario used during this run
+    |   ├── <config-name>            <-- Each configuration is stored within a separate folder (example: config42)
+    |   |   ├── scenario.config      <-- The parameter set used within this test
+    |   |   ├── _config/             <-- Generated config-specific files are stored here (e.g. generated maps)
     |   |   ├── <run_number>         <-- Each run of a configuration is stored in a separate folder. It contains all input- and output-files of a single test run
     |   |   |   ├── logs             <-- Logs folder (e.g. for ROS_LOG_DIR)
     |   |   |   |   ├── system.log   <-- The complete system log
