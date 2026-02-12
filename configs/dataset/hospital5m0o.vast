@@ -31,7 +31,7 @@ configuration:
       - 0.05
       - 0.1
 execution:
-  image: freeedlabs/robovast_jazzy:latest
+  image: ghcr.io/cps-test-lab/robovast:latest
   kubernetes:
     resources:
       cpu: 8
