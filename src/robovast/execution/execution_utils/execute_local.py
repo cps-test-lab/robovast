@@ -330,18 +330,18 @@ def generate_docker_run_script(runs, run_data, config_path_result, pre_command, 
         script += '    $GUI_OPTIONS \\\n'
         script += '    --rm \\\n'
         script += f'    --user {uid}:{gid} \\\n'
-        script += f'    -v {test_path}:/out \\\n'
-        script += f'    -v {entrypoint_path}:/entrypoint.sh:ro \\\n'
+        script += f'    -v "{test_path}:/out" \\\n'
+        script += f'    -v "{entrypoint_path}:/entrypoint.sh:ro" \\\n'
 
         # Mount scenario and config files from results directory
-        script += f'    -v ${{RESULTS_DIR}}/scenario.osc:/config/scenario.osc:ro \\\n'
-        script += f'    -v ${{RESULTS_DIR}}/{config_name}/scenario.config:/config/scenario.config:ro \\\n'
+        script += f'    -v "${{RESULTS_DIR}}/scenario.osc:/config/scenario.osc:ro" \\\n'
+        script += f'    -v "${{RESULTS_DIR}}/{config_name}/scenario.config:/config/scenario.config:ro" \\\n'
 
         for run_file in run_files:
-            script += f'    -v ${{RESULTS_DIR}}/_config/{run_file}:/config/{run_file}:ro \\\n'
+            script += f'    -v "${{RESULTS_DIR}}/_config/{run_file}:/config/{run_file}:ro" \\\n'
 
         for config_file in config_files:
-            script += f'    -v ${{RESULTS_DIR}}/{config_name}/{config_file}:/config/{config_file}:ro \\\n'
+            script += f'    -v "${{RESULTS_DIR}}/{config_name}/{config_file}:/config/{config_file}:ro" \\\n'
 
         # Add environment variables
         env_vars = get_execution_env_variables(run_num, config_name)

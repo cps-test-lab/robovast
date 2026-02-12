@@ -60,6 +60,12 @@ def prepare_run_configs(out_dir, run_data):
     run_config_dir = os.path.join(out_dir, "_config")
     os.makedirs(run_config_dir, exist_ok=True)
 
+    # Save scenario variations as YAML in _config subdirectory
+    scenario_variations_path = os.path.join(run_config_dir, "scenario_variations.yaml")
+    with open(scenario_variations_path, 'w') as f:
+        yaml.dump(run_data, f, default_flow_style=False, sort_keys=False)
+    logger.debug(f"Saved scenario variations to {scenario_variations_path}")
+
     vast_file_path = os.path.dirname(run_data["vast"])
     # copy scenario_file
     scenario_file_path = os.path.join(vast_file_path, run_data["scenario_file"])
