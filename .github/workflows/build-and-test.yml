@@ -45,4 +45,4 @@ jobs:
 
       - name: Run Example tests
         run: |
-          .github/test_growth_sim.py
+          poetry run .github/test_growth_sim.py
