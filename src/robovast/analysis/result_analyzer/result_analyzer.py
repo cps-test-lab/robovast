@@ -47,7 +47,7 @@ class TestResultsAnalyzer(QMainWindow):
 
         # Initialize configuration for shared settings
         self.config_file = config_file
-        self.parameters = load_config(config_file, "analysis")
+        self.parameters = load_config(config_file, "analysis", allow_missing=True)
 
         # Initialize variables to None first
         self.local_execution_widget = None

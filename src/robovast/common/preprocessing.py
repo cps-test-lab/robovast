@@ -34,11 +34,8 @@ def get_preprocessing_commands(config_path: str) -> List[str]:
     Returns:
         List of preprocessing commands or empty list if none defined
     """
-    try:
-        analysis_config = load_config(config_path, subsection="analysis")
-        return analysis_config.get("preprocessing", [])
-    except (ValueError, KeyError):
-        return []
+    analysis_config = load_config(config_path, subsection="analysis", allow_missing=True)
+    return analysis_config.get("preprocessing", [])
 
 
 def get_command_files_and_paths(config_path: str, commands: List[str]) -> tuple[List[str], List[List[str]]]:
