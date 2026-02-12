@@ -26,7 +26,7 @@ import yaml
 
 from robovast.common import prepare_run_configs
 from robovast.common.cli import get_project_config
-from robovast.execution.cluster_execution.cluster_execution import JobRunner
+from robovast.execution.cluster_execution.cluster_execution import JobRunner, cleanup_cluster_run
 from robovast.execution.cluster_execution.cluster_setup import (
     delete_server, get_cluster_config, load_cluster_config_name, setup_server)
 from robovast.execution.cluster_execution.download_results import \
@@ -36,7 +36,7 @@ from ..cluster_execution.kubernetes import (check_kubernetes_access,
                                             check_pod_running,
                                             get_kubernetes_client)
 from .execute_local import initialize_local_execution
-
+     
 
 @click.group()
 def execution():
@@ -360,9 +360,7 @@ def run_cleanup():
     
     Usage: vast execution cluster run-cleanup
     """
-    try:
-        from robovast.execution.cluster_execution.cluster_execution import cleanup_cluster_run
-        
+    try:   
         # Get Kubernetes client
         k8s_client = get_kubernetes_client()
         

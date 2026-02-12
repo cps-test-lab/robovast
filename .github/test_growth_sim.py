@@ -8,6 +8,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+import traceback
 
 def run_command(cmd, cwd=None, check=True):
     """Run a command and return the result."""
@@ -105,7 +106,7 @@ def check_postprocessed_file(results_dir):
     return True
 
 
-def test_growth_sim_workflow():
+def test_growth_sim_workflow():  # pylint: disable=too-many-return-statements
     """Test complete growth_sim workflow: init -> execution -> postprocessing."""
     print("\n" + "="*60)
     print("Testing: Complete growth_sim workflow")
@@ -121,42 +122,37 @@ def test_growth_sim_workflow():
     
     print(f"✓ Config file found: {config_path}")
     
-    # Create temporary directory for entire workflow
-    with tempfile.TemporaryDirectory() as temp_dir:
-        temp_path = Path(temp_dir)
+    # vast init creates project in repo root, so we work there instead of temp directory
+    # Save and restore the .robovast_project file if it exists
+    robovast_project = repo_root / '.robovast_project'
+    backup_path = None
+    if robovast_project.exists():
+        backup_path = repo_root / '.robovast_project.backup'
+        shutil.copy(robovast_project, backup_path)
+        print(f"  Backed up existing .robovast_project to {backup_path.name}")
+    
+    try:
+        # Step 1: vast init
+        print("\n--- Step 1: vast init ---")
+        cmd_init = [
+            'poetry', 'run', '--directory', str(repo_root),
+            'vast', 'init', str(config_path)
+        ]
         
-        try:
-            # Step 1: vast init
-            print("\n--- Step 1: vast init ---")
-            cmd_init = [
-                'poetry', 'run', '--directory', str(repo_root),
-                'vast', 'init', str(config_path)
-            ]
-            
-            result = run_command(cmd_init, cwd=temp_path)
-            
-            if result.returncode != 0:
-                print("✗ vast init failed")
-                return False
-            
-            print("✓ vast init executed successfully")
-            
-            # Check that files were created
-            created_files = list(temp_path.iterdir())
-            print(f"  Created files: {[f.name for f in created_files]}")
-            
-            if not created_files:
-                print("✗ No files created by vast init")
-                return False
-            
-            # Check for .robovast_project file (critical for execution step)
-            robovast_project = temp_path / '.robovast_project'
-            if not robovast_project.exists():
-                print("✗ .robovast_project file not found - execution step will fail")
-                print(f"  Files created: {[f.name for f in created_files]}")
-                return False
-            
-            print("✓ .robovast_project file exists - environment is properly initialized")
+        result = run_command(cmd_init, cwd=repo_root)
+        
+        if result.returncode != 0:
+            print("✗ vast init failed")
+            return False
+        
+        print("✓ vast init executed successfully")
+        
+        # Check for .robovast_project file (critical for execution step)
+        if not robovast_project.exists():
+            print("✗ .robovast_project file not found - execution step will fail")
+            return False
+        
+        print("✓ .robovast_project file exists - environment is properly initialized")
             
             # Check for expected files
             expected_items = ['configs', 'growth_sim.vast', '.cache']
@@ -231,7 +227,6 @@ def test_growth_sim_workflow():
             return False
         except Exception as e:
             print(f"✗ Unexpected error: {e}")
-            import traceback
             traceback.print_exc()
             return False
 
@@ -253,7 +248,6 @@ def main():
             results.append((name, result))
         except Exception as e:
             print(f"✗ Test '{name}' raised exception: {e}")
-            import traceback
             traceback.print_exc()
             results.append((name, False))
     

@@ -175,4 +175,3 @@ def list_postprocessing_commands():
     click.echo("        args: [--arg, value]")
     click.echo("\nCommands without parameters can be simple strings.")
     click.echo("Commands with parameters use plugin name as key with parameters as dict.")
-

@@ -120,17 +120,17 @@ def rosbags_tf_to_csv(results_dir: str, config_dir: str, frames: Optional[List[s
     script_path = str(files('robovast.common.data').joinpath('docker_exec.sh'))
     
     # Build command with frame arguments
-    command = [script_path, "rosbags_tf_to_csv.py"]
+    cmd = [script_path, "rosbags_tf_to_csv.py"]
     
     if frames:
         for frame in frames:
-            command.extend(["--frame", frame])
+            cmd.extend(["--frame", frame])
     
-    command.append(results_dir)
+    cmd.append(results_dir)
     
     try:
         result = subprocess.run(
-            command,
+            cmd,
             cwd=os.path.dirname(script_path),
             check=False,
             capture_output=True,
@@ -168,11 +168,11 @@ def rosbags_bt_to_csv(results_dir: str, config_dir: str) -> Tuple[bool, str]:
     # Get docker_exec.sh from package data
     script_path = str(files('robovast.common.data').joinpath('docker_exec.sh'))
     
-    command = [script_path, "rosbags_bt_to_csv.py", results_dir]
+    cmd = [script_path, "rosbags_bt_to_csv.py", results_dir]
     
     try:
         result = subprocess.run(
-            command,
+            cmd,
             cwd=os.path.dirname(script_path),
             check=False,
             capture_output=True,
