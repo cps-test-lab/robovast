@@ -321,18 +321,20 @@ postprocessing
 
 Commands to run for postprocessing test results. These are executed before the analysis GUI is launched and typically convert raw data files into more analysis-friendly formats.
 
-**All postprocessing commands are plugins.** Each command is specified as a dictionary with a ``name`` field for the plugin name and additional fields for parameters.
+**All postprocessing commands are plugins.** Each command is specified either as:
+- A simple string (for commands without parameters)
+- A dictionary with the plugin name as key and parameters as value
 
 .. code-block:: yaml
 
    analysis:
      postprocessing:
-       - name: rosbags_tf_to_csv
-         frames: [base_link, turtlebot4_base_link_gt]
-       - name: rosbags_bt_to_csv
-       - name: command
-         script: ../../../tools/custom_script.sh
-         args: [--arg, value]
+       - rosbags_tf_to_csv:
+           frames: [base_link, turtlebot4_base_link_gt]
+       - rosbags_bt_to_csv
+       - command:
+           script: ../../../tools/custom_script.sh
+           args: [--arg, value]
 
 To list all available plugins and their descriptions:
 

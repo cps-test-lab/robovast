@@ -84,22 +84,25 @@ def execute_postprocessing_plugin(
         return False, f"Plugin '{plugin_name}' execution error: {e}"
 
 
-def validate_postprocessing_command(command: dict, plugins: Dict[str, callable]) -> tuple[bool, str]:
+def validate_postprocessing_command(command: str | dict, plugins: Dict[str, callable]) -> tuple[bool, str]:
     """Validate a postprocessing command.
 
     Args:
-        command: Command dict with 'name' key
+        command: Command as string (simple name) or dict (name as key with parameters)
         plugins: Dictionary of available plugins
 
     Returns:
         Tuple of (is_valid, error_message)
     """
-    if not isinstance(command, dict):
-        return False, f"Postprocessing command must be a dict with 'name' field, got {type(command)}"
-    
-    plugin_name = command.get('name')
-    if not plugin_name:
-        return False, "Postprocessing command missing 'name' field"
+    # Parse command to get plugin name
+    if isinstance(command, str):
+        plugin_name = command
+    elif isinstance(command, dict):
+        if len(command) != 1:
+            return False, f"Postprocessing command dict must have exactly one key (the plugin name), got {len(command)}"
+        plugin_name = list(command.keys())[0]
+    else:
+        return False, f"Postprocessing command must be a string or dict, got {type(command)}"
     
     if plugin_name not in plugins:
         available = ', '.join(sorted(plugins.keys()))
@@ -222,13 +225,26 @@ def run_postprocessing(config_path: str, results_dir: str, output_callback=None)
     success = True
 
     for i, command in enumerate(commands, 1):
-        if not isinstance(command, dict):
-            output(f"[{i}/{len(commands)}] ✗ Invalid command format: must be dict with 'name' field")
+        # Parse command to get plugin name and parameters
+        if isinstance(command, str):
+            plugin_name = command
+            params = {}
+        elif isinstance(command, dict):
+            if len(command) != 1:
+                output(f"[{i}/{len(commands)}] ✗ Invalid command format: dict must have exactly one key")
+                success = False
+                continue
+            plugin_name = list(command.keys())[0]
+            params = command[plugin_name] or {}
+            if not isinstance(params, dict):
+                output(f"[{i}/{len(commands)}] ✗ Invalid command format: parameters must be a dict")
+                success = False
+                continue
+        else:
+            output(f"[{i}/{len(commands)}] ✗ Invalid command format: must be string or dict, got {type(command)}")
             success = False
             continue
         
-        plugin_name = command.get('name')
-        params = {k: v for k, v in command.items() if k != 'name'}
         display_cmd = f"{plugin_name} (params: {params})" if params else plugin_name
         
         plugin_func = plugins[plugin_name]

@@ -15947,15 +15947,15 @@ execution:
   - '**/small_dataset_maps/**/maps/*'
 analysis:
   postprocessing:
-    - name: command
-      script: ../../tools/docker_exec.sh
-      args: [rosbags_to_csv.py]
-    - name: command
-      script: ../../tools/docker_exec.sh
-      args: [rosbags_tf_to_csv.py, --frame, base_link, --frame, nav2_turtlebot4_base_link_gt]
-    - name: command
-      script: ../../tools/docker_exec.sh
-      args: [rosbags_bt_to_csv.py]
+    - command:
+        script: ../../tools/docker_exec.sh
+        args: [rosbags_to_csv.py]
+    - command:
+        script: ../../tools/docker_exec.sh
+        args: [rosbags_tf_to_csv.py, --frame, base_link, --frame, nav2_turtlebot4_base_link_gt]
+    - command:
+        script: ../../tools/docker_exec.sh
+        args: [rosbags_bt_to_csv.py]
   visualization:
   - Analysis:
       single_test: analysis/analysis_single_test.ipynb

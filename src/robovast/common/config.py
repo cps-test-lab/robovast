@@ -68,17 +68,12 @@ class ExecutionConfig(BaseModel):
     test_files_filter: Optional[list[str]] = None
 
 
-class PostprocessingCommandConfig(BaseModel):
-    model_config = ConfigDict(extra='allow')
-    name: str
-
-
 class VisualizationConfig(BaseModel):
     pass
 
 
 class AnalysisConfig(BaseModel):
-    postprocessing: Optional[list[PostprocessingCommandConfig]] = None
+    postprocessing: Optional[list[str | dict[str, Any]]] = None
     visualization: Optional[list[dict[str, Any]]] = None
 
 

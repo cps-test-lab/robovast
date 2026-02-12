@@ -28,12 +28,14 @@ Each function returns a tuple of (success: bool, message: str).
 
 Configuration format:
     postprocessing:
-      - name: plugin_name
-        param1: value1
-        param2: value2
+      - plugin_name:
+          param1: value1
+          param2: value2
+      - simple_plugin_name
 """
 import os
 import subprocess
+from importlib.resources import files
 from typing import List, Optional, Tuple
 
 
@@ -54,11 +56,11 @@ def command(results_dir: str, config_dir: str, script: str, args: Optional[List[
     
     Example usage in .vast config:
         postprocessing:
-          - name: command
-            script: ../../../tools/docker_exec.sh
-            args: [custom_script.py, --arg, value]
-          - name: command
-            script: /absolute/path/to/script.sh
+          - command:
+              script: ../../../tools/docker_exec.sh
+              args: [custom_script.py, --arg, value]
+          - command:
+              script: /absolute/path/to/script.sh
     """
     # Resolve script path if not absolute
     script_path = script
@@ -110,16 +112,12 @@ def rosbags_tf_to_csv(results_dir: str, config_dir: str, frames: Optional[List[s
     
     Example usage in .vast config:
         postprocessing:
-          - name: rosbags_tf_to_csv
-            frames: [base_link, map]
-          - name: rosbags_tf_to_csv  # Extract all frames
+          - rosbags_tf_to_csv:
+              frames: [base_link, map]
+          - rosbags_tf_to_csv  # Extract all frames
     """
-    script_path = "tools/docker_exec.sh"
-    if config_dir:
-        script_path = os.path.join(config_dir, script_path)
-    
-    if not os.path.exists(script_path):
-        return False, f"Script not found: {script_path}"
+    # Get docker_exec.sh from package data
+    script_path = str(files('robovast.common.data').joinpath('docker_exec.sh'))
     
     # Build command with frame arguments
     command = [script_path, "rosbags_tf_to_csv.py"]
@@ -165,14 +163,10 @@ def rosbags_bt_to_csv(results_dir: str, config_dir: str) -> Tuple[bool, str]:
     
     Example usage in .vast config:
         postprocessing:
-          - name: rosbags_bt_to_csv
+          - rosbags_bt_to_csv
     """
-    script_path = "tools/docker_exec.sh"
-    if config_dir:
-        script_path = os.path.join(config_dir, script_path)
-    
-    if not os.path.exists(script_path):
-        return False, f"Script not found: {script_path}"
+    # Get docker_exec.sh from package data
+    script_path = str(files('robovast.common.data').joinpath('docker_exec.sh'))
     
     command = [script_path, "rosbags_bt_to_csv.py", results_dir]
     

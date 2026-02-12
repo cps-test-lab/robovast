@@ -31,9 +31,9 @@ execution:
   - "**/files/*"
 analysis:
   postprocessing:
-    - name: rosbags_tf_to_csv
-      frames: [base_link, turtlebot4_base_link_gt]
-    - name: rosbags_bt_to_csv
+    - rosbags_tf_to_csv:
+        frames: [base_link, turtlebot4_base_link_gt]
+    - rosbags_bt_to_csv
   visualization:
   - Analysis:
       single_test: analysis/analysis_single_test.ipynb

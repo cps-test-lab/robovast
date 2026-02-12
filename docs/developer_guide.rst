@@ -248,13 +248,13 @@ Postprocessing plugins are Python functions that process test result directories
 
     analysis:
       postprocessing:
-        - name: my_postprocessing_command
-          custom_param: value
-        - name: rosbags_tf_to_csv
-          frames: [base_link, map]
-        - name: command
-          script: tools/script.sh
-          args: [arg1, arg2]
+        - my_postprocessing_command:
+            custom_param: value
+        - rosbags_tf_to_csv:
+            frames: [base_link, map]
+        - command:
+            script: tools/script.sh
+            args: [arg1, arg2]
 
 
 Add Cluster Config Plugin
