@@ -60,7 +60,6 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
     pre_command = execution_parameters.get("pre_command")
     post_command = execution_parameters.get("post_command")
     results_dir = project_config.results_dir
-    run_as_user = execution_parameters.get("run_as_user")
 
     # Use execution_parameters value if runs is not provided
     if runs is None:
@@ -72,12 +71,6 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
             runs = execution_parameters["runs"]
 
     logger.debug(f"Using Docker image: {docker_image}")
-
-    # Check if run_as_user differs from local user
-    host_uid = os.getuid()
-    if run_as_user is not None and run_as_user != host_uid:
-        logger.info(f"Note: config specifies run_as_user={run_as_user}, but local execution will use host user UID={
-                    host_uid} to ensure proper file permissions on bind mounts")
 
     # Generate and filter configs
     logger.debug("Generating scenario variations")
@@ -137,6 +130,14 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
         sys.exit(1)
 
     logger.debug(f"Configuration files prepared in: {config_dir}")
+    
+    # Check if run_as_user differs from local user
+    execution_params = run_data.get("execution", {})
+    run_as_user = execution_params.get("run_as_user")
+    host_uid = os.getuid()
+    if run_as_user is not None and run_as_user != host_uid:
+        logger.info(f"Note: config specifies run_as_user={run_as_user}, but local execution will use host user UID={
+                    host_uid} to ensure proper file permissions on bind mounts")
 
     generate_docker_run_script(runs, run_data, config_path_result, pre_command, post_command,
                                docker_image, results_dir, os.path.join(config_dir, "run.sh"))
@@ -305,7 +306,7 @@ def generate_docker_run_script(runs, run_data, config_path_result, pre_command, 
     script += f'echo ""\n\n'
     
     # Create execution.yaml with ISO formatted timestamp
-    script += generate_execution_yaml_script(runs)
+    script += generate_execution_yaml_script(runs, execution_params=run_data.get("execution", {}))
 
     # Generate docker run commands for each task
     for idx, task in enumerate(execution_tasks, 1):
@@ -344,7 +345,7 @@ def generate_docker_run_script(runs, run_data, config_path_result, pre_command, 
             script += f'    -v "${{RESULTS_DIR}}/{config_name}/{config_file}:/config/{config_file}:ro" \\\n'
 
         # Add environment variables (includes both execution defaults and custom env vars)
-        env_vars = get_execution_env_variables(run_num, config_name, run_data.get('env'))
+        env_vars = get_execution_env_variables(run_num, config_name, run_data.get('execution', {}).get('env'))
         for key, value in env_vars.items():
             script += f'    -e {key}={value} \\\n'
 

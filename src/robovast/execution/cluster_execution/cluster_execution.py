@@ -102,14 +102,7 @@ class JobRunner:
         self.pre_command = parameters.get("pre_command")
         self.post_command = parameters.get("post_command")
 
-        self.run_as_user = parameters.get("run_as_user", 1000)
-
-        self.manifest = self.get_job_manifest(parameters["image"],
-                                              parameters["kubernetes"]["resources"],
-                                              [],  # env vars handled per-job in create_job_manifest_for_scenario
-                                              self.run_as_user)
-
-        # Generate configs with filtered files
+        # Generate configs with filtered files first, so we have access to execution params
         self.config_output_file_dir = tempfile.TemporaryDirectory(prefix="robovast_execution_")
         self.run_data, _ = generate_scenario_variations(
             config_path,
@@ -118,6 +111,16 @@ class JobRunner:
             output_dir=self.config_output_file_dir.name,
         )
         self.configs = self.run_data["configs"]
+        
+        # Get execution parameters from run_data
+        execution_params = self.run_data.get("execution", {})
+        self.run_as_user = execution_params.get("run_as_user", 1000)
+
+        # Create manifest with env vars from config
+        self.manifest = self.get_job_manifest(parameters["image"],
+                                              parameters["kubernetes"]["resources"],
+                                              execution_params.get("env", []),
+                                              self.run_as_user)
 
         if not self.configs:
             raise ValueError("No scenario configs generated.")
@@ -193,7 +196,7 @@ class JobRunner:
             if 'env' not in containers[0]:
                 containers[0]['env'] = []
 
-            env_vars = get_execution_env_variables(run_number, scenario_key, self.run_data.get('env'))
+            env_vars = get_execution_env_variables(run_number, scenario_key, self.run_data.get('execution', {}).get('env'))
             for name, val in env_vars.items():
                 containers[0]['env'].append({
                     'name': str(name),
@@ -580,8 +583,9 @@ class JobRunner:
             out_dir = os.path.join(temp_dir, "out_template", self.run_id)
             prepare_run_configs(out_dir, self.run_data)
 
-            # Create execution.yaml with ISO formatted timestamp
-            create_execution_yaml(out_dir)
+            # Create execution.yaml
+            create_execution_yaml(self.num_runs, out_dir, 
+                                execution_params=self.run_data.get("execution", {}))
 
             copy_config_to_cluster(os.path.join(temp_dir, "out_template"), self.run_id)
 

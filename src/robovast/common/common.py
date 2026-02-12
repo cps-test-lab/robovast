@@ -114,29 +114,6 @@ def convert_dataclasses_to_dict(obj):  # pylint: disable=too-many-return-stateme
         return obj
 
 
-def save_scenario_configs_file(configs, output_file):
-    # Ensure the directory exists
-    os.makedirs(os.path.dirname(output_file), exist_ok=True)
-
-    # Create the complete data structure with configs and settings
-    data_to_save = []
-
-    for config_data in configs:
-        # Convert dataclasses to dicts automatically
-        converted_config = convert_dataclasses_to_dict(config_data)
-        converted_config.pop('path', None)
-        data_to_save.append(converted_config)
-
-    # Write settings at the top, then configurations
-    with open(output_file, "w") as f:
-        # Write each config as a separate YAML document
-        for idx, config_dict in enumerate(data_to_save):
-            yaml.dump(config_dict, f, default_flow_style=False)
-            # separate documents with '---'
-            if idx < len(data_to_save) - 1:
-                f.write("---\n")
-
-
 def filter_configs(configs):
     """Parse YAML config file and filter out keys starting with underscore.
 

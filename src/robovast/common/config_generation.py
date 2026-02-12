@@ -22,8 +22,7 @@ import re
 import tempfile
 from importlib.metadata import entry_points
 
-from .common import (get_scenario_parameters, load_config,
-                     save_scenario_configs_file)
+from .common import (get_scenario_parameters, load_config)
 
 logger = logging.getLogger(__name__)
 
@@ -305,13 +304,17 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
 
         configs.extend(current_configs)
 
-    # Extract env from execution section
-    execution_env = parameters.get('execution', {}).get('env')
-    print(f"Extracted execution env: {execution_env}")
+    # Extract execution parameters from execution section
+    execution_section = parameters.get('execution', {})
+    execution_params = {
+        "env": execution_section.get('env'),
+        "run_as_user": execution_section.get('run_as_user')
+    }
+    
     return {
         "vast": variation_file,
         "scenario_file": scenario_file,
         "configs": configs,
         "_test_files": test_files,
-        "env": execution_env
+        "execution": execution_params
     }, variation_gui_classes
