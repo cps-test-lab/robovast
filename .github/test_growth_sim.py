@@ -153,30 +153,22 @@ def test_growth_sim_workflow():  # pylint: disable=too-many-return-statements
             return False
         
         print("✓ .robovast_project file exists - environment is properly initialized")
-            
-            # Check for expected files
-            expected_items = ['configs', 'growth_sim.vast', '.cache']
-            found_items = [f.name for f in created_files]
-            
-            has_expected = any(item in found_items for item in expected_items)
-            if has_expected:
-                print(f"✓ Found expected items: {[item for item in expected_items if item in found_items]}")
-            else:
-                print(f"⚠ Warning: Expected items not found. Created: {found_items}")
-            
-            # Step 2: vast execution local run
+        
+        # Step 2: vast execution local run
+        # Use a temporary directory for output
+        with tempfile.TemporaryDirectory() as temp_output:
             print("\n--- Step 2: vast execution local run ---")
-            output_dir_name = 'test_output'
+            output_dir = Path(temp_output) / 'test_output'
             
             cmd_exec = [
                 'poetry', 'run', '--directory', str(repo_root),
                 'vast', 'execution', 'local', 'run',
                 '--config', 'test-fixed-values',
                 '--runs', '1',
-                '--output', output_dir_name
+                '--output', str(output_dir)
             ]
             
-            result = run_command(cmd_exec, cwd=temp_path)
+            result = run_command(cmd_exec, cwd=repo_root)
             
             if result.returncode != 0:
                 print("✗ vast execution local run failed")
@@ -185,13 +177,12 @@ def test_growth_sim_workflow():  # pylint: disable=too-many-return-statements
             print("✓ vast execution local run executed successfully")
             
             # Check output structure
-            output_dir = temp_path / output_dir_name
             if not check_output_structure(output_dir):
                 return False
             
             print("✓ Output structure is valid")
             
-            # Step 3: vast analysis preprocess
+            # Step 3: vast analysis postprocess
             print("\n--- Step 3: vast analysis postprocess ---")
             results_dir = output_dir
             
@@ -204,8 +195,8 @@ def test_growth_sim_workflow():  # pylint: disable=too-many-return-statements
                 '--results-dir', str(results_dir)
             ]
             
-            # Execute in the same directory where vast init was called (where .robovast_project exists)
-            result = run_command(cmd_postprocess, cwd=temp_path)
+            # Execute in the repo root where .robovast_project exists
+            result = run_command(cmd_postprocess, cwd=repo_root)
             
             if result.returncode != 0:
                 print("✗ vast analysis postprocess failed")
@@ -221,15 +212,20 @@ def test_growth_sim_workflow():  # pylint: disable=too-many-return-statements
             
             print("\n✓ Complete workflow succeeded!")
             return True
-            
-        except subprocess.CalledProcessError as e:
-            print(f"✗ Command failed with exit code {e.returncode}")
-            return False
-        except Exception as e:
-            print(f"✗ Unexpected error: {e}")
-            traceback.print_exc()
-            return False
-
+        
+    except subprocess.CalledProcessError as e:
+        print(f"✗ Command failed with exit code {e.returncode}")
+        return False
+    except Exception as e:
+        print(f"✗ Unexpected error: {e}")
+        traceback.print_exc()
+        return False
+    finally:
+        # Restore the backup if it exists
+        if backup_path and backup_path.exists():
+            shutil.copy(backup_path, robovast_project)
+            backup_path.unlink()
+            print(f"  Restored .robovast_project from backup")
 
 def main():
     """Run all tests."""
