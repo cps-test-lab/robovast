@@ -51,6 +51,10 @@ def main():
                     try:
                         cls = ep.load()
                         print(f"        ✓ Successfully loaded: {cls}")
+                    except ImportError as e:
+                        print(f"        ✗ Failed to load due to import error: {e}")
+                        if 'libEGL' in str(e) or 'Qt' in str(e):
+                            print(f"        ⚠ This is a graphics library issue (GUI dependencies in headless environment)")
                     except Exception as e:
                         print(f"        ✗ Failed to load: {e}")
             else:
