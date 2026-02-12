@@ -222,7 +222,7 @@ while [ $# -gt 0 ]; do
                 exit 1
             fi
             echo "Overriding results directory to: $2"
-            RESULTS_DIR="$2"
+            RESULTS_DIR="$2/${RUN_ID}"
             shift 2
             ;;
         *)

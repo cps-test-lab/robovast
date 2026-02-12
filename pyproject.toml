@@ -61,6 +61,11 @@ azure = "robovast.execution.cluster_config.azure:AzureClusterConfig"
 "ParameterVariationDistributionUniform" = "robovast.common.variation.parameter_variation:ParameterVariationDistributionUniform"
 "ParameterVariationDistributionGaussian" = "robovast.common.variation.parameter_variation:ParameterVariationDistributionGaussian"
 
+[tool.poetry.plugins."robovast.preprocessing_commands"]
+command = "robovast.common.preprocessing_plugins:command"
+rosbags_tf_to_csv = "robovast.common.preprocessing_plugins:rosbags_tf_to_csv"
+rosbags_bt_to_csv = "robovast.common.preprocessing_plugins:rosbags_bt_to_csv"
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"

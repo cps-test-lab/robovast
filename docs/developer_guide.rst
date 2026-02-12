@@ -192,6 +192,71 @@ Example plugin registration:
     [tool.poetry.plugins."vast.plugins"]
     variation = "variation_utils.cli:variation"
 
+
+.. _extending-preprocessing:
+
+Add Preprocessing Command Plugin
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Preprocessing plugins are Python functions that process test result directories (e.g., convert rosbag data to CSV). They are registered as entry points and executed before analysis.
+
+**Creating a Preprocessing Plugin:**
+
+.. code-block:: python
+
+    from typing import Tuple, Optional, List
+    
+    def my_preprocessing_command(
+        results_dir: str,
+        config_dir: str,
+        custom_param: Optional[str] = None
+    ) -> Tuple[bool, str]:
+        """Convert custom data to CSV.
+        
+        Args:
+            results_dir: Path to the run-<id> directory to process
+            config_dir: Config file directory (for resolving relative paths)
+            custom_param: Optional custom parameter
+        
+        Returns:
+            Tuple of (success, message)
+        """
+        import subprocess
+        import os
+        
+        script = os.path.join(config_dir, "tools/script.sh")
+        cmd = [script, results_dir]
+        if custom_param:
+            cmd.extend(["--param", custom_param])
+        
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            return False, f"Failed: {result.stderr}"
+        return True, "Success"
+
+**Register in pyproject.toml:**
+
+.. code-block:: toml
+
+    [tool.poetry.plugins."robovast.preprocessing_commands"]
+    my_preprocessing_command = "your_package.preprocessing_plugins:my_preprocessing_command"
+
+**Usage in .vast config:**
+
+.. code-block:: yaml
+
+    analysis:
+      preprocessing:
+        - name: my_preprocessing_command
+          custom_param: value
+        - name: rosbags_tf_to_csv
+          frames: [base_link, map]
+        - name: command
+          script: tools/script.sh
+          args: [arg1, arg2]
+
+
 Add Cluster Config Plugin
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 

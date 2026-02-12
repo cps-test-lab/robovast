@@ -68,8 +68,9 @@ class ExecutionConfig(BaseModel):
     test_files_filter: Optional[list[str]] = None
 
 
-class PreprocessingConfig(BaseModel):
-    pass
+class PreprocessingCommandConfig(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    name: str
 
 
 class VisualizationConfig(BaseModel):
@@ -77,7 +78,7 @@ class VisualizationConfig(BaseModel):
 
 
 class AnalysisConfig(BaseModel):
-    preprocessing: Optional[list[str]] = None
+    preprocessing: Optional[list[PreprocessingCommandConfig]] = None
     visualization: Optional[list[dict[str, Any]]] = None
 
 

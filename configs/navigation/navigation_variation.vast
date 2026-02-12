@@ -45,9 +45,15 @@ execution:
   - "**/files/*"
 analysis:
   preprocessing:
-  - ../../tools/ros2_exec.sh rosbags_to_csv.py
-  - ../../tools/ros2_exec.sh rosbags_tf_to_csv.py --frame base_link --frame turtlebot4_base_link_gt
-  - ../../tools/ros2_exec.sh rosbags_bt_to_csv.py
+    - name: command
+      script: ../../tools/ros2_exec.sh
+      args: [rosbags_to_csv.py]
+    - name: command
+      script: ../../tools/ros2_exec.sh
+      args: [rosbags_tf_to_csv.py, --frame, base_link, --frame, turtlebot4_base_link_gt]
+    - name: command
+      script: ../../tools/ros2_exec.sh
+      args: [rosbags_bt_to_csv.py]
   visualization:
   - Analysis:
       single_test: analysis/analysis_single_test.ipynb

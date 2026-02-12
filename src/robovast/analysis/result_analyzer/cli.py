@@ -22,6 +22,7 @@ import sys
 import click
 
 from robovast.common.cli import get_project_config
+from robovast.common.preprocessing import load_preprocessing_plugins
 
 from ...common import run_preprocessing
 
@@ -127,3 +128,47 @@ def result_analyzer_cmd(results_dir):
     except Exception as e:
         click.echo(f"Application error: {e}", err=True)
         sys.exit(1)
+
+
+@analysis.command(name='preprocess-commands')
+def list_preprocessing_commands():
+    """List all available preprocessing command plugins.
+
+    Shows plugin names that can be used in the analysis.preprocessing section
+    of the configuration file, along with their descriptions and parameters.
+    """
+    plugins = load_preprocessing_plugins()
+
+    if not plugins:
+        click.echo("No preprocessing command plugins available.")
+        click.echo("\nPreprocessing commands can be registered as plugins.")
+        click.echo("See documentation for how to add custom preprocessing commands.")
+        return
+
+    click.echo("Available preprocessing command plugins:")
+    click.echo("=" * 70)
+
+    # Sort by plugin name for consistent output
+    for plugin_name in sorted(plugins.keys()):
+        click.echo(f"\n{plugin_name}")
+
+        # Try to get the function's docstring
+        try:
+            func = plugins[plugin_name]
+            if func.__doc__:
+                # Clean up docstring and display first line
+                doc_lines = [line.strip() for line in func.__doc__.strip().split('\n') if line.strip()]
+                if doc_lines:
+                    click.echo(f"  Description: {doc_lines[0]}")
+        except Exception:
+            pass
+
+    click.echo("\n" + "=" * 70)
+    click.echo("\nUsage in configuration file:")
+    click.echo("\n  analysis:")
+    click.echo("    preprocessing:")
+    click.echo("    - rosbags_tf_to_csv --frame base_link")
+    click.echo("    - rosbags_bt_to_csv")
+    click.echo("    - command ../../../tools/custom_script.sh --arg value")
+    click.echo("\nThe first token is the plugin name, followed by any arguments.")
+

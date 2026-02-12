@@ -17,63 +17,112 @@
 """Preprocessing functionality for analysis data."""
 import hashlib
 import os
-import subprocess
 import time
+from importlib.metadata import entry_points
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 
 from .common import load_config
 
 
-def get_preprocessing_commands(config_path: str) -> List[str]:
+def load_preprocessing_plugins() -> Dict[str, callable]:
+    """Load preprocessing command plugins from entry points.
+
+    Returns:
+        Dictionary mapping plugin names to their callable functions
+    """
+    plugins = {}
+    try:
+        eps = entry_points(group='robovast.preprocessing_commands')
+        for ep in eps:
+            try:
+                # Load the entry point - should return a callable
+                plugin_func = ep.load()
+                plugins[ep.name] = plugin_func
+            except Exception as e:
+                # Log and continue if a plugin fails to load
+                print(f"Warning: Failed to load preprocessing plugin '{ep.name}': {e}")
+    except Exception:
+        # No plugins available or entry_points call failed
+        pass
+    return plugins
+
+
+def execute_preprocessing_plugin(
+    plugin_name: str, 
+    plugin_func: callable, 
+    params: dict,
+    results_dir: str,
+    config_dir: str
+) -> tuple[bool, str]:
+    """Execute a preprocessing plugin with parameters.
+    
+    Args:
+        plugin_name: Name of the plugin
+        plugin_func: The plugin function to call
+        params: Dictionary of parameters for the plugin
+        results_dir: Path to the run-<id> directory
+        config_dir: Directory containing the configuration file
+        
+    Returns:
+        Tuple of (success, message)
+    """
+    # Add common arguments
+    kwargs = {
+        'results_dir': results_dir,
+        'config_dir': config_dir,
+        **params  # Merge in plugin-specific parameters
+    }
+    
+    try:
+        # Call the plugin function with parameters
+        success, message = plugin_func(**kwargs)
+        return success, message
+    except TypeError as e:
+        return False, f"Plugin '{plugin_name}' argument error: {e}"
+    except Exception as e:
+        return False, f"Plugin '{plugin_name}' execution error: {e}"
+
+
+def validate_preprocessing_command(command: dict, plugins: Dict[str, callable]) -> tuple[bool, str]:
+    """Validate a preprocessing command.
+
+    Args:
+        command: Command dict with 'name' key
+        plugins: Dictionary of available plugins
+
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    if not isinstance(command, dict):
+        return False, f"Preprocessing command must be a dict with 'name' field, got {type(command)}"
+    
+    plugin_name = command.get('name')
+    if not plugin_name:
+        return False, "Preprocessing command missing 'name' field"
+    
+    if plugin_name not in plugins:
+        available = ', '.join(sorted(plugins.keys()))
+        return False, (
+            f"Unknown preprocessing plugin: '{plugin_name}'. "
+            f"Available plugins: {available if available else 'none'}. "
+            f"Use 'vast analysis preprocessing-commands' to list all plugins."
+        )
+    
+    return True, ""
+
+
+def get_preprocessing_commands(config_path: str) -> List[dict]:
     """Get preprocessing commands from configuration file.
 
     Args:
         config_path: Path to .vast configuration file
 
     Returns:
-        List of preprocessing commands or empty list if none defined
+        List of preprocessing commands (dicts) or empty list if none defined
     """
     analysis_config = load_config(config_path, subsection="analysis", allow_missing=True)
     return analysis_config.get("preprocessing", [])
-
-
-def get_command_files_and_paths(config_path: str, commands: List[str]) -> tuple[List[str], List[List[str]]]:
-    """Extract command files and paths from preprocessing commands.
-
-    Args:
-        config_path: Path to .vast configuration file
-        commands: List of preprocessing commands
-
-    Returns:
-        Tuple of (command_files, command_paths) where:
-        - command_files: List of resolved file paths for each command
-        - command_paths: List of split command arguments
-
-    Raises:
-        ValueError: If a command is invalid or file not found
-    """
-    command_files = []
-    command_paths = []
-    config_dir = os.path.dirname(config_path)
-
-    for command in commands:
-        splitted = command.split()
-        if not splitted:
-            raise ValueError(f"Invalid preprocessing command: {command}")
-
-        if os.path.isabs(splitted[0]):
-            command_path = splitted[0]
-        else:
-            command_path = os.path.join(config_dir, splitted[0])
-
-        if not os.path.exists(command_path):
-            raise ValueError(f"Preprocessing command not found: {command_path}")
-
-        command_files.append(command_path)
-        command_paths.append(splitted)
-
-    return command_files, command_paths
 
 
 def compute_dir_hash(dir_path):
@@ -157,39 +206,50 @@ def run_preprocessing(config_path: str, results_dir: str, output_callback=None):
             output(f"Warning: Could not read hash file: {e}")
             # Continue with preprocessing if we can't read the hash file
 
-    # Validate and resolve command paths
-    try:
-        command_files, command_paths = get_command_files_and_paths(config_path, commands)
-    except ValueError as e:
-        return False, str(e)
+    # Load plugins
+    plugins = load_preprocessing_plugins()
+    
+    # Validate all commands first
+    for command in commands:
+        is_valid, error_msg = validate_preprocessing_command(command, plugins)
+        if not is_valid:
+            return False, error_msg
+
+    # Get config directory for resolving relative paths
+    config_dir = os.path.dirname(os.path.abspath(config_path))
 
     # Execute each preprocessing command
     success = True
 
-    for i, command in enumerate(command_paths, 1):
-        command_dir = os.path.dirname(command_files[i - 1])
-        # Update command to use just the basename since we're running in command_dir
-        command[0] = './' + os.path.basename(command_files[i - 1])
-        command.append(os.path.abspath(results_dir))
-        output(f"[{i}/{len(command_paths)}] Executing: {' '.join(command)} in {command_dir}")
-
-        try:
-            result = subprocess.run(
-                command,
-                cwd=command_dir,
-                check=False,
-                env={**os.environ, 'PYTHONUNBUFFERED': '1'}
-            )
-
-            if result.returncode != 0:
-                output(f"✗ Failed with exit code {result.returncode}")
-                success = False
-                continue
-
-        except Exception as e:
-            output(f"✗ Error executing command: {e}")
+    for i, command in enumerate(commands, 1):
+        if not isinstance(command, dict):
+            output(f"[{i}/{len(commands)}] ✗ Invalid command format: must be dict with 'name' field")
             success = False
             continue
+        
+        plugin_name = command.get('name')
+        params = {k: v for k, v in command.items() if k != 'name'}
+        display_cmd = f"{plugin_name} (params: {params})" if params else plugin_name
+        
+        plugin_func = plugins[plugin_name]
+        
+        output(f"[{i}/{len(commands)}] Executing: {display_cmd}")
+
+        # Execute the plugin
+        plugin_success, message = execute_preprocessing_plugin(
+            plugin_name=plugin_name,
+            plugin_func=plugin_func,
+            params=params,
+            results_dir=results_dir,
+            config_dir=config_dir
+        )
+
+        if not plugin_success:
+            output(f"✗ {message}")
+            success = False
+            continue
+        else:
+            output(f"✓ {message}")
 
     # Store the hash if preprocessing was successful
     if success:

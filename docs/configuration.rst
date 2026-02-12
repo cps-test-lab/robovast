@@ -315,18 +315,38 @@ The ``analysis`` section defines how test results should be analyzed.
 preprocessing
 ^^^^^^^^^^^^^
 
-**Type:** List of strings (shell commands)
+**Type:** List of strings (plugin commands)
 
 **Required:** No
 
 Commands to run for preprocessing test results. These are executed before the analysis GUI is launched and typically convert raw data files into more analysis-friendly formats.
 
+**All preprocessing commands are plugins.** Each command is specified as a dictionary with a ``name`` field for the plugin name and additional fields for parameters.
+
 .. code-block:: yaml
 
    analysis:
      preprocessing:
-     - ../../../tools/docker_exec.sh rosbags_tf_to_csv.py --frame base_link
-     - ../../../tools/docker_exec.sh rosbags_bt_to_csv.py
+       - name: rosbags_tf_to_csv
+         frames: [base_link, turtlebot4_base_link_gt]
+       - name: rosbags_bt_to_csv
+       - name: command
+         script: ../../../tools/custom_script.sh
+         args: [--arg, value]
+
+To list all available plugins and their descriptions:
+
+.. code-block:: bash
+
+   vast analysis preprocess-commands
+
+**Built-in Preprocessing Plugins:**
+
+- ``rosbags_tf_to_csv``: Convert ROS TF transformations to CSV format. Optional ``frames`` parameter (list of frame names).
+- ``rosbags_bt_to_csv``: Convert ROS behavior tree logs to CSV format (no parameters).
+- ``command``: Execute arbitrary commands or scripts. Requires ``script`` parameter, optional ``args`` parameter (list).
+
+See :ref:`extending-preprocessing` for how to add custom preprocessing plugins.
 
 visualization
 ^^^^^^^^^^^^^

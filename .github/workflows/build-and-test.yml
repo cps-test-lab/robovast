@@ -42,3 +42,7 @@ jobs:
       - name: Run CLI tests
         run: |
           bash .github/test_commands.sh
+
+      - name: Run Example tests
+        run: |
+          .github/test_growth_sim.py
