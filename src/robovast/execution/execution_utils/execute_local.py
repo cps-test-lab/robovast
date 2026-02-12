@@ -307,7 +307,6 @@ def generate_docker_run_script(runs, run_data, config_path_result, pre_command, 
     # Generate docker run commands for each task
     for idx, task in enumerate(execution_tasks, 1):
         config_name = task['config_name']
-        config_path = task['config_path']
         run_num = task['run_number']
         config_files = task['config_files']
 
