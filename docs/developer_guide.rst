@@ -66,8 +66,8 @@ Next, it is important to verify that the output (e.g. ROS bag) is stored correct
 
     vast execution local run --config config1 ./test_out
 
-    # check that output is created in ./test_out/run_<timestamp>/<config-name>/<test_number>
-    ls -l ./test_out/run_*/config1/0/
+    # check that output is created in ./test_out/run-<timestamp>/<config-name>/<test_number>
+    ls -l ./test_out/run-*/config1/0/
 
 Once you are satisfied that the scenario and configuration work as expected, you can proceed to the next step.
 
@@ -102,7 +102,7 @@ A good practice is, to first run a single configuration to verify that everythin
 
     # 2. check results
     vast execution cluster download
-    # Results are organized as: <results-dir>/run_<timestamp>/<config-name>/<test_number>/
+    # Results are organized as: <results-dir>/run-<timestamp>/<config-name>/<test_number>/
     find ./results/
 
 Running local container images in minikube
@@ -131,11 +131,11 @@ To develop the notebooks, it is recommended to use e.g. VSCode. For the RoboVAST
 .. code-block:: python
 
     # for single-test (specific test of a configuration)
-    DATA_DIR = '<path-to-your-results-directory>/run_<timestamp>/<config-name>/<test_number>'
+    DATA_DIR = '<path-to-your-results-directory>/run-<timestamp>/<config-name>/<test_number>'
     # for configuration (all configurations)
-    DATA_DIR = '<path-to-your-results-directory>/run_<timestamp>/<config-name>'
+    DATA_DIR = '<path-to-your-results-directory>/run-<timestamp>/<config-name>'
     # for complete run
-    DATA_DIR = '<path-to-your-results-directory>/run_<timestamp>'
+    DATA_DIR = '<path-to-your-results-directory>/run-<timestamp>'
 
 In case you are using ROS bags as output format, it is recommended to preprocess the results before analysis. This can be done with the preprocessing commands defined in the configuration file. RoboVAST provides several conversion scripts for common use-cases, e.g., converting ROS bag messages to CSV files or tf-frames to poses.
 
