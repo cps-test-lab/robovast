@@ -15,13 +15,17 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import datetime
+import logging
 import os
 import shutil
 from importlib.resources import files
+from pprint import pformat
 
 import yaml
 
 from .common import convert_dataclasses_to_dict, get_scenario_parameters
+
+logger = logging.getLogger(__name__)
 
 
 def get_run_id():
@@ -40,31 +44,47 @@ def get_execution_env_variables(run_num, config_name):
     }
 
 
-def prepare_run_configs(run_id, configs, output_dir):
-    # Create the out directory structure: /out/$RUN_ID/
-    out_dir = os.path.join(output_dir, "out", run_id)
+def prepare_run_configs(out_dir, run_data):
+    # Create the output directory structure
+    logger.debug(f"Run Configs: {pformat(run_data)}")
     os.makedirs(out_dir, exist_ok=True)
-    
+
     # Copy entrypoint.sh to the out directory
     entrypoint_src = str(files('robovast.execution.data').joinpath('entrypoint.sh'))
     entrypoint_dst = os.path.join(out_dir, "entrypoint.sh")
     shutil.copy2(entrypoint_src, entrypoint_dst)
-    
-    for config_data in configs:
-        # Create _config subdirectory for each config
-        scenario_dir = os.path.join(out_dir, config_data.get("name"), "_config")
-        os.makedirs(scenario_dir, exist_ok=True)
 
-        # Copy scenario file
-        original_scenario_path = config_data.get('_scenario_file')
-        shutil.copy2(original_scenario_path, os.path.join(scenario_dir, 'scenario.osc'))
+    # Copy vast file to the out directory
+    shutil.copy2(run_data["vast"], out_dir)
 
-        # Copy filtered files
-        for config_file in config_data.get("_scenario_files", []):
-            src_path = os.path.join(os.path.dirname(original_scenario_path), config_file)
-            dst_path = os.path.join(scenario_dir, config_file)
-            os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-            shutil.copy2(src_path, dst_path)
+    run_config_dir = os.path.join(out_dir, "_config")
+    os.makedirs(run_config_dir, exist_ok=True)
+
+    vast_file_path = os.path.dirname(run_data["vast"])
+    # copy scenario_file
+    scenario_file_path = os.path.join(vast_file_path, run_data["scenario_file"])
+    shutil.copy2(scenario_file_path, out_dir)
+
+    # Copy test files
+    for config_file in run_data.get("_test_files", []):
+        src_path = os.path.join(vast_file_path, config_file)
+        dst_path = os.path.join(run_config_dir, config_file)
+        os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+        shutil.copy2(src_path, dst_path)
+
+    # get scenario name
+    original_scenario_path = os.path.join(vast_file_path, run_data.get("scenario_file"))
+    try:
+        scenario_params = get_scenario_parameters(original_scenario_path)
+        scenario_name = next(iter(scenario_params.keys()))
+
+        if scenario_name is None:
+            raise ValueError(f"Scenario name not found in {original_scenario_path}")
+    except Exception as e:
+        raise RuntimeError(f"Could not get scenario name from {original_scenario_path}: {e}") from e
+
+    for config_data in run_data["configs"]:
+        test_config_dir = os.path.join(out_dir, config_data.get("name"), "_config")
 
         # Copy config files
         if "_config_files" in config_data:
@@ -72,24 +92,17 @@ def prepare_run_configs(run_id, configs, output_dir):
                 if not os.path.exists(config_path):
                     raise FileNotFoundError(f"Config file {config_path} does not exist.")
                 src_path = config_path
-                dst_path = os.path.join(scenario_dir, config_rel_path)
+                dst_path = os.path.join(test_config_dir, config_rel_path)
                 os.makedirs(os.path.dirname(dst_path), exist_ok=True)
                 shutil.copy2(src_path, dst_path)
 
         # Create config file if needed
-        config = config_data.get('config')
-        if config is not None:
-            # Get the scenario name from the scenario file
-            original_scenario_path = config_data.get('_scenario_file')
-            try:
-                scenario_params = get_scenario_parameters(original_scenario_path)
-                # get_scenario_parameters returns {scenario_name: [params]}
-                scenario_name = next(iter(scenario_params.keys()))
-                # Wrap config_data under the scenario name
+        if "config" in config_data:
+            config = config_data.get('config')
+            if config is not None:
                 wrapped_config_data = {scenario_name: config}
-            except Exception as e:
-                raise RuntimeError(f"Could not get scenario name from {original_scenario_path}: {e}") from e
-
-            with open(os.path.join(scenario_dir, 'scenario.config'), 'w') as f:
-                converted_config_data = convert_dataclasses_to_dict(wrapped_config_data)
-                yaml.dump(converted_config_data, f, default_flow_style=False, sort_keys=False)
+                dst_path = os.path.join(out_dir, config_data.get("name"), 'scenario.config')
+                os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+                with open(dst_path, 'w') as f:
+                    converted_config_data = convert_dataclasses_to_dict(wrapped_config_data)
+                    yaml.dump(converted_config_data, f, default_flow_style=False, sort_keys=False)

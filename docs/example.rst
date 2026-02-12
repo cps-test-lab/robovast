@@ -192,7 +192,7 @@ The visualization can be customized by adapting the ``analysis.visualization`` s
 
 .. literalinclude:: ../configs/examples/growth_sim/growth_sim.vast
    :language: yaml
-   :lines: 32-37
+   :lines: 32-36
    :caption: Analysis section of RoboVAST Configuration File
 
 Although this example includes only one entry in the analysis list, you can add more. Each additional entry will appear as a separate tab in the GUI.

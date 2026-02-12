@@ -431,10 +431,10 @@ def prepare_run(output, config, runs, cluster_config, options):  # pylint: disab
     # Prepare config files
     logging.debug("Preparing configuration files...")
 
+    out_dir = os.path.join(output, "out_template", job_runner.run_id)
     prepare_run_configs(
-        job_runner.run_id,
-        job_runner.configs,
-        output
+        out_dir,
+        job_runner.run_data
     )
 
     # Create jobs directory
@@ -496,7 +496,7 @@ def main():
     """Main function to copy configs to cluster."""
     # Get the directory where this script is located
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    config_dir = os.path.join(script_dir, "out")
+    config_dir = os.path.join(script_dir, "out_template")
     run_id = "{run_id}"
 
     if not os.path.exists(config_dir):

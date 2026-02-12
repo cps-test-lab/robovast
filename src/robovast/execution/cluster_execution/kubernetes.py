@@ -154,7 +154,7 @@ def copy_config_to_cluster(config_dir, run_id):
         # Discover config names from local config directory
         local_run_config_dir = os.path.join(config_dir, run_id)
         entrypoint_path = None
-        
+
         # Copy config files directly to _config folder
         copy_cmd = [
             "kubectl", "cp",
@@ -162,7 +162,7 @@ def copy_config_to_cluster(config_dir, run_id):
             f"default/robovast:/exports/out/"
         ]
         subprocess.run(copy_cmd, capture_output=True, text=True, check=True)
-        
+
         # Copy entrypoint.sh to out/{run_id}/ if it exists
         if entrypoint_path:
             entrypoint_cmd = [
@@ -172,7 +172,7 @@ def copy_config_to_cluster(config_dir, run_id):
             ]
             subprocess.run(entrypoint_cmd, capture_output=True, text=True, check=True)
             logger.debug(f"Entrypoint script copied to /exports/out/{run_id}/entrypoint.sh")
-        
+
         logger.debug(f"Successfully copied all config files to transfer pod")
 
     except subprocess.CalledProcessError as e:

@@ -76,18 +76,19 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
     # Check if run_as_user differs from local user
     host_uid = os.getuid()
     if run_as_user is not None and run_as_user != host_uid:
-        logger.info(f"Note: config specifies run_as_user={run_as_user}, but local execution will use host user UID={host_uid} to ensure proper file permissions on bind mounts")
+        logger.info(f"Note: config specifies run_as_user={run_as_user}, but local execution will use host user UID={
+                    host_uid} to ensure proper file permissions on bind mounts")
 
     # Generate and filter configs
     logger.debug("Generating scenario variations")
     temp_dir = tempfile.TemporaryDirectory(prefix="robovast_execution_")
-    configs, _ = generate_scenario_variations(
+    run_data, _ = generate_scenario_variations(
         variation_file=config_path,
         progress_update_callback=None,
         output_dir=temp_dir.name
     )
 
-    if not configs:
+    if not run_data["configs"]:
         logger.error("No configs found in vast-file")
         feedback_callback("Error: No configs found in vast-file.", file=sys.stderr)
         sys.exit(1)
@@ -95,7 +96,7 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
     # Filter to specific config if requested
     if config:
         found_config = None
-        for cfg in configs:
+        for cfg in run_data["configs"]:
             if cfg['name'] == config:
                 found_config = cfg
                 break
@@ -103,13 +104,13 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
         if not found_config:
             feedback_callback(f"Error: Config '{config}' not found in config.", file=sys.stderr)
             feedback_callback("Available configs:")
-            for cfg in configs:
+            for cfg in run_data["configs"]:
                 feedback_callback(f"  - {cfg['name']}")
             sys.exit(1)
 
-        configs = [found_config]
+        run_data["configs"] = [found_config]
 
-    logger.debug(f"Preparing {len(configs)} configs from {config_path}...")
+    logger.debug(f"Preparing {len(run_data['configs'])} configs from {config_path}...")
     logger.debug(f"Output directory: {output_dir}")
 
     # Create temp directory for run() or use output_dir for prepare_run()
@@ -128,8 +129,8 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
         config_dir = output_dir
 
     try:
-        prepare_run_configs("local", configs, config_dir)
-        config_path_result = os.path.join(config_dir, "config", "local")
+        config_path_result = os.path.join(config_dir, "out_template")
+        prepare_run_configs(config_path_result, run_data)
         logger.debug(f"Config path: {config_path_result}")
     except Exception as e:  # pylint: disable=broad-except
         feedback_callback(f"Error preparing run configs: {e}", file=sys.stderr)
@@ -137,53 +138,9 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
 
     logger.debug(f"Configuration files prepared in: {config_dir}")
 
-    docker_configs = []
-    for run_number in range(runs):
-        for config_entry in configs:
-            docker_configs.append((docker_image, os.path.abspath(os.path.join(
-                config_path_result, config_entry["name"])), config_entry['name'], run_number, pre_command, post_command))
-
-    generate_docker_run_script(docker_configs, results_dir, os.path.join(config_dir, "run.sh"))
+    generate_docker_run_script(runs, run_data, config_path_result, pre_command, post_command,
+                               docker_image, results_dir, os.path.join(config_dir, "run.sh"))
     return os.path.join(config_dir, "run.sh")
-
-
-def get_commandline(image, config_path, output_path, config_name, run_num=0, shell=False, pre_command=None, post_command=None):
-
-    # Get the current user and group IDs to run docker with the same permissions
-    uid = os.getuid()
-    gid = os.getgid()
-
-    # Get the path to the entrypoint.sh file from package data
-    entrypoint_path = str(files('robovast.execution.data').joinpath('entrypoint.sh'))
-
-    docker_cmd = [
-        'docker', 'run',
-        '--rm',  # Remove container after execution
-        '--user', f'{uid}:{gid}',  # Run as host user to avoid permission issues
-        '-v', f'{config_path}:/config',  # Bind mount temp_path to /config
-        '-v', f'{output_path}:/out',   # Bind mount output to /out
-        '-v', f'{entrypoint_path}:/entrypoint.sh:ro',  # Mount entrypoint.sh
-    ]
-
-    env_vars = get_execution_env_variables(run_num, config_name)
-    for key, value in env_vars.items():
-        docker_cmd.extend(['-e', f'{key}={value}'])
-    
-    # Add PRE_COMMAND and POST_COMMAND if specified
-    if pre_command:
-        docker_cmd.extend(['-e', f'PRE_COMMAND="{pre_command}"'])
-    if post_command:
-        docker_cmd.extend(['-e', f'POST_COMMAND="{post_command}"'])
-
-    if shell:
-        # Interactive shell mode
-        docker_cmd.extend(['-it', image, '/bin/bash'])
-        logger.info(f"Opening interactive shell in Docker container: {image}")
-    else:
-        # Normal execution mode
-        docker_cmd.append(image)
-
-    return docker_cmd
 
 
 DOCKER_RUN_TEMPLATE = """#!/usr/bin/env bash
@@ -299,101 +256,122 @@ mkdir -p ${RESULTS_DIR}
 """
 
 
-def generate_docker_run_script(configs, results_dir, output_script_path):
+def generate_docker_run_script(runs, run_data, config_path_result, pre_command, post_command, docker_image, results_dir, output_script_path):
     """Generate a shell script to run Docker containers sequentially.
 
     Args:
-        configs: List of tuples (image, config_path, config_name, run_num, pre_command, post_command)
+        runs: Number of runs per config
+        run_data: Dictionary containing configs and test files
+        config_path_result: Path to the config results directory
+        pre_command: Command to run before execution (optional)
+        post_command: Command to run after execution (optional)
+        docker_image: Docker image to use
+        results_dir: Directory where results are stored
         output_script_path: Path where the script should be written
     """
-    if not configs:
+    # Build list of execution tasks
+    run_files = run_data.get("_test_files", [])
+    execution_tasks = []
+
+    for run_number in range(runs):
+        for config_entry in run_data["configs"]:
+            execution_tasks.append({
+                'config_name': config_entry['name'],
+                'config_path': os.path.abspath(os.path.join(config_path_result, config_entry["name"])),
+                'config_files': config_entry.get("_config_files", []),
+                'run_number': run_number,
+            })
+
+    if not execution_tasks:
         raise ValueError("At least one config configuration is required")
 
-    # Use the first config's image as the default
-    default_image = configs[0][0]
-
-    # Start with the template, replacing the image
-    # Replace only the first occurrence of DOCKER_IMAGE and RESULTS_DIR
-    script = DOCKER_RUN_TEMPLATE
-    script = script.replace(
+    # Initialize script with template
+    script = DOCKER_RUN_TEMPLATE.replace(
         'DOCKER_IMAGE="ghcr.io/cps-test-lab/robovast:latest"',
-        f'DOCKER_IMAGE="{default_image}"', 1
-    )
-    script = script.replace(
+        f'DOCKER_IMAGE="{docker_image}"', 1
+    ).replace(
         'RESULTS_DIR=',
         f'RESULTS_DIR="{results_dir}/${{RUN_ID}}"', 1
     )
 
-    total_configs = len(configs)
+    # Get common environment variables
+    uid = os.getuid()
+    gid = os.getgid()
+    entrypoint_path = str(files('robovast.execution.data').joinpath('entrypoint.sh'))
 
-    # Generate docker run commands for each config
-    for idx, config_tuple in enumerate(configs, 1):
-        image, config_path, config_name, run_num, pre_command, post_command = config_tuple
-        result_config_path = os.path.join("${RESULTS_DIR}", config_name, "_config")
+    # Copy the contents of out_template directory to results directory
+    script += f'echo "Copying out_template contents to ${{RESULTS_DIR}}..."\n'
+    script += f'cp -r "{config_path_result}/"* "${{RESULTS_DIR}}/"\n'
+    script += f'echo ""\n\n'
+
+    # Generate docker run commands for each task
+    for idx, task in enumerate(execution_tasks, 1):
+        config_name = task['config_name']
+        run_num = task['run_number']
+        config_files = task['config_files']
+
         test_path = os.path.join("${RESULTS_DIR}", config_name, str(run_num))
-        cmd_line = get_commandline(image, config_path, test_path, config_name, run_num, pre_command=pre_command, post_command=post_command)
-
-        # copy config files to output directory only for the first run
-        if run_num == 0:
-            script += f'echo "Copying configuration files to {result_config_path}..."\n'
-            script += f'mkdir -p "{result_config_path}"\n'
-            script += f'cp -r "{config_path}/"* "{result_config_path}" 2>/dev/null || true\n'
-            script += f'echo ""\n\n'
 
         # Add progress message
         script += f'\necho ""\n'
         script += f'echo "{"=" * 60}"\n'
-        script += f'echo "{idx}/{total_configs} Executing config {config_name}, run {run_num}"\n'
+        script += f'echo "{idx}/{len(execution_tasks)} Executing config {config_name}, run {run_num}"\n'
         script += f'echo "{"=" * 60}"\n'
         script += f'echo ""\n\n'
         script += f'mkdir -p {test_path}/logs\n'
 
-        # Extract docker run parameters from cmd_line (skip 'docker', 'run')
-        docker_params = []
-        i = 2  # Skip 'docker' and 'run'
-        while i < len(cmd_line):
-            arg = cmd_line[i]
-            if arg == image:
-                # Stop when we reach the image name
-                break
-            elif arg in ['-v', '-e', '--user']:
-                # Options with values
-                docker_params.append(f"    {arg} {cmd_line[i+1]} \\")
-                i += 2
-            else:
-                # Options without values
-                docker_params.append(f"    {arg} \\")
-                i += 1
-
-        # Add docker run command for this config
+        # Build docker run command directly
         script += 'docker run $INTERACTIVE \\\n'
         script += f'    --name "$CONTAINER_NAME" \\\n'
         script += '    $NETWORK_MODE \\\n'
         script += '    $GUI_OPTIONS \\\n'
-        script += "\n".join(docker_params)
-        script += f'\n    "$DOCKER_IMAGE" \\\n    $COMMAND\n\n'
+        script += '    --rm \\\n'
+        script += f'    --user {uid}:{gid} \\\n'
+        script += f'    -v {test_path}:/out \\\n'
+        script += f'    -v {entrypoint_path}:/entrypoint.sh:ro \\\n'
 
-        # Check exit code after each run
-        if idx < total_configs:
-            # Not the last one - check and continue
+        # Mount scenario and config files from results directory
+        script += f'    -v ${{RESULTS_DIR}}/scenario.osc:/config/scenario.osc:ro \\\n'
+        script += f'    -v ${{RESULTS_DIR}}/{config_name}/scenario.config:/config/scenario.config:ro \\\n'
+
+        for run_file in run_files:
+            script += f'    -v ${{RESULTS_DIR}}/_config/{run_file}:/config/{run_file}:ro \\\n'
+
+        for config_file in config_files:
+            script += f'    -v ${{RESULTS_DIR}}/{config_name}/{config_file}:/config/{config_file}:ro \\\n'
+
+        # Add environment variables
+        env_vars = get_execution_env_variables(run_num, config_name)
+        for key, value in env_vars.items():
+            script += f'    -e {key}={value} \\\n'
+
+        if pre_command:
+            script += f'    -e PRE_COMMAND="{pre_command}" \\\n'
+        if post_command:
+            script += f'    -e POST_COMMAND="{post_command}" \\\n'
+
+        script += '    "$DOCKER_IMAGE" \\\n'
+        script += '    $COMMAND\n\n'
+
+        # Check exit code
+        if idx < len(execution_tasks):
             script += '# Check exit code\n'
             script += 'EXIT_CODE=$?\n'
             script += 'if [ $EXIT_CODE -ne 0 ]; then\n'
-            script += f'    echo "Error: Config {idx}/{total_configs} ({config_name}) failed with exit code $EXIT_CODE"\n'
+            script += f'    echo "Error: Config {idx}/{len(execution_tasks)} ({config_name}) failed with exit code $EXIT_CODE"\n'
             script += '    cleanup\n'
             script += '    exit $EXIT_CODE\n'
             script += 'fi\n\n'
         else:
-            # Last one - capture exit code and cleanup
             script += '# Capture exit code and cleanup\n'
             script += 'EXIT_CODE=$?\n'
             script += 'if [ $EXIT_CODE -eq 0 ]; then\n'
             script += f'    echo ""\n'
             script += f'    echo "{"=" * 60}"\n'
-            script += f'    echo "All {total_configs} config(s) completed successfully!"\n'
+            script += f'    echo "All {len(execution_tasks)} config(s) completed successfully!"\n'
             script += f'    echo "{"=" * 60}"\n'
             script += 'else\n'
-            script += f'    echo "Error: Config {idx}/{total_configs} ({config_name}) failed with exit code $EXIT_CODE"\n'
+            script += f'    echo "Error: Config {idx}/{len(execution_tasks)} ({config_name}) failed with exit code $EXIT_CODE"\n'
             script += 'fi\n'
             script += 'cleanup\n'
             script += 'exit $EXIT_CODE\n'
@@ -401,7 +379,7 @@ def generate_docker_run_script(configs, results_dir, output_script_path):
     try:
         with open(output_script_path, 'w') as f:
             f.write(script)
-        os.chmod(output_script_path, 0o755)  # Make the script executable
+        os.chmod(output_script_path, 0o755)
         logger.debug(f"Generated Docker run script: {output_script_path}")
     except Exception as e:  # pylint: disable=broad-except
         logger.error(f"Error writing Docker run script: {e}")

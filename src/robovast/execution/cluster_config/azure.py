@@ -145,7 +145,7 @@ class AzureClusterConfig(BaseConfig):
 
     def cleanup_cluster(self, storage_size="10Gi", **kwargs):
         """Clean up transfer mechanism for Azure cluster.
-        
+
         Args:
             storage_size (str): Size of the persistent volume (default: "10Gi")
             **kwargs: Additional cluster-specific options (ignored)

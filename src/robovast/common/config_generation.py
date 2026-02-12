@@ -218,41 +218,44 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     parameters = load_config(variation_file)
 
     # Get scenario file from configuration section
-    scenarios = parameters.get('configuration', [])
+    configurations = parameters.get('configuration', [])
 
-    scenario_files = []
+    test_files = []
     # Get test_files_filter from config
     test_files_filter = parameters.get("execution", {}).get("test_files_filter", [])
     if test_files_filter:
-        scenario_files = collect_filtered_files(test_files_filter, os.path.dirname(variation_file))
-        progress_update_callback(f"Loaded {len(test_files_filter)} filter patterns (found {len(scenario_files)} files).")
+        additional_test_files = collect_filtered_files(test_files_filter, os.path.dirname(variation_file))
+        progress_update_callback(f"Loaded {len(test_files_filter)} filter patterns (found {len(additional_test_files)} files).")
+        test_files.extend(additional_test_files)
 
     configs = []
     variation_gui_classes = {}
-    # Get scenario_file from execution section (preferred) or fall back to configuration section
+
+    # Get scenario_file from execution section
     execution_scenario_file_name = parameters.get('execution', {}).get('scenario_file')
-    for scenario in scenarios:
-        scenario_file_name = execution_scenario_file_name
-        scenario_file = os.path.join(os.path.dirname(variation_file), scenario_file_name) if scenario_file_name else None
+    scenario_file = os.path.join(os.path.dirname(variation_file), execution_scenario_file_name) if execution_scenario_file_name else None
 
-        if output_dir is None:
-            temp_path = tempfile.TemporaryDirectory(prefix="robovast_variation_")
-            output_dir = temp_path.name
+    if output_dir is None:
+        temp_path = tempfile.TemporaryDirectory(prefix="robovast_variation_")
+        output_dir = temp_path.name
 
+    general_parameters = parameters.get('general', {})
+
+    # Get scenario parameters once (same for all configurations)
+    scenario_param_dict = get_scenario_parameters(scenario_file)
+    existing_scenario_parameters = next(iter(scenario_param_dict.values())) if scenario_param_dict else []
+
+    for config in configurations:
         if variation_classes is None:
             # Read variation classes from the variation file
-            variation_classes_and_parameters = _get_variation_classes(scenario)
+            variation_classes_and_parameters = _get_variation_classes(config)
         else:
             raise NotImplementedError("Passing variation_classes is not implemented yet")
 
-        general_parameters = parameters.get('general', {})
-
         # Initialize config dict with scenario parameters if they exist
         config_dict = {}
-        scenario_param_dict = get_scenario_parameters(scenario_file)
-        existing_scenario_parameters = next(iter(scenario_param_dict.values())) if scenario_param_dict else []
 
-        scenario_parameters = scenario.get('parameters', [])
+        scenario_parameters = config.get('parameters', [])
         if scenario_parameters:
             # Convert list of single-key dicts to a single dict
             for param in scenario_parameters:
@@ -268,17 +271,13 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                 invalid_params = [p for p in config_dict if p not in valid_param_names]
                 if invalid_params:
                     raise ValueError(
-                        f"Invalid parameters in scenario '{scenario['name']}': {invalid_params}. "
+                        f"Invalid parameters in scenario '{config['name']}': {invalid_params}. "
                         f"Valid parameters are: {valid_param_names}"
                     )
 
         current_configs = [{
-            'name': scenario['name'],
-            'config': config_dict,
-            '_config_files': [],
-            '_scenario_file': scenario_file}]
-        if test_files_filter:
-            current_configs[0]['_scenario_files'] = scenario_files
+            'name': config['name'],
+            'config': config_dict}]
 
         for variation_class, parameters in variation_classes_and_parameters:
             variation_gui_class = None
@@ -308,4 +307,9 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     if configs:
         save_scenario_configs_file(configs, os.path.join(output_dir, 'scenario.configs'))
 
-    return configs, variation_gui_classes
+    return {
+        "vast": variation_file,
+        "scenario_file": scenario_file,
+        "configs": configs,
+        "_test_files": test_files
+    }, variation_gui_classes

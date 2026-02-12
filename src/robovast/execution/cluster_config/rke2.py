@@ -176,7 +176,7 @@ class Rke2ClusterConfig(BaseConfig):
 
     def cleanup_cluster(self, **kwargs):
         """Clean up transfer mechanism for RKE2 cluster.
-        
+
         Args:
             **kwargs: Additional cluster-specific options (ignored)
         """

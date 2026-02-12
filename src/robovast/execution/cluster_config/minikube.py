@@ -83,7 +83,7 @@ class MinikubeClusterConfig(BaseConfig):
 
     def cleanup_cluster(self, **kwargs):
         """Clean up transfer mechanism for Minikube cluster.
-        
+
         Args:
             **kwargs: Additional cluster-specific options (ignored)
         """

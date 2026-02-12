@@ -28,7 +28,7 @@ class BaseConfig(object):
 
     def cleanup_cluster(self, **kwargs):
         """Clean up transfer mechanism for the cluster.
-        
+
         Args:
             **kwargs: Cluster-specific configuration options
         """

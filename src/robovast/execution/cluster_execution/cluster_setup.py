@@ -222,16 +222,16 @@ def delete_server(config_name=None):
         None
     """
     cluster_kwargs = {}
-    
+
     # Auto-detect config from flag file if not provided
     if config_name is None:
         name, stored_kwargs = load_cluster_setup_info()
         config_name = name
-        
+
         # Use stored kwargs for cleanup
         if stored_kwargs:
             cluster_kwargs = stored_kwargs
-        
+
         if config_name:
             logger.debug(f"Auto-detected cluster config: {config_name}")
         else:

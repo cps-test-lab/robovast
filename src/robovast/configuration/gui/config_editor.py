@@ -81,7 +81,7 @@ class GenerationWorker(QObject):
     def run(self):
         """Run the generation process."""
         try:
-            configs, variation_gui_classes = generate_scenario_variations(
+            run_data, variation_gui_classes = generate_scenario_variations(
                 variation_file=self.yaml_path,
                 progress_update_callback=self._check_interruption,
                 output_dir=self.output_dir
@@ -92,7 +92,7 @@ class GenerationWorker(QObject):
                 self.cancelled.emit()
                 return
 
-            self.configs = configs
+            self.configs = run_data["configs"]
             self.variation_gui_classes = variation_gui_classes
             self.finished.emit()
         except Exception as e:
