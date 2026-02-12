@@ -106,3 +106,34 @@ def prepare_run_configs(out_dir, run_data):
                 with open(dst_path, 'w') as f:
                     converted_config_data = convert_dataclasses_to_dict(wrapped_config_data)
                     yaml.dump(converted_config_data, f, default_flow_style=False, sort_keys=False)
+
+
+def generate_execution_yaml_script(output_dir_var="${RESULTS_DIR}"):
+    """Generate shell script code to create execution.yaml with ISO formatted timestamp.
+    
+    Args:
+        output_dir_var: Shell variable name for the output directory (default: ${RESULTS_DIR})
+    
+    Returns:
+        String containing shell script code to create execution.yaml
+    """
+    script = f'echo "Creating execution.yaml..."\n'
+    script += f'EXECUTION_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")\n'
+    script += f'cat > "{output_dir_var}/execution.yaml" << EOF\n'
+    script += 'execution_time: ${EXECUTION_TIME}\n'
+    script += 'EOF\n'
+    script += f'echo ""\n\n'
+    return script
+
+
+def create_execution_yaml(output_dir):
+    """Create execution.yaml file with ISO formatted timestamp.
+    
+    Args:
+        output_dir: Directory where execution.yaml will be created
+    """
+    execution_yaml_path = os.path.join(output_dir, "execution.yaml")
+    execution_time = datetime.datetime.now(datetime.timezone.utc).isoformat() + 'Z'
+    with open(execution_yaml_path, 'w') as f:
+        f.write(f"execution_time: {execution_time}\n")
+    logger.debug(f"Created execution.yaml with timestamp: {execution_time}")

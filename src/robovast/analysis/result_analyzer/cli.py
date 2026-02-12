@@ -38,11 +38,14 @@ def analysis():
 @analysis.command(name='postprocess')
 @click.option('--results-dir', '-r', default=None,
               help='Directory containing test results (uses project results dir if not specified)')
-def postprocess_cmd(results_dir):
+@click.option('--force', '-f', is_flag=True,
+              help='Force postprocessing even if results directory is unchanged (bypasses caching)')
+def postprocess_cmd(results_dir, force):
     """Run postprocessing commands on test results.
 
     Executes postprocessing commands defined in the configuration file's
-    analysis.postprocessing section. Postprocessing is skipped if the result-directory is unchanged.
+    analysis.postprocessing section. Postprocessing is skipped if the result-directory is unchanged,
+    unless --force is specified.
 
     Requires project initialization with ``vast init`` first (unless ``--results-dir`` is specified).
     """
@@ -55,13 +58,16 @@ def postprocess_cmd(results_dir):
 
     click.echo("Starting postprocessing...")
     click.echo(f"Results directory: {results_dir}")
+    if force:
+        click.echo("Force mode enabled: bypassing cache")
     click.echo("-" * 60)
 
     # Run postprocessing
     success, message = run_postprocessing(
         config_path=config_path,
         results_dir=results_dir,
-        output_callback=click.echo
+        output_callback=click.echo,
+        force=force
     )
 
     click.echo("\n" + "=" * 60)
@@ -73,7 +79,9 @@ def postprocess_cmd(results_dir):
 @analysis.command(name='gui')
 @click.option('--results-dir', '-r', default=None,
               help='Directory containing test results (uses project results dir if not specified)')
-def result_analyzer_cmd(results_dir):
+@click.option('--force', '-f', is_flag=True,
+              help='Force postprocessing even if results directory is unchanged (bypasses caching)')
+def result_analyzer_cmd(results_dir, force):
     """Launch the graphical test results analyzer.
 
     Opens a GUI application for interactive exploration and
@@ -93,7 +101,8 @@ def result_analyzer_cmd(results_dir):
     success, message = run_postprocessing(
         config_path=config,
         results_dir=results_dir,
-        output_callback=click.echo
+        output_callback=click.echo,
+        force=force
     )
 
     if not success:

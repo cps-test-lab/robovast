@@ -152,11 +152,15 @@ To develop the notebooks, it is recommended to use e.g. VSCode. For the RoboVAST
 
 In case you are using ROS bags as output format, it is recommended to postprocess the results before analysis. This can be done with the postprocessing commands defined in the configuration file. RoboVAST provides several conversion scripts for common use-cases, e.g., converting ROS bag messages to CSV files or tf-frames to poses.
 
+Postprocessing is cached based on the results directory hash. To bypass the cache and force postprocessing (e.g., after updating postprocessing scripts), use the ``--force`` or ``-f`` flag:
+
 Afterwards you can start the GUI:
 
 .. code-block:: bash
 
     vast analysis postprocess
+    # or, to force postprocessing even if results are unchanged:  
+    vast analysis postprocess --force
     vast analysis gui
 
 

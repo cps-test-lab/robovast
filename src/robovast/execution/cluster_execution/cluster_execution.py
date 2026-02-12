@@ -28,7 +28,7 @@ from kubernetes import client
 from kubernetes import config as kube_config
 
 from robovast.common import (get_execution_env_variables, get_run_id,
-                             load_config, prepare_run_configs)
+                             load_config, prepare_run_configs, create_execution_yaml)
 from robovast.common.config_generation import generate_scenario_variations
 from robovast.execution.cluster_execution.kubernetes import (
     check_pod_running, copy_config_to_cluster)
@@ -579,6 +579,9 @@ class JobRunner:
 
             out_dir = os.path.join(temp_dir, "out_template", self.run_id)
             prepare_run_configs(out_dir, self.run_data)
+
+            # Create execution.yaml with ISO formatted timestamp
+            create_execution_yaml(out_dir)
 
             copy_config_to_cluster(os.path.join(temp_dir, "out_template"), self.run_id)
 

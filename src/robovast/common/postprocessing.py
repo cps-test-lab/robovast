@@ -159,13 +159,14 @@ def compute_dir_hash(dir_path):
     return hashlib.md5(hash_string.encode()).hexdigest()
 
 
-def run_postprocessing(config_path: str, results_dir: str, output_callback=None):  # pylint: disable=too-many-return-statements
+def run_postprocessing(config_path: str, results_dir: str, output_callback=None, force: bool = False):  # pylint: disable=too-many-return-statements
     """Run postprocessing commands on test results.
 
     Args:
         config_path: Path to .vast configuration file
         results_dir: Directory containing test results
         output_callback: Optional callback function for output messages (takes message string)
+        force: If True, bypass caching and force postprocessing even if results are unchanged
 
     Returns:
         Tuple of (success: bool, message: str)
@@ -187,27 +188,33 @@ def run_postprocessing(config_path: str, results_dir: str, output_callback=None)
     if not commands:
         return True, "No postprocessing commands defined."
 
-    output(f"Checking if postprocessing is needed...")
-    # Compute hash of results directory
-    start_time = time.time()
-    hash_result = compute_dir_hash(results_dir)
-    elapsed_time = time.time() - start_time
-    output(f"Hashing {results_dir} took {elapsed_time:.4f} seconds")
+    # Skip cache check if force is enabled
+    if not force:
+        output(f"Checking if postprocessing is needed...")
+        # Compute hash of results directory
+        start_time = time.time()
+        hash_result = compute_dir_hash(results_dir)
+        elapsed_time = time.time() - start_time
+        output(f"Hashing {results_dir} took {elapsed_time:.4f} seconds")
 
-    # Check if postprocessing is needed by comparing with stored hash
-    hash_file = os.path.join(results_dir, ".robovast_postprocessing.hash")
+        # Check if postprocessing is needed by comparing with stored hash
+        hash_file = os.path.join(results_dir, ".robovast_postprocessing.hash")
 
-    if os.path.exists(hash_file):
-        try:
-            with open(hash_file, 'r') as f:
-                stored_hash = f.read().strip()
+        if os.path.exists(hash_file):
+            try:
+                with open(hash_file, 'r') as f:
+                    stored_hash = f.read().strip()
 
-            if stored_hash == hash_result:
-                output("Postprocessing skipped: results directory hash unchanged")
-                return True, "Postprocessing not needed (hash unchanged)"
-        except Exception as e:
-            output(f"Warning: Could not read hash file: {e}")
-            # Continue with postprocessing if we can't read the hash file
+                if stored_hash == hash_result:
+                    output("Postprocessing skipped: results directory hash unchanged")
+                    return True, "Postprocessing not needed (hash unchanged)"
+            except Exception as e:
+                output(f"Warning: Could not read hash file: {e}")
+                # Continue with postprocessing if we can't read the hash file
+    else:
+        output("Force mode enabled: skipping cache check")
+        hash_result = compute_dir_hash(results_dir)
+        hash_file = os.path.join(results_dir, ".robovast_postprocessing.hash")
 
     # Load plugins
     plugins = load_postprocessing_plugins()

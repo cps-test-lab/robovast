@@ -211,6 +211,12 @@ First, the results can optionally be postprocessed to simplify later analysis. T
 
    vast analysis postprocess
 
+Postprocessing is cached based on the results directory hash. If the results directory is unchanged since the last postprocessing, the postprocessing is skipped automatically. To force postprocessing even if the results are unchanged (e.g., after updating postprocessing scripts), use the ``--force`` or ``-f`` flag:
+
+.. code-block:: bash
+
+   vast analysis postprocess --force
+
 After postprocessing, the actual analysis can be performed.
 To simplify this process, RoboVAST provides a GUI tool, which enables users to execute Jupyter notebooks directly from a graphical interface.
 

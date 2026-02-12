@@ -21,7 +21,7 @@ import tempfile
 from importlib.resources import files
 
 from robovast.common import (get_execution_env_variables, load_config,
-                             prepare_run_configs)
+                             prepare_run_configs, generate_execution_yaml_script)
 from robovast.common.cli import get_project_config
 from robovast.common.config_generation import generate_scenario_variations
 
@@ -303,6 +303,9 @@ def generate_docker_run_script(runs, run_data, config_path_result, pre_command, 
     script += f'echo "Copying out_template contents to ${{RESULTS_DIR}}..."\n'
     script += f'cp -r "{config_path_result}/"* "${{RESULTS_DIR}}/"\n'
     script += f'echo ""\n\n'
+    
+    # Create execution.yaml with ISO formatted timestamp
+    script += generate_execution_yaml_script()
 
     # Generate docker run commands for each task
     for idx, task in enumerate(execution_tasks, 1):
