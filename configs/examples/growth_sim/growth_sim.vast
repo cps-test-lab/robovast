@@ -25,6 +25,8 @@ execution:
     resources:
       cpu: 1
   runs: 20
+  env:
+  - ENABLE_X11: "false"
   scenario_file: scenario.osc
   test_files_filter:
   - "**/files/*.py"

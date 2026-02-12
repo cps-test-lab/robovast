@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Test script for growth_sim example - tests execution and postprocessing."""
 
-import os
 import shutil
 import subprocess
 import sys
