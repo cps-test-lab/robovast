@@ -150,13 +150,13 @@ To develop the notebooks, it is recommended to use e.g. VSCode. For the RoboVAST
     # for complete run
     DATA_DIR = '<path-to-your-results-directory>/run-<timestamp>'
 
-In case you are using ROS bags as output format, it is recommended to preprocess the results before analysis. This can be done with the preprocessing commands defined in the configuration file. RoboVAST provides several conversion scripts for common use-cases, e.g., converting ROS bag messages to CSV files or tf-frames to poses.
+In case you are using ROS bags as output format, it is recommended to postprocess the results before analysis. This can be done with the postprocessing commands defined in the configuration file. RoboVAST provides several conversion scripts for common use-cases, e.g., converting ROS bag messages to CSV files or tf-frames to poses.
 
 Afterwards you can start the GUI:
 
 .. code-block:: bash
 
-    vast analysis preprocess
+    vast analysis postprocess
     vast analysis gui
 
 
@@ -193,20 +193,20 @@ Example plugin registration:
     variation = "variation_utils.cli:variation"
 
 
-.. _extending-preprocessing:
+.. _extending-postprocessing:
 
-Add Preprocessing Command Plugin
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Add Postprocessing Command Plugin
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Preprocessing plugins are Python functions that process test result directories (e.g., convert rosbag data to CSV). They are registered as entry points and executed before analysis.
+Postprocessing plugins are Python functions that process test result directories (e.g., convert rosbag data to CSV). They are registered as entry points and executed before analysis.
 
-**Creating a Preprocessing Plugin:**
+**Creating a Postprocessing Plugin:**
 
 .. code-block:: python
 
     from typing import Tuple, Optional, List
     
-    def my_preprocessing_command(
+    def my_postprocessing_command(
         results_dir: str,
         config_dir: str,
         custom_param: Optional[str] = None
@@ -239,16 +239,16 @@ Preprocessing plugins are Python functions that process test result directories 
 
 .. code-block:: toml
 
-    [tool.poetry.plugins."robovast.preprocessing_commands"]
-    my_preprocessing_command = "your_package.preprocessing_plugins:my_preprocessing_command"
+    [tool.poetry.plugins."robovast.postprocessing_commands"]
+    my_postprocessing_command = "your_package.postprocessing_plugins:my_postprocessing_command"
 
 **Usage in .vast config:**
 
 .. code-block:: yaml
 
     analysis:
-      preprocessing:
-        - name: my_preprocessing_command
+      postprocessing:
+        - name: my_postprocessing_command
           custom_param: value
         - name: rosbags_tf_to_csv
           frames: [base_link, map]

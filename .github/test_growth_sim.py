@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test script for growth_sim example - tests execution and preprocessing."""
+"""Test script for growth_sim example - tests execution and postprocessing."""
 
 import os
 import shutil
@@ -84,19 +84,19 @@ def check_output_structure(output_dir):
     return True
 
 
-def check_preprocessed_file(results_dir):
-    """Check that the .preprocessed file exists in the results directory."""
-    preprocessed_file = Path(results_dir) / '.preprocessed'
+def check_postprocessed_file(results_dir):
+    """Check that the .postprocessed file exists in the results directory."""
+    postprocessed_file = Path(results_dir) / '.postprocessed'
     
-    if not preprocessed_file.exists():
-        print(f"✗ .preprocessed file not found: {preprocessed_file}")
+    if not postprocessed_file.exists():
+        print(f"✗ .postprocessed file not found: {postprocessed_file}")
         return False
     
-    print(f"✓ .preprocessed file exists: {preprocessed_file}")
+    print(f"✓ .postprocessed file exists: {postprocessed_file}")
     
     # Read and display contents
     try:
-        with open(preprocessed_file, 'r') as f:
+        with open(postprocessed_file, 'r') as f:
             content = f.read().strip()
         print(f"  Content: {content}")
     except Exception as e:
@@ -106,13 +106,13 @@ def check_preprocessed_file(results_dir):
 
 
 def test_growth_sim_workflow():
-    """Test complete growth_sim workflow: init -> execution -> preprocessing."""
+    """Test complete growth_sim workflow: init -> execution -> postprocessing."""
     print("\n" + "="*60)
     print("Testing: Complete growth_sim workflow")
     print("="*60)
     
     # Get the growth_sim config path and repo root
-    repo_root = Path(__file__).parent
+    repo_root = Path(__file__).parent.parent
     config_path = repo_root / 'configs' / 'examples' / 'growth_sim' / 'growth_sim.vast'
     
     if not config_path.exists():
@@ -196,32 +196,32 @@ def test_growth_sim_workflow():
             print("✓ Output structure is valid")
             
             # Step 3: vast analysis preprocess
-            print("\n--- Step 3: vast analysis preprocess ---")
+            print("\n--- Step 3: vast analysis postprocess ---")
             results_dir = output_dir
             
-            # Copy the config file to the results directory as expected by preprocess
+            # Copy the config file to the results directory as expected by postprocess
             shutil.copy(config_path, results_dir / 'growth_sim.vast')
             
-            cmd_preprocess = [
+            cmd_postprocess = [
                 'poetry', 'run', '--directory', str(repo_root),
-                'vast', 'analysis', 'preprocess',
+                'vast', 'analysis', 'postprocess',
                 '--results-dir', str(results_dir)
             ]
             
             # Execute in the same directory where vast init was called (where .robovast_project exists)
-            result = run_command(cmd_preprocess, cwd=temp_path)
+            result = run_command(cmd_postprocess, cwd=temp_path)
             
             if result.returncode != 0:
-                print("✗ vast analysis preprocess failed")
+                print("✗ vast analysis postprocess failed")
                 return False
             
-            print("✓ vast analysis preprocess executed successfully")
+            print("✓ vast analysis postprocess executed successfully")
             
-            # Check for .preprocessed file
-            if not check_preprocessed_file(results_dir):
+            # Check for .postprocessed file
+            if not check_postprocessed_file(results_dir):
                 return False
             
-            print("✓ Preprocessing completed successfully")
+            print("✓ Postprocessing completed successfully")
             
             print("\n✓ Complete workflow succeeded!")
             return True
@@ -243,7 +243,7 @@ def main():
     print("="*60)
     
     tests = [
-        ("Complete workflow: init -> execution -> preprocess", test_growth_sim_workflow),
+        ("Complete workflow: init -> execution -> postprocess", test_growth_sim_workflow),
     ]
     
     results = []

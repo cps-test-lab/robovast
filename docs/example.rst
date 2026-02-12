@@ -205,13 +205,13 @@ Analysis
 As result analysis is tailored to each test, users are expected to implement their own analysis routines.
 
 There are two steps invoked to analyze results.
-First, the results can optionally be preprocessed to simplify later analysis. The user might specify preprocessing commands in ``analysis.preprocessing`` section of the ``.vast`` configuration. Common scripts including converting ROS bags to CSV files or extracting poses from tf-data are available to improve usability.
+First, the results can optionally be postprocessed to simplify later analysis. The user might specify postprocessing commands in ``analysis.postprocessing`` section of the ``.vast`` configuration. Common scripts including converting ROS bags to CSV files or extracting poses from tf-data are available to improve usability.
 
 .. code-block:: bash
 
-   vast analysis preprocess
+   vast analysis postprocess
 
-After preprocessing, the actual analysis can be performed.
+After postprocessing, the actual analysis can be performed.
 To simplify this process, RoboVAST provides a GUI tool, which enables users to execute Jupyter notebooks directly from a graphical interface.
 
 .. code-block:: bash

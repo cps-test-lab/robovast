@@ -15946,7 +15946,7 @@ execution:
   - '**/small_dataset_maps/*.stl'
   - '**/small_dataset_maps/**/maps/*'
 analysis:
-  preprocessing:
+  postprocessing:
     - name: command
       script: ../../tools/docker_exec.sh
       args: [rosbags_to_csv.py]

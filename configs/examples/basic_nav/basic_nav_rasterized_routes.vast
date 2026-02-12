@@ -23,7 +23,7 @@ execution:
   test_files_filter:
   - "**/files/*"
 analysis:
-  preprocessing:
+  postprocessing:
     - name: command
       script: ../../../tools/docker_exec.sh
       args: [rosbags_tf_to_csv.py, --frame, base_link, --frame, turtlebot4_base_link_gt]

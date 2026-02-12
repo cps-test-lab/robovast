@@ -8,7 +8,7 @@ from .config_generation import execute_variation, generate_scenario_variations
 from .execution import (get_execution_env_variables, get_run_id,
                         prepare_run_configs)
 from .file_cache import FileCache
-from .preprocessing import run_preprocessing
+from .postprocessing import run_postprocessing
 
 __all__ = [
     'FileCache',
@@ -24,6 +24,6 @@ __all__ = [
     'filter_configs',
     'get_scenario_parameters',
     'is_scenario_parameter',
-    'run_preprocessing',
+    'run_postprocessing',
     'get_run_id'
 ]

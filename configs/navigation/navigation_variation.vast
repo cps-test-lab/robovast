@@ -44,7 +44,7 @@ execution:
   test_files_filter:
   - "**/files/*"
 analysis:
-  preprocessing:
+  postprocessing:
     - name: command
       script: ../../tools/ros2_exec.sh
       args: [rosbags_to_csv.py]

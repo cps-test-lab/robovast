@@ -312,21 +312,21 @@ Analysis Section
 
 The ``analysis`` section defines how test results should be analyzed.
 
-preprocessing
-^^^^^^^^^^^^^
+postprocessing
+^^^^^^^^^^^^^^
 
 **Type:** List of strings (plugin commands)
 
 **Required:** No
 
-Commands to run for preprocessing test results. These are executed before the analysis GUI is launched and typically convert raw data files into more analysis-friendly formats.
+Commands to run for postprocessing test results. These are executed before the analysis GUI is launched and typically convert raw data files into more analysis-friendly formats.
 
-**All preprocessing commands are plugins.** Each command is specified as a dictionary with a ``name`` field for the plugin name and additional fields for parameters.
+**All postprocessing commands are plugins.** Each command is specified as a dictionary with a ``name`` field for the plugin name and additional fields for parameters.
 
 .. code-block:: yaml
 
    analysis:
-     preprocessing:
+     postprocessing:
        - name: rosbags_tf_to_csv
          frames: [base_link, turtlebot4_base_link_gt]
        - name: rosbags_bt_to_csv
@@ -338,15 +338,15 @@ To list all available plugins and their descriptions:
 
 .. code-block:: bash
 
-   vast analysis preprocess-commands
+   vast analysis postprocess-commands
 
-**Built-in Preprocessing Plugins:**
+**Built-in Postprocessing Plugins:**
 
 - ``rosbags_tf_to_csv``: Convert ROS TF transformations to CSV format. Optional ``frames`` parameter (list of frame names).
 - ``rosbags_bt_to_csv``: Convert ROS behavior tree logs to CSV format (no parameters).
 - ``command``: Execute arbitrary commands or scripts. Requires ``script`` parameter, optional ``args`` parameter (list).
 
-See :ref:`extending-preprocessing` for how to add custom preprocessing plugins.
+See :ref:`extending-postprocessing` for how to add custom postprocessing plugins.
 
 visualization
 ^^^^^^^^^^^^^
@@ -430,7 +430,7 @@ Here's a complete example showing all major configuration options:
          cpu: 4
          memory: 8Gi
    analysis:
-     preprocessing:
+     postprocessing:
      - ../../../tools/docker_exec.sh rosbags_tf_to_csv.py --frame base_link
      - ../../../tools/docker_exec.sh rosbags_bt_to_csv.py
      visualization:

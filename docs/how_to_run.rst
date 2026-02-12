@@ -15,6 +15,6 @@ How to run
 .. click:: robovast.analysis.result_analyzer.cli:analysis
    :prog: vast analysis
    :nested: full
-   :commands: preprocess, gui
+   :commands: postprocess, gui
 
 

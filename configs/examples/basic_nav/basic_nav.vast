@@ -30,7 +30,7 @@ execution:
   test_files_filter:
   - "**/files/*"
 analysis:
-  preprocessing:
+  postprocessing:
     - name: rosbags_tf_to_csv
       frames: [base_link, turtlebot4_base_link_gt]
     - name: rosbags_bt_to_csv
