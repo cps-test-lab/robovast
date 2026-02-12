@@ -26,3 +26,4 @@ xacro
 waypoints
 pre
 postprocess
+rosbag
