@@ -264,16 +264,15 @@ env
 
 **Required:** No
 
-Additional environment variables to set in the test container. Each list item should have ``name`` and ``value`` keys.
+Additional environment variables to set in the test container. Each list item should be a single key-value pair.
 
 .. code-block:: yaml
 
    execution:
      env:
-     - name: RMW_IMPLEMENTATION
-       value: rmw_cyclonedds_cpp
-     - name: CUSTOM_VAR
-       value: custom_value
+     - RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+     - CUSTOM_VAR: custom_value
+     - ENABLE_X11: "false"
 
 kubernetes
 ^^^^^^^^^^
@@ -425,8 +424,7 @@ Here's a complete example showing all major configuration options:
      - "**/files/*"
      - "**/models/*.sdf"
      env:
-     - name: RMW_IMPLEMENTATION
-       value: rmw_cyclonedds_cpp
+     - RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
      kubernetes:
        resources:
          cpu: 4

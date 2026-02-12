@@ -279,7 +279,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
             'name': config['name'],
             'config': config_dict}]
 
-        for variation_class, parameters in variation_classes_and_parameters:
+        for variation_class, variation_parameters in variation_classes_and_parameters:
             variation_gui_class = None
             if hasattr(variation_class, 'GUI_CLASS'):
                 if variation_class.GUI_CLASS is not None:
@@ -295,7 +295,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                         raise ValueError(f"Variation class {variation_class.__name__} has GUI_RENDERER_CLASS defined but no GUI_CLASS.")
                     variation_gui_classes[variation_gui_class].append(variation_gui_renderer_class)
             result = execute_variation(os.path.dirname(variation_file), current_configs, variation_class,
-                                       parameters, general_parameters, progress_update_callback, scenario_file, output_dir)
+                                       variation_parameters, general_parameters, progress_update_callback, scenario_file, output_dir)
             if result is None or len(result) == 0:
                 # If a variation step fails or produces no results, stop the pipeline
                 progress_update_callback(f"Variation pipeline stopped at {variation_class.__name__} - no configs to process")
@@ -305,9 +305,13 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
 
         configs.extend(current_configs)
 
+    # Extract env from execution section
+    execution_env = parameters.get('execution', {}).get('env')
+    print(f"Extracted execution env: {execution_env}")
     return {
         "vast": variation_file,
         "scenario_file": scenario_file,
         "configs": configs,
-        "_test_files": test_files
+        "_test_files": test_files,
+        "env": execution_env
     }, variation_gui_classes

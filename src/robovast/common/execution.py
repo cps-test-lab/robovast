@@ -32,16 +32,37 @@ def get_run_id():
     return f"run-{datetime.datetime.now().strftime('%Y-%m-%d-%H%M%S')}"
 
 
-def get_execution_env_variables(run_num, config_name):
+def get_execution_env_variables(run_num, config_name, additional_env=None):
+    """Get environment variables for execution.
+    
+    Args:
+        run_num: Run number
+        config_name: Configuration name
+        additional_env: Optional list of additional environment variables in format:
+                       [{"KEY": "value"}]
+    
+    Returns:
+        Dictionary of environment variables
+    """
     run_id = get_run_id()
     scenario_id = f"{config_name}-{run_num}"
-    return {
+    env_vars = {
         'RUN_ID': run_id,
         'RUN_NUM': str(run_num),
         'SCENARIO_ID': scenario_id,
         'SCENARIO_CONFIG': config_name,
         'ROS_LOG_DIR': '/out/logs',
     }
+    
+    # Add custom environment variables from execution config
+    if additional_env and isinstance(additional_env, list):
+        for env_item in additional_env:
+            if isinstance(env_item, dict):
+                # Handle simple format: {"KEY": "value"}
+                for key, value in env_item.items():
+                    env_vars[key] = value
+    
+    return env_vars
 
 
 def prepare_run_configs(out_dir, run_data):

@@ -106,7 +106,7 @@ class JobRunner:
 
         self.manifest = self.get_job_manifest(parameters["image"],
                                               parameters["kubernetes"]["resources"],
-                                              parameters.get("env", []),
+                                              [],  # env vars handled per-job in create_job_manifest_for_scenario
                                               self.run_as_user)
 
         # Generate configs with filtered files
@@ -193,7 +193,7 @@ class JobRunner:
             if 'env' not in containers[0]:
                 containers[0]['env'] = []
 
-            env_vars = get_execution_env_variables(run_number, scenario_key)
+            env_vars = get_execution_env_variables(run_number, scenario_key, self.run_data.get('env'))
             for name, val in env_vars.items():
                 containers[0]['env'].append({
                     'name': str(name),
