@@ -105,6 +105,19 @@ A good practice is, to first run a single configuration to verify that everythin
     # Results are organized as: <results-dir>/run-<timestamp>/<config-name>/<test_number>/
     find ./results/
 
+For long-running tests, you can use detached mode to run jobs in the background:
+
+.. code-block:: bash
+
+    # Run in detached mode (command exits after creating jobs)
+    vast execution cluster run --detach
+    
+    # Monitor job status
+    kubectl get jobs
+    
+    # Clean up after jobs complete
+    vast execution cluster run-cleanup
+
 Running local container images in minikube
 """""""""""""""""""""""""""""""""""""""""""
 

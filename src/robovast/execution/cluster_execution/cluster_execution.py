@@ -38,6 +38,44 @@ from .manifests import JOB_TEMPLATE
 logger = logging.getLogger(__name__)
 
 
+def cleanup_cluster_run():
+    """Clean up all scenario run jobs and pods from the cluster.
+    
+    This function removes all Kubernetes jobs and pods with the label
+    'jobgroup=scenario-runs' from the default namespace. It's used after
+    a detached run to clean up resources once jobs have completed.
+    """
+    kube_config.load_kube_config()
+    k8s_client = client.CoreV1Api()
+    k8s_batch_client = client.BatchV1Api()
+    
+    # Cleanup jobs
+    try:
+        logger.debug("Deleting all jobs with label 'jobgroup=scenario-runs'")
+        k8s_batch_client.delete_collection_namespaced_job(
+            namespace="default",
+            label_selector="jobgroup=scenario-runs",
+            body=client.V1DeleteOptions(grace_period_seconds=0)
+        )
+        logger.info("Successfully deleted all scenario-runs jobs")
+    except client.rest.ApiException as e:
+        logger.error(f"Error deleting jobs with label selector: {e}")
+        raise
+    
+    # Cleanup pods
+    try:
+        logger.debug("Deleting all pods with label 'jobgroup=scenario-runs'")
+        k8s_client.delete_collection_namespaced_pod(
+            namespace="default",
+            label_selector="jobgroup=scenario-runs",
+            body=client.V1DeleteOptions(grace_period_seconds=0)
+        )
+        logger.debug("Successfully cleaned up all scenario-runs pods")
+    except client.rest.ApiException as e:
+        logger.error(f"Error deleting pods with label selector: {e}")
+        raise
+
+
 class JobRunner:
     def __init__(self, config_path, single_config=None, num_runs=None, cluster_config=None):
         self.cluster_config = cluster_config
@@ -437,7 +475,7 @@ class JobRunner:
         except client.rest.ApiException as e:
             logger.error(f"Error deleting jobs with label selector: {e}")
 
-    def run(self):
+    def run(self, detached=False):
         # check if k8s element names have "$ITEM" template
         manifest_data = self.manifest
         if '$SCENARIO_ID' not in manifest_data['metadata']['name']:
@@ -481,6 +519,12 @@ class JobRunner:
                 logger.debug(f"Created job {job_name} for run {run_number + 1}")
 
         logger.info(f"All {len(all_jobs)} jobs created. Starting execution...")
+        
+        # If detached, exit here without waiting
+        if detached:
+            logger.info("Running in detached mode. Jobs will continue running in the background.")
+            return
+        
         # Track run start time
         self.run_start_time = datetime.datetime.now(datetime.timezone.utc)
 

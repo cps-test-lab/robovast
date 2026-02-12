@@ -23,6 +23,10 @@ To run the example, execute the following commands in the base folder of the Rob
     
    # execute the tests in the cluster
    vast execution cluster run
+   
+   # OR: execute in detached mode (exit immediately, cleanup manually)
+   # vast execution cluster run --detach
+   # vast execution cluster run-cleanup  # run this after jobs complete
     
    # download results from the cluster
    vast execution cluster download
@@ -142,6 +146,31 @@ To execute all tests in the cluster, run:
 .. code-block:: bash
 
    vast execution cluster run
+
+By default, this command waits for all jobs to complete and displays statistics.
+
+**Detached Execution**
+
+For long-running tests, you can use the ``--detach`` (or ``-d``) flag to exit immediately after creating the jobs:
+
+.. code-block:: bash
+
+   vast execution cluster run --detach
+
+When running in detached mode:
+
+- The command exits right after creating all Kubernetes jobs
+- Jobs continue running in the background in the cluster
+- You can monitor job status using ``kubectl get jobs``
+- You need to manually clean up jobs after they complete
+
+To clean up after a detached run:
+
+.. code-block:: bash
+
+   vast execution cluster run-cleanup
+
+This removes all scenario execution jobs and their associated pods from the cluster.
 
 Download Results
 """"""""""""""""

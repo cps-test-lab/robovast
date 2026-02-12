@@ -175,11 +175,16 @@ def cluster():
               help='Run only a specific configuration by name')
 @click.option('--runs', '-r', type=int, default=None,
               help='Override the number of runs specified in the config')
-def run(config, runs):  # pylint: disable=function-redefined
+@click.option('--detach', '-d', is_flag=True,
+              help='Exit after creating jobs without waiting for completion')
+def run(config, runs, detach):  # pylint: disable=function-redefined
     """Execute scenarios on a Kubernetes cluster.
 
     Deploys all test configurations (or a specific one) as Kubernetes jobs
     for distributed parallel execution.
+
+    Use --detach to exit immediately after creating jobs without waiting.
+    Use 'vast execution cluster run-cleanup' to clean up jobs afterwards.
 
     Requires project initialization with ``vast init`` first.
     """
@@ -228,13 +233,23 @@ def run(config, runs):  # pylint: disable=function-redefined
 
     try:
         job_runner = JobRunner(project_config.config_path, config, runs, cluster_config)
-        job_runner.run()
-        click.echo("Cluster execution finished.")
-        click.echo()
-        click.echo("You can now download the results using:")
-        click.echo()
-        click.echo("  vast execution cluster download")
-        click.echo()
+        job_runner.run(detached=detach)
+        
+        if detach:
+            click.echo(f"✓ Jobs created successfully (Run ID: {job_runner.run_id})")
+            click.echo()
+            click.echo("Jobs are now running in detached mode.")
+            click.echo()
+            click.echo("To check job status, use: kubectl get jobs")
+            click.echo("To clean up jobs, use: vast execution cluster run-cleanup")
+            click.echo()
+        else:
+            click.echo("Cluster execution finished.")
+            click.echo()
+            click.echo("You can now download the results using:")
+            click.echo()
+            click.echo("  vast execution cluster download")
+            click.echo()
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -335,17 +350,50 @@ def setup(list_configs, options, force, cluster_config):
         sys.exit(1)
 
 
+@cluster.command(name='run-cleanup')
+def run_cleanup():
+    """Clean up jobs and pods from a cluster run.
+    
+    Removes all scenario execution jobs and their associated pods.
+    This is useful after running with --detach to clean up resources
+    once jobs have completed.
+    
+    Usage: vast execution cluster run-cleanup
+    """
+    try:
+        from robovast.execution.cluster_execution.cluster_execution import cleanup_cluster_run
+        
+        # Get Kubernetes client
+        k8s_client = get_kubernetes_client()
+        
+        # Check Kubernetes access
+        click.echo("Checking Kubernetes cluster access...")
+        k8s_ok, k8s_msg = check_kubernetes_access(k8s_client)
+        if not k8s_ok:
+            click.echo(f"✗ Error: {k8s_msg}", err=True)
+            sys.exit(1)
+        
+        click.echo("Cleaning up scenario run jobs and pods...")
+        cleanup_cluster_run()
+        click.echo("✓ Cleanup completed successfully!")
+        
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
 @cluster.command()
 @click.option('--cluster-config', '-c', 'config_name', default=None,
               help='Cluster configuration plugin to use (auto-detects if not specified)')
 def cleanup(config_name):
-    """Clean up the Kubernetes cluster after execution.
+    """Clean up the Kubernetes cluster setup.
 
     Removes the NFS server pod and service from the Kubernetes cluster
     by deleting the NFS manifest configuration.
 
     This command can be run after completing all scenario executions
-    to clean up cluster resources.
+    to clean up cluster infrastructure resources (different from run-cleanup
+    which only cleans up job pods).
 
     If ``--config`` is not specified, it will automatically detect which
     cluster configuration was used during setup.
