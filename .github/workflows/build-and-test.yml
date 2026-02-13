@@ -56,6 +56,6 @@ jobs:
             exit 1
           fi
 
-      - name: Run Example tests
+      - name: Run Nav Example
         run: |
-          poetry run .github/test_vast.py configs/examples/basic_nav/basic_nav.vast -c test-1
+          xvfb-run poetry run .github/test_vast.py configs/examples/basic_nav/basic_nav.vast -c test-1
