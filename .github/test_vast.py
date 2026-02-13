@@ -3,7 +3,6 @@
 
 import os
 import argparse
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -13,11 +12,10 @@ from pathlib import Path
 import traceback
 
 # Global variable to track the current subprocess
-_current_process = None
+_current_process = None  # pylint: disable=invalid-name
 
 def _signal_handler(signum, frame):
     """Handle signals and forward them to the subprocess."""
-    global _current_process
     if _current_process is not None:
         print(f"\nReceived signal {signum}, forwarding to subprocess...")
         try:
@@ -28,7 +26,7 @@ def _signal_handler(signum, frame):
 
 def run_command(cmd, cwd=None, check=True):
     """Run a command and return the result."""
-    global _current_process
+    global _current_process  # pylint: disable=global-statement
     
     print(f"Running: {' '.join(cmd)}")
     
@@ -52,18 +50,9 @@ def run_command(cmd, cwd=None, check=True):
         signal.signal(signal.SIGTERM, old_sigterm_handler)
         
         if check and returncode != 0:
-            # Create a result-like object for compatibility
-            class Result:
-                def __init__(self, returncode):
-                    self.returncode = returncode
             raise subprocess.CalledProcessError(returncode, cmd)
         
-        # Return a result-like object
-        class Result:
-            def __init__(self, returncode):
-                self.returncode = returncode
-        
-        return Result(returncode)
+        return returncode
     
     except KeyboardInterrupt:
         # Handle Ctrl+C gracefully
@@ -88,11 +77,11 @@ def run_command(cmd, cwd=None, check=True):
         try:
             signal.signal(signal.SIGINT, old_sigint_handler)
             signal.signal(signal.SIGTERM, old_sigterm_handler)
-        except:
+        except (ValueError, OSError):
             pass
 
 
-def check_results_dir_structure(results_dir):
+def check_results_dir_structure(results_dir):  # pylint: disable=too-many-return-statements
     """Check that the results directory has the expected structure."""
     output_path = Path(results_dir)
     
@@ -244,7 +233,7 @@ def test_vast_workflow(vast_file_path, config=None):  # pylint: disable=too-many
             
             result = run_command(cmd_init, cwd=temp_output)
             
-            if result.returncode != 0:
+            if result != 0:
                 print("✗ vast init failed")
                 return False
             
@@ -272,7 +261,7 @@ def test_vast_workflow(vast_file_path, config=None):  # pylint: disable=too-many
             
             result = run_command(cmd_exec, cwd=temp_output)
             
-            if result.returncode != 0:
+            if result != 0:
                 print("✗ vast execution local run failed")
                 return False
             
@@ -295,7 +284,7 @@ def test_vast_workflow(vast_file_path, config=None):  # pylint: disable=too-many
             # Execute in the repo root where .robovast_project exists
             result = run_command(cmd_postprocess, cwd=temp_output)
             
-            if result.returncode != 0:
+            if result != 0:
                 print("✗ vast analysis postprocess failed")
                 return False
             
