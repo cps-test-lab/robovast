@@ -39,23 +39,24 @@ jobs:
         run: |
           poetry install
 
-      - name: Run CLI tests
-        run: |
-          bash .github/test_commands.sh
-
       - name: Run Example tests
         run: |
           poetry run .github/test_vast.py configs/examples/growth_sim/growth_sim.vast -c test-1-1
 
       - name: Check postprocessed file for growth_sim
         run: |
-          find results -type f
-
           if [ ! -f "results/.postprocessed" ]; then
             echo "✗ .postprocessed file not found for growth_sim.vast"
             exit 1
           fi
 
       - name: Run Nav Example
+        timeout-minutes: 8
         run: |
-          xvfb-run poetry run .github/test_vast.py configs/examples/basic_nav/basic_nav.vast -c test-1
+          Xvfb :1 -screen 0 800x600x16 &
+          export DISPLAY=:1.0
+          poetry run .github/test_vast.py configs/examples/basic_nav/basic_nav.vast -c test-1
+
+      - name: Run CLI tests
+        run: |
+          bash .github/test_commands.sh
