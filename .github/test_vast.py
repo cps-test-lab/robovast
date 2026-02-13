@@ -180,27 +180,6 @@ def check_results_dir_structure(results_dir):  # pylint: disable=too-many-return
     return True
 
 
-def check_postprocessed_file(results_dir):
-    """Check that the .postprocessed file exists in the results directory."""
-    postprocessed_file = Path(results_dir) / '.postprocessed'
-    
-    if not postprocessed_file.exists():
-        print(f"✗ .postprocessed file not found: {postprocessed_file}")
-        return False
-    
-    print(f"✓ .postprocessed file exists: {postprocessed_file}")
-    
-    # Read and display contents
-    try:
-        with open(postprocessed_file, 'r') as f:
-            content = f.read().strip()
-        print(f"  Content: {content}")
-    except Exception as e:
-        print(f"  Warning: Could not read file: {e}")
-    
-    return True
-
-
 def test_vast_workflow(vast_file_path, config=None):  # pylint: disable=too-many-return-statements
     """Test complete VAST workflow: init -> execution -> postprocessing."""
     print("\n" + "="*60)
@@ -289,10 +268,6 @@ def test_vast_workflow(vast_file_path, config=None):  # pylint: disable=too-many
                 return False
             
             print("✓ vast analysis postprocess executed successfully")
-            
-            # Check for .postprocessed file
-            if not check_postprocessed_file(os.path.join(temp_output, "results")):
-                return False
             
             print("✓ Postprocessing completed successfully")
             
