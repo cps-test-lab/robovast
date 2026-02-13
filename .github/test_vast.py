@@ -268,7 +268,7 @@ def test_vast_workflow(vast_file_path, config=None):  # pylint: disable=too-many
             print("✓ vast execution local run executed successfully")
             
             # Check output structure
-            if not check_results_dir_structure(os.path.join(temp_output, "results")):
+            if not check_results_dir_structure(os.path.join(repo_root, "results")):
                 return False
             
             print("✓ Output structure is valid")
