@@ -7,23 +7,89 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import signal
 from pathlib import Path
 
 import traceback
 
+# Global variable to track the current subprocess
+_current_process = None
+
+def _signal_handler(signum, frame):
+    """Handle signals and forward them to the subprocess."""
+    global _current_process
+    if _current_process is not None:
+        print(f"\nReceived signal {signum}, forwarding to subprocess...")
+        try:
+            _current_process.send_signal(signum)
+        except ProcessLookupError:
+            # Process already terminated
+            pass
+
 def run_command(cmd, cwd=None, check=True):
     """Run a command and return the result."""
+    global _current_process
+    
     print(f"Running: {' '.join(cmd)}")
-    result = subprocess.run(
-        cmd,
-        cwd=cwd,
-        check=False
-    )
     
-    if check and result.returncode != 0:
-        raise subprocess.CalledProcessError(result.returncode, cmd)
+    # Set up signal handler
+    old_sigint_handler = signal.signal(signal.SIGINT, _signal_handler)
+    old_sigterm_handler = signal.signal(signal.SIGTERM, _signal_handler)
     
-    return result
+    try:
+        _current_process = subprocess.Popen(
+            cmd,
+            cwd=cwd
+        )
+        
+        # Wait for process to complete
+        returncode = _current_process.wait()
+        
+        _current_process = None
+        
+        # Restore old signal handlers
+        signal.signal(signal.SIGINT, old_sigint_handler)
+        signal.signal(signal.SIGTERM, old_sigterm_handler)
+        
+        if check and returncode != 0:
+            # Create a result-like object for compatibility
+            class Result:
+                def __init__(self, returncode):
+                    self.returncode = returncode
+            raise subprocess.CalledProcessError(returncode, cmd)
+        
+        # Return a result-like object
+        class Result:
+            def __init__(self, returncode):
+                self.returncode = returncode
+        
+        return Result(returncode)
+    
+    except KeyboardInterrupt:
+        # Handle Ctrl+C gracefully
+        print("\nInterrupted by user")
+        if _current_process is not None:
+            try:
+                _current_process.send_signal(signal.SIGINT)
+                _current_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                print("Process did not terminate, forcing kill...")
+                _current_process.kill()
+                _current_process.wait()
+            except ProcessLookupError:
+                pass
+        _current_process = None
+        signal.signal(signal.SIGINT, old_sigint_handler)
+        signal.signal(signal.SIGTERM, old_sigterm_handler)
+        raise
+    
+    finally:
+        # Ensure we restore signal handlers
+        try:
+            signal.signal(signal.SIGINT, old_sigint_handler)
+            signal.signal(signal.SIGTERM, old_sigterm_handler)
+        except:
+            pass
 
 
 def check_results_dir_structure(results_dir):
