@@ -328,11 +328,19 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         "run_as_user": execution_section.get('run_as_user')
     }
     
-    return {
+    # Build result dictionary
+    result = {
         "vast": variation_file,
         "scenario_file": scenario_file,
         "configs": configs,
         "_test_files": test_files,
         "execution": execution_params,
         "created_at": datetime.now().isoformat()
-    }, variation_gui_classes
+    }
+    
+    # Add metadata if it exists
+    metadata = parameters.get('metadata')
+    if metadata:
+        result["metadata"] = metadata
+    
+    return result, variation_gui_classes

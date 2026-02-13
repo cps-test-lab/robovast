@@ -13,6 +13,10 @@ A ``.vast`` configuration file has the following top-level structure:
 .. code-block:: yaml
 
    version: 1
+   metadata:
+     title: "Project Title"
+     description: "Project description"
+     ...
    configuration:
      - name: scenario1
        ...
@@ -33,6 +37,29 @@ Specifies the version of the configuration file format. Currently, only version 
 .. code-block:: yaml
 
    version: 1
+
+
+Metadata Section
+----------------
+
+**Type:** Dictionary
+
+**Required:** No
+
+The ``metadata`` section allows you to provide structured information about the test configuration. This section can contain arbitrary key-value pairs and nested structures. If present, the metadata will be included in the generated ``configurations.yaml`` file.
+
+.. code-block:: yaml
+
+   metadata:
+     title: "Robot Navigation Test Results"
+     description: "Autonomous navigation performance evaluation"
+     creator: "Your Name"
+     keywords: ["robotics", "navigation", "ROS2"]
+     license: "CC-BY-4.0"
+     custom_fields:
+       nested_data: "value"
+
+All fields within ``metadata`` are optional and can be customized according to your needs.
 
 
 Configuration Section

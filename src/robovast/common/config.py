@@ -107,6 +107,7 @@ class AnalysisConfig(BaseModel):
 class ConfigV1(BaseModel):
     model_config = ConfigDict(extra='forbid')
     version: int = 1
+    metadata: Optional[dict[str, Any]] = None
     general: Optional[GeneralConfig] = None
     configuration: Optional[list[ConfigurationConfig]] = None
     execution: ExecutionConfig
