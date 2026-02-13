@@ -27,3 +27,4 @@ waypoints
 pre
 postprocess
 rosbag
+rosbags
