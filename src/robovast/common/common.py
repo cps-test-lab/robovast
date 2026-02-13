@@ -31,8 +31,17 @@ from .file_cache import FileCache
 logger = logging.getLogger(__name__)
 
 
-def load_config(config_file, subsection=None):
-    """Load and parse scenario variation file."""
+def load_config(config_file, subsection=None, allow_missing=False):
+    """Load and parse scenario variation file.
+    
+    Args:
+        config_file: Path to the configuration file
+        subsection: Optional subsection to extract
+        allow_missing: If True, return empty dict when subsection is missing instead of raising error
+    
+    Returns:
+        Configuration dict or subsection dict
+    """
     logger.debug(f"Loading config file: {config_file}")
     if not config_file:
         logger.error("No config file provided")
@@ -57,8 +66,12 @@ def load_config(config_file, subsection=None):
             if subsection:
                 subsection_data = config.get(subsection, None)
                 if not subsection_data:
-                    logger.error(f"No subsection '{subsection}' found in configuration")
-                    raise ValueError(f"No subsection '{subsection}' found in configuration")
+                    if allow_missing:
+                        logger.debug(f"No subsection '{subsection}' found in configuration, returning empty dict")
+                        return {}
+                    else:
+                        logger.error(f"No subsection '{subsection}' found in configuration")
+                        raise ValueError(f"No subsection '{subsection}' found in configuration")
                 logger.debug(f"Successfully loaded config subsection: {subsection}")
                 return subsection_data
             else:
@@ -99,29 +112,6 @@ def convert_dataclasses_to_dict(obj):  # pylint: disable=too-many-return-stateme
         return bool(obj)
     else:
         return obj
-
-
-def save_scenario_configs_file(configs, output_file):
-    # Ensure the directory exists
-    os.makedirs(os.path.dirname(output_file), exist_ok=True)
-
-    # Create the complete data structure with configs and settings
-    data_to_save = []
-
-    for config_data in configs:
-        # Convert dataclasses to dicts automatically
-        converted_config = convert_dataclasses_to_dict(config_data)
-        converted_config.pop('path', None)
-        data_to_save.append(converted_config)
-
-    # Write settings at the top, then configurations
-    with open(output_file, "w") as f:
-        # Write each config as a separate YAML document
-        for idx, config_dict in enumerate(data_to_save):
-            yaml.dump(config_dict, f, default_flow_style=False)
-            # separate documents with '---'
-            if idx < len(data_to_save) - 1:
-                f.write("---\n")
 
 
 def filter_configs(configs):

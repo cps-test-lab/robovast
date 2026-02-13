@@ -143,6 +143,9 @@ class Rke2ClusterConfig(BaseConfig):
             **kwargs: Cluster-specific options (ignored for RKE2)
         """
         logging.info("Setting up RoboVAST in RKE2 cluster...")
+        logging.info("")
+        logging.info("Please ensure, that folder /transfer exists on all cluster nodes and is writable by the NFS server pod.")
+        logging.info("")
 
         # Load Kubernetes configuration
         config.load_kube_config()

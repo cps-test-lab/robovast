@@ -21,9 +21,10 @@ import sys
 
 import click
 
-from robovast.common.cli import get_project_config
+from robovast.common.cli import get_project_config, handle_cli_exception
+from robovast.common.postprocessing import load_postprocessing_plugins
 
-from ...common import run_preprocessing
+from ...common import run_postprocessing
 
 
 @click.group()
@@ -34,14 +35,17 @@ def analysis():
     """
 
 
-@analysis.command(name='preprocess')
+@analysis.command(name='postprocess')
 @click.option('--results-dir', '-r', default=None,
               help='Directory containing test results (uses project results dir if not specified)')
-def preprocess_cmd(results_dir):
-    """Run preprocessing commands on test results.
+@click.option('--force', '-f', is_flag=True,
+              help='Force postprocessing even if results directory is unchanged (bypasses caching)')
+def postprocess_cmd(results_dir, force):
+    """Run postprocessing commands on test results.
 
-    Executes preprocessing commands defined in the configuration file's
-    analysis.preprocessing section. Preprocessing is skipped if the result-directory is unchanged.
+    Executes postprocessing commands defined in the configuration file's
+    analysis.postprocessing section. Postprocessing is skipped if the result-directory is unchanged,
+    unless --force is specified.
 
     Requires project initialization with ``vast init`` first (unless ``--results-dir`` is specified).
     """
@@ -52,15 +56,18 @@ def preprocess_cmd(results_dir):
     # Use provided results_dir or fall back to project results dir
     results_dir = results_dir if results_dir is not None else project_config.results_dir
 
-    click.echo("Starting preprocessing...")
+    click.echo("Starting postprocessing...")
     click.echo(f"Results directory: {results_dir}")
+    if force:
+        click.echo("Force mode enabled: bypassing cache")
     click.echo("-" * 60)
 
-    # Run preprocessing
-    success, message = run_preprocessing(
+    # Run postprocessing
+    success, message = run_postprocessing(
         config_path=config_path,
         results_dir=results_dir,
-        output_callback=click.echo
+        output_callback=click.echo,
+        force=force
     )
 
     click.echo("\n" + "=" * 60)
@@ -72,11 +79,13 @@ def preprocess_cmd(results_dir):
 @analysis.command(name='gui')
 @click.option('--results-dir', '-r', default=None,
               help='Directory containing test results (uses project results dir if not specified)')
-def result_analyzer_cmd(results_dir):
+@click.option('--force', '-f', is_flag=True,
+              help='Force postprocessing even if results directory is unchanged (bypasses caching)')
+def result_analyzer_cmd(results_dir, force):
     """Launch the graphical test results analyzer.
 
     Opens a GUI application for interactive exploration and
-    visualization of test results. Automatically runs preprocessing
+    visualization of test results. Automatically runs postprocessing
     before launching the GUI.
 
     Requires project initialization with ``vast init`` first (unless ``--results-dir`` is specified).
@@ -88,16 +97,17 @@ def result_analyzer_cmd(results_dir):
     # Use provided results_dir or fall back to project results dir
     results_dir = results_dir if results_dir is not None else project_config.results_dir
 
-    # Run preprocessing before launching GUI
-    success, message = run_preprocessing(
+    # Run postprocessing before launching GUI
+    success, message = run_postprocessing(
         config_path=config,
         results_dir=results_dir,
-        output_callback=click.echo
+        output_callback=click.echo,
+        force=force
     )
 
     if not success:
-        click.echo(f"\n✗ Preprocessing failed: {message}", err=True)
-        click.echo("Cannot launch GUI without successful preprocessing.", err=True)
+        click.echo(f"\n✗ Postprocessing failed: {message}", err=True)
+        click.echo("Cannot launch GUI without successful postprocessing.", err=True)
         sys.exit(1)
 
     try:
@@ -125,5 +135,51 @@ def result_analyzer_cmd(results_dir):
         sys.exit(exit_code)
 
     except Exception as e:
-        click.echo(f"Application error: {e}", err=True)
-        sys.exit(1)
+        handle_cli_exception(e)
+
+
+@analysis.command(name='postprocess-commands')
+def list_postprocessing_commands():
+    """List all available postprocessing command plugins.
+
+    Shows plugin names that can be used in the analysis.postprocessing section
+    of the configuration file, along with their descriptions and parameters.
+    """
+    plugins = load_postprocessing_plugins()
+
+    if not plugins:
+        click.echo("No postprocessing command plugins available.")
+        click.echo("\nPostprocessing commands can be registered as plugins.")
+        click.echo("See documentation for how to add custom postprocessing commands.")
+        return
+
+    click.echo("Available postprocessing command plugins:")
+    click.echo("=" * 70)
+
+    # Sort by plugin name for consistent output
+    for plugin_name in sorted(plugins.keys()):
+        click.echo(f"\n{plugin_name}")
+
+        # Try to get the function's docstring
+        try:
+            func = plugins[plugin_name]
+            if func.__doc__:
+                # Clean up docstring and display first line
+                doc_lines = [line.strip() for line in func.__doc__.strip().split('\n') if line.strip()]
+                if doc_lines:
+                    click.echo(f"  Description: {doc_lines[0]}")
+        except Exception:
+            pass
+
+    click.echo("\n" + "=" * 70)
+    click.echo("\nUsage in configuration file:")
+    click.echo("\n  analysis:")
+    click.echo("    postprocessing:")
+    click.echo("    - rosbags_tf_to_csv:")
+    click.echo("        frames: [base_link, map]")
+    click.echo("    - rosbags_bt_to_csv")
+    click.echo("    - command:")
+    click.echo("        script: ../../../tools/custom_script.sh")
+    click.echo("        args: [--arg, value]")
+    click.echo("\nCommands without parameters can be simple strings.")
+    click.echo("Commands with parameters use plugin name as key with parameters as dict.")

@@ -67,23 +67,47 @@ class ExecutionConfig(BaseModel):
     scenario_file: Optional[str] = None
     test_files_filter: Optional[list[str]] = None
 
-
-class PreprocessingConfig(BaseModel):
-    pass
-
+    @field_validator('env')
+    @classmethod
+    def validate_no_reserved_env_vars(cls, v: Optional[list[dict[str, str]]]) -> Optional[list[dict[str, str]]]:
+        """Validate that env does not contain reserved environment variable names."""
+        if v is None:
+            return v
+        
+        # Reserved keys that are set automatically during execution
+        reserved_keys = {
+            'RUN_ID', 'RUN_NUM', 'SCENARIO_ID', 'SCENARIO_CONFIG', 'ROS_LOG_DIR',
+            'PRE_COMMAND', 'POST_COMMAND'
+        }
+        
+        found_reserved = []
+        for env_item in v:
+            if isinstance(env_item, dict):
+                for key in env_item.keys():
+                    if key in reserved_keys:
+                        found_reserved.append(key)
+        
+        if found_reserved:
+            raise ValueError(
+                f"execution.env contains reserved environment variable names: {', '.join(found_reserved)}. "
+                f"Reserved names are: {', '.join(sorted(reserved_keys))}"
+            )
+        
+        return v
 
 class VisualizationConfig(BaseModel):
     pass
 
 
 class AnalysisConfig(BaseModel):
-    preprocessing: Optional[list[str]] = None
+    postprocessing: Optional[list[str | dict[str, Any]]] = None
     visualization: Optional[list[dict[str, Any]]] = None
 
 
 class ConfigV1(BaseModel):
     model_config = ConfigDict(extra='forbid')
     version: int = 1
+    metadata: Optional[dict[str, Any]] = None
     general: Optional[GeneralConfig] = None
     configuration: Optional[list[ConfigurationConfig]] = None
     execution: ExecutionConfig

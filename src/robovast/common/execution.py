@@ -32,16 +32,37 @@ def get_run_id():
     return f"run-{datetime.datetime.now().strftime('%Y-%m-%d-%H%M%S')}"
 
 
-def get_execution_env_variables(run_num, config_name):
+def get_execution_env_variables(run_num, config_name, additional_env=None):
+    """Get environment variables for execution.
+    
+    Args:
+        run_num: Run number
+        config_name: Configuration name
+        additional_env: Optional list of additional environment variables in format:
+                       [{"KEY": "value"}]
+    
+    Returns:
+        Dictionary of environment variables
+    """
     run_id = get_run_id()
     scenario_id = f"{config_name}-{run_num}"
-    return {
+    env_vars = {
         'RUN_ID': run_id,
         'RUN_NUM': str(run_num),
         'SCENARIO_ID': scenario_id,
         'SCENARIO_CONFIG': config_name,
         'ROS_LOG_DIR': '/out/logs',
     }
+    
+    # Add custom environment variables from execution config
+    if additional_env and isinstance(additional_env, list):
+        for env_item in additional_env:
+            if isinstance(env_item, dict):
+                # Handle simple format: {"KEY": "value"}
+                for key, value in env_item.items():
+                    env_vars[key] = value
+    
+    return env_vars
 
 
 def prepare_run_configs(out_dir, run_data):
@@ -59,6 +80,12 @@ def prepare_run_configs(out_dir, run_data):
 
     run_config_dir = os.path.join(out_dir, "_config")
     os.makedirs(run_config_dir, exist_ok=True)
+
+    # Save scenario variations as YAML in _config subdirectory
+    scenario_variations_path = os.path.join(run_config_dir, "configurations.yaml")
+    with open(scenario_variations_path, 'w') as f:
+        yaml.dump(convert_dataclasses_to_dict(run_data), f, default_flow_style=False, sort_keys=False)
+    logger.debug(f"Saved configurations to {scenario_variations_path}")
 
     vast_file_path = os.path.dirname(run_data["vast"])
     # copy scenario_file
@@ -106,3 +133,87 @@ def prepare_run_configs(out_dir, run_data):
                 with open(dst_path, 'w') as f:
                     converted_config_data = convert_dataclasses_to_dict(wrapped_config_data)
                     yaml.dump(converted_config_data, f, default_flow_style=False, sort_keys=False)
+
+
+def generate_execution_yaml_script(runs, execution_params=None, output_dir_var="${RESULTS_DIR}"):
+    """Generate shell script code to create execution.yaml with ISO formatted timestamp.
+    
+    Args:
+        runs: Number of runs
+        execution_params: Dictionary containing execution parameters (run_as_user, env, etc.)
+        output_dir_var: Shell variable name for the output directory (default: ${RESULTS_DIR})
+    
+    Returns:
+        String containing shell script code to create execution.yaml
+    """
+    if execution_params is None:
+        execution_params = {}
+    
+    script = f'echo "Creating execution.yaml..."\n'
+    script += f'EXECUTION_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")\n'
+    script += f'cat > "{output_dir_var}/execution.yaml" << EOF\n'
+    script += 'execution_time: ${EXECUTION_TIME}\n'
+    script += f'runs: {runs}\n'
+    script += f'execution_type: local\n'
+    
+    # Add run_as_user if provided
+    run_as_user = execution_params.get('run_as_user')
+    if run_as_user is not None:
+        script += f'run_as_user: {run_as_user}\n'
+    
+    # Add env if provided
+    env = execution_params.get('env')
+    if env:
+        script += 'env:\n'
+        for env_item in env:
+            if isinstance(env_item, dict):
+                for key, value in env_item.items():
+                    # Escape special characters for heredoc
+                    escaped_value = str(value).replace('"', '\\"').replace('$', '\\$') if value is not None else ""
+                    script += f'  {key}: "{escaped_value}"\n'
+    
+    script += 'EOF\n'
+    script += f'echo ""\n\n'
+    return script
+
+
+def create_execution_yaml(runs, output_dir, execution_params=None):
+    """Create execution.yaml file with ISO formatted timestamp.
+    
+    Args:
+        runs: Number of runs to include in execution.yaml
+        output_dir: Directory where execution.yaml will be created
+        execution_params: Dictionary containing execution parameters (run_as_user, env, etc.)
+    """
+    if execution_params is None:
+        execution_params = {}
+    
+    execution_yaml_path = os.path.join(output_dir, "execution.yaml")
+    execution_time = datetime.datetime.now(datetime.timezone.utc).isoformat() + 'Z'
+    
+    execution_data = {
+        'execution_time': execution_time,
+        'runs': runs,
+        'execution_type': 'cluster'
+    }
+    
+    # Add run_as_user if provided
+    run_as_user = execution_params.get('run_as_user')
+    if run_as_user is not None:
+        execution_data['run_as_user'] = run_as_user
+    
+    # Add env if provided
+    env = execution_params.get('env')
+    if env:
+        # Convert list of dicts to a single dict for cleaner YAML output
+        env_dict = {}
+        for env_item in env:
+            if isinstance(env_item, dict):
+                env_dict.update(env_item)
+        if env_dict:
+            execution_data['env'] = env_dict
+    
+    with open(execution_yaml_path, 'w') as f:
+        yaml.dump(execution_data, f, default_flow_style=False, sort_keys=False)
+    
+    logger.debug(f"Created execution.yaml with timestamp: {execution_time}")

@@ -30,9 +30,10 @@ execution:
   test_files_filter:
   - "**/files/*"
 analysis:
-  preprocessing:
-  - ../../../tools/docker_exec.sh rosbags_tf_to_csv.py --frame base_link --frame turtlebot4_base_link_gt
-  - ../../../tools/docker_exec.sh rosbags_bt_to_csv.py
+  postprocessing:
+    - rosbags_tf_to_csv:
+        frames: [base_link, turtlebot4_base_link_gt]
+    - rosbags_bt_to_csv
   visualization:
   - Analysis:
       single_test: analysis/analysis_single_test.ipynb

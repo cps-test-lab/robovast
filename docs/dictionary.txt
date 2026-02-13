@@ -13,9 +13,9 @@ config
 Kubespray
 minikube
 ubuntu
-preprocessing
+postprocessing
 preprocess
-preprocessed
+postprocessed
 tf
 overwritable
 gui
@@ -25,3 +25,6 @@ rasterization
 xacro
 waypoints
 pre
+postprocess
+rosbag
+rosbags

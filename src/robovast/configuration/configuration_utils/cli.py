@@ -27,7 +27,8 @@ import yaml
 
 from robovast.common import (filter_configs, generate_scenario_variations,
                              get_scenario_parameters)
-from robovast.common.cli import get_project_config
+from robovast.common.cli import get_project_config, handle_cli_exception
+
 
 
 @click.group()
@@ -61,8 +62,7 @@ def gui(debug):
         sys.exit(exit_code)
 
     except Exception as e:
-        click.echo(f"Application error: {e}", err=True)
-        sys.exit(1)
+        handle_cli_exception(e)
 
 
 @configuration.command(name='list')
@@ -118,8 +118,7 @@ def list_cmd(debug):
                 sys.exit(1)
 
         except Exception as e:
-            click.echo(f"Error: {e}", err=True)
-            sys.exit(1)
+            handle_cli_exception(e)
 
 
 @configuration.command()
@@ -153,8 +152,7 @@ def generate(output_dir):
             sys.exit(1)
 
     except Exception as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
+        handle_cli_exception(e)
 
 
 @configuration.command(name='variation-types')
@@ -191,8 +189,7 @@ def variation_types():
                 click.echo()
 
     except Exception as e:
-        click.echo(f"Error loading variation types: {e}", err=True)
-        sys.exit(1)
+        handle_cli_exception(e)
 
 
 @configuration.command(name='variation-points')
@@ -220,8 +217,7 @@ def variation_points():
             )
             configs = run_data["configs"]
         except Exception as e:
-            click.echo(f"Error: {e}", err=True)
-            sys.exit(1)
+            handle_cli_exception(e)
 
     unique_scenarios = set()
     for config in configs:

@@ -47,7 +47,7 @@ class TestResultsAnalyzer(QMainWindow):
 
         # Initialize configuration for shared settings
         self.config_file = config_file
-        self.parameters = load_config(config_file, "analysis")
+        self.parameters = load_config(config_file, "analysis", allow_missing=True)
 
         # Initialize variables to None first
         self.local_execution_widget = None
@@ -478,19 +478,19 @@ class TestResultsAnalyzer(QMainWindow):
     def get_run_type(self, data_path):
         """Determine analysis type based on directory structure"""
         try:
-            # Check for run.yaml files in different locations to determine analysis type
+            # Check for test.xml files in different locations to determine analysis type
 
-            # 1. Check if run.yaml exists directly in the path (single run)
-            if os.path.exists(data_path / "run.yaml"):
+            # 1. Check if test.xml exists directly in the path (single run)
+            if os.path.exists(data_path / "test.xml"):
                 return RunType.SINGLE_TEST
 
-            # 2. Check if run.yamls exist in subfolders (folder run)
-            run_files = list(data_path.glob("*/run.yaml"))
+            # 2. Check if test.xml exist in subfolders (folder run)
+            run_files = list(data_path.glob("*/test.xml"))
             if run_files:
                 return RunType.CONFIG
 
-            # 3. Check if CSV files exist in subfolders of subfolders (whole run)
-            run_files = list(data_path.glob("*/*/run.yaml"))
+            # 3. Check if test.xml files exist in subfolders of subfolders (whole run)
+            run_files = list(data_path.glob("*/*/test.xml"))
             if run_files:
                 return RunType.RUN
 

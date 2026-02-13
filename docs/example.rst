@@ -23,6 +23,10 @@ To run the example, execute the following commands in the base folder of the Rob
     
    # execute the tests in the cluster
    vast execution cluster run
+   
+   # OR: execute in detached mode (exit immediately, cleanup manually)
+   # vast execution cluster run --detach
+   # vast execution cluster run-cleanup  # run this after jobs complete
     
    # download results from the cluster
    vast execution cluster download
@@ -143,6 +147,31 @@ To execute all tests in the cluster, run:
 
    vast execution cluster run
 
+By default, this command waits for all jobs to complete and displays statistics.
+
+**Detached Execution**
+
+For long-running tests, you can use the ``--detach`` (or ``-d``) flag to exit immediately after creating the jobs:
+
+.. code-block:: bash
+
+   vast execution cluster run --detach
+
+When running in detached mode:
+
+- The command exits right after creating all Kubernetes jobs
+- Jobs continue running in the background in the cluster
+- You can monitor job status using ``kubectl get jobs``
+- You need to manually clean up jobs after they complete
+
+To clean up after a detached run:
+
+.. code-block:: bash
+
+   vast execution cluster run-cleanup
+
+This removes all scenario execution jobs and their associated pods from the cluster.
+
 Download Results
 """"""""""""""""
 
@@ -166,7 +195,6 @@ The resulting folder structure looks like this:
     |   |   ├── <test_number>         <-- Each run of a configuration is stored in a separate folder. It contains all input- and output-files of a single test run
     |   |   |   ├── logs             <-- Logs folder (e.g. for ROS_LOG_DIR)
     |   |   |   |   ├── system.log   <-- The complete system log
-    |   |   |   ├── run.yaml         <-- Details about the run (e.g. RUN_ID)
     |   |   |   ├── test.xml         <-- Scenario result, in junitxml format
     |   |   |   ├── <test-specifics> <-- Any test-specific files, stored during the test run within /out (e.g. rosbag)
 
@@ -176,13 +204,19 @@ Analysis
 As result analysis is tailored to each test, users are expected to implement their own analysis routines.
 
 There are two steps invoked to analyze results.
-First, the results can optionally be preprocessed to simplify later analysis. The user might specify preprocessing commands in ``analysis.preprocessing`` section of the ``.vast`` configuration. Common scripts including converting ROS bags to CSV files or extracting poses from tf-data are available to improve usability.
+First, the results can optionally be postprocessed to simplify later analysis. The user might specify postprocessing commands in ``analysis.postprocessing`` section of the ``.vast`` configuration. Common scripts including converting ROS bags to CSV files or extracting poses from tf-data are available to improve usability.
 
 .. code-block:: bash
 
-   vast analysis preprocess
+   vast analysis postprocess
 
-After preprocessing, the actual analysis can be performed.
+Postprocessing is cached based on the results directory hash. If the results directory is unchanged since the last postprocessing, the postprocessing is skipped automatically. To force postprocessing even if the results are unchanged (e.g., after updating postprocessing scripts), use the ``--force`` or ``-f`` flag:
+
+.. code-block:: bash
+
+   vast analysis postprocess --force
+
+After postprocessing, the actual analysis can be performed.
 To simplify this process, RoboVAST provides a GUI tool, which enables users to execute Jupyter notebooks directly from a graphical interface.
 
 .. code-block:: bash

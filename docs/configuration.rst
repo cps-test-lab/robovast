@@ -13,6 +13,10 @@ A ``.vast`` configuration file has the following top-level structure:
 .. code-block:: yaml
 
    version: 1
+   metadata:
+     title: "Project Title"
+     description: "Project description"
+     ...
    configuration:
      - name: scenario1
        ...
@@ -33,6 +37,29 @@ Specifies the version of the configuration file format. Currently, only version 
 .. code-block:: yaml
 
    version: 1
+
+
+Metadata Section
+----------------
+
+**Type:** Dictionary
+
+**Required:** No
+
+The ``metadata`` section allows you to provide structured information about the test configuration. This section can contain arbitrary key-value pairs and nested structures. If present, the metadata will be included in the generated ``configurations.yaml`` file.
+
+.. code-block:: yaml
+
+   metadata:
+     title: "Robot Navigation Test Results"
+     description: "Autonomous navigation performance evaluation"
+     creator: "Your Name"
+     keywords: ["robotics", "navigation", "ROS2"]
+     license: "CC-BY-4.0"
+     custom_fields:
+       nested_data: "value"
+
+All fields within ``metadata`` are optional and can be customized according to your needs.
 
 
 Configuration Section
@@ -264,16 +291,15 @@ env
 
 **Required:** No
 
-Additional environment variables to set in the test container. Each list item should have ``name`` and ``value`` keys.
+Additional environment variables to set in the test container. Each list item should be a single key-value pair.
 
 .. code-block:: yaml
 
    execution:
      env:
-     - name: RMW_IMPLEMENTATION
-       value: rmw_cyclonedds_cpp
-     - name: CUSTOM_VAR
-       value: custom_value
+     - RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+     - CUSTOM_VAR: custom_value
+     - ENABLE_X11: "false"
 
 kubernetes
 ^^^^^^^^^^
@@ -312,21 +338,44 @@ Analysis Section
 
 The ``analysis`` section defines how test results should be analyzed.
 
-preprocessing
-^^^^^^^^^^^^^
+postprocessing
+^^^^^^^^^^^^^^
 
-**Type:** List of strings (shell commands)
+**Type:** List of strings (plugin commands)
 
 **Required:** No
 
-Commands to run for preprocessing test results. These are executed before the analysis GUI is launched and typically convert raw data files into more analysis-friendly formats.
+Commands to run for postprocessing test results. These are executed before the analysis GUI is launched and typically convert raw data files into more analysis-friendly formats.
+
+**All postprocessing commands are plugins.** Each command is specified either as:
+- A simple string (for commands without parameters)
+- A dictionary with the plugin name as key and parameters as value
 
 .. code-block:: yaml
 
    analysis:
-     preprocessing:
-     - ../../../tools/docker_exec.sh rosbags_tf_to_csv.py --frame base_link
-     - ../../../tools/docker_exec.sh rosbags_bt_to_csv.py
+     postprocessing:
+       - rosbags_tf_to_csv:
+           frames: [base_link, turtlebot4_base_link_gt]
+       - rosbags_bt_to_csv
+       - command:
+           script: ../../../tools/custom_script.sh
+           args: [--arg, value]
+
+To list all available plugins and their descriptions:
+
+.. code-block:: bash
+
+   vast analysis postprocess-commands
+
+**Built-in Postprocessing Plugins:**
+
+- ``rosbags_tf_to_csv``: Convert ROS TF transformations to CSV format. Optional ``frames`` parameter (list of frame names).
+- ``rosbags_bt_to_csv``: Convert ROS behavior tree logs to CSV format (no parameters).
+- ``rosbags_to_csv``: Convert all ROS messages from rosbags to CSV format. Optional ``skip_topics`` parameter (list of topic names to skip).
+- ``command``: Execute arbitrary commands or scripts. Requires ``script`` parameter, optional ``args`` parameter (list).
+
+See :ref:`extending-postprocessing` for how to add custom postprocessing plugins.
 
 visualization
 ^^^^^^^^^^^^^
@@ -403,16 +452,17 @@ Here's a complete example showing all major configuration options:
      - "**/files/*"
      - "**/models/*.sdf"
      env:
-     - name: RMW_IMPLEMENTATION
-       value: rmw_cyclonedds_cpp
+     - RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
      kubernetes:
        resources:
          cpu: 4
          memory: 8Gi
    analysis:
-     preprocessing:
-     - ../../../tools/docker_exec.sh rosbags_tf_to_csv.py --frame base_link
-     - ../../../tools/docker_exec.sh rosbags_bt_to_csv.py
+     postprocessing:
+     - rosbags_tf_to_csv:
+        frames: [base_link]
+     - rosbags_bt_to_csv
+     - rosbags_to_csv
      visualization:
      - Analysis:
          single_test: analysis/analysis_single_test.ipynb

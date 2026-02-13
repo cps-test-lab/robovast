@@ -105,6 +105,19 @@ A good practice is, to first run a single configuration to verify that everythin
     # Results are organized as: <results-dir>/run-<timestamp>/<config-name>/<test_number>/
     find ./results/
 
+For long-running tests, you can use detached mode to run jobs in the background:
+
+.. code-block:: bash
+
+    # Run in detached mode (command exits after creating jobs)
+    vast execution cluster run --detach
+    
+    # Monitor job status
+    kubectl get jobs
+    
+    # Clean up after jobs complete
+    vast execution cluster run-cleanup
+
 Running local container images in minikube
 """""""""""""""""""""""""""""""""""""""""""
 
@@ -137,13 +150,17 @@ To develop the notebooks, it is recommended to use e.g. VSCode. For the RoboVAST
     # for complete run
     DATA_DIR = '<path-to-your-results-directory>/run-<timestamp>'
 
-In case you are using ROS bags as output format, it is recommended to preprocess the results before analysis. This can be done with the preprocessing commands defined in the configuration file. RoboVAST provides several conversion scripts for common use-cases, e.g., converting ROS bag messages to CSV files or tf-frames to poses.
+In case you are using ROS bags as output format, it is recommended to postprocess the results before analysis. This can be done with the postprocessing commands defined in the configuration file. RoboVAST provides several conversion scripts for common use-cases, e.g., converting ROS bag messages to CSV files or tf-frames to poses.
+
+Postprocessing is cached based on the results directory hash. To bypass the cache and force postprocessing (e.g., after updating postprocessing scripts), use the ``--force`` or ``-f`` flag:
 
 Afterwards you can start the GUI:
 
 .. code-block:: bash
 
-    vast analysis preprocess
+    vast analysis postprocess
+    # or, to force postprocessing even if results are unchanged:  
+    vast analysis postprocess --force
     vast analysis gui
 
 
@@ -178,6 +195,73 @@ Example plugin registration:
 
     [tool.poetry.plugins."vast.plugins"]
     variation = "variation_utils.cli:variation"
+
+
+.. _extending-postprocessing:
+
+Add Postprocessing Command Plugin
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Postprocessing plugins are Python functions that process test result directories (e.g., convert rosbag data to CSV). They are registered as entry points and executed before analysis.
+
+**Creating a Postprocessing Plugin:**
+
+.. code-block:: python
+
+    from typing import Tuple, Optional, List
+    
+    def my_postprocessing_command(
+        results_dir: str,
+        config_dir: str,
+        custom_param: Optional[str] = None
+    ) -> Tuple[bool, str]:
+        """Convert custom data to CSV.
+        
+        Args:
+            results_dir: Path to the run-<id> directory to process
+            config_dir: Config file directory (for resolving relative paths)
+            custom_param: Optional custom parameter
+        
+        Returns:
+            Tuple of (success, message)
+        """
+        import subprocess
+        import os
+        
+        script = os.path.join(config_dir, "tools/script.sh")
+        cmd = [script, results_dir]
+        if custom_param:
+            cmd.extend(["--param", custom_param])
+        
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            return False, f"Failed: {result.stderr}"
+        return True, "Success"
+
+**Register in pyproject.toml:**
+
+.. code-block:: toml
+
+    [tool.poetry.plugins."robovast.postprocessing_commands"]
+    my_postprocessing_command = "your_package.postprocessing_plugins:my_postprocessing_command"
+
+**Usage in .vast config:**
+
+.. code-block:: yaml
+
+    analysis:
+      postprocessing:
+        - my_postprocessing_command:
+            custom_param: value
+        - rosbags_tf_to_csv:
+            frames: [base_link, map]
+        - rosbags_to_csv:
+            skip_topics: [/large_topic]
+        - command:
+            script: tools/script.sh
+            args: [arg1, arg2]
+
 
 Add Cluster Config Plugin
 ^^^^^^^^^^^^^^^^^^^^^^^^^

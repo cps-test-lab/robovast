@@ -15946,10 +15946,11 @@ execution:
   - '**/small_dataset_maps/*.stl'
   - '**/small_dataset_maps/**/maps/*'
 analysis:
-  preprocessing:
-  - ../../tools/docker_exec.sh rosbags_to_csv.py
-  - ../../tools/docker_exec.sh rosbags_tf_to_csv.py --frame base_link --frame nav2_turtlebot4_base_link_gt
-  - ../../tools/docker_exec.sh rosbags_bt_to_csv.py
+  postprocessing:
+    - rosbags_to_csv
+    - rosbags_tf_to_csv:
+        frames: [base_link, turtlebot4_base_link_gt]
+    - rosbags_bt_to_csv
   visualization:
   - Analysis:
       single_test: analysis/analysis_single_test.ipynb

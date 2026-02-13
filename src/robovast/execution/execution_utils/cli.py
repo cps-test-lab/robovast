@@ -25,8 +25,8 @@ import click
 import yaml
 
 from robovast.common import prepare_run_configs
-from robovast.common.cli import get_project_config
-from robovast.execution.cluster_execution.cluster_execution import JobRunner
+from robovast.common.cli import get_project_config, handle_cli_exception
+from robovast.execution.cluster_execution.cluster_execution import JobRunner, cleanup_cluster_run
 from robovast.execution.cluster_execution.cluster_setup import (
     delete_server, get_cluster_config, load_cluster_config_name, setup_server)
 from robovast.execution.cluster_execution.download_results import \
@@ -114,8 +114,7 @@ def run(config, runs, output, shell, no_gui, network_host, image):
         os.execv(run_script_path, cmd)
 
     except Exception as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
+        handle_cli_exception(e)
 
 
 @local.command()
@@ -155,8 +154,7 @@ def prepare_run(output_dir, config, runs):
         click.echo(f"\nFor local execution, run: \n\n{os.path.join(output_dir, 'run.sh')}\n")
 
     except Exception as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
+        handle_cli_exception(e)
 
 
 @execution.group()
@@ -175,11 +173,16 @@ def cluster():
               help='Run only a specific configuration by name')
 @click.option('--runs', '-r', type=int, default=None,
               help='Override the number of runs specified in the config')
-def run(config, runs):  # pylint: disable=function-redefined
+@click.option('--detach', '-d', is_flag=True,
+              help='Exit after creating jobs without waiting for completion')
+def run(config, runs, detach):  # pylint: disable=function-redefined
     """Execute scenarios on a Kubernetes cluster.
 
     Deploys all test configurations (or a specific one) as Kubernetes jobs
     for distributed parallel execution.
+
+    Use --detach to exit immediately after creating jobs without waiting.
+    Use 'vast execution cluster run-cleanup' to clean up jobs afterwards.
 
     Requires project initialization with ``vast init`` first.
     """
@@ -228,16 +231,25 @@ def run(config, runs):  # pylint: disable=function-redefined
 
     try:
         job_runner = JobRunner(project_config.config_path, config, runs, cluster_config)
-        job_runner.run()
-        click.echo("Cluster execution finished.")
-        click.echo()
-        click.echo("You can now download the results using:")
-        click.echo()
-        click.echo("  vast execution cluster download")
-        click.echo()
+        job_runner.run(detached=detach)
+        
+        if detach:
+            click.echo(f"✓ Jobs created successfully (Run ID: {job_runner.run_id})")
+            click.echo()
+            click.echo("Jobs are now running in detached mode.")
+            click.echo()
+            click.echo("To check job status, use: kubectl get jobs")
+            click.echo("To clean up jobs, use: vast execution cluster run-cleanup")
+            click.echo()
+        else:
+            click.echo("Cluster execution finished.")
+            click.echo()
+            click.echo("You can now download the results using:")
+            click.echo()
+            click.echo("  vast execution cluster download")
+            click.echo()
     except Exception as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
+        handle_cli_exception(e)
 
 
 @cluster.command()
@@ -275,8 +287,7 @@ def download(output, force):
         click.echo(f"✓ Download of {count} runs completed successfully!")
 
     except Exception as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
+        handle_cli_exception(e)
 
 
 @cluster.command()
@@ -310,8 +321,7 @@ def setup(list_configs, options, force, cluster_config):
             setup_server(config_name=None, list_configs=True)
             return
         except Exception as e:
-            click.echo(f"Error: {e}", err=True)
-            sys.exit(1)
+            handle_cli_exception(e)
 
     if not cluster_config:
         click.echo("Error: CLUSTER_CONFIG argument is required when not using --list", err=True)
@@ -331,21 +341,50 @@ def setup(list_configs, options, force, cluster_config):
         click.echo("✓ Cluster setup completed successfully!")
 
     except Exception as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
+        handle_cli_exception(e)
+
+
+@cluster.command(name='run-cleanup')
+def run_cleanup():
+    """Clean up jobs and pods from a cluster run.
+    
+    Removes all scenario execution jobs and their associated pods.
+    This is useful after running with --detach to clean up resources
+    once jobs have completed.
+    
+    Usage: vast execution cluster run-cleanup
+    """
+    try:   
+        # Get Kubernetes client
+        k8s_client = get_kubernetes_client()
+        
+        # Check Kubernetes access
+        click.echo("Checking Kubernetes cluster access...")
+        k8s_ok, k8s_msg = check_kubernetes_access(k8s_client)
+        if not k8s_ok:
+            click.echo(f"✗ Error: {k8s_msg}", err=True)
+            sys.exit(1)
+        
+        click.echo("Cleaning up scenario run jobs and pods...")
+        cleanup_cluster_run()
+        click.echo("✓ Cleanup completed successfully!")
+        
+    except Exception as e:
+        handle_cli_exception(e)
 
 
 @cluster.command()
 @click.option('--cluster-config', '-c', 'config_name', default=None,
               help='Cluster configuration plugin to use (auto-detects if not specified)')
 def cleanup(config_name):
-    """Clean up the Kubernetes cluster after execution.
+    """Clean up the Kubernetes cluster setup.
 
     Removes the NFS server pod and service from the Kubernetes cluster
     by deleting the NFS manifest configuration.
 
     This command can be run after completing all scenario executions
-    to clean up cluster resources.
+    to clean up cluster infrastructure resources (different from run-cleanup
+    which only cleans up job pods).
 
     If ``--config`` is not specified, it will automatically detect which
     cluster configuration was used during setup.
@@ -355,8 +394,7 @@ def cleanup(config_name):
         click.echo("✓ Cluster cleanup completed successfully!")
 
     except Exception as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
+        handle_cli_exception(e)
 
 
 @cluster.command()
@@ -392,85 +430,89 @@ def prepare_run(output, config, runs, cluster_config, options):  # pylint: disab
 
     Requires project initialization with ``vast init`` first.
     """
-    # Get project configuration
-    project_config = get_project_config()
-    config_path = project_config.config_path
-
-    # Create output directory
-    os.makedirs(output, exist_ok=True)
-
-    # Parse cluster-specific options
-    cluster_kwargs = {}
-    for option in options:
-        if '=' not in option:
-            click.echo(f"Error: Invalid option format '{option}'. Expected key=value", err=True)
-            sys.exit(1)
-        key, value = option.split('=', 1)
-        cluster_kwargs[key] = value
-
-    if cluster_config is None:
-        cluster_config = load_cluster_config_name()
-        if cluster_config:
-            logging.debug(f"Auto-detected cluster config: {cluster_config}")
-        else:
-            raise ValueError(
-                "No cluster config specified and no saved config found. "
-                "Use --cluster-config <name> to select a config, or run setup first."
-            )
     try:
-        cluster_config = get_cluster_config(cluster_config)
+        # Get project configuration
+        project_config = get_project_config()
+        config_path = project_config.config_path
+
+        # Create output directory
+        os.makedirs(output, exist_ok=True)
+
+        # Parse cluster-specific options
+        cluster_kwargs = {}
+        for option in options:
+            if '=' not in option:
+                click.echo(f"Error: Invalid option format '{option}'. Expected key=value", err=True)
+                sys.exit(1)
+            key, value = option.split('=', 1)
+            cluster_kwargs[key] = value
+
+        if cluster_config is None:
+            cluster_config = load_cluster_config_name()
+            if cluster_config:
+                logging.debug(f"Auto-detected cluster config: {cluster_config}")
+            else:
+                raise ValueError(
+                    "No cluster config specified and no saved config found. "
+                    "Use --cluster-config <name> to select a config, or run setup first."
+                )
+        try:
+            cluster_config = get_cluster_config(cluster_config)
+        except Exception as e:
+            raise RuntimeError(f"Failed to get cluster config: {e}") from e
+
+        # Initialize job runner (this prepares all scenarios)
+        job_runner = JobRunner(config_path, config, runs, cluster_config)
+
+        click.echo(f"Preparing run configuration 'ID: {job_runner.run_id}', test configs: {
+                   len(job_runner.configs)}, runs per test config: {job_runner.num_runs}...")
+
+        # Prepare config files
+        logging.debug("Preparing configuration files...")
+
+        out_dir = os.path.join(output, "out_template", job_runner.run_id)
+        prepare_run_configs(
+            out_dir,
+            job_runner.run_data
+        )
+
+        # Create jobs directory
+        jobs_dir = os.path.join(output, "jobs")
+        os.makedirs(jobs_dir, exist_ok=True)
+
+        # Generate all job manifests
+        logging.debug("Generating job manifests...")
+        all_jobs = []
+        job_count = 0
+
+        for run_number in range(job_runner.num_runs):
+            for cfg in job_runner.configs:
+                config_name = cfg.get("name")
+                # Use the centralized function to create the job manifest
+                job_manifest = job_runner.create_job_manifest_for_scenario(config_name, run_number)
+
+                # Save individual job manifest
+                job_name = job_manifest['metadata']['name']
+                job_file = os.path.join(jobs_dir, f"{job_name}.yaml")
+                with open(job_file, 'w') as f:
+                    yaml.dump(job_manifest, f, default_flow_style=False)
+
+                all_jobs.append(job_manifest)
+                job_count += 1
+
+        # Save combined manifest
+        combined_file = os.path.join(output, "all-jobs.yaml")
+        with open(combined_file, 'w') as f:
+            yaml.dump_all(all_jobs, f, default_flow_style=False)
+
+        cluster_config.prepare_setup_cluster(output, **cluster_kwargs)
+
+        generate_copy_script(output, job_runner.run_id)
+
+        click.echo(f"✓ Successfully prepared {job_count} job manifests in directory'{output}'.\n\nFollow README files to set up and execute.\n")
+    
     except Exception as e:
-        raise RuntimeError(f"Failed to get cluster config: {e}") from e
-
-    # Initialize job runner (this prepares all scenarios)
-    job_runner = JobRunner(config_path, config, runs, cluster_config)
-
-    click.echo(f"Preparing run configuration 'ID: {job_runner.run_id}', test configs: {
-               len(job_runner.configs)}, runs per test config: {job_runner.num_runs}...")
-
-    # Prepare config files
-    logging.debug("Preparing configuration files...")
-
-    out_dir = os.path.join(output, "out_template", job_runner.run_id)
-    prepare_run_configs(
-        out_dir,
-        job_runner.run_data
-    )
-
-    # Create jobs directory
-    jobs_dir = os.path.join(output, "jobs")
-    os.makedirs(jobs_dir, exist_ok=True)
-
-    # Generate all job manifests
-    logging.debug("Generating job manifests...")
-    all_jobs = []
-    job_count = 0
-
-    for run_number in range(job_runner.num_runs):
-        for cfg in job_runner.configs:
-            config_name = cfg.get("name")
-            # Use the centralized function to create the job manifest
-            job_manifest = job_runner.create_job_manifest_for_scenario(config_name, run_number)
-
-            # Save individual job manifest
-            job_name = job_manifest['metadata']['name']
-            job_file = os.path.join(jobs_dir, f"{job_name}.yaml")
-            with open(job_file, 'w') as f:
-                yaml.dump(job_manifest, f, default_flow_style=False)
-
-            all_jobs.append(job_manifest)
-            job_count += 1
-
-    # Save combined manifest
-    combined_file = os.path.join(output, "all-jobs.yaml")
-    with open(combined_file, 'w') as f:
-        yaml.dump_all(all_jobs, f, default_flow_style=False)
-
-    cluster_config.prepare_setup_cluster(output, **cluster_kwargs)
-
-    generate_copy_script(output, job_runner.run_id)
-
-    click.echo(f"✓ Successfully prepared {job_count} job manifests in directory'{output}'.\n\nFollow README files to set up and execute.\n")
+        handle_cli_exception(e)
 
 
 def generate_copy_script(output_dir, run_id):

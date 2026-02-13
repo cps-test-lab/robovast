@@ -28,7 +28,7 @@ from kubernetes import client
 from kubernetes import config as kube_config
 
 from robovast.common import (get_execution_env_variables, get_run_id,
-                             load_config, prepare_run_configs)
+                             load_config, prepare_run_configs, create_execution_yaml)
 from robovast.common.config_generation import generate_scenario_variations
 from robovast.execution.cluster_execution.kubernetes import (
     check_pod_running, copy_config_to_cluster)
@@ -36,6 +36,44 @@ from robovast.execution.cluster_execution.kubernetes import (
 from .manifests import JOB_TEMPLATE
 
 logger = logging.getLogger(__name__)
+
+
+def cleanup_cluster_run():
+    """Clean up all scenario run jobs and pods from the cluster.
+    
+    This function removes all Kubernetes jobs and pods with the label
+    'jobgroup=scenario-runs' from the default namespace. It's used after
+    a detached run to clean up resources once jobs have completed.
+    """
+    kube_config.load_kube_config()
+    k8s_client = client.CoreV1Api()
+    k8s_batch_client = client.BatchV1Api()
+    
+    # Cleanup jobs
+    try:
+        logger.debug("Deleting all jobs with label 'jobgroup=scenario-runs'")
+        k8s_batch_client.delete_collection_namespaced_job(
+            namespace="default",
+            label_selector="jobgroup=scenario-runs",
+            body=client.V1DeleteOptions(grace_period_seconds=0)
+        )
+        logger.info("Successfully deleted all scenario-runs jobs")
+    except client.rest.ApiException as e:
+        logger.error(f"Error deleting jobs with label selector: {e}")
+        raise
+    
+    # Cleanup pods
+    try:
+        logger.debug("Deleting all pods with label 'jobgroup=scenario-runs'")
+        k8s_client.delete_collection_namespaced_pod(
+            namespace="default",
+            label_selector="jobgroup=scenario-runs",
+            body=client.V1DeleteOptions(grace_period_seconds=0)
+        )
+        logger.debug("Successfully cleaned up all scenario-runs pods")
+    except client.rest.ApiException as e:
+        logger.error(f"Error deleting pods with label selector: {e}")
+        raise
 
 
 class JobRunner:
@@ -64,14 +102,7 @@ class JobRunner:
         self.pre_command = parameters.get("pre_command")
         self.post_command = parameters.get("post_command")
 
-        self.run_as_user = parameters.get("run_as_user", 1000)
-
-        self.manifest = self.get_job_manifest(parameters["image"],
-                                              parameters["kubernetes"]["resources"],
-                                              parameters.get("env", []),
-                                              self.run_as_user)
-
-        # Generate configs with filtered files
+        # Generate configs with filtered files first, so we have access to execution params
         self.config_output_file_dir = tempfile.TemporaryDirectory(prefix="robovast_execution_")
         self.run_data, _ = generate_scenario_variations(
             config_path,
@@ -80,6 +111,16 @@ class JobRunner:
             output_dir=self.config_output_file_dir.name,
         )
         self.configs = self.run_data["configs"]
+        
+        # Get execution parameters from run_data
+        execution_params = self.run_data.get("execution", {})
+        self.run_as_user = execution_params.get("run_as_user", 1000)
+
+        # Create manifest with env vars from config
+        self.manifest = self.get_job_manifest(parameters["image"],
+                                              parameters["kubernetes"]["resources"],
+                                              execution_params.get("env", []),
+                                              self.run_as_user)
 
         if not self.configs:
             raise ValueError("No scenario configs generated.")
@@ -87,16 +128,17 @@ class JobRunner:
         if single_config:
             found_config = None
             for config in self.configs:
-                if config["name"] == single_config:
+                config_name = config.get("name", "<unnamed>")
+                if config_name == single_config:
                     found_config = config
                     break
 
             if not found_config:
-                logger.error(f"Config '{single_config}' not found in config.")
-                logger.error("Available configs:")
+                logger.error(f"Config '{single_config}' not found.")
+                logger.info("Available configs:")
                 for v in self.configs:
-                    logger.error(f"   - {v["name"]}")
-                sys.exit(1)
+                    logger.info(f"   - {v.get('name', '<unnamed>')}")
+                raise ValueError(f"Config '{single_config}' not found (see available configs above)")
             self.run_data["configs"] = [found_config]
             self.configs = [found_config]
 
@@ -155,7 +197,7 @@ class JobRunner:
             if 'env' not in containers[0]:
                 containers[0]['env'] = []
 
-            env_vars = get_execution_env_variables(run_number, scenario_key)
+            env_vars = get_execution_env_variables(run_number, scenario_key, self.run_data.get('execution', {}).get('env'))
             for name, val in env_vars.items():
                 containers[0]['env'].append({
                     'name': str(name),
@@ -437,7 +479,7 @@ class JobRunner:
         except client.rest.ApiException as e:
             logger.error(f"Error deleting jobs with label selector: {e}")
 
-    def run(self):
+    def run(self, detached=False):
         # check if k8s element names have "$ITEM" template
         manifest_data = self.manifest
         if '$SCENARIO_ID' not in manifest_data['metadata']['name']:
@@ -481,6 +523,12 @@ class JobRunner:
                 logger.debug(f"Created job {job_name} for run {run_number + 1}")
 
         logger.info(f"All {len(all_jobs)} jobs created. Starting execution...")
+        
+        # If detached, exit here without waiting
+        if detached:
+            logger.info("Running in detached mode. Jobs will continue running in the background.")
+            return
+        
         # Track run start time
         self.run_start_time = datetime.datetime.now(datetime.timezone.utc)
 
@@ -536,6 +584,10 @@ class JobRunner:
             out_dir = os.path.join(temp_dir, "out_template", self.run_id)
             prepare_run_configs(out_dir, self.run_data)
 
+            # Create execution.yaml
+            create_execution_yaml(self.num_runs, out_dir, 
+                                execution_params=self.run_data.get("execution", {}))
+
             copy_config_to_cluster(os.path.join(temp_dir, "out_template"), self.run_id)
 
     def get_job_manifest(self, image: str, kubernetes_resources: dict, env: list, run_as_user: int = None) -> dict:
@@ -570,9 +622,13 @@ class JobRunner:
                     'memory': kubernetes_resources["memory"]
                 }
             }
-        for env_var in env:
-            manifest['spec']['template']['spec']['containers'][0].setdefault('env', []).append({
-                'name': env_var["name"],
-                'value': env_var["value"]
-            })
+        # Add environment variables (new format: [{"KEY": "value"}])
+        if env:
+            for env_var in env:
+                if isinstance(env_var, dict):
+                    for key, value in env_var.items():
+                        manifest['spec']['template']['spec']['containers'][0].setdefault('env', []).append({
+                            'name': key,
+                            'value': str(value)
+                        })
         return manifest
