@@ -187,3 +187,56 @@ def rosbags_bt_to_csv(results_dir: str, config_dir: str) -> Tuple[bool, str]:
         
     except Exception as e:
         return False, f"Error executing rosbags_bt_to_csv: {e}"
+
+
+def rosbags_to_csv(results_dir: str, config_dir: str, skip_topics: Optional[List[str]] = None) -> Tuple[bool, str]:
+    """Convert all ROS messages from rosbags to CSV format.
+    
+    Extracts all message data from ROS bag files and converts each topic
+    to a separate CSV file. Useful for analyzing any ROS topic data that
+    doesn't have a specialized converter. By default, skips large topics
+    like costmaps and snapshots.
+    
+    Args:
+        results_dir: Path to the run-<id> directory to process
+        config_dir: Directory containing the config file (for resolving relative paths)
+        skip_topics: Optional list of topic names to skip during conversion
+    
+    Returns:
+        Tuple of (success, message)
+    
+    Example usage in .vast config:
+        postprocessing:
+          - rosbags_to_csv  # Use default skip list
+          - rosbags_to_csv:
+              skip_topics: [/large_topic, /another_topic]
+    """
+    # Get docker_exec.sh from package data
+    script_path = str(files('robovast.common.data').joinpath('docker_exec.sh'))
+    
+    # Build command with skip-topic arguments
+    cmd = [script_path, "rosbags_to_csv.py"]
+    
+    if skip_topics:
+        for topic in skip_topics:
+            cmd.extend(["--skip-topic", topic])
+    
+    cmd.append(results_dir)
+    
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=os.path.dirname(script_path),
+            check=False,
+            capture_output=True,
+            text=True,
+            env={**os.environ, 'PYTHONUNBUFFERED': '1'}
+        )
+        
+        if result.returncode != 0:
+            return False, f"rosbags_to_csv failed with exit code {result.returncode}\n{result.stderr}"
+        
+        return True, "ROS messages converted to CSV successfully"
+        
+    except Exception as e:
+        return False, f"Error executing rosbags_to_csv: {e}"

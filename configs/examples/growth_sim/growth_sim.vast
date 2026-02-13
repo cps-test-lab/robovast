@@ -36,7 +36,7 @@ execution:
 analysis:
   postprocessing:
     - command:
-        script: ./preprocess.sh
+        script: ./postprocess.sh
   visualization:
   - Analysis:
       single_test: analysis/analysis_single_test.ipynb

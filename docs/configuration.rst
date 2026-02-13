@@ -345,6 +345,7 @@ To list all available plugins and their descriptions:
 
 - ``rosbags_tf_to_csv``: Convert ROS TF transformations to CSV format. Optional ``frames`` parameter (list of frame names).
 - ``rosbags_bt_to_csv``: Convert ROS behavior tree logs to CSV format (no parameters).
+- ``rosbags_to_csv``: Convert all ROS messages from rosbags to CSV format. Optional ``skip_topics`` parameter (list of topic names to skip).
 - ``command``: Execute arbitrary commands or scripts. Requires ``script`` parameter, optional ``args`` parameter (list).
 
 See :ref:`extending-postprocessing` for how to add custom postprocessing plugins.
@@ -431,8 +432,10 @@ Here's a complete example showing all major configuration options:
          memory: 8Gi
    analysis:
      postprocessing:
-     - ../../../tools/docker_exec.sh rosbags_tf_to_csv.py --frame base_link
-     - ../../../tools/docker_exec.sh rosbags_bt_to_csv.py
+     - rosbags_tf_to_csv:
+        frames: [base_link]
+     - rosbags_bt_to_csv
+     - rosbags_to_csv
      visualization:
      - Analysis:
          single_test: analysis/analysis_single_test.ipynb

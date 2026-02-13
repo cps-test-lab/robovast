@@ -24,12 +24,9 @@ execution:
   - "**/files/*"
 analysis:
   postprocessing:
-    - command:
-        script: ../../../tools/docker_exec.sh
-        args: [rosbags_tf_to_csv.py, --frame, base_link, --frame, turtlebot4_base_link_gt]
-    - command:
-        script: ../../../tools/docker_exec.sh
-        args: [rosbags_bt_to_csv.py]
+    - rosbags_tf_to_csv:
+        frames: [base_link, turtlebot4_base_link_gt]
+    - rosbags_bt_to_csv
   visualization:
   - Analysis:
       single_test: analysis/analysis_single_test.ipynb

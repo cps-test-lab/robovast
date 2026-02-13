@@ -256,6 +256,8 @@ Postprocessing plugins are Python functions that process test result directories
             custom_param: value
         - rosbags_tf_to_csv:
             frames: [base_link, map]
+        - rosbags_to_csv:
+            skip_topics: [/large_topic]
         - command:
             script: tools/script.sh
             args: [arg1, arg2]

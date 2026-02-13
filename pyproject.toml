@@ -65,6 +65,7 @@ azure = "robovast.execution.cluster_config.azure:AzureClusterConfig"
 command = "robovast.common.postprocessing_plugins:command"
 rosbags_tf_to_csv = "robovast.common.postprocessing_plugins:rosbags_tf_to_csv"
 rosbags_bt_to_csv = "robovast.common.postprocessing_plugins:rosbags_bt_to_csv"
+rosbags_to_csv = "robovast.common.postprocessing_plugins:rosbags_to_csv"
 
 [build-system]
 requires = ["poetry-core"]
