@@ -45,4 +45,8 @@ jobs:
 
       - name: Run Example tests
         run: |
-          poetry run .github/test_growth_sim.py
+          poetry run .github/test_vast.py configs/examples/growth_sim/growth_sim.vast-c test-1-1
+
+      - name: Run Example tests
+        run: |
+          poetry run .github/test_vast.py configs/examples/basic_nav/basic_nav.vast -c test-1
