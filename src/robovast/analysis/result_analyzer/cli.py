@@ -21,7 +21,7 @@ import sys
 
 import click
 
-from robovast.common.cli import get_project_config
+from robovast.common.cli import get_project_config, handle_cli_exception
 from robovast.common.postprocessing import load_postprocessing_plugins
 
 from ...common import run_postprocessing
@@ -135,8 +135,7 @@ def result_analyzer_cmd(results_dir, force):
         sys.exit(exit_code)
 
     except Exception as e:
-        click.echo(f"Application error: {e}", err=True)
-        sys.exit(1)
+        handle_cli_exception(e)
 
 
 @analysis.command(name='postprocess-commands')

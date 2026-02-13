@@ -128,16 +128,17 @@ class JobRunner:
         if single_config:
             found_config = None
             for config in self.configs:
-                if config["name"] == single_config:
+                config_name = config.get("name", "<unnamed>")
+                if config_name == single_config:
                     found_config = config
                     break
 
             if not found_config:
-                logger.error(f"Config '{single_config}' not found in config.")
-                logger.error("Available configs:")
+                logger.error(f"Config '{single_config}' not found.")
+                logger.info("Available configs:")
                 for v in self.configs:
-                    logger.error(f"   - {v["name"]}")
-                sys.exit(1)
+                    logger.info(f"   - {v.get('name', '<unnamed>')}")
+                raise ValueError(f"Config '{single_config}' not found (see available configs above)")
             self.run_data["configs"] = [found_config]
             self.configs = [found_config]
 
@@ -621,9 +622,13 @@ class JobRunner:
                     'memory': kubernetes_resources["memory"]
                 }
             }
-        for env_var in env:
-            manifest['spec']['template']['spec']['containers'][0].setdefault('env', []).append({
-                'name': env_var["name"],
-                'value': env_var["value"]
-            })
+        # Add environment variables (new format: [{"KEY": "value"}])
+        if env:
+            for env_var in env:
+                if isinstance(env_var, dict):
+                    for key, value in env_var.items():
+                        manifest['spec']['template']['spec']['containers'][0].setdefault('env', []).append({
+                            'name': key,
+                            'value': str(value)
+                        })
         return manifest
