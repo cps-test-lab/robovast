@@ -20,6 +20,7 @@ import logging
 import os
 import re
 import tempfile
+from datetime import datetime
 from importlib.metadata import entry_points
 
 from .common import (get_scenario_parameters, load_config)
@@ -332,5 +333,6 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         "scenario_file": scenario_file,
         "configs": configs,
         "_test_files": test_files,
-        "execution": execution_params
+        "execution": execution_params,
+        "created_at": datetime.now().isoformat()
     }, variation_gui_classes
