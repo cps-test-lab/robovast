@@ -411,6 +411,8 @@ class PathVariationRasterized(NavVariation):
         self.progress_update(f"Grid: {num_x_points}x{num_y_points} points, spacing={grid_spacing:.2f}m, "
                              f"offset=({normalized_offset_x:.2f}, {normalized_offset_y:.2f})m")
 
+        checked_points = 0
+        valid_points = 0
         for iy in range(num_y_points):
             y = start_y + iy * grid_spacing
             if y > max_y:
@@ -421,10 +423,14 @@ class PathVariationRasterized(NavVariation):
                 if x > max_x:
                     continue
 
+                checked_points += 1
                 # Check if this point is valid (not in obstacle)
                 if waypoint_generator.is_valid_position(x, y, self.parameters.robot_diameter / 2.):
                     raster_points.append((float(x), float(y)))
+                    valid_points += 1
 
+        if not valid_points:
+            raise ValueError(f"Checked {checked_points} grid points, {valid_points} valid. All points are occupied.")
         return raster_points
 
     def _calculate_path_length(self, path):

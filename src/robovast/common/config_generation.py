@@ -252,7 +252,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     scenario_file = os.path.join(os.path.dirname(variation_file), execution_scenario_file_name) if execution_scenario_file_name else None
 
     if output_dir is None:
-        temp_path = tempfile.TemporaryDirectory(prefix="robovast_variation_")
+        temp_path = tempfile.TemporaryDirectory(prefix="robovast_variation_", delete=False)
         output_dir = temp_path.name
 
     general_parameters = parameters.get('general', {})
@@ -312,11 +312,15 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                     variation_gui_classes[variation_gui_class].append(variation_gui_renderer_class)
             result = execute_variation(os.path.dirname(variation_file), current_configs, variation_class,
                                        variation_parameters, general_parameters, progress_update_callback, scenario_file, output_dir)
+
             if result is None or len(result) == 0:
                 # If a variation step fails or produces no results, stop the pipeline
                 progress_update_callback(f"Variation pipeline stopped at {variation_class.__name__} - no configs to process")
                 current_configs = []
                 break
+            else:
+                from pprint import pformat
+                logger.debug(f"Variation result after {variation_class.__name__}: \n{pformat(result)}")
             current_configs = result
 
         configs.extend(current_configs)

@@ -14,11 +14,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import os
-
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from ..floorplan_generation import generate_floorplan_variations
+from ..floorplan_generation import (
+    _create_config_for_floorplan,
+    generate_floorplan_variations,
+)
 from .nav_base_variation import NavVariation
 
 
@@ -51,6 +52,120 @@ class FloorplanVariationConfig(BaseModel):
         return v
 
 
+class FloorplanGenerationConfig(BaseModel):
+    """Configuration for FloorplanGeneration.
+    
+    Attributes:
+        name: List with exactly two elements: [map_file_param, mesh_file_param].
+              These names will be used as parameter keys in the generated configs.
+        floorplans: List of paths to .fpm floorplan files to generate artifacts for.
+                    Paths are relative to the base configuration directory.
+    """
+    model_config = ConfigDict(extra='forbid')
+    name: list[str]
+    floorplans: list[str]
+
+    @field_validator('name')
+    @classmethod
+    def validate_name_list(cls, v):
+        if not v or len(v) != 2:
+            raise ValueError('name must contain exactly two elements, 1. for map file, 2. for mesh file')
+        return v
+
+    @field_validator('floorplans')
+    @classmethod
+    def validate_floorplans(cls, v):
+        if not v or len(v) == 0:
+            raise ValueError('floorplans must contain at least one file')
+        return v
+
+
+class FloorplanGeneration(NavVariation):
+    """Generate floorplan artifacts from existing floorplan files.
+    
+    This variation takes existing .fpm (floorplan) files and generates the necessary
+    artifacts for navigation testing:
+    - Occupancy grid maps (.yaml and .pgm files)
+    - 3D meshes (.stl files)
+    
+    Unlike FloorplanVariation which creates multiple variations from .variation files,
+    FloorplanGeneration processes floorplan files directly without creating variations.
+    It generates exactly one configuration per input floorplan file.
+    
+    Example configuration:
+        - FloorplanGeneration:
+            name:
+            - map_file
+            - mesh_file
+            floorplans:
+            - floorplans/rooms/rooms.fpm
+            - floorplans/hallways/hallways.fpm
+    
+    This will generate map and mesh artifacts for each floorplan and create
+    configurations with the map_file and mesh_file parameters set appropriately.
+    """
+
+    CONFIG_CLASS = FloorplanGenerationConfig
+
+    def variation(self, in_configs):
+        """Generate artifacts for each floorplan and create configurations.
+        
+        Args:
+            in_configs: List of input configurations to extend. If empty, a default
+                       empty configuration is created.
+        
+        Returns:
+            List of configurations, one per input floorplan per input config.
+            Each configuration includes map_file and mesh_file parameters pointing
+            to the generated artifacts.
+        
+        Raises:
+            ValueError: If artifact generation fails or returns unexpected number of results.
+            FileNotFoundError: If floorplan files or generated artifacts are not found.
+        """
+        self.progress_update("Running Floorplan Generation...")
+
+        # If no input configs, create initial empty config
+        if not in_configs or len(in_configs) == 0:
+            in_configs = [{'config': {}, '_config_files': []}]
+
+        # Import here to avoid circular dependency
+        from ..floorplan_generation import generate_floorplan_artifacts
+
+        floorplan_names = generate_floorplan_artifacts(
+            self.base_path,
+            self.parameters.floorplans,
+            self.output_dir,
+            self.progress_update
+        )
+
+        if not floorplan_names:
+            raise ValueError("Floorplan generation failed, no result returned")
+        if len(floorplan_names) != len(self.parameters.floorplans):
+            raise ValueError(
+                f"Floorplan generation returned unexpected number ({len(floorplan_names)}) of configs. "
+                f"Expected {len(self.parameters.floorplans)}"
+            )
+
+        map_file_parameter_name = self.parameters.name[0]
+        mesh_file_parameter_name = self.parameters.name[1]
+
+        results = []
+        for floorplan_name in floorplan_names:
+            for config in in_configs:
+                new_config = _create_config_for_floorplan(
+                    floorplan_name,
+                    self.output_dir,
+                    config,
+                    map_file_parameter_name,
+                    mesh_file_parameter_name,
+                    self.update_config
+                )
+                results.append(new_config)
+
+        return results
+
+
 class FloorplanVariation(NavVariation):
     """Create floorplan variation."""
 
@@ -81,31 +196,15 @@ class FloorplanVariation(NavVariation):
         mesh_file_parameter_name = self.parameters.name[1]
 
         results = []
-        for value in floorplan_names:
+        for floorplan_name in floorplan_names:
             for config in in_configs:
-                base_name = os.path.basename(value).split('_')[0]
-                map_file_path = os.path.join(self.output_dir, value, 'maps', base_name + '.yaml')
-                mesh_file_path = os.path.join(self.output_dir, value, '3d-mesh', base_name + '.stl')
-
-                if not os.path.exists(map_file_path):
-                    raise FileNotFoundError(f"Warning: Map file not found: {map_file_path}")
-                if not os.path.exists(mesh_file_path):
-                    raise FileNotFoundError(f"Warning: Mesh file not found: {mesh_file_path}")
-                rel_map_yaml_path = os.path.join('maps', base_name + '.yaml')
-                rel_map_pgm_path = os.path.join('maps', base_name + '.pgm')
-                rel_mesh_path = os.path.join('3d-mesh', base_name + '.stl')
-                new_config = self.update_config(config, {
-                    map_file_parameter_name: rel_map_yaml_path,
-                    mesh_file_parameter_name: rel_mesh_path
-                },
-                    config_files=[
-                    (rel_map_yaml_path, map_file_path),
-                    (rel_map_pgm_path, os.path.join(self.output_dir, value, 'maps', base_name + '.pgm')),
-                    (rel_mesh_path, mesh_file_path)
-                ],
-                    other_values={
-                        '_map_file': map_file_path,
-                }
+                new_config = _create_config_for_floorplan(
+                    floorplan_name,
+                    self.output_dir,
+                    config,
+                    map_file_parameter_name,
+                    mesh_file_parameter_name,
+                    self.update_config
                 )
                 results.append(new_config)
 
