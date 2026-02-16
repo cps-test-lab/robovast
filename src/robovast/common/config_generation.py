@@ -20,6 +20,7 @@ import logging
 import os
 import re
 import tempfile
+from pprint import pformat
 from datetime import datetime
 from importlib.metadata import entry_points
 
@@ -318,7 +319,6 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                 current_configs = []
                 break
             else:
-                from pprint import pformat
                 logger.debug(f"Variation result after {variation_class.__name__}: \n{pformat(result)}")
             current_configs = result
 

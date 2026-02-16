@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 from ..floorplan_generation import (
     _create_config_for_floorplan,
     generate_floorplan_variations,
+    generate_floorplan_artifacts
 )
 from .nav_base_variation import NavVariation
 
@@ -128,9 +129,6 @@ class FloorplanGeneration(NavVariation):
         # If no input configs, create initial empty config
         if not in_configs or len(in_configs) == 0:
             in_configs = [{'config': {}, '_config_files': []}]
-
-        # Import here to avoid circular dependency
-        from ..floorplan_generation import generate_floorplan_artifacts
 
         floorplan_names = generate_floorplan_artifacts(
             self.base_path,
