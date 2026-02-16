@@ -424,10 +424,15 @@ class JupyterNotebookRunner(CancellableWorkload):
 
     def get_hash_files(self, run_type):
         """Get list of files to hash for caching purposes"""
-        hash_files = [os.path.abspath(self._get_external_notebook_path(run_type))]
-        return hash_files
+        path = self._get_external_notebook_path(run_type)
+        if path:
+            hash_files = [os.path.abspath(path)]
+            return hash_files
+        return []
 
     def run(self, data_path, run_type):
+        if not self._get_external_notebook_path(run_type):
+            return False, "Notebook not available"
         hash_files = self.get_hash_files(run_type)
         cache_file_name = self.get_cache_file_name(run_type)
         file_cache = FileCache(data_path, cache_file_name, hash_files, ".html")
@@ -791,9 +796,22 @@ class DataAnalysisWidget(QWidget):
         # Ensure web view is visible
         self.web_view.show()
 
-        # Load HTML file directly using setUrl
-        file_url = QUrl.fromLocalFile(html_file)
-        self.web_view.setUrl(file_url)
+        if html_file and os.path.exists(html_file):
+            # Load HTML file directly using setUrl
+            file_url = QUrl.fromLocalFile(html_file)
+            self.web_view.setUrl(file_url)
+        else:
+            # Handle error or missing file
+            error_html = f"""
+            <html>
+            <body style="font-family: sans-serif; text-align: center; padding-top: 50px;">
+                <h2>{html_file if html_file else "Analysis not available"}</h2>
+                <p>The requested notebook analysis could not be loaded.</p>
+            </body>
+            </html>
+            """
+            self.web_view.setHtml(error_html)
+            self.loading_overlay.hide_loading()
 
     def clear_output(self):
         """Clear the current output - show empty widget without triggering webview signals"""
