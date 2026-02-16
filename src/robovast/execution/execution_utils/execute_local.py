@@ -18,7 +18,6 @@ import logging
 import os
 import sys
 import tempfile
-from importlib.resources import files
 
 from robovast.common import (get_execution_env_variables, load_config,
                              prepare_run_configs, generate_execution_yaml_script)
