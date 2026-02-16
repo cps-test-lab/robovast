@@ -120,7 +120,9 @@ class ObstacleVariation(NavVariation):
                 )
                 obstacle_objects.extend(obstacles)
         else:
-            raise NotImplementedError("Path-dependent obstacle placement is not implemented yet.")
+            #raise NotImplementedError("Path-dependent obstacle placement is not implemented yet.")
+
+            pass
             # waypoints = [
             #     config["config"]["start_pose"],
             # ] + config["config"]["goal_poses"]
