@@ -802,11 +802,19 @@ class DataAnalysisWidget(QWidget):
             self.web_view.setUrl(file_url)
         else:
             # Handle error or missing file
+            theme = detect_theme()
+            if theme == 'dark':
+                bg = '#121212'
+                fg = '#e0e0e0'
+            else:
+                bg = '#ffffff'
+                fg = '#111111'
+
             error_html = f"""
             <html>
-            <body style="font-family: sans-serif; text-align: center; padding-top: 50px;">
-                <h2>{html_file if html_file else "Analysis not available"}</h2>
-                <p>The requested notebook analysis could not be loaded.</p>
+            <body style="font-family: sans-serif; text-align: center; padding-top: 50px; background-color: {bg}; color: {fg};">
+                <h4>{html_file if html_file else "Analysis not available"}</h4>
+                <p style="font-size: small;">The requested notebook analysis is not defined.</p>
             </body>
             </html>
             """
