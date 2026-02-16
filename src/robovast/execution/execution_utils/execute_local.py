@@ -262,7 +262,7 @@ else
     INTERACTIVE=""
 fi
 
-mkdir -p ${RESULTS_DIR}
+mkdir -p "${RESULTS_DIR}"
 """
 
 
@@ -330,8 +330,8 @@ def generate_docker_run_script(runs, run_data, config_path_result, pre_command, 
         script += f'echo "{idx}/{len(execution_tasks)} Executing config {config_name}, run {run_num}"\n'
         script += f'echo "{"=" * 60}"\n'
         script += f'echo ""\n\n'
-        script += f'mkdir -p {test_path}/logs\n'
-        script += f'chmod -R 777 {test_path}\n'
+        script += f'mkdir -p "{test_path}/logs"\n'
+        script += f'chmod -R 777 "{test_path}"\n'
 
         # Build docker run command directly
         script += 'docker run $INTERACTIVE \\\n'
