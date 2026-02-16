@@ -108,14 +108,14 @@ class WaypointGenerator:
     def is_valid_position(self, x: float, y: float, robot_radius: float) -> bool:
         """
         Check if a robot can be placed at the given world position.
-        Uses the occupancy grid to determine if space is free.
+        Only allows positions in white areas of the map.
 
         Args:
             x, y: World coordinates
             robot_radius: Robot radius in meters
 
         Returns:
-            True if position is valid (free space), False otherwise
+            True if position is valid (free white space), False otherwise
         """
         grid_x, grid_y = self.map.world_to_grid(x, y)
 
@@ -126,7 +126,7 @@ class WaypointGenerator:
         # Calculate robot radius in grid cells
         radius_cells = min(int(np.ceil(robot_radius / self.map.resolution)), 10)
 
-        # Check circular area around robot center - all must be free space
+        # Check circular area around robot center - all must be in white areas
         for dy in range(-radius_cells, radius_cells + 1):
             for dx in range(-radius_cells, radius_cells + 1):
                 # Check if point is within robot's circular footprint
@@ -138,9 +138,8 @@ class WaypointGenerator:
                     if not (0 <= check_x < self.map.width and 0 <= check_y < self.map.height):
                         return False
 
-                    # Check if this cell is occupied using the occupancy grid
-                    # occupancy_grid[y, x] = True means occupied
-                    if self.map.occupancy_grid[check_y, check_x]:
+                    # Check if this pixel is white (>= 250)
+                    if self.map.map_array[check_y, check_x] < 250:
                         return False
 
         return True

@@ -108,7 +108,7 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
     # Create temp directory for run() or use output_dir for prepare_run()
     temp_path = None
     if not output_dir:
-        temp_path = tempfile.TemporaryDirectory(prefix="robovast_local_", delete=False)
+        temp_path = tempfile.TemporaryDirectory(prefix="robovast_local_")
         logger.debug(f"Using temporary directory for config files: {temp_path.name}")
         logger.debug(f"Temp path: {temp_path.name}")
         config_dir = temp_path.name
