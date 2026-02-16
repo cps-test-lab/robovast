@@ -155,6 +155,7 @@ def generate_execution_yaml_script(runs, execution_params=None, output_dir_var="
     script += 'execution_time: ${EXECUTION_TIME}\n'
     script += f'runs: {runs}\n'
     script += f'execution_type: local\n'
+    script += f'image: {execution_params.get("image")}\n'
     
     # Add run_as_user if provided
     run_as_user = execution_params.get('run_as_user')
@@ -194,7 +195,8 @@ def create_execution_yaml(runs, output_dir, execution_params=None):
     execution_data = {
         'execution_time': execution_time,
         'runs': runs,
-        'execution_type': 'cluster'
+        'execution_type': 'cluster',
+        'image': execution_params.get('image')
     }
     
     # Add run_as_user if provided

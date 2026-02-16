@@ -325,7 +325,8 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     execution_section = parameters.get('execution', {})
     execution_params = {
         "env": execution_section.get('env'),
-        "run_as_user": execution_section.get('run_as_user')
+        "run_as_user": execution_section.get('run_as_user'),
+        "image": execution_section.get('image'),
     }
     
     # Build result dictionary

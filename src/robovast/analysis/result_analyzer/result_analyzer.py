@@ -68,9 +68,17 @@ class TestResultsAnalyzer(QMainWindow):
                     try:
                         if not isinstance(values, dict):
                             continue
-                        single_nb = os.path.join(os.path.dirname(config_file), values.get("single_test"))
-                        config_nb = os.path.join(os.path.dirname(config_file), values.get("config"))
-                        run_nb = os.path.join(os.path.dirname(config_file), values.get("run"))
+                        config_dir = os.path.dirname(config_file)
+                        
+                        single_val = values.get("single_test")
+                        single_nb = os.path.join(config_dir, single_val) if single_val else None
+
+                        config_val = values.get("config")
+                        config_nb = os.path.join(config_dir, config_val) if config_val else None
+
+                        run_val = values.get("run")
+                        run_nb = os.path.join(config_dir, run_val) if run_val else None
+
                         workloads.append(
                             JupyterNotebookRunner(name,
                                                   single_test_nb=single_nb,

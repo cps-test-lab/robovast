@@ -142,20 +142,38 @@ class JobRunner:
             self.run_data["configs"] = [found_config]
             self.configs = [found_config]
 
-        kube_config.load_kube_config()
-        self.k8s_client = client.CoreV1Api()
-        self.k8s_batch_client = client.BatchV1Api()
-        self.k8s_api_client = client.ApiClient()
-
-        # Check if transfer-pod exists
-        if not check_pod_running(self.k8s_client, "robovast"):
-            logger.error(f"Transfer pod 'robovast' is not available!")
-            sys.exit(1)
+        # Initialize k8s clients to None - will be initialized lazily when needed
+        self.k8s_client = None
+        self.k8s_batch_client = None
+        self.k8s_api_client = None
+        self._k8s_initialized = False
 
         # Initialize statistics tracking
         self.run_start_time = None
         self.run_end_time = None
         self.job_statistics = {}
+
+    def _ensure_k8s_initialized(self):
+        """Initialize Kubernetes clients if not already initialized.
+        
+        This is called lazily only when actually needed (e.g., during run()),
+        not during prepare-run which just generates manifests.
+        """
+        if self._k8s_initialized:
+            return
+            
+        logger.debug("Initializing Kubernetes connection...")
+        kube_config.load_kube_config()
+        self.k8s_client = client.CoreV1Api()
+        self.k8s_batch_client = client.BatchV1Api()
+        self.k8s_api_client = client.ApiClient()
+        self._k8s_initialized = True
+
+        # Check if transfer-pod exists
+        if not check_pod_running(self.k8s_client, "robovast"):
+            logger.error(f"Transfer pod 'robovast' is not available!")
+            sys.exit(1)
+        logger.debug("Kubernetes connection initialized successfully.")
 
     def replace_template(self, elem, tmpl, idx):
         if isinstance(elem, dict):
@@ -480,6 +498,9 @@ class JobRunner:
             logger.error(f"Error deleting jobs with label selector: {e}")
 
     def run(self, detached=False):
+        # Ensure Kubernetes clients are initialized before running
+        self._ensure_k8s_initialized()
+        
         # check if k8s element names have "$ITEM" template
         manifest_data = self.manifest
         if '$SCENARIO_ID' not in manifest_data['metadata']['name']:
