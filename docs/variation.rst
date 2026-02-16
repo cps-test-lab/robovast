@@ -73,12 +73,12 @@ Creates floorplan variations from variation files and generates corresponding ma
 FloorplanGeneration
 ^^^^^^^^^^^^^^^^^^^
 
-Generates artifacts (maps and 3D meshes) from existing floorplan files without creating variations. Unlike FloorplanVariation which creates multiple variations from .variation files, this processes .fpm floorplan files directly and generates exactly one configuration per input floorplan.
+Generates artifacts (maps and 3D meshes) from existing floorplan files without creating variations. Unlike FloorplanVariation which creates multiple variations from .variation files, this processes ``.fpm`` floorplan files directly and generates exactly one configuration per input floorplan.
 
   Expected parameters:
 
   - ``name``: List of two parameter names - first for map file, second for mesh file
-  - ``floorplans``: List of paths to .fpm floorplan files to generate artifacts for (must contain at least one file)
+  - ``floorplans``: List of paths to ``.fpm`` floorplan files to generate artifacts for (must contain at least one file)
 
   Generated outputs:
 
