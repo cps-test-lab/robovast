@@ -46,24 +46,29 @@ def _create_config_for_floorplan(
     base_name = os.path.basename(floorplan_name).split('_')[0]
     map_file_path = os.path.join(output_dir, floorplan_name, 'maps', base_name + '.yaml')
     mesh_file_path = os.path.join(output_dir, floorplan_name, '3d-mesh', base_name + '.stl')
+    mesh_file_metadata_path = os.path.join(output_dir, floorplan_name, '3d-mesh', base_name + '.stl.yaml')
 
     if not os.path.exists(map_file_path):
         raise FileNotFoundError(f"Warning: Map file not found: {map_file_path}")
     if not os.path.exists(mesh_file_path):
         raise FileNotFoundError(f"Warning: Mesh file not found: {mesh_file_path}")
+    if not os.path.exists(mesh_file_metadata_path):
+        raise FileNotFoundError(f"Warning: Mesh metadata file not found: {mesh_file_metadata_path}")
         
     rel_map_yaml_path = os.path.join('maps', base_name + '.yaml')
     rel_map_pgm_path = os.path.join('maps', base_name + '.pgm')
     rel_mesh_path = os.path.join('3d-mesh', base_name + '.stl')
+    rel_mesh_metadata_path = os.path.join('3d-mesh', base_name + '.stl.yaml')
     
     new_config = update_config_fn(in_config, {
         map_file_parameter_name: rel_map_yaml_path,
-        mesh_file_parameter_name: rel_mesh_path
+        mesh_file_parameter_name: rel_mesh_path,
     },
         config_files=[
         (rel_map_yaml_path, map_file_path),
         (rel_map_pgm_path, os.path.join(output_dir, floorplan_name, 'maps', base_name + '.pgm')),
-        (rel_mesh_path, mesh_file_path)
+        (rel_mesh_path, mesh_file_path),
+        (rel_mesh_metadata_path, mesh_file_metadata_path)
     ],
         other_values={
             '_map_file': map_file_path,
