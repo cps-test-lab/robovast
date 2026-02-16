@@ -350,7 +350,7 @@ def generate_docker_run_script(runs, run_data, config_path_result, pre_command, 
             script += f'    -v "${{RESULTS_DIR}}/_config/{run_file}:/config/{run_file}:ro" \\\n'
 
         for config_file in config_files:
-            script += f'    -v "${{RESULTS_DIR}}/{config_name}/{config_file}:/config/{config_file}:ro" \\\n'
+            script += f'    -v "${{RESULTS_DIR}}/{config_name}/_config/{config_file[0]}:/config/{config_file[0]}:ro" \\\n'
 
         # Add environment variables (includes both execution defaults and custom env vars)
         env_vars = get_execution_env_variables(run_num, config_name, run_data.get('execution', {}).get('env'))

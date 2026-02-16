@@ -20,6 +20,7 @@ import logging
 import os
 import re
 import tempfile
+from pprint import pformat
 from datetime import datetime
 from importlib.metadata import entry_points
 
@@ -317,6 +318,8 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                 progress_update_callback(f"Variation pipeline stopped at {variation_class.__name__} - no configs to process")
                 current_configs = []
                 break
+            else:
+                logger.debug(f"Variation result after {variation_class.__name__}: \n{pformat(result)}")
             current_configs = result
 
         configs.extend(current_configs)
