@@ -25,7 +25,8 @@ from importlib.metadata import entry_points
 import click
 import yaml
 
-from robovast.common import (filter_configs, generate_scenario_variations,
+from robovast.common import (convert_dataclasses_to_dict, filter_configs,
+                             generate_scenario_variations,
                              get_scenario_parameters)
 from robovast.common.cli import get_project_config, handle_cli_exception
 
@@ -79,47 +80,32 @@ def list_cmd(debug):
     project_config = get_project_config()
     config = project_config.config_path
 
-    with tempfile.TemporaryDirectory(prefix="robovast_list_configs_") as temp_dir:
-        try:
-            run_data, _ = generate_scenario_variations(
-                variation_file=config,
-                progress_update_callback=None,
-                output_dir=temp_dir
-            )
-            configs = run_data["configs"]
-            if configs:
-                configs_file = os.path.join(temp_dir, "scenario.configs")
-                if os.path.exists(configs_file):
-
-                    with open(configs_file, "r", encoding="utf-8") as vf:
-                        # Load all YAML documents
-                        all_configs = list(yaml.safe_load_all(vf))
-
-                        # Filter out internal values unless --debug is enabled
-                        if debug:
-                            filtered_documents = all_configs
-                        else:
-                            filtered_documents = filter_configs(all_configs)
-
-                        # Build output string with document separators
-                        output_parts = []
-                        for i, doc in enumerate(filtered_documents):
-                            if i > 0:
-                                output_parts.append("---")
-                            output_parts.append(yaml.dump(doc, default_flow_style=False, sort_keys=False).rstrip())
-
-                        output = "\n".join(output_parts)
-                        click.echo(output)
-                else:
-                    click.echo(f"No scenario.configs file found at {configs_file}", err=True)
-                    sys.exit(1)
+    try:
+        run_data, _ = generate_scenario_variations(
+            variation_file=config,
+            progress_update_callback=None,
+            output_dir=None
+        )
+        configs_data = run_data["configs"]
+        configs = convert_dataclasses_to_dict(configs_data)
+        if configs:
+            # Filter out internal values unless --debug is enabled
+            if debug:
+                filtered_documents = configs
             else:
-                click.echo("✗ Failed to list scenario configs", err=True)
-                sys.exit(1)
+                filtered_documents = filter_configs(configs)
 
-        except Exception as e:
-            handle_cli_exception(e)
+            # Build output string with document separators
+            output_parts = []
+            for i, doc in enumerate(filtered_documents):
+                if i > 0:
+                    output_parts.append("---")
+                output_parts.append(yaml.dump(doc, default_flow_style=False, sort_keys=False).rstrip())
 
+            output = "\n".join(output_parts)
+            click.echo(output)
+    except Exception as e:
+        handle_cli_exception(e)
 
 @configuration.command()
 @click.argument('output-dir', type=click.Path())

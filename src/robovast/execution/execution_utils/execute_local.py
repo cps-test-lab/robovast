@@ -18,7 +18,6 @@ import logging
 import os
 import sys
 import tempfile
-from importlib.resources import files
 
 from robovast.common import (get_execution_env_variables, load_config,
                              prepare_run_configs, generate_execution_yaml_script)
@@ -146,6 +145,8 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
 
 DOCKER_RUN_TEMPLATE = """#!/usr/bin/env bash
 
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
+
 # Default Docker image
 DOCKER_IMAGE="ghcr.io/cps-test-lab/robovast:latest"
 NETWORK_MODE=""
@@ -188,7 +189,7 @@ OPTIONS:
     --image IMAGE       Use a custom Docker image (default: ghcr.io/cps-test-lab/robovast:latest)
     --network-host      Use host networking mode
     --no-gui            Disable host GUI support
-    --output DIR        Override the results output directory
+    --results-dir DIR   Override the results output directory
     --shell             Launch an interactive shell instead of running the test
     -h, --help          Show this help message
 EOF
@@ -217,9 +218,9 @@ while [ $# -gt 0 ]; do
             USE_SHELL=true
             shift
             ;;
-        --output)
+        --results-dir)
             if [[ "$2" != /* ]]; then
-                echo "Error: --output must be an absolute path (starting with /)"
+                echo "Error: --results-dir must be an absolute path (starting with /)"
                 exit 1
             fi
             echo "Overriding results directory to: $2"
@@ -237,7 +238,14 @@ GUI_OPTIONS=""
 if [ "$USE_GUI" = true ]; then
     # Allow Docker to access the X server
     xhost +local:docker > /dev/null 2>&1
-    GUI_OPTIONS="--env DISPLAY=$DISPLAY --volume /tmp/.X11-unix:/tmp/.X11-unix:rw --device /dev/dri:/dev/dri --group-add video"
+    GUI_OPTIONS="--env DISPLAY=$DISPLAY --volume /tmp/.X11-unix:/tmp/.X11-unix:rw"
+    
+    # Only add /dev/dri if it exists (for GPU acceleration)
+    if [ -d /dev/dri ]; then
+        GUI_OPTIONS="$GUI_OPTIONS --device /dev/dri:/dev/dri"
+    fi
+    
+    GUI_OPTIONS="$GUI_OPTIONS --group-add video"
 fi
 
 # Determine command to run and interactive mode
@@ -253,7 +261,7 @@ else
     INTERACTIVE=""
 fi
 
-mkdir -p ${RESULTS_DIR}
+mkdir -p "${RESULTS_DIR}"
 """
 
 
@@ -298,11 +306,10 @@ def generate_docker_run_script(runs, run_data, config_path_result, pre_command, 
     # Get common environment variables
     uid = os.getuid()
     gid = os.getgid()
-    entrypoint_path = str(files('robovast.execution.data').joinpath('entrypoint.sh'))
 
     # Copy the contents of out_template directory to results directory
     script += f'echo "Copying out_template contents to ${{RESULTS_DIR}}..."\n'
-    script += f'cp -r "{config_path_result}/"* "${{RESULTS_DIR}}/"\n'
+    script += f'cp -r "${{SCRIPT_DIR}}/out_template/"* "${{RESULTS_DIR}}/"\n'
     script += f'echo ""\n\n'
     
     # Create execution.yaml with ISO formatted timestamp
@@ -322,7 +329,8 @@ def generate_docker_run_script(runs, run_data, config_path_result, pre_command, 
         script += f'echo "{idx}/{len(execution_tasks)} Executing config {config_name}, run {run_num}"\n'
         script += f'echo "{"=" * 60}"\n'
         script += f'echo ""\n\n'
-        script += f'mkdir -p {test_path}/logs\n'
+        script += f'mkdir -p "{test_path}/logs"\n'
+        script += f'chmod -R 777 "{test_path}"\n'
 
         # Build docker run command directly
         script += 'docker run $INTERACTIVE \\\n'
@@ -332,7 +340,7 @@ def generate_docker_run_script(runs, run_data, config_path_result, pre_command, 
         script += '    --rm \\\n'
         script += f'    --user {uid}:{gid} \\\n'
         script += f'    -v "{test_path}:/out" \\\n'
-        script += f'    -v "{entrypoint_path}:/entrypoint.sh:ro" \\\n'
+        script += f'    -v "${{SCRIPT_DIR}}/out_template/entrypoint.sh:/entrypoint.sh:ro" \\\n'
 
         # Mount scenario and config files from results directory
         script += f'    -v "${{RESULTS_DIR}}/scenario.osc:/config/scenario.osc:ro" \\\n'
@@ -342,7 +350,7 @@ def generate_docker_run_script(runs, run_data, config_path_result, pre_command, 
             script += f'    -v "${{RESULTS_DIR}}/_config/{run_file}:/config/{run_file}:ro" \\\n'
 
         for config_file in config_files:
-            script += f'    -v "${{RESULTS_DIR}}/{config_name}/{config_file}:/config/{config_file}:ro" \\\n'
+            script += f'    -v "${{RESULTS_DIR}}/{config_name}/_config/{config_file[0]}:/config/{config_file[0]}:ro" \\\n'
 
         # Add environment variables (includes both execution defaults and custom env vars)
         env_vars = get_execution_env_variables(run_num, config_name, run_data.get('execution', {}).get('env'))
