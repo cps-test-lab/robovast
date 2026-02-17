@@ -130,13 +130,14 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
 
     logger.debug(f"Configuration files prepared in: {config_dir}")
     
-    # Check if run_as_user differs from local user
+    # Check if run_as_user differs from local user and warn about potential permission issues
     execution_params = run_data.get("execution", {})
-    run_as_user = execution_params.get("run_as_user")
+    run_as_user = execution_params.get("run_as_user", 1000)
     host_uid = os.getuid()
-    if run_as_user is not None and run_as_user != host_uid:
-        logger.info(f"Note: config specifies run_as_user={run_as_user}, but local execution will use host user UID={
-                    host_uid} to ensure proper file permissions on bind mounts")
+    if run_as_user != host_uid:
+        logger.warning(f"Container will run as UID {run_as_user}, but host user is UID {host_uid}. "
+                      f"This may cause permission issues with bind-mounted directories. "
+                      f"Consider setting 'run_as_user: {host_uid}' in your .vast config for local testing.")
 
     generate_docker_run_script(runs, run_data, config_path_result, pre_command, post_command,
                                docker_image, results_dir, os.path.join(config_dir, "run.sh"))
@@ -303,9 +304,15 @@ def generate_docker_run_script(runs, run_data, config_path_result, pre_command, 
         f'RESULTS_DIR="{results_dir}/${{RUN_ID}}"', 1
     )
 
-    # Get common environment variables
-    uid = os.getuid()
-    gid = os.getgid()
+    # Get user ID for container execution
+    # Use run_as_user from config (defaults to 1000, matching cluster execution behavior)
+    execution_params = run_data.get("execution", {})
+    run_as_user = execution_params.get("run_as_user")
+    if run_as_user is None:
+        run_as_user = 1000
+    
+    uid = run_as_user
+    gid = run_as_user
 
     # Copy the contents of out_template directory to results directory
     script += f'echo "Copying out_template contents to ${{RESULTS_DIR}}..."\n'
