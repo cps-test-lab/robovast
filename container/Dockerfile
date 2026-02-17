@@ -105,6 +105,6 @@ RUN USER=ubuntu && \
     chown root:root /usr/local/bin/fixuid && \
     chmod 4755 /usr/local/bin/fixuid && \
     mkdir -p /etc/fixuid && \
-    printf "user: $USER\ngroup: $GROUP\n" > /etc/fixuid/config.yml
+    printf "user: $USER\ngroup: $GROUP\npaths:\n  - /\n  - /out\n" > /etc/fixuid/config.yml
 
 USER ubuntu:ubuntu
