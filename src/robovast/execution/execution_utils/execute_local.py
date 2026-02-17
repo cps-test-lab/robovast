@@ -251,7 +251,7 @@ fi
 
 # Determine command to run and interactive mode
 if [ "$USE_SHELL" = true ]; then
-    COMMAND="/bin/bash"
+    COMMAND="/usr/local/bin/fixuid /bin/bash"
     INTERACTIVE="-it"
     echo "--------------------------------------------------------"
     echo "Execute the following command to run the test:"
