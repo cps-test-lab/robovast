@@ -18,6 +18,7 @@ import os
 import subprocess
 import tarfile
 import tempfile
+from importlib.resources import files
 
 from robovast.common import FileCache
 
@@ -81,11 +82,11 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
         progress_update_callback(f"✗ Path not found: {base_path}")
         return None
 
-    script_path = os.path.join("dependencies", "scenery_builder.sh")
+    script_path = str(files('robovast_nav.data').joinpath('scenery_builder.sh'))
 
     if not os.path.exists(script_path):
         progress_update_callback(f"✗ Script not found at: {script_path}")
-        return FileNotFoundError(f"Script not found at: {script_path}")
+        raise FileNotFoundError(f"Script not found at: {script_path}")
 
     temp_base_obj = tempfile.TemporaryDirectory(prefix="floorplan_variation_")
     temp_base = temp_base_obj.name
@@ -277,11 +278,11 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
         progress_update_callback(f"✗ Path not found: {base_path}")
         return None
 
-    script_path = os.path.join("dependencies", "scenery_builder.sh")
+    script_path = str(files('robovast_nav.data').joinpath('scenery_builder.sh'))
 
     if not os.path.exists(script_path):
         progress_update_callback(f"✗ Script not found at: {script_path}")
-        return FileNotFoundError(f"Script not found at: {script_path}")
+        raise FileNotFoundError(f"Script not found at: {script_path}")
 
     temp_base_obj = tempfile.TemporaryDirectory(prefix="floorplan_generation_")
     temp_base = temp_base_obj.name
@@ -356,6 +357,7 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
                 "mesh"
             ]
             progress_update_callback(f"Command: {' '.join(cmd_generate)}")
+            progress_update_callback("Generating floorplan. This may take a while...")
             try:
                 result = subprocess.run(
                     cmd_generate, capture_output=True, text=True, check=True
