@@ -155,11 +155,19 @@ def copy_config_to_cluster(config_dir, run_id):
         local_run_config_dir = os.path.join(config_dir, run_id)
         entrypoint_path = None
 
-        # Copy config files directly to _config folder
+        # Ensure /exports/out directory exists in the pod
+        ensure_dir_cmd = [
+            "kubectl", "exec", "-n", "default", "robovast",
+            "--",
+            "mkdir", "-p", "/exports/out"
+        ]
+        subprocess.run(ensure_dir_cmd, capture_output=True, text=True, check=False)
+
+        # Copy config files to out/{run_id}/ folder
         copy_cmd = [
             "kubectl", "cp",
             local_run_config_dir,
-            f"default/robovast:/exports/out/"
+            f"default/robovast:/exports/out/{run_id}/"
         ]
         subprocess.run(copy_cmd, capture_output=True, text=True, check=True)
 

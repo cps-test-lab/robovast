@@ -198,7 +198,8 @@ def run_postprocessing(config_path: str, results_dir: str, output_callback=None,
         output(f"Hashing {results_dir} took {elapsed_time:.4f} seconds")
 
         # Check if postprocessing is needed by comparing with stored hash
-        hash_file = os.path.join(results_dir, ".robovast_postprocessing.hash")
+        cache_dir = os.path.join(results_dir, ".cache")
+        hash_file = os.path.join(cache_dir, ".robovast_postprocessing.hash")
 
         if os.path.exists(hash_file):
             try:
@@ -214,7 +215,8 @@ def run_postprocessing(config_path: str, results_dir: str, output_callback=None,
     else:
         output("Force mode enabled: skipping cache check")
         hash_result = compute_dir_hash(results_dir)
-        hash_file = os.path.join(results_dir, ".robovast_postprocessing.hash")
+        cache_dir = os.path.join(results_dir, ".cache")
+        hash_file = os.path.join(cache_dir, ".robovast_postprocessing.hash")
 
     # Load plugins
     plugins = load_postprocessing_plugins()
@@ -277,6 +279,8 @@ def run_postprocessing(config_path: str, results_dir: str, output_callback=None,
     # Store the hash if postprocessing was successful
     if success:
         try:
+            # Ensure .cache directory exists
+            os.makedirs(cache_dir, exist_ok=True)
             with open(hash_file, 'w') as f:
                 f.write(hash_result)
             output(f"Stored postprocessing hash to {hash_file}")
