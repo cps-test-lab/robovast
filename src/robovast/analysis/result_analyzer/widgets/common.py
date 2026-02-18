@@ -46,10 +46,10 @@ def clean_test_name(test_file_path):
         print(f"Error getting run data for {run_file}: {str(e)}")
         return None
 
-    if not run_data or "SCENARIO_CONFIG" not in run_data:
+    if not run_data or "TEST_ID" not in run_data:
         return None
 
-    return run_data["SCENARIO_CONFIG"]
+    return run_data["TEST_ID"]
 
 
 def check_preferred_log_file(file_path):

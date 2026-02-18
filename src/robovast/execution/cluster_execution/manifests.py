@@ -2,7 +2,7 @@
 JOB_TEMPLATE = """apiVersion: batch/v1
 kind: Job
 metadata:
-  name: $SCENARIO_ID
+  name: $TEST_ID
   labels:
     jobgroup: scenario-runs
 spec:

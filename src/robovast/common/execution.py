@@ -45,12 +45,9 @@ def get_execution_env_variables(run_num, config_name, additional_env=None):
         Dictionary of environment variables
     """
     run_id = get_run_id()
-    scenario_id = f"{config_name}-{run_num}"
+    test_id = f"{config_name}-{run_num}"
     env_vars = {
-        'RUN_ID': run_id,
-        'RUN_NUM': str(run_num),
-        'SCENARIO_ID': scenario_id,
-        'SCENARIO_CONFIG': config_name,
+        'TEST_ID': test_id,
         'ROS_LOG_DIR': '/out/logs',
     }
 

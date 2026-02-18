@@ -203,10 +203,7 @@ class JobRunner:
         # Replace template variables
         self.replace_template(job_manifest, "$ITEM",
                               f"{scenario_key.replace('/', '-').replace('_', '-')}-{run_number}")
-        self.replace_template(job_manifest, "$RUN_ID", self.run_id)
-        self.replace_template(job_manifest, "$SCENARIO_CONFIG", scenario_key)
-        self.replace_template(job_manifest, "$RUN_NUM", str(run_number))
-        self.replace_template(job_manifest, "$SCENARIO_ID",
+        self.replace_template(job_manifest, "$TEST_ID",
                               f"{scenario_key}-{run_number}")
 
         # Add environment variables and volume mounts to the container
@@ -504,12 +501,12 @@ class JobRunner:
 
         # check if k8s element names have "$ITEM" template
         manifest_data = self.manifest
-        if '$SCENARIO_ID' not in manifest_data['metadata']['name']:
-            raise ValueError("Manifest element names need to contain '$SCENARIO_ID' template")
+        if '$TEST_ID' not in manifest_data['metadata']['name']:
+            raise ValueError("Manifest element names need to contain '$TEST_ID' template")
 
         # Cleaning up previous k8s elements
         # Get the job name prefix by replacing templates
-        job_prefix = manifest_data['metadata']['name'].replace("$SCENARIO_ID", "").replace("$ITEM", "")
+        job_prefix = manifest_data['metadata']['name'].replace("$TEST_ID", "").replace("$ITEM", "")
 
         # Clean up existing jobs that match our naming pattern
         job_list = self.k8s_batch_client.list_namespaced_job(namespace="default")
@@ -603,7 +600,9 @@ class JobRunner:
         with tempfile.TemporaryDirectory() as temp_dir:
             logger.debug(f"Using temporary directory: {temp_dir}")
 
-            out_dir = os.path.join(temp_dir, "out_template", self.run_id)
+            # Generate a stable out_template directory (no per-run subfolder).
+            # The run_id is used as the destination folder on the transfer PVC.
+            out_dir = os.path.join(temp_dir, "out_template")
             prepare_run_configs(out_dir, self.run_data)
 
             # Create execution.yaml

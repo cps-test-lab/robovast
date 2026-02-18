@@ -76,8 +76,8 @@ class ExecutionConfig(BaseModel):
 
         # Reserved keys that are set automatically during execution
         reserved_keys = {
-            'RUN_ID', 'RUN_NUM', 'SCENARIO_ID', 'SCENARIO_CONFIG', 'ROS_LOG_DIR',
-            'PRE_COMMAND', 'POST_COMMAND'
+            'TEST_ID', 'ROS_LOG_DIR',
+            'PRE_COMMAND', 'POST_COMMAND',
         }
 
         found_reserved = []
