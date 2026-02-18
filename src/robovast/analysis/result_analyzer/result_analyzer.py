@@ -69,7 +69,7 @@ class TestResultsAnalyzer(QMainWindow):
                         if not isinstance(values, dict):
                             continue
                         config_dir = os.path.dirname(config_file)
-                        
+
                         single_val = values.get("single_test")
                         single_nb = os.path.join(config_dir, single_val) if single_val else None
 

@@ -24,15 +24,15 @@ from robovast.common import FileCache
 
 
 def _create_config_for_floorplan(
-    floorplan_name, 
-    output_dir, 
-    in_config, 
-    map_file_parameter_name, 
+    floorplan_name,
+    output_dir,
+    in_config,
+    map_file_parameter_name,
     mesh_file_parameter_name,
     update_config_fn
 ):
     """Create a configuration entry for a generated floorplan with its artifacts.
-    
+
     Args:
         floorplan_name: Name of the floorplan (used as subdirectory name)
         output_dir: Base output directory containing floorplan artifacts
@@ -40,7 +40,7 @@ def _create_config_for_floorplan(
         map_file_parameter_name: Config key for map file parameter
         mesh_file_parameter_name: Config key for mesh file parameter
         update_config_fn: Function to update config with new values
-        
+
     Returns:
         Updated configuration dictionary
     """
@@ -55,12 +55,12 @@ def _create_config_for_floorplan(
         raise FileNotFoundError(f"Warning: Mesh file not found: {mesh_file_path}")
     if not os.path.exists(mesh_file_metadata_path):
         raise FileNotFoundError(f"Warning: Mesh metadata file not found: {mesh_file_metadata_path}")
-        
+
     rel_map_yaml_path = os.path.join('maps', base_name + '.yaml')
     rel_map_pgm_path = os.path.join('maps', base_name + '.pgm')
     rel_mesh_path = os.path.join('3d-mesh', base_name + '.stl')
     rel_mesh_metadata_path = os.path.join('3d-mesh', base_name + '.stl.yaml')
-    
+
     new_config = update_config_fn(in_config, {
         map_file_parameter_name: rel_map_yaml_path,
         mesh_file_parameter_name: rel_mesh_path,
@@ -264,13 +264,13 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
 
 def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progress_update_callback):
     """Generate artifacts (maps and meshes) from existing floorplan files.
-    
+
     Args:
         base_path: Base path for resolving relative floorplan file paths
         floorplan_files: List of floorplan (.fpm) file paths
         output_dir: Directory where artifacts will be generated
         progress_update_callback: Callback function for progress updates
-        
+
     Returns:
         List of floorplan names (subdirectory names) that were generated
     """
@@ -290,12 +290,12 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
 
     all_artifacts_dirs = []
     floorplan_names = []
-    
+
     for floorplan_file in floorplan_files:
         floorplan_file_path = os.path.join(base_path, floorplan_file)
         if not os.path.exists(floorplan_file_path):
             raise FileNotFoundError(f"Floorplan file {floorplan_file_path} not found")
-            
+
         floorplan_basename = os.path.splitext(os.path.basename(floorplan_file))[0]
         progress_update_callback(f"\nProcessing: {floorplan_basename}")
 

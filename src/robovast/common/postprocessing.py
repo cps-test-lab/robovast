@@ -49,21 +49,21 @@ def load_postprocessing_plugins() -> Dict[str, callable]:
 
 
 def execute_postprocessing_plugin(
-    plugin_name: str, 
-    plugin_func: callable, 
+    plugin_name: str,
+    plugin_func: callable,
     params: dict,
     results_dir: str,
     config_dir: str
 ) -> tuple[bool, str]:
     """Execute a postprocessing plugin with parameters.
-    
+
     Args:
         plugin_name: Name of the plugin
         plugin_func: The plugin function to call
         params: Dictionary of parameters for the plugin
         results_dir: Path to the run-<id> directory
         config_dir: Directory containing the configuration file
-        
+
     Returns:
         Tuple of (success, message)
     """
@@ -73,7 +73,7 @@ def execute_postprocessing_plugin(
         'config_dir': config_dir,
         **params  # Merge in plugin-specific parameters
     }
-    
+
     try:
         # Call the plugin function with parameters
         success, message = plugin_func(**kwargs)
@@ -103,7 +103,7 @@ def validate_postprocessing_command(command: str | dict, plugins: Dict[str, call
         plugin_name = list(command.keys())[0]
     else:
         return False, f"Postprocessing command must be a string or dict, got {type(command)}"
-    
+
     if plugin_name not in plugins:
         available = ', '.join(sorted(plugins.keys()))
         return False, (
@@ -111,7 +111,7 @@ def validate_postprocessing_command(command: str | dict, plugins: Dict[str, call
             f"Available plugins: {available if available else 'none'}. "
             f"Use 'vast analysis postprocessing-commands' to list all plugins."
         )
-    
+
     return True, ""
 
 
@@ -218,7 +218,7 @@ def run_postprocessing(config_path: str, results_dir: str, output_callback=None,
 
     # Load plugins
     plugins = load_postprocessing_plugins()
-    
+
     # Validate all commands first
     for command in commands:
         is_valid, error_msg = validate_postprocessing_command(command, plugins)
@@ -251,11 +251,11 @@ def run_postprocessing(config_path: str, results_dir: str, output_callback=None,
             output(f"[{i}/{len(commands)}] ✗ Invalid command format: must be string or dict, got {type(command)}")
             success = False
             continue
-        
+
         display_cmd = f"{plugin_name} (params: {params})" if params else plugin_name
-        
+
         plugin_func = plugins[plugin_name]
-        
+
         output(f"[{i}/{len(commands)}] Executing: {display_cmd}")
 
         # Execute the plugin

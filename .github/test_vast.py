@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """Generic test script for VAST files - tests execution and postprocessing."""
 
-import os
 import argparse
+import os
+import signal
 import subprocess
 import sys
 import tempfile
-import signal
-from pathlib import Path
-
 import traceback
+from pathlib import Path
 
 # Global variable to track the current subprocess
 _current_process = None  # pylint: disable=invalid-name

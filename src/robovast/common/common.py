@@ -33,12 +33,12 @@ logger = logging.getLogger(__name__)
 
 def load_config(config_file, subsection=None, allow_missing=False):
     """Load and parse scenario variation file.
-    
+
     Args:
         config_file: Path to the configuration file
         subsection: Optional subsection to extract
         allow_missing: If True, return empty dict when subsection is missing instead of raising error
-    
+
     Returns:
         Configuration dict or subsection dict
     """

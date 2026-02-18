@@ -20,11 +20,11 @@ import logging
 import os
 import re
 import tempfile
-from pprint import pformat
 from datetime import datetime
 from importlib.metadata import entry_points
+from pprint import pformat
 
-from .common import (get_scenario_parameters, load_config)
+from .common import get_scenario_parameters, load_config
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +187,7 @@ def _get_variation_classes(scenario_config):
     try:
         eps = entry_points()
         variation_eps = eps.select(group='robovast.variation_types')
-        
+
         ep_list = list(variation_eps)
         if not ep_list:
             logger.warning("No variation types found in entry points. This usually means the package is not properly installed.")
@@ -331,7 +331,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         "run_as_user": execution_section.get('run_as_user'),
         "image": execution_section.get('image'),
     }
-    
+
     # Build result dictionary
     result = {
         "vast": variation_file,
@@ -341,10 +341,10 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         "execution": execution_params,
         "created_at": datetime.now().isoformat()
     }
-    
+
     # Add metadata if it exists
     metadata = parameters.get('metadata')
     if metadata:
         result["metadata"] = metadata
-    
+
     return result, variation_gui_classes

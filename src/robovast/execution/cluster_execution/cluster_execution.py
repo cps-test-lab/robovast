@@ -27,8 +27,9 @@ import yaml
 from kubernetes import client
 from kubernetes import config as kube_config
 
-from robovast.common import (get_execution_env_variables, get_run_id,
-                             load_config, prepare_run_configs, create_execution_yaml)
+from robovast.common import (create_execution_yaml,
+                             get_execution_env_variables, get_run_id,
+                             load_config, prepare_run_configs)
 from robovast.common.config_generation import generate_scenario_variations
 from robovast.execution.cluster_execution.kubernetes import (
     check_pod_running, copy_config_to_cluster)
@@ -40,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 def cleanup_cluster_run():
     """Clean up all scenario run jobs and pods from the cluster.
-    
+
     This function removes all Kubernetes jobs and pods with the label
     'jobgroup=scenario-runs' from the default namespace. It's used after
     a detached run to clean up resources once jobs have completed.
@@ -48,7 +49,7 @@ def cleanup_cluster_run():
     kube_config.load_kube_config()
     k8s_client = client.CoreV1Api()
     k8s_batch_client = client.BatchV1Api()
-    
+
     # Cleanup jobs
     try:
         logger.debug("Deleting all jobs with label 'jobgroup=scenario-runs'")
@@ -61,7 +62,7 @@ def cleanup_cluster_run():
     except client.rest.ApiException as e:
         logger.error(f"Error deleting jobs with label selector: {e}")
         raise
-    
+
     # Cleanup pods
     try:
         logger.debug("Deleting all pods with label 'jobgroup=scenario-runs'")
@@ -111,7 +112,7 @@ class JobRunner:
             output_dir=self.config_output_file_dir.name,
         )
         self.configs = self.run_data["configs"]
-        
+
         # Get execution parameters from run_data
         execution_params = self.run_data.get("execution", {})
         self.run_as_user = execution_params.get("run_as_user", 1000)
@@ -155,13 +156,13 @@ class JobRunner:
 
     def _ensure_k8s_initialized(self):
         """Initialize Kubernetes clients if not already initialized.
-        
+
         This is called lazily only when actually needed (e.g., during run()),
         not during prepare-run which just generates manifests.
         """
         if self._k8s_initialized:
             return
-            
+
         logger.debug("Initializing Kubernetes connection...")
         kube_config.load_kube_config()
         self.k8s_client = client.CoreV1Api()
@@ -500,7 +501,7 @@ class JobRunner:
     def run(self, detached=False):
         # Ensure Kubernetes clients are initialized before running
         self._ensure_k8s_initialized()
-        
+
         # check if k8s element names have "$ITEM" template
         manifest_data = self.manifest
         if '$SCENARIO_ID' not in manifest_data['metadata']['name']:
@@ -544,12 +545,12 @@ class JobRunner:
                 logger.debug(f"Created job {job_name} for run {run_number + 1}")
 
         logger.info(f"All {len(all_jobs)} jobs created. Starting execution...")
-        
+
         # If detached, exit here without waiting
         if detached:
             logger.info("Running in detached mode. Jobs will continue running in the background.")
             return
-        
+
         # Track run start time
         self.run_start_time = datetime.datetime.now(datetime.timezone.utc)
 
@@ -606,8 +607,8 @@ class JobRunner:
             prepare_run_configs(out_dir, self.run_data)
 
             # Create execution.yaml
-            create_execution_yaml(self.num_runs, out_dir, 
-                                execution_params=self.run_data.get("execution", {}))
+            create_execution_yaml(self.num_runs, out_dir,
+                                  execution_params=self.run_data.get("execution", {}))
 
             copy_config_to_cluster(os.path.join(temp_dir, "out_template"), self.run_id)
 
