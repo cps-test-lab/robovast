@@ -30,7 +30,7 @@ metadata:
   name: robovast-storage
 provisioner: kubernetes.io/gce-pd
 parameters:
-  type: pd-standard
+  type: {disk_type}
 reclaimPolicy: Delete
 volumeBindingMode: WaitForFirstConsumer
 ---
@@ -107,15 +107,17 @@ spec:
 
 class GcpClusterConfig(BaseConfig):
 
-    def setup_cluster(self, storage_size="10Gi", **kwargs):
+    def setup_cluster(self, storage_size="10Gi", disk_type="pd-standard", **kwargs):
         """Set up transfer mechanism for GCP cluster.
 
         Args:
             storage_size (str): Size of the persistent volume (default: "10Gi")
+            disk_type (str): GCP PD type for StorageClass (default: "pd-standard")
             **kwargs: Additional cluster-specific options (ignored)
         """
         logging.info("Setting up RoboVAST in GCP cluster...")
         logging.info(f"Storage size: {storage_size}")
+        logging.info(f"Disk type: {disk_type}")
 
         # Load Kubernetes configuration
         config.load_kube_config()
@@ -126,7 +128,11 @@ class GcpClusterConfig(BaseConfig):
         logging.debug("Applying RoboVAST manifest to Kubernetes cluster...")
         try:
             try:
-                yaml_objects = yaml.safe_load_all(io.StringIO(NFS_MANIFEST_GCP.format(storage_size=storage_size)))
+                yaml_objects = yaml.safe_load_all(
+                    io.StringIO(
+                        NFS_MANIFEST_GCP.format(storage_size=storage_size, disk_type=disk_type)
+                    )
+                )
             except yaml.YAMLError as e:
                 raise RuntimeError(f"Failed to parse RoboVAST manifest YAML: {str(e)}") from e
             apply_manifests(k8s_client, yaml_objects)
@@ -134,11 +140,12 @@ class GcpClusterConfig(BaseConfig):
         except Exception as e:
             raise RuntimeError(f"Error applying RoboVAST manifest: {str(e)}") from e
 
-    def cleanup_cluster(self, storage_size="10Gi", **kwargs):
-        """Clean up transfer mechanism for RKE2 cluster.
+    def cleanup_cluster(self, storage_size="10Gi", disk_type="pd-standard", **kwargs):
+        """Clean up transfer mechanism for GCP cluster.
 
         Args:
             storage_size (str): Size of the persistent volume (default: "10Gi")
+            disk_type (str): GCP PD type for StorageClass (default: "pd-standard")
             **kwargs: Additional cluster-specific options (ignored)
         """
         logging.debug("Cleaning up RoboVAST in GCP cluster...")
@@ -149,7 +156,11 @@ class GcpClusterConfig(BaseConfig):
         core_v1 = client.CoreV1Api()
 
         try:
-            yaml_objects = yaml.safe_load_all(io.StringIO(NFS_MANIFEST_GCP.format(storage_size=storage_size)))
+            yaml_objects = yaml.safe_load_all(
+                io.StringIO(
+                    NFS_MANIFEST_GCP.format(storage_size=storage_size, disk_type=disk_type)
+                )
+            )
         except yaml.YAMLError as e:
             raise RuntimeError(f"Failed to parse PVC manifest YAML: {str(e)}") from e
 
@@ -171,16 +182,17 @@ class GcpClusterConfig(BaseConfig):
             }
         ]
 
-    def prepare_setup_cluster(self, output_dir, storage_size="10Gi", **kwargs):
+    def prepare_setup_cluster(self, output_dir, storage_size="10Gi", disk_type="pd-standard", **kwargs):
         """Prepare any prerequisites before setting up the cluster.
 
         Args:
             output_dir (str): Directory where setup files will be written
             storage_size (str): Size of the persistent volume (default: "10Gi")
+            disk_type (str): GCP PD type for StorageClass (default: "pd-standard")
             **kwargs: Additional cluster-specific options (ignored)
         """
         with open(f"{output_dir}/robovast-manifest.yaml", "w") as f:
-            f.write(NFS_MANIFEST_GCP.format(storage_size=storage_size))
+            f.write(NFS_MANIFEST_GCP.format(storage_size=storage_size, disk_type=disk_type))
 
         # Create README with setup instructions
         readme_content = f"""# GCP Cluster Setup Instructions
@@ -191,6 +203,8 @@ class GcpClusterConfig(BaseConfig):
 
 This manifest creates a PersistentVolumeClaim with {storage_size} of storage.
 
+The StorageClass uses GCP Persistent Disk type `{disk_type}`.
+
 Apply the RoboVAST server manifest:
 
 ```bash
@@ -200,3 +214,7 @@ kubectl apply -f robovast-manifest.yaml
 """
         with open(f"{output_dir}/README_gcp.md", "w") as f:
             f.write(readme_content)
+
+    def get_instance_type_command(self):
+      """Get command to retrieve instance type of the current node."""
+      return "curl -s -H 'Metadata: true' 'http://169.254.169.254/metadata/instance/compute/vmSize?api-version=2021-02-01&format=text'"
