@@ -217,4 +217,6 @@ kubectl apply -f robovast-manifest.yaml
 
     def get_instance_type_command(self):
       """Get command to retrieve instance type of the current node."""
-      return "curl -s -H 'Metadata: true' 'http://169.254.169.254/metadata/instance/compute/vmSize?api-version=2021-02-01&format=text'"
+      return """
+INSTANCE_TYPE=$(curl -s -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/machine-type | awk -F'/' '{print $NF}')
+"""

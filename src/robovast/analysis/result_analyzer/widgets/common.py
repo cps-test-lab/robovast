@@ -25,33 +25,6 @@ class RunType(Enum):
     CONFIG = 1
     RUN = 2
 
-
-def clean_test_name(test_file_path):
-    run_file = test_file_path / "test.xml"
-
-    if not run_file.exists():
-        print(f"Run file not found: {run_file}")
-        return None
-
-    try:
-        with open(run_file, 'r') as f:
-            content = f.read()
-
-        try:
-            run_data = yaml.safe_load(content)
-        except yaml.YAMLError:
-            return None
-
-    except Exception as e:
-        print(f"Error getting run data for {run_file}: {str(e)}")
-        return None
-
-    if not run_data or "TEST_ID" not in run_data:
-        return None
-
-    return run_data["TEST_ID"]
-
-
 def check_preferred_log_file(file_path):
     """Check if a log file is the preferred one (starts with 'python' and contains 'scenario_execution_ros')"""
     try:

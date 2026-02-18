@@ -21,6 +21,15 @@ spec:
           command: ["/entrypoint.sh"]
           securityContext: # required for rke2
             privileged: true
+          env:
+          - name: AVAILABLE_CPUS
+            valueFrom:
+              resourceFieldRef:
+                resource: limits.cpu
+          - name: AVAILABLE_MEM
+            valueFrom:
+              resourceFieldRef:
+                resource: limits.memory
           resources:
             requests:
               cpu: {cpu}

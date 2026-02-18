@@ -16,6 +16,12 @@ log() {
 
 log "Running as UID: $(id -u), GID: $(id -g)..."
 
+# Collect system information (non-fatal)
+log "Collecting system information..."
+INSTANCE_TYPE=""
+SYSINFO_FILE="${OUTPUT_DIR}/sysinfo.yaml"
+python3 /collect_sysinfo.py --output "${SYSINFO_FILE}" --external "instance_type=${INSTANCE_TYPE}" --external "available_cpus=${AVAILABLE_CPUS}" --external "available_mem=${AVAILABLE_MEM}"
+
 # setup ros2 environment
 log "Setting up ROS2 environment..."
 source "/opt/ros/$ROS_DISTRO/setup.bash" --

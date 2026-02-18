@@ -72,6 +72,12 @@ def prepare_run_configs(out_dir, run_data):
     entrypoint_dst = os.path.join(out_dir, "entrypoint.sh")
     shutil.copy2(entrypoint_src, entrypoint_dst)
 
+    # Copy collect_sysinfo.py to the out directory so it can be mounted
+    # into the container alongside entrypoint.sh for both local and cluster runs.
+    collect_sysinfo_src = str(files('robovast.execution.data').joinpath('collect_sysinfo.py'))
+    collect_sysinfo_dst = os.path.join(out_dir, "collect_sysinfo.py")
+    shutil.copy2(collect_sysinfo_src, collect_sysinfo_dst)
+
     # Copy vast file to the out directory
     shutil.copy2(run_data["vast"], out_dir)
 

@@ -262,6 +262,15 @@ class JobRunner:
                 'readOnly': True
             })
 
+            # Add collect_sysinfo.py mount so it is provided from the same
+            # out directory as entrypoint.sh
+            volume_mounts.append({
+                'name': 'data-storage',
+                'mountPath': '/collect_sysinfo.py',
+                'subPath': f'out/{self.run_id}/collect_sysinfo.py',
+                'readOnly': True
+            })
+
             # Add scenario.osc mount
             volume_mounts.append({
                 'name': 'data-storage',
@@ -605,6 +614,26 @@ class JobRunner:
             out_dir = os.path.join(temp_dir, "out_template")
             prepare_run_configs(out_dir, self.run_data)
 
+            # If the cluster config provides an instance type command, inject it
+            # into the generated entrypoint.sh by replacing the INSTANCE_TYPE=""
+            # placeholder line with the command snippet.
+            entrypoint_path = os.path.join(out_dir, "entrypoint.sh")
+            try:
+                instance_type_cmd = None
+                if hasattr(self.cluster_config, "get_instance_type_command"):
+                    instance_type_cmd = self.cluster_config.get_instance_type_command()
+
+                if instance_type_cmd and os.path.exists(entrypoint_path):
+                    with open(entrypoint_path, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    placeholder = 'INSTANCE_TYPE=""'
+                    if placeholder in content:
+                        content = content.replace(placeholder, instance_type_cmd, 1)
+                        with open(entrypoint_path, "w", encoding="utf-8") as f:
+                            f.write(content)
+            except Exception as exc:  # pragma: no cover - best-effort, non-fatal
+                logger.warning(f"Could not inject instance type command into entrypoint.sh: {exc}")
+
             # Create execution.yaml
             create_execution_yaml(self.num_runs, out_dir,
                                   execution_params=self.run_data.get("execution", {}))
@@ -643,7 +672,7 @@ class JobRunner:
                     'memory': kubernetes_resources["memory"]
                 }
             }
-        # Add environment variables (new format: [{"KEY": "value"}])
+        # Add environment variables
         if env:
             for env_var in env:
                 if isinstance(env_var, dict):

@@ -15,13 +15,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import os
 from pathlib import Path
 
 from PySide6.QtCore import QProcess, QThread, Signal
 from PySide6.QtWidgets import (QFormLayout, QHBoxLayout, QLineEdit,
                                QPushButton, QVBoxLayout, QWidget)
 
-from .common import clean_test_name
 from .terminal_output_widget import TerminalOutputWidget
 
 
@@ -51,7 +51,7 @@ class LocalExecutionWorker(QThread):
             self.process.finished.connect(self.handle_finished)
 
             # Output will automatically go to project results_dir
-            command = f"vast execution local run --config {self.config_file}"
+            command = f"vast execution local run -r 1 -c {self.config_name}"
 
             # Create a script that sets up a new process group and runs the command
             # This ensures all child processes can be killed together
@@ -271,7 +271,8 @@ class LocalExecutionWidget(QWidget):
             base_dir = self.current_test_dir.parent.parent.parent.parent  # Assuming test is in scenarios/Dataset/
 
             # Remove the last -<number> pattern from test_name for run_local.sh
-            test_name_cleaned = clean_test_name(self.current_test_dir)
+            test_name_cleaned = self.current_test_dir.parent.name
+            
 
             # Start execution in worker thread
             self.execution_worker = LocalExecutionWorker(self.config_file, test_name_cleaned, str(base_dir))
