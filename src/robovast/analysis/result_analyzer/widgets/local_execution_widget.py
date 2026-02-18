@@ -15,7 +15,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import os
 from pathlib import Path
 
 from PySide6.QtCore import QProcess, QThread, Signal
@@ -272,7 +271,6 @@ class LocalExecutionWidget(QWidget):
 
             # Remove the last -<number> pattern from test_name for run_local.sh
             test_name_cleaned = self.current_test_dir.parent.name
-            
 
             # Start execution in worker thread
             self.execution_worker = LocalExecutionWorker(self.config_file, test_name_cleaned, str(base_dir))

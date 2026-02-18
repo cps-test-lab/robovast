@@ -166,12 +166,12 @@ def process_rosbag(bag_path: str, topic: str, default_fps: float) -> int:
             # msg.data is a bytes-like array of the raw JPEG/PNG payload
             try:
                 ffmpeg_proc.stdin.write(bytes(msg.data))
-            except BrokenPipeError:
+            except BrokenPipeError as exc:
                 ffmpeg_stderr = ffmpeg_proc.stderr.read()
                 raise RuntimeError(
                     f"FFmpeg stdin broke after {written} frames:\n"
                     f"{ffmpeg_stderr.decode(errors='replace')}"
-                )
+                ) from exc
             written += 1
     finally:
         stdin = ffmpeg_proc.stdin

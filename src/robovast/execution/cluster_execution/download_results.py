@@ -225,7 +225,7 @@ class ResultDownloader:
 
             if not archive_exists:
                 logger.debug(f"Creating compressed archive on remote pod using kubectl...")
-                
+
                 # Ensure /exports/out directory exists
                 ensure_dir_cmd = [
                     "kubectl", "exec", "-n", "default", "robovast",
@@ -233,7 +233,7 @@ class ResultDownloader:
                     "mkdir", "-p", "/exports/out"
                 ]
                 subprocess.run(ensure_dir_cmd, capture_output=True, text=True, check=False)
-                
+
                 # Check if run_id directory exists before creating archive
                 check_run_dir_cmd = [
                     "kubectl", "exec", "-n", "default", "robovast",
@@ -241,11 +241,11 @@ class ResultDownloader:
                     "test", "-d", f"/exports/out/{run_id}"
                 ]
                 run_dir_exists = subprocess.run(check_run_dir_cmd, capture_output=True, text=True, check=False).returncode == 0
-                
+
                 if not run_dir_exists:
                     logger.warning(f"Run directory /exports/out/{run_id} does not exist, skipping archive creation")
                     return False
-                
+
                 create_archive_cmd = [
                     "kubectl", "exec", "-n", "default", "robovast",
                     "--",

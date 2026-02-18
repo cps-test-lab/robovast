@@ -226,7 +226,9 @@ kubectl apply -f robovast-manifest.yaml
             f.write(readme_content)
 
     def get_instance_type_command(self):
-      """Get command to retrieve instance type of the current node."""
-      return """
-INSTANCE_TYPE=$(curl -s -H "Metadata: true" "http://169.254.169.254/metadata/instance/compute/vmSize?api-version=2021-02-01&format=text")
-"""
+        """Get command to retrieve instance type of the current node."""
+        return (
+            'INSTANCE_TYPE=$(curl -s -H "Metadata: true" '
+            '"http://169.254.169.254/metadata/instance/compute/vmSize'
+            '?api-version=2021-02-01&format=text")'
+        )

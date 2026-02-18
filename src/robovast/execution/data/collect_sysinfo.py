@@ -2,7 +2,7 @@
 import argparse
 import os
 import platform
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
 
 
 def _read_first_existing(paths) -> Optional[str]:
@@ -32,6 +32,7 @@ def get_cpu_info() -> Dict[str, Any]:
         cpu_name = None
 
     return {"cpu_name": cpu_name}
+
 
 def parse_external_kv(pairs) -> Dict[str, Any]:
     external: Dict[str, Any] = {}
@@ -84,7 +85,6 @@ def get_platform_info() -> Dict[str, Any]:
     """
     Collect a broad set of information from the Python `platform` module.
     """
-    uname = platform.uname()
     return {
         "platform": platform.platform(aliased=True, terse=False),
         "system": platform.system(),
@@ -158,4 +158,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

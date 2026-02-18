@@ -138,3 +138,7 @@ kubectl apply -f robovast-manifest.yaml
 """
         with open(f"{output_dir}/README_minikube.md", "w") as f:
             f.write(readme_content)
+
+    def get_instance_type_command(self):
+        """Get command to retrieve instance type of the current node."""
+        return "INSTANCE_TYPE=$(uname -m)"

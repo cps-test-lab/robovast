@@ -44,7 +44,6 @@ def get_execution_env_variables(run_num, config_name, additional_env=None):
     Returns:
         Dictionary of environment variables
     """
-    run_id = get_run_id()
     test_id = f"{config_name}-{run_num}"
     env_vars = {
         'TEST_ID': test_id,

@@ -17,13 +17,12 @@
 
 from enum import Enum
 
-import yaml
-
 
 class RunType(Enum):
     SINGLE_TEST = 0
     CONFIG = 1
     RUN = 2
+
 
 def check_preferred_log_file(file_path):
     """Check if a log file is the preferred one (starts with 'python' and contains 'scenario_execution_ros')"""
