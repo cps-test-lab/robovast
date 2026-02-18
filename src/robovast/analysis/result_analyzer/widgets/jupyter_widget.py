@@ -59,6 +59,72 @@ def detect_theme() -> str:
         return 'light'
 
 
+def _scrollbar_css(theme: str) -> str:
+    if theme == 'dark':
+        track = "rgba(255, 255, 255, 0.08)"
+        thumb = "rgba(255, 255, 255, 0.25)"
+        thumb_hover = "rgba(255, 255, 255, 0.35)"
+        color_scheme = "dark"
+    else:
+        track = "rgba(0, 0, 0, 0.05)"
+        thumb = "rgba(0, 0, 0, 0.25)"
+        thumb_hover = "rgba(0, 0, 0, 0.35)"
+        color_scheme = "light"
+
+    return f"""
+<style id="robovast-scrollbar-style">
+  html {{
+    color-scheme: {color_scheme};
+  }}
+  :root {{
+    --rv-scrollbar-track: {track};
+    --rv-scrollbar-thumb: {thumb};
+    --rv-scrollbar-thumb-hover: {thumb_hover};
+  }}
+  * {{
+    scrollbar-width: thin; /* Firefox */
+    scrollbar-color: var(--rv-scrollbar-thumb) var(--rv-scrollbar-track); /* Firefox */
+  }}
+  *::-webkit-scrollbar {{
+    width: 12px;
+    height: 12px;
+  }}
+  *::-webkit-scrollbar-track {{
+    background: var(--rv-scrollbar-track);
+  }}
+  *::-webkit-scrollbar-thumb {{
+    background-color: var(--rv-scrollbar-thumb);
+    border-radius: 8px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }}
+  *::-webkit-scrollbar-thumb:hover {{
+    background-color: var(--rv-scrollbar-thumb-hover);
+  }}
+</style>
+""".strip()
+
+
+def _inject_css_into_html_head(html_text: str, css_block: str) -> str:
+    if not html_text or not css_block:
+        return html_text
+
+    if 'id="robovast-scrollbar-style"' in html_text:
+        return html_text
+
+    head_close = re.search(r"</head\s*>", html_text, flags=re.IGNORECASE)
+    if head_close:
+        idx = head_close.start()
+        return html_text[:idx] + "\n" + css_block + "\n" + html_text[idx:]
+
+    head_open = re.search(r"<head(\s+[^>]*)?>", html_text, flags=re.IGNORECASE)
+    if head_open:
+        idx = head_open.end()
+        return html_text[:idx] + "\n" + css_block + "\n" + html_text[idx:]
+
+    return css_block + "\n" + html_text
+
+
 def clean_ansi_codes(text: str) -> str:
     """Remove ANSI color codes and escape sequences from text"""
     # Remove ANSI color codes like [0;31m, [0m, etc.
@@ -509,6 +575,7 @@ class JupyterNotebookRunner(CancellableWorkload):
                 pass
 
             (body, _) = html_exporter.from_notebook_node(notebook)
+            body = _inject_css_into_html_head(body, _scrollbar_css(html_exporter.theme))
 
             # Write the HTML content to the cache file
             with open(cache_file_name, 'w', encoding='utf-8') as cache_file:
@@ -708,6 +775,7 @@ class DataAnalysisWidget(QWidget):
                     -moz-osx-font-smoothing: grayscale;
                 }}
             </style>
+            {_scrollbar_css(theme)}
         </head>
         <body>
         </body>
@@ -774,6 +842,7 @@ class DataAnalysisWidget(QWidget):
                     border-radius: 4px;
                 }}
             </style>
+            {_scrollbar_css(theme)}
         </head>
         <body>
             <div class="error-container">

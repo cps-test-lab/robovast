@@ -52,13 +52,17 @@ def compute_rosbag_hash(bag_path):
 def get_hash_file_path(bag_path, prefix):
     """Get the path to the hash file for a rosbag."""
     parent_folder = os.path.abspath(os.path.dirname(bag_path))
-    return os.path.join(parent_folder, os.path.basename(bag_path) + '_' + prefix + '.hash')
+    cache_dir = os.path.join(parent_folder, '.cache')
+    return os.path.join(cache_dir, os.path.basename(bag_path) + '_' + prefix + '.hash')
 
 
 def write_hash_file(bag_path, prefix):
     """Write the hash file after successful processing."""
     bag_hash = compute_rosbag_hash(bag_path)
     hash_file = get_hash_file_path(bag_path, prefix)
+    # Ensure .cache directory exists
+    cache_dir = os.path.dirname(hash_file)
+    os.makedirs(cache_dir, exist_ok=True)
     hash_info = {
         "hash": bag_hash,
         "created_at": time.time()

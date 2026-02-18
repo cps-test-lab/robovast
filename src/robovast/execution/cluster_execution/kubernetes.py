@@ -151,27 +151,24 @@ def copy_config_to_cluster(config_dir, run_id):
     try:
         logger.debug(f"Copying config files to transfer pod...")
 
-        # Discover config names from local config directory
-        local_run_config_dir = os.path.join(config_dir, run_id)
-        entrypoint_path = None
+        if not os.path.isdir(config_dir):
+            raise FileNotFoundError(f"Config directory does not exist: {config_dir}")
 
-        # Copy config files directly to _config folder
+        # Ensure /exports/out/<run_id> directory exists in the pod
+        ensure_dir_cmd = [
+            "kubectl", "exec", "-n", "default", "robovast",
+            "--",
+            "mkdir", "-p", f"/exports/out/{run_id}"
+        ]
+        subprocess.run(ensure_dir_cmd, capture_output=True, text=True, check=False)
+
+        # Copy config files into out/{run_id}/ folder (copy directory contents, not the directory itself)
         copy_cmd = [
             "kubectl", "cp",
-            local_run_config_dir,
-            f"default/robovast:/exports/out/"
+            os.path.join(config_dir, "."),
+            f"default/robovast:/exports/out/{run_id}/"
         ]
         subprocess.run(copy_cmd, capture_output=True, text=True, check=True)
-
-        # Copy entrypoint.sh to out/{run_id}/ if it exists
-        if entrypoint_path:
-            entrypoint_cmd = [
-                "kubectl", "cp",
-                entrypoint_path,
-                f"default/robovast:/exports/out/{run_id}/entrypoint.sh"
-            ]
-            subprocess.run(entrypoint_cmd, capture_output=True, text=True, check=True)
-            logger.debug(f"Entrypoint script copied to /exports/out/{run_id}/entrypoint.sh")
 
         logger.debug(f"Successfully copied all config files to transfer pod")
 

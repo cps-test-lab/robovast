@@ -471,7 +471,7 @@ def prepare_run(output, config, runs, cluster_config, options):  # pylint: disab
         # Prepare config files
         logging.debug("Preparing configuration files...")
 
-        out_dir = os.path.join(output, "out_template", job_runner.run_id)
+        out_dir = os.path.join(output, "out_template")
         prepare_run_configs(
             out_dir,
             job_runner.run_data

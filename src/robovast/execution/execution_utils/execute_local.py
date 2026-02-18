@@ -349,6 +349,7 @@ def generate_docker_run_script(runs, run_data, config_path_result, pre_command, 
         script += f'    --user {uid}:{gid} \\\n'
         script += f'    -v "{test_path}:/out" \\\n'
         script += f'    -v "${{SCRIPT_DIR}}/out_template/entrypoint.sh:/entrypoint.sh:ro" \\\n'
+        script += f'    -v "${{SCRIPT_DIR}}/out_template/collect_sysinfo.py:/collect_sysinfo.py:ro" \\\n'
 
         # Mount scenario and config files from results directory
         script += f'    -v "${{RESULTS_DIR}}/scenario.osc:/config/scenario.osc:ro" \\\n'
@@ -369,7 +370,8 @@ def generate_docker_run_script(runs, run_data, config_path_result, pre_command, 
             script += f'    -e PRE_COMMAND="{pre_command}" \\\n'
         if post_command:
             script += f'    -e POST_COMMAND="{post_command}" \\\n'
-
+        script += '    -e AVAILABLE_CPUS="$(nproc)" \\\n'
+        script += "    -e AVAILABLE_MEM=\"$(awk '/MemTotal/ {print $2 * 1024}' /proc/meminfo)\" \\\n"
         script += '    "$DOCKER_IMAGE" \\\n'
         script += '    $COMMAND\n\n'
 
