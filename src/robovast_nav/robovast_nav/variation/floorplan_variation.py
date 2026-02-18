@@ -16,11 +16,9 @@
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from ..floorplan_generation import (
-    _create_config_for_floorplan,
-    generate_floorplan_variations,
-    generate_floorplan_artifacts
-)
+from ..floorplan_generation import (_create_config_for_floorplan,
+                                    generate_floorplan_artifacts,
+                                    generate_floorplan_variations)
 from .nav_base_variation import NavVariation
 
 
@@ -55,7 +53,7 @@ class FloorplanVariationConfig(BaseModel):
 
 class FloorplanGenerationConfig(BaseModel):
     """Configuration for FloorplanGeneration.
-    
+
     Attributes:
         name: List with exactly two elements: [map_file_param, mesh_file_param].
               These names will be used as parameter keys in the generated configs.
@@ -83,16 +81,16 @@ class FloorplanGenerationConfig(BaseModel):
 
 class FloorplanGeneration(NavVariation):
     """Generate floorplan artifacts from existing floorplan files.
-    
+
     This variation takes existing .fpm (floorplan) files and generates the necessary
     artifacts for navigation testing:
     - Occupancy grid maps (.yaml and .pgm files)
     - 3D meshes (.stl files)
-    
+
     Unlike FloorplanVariation which creates multiple variations from .variation files,
     FloorplanGeneration processes floorplan files directly without creating variations.
     It generates exactly one configuration per input floorplan file.
-    
+
     Example configuration:
         - FloorplanGeneration:
             name:
@@ -101,7 +99,7 @@ class FloorplanGeneration(NavVariation):
             floorplans:
             - floorplans/rooms/rooms.fpm
             - floorplans/hallways/hallways.fpm
-    
+
     This will generate map and mesh artifacts for each floorplan and create
     configurations with the map_file and mesh_file parameters set appropriately.
     """
@@ -110,16 +108,16 @@ class FloorplanGeneration(NavVariation):
 
     def variation(self, in_configs):
         """Generate artifacts for each floorplan and create configurations.
-        
+
         Args:
             in_configs: List of input configurations to extend. If empty, a default
                        empty configuration is created.
-        
+
         Returns:
             List of configurations, one per input floorplan per input config.
             Each configuration includes map_file and mesh_file parameters pointing
             to the generated artifacts.
-        
+
         Raises:
             ValueError: If artifact generation fails or returns unexpected number of results.
             FileNotFoundError: If floorplan files or generated artifacts are not found.

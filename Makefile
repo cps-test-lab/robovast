@@ -17,7 +17,7 @@ install-tools:
 .PHONY: check
 check: check-tools
 	@echo "Running pylint..."
-	@find . -name "*.py" -not -path "./dependencies/*" -not -path "./venv/*" -not -path "./.venv/*" -not -path "./install/*" -not -path "./build/*" | xargs pylint --rcfile=.github/linters/.pylintrc
+	@find . -type d \( -name "venv" -o -name ".venv" -o -name "dependencies" -o -name "install" -o -name "build" \) -prune -o -name "*.py" -print | xargs pylint --rcfile=.github/linters/.pylintrc
 
 .PHONY: fix
 fix: check-tools

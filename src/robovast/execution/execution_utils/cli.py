@@ -26,7 +26,8 @@ import yaml
 
 from robovast.common import prepare_run_configs
 from robovast.common.cli import get_project_config, handle_cli_exception
-from robovast.execution.cluster_execution.cluster_execution import JobRunner, cleanup_cluster_run
+from robovast.execution.cluster_execution.cluster_execution import (
+    JobRunner, cleanup_cluster_run)
 from robovast.execution.cluster_execution.cluster_setup import (
     delete_server, get_cluster_config, load_cluster_config_name, setup_server)
 from robovast.execution.cluster_execution.download_results import \
@@ -232,7 +233,7 @@ def run(config, runs, detach):  # pylint: disable=function-redefined
     try:
         job_runner = JobRunner(project_config.config_path, config, runs, cluster_config)
         job_runner.run(detached=detach)
-        
+
         if detach:
             click.echo(f"✓ Jobs created successfully (Run ID: {job_runner.run_id})")
             click.echo()
@@ -347,28 +348,28 @@ def setup(list_configs, options, force, cluster_config):
 @cluster.command(name='run-cleanup')
 def run_cleanup():
     """Clean up jobs and pods from a cluster run.
-    
+
     Removes all scenario execution jobs and their associated pods.
     This is useful after running with --detach to clean up resources
     once jobs have completed.
-    
+
     Usage: vast execution cluster run-cleanup
     """
-    try:   
+    try:
         # Get Kubernetes client
         k8s_client = get_kubernetes_client()
-        
+
         # Check Kubernetes access
         click.echo("Checking Kubernetes cluster access...")
         k8s_ok, k8s_msg = check_kubernetes_access(k8s_client)
         if not k8s_ok:
             click.echo(f"✗ Error: {k8s_msg}", err=True)
             sys.exit(1)
-        
+
         click.echo("Cleaning up scenario run jobs and pods...")
         cleanup_cluster_run()
         click.echo("✓ Cleanup completed successfully!")
-        
+
     except Exception as e:
         handle_cli_exception(e)
 
@@ -509,8 +510,9 @@ def prepare_run(output, config, runs, cluster_config, options):  # pylint: disab
 
         generate_copy_script(output, job_runner.run_id)
 
-        click.echo(f"✓ Successfully prepared {job_count} job manifests in directory'{output}'.\n\nFollow README files to set up and execute.\n")
-    
+        click.echo(f"✓ Successfully prepared {job_count} job manifests in directory'{
+                   output}'.\n\nFollow README files to set up and execute.\n")
+
     except Exception as e:
         handle_cli_exception(e)
 
