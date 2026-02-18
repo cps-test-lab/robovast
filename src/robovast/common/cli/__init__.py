@@ -11,7 +11,7 @@ from .project_config import get_project_config
 
 def handle_cli_exception(e: Exception) -> None:
     """Handle CLI exceptions with debug traceback logging.
-    
+
     Args:
         e: The exception to handle
     """

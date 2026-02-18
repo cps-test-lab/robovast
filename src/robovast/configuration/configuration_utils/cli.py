@@ -31,7 +31,6 @@ from robovast.common import (convert_dataclasses_to_dict, filter_configs,
 from robovast.common.cli import get_project_config, handle_cli_exception
 
 
-
 @click.group()
 def configuration():
     """Manage test configuration.
@@ -106,6 +105,7 @@ def list_cmd(debug):
             click.echo(output)
     except Exception as e:
         handle_cli_exception(e)
+
 
 @configuration.command()
 @click.argument('output-dir', type=click.Path())

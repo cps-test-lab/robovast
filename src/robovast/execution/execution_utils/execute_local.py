@@ -19,8 +19,9 @@ import os
 import sys
 import tempfile
 
-from robovast.common import (get_execution_env_variables, load_config,
-                             prepare_run_configs, generate_execution_yaml_script)
+from robovast.common import (generate_execution_yaml_script,
+                             get_execution_env_variables, load_config,
+                             prepare_run_configs)
 from robovast.common.cli import get_project_config
 from robovast.common.config_generation import generate_scenario_variations
 
@@ -129,15 +130,15 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
         sys.exit(1)
 
     logger.debug(f"Configuration files prepared in: {config_dir}")
-    
+
     # Check if run_as_user differs from local user and warn about potential permission issues
     execution_params = run_data.get("execution", {})
     run_as_user = execution_params.get("run_as_user", 1000)
     host_uid = os.getuid()
     if run_as_user != host_uid:
         logger.warning(f"Container will run as UID {run_as_user}, but host user is UID {host_uid}. "
-                      f"This may cause permission issues with bind-mounted directories. "
-                      f"Consider setting 'run_as_user: {host_uid}' in your .vast config for local testing.")
+                       f"This may cause permission issues with bind-mounted directories. "
+                       f"Consider setting 'run_as_user: {host_uid}' in your .vast config for local testing.")
 
     generate_docker_run_script(runs, run_data, config_path_result, pre_command, post_command,
                                docker_image, results_dir, os.path.join(config_dir, "run.sh"))
@@ -310,7 +311,7 @@ def generate_docker_run_script(runs, run_data, config_path_result, pre_command, 
     run_as_user = execution_params.get("run_as_user")
     if run_as_user is None:
         run_as_user = 1000
-    
+
     uid = run_as_user
     gid = run_as_user
 
@@ -318,7 +319,7 @@ def generate_docker_run_script(runs, run_data, config_path_result, pre_command, 
     script += f'echo "Copying out_template contents to ${{RESULTS_DIR}}..."\n'
     script += f'cp -r "${{SCRIPT_DIR}}/out_template/"* "${{RESULTS_DIR}}/"\n'
     script += f'echo ""\n\n'
-    
+
     # Create execution.yaml with ISO formatted timestamp
     script += generate_execution_yaml_script(runs, execution_params=run_data.get("execution", {}))
 
