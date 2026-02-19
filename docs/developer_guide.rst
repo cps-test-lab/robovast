@@ -150,7 +150,7 @@ To develop the notebooks, it is recommended to use e.g. VSCode. For the RoboVAST
     # for complete run
     DATA_DIR = '<path-to-your-results-directory>/run-<timestamp>'
 
-In case you are using ROS bags as output format, it is recommended to postprocess the results before analysis. This can be done with the postprocessing commands defined in the configuration file. RoboVAST provides several conversion scripts for common use-cases, e.g., converting ROS bag messages to CSV files, tf-frames to poses, or image topics to WebM videos for quick visual inspection.
+In case you are using ROS bags as output format, it is recommended to postprocess the results before analysis. This can be done with the postprocessing commands defined in the configuration file. RoboVAST provides several conversion scripts for common use-cases.
 
 Postprocessing is cached based on the results directory hash. To bypass the cache and force postprocessing (e.g., after updating postprocessing scripts), use the ``--force`` or ``-f`` flag:
 
