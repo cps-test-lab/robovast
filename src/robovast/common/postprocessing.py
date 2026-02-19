@@ -155,6 +155,7 @@ def _write_provenance_yaml_per_folder(results_dir: str, entries: List[dict]) -> 
     """Write postprocessing.yaml in each test folder with entries whose output is under that folder."""
     results_path = Path(results_dir)
     # Normalize paths to forward slashes for consistent prefix match
+
     def norm(s: str) -> str:
         return str(Path(s)) if os.sep != "/" else s
 

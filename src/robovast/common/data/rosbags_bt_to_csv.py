@@ -26,9 +26,7 @@ from multiprocessing import Pool, cpu_count
 import rosbag2_py
 from py_trees_ros_interfaces.msg import BehaviourTree
 from rclpy.serialization import deserialize_message
-from rosbags_common import find_rosbags
-
-from rosbags_common import write_provenance_entry
+from rosbags_common import find_rosbags, write_provenance_entry
 
 
 def reconstruct_behavior_timeline(bag_path, output_file):

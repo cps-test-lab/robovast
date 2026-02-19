@@ -41,9 +41,8 @@ def _get_cluster_info():
 
     # Load cluster config info from flag file if available
     try:
-        from robovast.execution.cluster_execution.cluster_setup import (  # pylint: disable=import-outside-toplevel
-            get_cluster_config_flag_path,
-        )
+        from robovast.execution.cluster_execution.cluster_setup import \
+            get_cluster_config_flag_path  # pylint: disable=import-outside-toplevel
 
         try:
             flag_path = get_cluster_config_flag_path()

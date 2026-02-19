@@ -26,10 +26,8 @@ from multiprocessing import Pool, cpu_count
 
 import rosbag2_py
 from rclpy.serialization import deserialize_message
-from rosbags_common import find_rosbags
+from rosbags_common import find_rosbags, write_provenance_entry
 from rosidl_runtime_py.utilities import get_message
-
-from rosbags_common import write_provenance_entry
 
 
 def sanitize_topic(topic: str) -> str:
