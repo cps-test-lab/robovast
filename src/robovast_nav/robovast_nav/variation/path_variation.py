@@ -132,7 +132,7 @@ class PathVariationRandom(NavVariation):
                 ref_name = self.parameters.goal_poses.lstrip('@')
                 goal_param_name = ref_name
             
-            single_pose_mode = (goal_param_name == 'goal_pose')
+            single_pose_mode = goal_param_name == 'goal_pose'
             
             # Set default num_goal_poses if not specified
             if self.parameters.num_goal_poses is None:
@@ -495,7 +495,7 @@ class PathVariationRasterized(NavVariation):
             waypoints = [start_pose]
             
             for goal_idx in range(self.parameters.num_goal_poses):
-                is_final_goal = (goal_idx == self.parameters.num_goal_poses - 1)
+                is_final_goal = goal_idx == self.parameters.num_goal_poses - 1
                 search_dist = search_radius + bonus_distance if is_final_goal else search_radius
                 
                 # Find next goal pose within search distance
