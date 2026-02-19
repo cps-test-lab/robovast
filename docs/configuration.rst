@@ -358,6 +358,9 @@ Commands to run for postprocessing test results. These are executed before the a
        - rosbags_tf_to_csv:
            frames: [base_link, turtlebot4_base_link_gt]
        - rosbags_bt_to_csv
+       - rosbags_to_webm:
+           topic: /camera/image_raw/compressed
+           fps: 30
        - command:
            script: ../../../tools/custom_script.sh
            args: [--arg, value]
@@ -373,6 +376,7 @@ To list all available plugins and their descriptions:
 - ``rosbags_tf_to_csv``: Convert ROS TF transformations to CSV format. Optional ``frames`` parameter (list of frame names).
 - ``rosbags_bt_to_csv``: Convert ROS behavior tree logs to CSV format (no parameters).
 - ``rosbags_to_csv``: Convert all ROS messages from rosbags to CSV format. Optional ``skip_topics`` parameter (list of topic names to skip).
+- ``rosbags_to_webm``: Convert a ``sensor_msgs/msg/CompressedImage`` topic from ROS bags to WebM video files (VP9 codec). Optional ``topic`` parameter (compressed image topic name, default ``/camera/image_raw/compressed``) and ``fps`` parameter (fallback frame rate when timestamps are unavailable, default ``30``).
 - ``command``: Execute arbitrary commands or scripts. Requires ``script`` parameter, optional ``args`` parameter (list).
 
 See :ref:`extending-postprocessing` for how to add custom postprocessing plugins.
@@ -463,6 +467,7 @@ Here's a complete example showing all major configuration options:
         frames: [base_link]
      - rosbags_bt_to_csv
      - rosbags_to_csv
+     - rosbags_to_webm
      visualization:
      - Analysis:
          single_test: analysis/analysis_single_test.ipynb

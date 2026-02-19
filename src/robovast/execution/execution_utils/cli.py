@@ -20,13 +20,15 @@
 import logging
 import os
 import sys
+import time
 
 import click
 import yaml
 
 from robovast.common import prepare_run_configs
 from robovast.common.cli import get_project_config, handle_cli_exception
-from robovast.execution.cluster_execution.cluster_execution import JobRunner, cleanup_cluster_run
+from robovast.execution.cluster_execution.cluster_execution import (
+    JobRunner, cleanup_cluster_run, get_cluster_run_job_counts)
 from robovast.execution.cluster_execution.cluster_setup import (
     delete_server, get_cluster_config, load_cluster_config_name, setup_server)
 from robovast.execution.cluster_execution.download_results import \
@@ -232,7 +234,7 @@ def run(config, runs, detach):  # pylint: disable=function-redefined
     try:
         job_runner = JobRunner(project_config.config_path, config, runs, cluster_config)
         job_runner.run(detached=detach)
-        
+
         if detach:
             click.echo(f"✓ Jobs created successfully (Run ID: {job_runner.run_id})")
             click.echo()
@@ -248,6 +250,75 @@ def run(config, runs, detach):  # pylint: disable=function-redefined
             click.echo()
             click.echo("  vast execution cluster download")
             click.echo()
+    except Exception as e:
+        handle_cli_exception(e)
+
+
+@cluster.command()
+@click.option('--interval', '-i', type=float, default=2.0, show_default=True,
+              help='Polling interval in seconds')
+@click.option('--once', is_flag=True,
+              help='Print job status once and exit')
+def monitor(interval, once):
+    """Monitor scenario execution jobs on the cluster.
+
+    Continuously displays how many jobs have finished (completed or failed),
+    how many are currently running, and how many are still pending.
+
+    This is intended for monitoring jobs created by
+    ``vast execution cluster run -d``.
+    """
+    try:
+        # Check Kubernetes access for a clear error if the cluster is not reachable
+        k8s_client = get_kubernetes_client()
+        click.echo("Checking Kubernetes cluster access...")
+        k8s_ok, k8s_msg = check_kubernetes_access(k8s_client)
+        if not k8s_ok:
+            click.echo(f"✗ Error: {k8s_msg}", err=True)
+            sys.exit(1)
+        logging.debug(k8s_msg)
+
+        def _print_status_line():
+            counts = get_cluster_run_job_counts()
+            finished = counts["completed"] + counts["failed"]
+            running = counts["running"]
+            pending = counts["pending"]
+
+            line = (
+                f"Finished: {finished} "
+                f"(completed: {counts['completed']}, failed: {counts['failed']})  "
+                f"Running: {running}  Pending: {pending}"
+            )
+
+            # Pad line to ensure we fully overwrite previous content
+            width = max(len(line), 80)
+            padded_line = line.ljust(width)
+
+            sys.stdout.write("\r" + padded_line)
+            sys.stdout.flush()
+            return counts
+
+        if once:
+            _print_status_line()
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            return
+
+        click.echo("Monitoring scenario run jobs (press Ctrl+C to stop)...")
+
+        while True:
+            counts = _print_status_line()
+            if counts["running"] == 0 and counts["pending"] == 0:
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+                click.echo("All jobs finished.")
+                break
+            time.sleep(interval)
+
+    except KeyboardInterrupt:
+        # Move to the next line cleanly on interrupt
+        sys.stdout.write("\n")
+        sys.stdout.flush()
     except Exception as e:
         handle_cli_exception(e)
 
@@ -347,28 +418,28 @@ def setup(list_configs, options, force, cluster_config):
 @cluster.command(name='run-cleanup')
 def run_cleanup():
     """Clean up jobs and pods from a cluster run.
-    
+
     Removes all scenario execution jobs and their associated pods.
     This is useful after running with --detach to clean up resources
     once jobs have completed.
-    
+
     Usage: vast execution cluster run-cleanup
     """
-    try:   
+    try:
         # Get Kubernetes client
         k8s_client = get_kubernetes_client()
-        
+
         # Check Kubernetes access
         click.echo("Checking Kubernetes cluster access...")
         k8s_ok, k8s_msg = check_kubernetes_access(k8s_client)
         if not k8s_ok:
             click.echo(f"✗ Error: {k8s_msg}", err=True)
             sys.exit(1)
-        
+
         click.echo("Cleaning up scenario run jobs and pods...")
         cleanup_cluster_run()
         click.echo("✓ Cleanup completed successfully!")
-        
+
     except Exception as e:
         handle_cli_exception(e)
 
@@ -470,7 +541,7 @@ def prepare_run(output, config, runs, cluster_config, options):  # pylint: disab
         # Prepare config files
         logging.debug("Preparing configuration files...")
 
-        out_dir = os.path.join(output, "out_template", job_runner.run_id)
+        out_dir = os.path.join(output, "out_template")
         prepare_run_configs(
             out_dir,
             job_runner.run_data
@@ -509,8 +580,9 @@ def prepare_run(output, config, runs, cluster_config, options):  # pylint: disab
 
         generate_copy_script(output, job_runner.run_id)
 
-        click.echo(f"✓ Successfully prepared {job_count} job manifests in directory'{output}'.\n\nFollow README files to set up and execute.\n")
-    
+        click.echo(f"✓ Successfully prepared {job_count} job manifests in directory'{
+                   output}'.\n\nFollow README files to set up and execute.\n")
+
     except Exception as e:
         handle_cli_exception(e)
 

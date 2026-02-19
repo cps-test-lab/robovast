@@ -15,9 +15,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import datetime
+import json
 import logging
 import os
 import shutil
+import subprocess
 from importlib.resources import files
 from pprint import pformat
 
@@ -28,32 +30,94 @@ from .common import convert_dataclasses_to_dict, get_scenario_parameters
 logger = logging.getLogger(__name__)
 
 
+def _get_cluster_info():
+    """Collect basic cluster information for cluster executions.
+
+    Returns a dictionary with node_count, node_labels and cluster_config
+    (loaded from the .robovast_cluster_config flag file) when available.
+    Failures are logged and result in partial or empty data rather than errors.
+    """
+    cluster_info = {}
+
+    # Load cluster config info from flag file if available
+    try:
+        from robovast.execution.cluster_execution.cluster_setup import (  # pylint: disable=import-outside-toplevel
+            get_cluster_config_flag_path,
+        )
+
+        try:
+            flag_path = get_cluster_config_flag_path()
+            if os.path.exists(flag_path):
+                with open(flag_path, "r", encoding="utf-8") as f:
+                    config_data = yaml.safe_load(f) or {}
+                cluster_info["cluster_config"] = config_data
+        except Exception as exc:  # pragma: no cover - best-effort, non-fatal
+            logger.warning("Failed to load cluster config from flag file: %s", exc)
+    except Exception:  # pragma: no cover - import may fail in non-cluster contexts
+        # If cluster modules are not available, silently skip cluster_config
+        pass
+
+    # Collect node information via kubectl
+    node_count = None
+    node_labels = {}
+    try:
+        result = subprocess.run(
+            ["kubectl", "get", "nodes", "-o", "json"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.returncode == 0 and result.stdout:
+            data = json.loads(result.stdout)
+            items = data.get("items", [])
+            node_count = len(items)
+            for item in items:
+                metadata = item.get("metadata", {})
+                name = metadata.get("name")
+                labels = metadata.get("labels") or {}
+                if name:
+                    node_labels[name] = labels
+        else:
+            if result.stderr:
+                logger.warning(
+                    "kubectl get nodes failed with return code %s: %s",
+                    result.returncode,
+                    result.stderr.strip(),
+                )
+    except Exception as exc:  # pragma: no cover - best-effort, non-fatal
+        logger.warning("Failed to collect cluster node information: %s", exc)
+
+    if node_count is not None:
+        cluster_info["node_count"] = node_count
+    if node_labels:
+        cluster_info["node_labels"] = node_labels
+
+    return cluster_info or None
+
+
 def get_run_id():
     return f"run-{datetime.datetime.now().strftime('%Y-%m-%d-%H%M%S')}"
 
 
 def get_execution_env_variables(run_num, config_name, additional_env=None):
     """Get environment variables for execution.
-    
+
     Args:
         run_num: Run number
         config_name: Configuration name
         additional_env: Optional list of additional environment variables in format:
                        [{"KEY": "value"}]
-    
+
     Returns:
         Dictionary of environment variables
     """
-    run_id = get_run_id()
-    scenario_id = f"{config_name}-{run_num}"
+    test_id = f"{config_name}-{run_num}"
     env_vars = {
-        'RUN_ID': run_id,
-        'RUN_NUM': str(run_num),
-        'SCENARIO_ID': scenario_id,
-        'SCENARIO_CONFIG': config_name,
+        'TEST_ID': test_id,
         'ROS_LOG_DIR': '/out/logs',
     }
-    
+
     # Add custom environment variables from execution config
     if additional_env and isinstance(additional_env, list):
         for env_item in additional_env:
@@ -61,7 +125,7 @@ def get_execution_env_variables(run_num, config_name, additional_env=None):
                 # Handle simple format: {"KEY": "value"}
                 for key, value in env_item.items():
                     env_vars[key] = value
-    
+
     return env_vars
 
 
@@ -74,6 +138,12 @@ def prepare_run_configs(out_dir, run_data):
     entrypoint_src = str(files('robovast.execution.data').joinpath('entrypoint.sh'))
     entrypoint_dst = os.path.join(out_dir, "entrypoint.sh")
     shutil.copy2(entrypoint_src, entrypoint_dst)
+
+    # Copy collect_sysinfo.py to the out directory so it can be mounted
+    # into the container alongside entrypoint.sh for both local and cluster runs.
+    collect_sysinfo_src = str(files('robovast.execution.data').joinpath('collect_sysinfo.py'))
+    collect_sysinfo_dst = os.path.join(out_dir, "collect_sysinfo.py")
+    shutil.copy2(collect_sysinfo_src, collect_sysinfo_dst)
 
     # Copy vast file to the out directory
     shutil.copy2(run_data["vast"], out_dir)
@@ -137,18 +207,18 @@ def prepare_run_configs(out_dir, run_data):
 
 def generate_execution_yaml_script(runs, execution_params=None, output_dir_var="${RESULTS_DIR}"):
     """Generate shell script code to create execution.yaml with ISO formatted timestamp.
-    
+
     Args:
         runs: Number of runs
         execution_params: Dictionary containing execution parameters (run_as_user, env, etc.)
         output_dir_var: Shell variable name for the output directory (default: ${RESULTS_DIR})
-    
+
     Returns:
         String containing shell script code to create execution.yaml
     """
     if execution_params is None:
         execution_params = {}
-    
+
     script = f'echo "Creating execution.yaml..."\n'
     script += f'EXECUTION_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")\n'
     script += f'cat > "{output_dir_var}/execution.yaml" << EOF\n'
@@ -156,12 +226,14 @@ def generate_execution_yaml_script(runs, execution_params=None, output_dir_var="
     script += f'runs: {runs}\n'
     script += f'execution_type: local\n'
     script += f'image: {execution_params.get("image")}\n'
-    
+    # Local executions have no cluster information attached
+    script += 'cluster_info: {}\n'
+
     # Add run_as_user if provided
     run_as_user = execution_params.get('run_as_user')
     if run_as_user is not None:
         script += f'run_as_user: {run_as_user}\n'
-    
+
     # Add env if provided
     env = execution_params.get('env')
     if env:
@@ -172,7 +244,7 @@ def generate_execution_yaml_script(runs, execution_params=None, output_dir_var="
                     # Escape special characters for heredoc
                     escaped_value = str(value).replace('"', '\\"').replace('$', '\\$') if value is not None else ""
                     script += f'  {key}: "{escaped_value}"\n'
-    
+
     script += 'EOF\n'
     script += f'echo ""\n\n'
     return script
@@ -180,7 +252,7 @@ def generate_execution_yaml_script(runs, execution_params=None, output_dir_var="
 
 def create_execution_yaml(runs, output_dir, execution_params=None):
     """Create execution.yaml file with ISO formatted timestamp.
-    
+
     Args:
         runs: Number of runs to include in execution.yaml
         output_dir: Directory where execution.yaml will be created
@@ -188,22 +260,22 @@ def create_execution_yaml(runs, output_dir, execution_params=None):
     """
     if execution_params is None:
         execution_params = {}
-    
+
     execution_yaml_path = os.path.join(output_dir, "execution.yaml")
-    execution_time = datetime.datetime.now(datetime.timezone.utc).isoformat() + 'Z'
-    
+    execution_time = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
     execution_data = {
         'execution_time': execution_time,
         'runs': runs,
         'execution_type': 'cluster',
         'image': execution_params.get('image')
     }
-    
+
     # Add run_as_user if provided
     run_as_user = execution_params.get('run_as_user')
     if run_as_user is not None:
         execution_data['run_as_user'] = run_as_user
-    
+
     # Add env if provided
     env = execution_params.get('env')
     if env:
@@ -214,8 +286,13 @@ def create_execution_yaml(runs, output_dir, execution_params=None):
                 env_dict.update(env_item)
         if env_dict:
             execution_data['env'] = env_dict
-    
+
+    # Attach cluster information (node count, labels, and cluster config)
+    cluster_info = _get_cluster_info()
+    if cluster_info is not None:
+        execution_data['cluster_info'] = cluster_info
+
     with open(execution_yaml_path, 'w') as f:
         yaml.dump(execution_data, f, default_flow_style=False, sort_keys=False)
-    
+
     logger.debug(f"Created execution.yaml with timestamp: {execution_time}")

@@ -19,8 +19,9 @@ import os
 import sys
 import tempfile
 
-from robovast.common import (get_execution_env_variables, load_config,
-                             prepare_run_configs, generate_execution_yaml_script)
+from robovast.common import (generate_execution_yaml_script,
+                             get_execution_env_variables, load_config,
+                             prepare_run_configs)
 from robovast.common.cli import get_project_config
 from robovast.common.config_generation import generate_scenario_variations
 
@@ -129,14 +130,15 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
         sys.exit(1)
 
     logger.debug(f"Configuration files prepared in: {config_dir}")
-    
-    # Check if run_as_user differs from local user
+
+    # Check if run_as_user differs from local user and warn about potential permission issues
     execution_params = run_data.get("execution", {})
-    run_as_user = execution_params.get("run_as_user")
+    run_as_user = execution_params.get("run_as_user", 1000)
     host_uid = os.getuid()
-    if run_as_user is not None and run_as_user != host_uid:
-        logger.info(f"Note: config specifies run_as_user={run_as_user}, but local execution will use host user UID={
-                    host_uid} to ensure proper file permissions on bind mounts")
+    if run_as_user != host_uid:
+        logger.warning(f"Container will run as UID {run_as_user}, but host user is UID {host_uid}. "
+                       f"This may cause permission issues with bind-mounted directories. "
+                       f"Consider setting 'run_as_user: {host_uid}' in your .vast config for local testing.")
 
     generate_docker_run_script(runs, run_data, config_path_result, pre_command, post_command,
                                docker_image, results_dir, os.path.join(config_dir, "run.sh"))
@@ -250,7 +252,7 @@ fi
 
 # Determine command to run and interactive mode
 if [ "$USE_SHELL" = true ]; then
-    COMMAND="/bin/bash"
+    COMMAND="/usr/local/bin/fixuid /bin/bash"
     INTERACTIVE="-it"
     echo "--------------------------------------------------------"
     echo "Execute the following command to run the test:"
@@ -303,15 +305,21 @@ def generate_docker_run_script(runs, run_data, config_path_result, pre_command, 
         f'RESULTS_DIR="{results_dir}/${{RUN_ID}}"', 1
     )
 
-    # Get common environment variables
-    uid = os.getuid()
-    gid = os.getgid()
+    # Get user ID for container execution
+    # Use run_as_user from config (defaults to 1000, matching cluster execution behavior)
+    execution_params = run_data.get("execution", {})
+    run_as_user = execution_params.get("run_as_user")
+    if run_as_user is None:
+        run_as_user = 1000
+
+    uid = run_as_user
+    gid = run_as_user
 
     # Copy the contents of out_template directory to results directory
     script += f'echo "Copying out_template contents to ${{RESULTS_DIR}}..."\n'
     script += f'cp -r "${{SCRIPT_DIR}}/out_template/"* "${{RESULTS_DIR}}/"\n'
     script += f'echo ""\n\n'
-    
+
     # Create execution.yaml with ISO formatted timestamp
     script += generate_execution_yaml_script(runs, execution_params=run_data.get("execution", {}))
 
@@ -341,6 +349,7 @@ def generate_docker_run_script(runs, run_data, config_path_result, pre_command, 
         script += f'    --user {uid}:{gid} \\\n'
         script += f'    -v "{test_path}:/out" \\\n'
         script += f'    -v "${{SCRIPT_DIR}}/out_template/entrypoint.sh:/entrypoint.sh:ro" \\\n'
+        script += f'    -v "${{SCRIPT_DIR}}/out_template/collect_sysinfo.py:/collect_sysinfo.py:ro" \\\n'
 
         # Mount scenario and config files from results directory
         script += f'    -v "${{RESULTS_DIR}}/scenario.osc:/config/scenario.osc:ro" \\\n'
@@ -361,7 +370,8 @@ def generate_docker_run_script(runs, run_data, config_path_result, pre_command, 
             script += f'    -e PRE_COMMAND="{pre_command}" \\\n'
         if post_command:
             script += f'    -e POST_COMMAND="{post_command}" \\\n'
-
+        script += '    -e AVAILABLE_CPUS="$(nproc)" \\\n'
+        script += "    -e AVAILABLE_MEM=\"$(awk '/MemTotal/ {print $2 * 1024}' /proc/meminfo)\" \\\n"
         script += '    "$DOCKER_IMAGE" \\\n'
         script += '    $COMMAND\n\n'
 

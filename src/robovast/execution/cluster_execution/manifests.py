@@ -2,7 +2,7 @@
 JOB_TEMPLATE = """apiVersion: batch/v1
 kind: Job
 metadata:
-  name: $SCENARIO_ID
+  name: $TEST_ID
   labels:
     jobgroup: scenario-runs
 spec:
@@ -21,6 +21,15 @@ spec:
           command: ["/entrypoint.sh"]
           securityContext: # required for rke2
             privileged: true
+          env:
+          - name: AVAILABLE_CPUS
+            valueFrom:
+              resourceFieldRef:
+                resource: limits.cpu
+          - name: AVAILABLE_MEM
+            valueFrom:
+              resourceFieldRef:
+                resource: limits.memory
           resources:
             requests:
               cpu: {cpu}

@@ -83,7 +83,7 @@ RUN mkdir -p /ws/src
 # hadolint ignore=DL3003
 RUN  git clone "https://github.com/cps-test-lab/scenario-execution.git" /ws/src/scenario-execution && \
      cd /ws/src/scenario-execution && \
-     git checkout b0508576c175a942f06688d79ebdc4c371e4c19d && \
+     git checkout 7671a6ddc6543a2c8a3da3b33894b0d22534a870 && \
      . "/opt/ros/${ROS_DISTRO}/setup.bash" && \
      cd /ws && \
      colcon build
@@ -98,3 +98,13 @@ ENV CDEPTH=24
 ENV QT_X11_NO_MITSHM=1
 
 RUN mkdir -p /out && chmod 777 /out
+
+RUN USER=ubuntu && \
+    GROUP=ubuntu && \
+    curl -SsL https://github.com/boxboat/fixuid/releases/download/v0.6.0/fixuid-0.6.0-linux-amd64.tar.gz | tar -C /usr/local/bin -xzf - && \
+    chown root:root /usr/local/bin/fixuid && \
+    chmod 4755 /usr/local/bin/fixuid && \
+    mkdir -p /etc/fixuid && \
+    printf "user: $USER\ngroup: $GROUP\npaths:\n  - /\n  - /out\n" > /etc/fixuid/config.yml
+
+USER ubuntu:ubuntu

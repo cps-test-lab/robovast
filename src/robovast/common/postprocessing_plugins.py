@@ -41,19 +41,19 @@ from typing import List, Optional, Tuple
 
 def command(results_dir: str, config_dir: str, script: str, args: Optional[List[str]] = None) -> Tuple[bool, str]:
     """Execute an arbitrary command or script.
-    
+
     Generic plugin that allows execution of any command or script path.
     Use this for custom scripts or when a specific plugin doesn't exist.
-    
+
     Args:
         results_dir: Path to the run-<id> directory to process
         config_dir: Directory containing the config file (for resolving relative paths)
         script: Script path to execute (relative or absolute)
         args: Optional list of command-line arguments to pass to the script
-    
+
     Returns:
         Tuple of (success, message)
-    
+
     Example usage in .vast config:
         postprocessing:
           - command:
@@ -66,16 +66,16 @@ def command(results_dir: str, config_dir: str, script: str, args: Optional[List[
     script_path = script
     if not os.path.isabs(script_path) and config_dir:
         script_path = os.path.join(config_dir, script_path)
-    
+
     if not os.path.exists(script_path):
         return False, f"Script not found: {script_path}"
-    
+
     # Build full command
     full_command = [script_path]
     if args:
         full_command.extend(args)
     full_command.append(results_dir)
-    
+
     try:
         result = subprocess.run(
             full_command,
@@ -85,31 +85,31 @@ def command(results_dir: str, config_dir: str, script: str, args: Optional[List[
             text=True,
             env={**os.environ, 'PYTHONUNBUFFERED': '1'}
         )
-        
+
         if result.returncode != 0:
             return False, f"Command failed with exit code {result.returncode}\n{result.stderr}"
-        
+
         return True, "Command executed successfully"
-        
+
     except Exception as e:
         return False, f"Error executing command: {e}"
 
 
 def rosbags_tf_to_csv(results_dir: str, config_dir: str, frames: Optional[List[str]] = None) -> Tuple[bool, str]:
     """Convert ROS TF (transform) data from rosbags to CSV format.
-    
+
     Extracts transformation data from ROS bag files and converts it to CSV
     format for easier analysis. Useful for analyzing robot poses, sensor
     positions, and coordinate transformations over time.
-    
+
     Args:
         results_dir: Path to the run-<id> directory to process
         config_dir: Directory containing the config file (for resolving relative paths)
         frames: Optional list of TF frame names to extract
-    
+
     Returns:
         Tuple of (success, message)
-    
+
     Example usage in .vast config:
         postprocessing:
           - rosbags_tf_to_csv:
@@ -118,16 +118,16 @@ def rosbags_tf_to_csv(results_dir: str, config_dir: str, frames: Optional[List[s
     """
     # Get docker_exec.sh from package data
     script_path = str(files('robovast.common.data').joinpath('docker_exec.sh'))
-    
+
     # Build command with frame arguments
     cmd = [script_path, "rosbags_tf_to_csv.py"]
-    
+
     if frames:
         for frame in frames:
             cmd.extend(["--frame", frame])
-    
+
     cmd.append(results_dir)
-    
+
     try:
         result = subprocess.run(
             cmd,
@@ -137,39 +137,39 @@ def rosbags_tf_to_csv(results_dir: str, config_dir: str, frames: Optional[List[s
             text=True,
             env={**os.environ, 'PYTHONUNBUFFERED': '1'}
         )
-        
+
         if result.returncode != 0:
             return False, f"rosbags_tf_to_csv failed with exit code {result.returncode}\n{result.stderr}"
-        
+
         return True, "TF data converted to CSV successfully"
-        
+
     except Exception as e:
         return False, f"Error executing rosbags_tf_to_csv: {e}"
 
 
 def rosbags_bt_to_csv(results_dir: str, config_dir: str) -> Tuple[bool, str]:
     """Convert ROS behavior tree data from rosbags to CSV format.
-    
+
     Extracts behavior tree execution logs from ROS bag files and converts
     them to CSV format. Useful for analyzing robot decision-making,
     task execution sequences, and behavior tree node activations.
-    
+
     Args:
         results_dir: Path to the run-<id> directory to process
         config_dir: Directory containing the config file (for resolving relative paths)
-    
+
     Returns:
         Tuple of (success, message)
-    
+
     Example usage in .vast config:
         postprocessing:
           - rosbags_bt_to_csv
     """
     # Get docker_exec.sh from package data
     script_path = str(files('robovast.common.data').joinpath('docker_exec.sh'))
-    
+
     cmd = [script_path, "rosbags_bt_to_csv.py", results_dir]
-    
+
     try:
         result = subprocess.run(
             cmd,
@@ -179,32 +179,32 @@ def rosbags_bt_to_csv(results_dir: str, config_dir: str) -> Tuple[bool, str]:
             text=True,
             env={**os.environ, 'PYTHONUNBUFFERED': '1'}
         )
-        
+
         if result.returncode != 0:
             return False, f"rosbags_bt_to_csv failed with exit code {result.returncode}\n{result.stderr}"
-        
+
         return True, "Behavior tree data converted to CSV successfully"
-        
+
     except Exception as e:
         return False, f"Error executing rosbags_bt_to_csv: {e}"
 
 
 def rosbags_to_csv(results_dir: str, config_dir: str, skip_topics: Optional[List[str]] = None) -> Tuple[bool, str]:
     """Convert all ROS messages from rosbags to CSV format.
-    
+
     Extracts all message data from ROS bag files and converts each topic
     to a separate CSV file. Useful for analyzing any ROS topic data that
     doesn't have a specialized converter. By default, skips large topics
     like costmaps and snapshots.
-    
+
     Args:
         results_dir: Path to the run-<id> directory to process
         config_dir: Directory containing the config file (for resolving relative paths)
         skip_topics: Optional list of topic names to skip during conversion
-    
+
     Returns:
         Tuple of (success, message)
-    
+
     Example usage in .vast config:
         postprocessing:
           - rosbags_to_csv  # Use default skip list
@@ -213,16 +213,16 @@ def rosbags_to_csv(results_dir: str, config_dir: str, skip_topics: Optional[List
     """
     # Get docker_exec.sh from package data
     script_path = str(files('robovast.common.data').joinpath('docker_exec.sh'))
-    
+
     # Build command with skip-topic arguments
     cmd = [script_path, "rosbags_to_csv.py"]
-    
+
     if skip_topics:
         for topic in skip_topics:
             cmd.extend(["--skip-topic", topic])
-    
+
     cmd.append(results_dir)
-    
+
     try:
         result = subprocess.run(
             cmd,
@@ -232,11 +232,65 @@ def rosbags_to_csv(results_dir: str, config_dir: str, skip_topics: Optional[List
             text=True,
             env={**os.environ, 'PYTHONUNBUFFERED': '1'}
         )
-        
+
         if result.returncode != 0:
             return False, f"rosbags_to_csv failed with exit code {result.returncode}\n{result.stderr}"
-        
+
         return True, "ROS messages converted to CSV successfully"
-        
+
     except Exception as e:
         return False, f"Error executing rosbags_to_csv: {e}"
+
+
+def rosbags_to_webm(results_dir: str, config_dir: str, topic: Optional[str] = None, fps: Optional[float] = None) -> Tuple[bool, str]:
+    """Convert a CompressedImage topic from rosbags to WebM video files.
+
+    Extracts compressed image frames from a ROS bag file and encodes them
+    into a WebM video using FFmpeg (VP9 codec). JPEG frames are piped
+    directly to FFmpeg without intermediate decoding for maximum performance.
+
+    Args:
+        results_dir: Path to the run-<id> directory to process
+        config_dir: Directory containing the config file (for resolving relative paths)
+        topic: CompressedImage topic name to convert (default: /camera/image_raw/compressed)
+        fps: Fallback FPS when timestamps are unavailable (default: 30)
+
+    Returns:
+        Tuple of (success, message)
+
+    Example usage in .vast config:
+        postprocessing:
+          - rosbags_to_webm  # Use default topic
+          - rosbags_to_webm:
+              topic: /front_camera/image_raw/compressed
+              fps: 15
+    """
+    # Get docker_exec.sh from package data
+    script_path = str(files('robovast.common.data').joinpath('docker_exec.sh'))
+
+    cmd = [script_path, "rosbags_to_webm.py"]
+
+    if topic:
+        cmd += ["--topic", topic]
+    if fps is not None:
+        cmd += ["--fps", str(fps)]
+
+    cmd.append(results_dir)
+
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=os.path.dirname(script_path),
+            check=False,
+            capture_output=True,
+            text=True,
+            env={**os.environ, 'PYTHONUNBUFFERED': '1'}
+        )
+
+        if result.returncode != 0:
+            return False, f"rosbags_to_webm failed with exit code {result.returncode}\n{result.stderr}"
+
+        return True, "CompressedImage topic converted to WebM successfully"
+
+    except Exception as e:
+        return False, f"Error executing rosbags_to_webm: {e}"

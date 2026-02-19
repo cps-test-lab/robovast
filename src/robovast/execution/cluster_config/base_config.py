@@ -26,6 +26,10 @@ class BaseConfig(object):
         """
         raise NotImplementedError("setup_cluster method must be implemented by subclasses.")
 
+    def get_instance_type_command(self):
+        """Get command to retrieve instance type of the current node."""
+        raise NotImplementedError("get_instance_type_command method must be implemented by subclasses.")
+
     def cleanup_cluster(self, **kwargs):
         """Clean up transfer mechanism for the cluster.
 

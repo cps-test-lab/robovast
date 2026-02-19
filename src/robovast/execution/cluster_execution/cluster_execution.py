@@ -27,8 +27,9 @@ import yaml
 from kubernetes import client
 from kubernetes import config as kube_config
 
-from robovast.common import (get_execution_env_variables, get_run_id,
-                             load_config, prepare_run_configs, create_execution_yaml)
+from robovast.common import (create_execution_yaml,
+                             get_execution_env_variables, get_run_id,
+                             load_config, prepare_run_configs)
 from robovast.common.config_generation import generate_scenario_variations
 from robovast.execution.cluster_execution.kubernetes import (
     check_pod_running, copy_config_to_cluster)
@@ -40,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 def cleanup_cluster_run():
     """Clean up all scenario run jobs and pods from the cluster.
-    
+
     This function removes all Kubernetes jobs and pods with the label
     'jobgroup=scenario-runs' from the default namespace. It's used after
     a detached run to clean up resources once jobs have completed.
@@ -48,7 +49,7 @@ def cleanup_cluster_run():
     kube_config.load_kube_config()
     k8s_client = client.CoreV1Api()
     k8s_batch_client = client.BatchV1Api()
-    
+
     # Cleanup jobs
     try:
         logger.debug("Deleting all jobs with label 'jobgroup=scenario-runs'")
@@ -61,7 +62,7 @@ def cleanup_cluster_run():
     except client.rest.ApiException as e:
         logger.error(f"Error deleting jobs with label selector: {e}")
         raise
-    
+
     # Cleanup pods
     try:
         logger.debug("Deleting all pods with label 'jobgroup=scenario-runs'")
@@ -74,6 +75,54 @@ def cleanup_cluster_run():
     except client.rest.ApiException as e:
         logger.error(f"Error deleting pods with label selector: {e}")
         raise
+
+
+def get_cluster_run_job_counts():
+    """Get aggregate status counts for scenario run jobs.
+
+    Counts all Kubernetes jobs in the default namespace with the label
+    ``jobgroup=scenario-runs`` and classifies each job as completed,
+    failed, running, or pending based on its status fields.
+    """
+    kube_config.load_kube_config()
+    k8s_batch_client = client.BatchV1Api()
+
+    try:
+        job_list = k8s_batch_client.list_namespaced_job(
+            namespace="default",
+            label_selector="jobgroup=scenario-runs",
+        )
+    except client.rest.ApiException as e:
+        logger.error(f"Error listing jobs with label selector: {e}")
+        raise
+
+    counts = {
+        "completed": 0,
+        "failed": 0,
+        "running": 0,
+        "pending": 0,
+    }
+
+    for job in job_list.items:
+        status = job.status
+        if status is None:
+            counts["pending"] += 1
+            continue
+
+        succeeded = status.succeeded or 0
+        failed = status.failed or 0
+        active = status.active or 0
+
+        if succeeded >= 1:
+            counts["completed"] += 1
+        elif failed >= 1:
+            counts["failed"] += 1
+        elif active >= 1:
+            counts["running"] += 1
+        else:
+            counts["pending"] += 1
+
+    return counts
 
 
 class JobRunner:
@@ -111,7 +160,7 @@ class JobRunner:
             output_dir=self.config_output_file_dir.name,
         )
         self.configs = self.run_data["configs"]
-        
+
         # Get execution parameters from run_data
         execution_params = self.run_data.get("execution", {})
         self.run_as_user = execution_params.get("run_as_user", 1000)
@@ -155,13 +204,13 @@ class JobRunner:
 
     def _ensure_k8s_initialized(self):
         """Initialize Kubernetes clients if not already initialized.
-        
+
         This is called lazily only when actually needed (e.g., during run()),
         not during prepare-run which just generates manifests.
         """
         if self._k8s_initialized:
             return
-            
+
         logger.debug("Initializing Kubernetes connection...")
         kube_config.load_kube_config()
         self.k8s_client = client.CoreV1Api()
@@ -202,10 +251,7 @@ class JobRunner:
         # Replace template variables
         self.replace_template(job_manifest, "$ITEM",
                               f"{scenario_key.replace('/', '-').replace('_', '-')}-{run_number}")
-        self.replace_template(job_manifest, "$RUN_ID", self.run_id)
-        self.replace_template(job_manifest, "$SCENARIO_CONFIG", scenario_key)
-        self.replace_template(job_manifest, "$RUN_NUM", str(run_number))
-        self.replace_template(job_manifest, "$SCENARIO_ID",
+        self.replace_template(job_manifest, "$TEST_ID",
                               f"{scenario_key}-{run_number}")
 
         # Add environment variables and volume mounts to the container
@@ -261,6 +307,15 @@ class JobRunner:
                 'name': 'data-storage',
                 'mountPath': '/entrypoint.sh',
                 'subPath': f'out/{self.run_id}/entrypoint.sh',
+                'readOnly': True
+            })
+
+            # Add collect_sysinfo.py mount so it is provided from the same
+            # out directory as entrypoint.sh
+            volume_mounts.append({
+                'name': 'data-storage',
+                'mountPath': '/collect_sysinfo.py',
+                'subPath': f'out/{self.run_id}/collect_sysinfo.py',
                 'readOnly': True
             })
 
@@ -500,15 +555,15 @@ class JobRunner:
     def run(self, detached=False):
         # Ensure Kubernetes clients are initialized before running
         self._ensure_k8s_initialized()
-        
+
         # check if k8s element names have "$ITEM" template
         manifest_data = self.manifest
-        if '$SCENARIO_ID' not in manifest_data['metadata']['name']:
-            raise ValueError("Manifest element names need to contain '$SCENARIO_ID' template")
+        if '$TEST_ID' not in manifest_data['metadata']['name']:
+            raise ValueError("Manifest element names need to contain '$TEST_ID' template")
 
         # Cleaning up previous k8s elements
         # Get the job name prefix by replacing templates
-        job_prefix = manifest_data['metadata']['name'].replace("$SCENARIO_ID", "").replace("$ITEM", "")
+        job_prefix = manifest_data['metadata']['name'].replace("$TEST_ID", "").replace("$ITEM", "")
 
         # Clean up existing jobs that match our naming pattern
         job_list = self.k8s_batch_client.list_namespaced_job(namespace="default")
@@ -544,12 +599,12 @@ class JobRunner:
                 logger.debug(f"Created job {job_name} for run {run_number + 1}")
 
         logger.info(f"All {len(all_jobs)} jobs created. Starting execution...")
-        
+
         # If detached, exit here without waiting
         if detached:
             logger.info("Running in detached mode. Jobs will continue running in the background.")
             return
-        
+
         # Track run start time
         self.run_start_time = datetime.datetime.now(datetime.timezone.utc)
 
@@ -602,12 +657,34 @@ class JobRunner:
         with tempfile.TemporaryDirectory() as temp_dir:
             logger.debug(f"Using temporary directory: {temp_dir}")
 
-            out_dir = os.path.join(temp_dir, "out_template", self.run_id)
+            # Generate a stable out_template directory (no per-run subfolder).
+            # The run_id is used as the destination folder on the transfer PVC.
+            out_dir = os.path.join(temp_dir, "out_template")
             prepare_run_configs(out_dir, self.run_data)
 
+            # If the cluster config provides an instance type command, inject it
+            # into the generated entrypoint.sh by replacing the INSTANCE_TYPE=""
+            # placeholder line with the command snippet.
+            entrypoint_path = os.path.join(out_dir, "entrypoint.sh")
+            try:
+                instance_type_cmd = None
+                if hasattr(self.cluster_config, "get_instance_type_command"):
+                    instance_type_cmd = self.cluster_config.get_instance_type_command()
+
+                if instance_type_cmd and os.path.exists(entrypoint_path):
+                    with open(entrypoint_path, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    placeholder = 'INSTANCE_TYPE=""'
+                    if placeholder in content:
+                        content = content.replace(placeholder, instance_type_cmd, 1)
+                        with open(entrypoint_path, "w", encoding="utf-8") as f:
+                            f.write(content)
+            except Exception as exc:  # pragma: no cover - best-effort, non-fatal
+                logger.warning(f"Could not inject instance type command into entrypoint.sh: {exc}")
+
             # Create execution.yaml
-            create_execution_yaml(self.num_runs, out_dir, 
-                                execution_params=self.run_data.get("execution", {}))
+            create_execution_yaml(self.num_runs, out_dir,
+                                  execution_params=self.run_data.get("execution", {}))
 
             copy_config_to_cluster(os.path.join(temp_dir, "out_template"), self.run_id)
 
@@ -643,7 +720,7 @@ class JobRunner:
                     'memory': kubernetes_resources["memory"]
                 }
             }
-        # Add environment variables (new format: [{"KEY": "value"}])
+        # Add environment variables
         if env:
             for env_var in env:
                 if isinstance(env_var, dict):
