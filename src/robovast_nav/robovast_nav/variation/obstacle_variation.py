@@ -131,7 +131,7 @@ class ObstacleVariation(NavVariation):
         goal_poses = config['config'].get('goal_poses', [])
         goal_pose = config['config'].get('goal_pose')
         
-        # Handle both goal_pose (singular, from PathVariationRandom) and goal_poses (plural)
+        # Handle both legacy goal_pose (singular) and current goal_poses (plural, from PathVariationRandom)
         if goal_pose and not goal_poses:
             goal_poses = [goal_pose]
         
@@ -172,7 +172,7 @@ class ObstacleVariation(NavVariation):
                     attempt += 1
 
                     try:
-                        obstacle_objects = placer.place_obstacles(
+                        placed_obstacles = placer.place_obstacles(
                             path,
                             obstacle_config.max_distance,
                             obstacle_config.amount,
@@ -183,27 +183,30 @@ class ObstacleVariation(NavVariation):
                         )
                     except Exception as e:
                         self.progress_update(f"Error placing obstacles: {e}")
-                        obstacle_objects = []
+                        placed_obstacles = []
 
-                    if not obstacle_objects:
-                        navigable_config_found = True
-                    else:
-                        # Validate navigation with the placed obstacles
-                        self.progress_update(f"Validating navigation on map {map_file_path} with {len(obstacle_objects)} obstacles")
+                    # Check if we got the expected number of obstacles
+                    if len(placed_obstacles) == obstacle_config.amount:
+                        # Test with all obstacles so far (existing + new ones)
+                        test_obstacles = obstacle_objects + placed_obstacles
+                        
+                        # Validate navigation with the combined obstacle set
+                        self.progress_update(f"Validating navigation on map {map_file_path} with {len(test_obstacles)} total obstacles")
                         if os.path.exists(map_file_path):
                             try:
                                 generator = PathGenerator(
                                     map_file_path, self.parameters.robot_diameter
                                 )
 
-                                # Check if navigation is still possible
+                                # Check if navigation is still possible with all obstacles
                                 validation_path = generator.generate_path(
                                     waypoints,
-                                    obstacle_objects,
+                                    test_obstacles,
                                 )
 
                                 if validation_path:
-                                    # Success! Navigation is still possible
+                                    # Success! Add these obstacles to our collection
+                                    obstacle_objects.extend(placed_obstacles)
                                     navigable_config_found = True
                                     self.progress_update(
                                         f"Successfully placed {obstacle_config.amount} obstacles for config"
@@ -219,13 +222,17 @@ class ObstacleVariation(NavVariation):
                                 )
                         else:
                             raise FileNotFoundError(f"Map file not found: {map_file_path}")
+                    else:
+                        self.progress_update(
+                            f"Attempt {attempt}/{max_attempts}: only placed {len(placed_obstacles)}/{obstacle_config.amount} obstacles, retrying..."
+                        )
 
                 # If we couldn't find a navigable configuration after all attempts
                 if not navigable_config_found:
                     self.progress_update(
                         f"Warning: Could not place {obstacle_config.amount} obstacles for config while maintaining navigation"
                     )
-                    raise ValueError("Could not place obstacles while maintaining navigation")
+                    raise ValueError(f"Could not place {obstacle_config.amount} obstacles while maintaining navigation after {max_attempts} attempts")
 
         # Always create variation with parameter, even if obstacle_objects is empty
         # This ensures consistent naming and parameters in scenario.config

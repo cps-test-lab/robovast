@@ -19,7 +19,7 @@ import pickle
 from typing import Optional
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict
 
 from robovast.common import FileCache
 from robovast.common.variation import VariationGuiRenderer
@@ -41,8 +41,8 @@ class PoseConfig(BaseModel):
 class PathVariationRandomConfig(BaseModel):
     model_config = ConfigDict(extra='forbid')
     start_pose: str | PoseConfig
-    goal_poses: str | list[dict] | list[PoseConfig]  # Can be a reference like "@goal_poses" or a list of poses
-    num_goal_poses: int  # Number of goal poses to generate
+    goal_poses: str | list[dict] | list[PoseConfig]  # Can be a reference like "@goal_poses" or "@goal_pose"
+    num_goal_poses: Optional[int] = None  # Number of goal poses to generate (optional, defaults based on target parameter)
     map_file: Optional[str] = None
     path_length: float
     num_paths: int
@@ -50,13 +50,6 @@ class PathVariationRandomConfig(BaseModel):
     min_distance: float
     seed: int
     robot_diameter: float
-
-    @field_validator('num_goal_poses')
-    @classmethod
-    def validate_num_goal_poses(cls, v):
-        if v <= 0:
-            raise ValueError('num_goal_poses must be a positive integer')
-        return v
 
 
 class PathVariationGuiRenderer(VariationGuiRenderer):
@@ -70,17 +63,37 @@ class PathVariationGuiRenderer(VariationGuiRenderer):
                                       alpha=0.8, label='Path',
                                       show_endpoints=True)
 
-        # Draw multiple goal poses
+        # Handle both single goal pose and multiple goal poses
+        # Check both possible parameter names
         goal_poses = config.get('config', {}).get('goal_poses', None)
-        if goal_poses:
+        goal_pose = config.get('config', {}).get('goal_pose', None)
+        
+        if goal_pose is not None:
+            # Single pose parameter
+            goal_poses_list = [goal_pose]
+            label = 'Goal Pose'
+        elif goal_poses is not None:
+            # Multiple poses parameter
+            if isinstance(goal_poses, list):
+                goal_poses_list = goal_poses
+                label = 'Goal Poses'
+            else:
+                goal_poses_list = [goal_poses]
+                label = 'Goal Pose'
+        else:
+            goal_poses_list = []
+            label = 'Goal Poses'
+
+        if goal_poses_list:
             # Extract x and y coordinates from Pose objects
-            x_coords = [pose.position.x for pose in goal_poses]
-            y_coords = [pose.position.y for pose in goal_poses]
+            x_coords = [pose.position.x for pose in goal_poses_list]
+            y_coords = [pose.position.y for pose in goal_poses_list]
+            
             self.gui_object.map_visualizer.ax.scatter(x_coords, y_coords,
                                                       s=10,  # marker size
                                                       c='blue',
                                                       alpha=0.9,
-                                                      label='Goal Poses',
+                                                      label=label,
                                                       zorder=10)
                 
         # Visualize raster points if available
@@ -110,8 +123,23 @@ class PathVariationRandom(NavVariation):
     def variation(self, in_configs):
         self.progress_update("Running Path Variation...")
         results = []
-
+        
         for config in in_configs:
+            # Detect if we should output single pose or multiple poses based on parameter name
+            # Use the configuration reference to determine target parameter
+            goal_param_name = 'goal_poses'  # Default
+            if isinstance(self.parameters.goal_poses, str):
+                ref_name = self.parameters.goal_poses.lstrip('@')
+                goal_param_name = ref_name
+            
+            single_pose_mode = (goal_param_name == 'goal_pose')
+            
+            # Set default num_goal_poses if not specified
+            if self.parameters.num_goal_poses is None:
+                self.parameters.num_goal_poses = 1 
+                
+            self.progress_update(f"Detected target parameter '{goal_param_name}' - generating {self.parameters.num_goal_poses} goal pose(s)")
+
             # calculate all start/goal poses for configuration
             for path_index in range(self.parameters.num_paths):
                 current_seed = self.parameters.seed + path_index
@@ -120,9 +148,19 @@ class PathVariationRandom(NavVariation):
                     self.base_path, config, path_index, current_seed
                 )
 
+                # Format goal_poses based on the target parameter
+                if single_pose_mode and len(goal_poses) >= 1:
+                    # Single pose mode: output the first pose directly (not in a list)
+                    formatted_goal_poses = goal_poses[0]
+                    target_param = 'goal_pose'
+                else:
+                    # Multiple poses mode: output as list
+                    formatted_goal_poses = goal_poses
+                    target_param = 'goal_poses'
+
                 new_config = self.update_config(config, {
                     'start_pose': start_pose,
-                    'goal_poses': goal_poses},
+                    target_param: formatted_goal_poses},
                     other_values={
                         '_path': path,
                         '_map_file': map_file

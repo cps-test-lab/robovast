@@ -1,4 +1,4 @@
-provenance:
+metadata:
   dataset_iri: https://cps-test-lab.github.io/robovast-datasets/2026-robovast-navigation/
   scenarios: scenarios
   runs: runs

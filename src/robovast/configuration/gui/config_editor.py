@@ -288,35 +288,6 @@ class ConfigEditor(QMainWindow):
         """)
         button_layout.addWidget(self.save_as_button)
 
-        # Add Open VAST File button
-        self.open_vast_button = QPushButton("Open VAST File")
-        self.open_vast_button.setMaximumWidth(150)
-        self.open_vast_button.clicked.connect(self.on_open_vast_clicked)
-        self.open_vast_button.setStyleSheet("""
-            QPushButton {
-                background-color: #7d4b2d;
-                color: white;
-                border: 1px solid #9a5a3a;
-                padding: 5px 15px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #9a5a3a;
-            }
-            QPushButton:pressed {
-                background-color: #664024;
-            }
-            QPushButton:disabled {
-                background-color: #555555;
-                color: #888888;
-                border: 1px solid #444444;
-            }
-        """)
-        button_layout.addWidget(self.open_vast_button)
-
-        # Add spacer to push buttons to the left
-        button_layout.addStretch()
-
         editor_container_layout.addWidget(button_container)
 
         self.left_splitter.addWidget(editor_container)
@@ -586,28 +557,6 @@ class ConfigEditor(QMainWindow):
             # Save to the original vast file
             if self.save_to_file(self.current_file):
                 self.error_display.append(f"<span style='color: #4ec9b0;'>✓ Saved to {Path(self.current_file).name}</span>")
-
-    def on_open_vast_clicked(self):
-        """Handle Open VAST File button click."""
-        file_name, _ = QFileDialog.getOpenFileName(
-            self,
-            "Open VAST Configuration File",
-            "",
-            "VAST Files (*.vast);;YAML Files (*.yaml *.yml);;All Files (*)"
-        )
-        
-        if file_name:
-            try:
-                with open(file_name, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                self.editor.setPlainText(content)
-                self.current_file = file_name
-                self.setWindowTitle(f"Configuration Editor - {Path(file_name).name}")
-                self.error_display.append(f"<span style='color: #4ec9b0;'>✓ Opened {Path(file_name).name}</span>")
-                self.validate_config()
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to open file:\n{str(e)}")
-                self.error_display.append(f"<span style='color: #f44747;'>✗ Failed to open {Path(file_name).name}: {str(e)}</span>")
 
     def on_save_as_clicked(self):
         """Handle Save As button click - always prompt for a new filename."""
