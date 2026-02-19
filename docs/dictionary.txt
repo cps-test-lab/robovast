@@ -33,3 +33,4 @@ codec
 dir
 kwarg
 orchestrator
+gzipped
