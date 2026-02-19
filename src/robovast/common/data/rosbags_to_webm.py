@@ -29,6 +29,8 @@ from rclpy.serialization import deserialize_message
 from rosbags_common import find_rosbags
 from rosidl_runtime_py.utilities import get_message
 
+from rosbags_common import write_provenance_entry
+
 
 def sanitize_topic(topic: str) -> str:
     """Convert a topic name like /camera/image_raw/compressed to camera_image_raw_compressed."""
@@ -207,6 +209,11 @@ def main():
         "input",
         help="Input directory path to search for rosbags",
     )
+    parser.add_argument(
+        "--provenance-file",
+        default=None,
+        help="Write provenance JSON to this path (output/source paths relative to input dir)",
+    )
 
     args = parser.parse_args()
 
@@ -239,10 +246,26 @@ def main():
         print(f"Error during processing: {e}")
         return 1
 
-    for frame_count in results:
+    input_root = os.path.abspath(args.input)
+    topic_suffix = sanitize_topic(args.topic)
+    for i, frame_count in enumerate(results):
         if frame_count > 0:
             total_frames += frame_count
             processed_bags += 1
+            if args.provenance_file:
+                bag_path = rosbag_paths[i]
+                parent_folder = os.path.abspath(os.path.dirname(bag_path))
+                bag_name = os.path.basename(bag_path)
+                output_file = os.path.join(parent_folder, f"{bag_name}_{topic_suffix}.webm")
+                output_rel = os.path.relpath(output_file, input_root)
+                source_rel = os.path.relpath(bag_path, input_root)
+                write_provenance_entry(
+                    args.provenance_file,
+                    output_rel,
+                    [source_rel],
+                    "rosbags_to_webm",
+                    params={"topic": args.topic, "fps": args.fps},
+                )
         else:
             failed_bags += 1
 

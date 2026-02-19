@@ -28,6 +28,8 @@ from py_trees_ros_interfaces.msg import BehaviourTree
 from rclpy.serialization import deserialize_message
 from rosbags_common import find_rosbags
 
+from rosbags_common import write_provenance_entry
+
 
 def reconstruct_behavior_timeline(bag_path, output_file):
     """
@@ -134,6 +136,11 @@ def main():
         default="behaviors.csv",
         help="Output CSV file name (default: <test-dir>/behaviors.csv)"
     )
+    parser.add_argument(
+        "--provenance-file",
+        default=None,
+        help="Write provenance JSON to this path (output/source paths relative to input dir)"
+    )
 
     args = parser.parse_args()
 
@@ -164,12 +171,26 @@ def main():
     # Calculate summary statistics
     failed_bags = 0
     error_bags = 0
-    for behavior_count in results:
+    input_root = os.path.abspath(args.input)
+    for i, behavior_count in enumerate(results):
         if behavior_count == -2:
             error_bags += 1
         elif behavior_count > 0:
             total_behaviors += behavior_count
             processed_bags += 1
+            if args.provenance_file:
+                bag_path = rosbag_paths[i]
+                parent_folder = os.path.abspath(os.path.dirname(bag_path))
+                output_file = os.path.join(parent_folder, args.csv_filename)
+                output_rel = os.path.relpath(output_file, input_root)
+                source_rel = os.path.relpath(bag_path, input_root)
+                write_provenance_entry(
+                    args.provenance_file,
+                    output_rel,
+                    [source_rel],
+                    "rosbags_bt_to_csv",
+                    params={"csv_filename": args.csv_filename},
+                )
         elif behavior_count == 0:
             failed_bags += 1
 

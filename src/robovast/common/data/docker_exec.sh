@@ -33,13 +33,17 @@ Usage: $(basename "$0") [OPTIONS] SCRIPT [ARGS...]
 Run a Python script with ROS from within a Docker container.
 
 OPTIONS:
-    --image IMAGE       Use a custom Docker image (default: ghcr.io/cps-test-lab/robovast:latest)
-    -h, --help          Show this help message
+    --image IMAGE           Use a custom Docker image (default: ghcr.io/cps-test-lab/robovast:latest)
+    --provenance-file PATH  Mount dirname(PATH) at /provenance in the container (for provenance JSON output)
+    -h, --help              Show this help message
 
 EXAMPLE:
     $(basename "$0") my_script.py arg1 arg2
 EOF
 }
+
+# Provenance mount (optional)
+PROVENANCE_MOUNT=""
 
 # Parse command-line arguments
 while [ $# -gt 0 ]; do
@@ -50,6 +54,15 @@ while [ $# -gt 0 ]; do
             ;;
         --image)
             DOCKER_IMAGE="$2"
+            shift 2
+            ;;
+        --provenance-file)
+            if [ -z "${2:-}" ]; then
+                echo "Error: --provenance-file requires a path"
+                exit 1
+            fi
+            PROVENANCE_DIR="$(cd "$(dirname "$2")" && pwd)"
+            PROVENANCE_MOUNT="-v $PROVENANCE_DIR:/provenance"
             shift 2
             ;;
         *)
@@ -97,6 +110,7 @@ docker run \
     -e PYTHONUNBUFFERED=1 \
     -v "$SCRIPT_DIR:/scripts:ro" \
     $INPUT_MOUNT \
+    $PROVENANCE_MOUNT \
     -w /scripts \
     "$DOCKER_IMAGE" \
     /scripts/ros2_exec.sh "${ARGS[@]}"

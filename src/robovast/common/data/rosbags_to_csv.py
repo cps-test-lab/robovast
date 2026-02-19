@@ -28,6 +28,8 @@ from rclpy.serialization import deserialize_message
 from rosbags_common import find_rosbags, gen_msg_values
 from rosidl_runtime_py.utilities import get_message
 
+from rosbags_common import write_provenance_entry
+
 
 def process_rosbag_wrapper(args):
     """Wrapper function for multiprocessing that unpacks arguments."""
@@ -121,6 +123,11 @@ def main():
         "input",
         help="input directory path to search for rosbags"
     )
+    parser.add_argument(
+        "--provenance-file",
+        default=None,
+        help="Write provenance JSON to this path (output/source paths relative to input dir)"
+    )
 
     args = parser.parse_args()
     skipped_topics = set(args.skip_topic)
@@ -150,15 +157,29 @@ def main():
     except KeyboardInterrupt:
         print("Processing interrupted by user.")
         return 1
-    # Calculate summary statistics
+    # Calculate summary statistics and write provenance
+    input_root = os.path.abspath(args.input)
     failed_bags = 0
     error_bags = 0
-    for records_count in results:
+    for i, records_count in enumerate(results):
         if records_count == -2:
             error_bags += 1
         elif records_count > 0:
             total_records += records_count
             processed_bags += 1
+            if args.provenance_file:
+                bag_path = rosbag_paths[i]
+                parent_folder = os.path.abspath(os.path.dirname(bag_path))
+                output_file = os.path.join(parent_folder, os.path.basename(bag_path) + '.csv')
+                output_rel = os.path.relpath(output_file, input_root)
+                source_rel = os.path.relpath(bag_path, input_root)
+                write_provenance_entry(
+                    args.provenance_file,
+                    output_rel,
+                    [source_rel],
+                    "rosbags_to_csv",
+                    params={"skip_topics": list(skipped_topics)},
+                )
         elif records_count == 0:
             failed_bags += 1
 

@@ -15,7 +15,53 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import json
 import os
+from typing import List, Optional
+
+
+def write_provenance_entry(
+    provenance_file_path: Optional[str],
+    output_rel: str,
+    sources_rel: List[str],
+    plugin_name: str,
+    params: Optional[dict] = None,
+) -> None:
+    """Append one provenance entry to a JSON file.
+
+    Used by container scripts to record which output was produced from which
+    sources. Paths should be relative to the results root (input dir).
+    If provenance_file_path is None or empty, does nothing.
+
+    Args:
+        provenance_file_path: Path to the provenance JSON file (or None to skip).
+        output_rel: Output path relative to results root.
+        sources_rel: List of source paths relative to results root.
+        plugin_name: Name of the plugin that produced the output.
+        params: Optional dict of plugin parameters.
+    """
+    if not provenance_file_path:
+        return
+    entry = {
+        "output": output_rel,
+        "sources": list(sources_rel),
+        "plugin": plugin_name,
+        "params": params if params is not None else {},
+    }
+    parent = os.path.dirname(provenance_file_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    existing: List[dict] = []
+    if os.path.exists(provenance_file_path):
+        try:
+            with open(provenance_file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                existing = data.get("entries", [])
+        except (json.JSONDecodeError, OSError):
+            existing = []
+    existing.append(entry)
+    with open(provenance_file_path, "w", encoding="utf-8") as f:
+        json.dump({"entries": existing}, f, indent=2)
 
 
 def gen_msg_values(msg, prefix=""):

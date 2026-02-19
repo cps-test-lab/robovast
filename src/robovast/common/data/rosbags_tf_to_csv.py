@@ -32,6 +32,8 @@ from tf2_py import (ConnectivityException, ExtrapolationException,
                     LookupException)
 from tf2_ros import Buffer
 
+from rosbags_common import write_provenance_entry
+
 def process_rosbag_wrapper(args):
     """Wrapper function for multiprocessing that unpacks arguments."""
     bag_path, frames, csv_filename = args
@@ -172,6 +174,11 @@ def main():
         "input",
         help="input directory path to search for rosbags"
     )
+    parser.add_argument(
+        "--provenance-file",
+        default=None,
+        help="Write provenance JSON to this path (output/source paths relative to input dir)"
+    )
 
     args = parser.parse_args()
 
@@ -212,7 +219,8 @@ def main():
     # Aggregate per-frame counts across all bags
     total_frame_counts = {frame: 0 for frame in args.frame}
 
-    for record_count, frame_counts in results:
+    input_root = os.path.abspath(args.input)
+    for i, (record_count, frame_counts) in enumerate(results):
         if record_count == -2:
             error_bags += 1
         elif record_count > 0:
@@ -221,6 +229,18 @@ def main():
             # Aggregate frame counts
             for frame, count in frame_counts.items():
                 total_frame_counts[frame] += count
+            if args.provenance_file:
+                bag_path = rosbag_paths[i]
+                csv_file_path = os.path.join(os.path.dirname(bag_path), args.csv_filename)
+                output_rel = os.path.relpath(csv_file_path, input_root)
+                source_rel = os.path.relpath(bag_path, input_root)
+                write_provenance_entry(
+                    args.provenance_file,
+                    output_rel,
+                    [source_rel],
+                    "rosbags_tf_to_csv",
+                    params={"frames": args.frame, "csv_filename": args.csv_filename},
+                )
         elif record_count == 0:
             failed_bags += 1
 
