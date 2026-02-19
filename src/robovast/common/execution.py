@@ -15,9 +15,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import datetime
+import json
 import logging
 import os
 import shutil
+import subprocess
 from importlib.resources import files
 from pprint import pformat
 
@@ -26,6 +28,72 @@ import yaml
 from .common import convert_dataclasses_to_dict, get_scenario_parameters
 
 logger = logging.getLogger(__name__)
+
+
+def _get_cluster_info():
+    """Collect basic cluster information for cluster executions.
+
+    Returns a dictionary with node_count, node_labels and cluster_config
+    (loaded from the .robovast_cluster_config flag file) when available.
+    Failures are logged and result in partial or empty data rather than errors.
+    """
+    cluster_info = {}
+
+    # Load cluster config info from flag file if available
+    try:
+        from robovast.execution.cluster_execution.cluster_setup import (  # pylint: disable=import-outside-toplevel
+            get_cluster_config_flag_path,
+        )
+
+        try:
+            flag_path = get_cluster_config_flag_path()
+            if os.path.exists(flag_path):
+                with open(flag_path, "r", encoding="utf-8") as f:
+                    config_data = yaml.safe_load(f) or {}
+                cluster_info["cluster_config"] = config_data
+        except Exception as exc:  # pragma: no cover - best-effort, non-fatal
+            logger.warning("Failed to load cluster config from flag file: %s", exc)
+    except Exception:  # pragma: no cover - import may fail in non-cluster contexts
+        # If cluster modules are not available, silently skip cluster_config
+        pass
+
+    # Collect node information via kubectl
+    node_count = None
+    node_labels = {}
+    try:
+        result = subprocess.run(
+            ["kubectl", "get", "nodes", "-o", "json"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.returncode == 0 and result.stdout:
+            data = json.loads(result.stdout)
+            items = data.get("items", [])
+            node_count = len(items)
+            for item in items:
+                metadata = item.get("metadata", {})
+                name = metadata.get("name")
+                labels = metadata.get("labels") or {}
+                if name:
+                    node_labels[name] = labels
+        else:
+            if result.stderr:
+                logger.warning(
+                    "kubectl get nodes failed with return code %s: %s",
+                    result.returncode,
+                    result.stderr.strip(),
+                )
+    except Exception as exc:  # pragma: no cover - best-effort, non-fatal
+        logger.warning("Failed to collect cluster node information: %s", exc)
+
+    if node_count is not None:
+        cluster_info["node_count"] = node_count
+    if node_labels:
+        cluster_info["node_labels"] = node_labels
+
+    return cluster_info or None
 
 
 def get_run_id():
@@ -158,6 +226,8 @@ def generate_execution_yaml_script(runs, execution_params=None, output_dir_var="
     script += f'runs: {runs}\n'
     script += f'execution_type: local\n'
     script += f'image: {execution_params.get("image")}\n'
+    # Local executions have no cluster information attached
+    script += 'cluster_info: {}\n'
 
     # Add run_as_user if provided
     run_as_user = execution_params.get('run_as_user')
@@ -216,6 +286,11 @@ def create_execution_yaml(runs, output_dir, execution_params=None):
                 env_dict.update(env_item)
         if env_dict:
             execution_data['env'] = env_dict
+
+    # Attach cluster information (node count, labels, and cluster config)
+    cluster_info = _get_cluster_info()
+    if cluster_info is not None:
+        execution_data['cluster_info'] = cluster_info
 
     with open(execution_yaml_path, 'w') as f:
         yaml.dump(execution_data, f, default_flow_style=False, sort_keys=False)
