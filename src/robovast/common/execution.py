@@ -262,7 +262,7 @@ def create_execution_yaml(runs, output_dir, execution_params=None):
         execution_params = {}
 
     execution_yaml_path = os.path.join(output_dir, "execution.yaml")
-    execution_time = datetime.datetime.now(datetime.timezone.utc).isoformat() + 'Z'
+    execution_time = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     execution_data = {
         'execution_time': execution_time,
