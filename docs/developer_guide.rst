@@ -150,7 +150,7 @@ To develop the notebooks, it is recommended to use e.g. VSCode. For the RoboVAST
     # for complete run
     DATA_DIR = '<path-to-your-results-directory>/run-<timestamp>'
 
-In case you are using ROS bags as output format, it is recommended to postprocess the results before analysis. This can be done with the postprocessing commands defined in the configuration file. RoboVAST provides several conversion scripts for common use-cases, e.g., converting ROS bag messages to CSV files or tf-frames to poses.
+In case you are using ROS bags as output format, it is recommended to postprocess the results before analysis. This can be done with the postprocessing commands defined in the configuration file. RoboVAST provides several conversion scripts for common use-cases.
 
 Postprocessing is cached based on the results directory hash. To bypass the cache and force postprocessing (e.g., after updating postprocessing scripts), use the ``--force`` or ``-f`` flag:
 
@@ -254,14 +254,6 @@ Postprocessing plugins are Python functions that process test result directories
       postprocessing:
         - my_postprocessing_command:
             custom_param: value
-        - rosbags_tf_to_csv:
-            frames: [base_link, map]
-        - rosbags_to_csv:
-            skip_topics: [/large_topic]
-        - command:
-            script: tools/script.sh
-            args: [arg1, arg2]
-
 
 Add Cluster Config Plugin
 ^^^^^^^^^^^^^^^^^^^^^^^^^

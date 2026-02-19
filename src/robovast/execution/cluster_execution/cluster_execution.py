@@ -77,6 +77,54 @@ def cleanup_cluster_run():
         raise
 
 
+def get_cluster_run_job_counts():
+    """Get aggregate status counts for scenario run jobs.
+
+    Counts all Kubernetes jobs in the default namespace with the label
+    ``jobgroup=scenario-runs`` and classifies each job as completed,
+    failed, running, or pending based on its status fields.
+    """
+    kube_config.load_kube_config()
+    k8s_batch_client = client.BatchV1Api()
+
+    try:
+        job_list = k8s_batch_client.list_namespaced_job(
+            namespace="default",
+            label_selector="jobgroup=scenario-runs",
+        )
+    except client.rest.ApiException as e:
+        logger.error(f"Error listing jobs with label selector: {e}")
+        raise
+
+    counts = {
+        "completed": 0,
+        "failed": 0,
+        "running": 0,
+        "pending": 0,
+    }
+
+    for job in job_list.items:
+        status = job.status
+        if status is None:
+            counts["pending"] += 1
+            continue
+
+        succeeded = status.succeeded or 0
+        failed = status.failed or 0
+        active = status.active or 0
+
+        if succeeded >= 1:
+            counts["completed"] += 1
+        elif failed >= 1:
+            counts["failed"] += 1
+        elif active >= 1:
+            counts["running"] += 1
+        else:
+            counts["pending"] += 1
+
+    return counts
+
+
 class JobRunner:
     def __init__(self, config_path, single_config=None, num_runs=None, cluster_config=None):
         self.cluster_config = cluster_config
