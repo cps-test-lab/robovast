@@ -26,12 +26,8 @@ from multiprocessing import Pool, cpu_count
 
 import rosbag2_py
 from rclpy.serialization import deserialize_message
-from rosbags_common import (find_rosbags, should_skip_processing,
-                            write_hash_file)
+from rosbags_common import find_rosbags
 from rosidl_runtime_py.utilities import get_message
-
-# Get script name without extension to use as prefix
-SCRIPT_NAME = os.path.splitext(os.path.basename(__file__))[0]
 
 
 def sanitize_topic(topic: str) -> str:
@@ -49,13 +45,10 @@ def process_rosbag(bag_path: str, topic: str, default_fps: float) -> int:
     """Process a single rosbag: pipe JPEG frames directly to FFmpeg → WebM.
 
     Returns:
-        Number of frames written, -1 if skipped, 0 if topic missing/empty.
+        Number of frames written, or 0 if topic missing/empty.
     Raises:
         Exception: propagated to the pool caller so the real traceback is visible.
     """
-    if should_skip_processing(bag_path, prefix=SCRIPT_NAME):
-        return -1  # already processed
-
     reader = rosbag2_py.SequentialReader()
     reader.open(
         rosbag2_py.StorageOptions(uri=bag_path, storage_id="mcap"),
@@ -76,7 +69,6 @@ def process_rosbag(bag_path: str, topic: str, default_fps: float) -> int:
     available_topics = [t.name for t in topic_types]
     if topic not in available_topics:
         print(f"✗ {bag_path}: topic '{topic}' not found (available: {available_topics})", flush=True)
-        write_hash_file(bag_path, prefix=SCRIPT_NAME)
         return 0
 
     msg_type = get_message(typename(topic))
@@ -97,7 +89,6 @@ def process_rosbag(bag_path: str, topic: str, default_fps: float) -> int:
 
     if frame_count == 0:
         print(f"✗ {bag_path}: no frames on topic '{topic}'", flush=True)
-        write_hash_file(bag_path, prefix=SCRIPT_NAME)
         return 0
 
     # Compute FPS from timestamps (nanoseconds)
@@ -189,7 +180,6 @@ def process_rosbag(bag_path: str, topic: str, default_fps: float) -> int:
     if ffmpeg_proc.returncode != 0:
         raise RuntimeError(f"FFmpeg failed:\n{stderr.decode(errors='replace')}")
 
-    write_hash_file(bag_path, prefix=SCRIPT_NAME)
     print(f"✓ {output_file}: {written} frames @ {fps:.2f} fps", flush=True)
     return written
 
@@ -234,7 +224,6 @@ def main():
     start = time.time()
     total_frames = 0
     processed_bags = 0
-    skipped_bags = 0
     failed_bags = 0
     error_bags = 0
 
@@ -251,9 +240,7 @@ def main():
         return 1
 
     for frame_count in results:
-        if frame_count == -1:
-            skipped_bags += 1
-        elif frame_count > 0:
+        if frame_count > 0:
             total_frames += frame_count
             processed_bags += 1
         else:
@@ -262,7 +249,7 @@ def main():
     elapsed = time.time() - start
     print(
         f"Summary: {len(rosbag_paths)} rosbags ({processed_bags} success, "
-        f"{error_bags} errors, {failed_bags} failed, {skipped_bags} skipped), "
+        f"{error_bags} errors, {failed_bags} failed), "
         f"{total_frames} total frames, time {elapsed:.2f}s"
     )
     return 0

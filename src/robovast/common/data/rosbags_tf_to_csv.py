@@ -26,16 +26,11 @@ from multiprocessing import Pool, cpu_count
 
 import rosbag2_py
 from rclpy.serialization import deserialize_message
-from rosbags_common import (find_rosbags, should_skip_processing,
-                            write_hash_file)
+from rosbags_common import find_rosbags
 from rosidl_runtime_py.utilities import get_message
 from tf2_py import (ConnectivityException, ExtrapolationException,
                     LookupException)
 from tf2_ros import Buffer
-
-# Get script name without extension to use as prefix
-SCRIPT_NAME = os.path.splitext(os.path.basename(__file__))[0]
-
 
 def process_rosbag_wrapper(args):
     """Wrapper function for multiprocessing that unpacks arguments."""
@@ -54,10 +49,6 @@ def quat_to_rpy(x, y, z, w):
 def process_rosbag(bag_path, frames, csv_filename):
     """Process a single rosbag and write pose records directly to CSV file."""
     try:
-        # Check if we should skip processing based on hash
-        if should_skip_processing(bag_path, prefix=SCRIPT_NAME):
-            return (-1, {})  # Return -1 to indicate skipped
-
         if frames is None:
             raise ValueError("frames parameter must be provided")
 
@@ -137,9 +128,6 @@ def process_rosbag(bag_path, frames, csv_filename):
         finally:
             csvfile.close()
 
-        # Write hash file after successful processing
-        write_hash_file(bag_path, prefix=SCRIPT_NAME)
-
         total_records = sum(record_counts.values())
 
         # Report results
@@ -155,7 +143,6 @@ def process_rosbag(bag_path, frames, csv_filename):
 
     except Exception as e:
         print(f"✗ {bag_path}: Error - {str(e)}")
-        write_hash_file(bag_path, prefix=SCRIPT_NAME)
         return (-2, {})
 
 
@@ -220,16 +207,13 @@ def main():
         return 1
 
     # Calculate summary statistics
-    skipped_bags = 0
     failed_bags = 0
     error_bags = 0
     # Aggregate per-frame counts across all bags
     total_frame_counts = {frame: 0 for frame in args.frame}
 
     for record_count, frame_counts in results:
-        if record_count == -1:
-            skipped_bags += 1
-        elif record_count == -2:
+        if record_count == -2:
             error_bags += 1
         elif record_count > 0:
             total_records += record_count
@@ -241,8 +225,8 @@ def main():
             failed_bags += 1
 
     elapsed = time.time() - start
-    print(f"Summary: {len(rosbag_paths)} rosbags ({processed_bags} success, {
-          error_bags} errors, {failed_bags} failed, {skipped_bags} skipped), time {elapsed:.2f}s")
+    print(f"Summary: {len(rosbag_paths)} rosbags ({processed_bags} success, "
+          f"{error_bags} errors, {failed_bags} failed), time {elapsed:.2f}s")
 
     # Check if any requested frame has no records
     empty_frames = [frame for frame, count in total_frame_counts.items() if count == 0]
