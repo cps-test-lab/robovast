@@ -254,24 +254,6 @@ Postprocessing plugins are Python functions that process test result directories
       postprocessing:
         - my_postprocessing_command:
             custom_param: value
-        - rosbags_tf_to_csv:
-            frames: [base_link, map]
-        - rosbags_to_csv:
-            skip_topics: [/large_topic]
-        - rosbags_to_webm:
-            topic: /camera/image_raw/compressed
-            fps: 30
-        - command:
-            script: tools/script.sh
-            args: [arg1, arg2]
-
-Built-in postprocessing commands include:
-
-- ``rosbags_tf_to_csv``: Extract TF frames from ROS bags and write them to CSV files. Optionally restrict the set of frames via the ``frames`` parameter.
-- ``rosbags_bt_to_csv``: Convert behavior tree execution logs stored in ROS bags to CSV format.
-- ``rosbags_to_csv``: Convert all ROS topics in ROS bags to CSV files, optionally skipping large or unneeded topics via ``skip_topics``.
-- ``rosbags_to_webm``: Convert a ``sensor_msgs/msg/CompressedImage`` topic from ROS bags into WebM video files (VP9 codec). By default, the topic ``/camera/image_raw/compressed`` is used with a fallback frame rate of 30 FPS. You can override the topic with ``topic`` and the fallback frame rate with ``fps`` (see example above).
-
 
 Add Cluster Config Plugin
 ^^^^^^^^^^^^^^^^^^^^^^^^^
