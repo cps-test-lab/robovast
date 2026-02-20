@@ -77,7 +77,8 @@ class MinikubeClusterConfig(BaseConfig):
                 yaml_objects = yaml.safe_load_all(io.StringIO(NFS_MANIFEST_MINIKUBE))
             except yaml.YAMLError as e:
                 raise RuntimeError(f"Failed to parse NFS manifest YAML: {str(e)}") from e
-            apply_manifests(k8s_client, yaml_objects)
+            namespace = kwargs.get('namespace', 'default')
+            apply_manifests(k8s_client, yaml_objects, namespace=namespace)
         except Exception as e:
             raise RuntimeError(f"Error applying NFS manifest: {str(e)}") from e
 
@@ -99,7 +100,8 @@ class MinikubeClusterConfig(BaseConfig):
         except yaml.YAMLError as e:
             raise RuntimeError(f"Failed to parse PVC manifest YAML: {str(e)}") from e
 
-        delete_manifests(core_v1, yaml_objects)
+        namespace = kwargs.get('namespace', 'default')
+        delete_manifests(core_v1, yaml_objects, namespace=namespace)
         logging.debug("RoboVAST manifest deleted successfully!")
 
     def get_job_volumes(self):

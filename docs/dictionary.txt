@@ -34,3 +34,4 @@ dir
 kwarg
 orchestrator
 gzipped
+namespace

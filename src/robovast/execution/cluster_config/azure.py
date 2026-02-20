@@ -21,6 +21,7 @@ import time
 import yaml
 from kubernetes import client, config
 
+from ..cluster_execution.cluster_setup import get_cluster_namespace
 from ..cluster_execution.kubernetes import apply_manifests, delete_manifests
 from .base_config import BaseConfig
 
@@ -115,7 +116,8 @@ class AzureClusterConfig(BaseConfig):
                 yaml_objects = yaml.safe_load_all(io.StringIO(NFS_MANIFEST_AZURE.format(storage_size=storage_size)))
             except yaml.YAMLError as e:
                 raise RuntimeError(f"Failed to parse RoboVAST manifest YAML: {str(e)}") from e
-            apply_manifests(k8s_client, yaml_objects)
+            namespace = kwargs.get('namespace', 'default')
+            apply_manifests(k8s_client, yaml_objects, namespace=namespace)
 
         except Exception as e:
             raise RuntimeError(f"Error applying RoboVAST manifest: {str(e)}") from e
@@ -128,7 +130,7 @@ class AzureClusterConfig(BaseConfig):
                 try:
                     service = core_v1.read_namespaced_service(
                         name="robovast",
-                        namespace="default"
+                        namespace=namespace
                     )
                     if service.spec.cluster_ip:
                         nfs_server_ip = service.spec.cluster_ip
@@ -162,7 +164,8 @@ class AzureClusterConfig(BaseConfig):
         except yaml.YAMLError as e:
             raise RuntimeError(f"Failed to parse PVC manifest YAML: {str(e)}") from e
 
-        delete_manifests(core_v1, yaml_objects)
+        namespace = kwargs.get('namespace', 'default')
+        delete_manifests(core_v1, yaml_objects, namespace=namespace)
         logging.debug("NFS manifest deleted successfully!")
 
     def get_job_volumes(self):
@@ -174,16 +177,17 @@ class AzureClusterConfig(BaseConfig):
         core_v1 = client.CoreV1Api()
 
         # Get the robovast service to retrieve its ClusterIP
+        namespace = get_cluster_namespace()
         try:
             service = core_v1.read_namespaced_service(
                 name="robovast",
-                namespace="default"
+                namespace=namespace
             )
             nfs_server = service.spec.cluster_ip
             logging.debug(f"Retrieved NFS server IP: {nfs_server}")
         except Exception as e:
             logging.warning(f"Failed to retrieve robovast service IP: {e}. Falling back to DNS name.")
-            nfs_server = "robovast.default.svc.cluster.local"
+            nfs_server = f"robovast.{namespace}.svc.cluster.local"
 
         return [
             {

@@ -32,7 +32,8 @@ logger = logging.getLogger(__name__)
 
 
 class ResultDownloader:
-    def __init__(self):
+    def __init__(self, namespace="default"):
+        self.namespace = namespace
         self.port_forward_process = None
         self.local_port = self._find_available_port()
         self.remote_port = 80  # HTTP server port in sidecar
@@ -86,7 +87,7 @@ class ResultDownloader:
 
         cmd = [
             "kubectl", "port-forward",
-            "-n", "default",
+            "-n", self.namespace,
             f"pod/robovast",
             f"{self.local_port}:{self.remote_port}"
         ]
@@ -106,7 +107,7 @@ class ResultDownloader:
         try:
             pod = self.k8s_client.read_namespaced_pod(
                 name="robovast",
-                namespace="default"
+                namespace=self.namespace
             )
             # Check if pod is running
             if pod.status.phase not in ["Running", "Pending"]:
@@ -125,7 +126,7 @@ class ResultDownloader:
         try:
             # Use kubectl to list directories in /exports/out/
             list_runs_cmd = [
-                "kubectl", "exec", "-n", "default", "robovast",
+                "kubectl", "exec", "-n", self.namespace, "robovast",
                 "-c", "robovast",
                 "--",
                 "find", "/exports/out", "-maxdepth", "1", "-type", "d", "-name", "run-*"
@@ -216,7 +217,7 @@ class ResultDownloader:
 
             # Check if remote archive already exists
             check_archive_cmd = [
-                "kubectl", "exec", "-n", "default", "robovast",
+                "kubectl", "exec", "-n", self.namespace, "robovast",
                 "--",
                 "test", "-f", remote_archive_path
             ]
@@ -228,7 +229,7 @@ class ResultDownloader:
 
                 # Ensure /exports/out directory exists
                 ensure_dir_cmd = [
-                    "kubectl", "exec", "-n", "default", "robovast",
+                    "kubectl", "exec", "-n", self.namespace, "robovast",
                     "--",
                     "mkdir", "-p", "/exports/out"
                 ]
@@ -236,7 +237,7 @@ class ResultDownloader:
 
                 # Check if run_id directory exists before creating archive
                 check_run_dir_cmd = [
-                    "kubectl", "exec", "-n", "default", "robovast",
+                    "kubectl", "exec", "-n", self.namespace, "robovast",
                     "--",
                     "test", "-d", f"/exports/out/{run_id}"
                 ]
@@ -247,7 +248,7 @@ class ResultDownloader:
                     return False
 
                 create_archive_cmd = [
-                    "kubectl", "exec", "-n", "default", "robovast",
+                    "kubectl", "exec", "-n", self.namespace, "robovast",
                     "--",
                     "tar", "-czf", remote_archive_path, "-C", "/exports/out", run_id
                 ]
@@ -337,7 +338,7 @@ class ResultDownloader:
             # Clean up remote archive using kubectl
             logger.debug(f"Cleaning up remote archive...")
             cleanup_cmd = [
-                "kubectl", "exec", "-n", "default", "robovast",
+                "kubectl", "exec", "-n", self.namespace, "robovast",
                 "--",
                 "rm", "-f", remote_archive_path
             ]
@@ -346,7 +347,7 @@ class ResultDownloader:
             # Delete the run directory from remote pod after successful download
             logger.debug(f"Deleting run directory from remote pod...")
             delete_run_cmd = [
-                "kubectl", "exec", "-n", "default", "robovast",
+                "kubectl", "exec", "-n", self.namespace, "robovast",
                 "--",
                 "rm", "-rf", f"/exports/out/{run_id}"
             ]
@@ -362,7 +363,7 @@ class ResultDownloader:
 
             # Clean up remote archive on error
             cleanup_cmd = [
-                "kubectl", "exec", "-n", "default", "robovast",
+                "kubectl", "exec", "-n", self.namespace, "robovast",
                 "--",
                 "rm", "-f", remote_archive_path
             ]
@@ -373,7 +374,7 @@ class ResultDownloader:
 
             # Clean up remote archive on error
             cleanup_cmd = [
-                "kubectl", "exec", "-n", "default", "robovast",
+                "kubectl", "exec", "-n", self.namespace, "robovast",
                 "--",
                 "rm", "-f", remote_archive_path
             ]
@@ -384,7 +385,7 @@ class ResultDownloader:
 
             # Clean up remote archive on error
             cleanup_cmd = [
-                "kubectl", "exec", "-n", "default", "robovast",
+                "kubectl", "exec", "-n", self.namespace, "robovast",
                 "--",
                 "rm", "-f", remote_archive_path
             ]
