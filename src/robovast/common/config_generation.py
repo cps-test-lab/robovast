@@ -259,6 +259,8 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     general_parameters = parameters.get('general', {})
 
     # Get scenario parameters once (same for all configurations)
+    if scenario_file is None:
+        raise ValueError("No scenario_file specified in execution section of the variation file. Please add 'scenario_file' to the execution section.")
     scenario_param_dict = get_scenario_parameters(scenario_file)
     existing_scenario_parameters = next(iter(scenario_param_dict.values())) if scenario_param_dict else []
 
