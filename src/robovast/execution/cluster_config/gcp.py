@@ -20,6 +20,7 @@ import logging
 import yaml
 from kubernetes import client, config
 
+from ..cluster_execution.cluster_setup import get_cluster_namespace
 from ..cluster_execution.kubernetes import apply_manifests, delete_manifests
 from .base_config import BaseConfig
 
@@ -135,7 +136,8 @@ class GcpClusterConfig(BaseConfig):
                 )
             except yaml.YAMLError as e:
                 raise RuntimeError(f"Failed to parse RoboVAST manifest YAML: {str(e)}") from e
-            apply_manifests(k8s_client, yaml_objects)
+            namespace = kwargs.get('namespace', 'default')
+            apply_manifests(k8s_client, yaml_objects, namespace=namespace)
 
         except Exception as e:
             raise RuntimeError(f"Error applying RoboVAST manifest: {str(e)}") from e
@@ -164,7 +166,8 @@ class GcpClusterConfig(BaseConfig):
         except yaml.YAMLError as e:
             raise RuntimeError(f"Failed to parse PVC manifest YAML: {str(e)}") from e
 
-        delete_manifests(core_v1, yaml_objects)
+        namespace = kwargs.get('namespace', 'default')
+        delete_manifests(core_v1, yaml_objects, namespace=namespace)
         logging.debug("NFS manifest deleted successfully!")
         logging.info("-----")
         logging.info("Warning: Persistent volumes may need to be deleted manually in GCP console.")
@@ -172,11 +175,12 @@ class GcpClusterConfig(BaseConfig):
 
     def get_job_volumes(self):
         """Get job volumes for GCP cluster."""
+        namespace = get_cluster_namespace()
         return [
             {
                 "name": "data-storage",
                 "nfs": {
-                    "server": "robovast.default.svc.cluster.local",
+                    "server": f"robovast.{namespace}.svc.cluster.local",
                     "path": "/"
                 }
             }

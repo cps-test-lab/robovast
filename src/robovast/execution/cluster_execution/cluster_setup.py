@@ -104,6 +104,16 @@ def load_cluster_config_name():
     return name
 
 
+def get_cluster_namespace():
+    """Load the cluster namespace from the setup flag file.
+
+    Returns:
+        str: Kubernetes namespace for cluster execution, or "default" if not set
+    """
+    _, kwargs = load_cluster_setup_info()
+    return kwargs.get("namespace", "default")
+
+
 def delete_cluster_config_flag():
     """Delete the cluster config flag file."""
     try:
@@ -211,12 +221,15 @@ def setup_server(config_name=None, list_configs=False, force=False, **cluster_kw
     logger.debug(f"Cluster config '{config_name}' saved to {flag_path}")
 
 
-def delete_server(config_name=None):
+def delete_server(config_name=None, **cluster_kwargs_override):
     """Clean up transfer mechanism for cluster execution.
 
     Args:
         config_name (str, optional): Name of the cluster config plugin to use.
                                      If not provided, will auto-detect from flag file.
+        **cluster_kwargs_override: Optional kwargs to pass to cleanup_cluster (e.g. namespace).
+                                   When auto-detecting, these override stored kwargs.
+                                   When config_name is given, these are the only kwargs used.
 
     Returns:
         None
@@ -228,9 +241,11 @@ def delete_server(config_name=None):
         name, stored_kwargs = load_cluster_setup_info()
         config_name = name
 
-        # Use stored kwargs for cleanup
+        # Use stored kwargs for cleanup; CLI overrides take precedence
         if stored_kwargs:
-            cluster_kwargs = stored_kwargs
+            cluster_kwargs = dict(stored_kwargs)
+        if cluster_kwargs_override:
+            cluster_kwargs.update(cluster_kwargs_override)
 
         if config_name:
             logger.debug(f"Auto-detected cluster config: {config_name}")
@@ -239,6 +254,9 @@ def delete_server(config_name=None):
                 "No cluster config specified and no saved config found. "
                 "Use --cluster-config <name> to select a config, or run setup first."
             )
+    else:
+        # Explicit config: use only CLI-provided kwargs (e.g. -n namespace)
+        cluster_kwargs = dict(cluster_kwargs_override)
 
     cluster_config = get_cluster_config(config_name)
     cluster_config.cleanup_cluster(**cluster_kwargs)

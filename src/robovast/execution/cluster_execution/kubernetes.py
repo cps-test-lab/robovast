@@ -42,12 +42,12 @@ def get_kubernetes_client():
         return None
 
 
-def check_pod_running(k8s_client, pod_name):
+def check_pod_running(k8s_client, pod_name, namespace="default"):
     """Check if transfer-pod exists, exit if not found"""
     try:
         pod = k8s_client.read_namespaced_pod(
             name=pod_name,
-            namespace="default"
+            namespace=namespace
         )
         # Check if pod is running
         if pod.status.phase != "Running":
@@ -60,11 +60,17 @@ def check_pod_running(k8s_client, pod_name):
             return False, f"Error checking pod status: {str(e)}"
 
 
-def apply_manifests(k8s_client, manifests: list):
+def apply_manifests(k8s_client, manifests: list, namespace=None):
+    """Apply Kubernetes manifests. If namespace is given, set it on each resource."""
     try:
         for yaml_object in manifests:
             if yaml_object is None:
                 continue
+
+            if namespace is not None:
+                if 'metadata' not in yaml_object:
+                    yaml_object['metadata'] = {}
+                yaml_object['metadata']['namespace'] = namespace
 
             kind = yaml_object.get('kind')
             name = yaml_object.get('metadata', {}).get('name')
@@ -84,45 +90,51 @@ def apply_manifests(k8s_client, manifests: list):
         raise RuntimeError(f"Error applying NFS manifest: {str(e)}") from e
 
 
-def delete_manifests(core_v1, manifests: list):
+def delete_manifests(core_v1, manifests: list, namespace=None):
+    """Delete Kubernetes resources from manifests. If namespace is given, use it for each resource."""
     for yaml_object in manifests:
         if yaml_object is None:
             continue
 
+        if namespace is not None:
+            if 'metadata' not in yaml_object:
+                yaml_object['metadata'] = {}
+            yaml_object['metadata']['namespace'] = namespace
+
         kind = yaml_object.get('kind')
         name = yaml_object.get('metadata', {}).get('name')
-        namespace = yaml_object.get('metadata', {}).get('namespace', 'default')
+        ns = yaml_object.get('metadata', {}).get('namespace', 'default')
 
         try:
             if kind == 'Pod':
                 core_v1.delete_namespaced_pod(
                     name=name,
-                    namespace=namespace,
+                    namespace=ns,
                     body=client.V1DeleteOptions()
                 )
-                logger.debug(f"Deleted Pod/{name} from namespace {namespace}")
+                logger.debug(f"Deleted Pod/{name} from namespace {ns}")
 
             elif kind == 'Service':
                 core_v1.delete_namespaced_service(
                     name=name,
-                    namespace=namespace,
+                    namespace=ns,
                     body=client.V1DeleteOptions()
                 )
-                logger.debug(f"Deleted Service/{name} from namespace {namespace}")
+                logger.debug(f"Deleted Service/{name} from namespace {ns}")
             elif kind == 'ConfigMap':
                 core_v1.delete_namespaced_config_map(
                     name=name,
-                    namespace=namespace,
+                    namespace=ns,
                     body=client.V1DeleteOptions()
                 )
-                logger.debug(f"Deleted ConfigMap/{name} from namespace {namespace}")
+                logger.debug(f"Deleted ConfigMap/{name} from namespace {ns}")
             elif kind == 'PersistentVolumeClaim':
                 core_v1.delete_namespaced_persistent_volume_claim(
                     name=name,
-                    namespace=namespace,
+                    namespace=ns,
                     body=client.V1DeleteOptions()
                 )
-                logger.debug(f"Deleted PersistentVolumeClaim/{name} from namespace {namespace}")
+                logger.debug(f"Deleted PersistentVolumeClaim/{name} from namespace {ns}")
             elif kind == 'PersistentVolume':
                 core_v1.delete_persistent_volume(
                     name=name,
@@ -146,7 +158,7 @@ def delete_manifests(core_v1, manifests: list):
                 raise
 
 
-def copy_config_to_cluster(config_dir, run_id):
+def copy_config_to_cluster(config_dir, run_id, namespace="default"):
 
     try:
         logger.debug(f"Copying config files to transfer pod...")
@@ -156,7 +168,7 @@ def copy_config_to_cluster(config_dir, run_id):
 
         # Ensure /exports/out/<run_id> directory exists in the pod
         ensure_dir_cmd = [
-            "kubectl", "exec", "-n", "default", "robovast",
+            "kubectl", "exec", "-n", namespace, "robovast",
             "--",
             "mkdir", "-p", f"/exports/out/{run_id}"
         ]
@@ -166,7 +178,7 @@ def copy_config_to_cluster(config_dir, run_id):
         copy_cmd = [
             "kubectl", "cp",
             os.path.join(config_dir, "."),
-            f"default/robovast:/exports/out/{run_id}/"
+            f"{namespace}/robovast:/exports/out/{run_id}/"
         ]
         subprocess.run(copy_cmd, capture_output=True, text=True, check=True)
 
@@ -182,8 +194,16 @@ def copy_config_to_cluster(config_dir, run_id):
         sys.exit(1)
 
 
-def check_kubernetes_access(k8s_client):
+def check_kubernetes_access(k8s_client, namespace="default"):
     """Check if Kubernetes cluster is accessible.
+
+    Uses a namespace-scoped call (list pods in namespace) so that users with
+    access only to a single namespace (e.g. RBAC) can pass cluster check.
+
+    Args:
+        k8s_client: CoreV1Api instance
+        namespace: Namespace to check (avoids cluster-scoped list_namespace which
+                   can return 403 for namespace-scoped users).
 
     Returns:
         tuple: (bool, str) - (success, message)
@@ -195,10 +215,10 @@ def check_kubernetes_access(k8s_client):
         version = client.VersionApi().get_code()
         k8s_version = f"{version.major}.{version.minor}"
 
-        # Try to list namespaces to verify we have basic permissions
-        k8s_client.list_namespace(limit=1)
+        # Use namespace-scoped list so RBAC users with access only to one namespace succeed
+        k8s_client.list_namespaced_pod(namespace=namespace, limit=1)
 
-        return True, f"Kubernetes cluster is accessible (version {k8s_version})"
+        return True, f"Kubernetes cluster is accessible (version {k8s_version}, namespace {namespace})"
 
     except config.ConfigException as e:
         return False, f"Kubernetes configuration not found: {str(e)}"
