@@ -16,7 +16,6 @@
 
 import logging
 import os
-import subprocess
 import sys
 
 from kubernetes import client, config, utils
@@ -85,9 +84,9 @@ def apply_manifests(k8s_client, manifests: list, namespace=None):
                     logger.info(f"{kind}/{name} already exists, skipping creation")
                 raise
     except ApiException as e:
-        raise RuntimeError(f"Failed to apply NFS manifest: {e.reason}") from e
+        raise RuntimeError(f"Failed to apply manifest: {e.reason}") from e
     except Exception as e:
-        raise RuntimeError(f"Error applying NFS manifest: {str(e)}") from e
+        raise RuntimeError(f"Error applying manifest: {str(e)}") from e
 
 
 def delete_manifests(core_v1, manifests: list, namespace=None):
@@ -158,39 +157,37 @@ def delete_manifests(core_v1, manifests: list, namespace=None):
                 raise
 
 
-def copy_config_to_cluster(config_dir, run_id, namespace="default"):
+def upload_configs_to_s3(config_dir, bucket_name, cluster_config, namespace="default"):
+    """Upload run configuration files to S3 bucket.
 
+    Creates the bucket and uploads the entire config_dir to the bucket root,
+    preserving the directory structure.
+
+    Args:
+        config_dir (str): Local directory containing generated config files.
+        bucket_name (str): S3 bucket name (e.g. 'run-20260220-123456').
+        cluster_config: BaseConfig instance providing S3 endpoint/credentials.
+        namespace (str): Kubernetes namespace (used for port-forwarding).
+    """
+    from .s3_client import ClusterS3Client
+
+    if not os.path.isdir(config_dir):
+        raise FileNotFoundError(f"Config directory does not exist: {config_dir}")
+
+    access_key, secret_key = cluster_config.get_s3_credentials()
+
+    logger.debug(f"Uploading config files to s3://{bucket_name}/ ...")
     try:
-        logger.debug(f"Copying config files to transfer pod...")
-
-        if not os.path.isdir(config_dir):
-            raise FileNotFoundError(f"Config directory does not exist: {config_dir}")
-
-        # Ensure /exports/out/<run_id> directory exists in the pod
-        ensure_dir_cmd = [
-            "kubectl", "exec", "-n", namespace, "robovast",
-            "--",
-            "mkdir", "-p", f"/exports/out/{run_id}"
-        ]
-        subprocess.run(ensure_dir_cmd, capture_output=True, text=True, check=False)
-
-        # Copy config files into out/{run_id}/ folder (copy directory contents, not the directory itself)
-        copy_cmd = [
-            "kubectl", "cp",
-            os.path.join(config_dir, "."),
-            f"{namespace}/robovast:/exports/out/{run_id}/"
-        ]
-        subprocess.run(copy_cmd, capture_output=True, text=True, check=True)
-
-        logger.debug(f"Successfully copied all config files to transfer pod")
-
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Failed to copy config files to transfer pod: {e}")
-        logger.error(f"stdout: {e.stdout}")
-        logger.error(f"stderr: {e.stderr}")
-        sys.exit(1)
+        with ClusterS3Client(
+            namespace=namespace,
+            access_key=access_key,
+            secret_key=secret_key,
+        ) as s3:
+            s3.create_bucket(bucket_name)
+            s3.upload_directory(bucket_name, config_dir)
+        logger.debug(f"Successfully uploaded all config files to s3://{bucket_name}/")
     except Exception as e:
-        logger.error(f"Unexpected error during config file copy: {e}")
+        logger.error(f"Failed to upload config files to S3: {e}")
         sys.exit(1)
 
 

@@ -88,19 +88,40 @@ else
             exit 1
         fi
     fi
-    
-    # Validate POST_COMMAND exists if specified
+
+    # Build the S3 upload script that will be used as --post-run
+    S3_UPLOAD_SCRIPT="/tmp/s3_upload.sh"
+    cat > "${S3_UPLOAD_SCRIPT}" << 'UPLOAD_EOF'
+#!/bin/bash
+set -e
+mc alias set myminio "${S3_ENDPOINT}" "${S3_ACCESS_KEY}" "${S3_SECRET_KEY}" --quiet
+mc mirror /out/ "myminio/${S3_BUCKET}/${S3_PREFIX}/"
+UPLOAD_EOF
+    chmod +x "${S3_UPLOAD_SCRIPT}"
+
+    # Determine effective post-run script
     POST_COMMAND_PARAM=""
     if [ -n "${POST_COMMAND}" ]; then
         if [ -e "${POST_COMMAND}" ]; then
-            POST_COMMAND_PARAM="--post-run ${POST_COMMAND}"
-            log "Post-command '${POST_COMMAND}' will be executed after scenario execution."
+            # Combine user post-command with S3 upload
+            COMBINED_SCRIPT="/tmp/combined_post_run.sh"
+            cat > "${COMBINED_SCRIPT}" << COMBINED_EOF
+#!/bin/bash
+set -e
+source "${POST_COMMAND}"
+"${S3_UPLOAD_SCRIPT}"
+COMBINED_EOF
+            chmod +x "${COMBINED_SCRIPT}"
+            POST_COMMAND_PARAM="--post-run ${COMBINED_SCRIPT}"
+            log "Post-command '${POST_COMMAND}' combined with S3 upload."
         else
             log "ERROR: Post-command '${POST_COMMAND}' does not exist."
             exit 1
         fi
+    else
+        POST_COMMAND_PARAM="--post-run ${S3_UPLOAD_SCRIPT}"
     fi
-    
+
     if [ -e /config/scenario.config ]; then
         log "Starting scenario execution with config file..."
         exec ros2 run scenario_execution_ros scenario_execution_ros -o ${OUTPUT_DIR} /config/scenario.osc ${POST_COMMAND_PARAM} --scenario-parameter-file /config/scenario.config ${SCENARIO_EXECUTION_PARAMETERS}

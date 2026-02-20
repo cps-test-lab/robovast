@@ -99,6 +99,10 @@ ENV QT_X11_NO_MITSHM=1
 
 RUN mkdir -p /out && chmod 777 /out
 
+# Install MinIO client (mc) for S3 upload in post-run script
+RUN curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc && \
+    chmod +x /usr/local/bin/mc
+
 RUN USER=ubuntu && \
     GROUP=ubuntu && \
     curl -SsL https://github.com/boxboat/fixuid/releases/download/v0.6.0/fixuid-0.6.0-linux-amd64.tar.gz | tar -C /usr/local/bin -xzf - && \

@@ -35,5 +35,4 @@ spec:
               cpu: {cpu}
             limits:
               cpu: {cpu}
-      volumes: {volumes}
 """

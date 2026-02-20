@@ -32,7 +32,7 @@ from robovast.common import (create_execution_yaml,
                              load_config, prepare_run_configs)
 from robovast.common.config_generation import generate_scenario_variations
 from robovast.execution.cluster_execution.kubernetes import (
-    check_pod_running, copy_config_to_cluster)
+    check_pod_running, upload_configs_to_s3)
 
 from .manifests import JOB_TEMPLATE
 
@@ -255,10 +255,54 @@ class JobRunner:
         self.replace_template(job_manifest, "$TEST_ID",
                               f"{scenario_key}-{run_number}")
 
-        # Add environment variables and volume mounts to the container
-        containers = job_manifest['spec']['template']['spec']['containers']
+        # S3 connection details from cluster config
+        s3_endpoint = self.cluster_config.get_s3_endpoint()
+        s3_access_key, s3_secret_key = self.cluster_config.get_s3_credentials()
+        bucket_name = self._bucket_name_for_run(self.run_id)
+        s3_prefix = f"{scenario_key}/{run_number}"
+
+        spec = job_manifest['spec']['template']['spec']
+
+        # Add the per-job shared emptyDir volume
+        if 'volumes' not in spec:
+            spec['volumes'] = []
+        spec['volumes'].append({'name': 'shared-data', 'emptyDir': {}})
+
+        # Build the initContainer that downloads all needed files from S3
+        scenario_key_safe = scenario_key.replace("'", "\\'")
+        init_cmd = (
+            f"mc alias set myminio \"$S3_ENDPOINT\" \"$S3_ACCESS_KEY\" \"$S3_SECRET_KEY\" && "
+            f"mc cp myminio/$S3_BUCKET/entrypoint.sh /shared/ && "
+            f"mc cp myminio/$S3_BUCKET/collect_sysinfo.py /shared/ && "
+            f"mc cp myminio/$S3_BUCKET/scenario.osc /shared/ && "
+            f"mc mirror myminio/$S3_BUCKET/_config/ /shared/_config/ || true && "
+            f"mc mirror myminio/$S3_BUCKET/{scenario_key}/_config/ /shared/{scenario_key}/_config/ || true && "
+            f"mc cp myminio/$S3_BUCKET/{scenario_key}/scenario.config /shared/{scenario_key}/ || true && "
+            f"mkdir -p /shared/{scenario_key}/{run_number}"
+        )
+
+        init_env = [
+            {'name': 'S3_ENDPOINT', 'value': s3_endpoint},
+            {'name': 'S3_BUCKET', 'value': bucket_name},
+            {'name': 'S3_ACCESS_KEY', 'value': s3_access_key},
+            {'name': 'S3_SECRET_KEY', 'value': s3_secret_key},
+        ]
+
+        spec['initContainers'] = [
+            {
+                'name': 's3-init',
+                'image': 'minio/mc:latest',
+                'command': ['sh', '-c', init_cmd],
+                'env': init_env,
+                'volumeMounts': [
+                    {'name': 'shared-data', 'mountPath': '/shared'}
+                ],
+            }
+        ]
+
+        # Add environment variables and volume mounts to the main container
+        containers = spec['containers']
         if containers:
-            # Add environment variables
             if 'env' not in containers[0]:
                 containers[0]['env'] = []
 
@@ -268,6 +312,16 @@ class JobRunner:
                     'name': str(name),
                     'value': "" if val is None else str(val)
                 })
+
+            # S3 env vars for entrypoint post-run upload
+            for k, v in [
+                ('S3_ENDPOINT', s3_endpoint),
+                ('S3_BUCKET', bucket_name),
+                ('S3_ACCESS_KEY', s3_access_key),
+                ('S3_SECRET_KEY', s3_secret_key),
+                ('S3_PREFIX', s3_prefix),
+            ]:
+                containers[0]['env'].append({'name': k, 'value': v})
 
             # Add PRE_COMMAND and POST_COMMAND if specified
             if self.pre_command:
@@ -281,104 +335,81 @@ class JobRunner:
                     'value': str(self.post_command)
                 })
 
-            # Add volume mounts
+            # Volume mounts from shared emptyDir (subPaths mirror NFS layout without run_id prefix)
             if 'volumeMounts' not in containers[0]:
                 containers[0]['volumeMounts'] = []
 
             volume_mounts = [
                 {
-                    'name': 'data-storage',
+                    'name': 'shared-data',
                     'mountPath': '/out',
-                    'subPath': f'out/{self.run_id}/{scenario_key}/{run_number}',
+                    'subPath': f'{scenario_key}/{run_number}',
                     'readOnly': False
-                }
+                },
+                {
+                    'name': 'shared-data',
+                    'mountPath': '/entrypoint.sh',
+                    'subPath': 'entrypoint.sh',
+                    'readOnly': True
+                },
+                {
+                    'name': 'shared-data',
+                    'mountPath': '/collect_sysinfo.py',
+                    'subPath': 'collect_sysinfo.py',
+                    'readOnly': True
+                },
+                {
+                    'name': 'shared-data',
+                    'mountPath': '/config/scenario.osc',
+                    'subPath': 'scenario.osc',
+                    'readOnly': True
+                },
             ]
 
-            # Add mounts for _test_files (shared across all configs)
+            # Shared test files (_config/ tree)
             for test_file in self.run_data.get("_test_files", []):
                 volume_mounts.append({
-                    'name': 'data-storage',
+                    'name': 'shared-data',
                     'mountPath': f'/config/{test_file}',
-                    'subPath': f'out/{self.run_id}/_config/{test_file}',
+                    'subPath': f'_config/{test_file}',
                     'readOnly': True
                 })
 
-            # Add entrypoint mount
-            volume_mounts.append({
-                'name': 'data-storage',
-                'mountPath': '/entrypoint.sh',
-                'subPath': f'out/{self.run_id}/entrypoint.sh',
-                'readOnly': True
-            })
-
-            # Add collect_sysinfo.py mount so it is provided from the same
-            # out directory as entrypoint.sh
-            volume_mounts.append({
-                'name': 'data-storage',
-                'mountPath': '/collect_sysinfo.py',
-                'subPath': f'out/{self.run_id}/collect_sysinfo.py',
-                'readOnly': True
-            })
-
-            # Add scenario.osc mount
-            volume_mounts.append({
-                'name': 'data-storage',
-                'mountPath': '/config/scenario.osc',
-                'subPath': f'out/{self.run_id}/scenario.osc',
-                'readOnly': True
-            })
-
-            # Find the current config and add mounts for its _config_files
+            # Per-scenario config files
             current_config = None
-            for config in self.configs:
-                if config.get("name") == scenario_key:
-                    current_config = config
+            for cfg in self.configs:
+                if cfg.get("name") == scenario_key:
+                    current_config = cfg
                     break
 
             if current_config and "_config_files" in current_config:
                 for config_rel_path, _ in current_config["_config_files"]:
                     volume_mounts.append({
-                        'name': 'data-storage',
+                        'name': 'shared-data',
                         'mountPath': f'/config/{config_rel_path}',
-                        'subPath': f'out/{self.run_id}/{scenario_key}/_config/{config_rel_path}',
+                        'subPath': f'{scenario_key}/_config/{config_rel_path}',
                         'readOnly': True
                     })
 
-            # Add scenario.config mount
+            # Per-scenario scenario.config
             volume_mounts.append({
-                'name': 'data-storage',
+                'name': 'shared-data',
                 'mountPath': '/config/scenario.config',
-                'subPath': f'out/{self.run_id}/{scenario_key}/scenario.config',
+                'subPath': f'{scenario_key}/scenario.config',
                 'readOnly': True
             })
 
             containers[0]['volumeMounts'].extend(volume_mounts)
 
-        # Get runAsUser from container to match ownership in initContainer
-        run_as_user = 1000
-        if containers and 'securityContext' in containers[0] and 'runAsUser' in containers[0]['securityContext']:
-            run_as_user = containers[0]['securityContext']['runAsUser']
-
-        # Add initContainer to fix permissions
-        job_manifest['spec']['template']['spec']['initContainers'] = [
-            {
-                'name': 'fix-permissions',
-                'image': 'alpine:latest',
-                'command': ['sh', '-c', f'chown -R {run_as_user}:{run_as_user} /out'],
-                'securityContext': {
-                    'runAsUser': 0
-                },
-                'volumeMounts': [
-                    {
-                        'name': 'data-storage',
-                        'mountPath': '/out',
-                        'subPath': f'out/{self.run_id}/{scenario_key}/{run_number}'
-                    }
-                ]
-            }
-        ]
-
         return job_manifest
+
+    @staticmethod
+    def _bucket_name_for_run(run_id: str) -> str:
+        """Convert a run_id into a valid S3 bucket name.
+
+        Bucket names must be lowercase, 3-63 chars, no underscores.
+        """
+        return run_id.lower().replace("_", "-")
 
     def get_remaining_jobs(self, job_names):
         running_jobs = []
@@ -581,9 +612,9 @@ class JobRunner:
         # Clean up existing pods with label jobgroup: scenario-runs
         self.cleanup_pods()
 
-        # upload all config files to transfer PVC via transfer pod
-        logger.debug(f"Uploading task config files for {len(self.configs)} scenarios to cluster...")
-        self.upload_tasks_to_transfer_pod()
+        # upload all config files to S3 bucket
+        logger.debug(f"Uploading task config files for {len(self.configs)} scenarios to S3...")
+        self.upload_tasks_to_s3()
 
         # Create all jobs for all runs before executing any
         all_jobs = []
@@ -636,7 +667,7 @@ class JobRunner:
         # Print comprehensive statistics
         self.print_run_statistics()
 
-        logger.debug(f"Transfer PVC and pod are left running for reuse")
+        logger.debug(f"MinIO S3 pod is left running for reuse")
 
     def cleanup_pods(self):
         # Cleanup pods with label jobgroup: scenario-runs
@@ -651,21 +682,18 @@ class JobRunner:
         except client.rest.ApiException as e:
             logger.error(f"Error deleting pods with label selector: {e}")
 
-    def upload_tasks_to_transfer_pod(self):
-        """Upload all files to transfer PVC using kubectl cp to transfer pod"""
+    def upload_tasks_to_s3(self):
+        """Upload all run config files to an S3 bucket (one bucket per run_id)."""
 
-        # Create a temporary directory to organize all files
+        bucket_name = self._bucket_name_for_run(self.run_id)
+
         with tempfile.TemporaryDirectory() as temp_dir:
             logger.debug(f"Using temporary directory: {temp_dir}")
 
-            # Generate a stable out_template directory (no per-run subfolder).
-            # The run_id is used as the destination folder on the transfer PVC.
             out_dir = os.path.join(temp_dir, "out_template")
             prepare_run_configs(out_dir, self.run_data)
 
-            # If the cluster config provides an instance type command, inject it
-            # into the generated entrypoint.sh by replacing the INSTANCE_TYPE=""
-            # placeholder line with the command snippet.
+            # Inject instance type command into entrypoint.sh if the cluster config provides one
             entrypoint_path = os.path.join(out_dir, "entrypoint.sh")
             try:
                 instance_type_cmd = None
@@ -683,11 +711,11 @@ class JobRunner:
             except Exception as exc:  # pragma: no cover - best-effort, non-fatal
                 logger.warning(f"Could not inject instance type command into entrypoint.sh: {exc}")
 
-            # Create execution.yaml
             create_execution_yaml(self.num_runs, out_dir,
                                   execution_params=self.run_data.get("execution", {}))
 
-            copy_config_to_cluster(os.path.join(temp_dir, "out_template"), self.run_id, self.namespace)
+            logger.info(f"Uploading config files to S3 bucket '{bucket_name}'...")
+            upload_configs_to_s3(out_dir, bucket_name, self.cluster_config, self.namespace)
 
     def get_job_manifest(self, image: str, kubernetes_resources: dict, env: list, run_as_user: int = None) -> dict:
         """Generate the base Kubernetes job manifest from templates.
@@ -706,7 +734,7 @@ class JobRunner:
 
         logger.debug(f"Using run_as_user={run_as_user} for job containers")
 
-        yaml_str = JOB_TEMPLATE.format(image=image, cpu=kubernetes_resources["cpu"], volumes=self.cluster_config.get_job_volumes())
+        yaml_str = JOB_TEMPLATE.format(image=image, cpu=kubernetes_resources["cpu"])
         manifest = yaml.safe_load(yaml_str)
 
         manifest['spec']['template']['spec']['containers'][0]['securityContext']['runAsUser'] = run_as_user
