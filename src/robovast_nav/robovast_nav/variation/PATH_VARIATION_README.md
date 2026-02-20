@@ -55,7 +55,7 @@ Generates random navigation paths with multiple waypoints between start and goal
 type: PathVariationRandom
 parameters:
   start_pose: "@start_pose"           # Reference to scenario parameter
-  goal_poses: "@goal_poses"           # Will output to goal_poses if multiple, goal_pose if single
+  goal_poses: "@goal_poses"           # Will output to goal_poses if multiple, goal_pose if single. Use @goal_pose if you want to use nav_to_pose
   num_goal_poses: 3                   # Generate 3 goal poses per path
   path_length: 15.0                   # Target 15 meter paths
   path_length_tolerance: 1.0          # Allow ±1m deviation

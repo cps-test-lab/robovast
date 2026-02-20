@@ -1,0 +1,54 @@
+version: 1
+configuration:
+- name: navigation
+  variations:
+  - FloorplanVariation:
+      name:
+      - map_file
+      - mesh_file
+      variation_files:
+      - floorplans/rooms/rooms.variation
+      #- floorplans/hallways/hallways.variation
+      num_variations: 1
+      seed: 1
+  - PathVariationRasterized:
+      num_goal_poses: 1
+      raster_size: 3.0
+      path_length: 10.0
+      path_length_tolerance: 2.5
+      robot_diameter: 0.35
+      raster_offset_y: 4.5
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 1
+        max_distance: 0.1
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.1
+execution:
+  image: ghcr.io/cps-test-lab/robovast:latest
+  kubernetes:
+    resources:
+      cpu: 8
+  runs: 10
+  scenario_file: scenario.osc
+  test_files_filter:
+  - "**/files/*"
+analysis:
+  postprocessing:
+    - rosbags_to_csv
+    - rosbags_tf_to_csv:
+        frames: [base_link, turtlebot4_base_link_gt]
+    - rosbags_bt_to_csv
+  visualization:
+  - Analysis:
+      single_test: analysis/analysis_single_test.ipynb
+      config: analysis/analysis_config.ipynb
+      run: analysis/analysis_run.ipynb
