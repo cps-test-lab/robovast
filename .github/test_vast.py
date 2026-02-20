@@ -152,17 +152,21 @@ def check_results_dir_structure(results_dir):  # pylint: disable=too-many-return
     
     print("  ✓ configurations.yaml file exists in _config directory")
     
-    # Check structure of first config
-    first_config = config_dirs[0]
-    config_contents = list(first_config.iterdir())
-    print(f"    {first_config.name} contents: {[c.name for c in config_contents]}")
+    # Check structure of first scenario directory (exclude _config; it has its own layout)
+    scenario_dirs = [d for d in config_dirs if d.name != '_config']
+    if not scenario_dirs:
+        print("  ✗ No scenario directory found in run")
+        return False
+    first_scenario = scenario_dirs[0]
+    config_contents = list(first_scenario.iterdir())
+    print(f"    {first_scenario.name} contents: {[c.name for c in config_contents]}")
     
-    # Check that only "_config" and numbers exist as directory names
+    # Check that only numeric directories exist (and require test.xml in each)
     for item in config_contents:
         if item.is_dir():
             name = item.name
-            if not (name == "_config" or name.isdigit()):
-                print(f"    ✗ Invalid directory name: {name} (expected '_config' or numeric)")
+            if not name.isdigit():
+                print(f"    ✗ Invalid directory name: {name} (expected numeric run index)")
                 return False
             
             if name.isdigit():
@@ -173,7 +177,7 @@ def check_results_dir_structure(results_dir):  # pylint: disable=too-many-return
                     print(f"    ✗ test.xml file not found in {name} directory")
                     return False
     
-    print("    ✓ Directory names are valid (_config and/or numbers)")
+    print("    ✓ Directory names are valid (numeric run indices)")
     print("    ✓ test.xml files exist in numeric directories")
     
     return True

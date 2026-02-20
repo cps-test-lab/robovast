@@ -204,6 +204,10 @@ Add Postprocessing Command Plugin
 
 Postprocessing plugins are Python functions that process test result directories (e.g., convert rosbag data to CSV). They are registered as entry points and executed before analysis.
 
+**Return value:** A plugin must return ``(success: bool, message: str)``. It may optionally return a third value, a list of **provenance entries**, so that each produced file is recorded (e.g. which CSV was created from which rosbag). Each entry is a dict with keys: ``output`` (path relative to results_dir), ``sources`` (list of paths), ``plugin`` (plugin name), ``params`` (optional dict). If returned, these entries are merged and written into ``postprocessing.yaml`` in each test folder (``run-<id>/<config>/<test-number>/``).
+
+**Provenance for container scripts:** Plugins that run scripts inside Docker (e.g. via ``docker_exec.sh``) cannot return data directly. The orchestrator passes a **provenance file** path to each plugin (optional kwarg ``provenance_file``). Container-invoking plugins must pass this to ``docker_exec.sh`` as ``--provenance-file HOST_PATH``; ``docker_exec.sh`` mounts the directory at ``/provenance`` in the container and the script receives ``--provenance-file /provenance/<basename>``. The script should write a JSON file at that path with format ``{"entries": [{"output": "...", "sources": [...], "plugin": "...", "params": {}}]}`` (paths relative to the results/input directory). Use the helper ``write_provenance_entry`` from ``rosbags_common`` (same directory as the scripts, so it works in the container) to append entries; the script gets the path from ``--provenance-file`` and uses its own plugin name when calling the helper.
+
 **Creating a Postprocessing Plugin:**
 
 .. code-block:: python
@@ -213,7 +217,8 @@ Postprocessing plugins are Python functions that process test result directories
     def my_postprocessing_command(
         results_dir: str,
         config_dir: str,
-        custom_param: Optional[str] = None
+        custom_param: Optional[str] = None,
+        provenance_file: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Convert custom data to CSV.
         
@@ -221,9 +226,10 @@ Postprocessing plugins are Python functions that process test result directories
             results_dir: Path to the run-<id> directory to process
             config_dir: Config file directory (for resolving relative paths)
             custom_param: Optional custom parameter
+            provenance_file: Optional path for provenance JSON (for container scripts)
         
         Returns:
-            Tuple of (success, message)
+            Tuple of (success, message) or (success, message, provenance_entries)
         """
         import subprocess
         import os

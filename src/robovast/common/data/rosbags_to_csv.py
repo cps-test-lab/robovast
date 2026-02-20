@@ -25,12 +25,8 @@ from multiprocessing import Pool, cpu_count
 
 import rosbag2_py
 from rclpy.serialization import deserialize_message
-from rosbags_common import (find_rosbags, gen_msg_values,
-                            should_skip_processing, write_hash_file)
+from rosbags_common import find_rosbags, gen_msg_values, write_provenance_entry
 from rosidl_runtime_py.utilities import get_message
-
-# Get script name without extension to use as prefix
-SCRIPT_NAME = os.path.splitext(os.path.basename(__file__))[0]
 
 
 def process_rosbag_wrapper(args):
@@ -42,11 +38,6 @@ def process_rosbag_wrapper(args):
 def process_rosbag(bag_path, skipped_topics):
     """Process a single rosbag and save to CSV in the output directory."""
     try:
-        # Check if we should skip processing based on hash
-        if should_skip_processing(bag_path, prefix=SCRIPT_NAME):
-            # print(f"⊘ {bag_path}: Skipped (already processed)")
-            return -1  # Return -1 to indicate skipped
-
         records = []
         append = records.append  # Local variable for faster access
 
@@ -81,7 +72,6 @@ def process_rosbag(bag_path, skipped_topics):
                 }
                 append(record)
 
-        write_hash_file(bag_path, prefix=SCRIPT_NAME)
         if records:
             # Use only the immediate parent folder name for the CSV filename
             parent_folder = os.path.abspath(os.path.dirname(bag_path))
@@ -110,7 +100,6 @@ def process_rosbag(bag_path, skipped_topics):
             return 0
     except Exception as e:
         print(f"✗ {bag_path}: Error - {str(e)}")
-        write_hash_file(bag_path, prefix=SCRIPT_NAME)
         return -2  # Return -2 to indicate error
 
 
@@ -131,6 +120,11 @@ def main():
     parser.add_argument(
         "input",
         help="input directory path to search for rosbags"
+    )
+    parser.add_argument(
+        "--provenance-file",
+        default=None,
+        help="Write provenance JSON to this path (output/source paths relative to input dir)"
     )
 
     args = parser.parse_args()
@@ -161,24 +155,35 @@ def main():
     except KeyboardInterrupt:
         print("Processing interrupted by user.")
         return 1
-    # Calculate summary statistics
-    skipped_bags = 0
+    # Calculate summary statistics and write provenance
+    input_root = os.path.abspath(args.input)
     failed_bags = 0
     error_bags = 0
-    for records_count in results:
-        if records_count == -1:
-            skipped_bags += 1
-        elif records_count == -2:
+    for i, records_count in enumerate(results):
+        if records_count == -2:
             error_bags += 1
         elif records_count > 0:
             total_records += records_count
             processed_bags += 1
+            if args.provenance_file:
+                bag_path = rosbag_paths[i]
+                parent_folder = os.path.abspath(os.path.dirname(bag_path))
+                output_file = os.path.join(parent_folder, os.path.basename(bag_path) + '.csv')
+                output_rel = os.path.relpath(output_file, input_root)
+                source_rel = os.path.relpath(bag_path, input_root)
+                write_provenance_entry(
+                    args.provenance_file,
+                    output_rel,
+                    [source_rel],
+                    "rosbags_to_csv",
+                    params={"skip_topics": list(skipped_topics)},
+                )
         elif records_count == 0:
             failed_bags += 1
 
     elapsed = time.time() - start
-    print(f"Summary: {len(rosbag_paths)} rosbags ({processed_bags} success, {
-          error_bags} errors, {failed_bags} failed, {skipped_bags} skipped), time {elapsed:.2f}")
+    print(f"Summary: {len(rosbag_paths)} rosbags ({processed_bags} success, "
+          f"{error_bags} errors, {failed_bags} failed), time {elapsed:.2f}s")
     return 0
 
 

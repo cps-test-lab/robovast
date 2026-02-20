@@ -378,6 +378,7 @@ To list all available plugins and their descriptions:
 - ``rosbags_to_csv``: Convert all ROS messages from rosbags to CSV format. Optional ``skip_topics`` parameter (list of topic names to skip).
 - ``rosbags_to_webm``: Convert a ``sensor_msgs/msg/CompressedImage`` topic from ROS bags to WebM video files (VP9 codec). Optional ``topic`` parameter (compressed image topic name, default ``/camera/image_raw/compressed``) and ``fps`` parameter (fallback frame rate when timestamps are unavailable, default ``30``).
 - ``command``: Execute arbitrary commands or scripts. Requires ``script`` parameter, optional ``args`` parameter (list).
+- ``compress``: Create a gzipped tarball (``run-<id>.tar.gz``) for each run directory; runs on the host (no Docker). Optional ``output_dir`` (default: results directory), ``exclude_dirs`` (directory names to exclude, default ``['.cache']``), ``overwrite`` (if ``false``, skip when a tarball already exists; default ``false``).
 
 See :ref:`extending-postprocessing` for how to add custom postprocessing plugins.
 
