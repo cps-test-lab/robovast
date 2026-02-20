@@ -15,83 +15,53 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import hashlib
 import json
 import os
-import time
-from pathlib import Path
+from typing import List, Optional
 
 
-def compute_rosbag_hash(bag_path):
-    """Compute a hash for a rosbag based on modification time and file sizes."""
-    path = Path(bag_path)
+def write_provenance_entry(
+    provenance_file_path: Optional[str],
+    output_rel: str,
+    sources_rel: List[str],
+    plugin_name: str,
+    params: Optional[dict] = None,
+) -> None:
+    """Append one provenance entry to a JSON file.
 
-    # Collect all relevant files (mcap files and metadata.yaml)
-    mcap_files = list(path.glob("*.mcap"))
-    metadata_file = path / "metadata.yaml"
+    Used by container scripts to record which output was produced from which
+    sources. Paths should be relative to the results root (input dir).
+    If provenance_file_path is None or empty, does nothing.
 
-    files_to_check = mcap_files
-    if metadata_file.exists():
-        files_to_check.append(metadata_file)
-
-    # Create hash based on file stats (even if empty)
-    hash_data = []
-    for file_path in sorted(files_to_check):
-        stat = file_path.stat()
-        hash_data.append({
-            "name": file_path.name,
-            "size": stat.st_size,
-            "mtime": stat.st_mtime
-        })
-
-    # Create a simple hash string
-    hash_string = json.dumps(hash_data, sort_keys=True)
-    return hashlib.md5(hash_string.encode()).hexdigest()
-
-
-def get_hash_file_path(bag_path, prefix):
-    """Get the path to the hash file for a rosbag."""
-    parent_folder = os.path.abspath(os.path.dirname(bag_path))
-    cache_dir = os.path.join(parent_folder, '.cache')
-    return os.path.join(cache_dir, os.path.basename(bag_path) + '_' + prefix + '.hash')
-
-
-def write_hash_file(bag_path, prefix):
-    """Write the hash file after successful processing."""
-    bag_hash = compute_rosbag_hash(bag_path)
-    hash_file = get_hash_file_path(bag_path, prefix)
-    # Ensure .cache directory exists
-    cache_dir = os.path.dirname(hash_file)
-    os.makedirs(cache_dir, exist_ok=True)
-    hash_info = {
-        "hash": bag_hash,
-        "created_at": time.time()
+    Args:
+        provenance_file_path: Path to the provenance JSON file (or None to skip).
+        output_rel: Output path relative to results root.
+        sources_rel: List of source paths relative to results root.
+        plugin_name: Name of the plugin that produced the output.
+        params: Optional dict of plugin parameters.
+    """
+    if not provenance_file_path:
+        return
+    entry = {
+        "output": output_rel,
+        "sources": list(sources_rel),
+        "plugin": plugin_name,
+        "params": params if params is not None else {},
     }
-    with open(hash_file, 'w') as f:
-        json.dump(hash_info, f, indent=2)
-
-
-def should_skip_processing(bag_path, prefix):
-    """Check if processing should be skipped based on hash file."""
-    hash_file = get_hash_file_path(bag_path, prefix)
-
-    if not os.path.exists(hash_file):
-        return False
-
-    try:
-        with open(hash_file, 'r') as f:
-            stored_info = json.load(f)
-
-        stored_hash = stored_info.get("hash")
-        current_hash = compute_rosbag_hash(bag_path)
-
-        if stored_hash == current_hash:
-            return True
-    except (json.JSONDecodeError, KeyError, OSError):
-        # If hash file is corrupted or unreadable, reprocess
-        return False
-
-    return False
+    parent = os.path.dirname(provenance_file_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    existing: List[dict] = []
+    if os.path.exists(provenance_file_path):
+        try:
+            with open(provenance_file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                existing = data.get("entries", [])
+        except (json.JSONDecodeError, OSError):
+            existing = []
+    existing.append(entry)
+    with open(provenance_file_path, "w", encoding="utf-8") as f:
+        json.dump({"entries": existing}, f, indent=2)
 
 
 def gen_msg_values(msg, prefix=""):

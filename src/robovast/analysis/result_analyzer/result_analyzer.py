@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (QApplication, QGroupBox, QHBoxLayout, QLabel,
                                QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from robovast.common import load_config
+from robovast.common.results_utils import iter_test_folders
 
 from .widgets.common import RunType
 from .widgets.jupyter_widget import DataAnalysisWidget, JupyterNotebookRunner
@@ -413,68 +414,64 @@ class TestResultsAnalyzer(QMainWindow):
         self.tree.expandAll()
 
     def populate_directory(self, parent_item, directory_path, max_depth=2, current_depth=0):
-        """Recursively populate directory with depth limit"""
+        """Populate tree from common test-folder discovery (run-<id>/<config>/<test-number>)."""
         try:
-            items = sorted(directory_path.iterdir(), key=lambda x: (not x.is_dir(), x.name))
+            base_dir = Path(directory_path)
+            # Build structure from shared iterator: run_id -> config_name -> [(test_number, folder_path)]
+            structure = {}
+            for run_id, config_name, test_number, folder_path in iter_test_folders(str(base_dir)):
+                if run_id not in structure:
+                    structure[run_id] = {}
+                if config_name not in structure[run_id]:
+                    structure[run_id][config_name] = []
+                structure[run_id][config_name].append((test_number, folder_path))
 
-            for item_path in items:
-                # Skip hidden files and directories
-                if item_path.name.startswith('.'):
+            for run_id in sorted(structure.keys()):
+                run_path = base_dir / run_id
+                run_item = QTreeWidgetItem(parent_item)
+                run_item.setData(0, Qt.UserRole, str(run_path))
+                stats = self.calculate_test_statistics(run_path)
+                display_text = run_id
+                if stats['total'] > 0:
+                    unknown_str = f" ?{stats['unknown']}" if stats['unknown'] > 0 else ""
+                    display_text = f"{run_id} (✓{stats['passed']} ✗{stats['failed']}{unknown_str})"
+                run_item.setText(0, display_text)
+
+                if max_depth < 1:
                     continue
-                # Skip folders named "_config"
-                if item_path.name == "_config" and item_path.is_dir():
-                    continue
-                # At root level, only show run- directories (skip all files and non-run directories)
-                if current_depth == 0 and (not item_path.is_dir() or not item_path.name.startswith('run-')):
-                    continue
-                # At config level (depth 1), skip all files
-                if current_depth == 1 and not item_path.is_dir():
-                    continue
-                # At test level (depth 2), only show directories with numbers-only names
-                if current_depth == 2 and (not item_path.is_dir() or not item_path.name.isdigit()):
-                    continue
-                # Create tree item for visible path
-                tree_item = QTreeWidgetItem(parent_item)
-                tree_item.setData(0, Qt.UserRole, str(item_path))
+                for config_name in sorted(structure[run_id].keys()):
+                    config_path = run_path / config_name
+                    config_item = QTreeWidgetItem(run_item)
+                    config_item.setData(0, Qt.UserRole, str(config_path))
+                    config_item.setText(0, config_name)
 
-                if item_path.is_dir():
-                    display_text = item_path.name
-
-                    # Check if this is a run- folder and add statistics
-                    if item_path.name.startswith("run-"):
-                        stats = self.calculate_test_statistics(item_path)
-                        if stats['total'] > 0:
-                            unknown_str = f" ?{stats['unknown']}" if stats['unknown'] > 0 else ""
-                            display_text = f"{item_path.name} (✓{stats['passed']} ✗{stats['failed']}{unknown_str})"
-                    elif self.is_test_directory(item_path):
-                        test_status = self.get_test_status(item_path)
-
-                        # Get theme-aware colors
-                        passed_bg, passed_fg = self.get_theme_colors("passed")
-                        failed_bg, failed_fg = self.get_theme_colors("failed")
-                        unknown_bg, unknown_fg = self.get_theme_colors("unknown")
-
-                        if test_status == "passed":
-                            tree_item.setData(0, Qt.UserRole + 1, "passed")
-                            display_text = f"✓ {item_path.name}"
-                            tree_item.setBackground(0, QBrush(QColor(passed_bg)))
-                            tree_item.setForeground(0, QBrush(QColor(passed_fg)))
-                        elif test_status == "failed":
-                            tree_item.setData(0, Qt.UserRole + 1, "failed")
-                            display_text = f"✗ {item_path.name}"
-                            tree_item.setBackground(0, QBrush(QColor(failed_bg)))
-                            tree_item.setForeground(0, QBrush(QColor(failed_fg)))
-                        else:
-                            tree_item.setData(0, Qt.UserRole + 1, "unknown")
-                            display_text = f"? {item_path.name}"
-                            tree_item.setBackground(0, QBrush(QColor(unknown_bg)))
-                            tree_item.setForeground(0, QBrush(QColor(unknown_fg)))
-
-                    tree_item.setText(0, display_text)
-
-                    # Only recurse if we haven't reached max depth
-                    if current_depth < max_depth:
-                        self.populate_directory(tree_item, item_path, max_depth, current_depth + 1)
+                    if max_depth < 2:
+                        continue
+                    for test_number, folder_path in sorted(structure[run_id][config_name], key=lambda x: x[0]):
+                        tree_item = QTreeWidgetItem(config_item)
+                        tree_item.setData(0, Qt.UserRole, str(folder_path))
+                        display_text = test_number
+                        if self.is_test_directory(folder_path):
+                            test_status = self.get_test_status(folder_path)
+                            passed_bg, passed_fg = self.get_theme_colors("passed")
+                            failed_bg, failed_fg = self.get_theme_colors("failed")
+                            unknown_bg, unknown_fg = self.get_theme_colors("unknown")
+                            if test_status == "passed":
+                                tree_item.setData(0, Qt.UserRole + 1, "passed")
+                                display_text = f"✓ {test_number}"
+                                tree_item.setBackground(0, QBrush(QColor(passed_bg)))
+                                tree_item.setForeground(0, QBrush(QColor(passed_fg)))
+                            elif test_status == "failed":
+                                tree_item.setData(0, Qt.UserRole + 1, "failed")
+                                display_text = f"✗ {test_number}"
+                                tree_item.setBackground(0, QBrush(QColor(failed_bg)))
+                                tree_item.setForeground(0, QBrush(QColor(failed_fg)))
+                            else:
+                                tree_item.setData(0, Qt.UserRole + 1, "unknown")
+                                display_text = f"? {test_number}"
+                                tree_item.setBackground(0, QBrush(QColor(unknown_bg)))
+                                tree_item.setForeground(0, QBrush(QColor(unknown_fg)))
+                        tree_item.setText(0, display_text)
 
         except PermissionError:
             error_item = QTreeWidgetItem(parent_item)
@@ -631,13 +628,18 @@ class TestResultsAnalyzer(QMainWindow):
             QTimer.singleShot(3000, self._reset_status_to_ready)
 
     def calculate_test_statistics(self, base_path):
-        """Calculate test statistics for a directory"""
+        """Calculate test statistics for a run directory using common test-folder discovery."""
         stats = {'passed': 0, 'failed': 0, 'unknown': 0, 'total': 0}
+        base_path = Path(base_path)
+        results_dir = base_path.parent
+        run_id = base_path.name
 
         try:
-            for item in base_path.rglob("*"):
-                if item.is_dir() and self.is_test_directory(item):
-                    test_status = self.get_test_status(item)
+            for rid, _config, _num, folder_path in iter_test_folders(str(results_dir)):
+                if rid != run_id:
+                    continue
+                if self.is_test_directory(folder_path):
+                    test_status = self.get_test_status(folder_path)
                     stats[test_status] = stats.get(test_status, 0) + 1
                     stats['total'] += 1
         except Exception as e:
