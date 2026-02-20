@@ -42,12 +42,12 @@ def get_kubernetes_client():
         return None
 
 
-def check_pod_running(k8s_client, pod_name):
+def check_pod_running(k8s_client, pod_name, namespace="default"):
     """Check if transfer-pod exists, exit if not found"""
     try:
         pod = k8s_client.read_namespaced_pod(
             name=pod_name,
-            namespace="default"
+            namespace=namespace
         )
         # Check if pod is running
         if pod.status.phase != "Running":
@@ -146,7 +146,7 @@ def delete_manifests(core_v1, manifests: list):
                 raise
 
 
-def copy_config_to_cluster(config_dir, run_id):
+def copy_config_to_cluster(config_dir, run_id, namespace="default"):
 
     try:
         logger.debug(f"Copying config files to transfer pod...")
@@ -156,7 +156,7 @@ def copy_config_to_cluster(config_dir, run_id):
 
         # Ensure /exports/out/<run_id> directory exists in the pod
         ensure_dir_cmd = [
-            "kubectl", "exec", "-n", "default", "robovast",
+            "kubectl", "exec", "-n", namespace, "robovast",
             "--",
             "mkdir", "-p", f"/exports/out/{run_id}"
         ]
@@ -166,7 +166,7 @@ def copy_config_to_cluster(config_dir, run_id):
         copy_cmd = [
             "kubectl", "cp",
             os.path.join(config_dir, "."),
-            f"default/robovast:/exports/out/{run_id}/"
+            f"{namespace}/robovast:/exports/out/{run_id}/"
         ]
         subprocess.run(copy_cmd, capture_output=True, text=True, check=True)
 

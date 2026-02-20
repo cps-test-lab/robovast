@@ -39,11 +39,11 @@ from .manifests import JOB_TEMPLATE
 logger = logging.getLogger(__name__)
 
 
-def cleanup_cluster_run():
+def cleanup_cluster_run(namespace="default"):
     """Clean up all scenario run jobs and pods from the cluster.
 
     This function removes all Kubernetes jobs and pods with the label
-    'jobgroup=scenario-runs' from the default namespace. It's used after
+    'jobgroup=scenario-runs' from the given namespace. It's used after
     a detached run to clean up resources once jobs have completed.
     """
     kube_config.load_kube_config()
@@ -54,7 +54,7 @@ def cleanup_cluster_run():
     try:
         logger.debug("Deleting all jobs with label 'jobgroup=scenario-runs'")
         k8s_batch_client.delete_collection_namespaced_job(
-            namespace="default",
+            namespace=namespace,
             label_selector="jobgroup=scenario-runs",
             body=client.V1DeleteOptions(grace_period_seconds=0)
         )
@@ -67,7 +67,7 @@ def cleanup_cluster_run():
     try:
         logger.debug("Deleting all pods with label 'jobgroup=scenario-runs'")
         k8s_client.delete_collection_namespaced_pod(
-            namespace="default",
+            namespace=namespace,
             label_selector="jobgroup=scenario-runs",
             body=client.V1DeleteOptions(grace_period_seconds=0)
         )
@@ -77,10 +77,10 @@ def cleanup_cluster_run():
         raise
 
 
-def get_cluster_run_job_counts():
+def get_cluster_run_job_counts(namespace="default"):
     """Get aggregate status counts for scenario run jobs.
 
-    Counts all Kubernetes jobs in the default namespace with the label
+    Counts all Kubernetes jobs in the given namespace with the label
     ``jobgroup=scenario-runs`` and classifies each job as completed,
     failed, running, or pending based on its status fields.
     """
@@ -89,7 +89,7 @@ def get_cluster_run_job_counts():
 
     try:
         job_list = k8s_batch_client.list_namespaced_job(
-            namespace="default",
+            namespace=namespace,
             label_selector="jobgroup=scenario-runs",
         )
     except client.rest.ApiException as e:
@@ -126,8 +126,9 @@ def get_cluster_run_job_counts():
 
 
 class JobRunner:
-    def __init__(self, config_path, single_config=None, num_runs=None, cluster_config=None):
+    def __init__(self, config_path, single_config=None, num_runs=None, cluster_config=None, namespace="default"):
         self.cluster_config = cluster_config
+        self.namespace = namespace
         if not self.cluster_config:
             raise ValueError("Cluster config must be provided to JobRunner")
 
@@ -219,7 +220,7 @@ class JobRunner:
         self._k8s_initialized = True
 
         # Check if transfer-pod exists
-        if not check_pod_running(self.k8s_client, "robovast"):
+        if not check_pod_running(self.k8s_client, "robovast", self.namespace):
             logger.error(f"Transfer pod 'robovast' is not available!")
             sys.exit(1)
         logger.debug("Kubernetes connection initialized successfully.")
@@ -382,7 +383,7 @@ class JobRunner:
     def get_remaining_jobs(self, job_names):
         running_jobs = []
         for job_name in job_names:
-            job_status = self.k8s_batch_client.read_namespaced_job_status(name=job_name, namespace="default")
+            job_status = self.k8s_batch_client.read_namespaced_job_status(name=job_name, namespace=self.namespace)
 
             # Check if job is still active/running
             if job_status.status.active is not None and job_status.status.active >= 1:
@@ -396,7 +397,7 @@ class JobRunner:
         """Collect statistics for completed jobs"""
         for job_name in job_names:
             try:
-                job_status = self.k8s_batch_client.read_namespaced_job_status(name=job_name, namespace="default")
+                job_status = self.k8s_batch_client.read_namespaced_job_status(name=job_name, namespace=self.namespace)
 
                 completion_time = job_status.status.completion_time
                 succeeded = job_status.status.succeeded or 0
@@ -407,7 +408,7 @@ class JobRunner:
                 try:
                     # Get pods associated with this job
                     pods = self.k8s_client.list_namespaced_pod(
-                        namespace="default",
+                        namespace=self.namespace,
                         label_selector=f"job-name={job_name}"
                     )
 
@@ -544,7 +545,7 @@ class JobRunner:
         try:
             logger.debug(f"Deleting all jobs with label 'jobgroup=scenario-runs'")
             self.k8s_batch_client.delete_collection_namespaced_job(
-                namespace="default",
+                namespace=self.namespace,
                 label_selector="jobgroup=scenario-runs",
                 body=client.V1DeleteOptions(grace_period_seconds=0)
             )
@@ -566,7 +567,7 @@ class JobRunner:
         job_prefix = manifest_data['metadata']['name'].replace("$TEST_ID", "").replace("$ITEM", "")
 
         # Clean up existing jobs that match our naming pattern
-        job_list = self.k8s_batch_client.list_namespaced_job(namespace="default")
+        job_list = self.k8s_batch_client.list_namespaced_job(namespace=self.namespace)
         jobs_to_cleanup = []
         for job in job_list.items:
             if job.metadata.name.startswith(job_prefix):
@@ -595,7 +596,7 @@ class JobRunner:
                 job_manifest = self.create_job_manifest_for_scenario(config_name, run_number)
                 job_name = job_manifest['metadata']['name']
                 all_jobs.append(job_name)
-                self.k8s_batch_client.create_namespaced_job(namespace="default", body=job_manifest)
+                self.k8s_batch_client.create_namespaced_job(namespace=self.namespace, body=job_manifest)
                 logger.debug(f"Created job {job_name} for run {run_number + 1}")
 
         logger.info(f"All {len(all_jobs)} jobs created. Starting execution...")
@@ -642,7 +643,7 @@ class JobRunner:
         try:
             logger.debug(f"Deleting all pods with label 'jobgroup=scenario-runs'")
             self.k8s_client.delete_collection_namespaced_pod(
-                namespace="default",
+                namespace=self.namespace,
                 label_selector="jobgroup=scenario-runs",
                 body=client.V1DeleteOptions(grace_period_seconds=0)
             )
@@ -686,7 +687,7 @@ class JobRunner:
             create_execution_yaml(self.num_runs, out_dir,
                                   execution_params=self.run_data.get("execution", {}))
 
-            copy_config_to_cluster(os.path.join(temp_dir, "out_template"), self.run_id)
+            copy_config_to_cluster(os.path.join(temp_dir, "out_template"), self.run_id, self.namespace)
 
     def get_job_manifest(self, image: str, kubernetes_resources: dict, env: list, run_as_user: int = None) -> dict:
         """Generate the base Kubernetes job manifest from templates.

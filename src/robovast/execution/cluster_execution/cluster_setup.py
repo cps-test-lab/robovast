@@ -104,6 +104,16 @@ def load_cluster_config_name():
     return name
 
 
+def get_cluster_namespace():
+    """Load the cluster namespace from the setup flag file.
+
+    Returns:
+        str: Kubernetes namespace for cluster execution, or "default" if not set
+    """
+    _, kwargs = load_cluster_setup_info()
+    return kwargs.get("namespace", "default")
+
+
 def delete_cluster_config_flag():
     """Delete the cluster config flag file."""
     try:

@@ -30,7 +30,8 @@ from robovast.common.cli import get_project_config, handle_cli_exception
 from robovast.execution.cluster_execution.cluster_execution import (
     JobRunner, cleanup_cluster_run, get_cluster_run_job_counts)
 from robovast.execution.cluster_execution.cluster_setup import (
-    delete_server, get_cluster_config, load_cluster_config_name, setup_server)
+    delete_server, get_cluster_config, get_cluster_namespace,
+    load_cluster_config_name, setup_server)
 from robovast.execution.cluster_execution.download_results import \
     ResultDownloader
 
@@ -204,7 +205,8 @@ def run(config, runs, detach):  # pylint: disable=function-redefined
     # Check if transfer pod is running
     click.echo("Checking robovast pod status...")
     k8s_client = get_kubernetes_client()
-    pod_ok, pod_msg = check_pod_running(k8s_client, "robovast")
+    namespace = get_cluster_namespace()
+    pod_ok, pod_msg = check_pod_running(k8s_client, "robovast", namespace)
     cluster_config = None
 
     if pod_ok:
@@ -232,7 +234,7 @@ def run(config, runs, detach):  # pylint: disable=function-redefined
     logging.debug(pod_msg)
 
     try:
-        job_runner = JobRunner(project_config.config_path, config, runs, cluster_config)
+        job_runner = JobRunner(project_config.config_path, config, runs, cluster_config, namespace=namespace)
         job_runner.run(detached=detach)
 
         if detach:
@@ -278,8 +280,10 @@ def monitor(interval, once):
             sys.exit(1)
         logging.debug(k8s_msg)
 
+        namespace = get_cluster_namespace()
+
         def _print_status_line():
-            counts = get_cluster_run_job_counts()
+            counts = get_cluster_run_job_counts(namespace)
             finished = counts["completed"] + counts["failed"]
             running = counts["running"]
             pending = counts["pending"]
@@ -352,7 +356,7 @@ def download(output, force):
         sys.exit(1)
 
     try:
-        downloader = ResultDownloader()
+        downloader = ResultDownloader(namespace=get_cluster_namespace())
         # Download all runs
         count = downloader.download_results(output, force)
         click.echo(f"✓ Download of {count} runs completed successfully!")
@@ -364,12 +368,14 @@ def download(output, force):
 @cluster.command()
 @click.option('--list', 'list_configs', is_flag=True,
               help='List available cluster configuration plugins')
+@click.option('--namespace', '-n', default='default', show_default=True,
+              help='Kubernetes namespace for execution (used by cluster run)')
 @click.option('--option', '-o', 'options', multiple=True,
               help='Cluster-specific option in key=value format (can be used multiple times)')
 @click.option('--force', '-f', is_flag=True,
               help='Force re-setup even if cluster is already set up')
 @click.argument('cluster_config', required=False)
-def setup(list_configs, options, force, cluster_config):
+def setup(list_configs, namespace, options, force, cluster_config):
     """Set up the Kubernetes cluster for execution.
 
     Sets up the NFS server in the Kubernetes cluster, that is
@@ -399,7 +405,7 @@ def setup(list_configs, options, force, cluster_config):
         sys.exit(1)
 
     # Parse cluster-specific options
-    cluster_kwargs = {}
+    cluster_kwargs = {"namespace": namespace}
     for option in options:
         if '=' not in option:
             click.echo(f"Error: Invalid option format '{option}'. Expected key=value", err=True)
@@ -437,7 +443,7 @@ def run_cleanup():
             sys.exit(1)
 
         click.echo("Cleaning up scenario run jobs and pods...")
-        cleanup_cluster_run()
+        cleanup_cluster_run(namespace=get_cluster_namespace())
         click.echo("✓ Cleanup completed successfully!")
 
     except Exception as e:
@@ -532,8 +538,10 @@ def prepare_run(output, config, runs, cluster_config, options):  # pylint: disab
         except Exception as e:
             raise RuntimeError(f"Failed to get cluster config: {e}") from e
 
+        namespace = get_cluster_namespace()
+
         # Initialize job runner (this prepares all scenarios)
-        job_runner = JobRunner(config_path, config, runs, cluster_config)
+        job_runner = JobRunner(config_path, config, runs, cluster_config, namespace=namespace)
 
         click.echo(f"Preparing run configuration 'ID: {job_runner.run_id}', test configs: {
                    len(job_runner.configs)}, runs per test config: {job_runner.num_runs}...")
