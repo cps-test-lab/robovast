@@ -192,10 +192,11 @@ def run(config, runs, detach):  # pylint: disable=function-redefined
     # Get project configuration
     project_config = get_project_config()
 
-    # Check Kubernetes access
+    # Check Kubernetes access (namespace-scoped so RBAC namespace-only users succeed)
     k8s_client = get_kubernetes_client()
+    namespace = get_cluster_namespace()
     click.echo("Checking Kubernetes cluster access...")
-    k8s_ok, k8s_msg = check_kubernetes_access(k8s_client)
+    k8s_ok, k8s_msg = check_kubernetes_access(k8s_client, namespace=namespace)
     if not k8s_ok:
         click.echo(f"✗ Error: {k8s_msg}", err=True)
         click.echo("  Kubernetes cluster is required for RoboVAST execution.", err=True)
@@ -204,8 +205,6 @@ def run(config, runs, detach):  # pylint: disable=function-redefined
 
     # Check if transfer pod is running
     click.echo("Checking robovast pod status...")
-    k8s_client = get_kubernetes_client()
-    namespace = get_cluster_namespace()
     pod_ok, pod_msg = check_pod_running(k8s_client, "robovast", namespace)
     cluster_config = None
 
@@ -271,16 +270,14 @@ def monitor(interval, once):
     ``vast execution cluster run -d``.
     """
     try:
-        # Check Kubernetes access for a clear error if the cluster is not reachable
+        namespace = get_cluster_namespace()
         k8s_client = get_kubernetes_client()
         click.echo("Checking Kubernetes cluster access...")
-        k8s_ok, k8s_msg = check_kubernetes_access(k8s_client)
+        k8s_ok, k8s_msg = check_kubernetes_access(k8s_client, namespace=namespace)
         if not k8s_ok:
             click.echo(f"✗ Error: {k8s_msg}", err=True)
             sys.exit(1)
         logging.debug(k8s_msg)
-
-        namespace = get_cluster_namespace()
 
         def _print_status_line():
             counts = get_cluster_run_job_counts(namespace)
@@ -432,18 +429,16 @@ def run_cleanup():
     Usage: vast execution cluster run-cleanup
     """
     try:
-        # Get Kubernetes client
+        namespace = get_cluster_namespace()
         k8s_client = get_kubernetes_client()
-
-        # Check Kubernetes access
         click.echo("Checking Kubernetes cluster access...")
-        k8s_ok, k8s_msg = check_kubernetes_access(k8s_client)
+        k8s_ok, k8s_msg = check_kubernetes_access(k8s_client, namespace=namespace)
         if not k8s_ok:
             click.echo(f"✗ Error: {k8s_msg}", err=True)
             sys.exit(1)
 
         click.echo("Cleaning up scenario run jobs and pods...")
-        cleanup_cluster_run(namespace=get_cluster_namespace())
+        cleanup_cluster_run(namespace=namespace)
         click.echo("✓ Cleanup completed successfully!")
 
     except Exception as e:
@@ -453,7 +448,11 @@ def run_cleanup():
 @cluster.command()
 @click.option('--cluster-config', '-c', 'config_name', default=None,
               help='Cluster configuration plugin to use (auto-detects if not specified)')
-def cleanup(config_name):
+@click.option('--namespace', '-n', default=None,
+              help='Kubernetes namespace to clean up (required when using --cluster-config without prior setup)')
+@click.option('--option', '-o', 'options', multiple=True,
+              help='Cluster-specific option in key=value format (can be used multiple times)')
+def cleanup(config_name, namespace, options):
     """Clean up the Kubernetes cluster setup.
 
     Removes the NFS server pod and service from the Kubernetes cluster
@@ -463,11 +462,22 @@ def cleanup(config_name):
     to clean up cluster infrastructure resources (different from run-cleanup
     which only cleans up job pods).
 
-    If ``--config`` is not specified, it will automatically detect which
-    cluster configuration was used during setup.
+    If ``--cluster-config`` is not specified, it will automatically detect
+    which cluster configuration was used during setup (from the project flag file).
+    When specifying ``--cluster-config`` explicitly, pass ``-n <namespace>`` if the
+    setup was done in a non-default namespace.
     """
     try:
-        delete_server(config_name=config_name)
+        cluster_kwargs = {}
+        if namespace is not None:
+            cluster_kwargs["namespace"] = namespace
+        for option in options:
+            if '=' not in option:
+                click.echo(f"Error: Invalid option format '{option}'. Expected key=value", err=True)
+                sys.exit(1)
+            key, value = option.split('=', 1)
+            cluster_kwargs[key] = value
+        delete_server(config_name=config_name, **cluster_kwargs)
         click.echo("✓ Cluster cleanup completed successfully!")
 
     except Exception as e:
@@ -586,7 +596,7 @@ def prepare_run(output, config, runs, cluster_config, options):  # pylint: disab
 
         cluster_config.prepare_setup_cluster(output, **cluster_kwargs)
 
-        generate_copy_script(output, job_runner.run_id)
+        generate_copy_script(output, job_runner.run_id, namespace)
 
         click.echo(f"✓ Successfully prepared {job_count} job manifests in directory'{
                    output}'.\n\nFollow README files to set up and execute.\n")
@@ -595,7 +605,7 @@ def prepare_run(output, config, runs, cluster_config, options):  # pylint: disab
         handle_cli_exception(e)
 
 
-def generate_copy_script(output_dir, run_id):
+def generate_copy_script(output_dir, run_id, namespace="default"):
     """Generate a Python script to copy configuration files to the cluster."""
     script_content = f'''#!/usr/bin/env python3
 """
@@ -606,6 +616,7 @@ in the Kubernetes cluster for use by scenario execution jobs.
 
 Generated by: vast execution cluster prepare-run
 Run ID: {run_id}
+Namespace: {namespace}
 """
 
 import os
@@ -620,6 +631,7 @@ def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     config_dir = os.path.join(script_dir, "out_template")
     run_id = "{run_id}"
+    namespace = "{namespace}"
 
     if not os.path.exists(config_dir):
         print(f"ERROR: Config directory not found: {{config_dir}}")
@@ -627,9 +639,9 @@ def main():
 
     print(f"Copying config files to transfer pod using kubectl cp...")
     print(f"Source: {{config_dir}}")
-    print(f"Destination: robovast pod at /exports/")
+    print(f"Destination: robovast pod in namespace {{namespace}} at /exports/")
 
-    copy_config_to_cluster(config_dir, run_id)
+    copy_config_to_cluster(config_dir, run_id, namespace)
 
 
 if __name__ == "__main__":
@@ -669,6 +681,16 @@ Deploy the scenario execution jobs:
 ```bash
 kubectl apply -f all-jobs.yaml
 ```
+
+To re-deploy after a previous run (Job spec is immutable, so plain apply will fail):
+use the same namespace as setup (e.g. ``-n <namespace>``) and either delete then apply,
+or replace (delete and recreate) in one step:
+
+```bash
+kubectl replace --force -f all-jobs.yaml
+```
+
+For a single job file: ``kubectl replace --force -f jobs/<job-name>.yaml -n <namespace>``
 """
     with open(f"{output_dir}/README.md", "w") as f:
         f.write(readme_content)
