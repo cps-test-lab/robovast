@@ -22,6 +22,7 @@ import os
 import sys
 import tempfile
 import time
+import warnings
 
 import yaml
 from kubernetes import client
@@ -263,22 +264,23 @@ class JobRunner:
 
         spec = job_manifest['spec']['template']['spec']
 
-        # Add the per-job shared emptyDir volume
-        if 'volumes' not in spec:
-            spec['volumes'] = []
-        spec['volumes'].append({'name': 'shared-data', 'emptyDir': {}})
+        # Two purpose-specific emptyDir volumes: config (shared with initContainer) and out (main only)
+        spec['volumes'] = [
+            {'name': 'config', 'emptyDir': {}},
+            {'name': 'out', 'emptyDir': {}},
+        ]
 
-        # Build the initContainer that downloads all needed files from S3
-        scenario_key_safe = scenario_key.replace("'", "\\'")
+        # Build the initContainer that downloads all needed files from S3 into /config/
+        # After downloading, chmod +x all scripts so the main container can execute them.
         init_cmd = (
             f"mc alias set myminio \"$S3_ENDPOINT\" \"$S3_ACCESS_KEY\" \"$S3_SECRET_KEY\" && "
-            f"mc cp myminio/$S3_BUCKET/entrypoint.sh /shared/ && "
-            f"mc cp myminio/$S3_BUCKET/collect_sysinfo.py /shared/ && "
-            f"mc cp myminio/$S3_BUCKET/scenario.osc /shared/ && "
-            f"mc mirror myminio/$S3_BUCKET/_config/ /shared/_config/ || true && "
-            f"mc mirror myminio/$S3_BUCKET/{scenario_key}/_config/ /shared/{scenario_key}/_config/ || true && "
-            f"mc cp myminio/$S3_BUCKET/{scenario_key}/scenario.config /shared/{scenario_key}/ || true && "
-            f"mkdir -p /shared/{scenario_key}/{run_number}"
+            f"mc cp myminio/$S3_BUCKET/entrypoint.sh /config/ && "
+            f"mc cp myminio/$S3_BUCKET/collect_sysinfo.py /config/ && "
+            f"mc cp myminio/$S3_BUCKET/scenario.osc /config/ && "
+            f"mc mirror myminio/$S3_BUCKET/_config/ /config/ || true && "
+            f"mc mirror myminio/$S3_BUCKET/{scenario_key}/_config/ /config/ || true && "
+            f"mc cp myminio/$S3_BUCKET/{scenario_key}/scenario.config /config/ || true && "
+            f"chmod +x /config/*.sh /config/*.py 2>/dev/null; true"
         )
 
         init_env = [
@@ -295,7 +297,7 @@ class JobRunner:
                 'command': ['sh', '-c', init_cmd],
                 'env': init_env,
                 'volumeMounts': [
-                    {'name': 'shared-data', 'mountPath': '/shared'}
+                    {'name': 'config', 'mountPath': '/config'}
                 ],
             }
         ]
@@ -306,7 +308,7 @@ class JobRunner:
             if 'env' not in containers[0]:
                 containers[0]['env'] = []
 
-            env_vars = get_execution_env_variables(run_number, scenario_key, self.run_data.get('execution', {}).get('env'))
+            env_vars = get_execution_env_variables(run_number, scenario_key)
             for name, val in env_vars.items():
                 containers[0]['env'].append({
                     'name': str(name),
@@ -335,71 +337,11 @@ class JobRunner:
                     'value': str(self.post_command)
                 })
 
-            # Volume mounts from shared emptyDir (subPaths mirror NFS layout without run_id prefix)
-            if 'volumeMounts' not in containers[0]:
-                containers[0]['volumeMounts'] = []
-
-            volume_mounts = [
-                {
-                    'name': 'shared-data',
-                    'mountPath': '/out',
-                    'subPath': f'{scenario_key}/{run_number}',
-                    'readOnly': False
-                },
-                {
-                    'name': 'shared-data',
-                    'mountPath': '/entrypoint.sh',
-                    'subPath': 'entrypoint.sh',
-                    'readOnly': True
-                },
-                {
-                    'name': 'shared-data',
-                    'mountPath': '/collect_sysinfo.py',
-                    'subPath': 'collect_sysinfo.py',
-                    'readOnly': True
-                },
-                {
-                    'name': 'shared-data',
-                    'mountPath': '/config/scenario.osc',
-                    'subPath': 'scenario.osc',
-                    'readOnly': True
-                },
+            # Main container only needs /config (read-only, populated by initContainer) and /out
+            containers[0]['volumeMounts'] = [
+                {'name': 'config', 'mountPath': '/config', 'readOnly': True},
+                {'name': 'out', 'mountPath': '/out', 'readOnly': False},
             ]
-
-            # Shared test files (_config/ tree)
-            for test_file in self.run_data.get("_test_files", []):
-                volume_mounts.append({
-                    'name': 'shared-data',
-                    'mountPath': f'/config/{test_file}',
-                    'subPath': f'_config/{test_file}',
-                    'readOnly': True
-                })
-
-            # Per-scenario config files
-            current_config = None
-            for cfg in self.configs:
-                if cfg.get("name") == scenario_key:
-                    current_config = cfg
-                    break
-
-            if current_config and "_config_files" in current_config:
-                for config_rel_path, _ in current_config["_config_files"]:
-                    volume_mounts.append({
-                        'name': 'shared-data',
-                        'mountPath': f'/config/{config_rel_path}',
-                        'subPath': f'{scenario_key}/_config/{config_rel_path}',
-                        'readOnly': True
-                    })
-
-            # Per-scenario scenario.config
-            volume_mounts.append({
-                'name': 'shared-data',
-                'mountPath': '/config/scenario.config',
-                'subPath': f'{scenario_key}/scenario.config',
-                'readOnly': True
-            })
-
-            containers[0]['volumeMounts'].extend(volume_mounts)
 
         return job_manifest
 
@@ -627,7 +569,14 @@ class JobRunner:
                 job_manifest = self.create_job_manifest_for_scenario(config_name, run_number)
                 job_name = job_manifest['metadata']['name']
                 all_jobs.append(job_name)
-                self.k8s_batch_client.create_namespaced_job(namespace=self.namespace, body=job_manifest)
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    self.k8s_batch_client.create_namespaced_job(namespace=self.namespace, body=job_manifest)
+                if caught:
+                    logger.error(f"Kubernetes API warnings for job '{job_name}':")
+                    for w in caught:
+                        logger.error(f"  Warning: {w.message}")
+                    raise SystemExit(1)
                 logger.debug(f"Created job {job_name} for run {run_number + 1}")
 
         logger.info(f"All {len(all_jobs)} jobs created. Starting execution...")
@@ -734,10 +683,10 @@ class JobRunner:
 
         logger.debug(f"Using run_as_user={run_as_user} for job containers")
 
-        yaml_str = JOB_TEMPLATE.format(image=image, cpu=kubernetes_resources["cpu"])
+        yaml_str = JOB_TEMPLATE.format(image=image, cpu=kubernetes_resources["cpu"], namespace=self.namespace)
         manifest = yaml.safe_load(yaml_str)
 
-        manifest['spec']['template']['spec']['containers'][0]['securityContext']['runAsUser'] = run_as_user
+        manifest['spec']['template']['spec']['containers'][0].setdefault('securityContext', {})['runAsUser'] = run_as_user
 
         if "memory" in kubernetes_resources:
             # Add memory resource if specified

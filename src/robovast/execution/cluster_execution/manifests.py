@@ -3,6 +3,7 @@ JOB_TEMPLATE = """apiVersion: batch/v1
 kind: Job
 metadata:
   name: $TEST_ID
+  namespace: {namespace}
   labels:
     jobgroup: scenario-runs
 spec:
@@ -18,9 +19,7 @@ spec:
       containers:
         - name: test-container
           image: {image}
-          command: ["/entrypoint.sh"]
-          securityContext: # required for rke2
-            privileged: true
+          command: ["/bin/bash", "/config/entrypoint.sh"]
           env:
           - name: AVAILABLE_CPUS
             valueFrom:

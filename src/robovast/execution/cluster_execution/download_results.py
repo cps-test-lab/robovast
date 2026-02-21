@@ -40,10 +40,8 @@ class ResultDownloader:
         self.namespace = namespace
 
         if cluster_config is not None:
-            self.s3_endpoint = cluster_config.get_s3_endpoint()
             self.access_key, self.secret_key = cluster_config.get_s3_credentials()
         else:
-            self.s3_endpoint = None  # ClusterS3Client will port-forward
             self.access_key = "minioadmin"
             self.secret_key = "minioadmin"
 
@@ -98,7 +96,6 @@ class ResultDownloader:
 
         with ClusterS3Client(
             namespace=self.namespace,
-            endpoint=self.s3_endpoint,
             access_key=self.access_key,
             secret_key=self.secret_key,
         ) as s3:
@@ -112,22 +109,26 @@ class ResultDownloader:
             )
 
             downloaded_count = 0
-            for bucket_name in available_runs:
+            total_runs = len(available_runs)
+            for idx, bucket_name in enumerate(available_runs, start=1):
                 run_dir = os.path.join(output_directory, bucket_name)
+                prefix = f"[{idx}/{total_runs}]"
                 if not force and os.path.exists(run_dir) and os.listdir(run_dir):
                     logger.info(
-                        f"Run '{bucket_name}' already exists locally, skipping "
+                        f"{prefix} '{bucket_name}' already exists locally, skipping "
                         "(use --force to re-download)"
                     )
                     downloaded_count += 1
                     continue
 
                 try:
-                    logger.info(f"Downloading '{bucket_name}'...")
+                    logger.info(f"{prefix} Downloading '{bucket_name}'...")
                     count = s3.download_bucket(bucket_name, output_directory, force=force)
-                    logger.info(f"Downloaded {count} file(s) for '{bucket_name}'")
+                    logger.info(f"{prefix} Downloaded {count} file(s) for '{bucket_name}'")
                     downloaded_count += 1
+                    s3.delete_bucket(bucket_name)
+                    logger.info(f"{prefix} Removed '{bucket_name}' from S3")
                 except Exception as e:
-                    logger.error(f"Failed to download '{bucket_name}': {e}")
+                    logger.error(f"{prefix} Failed to download '{bucket_name}': {e}")
 
         return downloaded_count

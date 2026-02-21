@@ -349,7 +349,7 @@ def generate_docker_run_script(runs, run_data, config_path_result, pre_command, 
         script += f'    --user {uid}:{gid} \\\n'
         script += f'    -v "{test_path}:/out" \\\n'
         script += f'    -v "${{SCRIPT_DIR}}/out_template/entrypoint.sh:/entrypoint.sh:ro" \\\n'
-        script += f'    -v "${{SCRIPT_DIR}}/out_template/collect_sysinfo.py:/collect_sysinfo.py:ro" \\\n'
+        script += f'    -v "${{SCRIPT_DIR}}/out_template/collect_sysinfo.py:/config/collect_sysinfo.py:ro" \\\n'
 
         # Mount scenario and config files from results directory
         script += f'    -v "${{RESULTS_DIR}}/scenario.osc:/config/scenario.osc:ro" \\\n'
