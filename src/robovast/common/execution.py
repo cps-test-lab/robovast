@@ -19,7 +19,6 @@ import json
 import logging
 import os
 import shutil
-import subprocess
 from importlib.resources import files
 from pprint import pformat
 
@@ -30,12 +29,33 @@ from .common import convert_dataclasses_to_dict, get_scenario_parameters
 logger = logging.getLogger(__name__)
 
 
+def _check_static_cpu_manager(k8s_client, node_name):
+    """Query kubelet configz endpoint to determine the CPU manager policy for a node.
+
+    Args:
+        k8s_client: CoreV1Api instance
+        node_name: Name of the node to query
+
+    Returns:
+        str or None: The cpuManagerPolicy value (e.g. "static", "none"), or None on failure
+    """
+    try:
+        response = k8s_client.connect_get_node_proxy_with_path(node_name, "configz")
+        data = json.loads(response)
+        kubelet_config = data.get("kubeletconfig", {})
+        return kubelet_config.get("cpuManagerPolicy")
+    except Exception as exc:
+        logger.debug("Could not retrieve kubelet configz for node %s: %s", node_name, exc)
+        return "none"
+
+
 def _get_cluster_info():
     """Collect basic cluster information for cluster executions.
 
-    Returns a dictionary with node_count, node_labels and cluster_config
-    (loaded from the .robovast_cluster_config flag file) when available.
-    Failures are logged and result in partial or empty data rather than errors.
+    Returns a dictionary with node_count, node_labels, cpu_manager_policy and
+    cluster_config (loaded from the .robovast_cluster_config flag file) when
+    available.  Failures are logged and result in partial or empty data rather
+    than errors.
     """
     cluster_info = {}
 
@@ -56,34 +76,37 @@ def _get_cluster_info():
         # If cluster modules are not available, silently skip cluster_config
         pass
 
-    # Collect node information via kubectl
+    # Collect node information via Kubernetes Python API
     node_count = None
     node_labels = {}
+    cpu_manager_policies = {}
     try:
-        result = subprocess.run(
-            ["kubectl", "get", "nodes", "-o", "json"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        if result.returncode == 0 and result.stdout:
-            data = json.loads(result.stdout)
-            items = data.get("items", [])
-            node_count = len(items)
-            for item in items:
-                metadata = item.get("metadata", {})
-                name = metadata.get("name")
-                labels = metadata.get("labels") or {}
-                if name:
-                    node_labels[name] = labels
-        else:
-            if result.stderr:
-                logger.warning(
-                    "kubectl get nodes failed with return code %s: %s",
-                    result.returncode,
-                    result.stderr.strip(),
-                )
+        from kubernetes import client as k8s_client_lib  # pylint: disable=import-outside-toplevel
+        from kubernetes import config as k8s_config  # pylint: disable=import-outside-toplevel
+
+        try:
+            k8s_config.load_incluster_config()
+        except k8s_config.ConfigException:
+            k8s_config.load_kube_config()
+
+        v1 = k8s_client_lib.CoreV1Api()
+        node_list = v1.list_node()
+        items = node_list.items or []
+        node_count = len(items)
+
+        for node in items:
+            name = node.metadata.name
+            labels = node.metadata.labels or {}
+            if name:
+                node_labels[name] = labels
+                policy = _check_static_cpu_manager(v1, name)
+                if policy is not None:
+                    cpu_manager_policies[name] = policy
+
+        # Warn if any node does not have the Static CPU Manager policy enabled
+        if cpu_manager_policies:
+            logger.debug(f"Static CPU Manager policy is enabled on {len(cpu_manager_policies)} node(s): {', '.join(cpu_manager_policies.keys())}")
+
     except Exception as exc:  # pragma: no cover - best-effort, non-fatal
         logger.warning("Failed to collect cluster node information: %s", exc)
 
@@ -91,6 +114,8 @@ def _get_cluster_info():
         cluster_info["node_count"] = node_count
     if node_labels:
         cluster_info["node_labels"] = node_labels
+    if cpu_manager_policies:
+        cluster_info["cpu_manager_policies"] = cpu_manager_policies
 
     return cluster_info or None
 
