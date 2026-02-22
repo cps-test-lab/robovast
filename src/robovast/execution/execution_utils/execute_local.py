@@ -158,8 +158,11 @@ USE_SHELL=false
 RUN_ID="run-$(date +%Y-%m-%d-%H%M%S)"
 RESULTS_DIR=
 
-# Variable to track if cleanup has run
+# Variables to track cleanup and interrupt state
 CLEANUP_DONE=0
+COMPOSE_PID=
+LOG_PID=
+SIGINT_COUNT=0
 
 # Cleanup function
 cleanup() {
@@ -168,6 +171,11 @@ cleanup() {
     fi
     CLEANUP_DONE=1
 
+    if [ -n "$LOG_PID" ]; then
+        kill "$LOG_PID" 2>/dev/null || true
+        LOG_PID=
+    fi
+
     echo ""
     echo "Cleaning up containers..."
     if [ -n "$CURRENT_COMPOSE_FILE" ]; then
@@ -175,8 +183,42 @@ cleanup() {
     fi
 }
 
+# SIGINT handler: first press triggers graceful shutdown; subsequent presses force-kill
+handle_sigint() {
+    SIGINT_COUNT=$((SIGINT_COUNT + 1))
+    if [ $SIGINT_COUNT -eq 1 ]; then
+        echo ""
+        echo "Stopping... (press Ctrl+C again to force exit)"
+        if [ -n "$COMPOSE_PID" ]; then
+            kill -TERM "$COMPOSE_PID" 2>/dev/null || true
+        fi
+        # Keep streaming logs while containers shut down
+        if [ -n "$CURRENT_COMPOSE_FILE" ]; then
+            docker compose -f "$CURRENT_COMPOSE_FILE" logs --follow 2>/dev/null &
+            LOG_PID=$!
+        fi
+    else
+        echo ""
+        echo "Force exiting..."
+        if [ -n "$LOG_PID" ]; then
+            kill "$LOG_PID" 2>/dev/null || true
+            LOG_PID=
+        fi
+        if [ -n "$COMPOSE_PID" ]; then
+            disown "$COMPOSE_PID" 2>/dev/null || true
+            kill -KILL "$COMPOSE_PID" 2>/dev/null || true
+        fi
+        if [ -n "$CURRENT_COMPOSE_FILE" ]; then
+            docker compose -f "$CURRENT_COMPOSE_FILE" kill 2>/dev/null || true
+        fi
+        cleanup
+        exit 130
+    fi
+}
+
 # Set up signal handlers
-trap 'cleanup; exit 130' SIGINT SIGTERM
+trap 'handle_sigint' SIGINT
+trap 'cleanup; exit 130' SIGTERM
 
 # Show help
 show_help() {
@@ -328,6 +370,7 @@ def _build_compose_yaml(
         lines.append(res)
 
     lines.append(f"    user: \"{uid}:{gid}\"")
+    lines.append("    stop_grace_period: 60s")
     lines.append("    command: [\"/bin/bash\", \"/config/entrypoint.sh\"]")
 
     for sc in secondary_containers:
@@ -355,6 +398,10 @@ def _build_compose_yaml(
             lines.append(sc_res)
 
         lines.append(f"    user: \"{uid}:{gid}\"")
+        # ROS2 nodes respond to SIGINT for graceful shutdown; docker compose
+        # sends SIGTERM by default, causing non-clean exits and corrupted exit codes
+        lines.append("    stop_signal: SIGINT")
+        lines.append("    stop_grace_period: 5s")
         lines.append('    command: ["/bin/bash", "/config/secondary_entrypoint.sh"]')
 
     if has_secondaries:
@@ -477,22 +524,50 @@ def generate_compose_run_script(runs, run_data, config_path_result, pre_command,
         script += compose_yaml + '\n'
         script += 'COMPOSE_EOF\n\n'
 
-        compose_cmd = (
-            f'COMPOSE_MENU=false docker compose -f "{compose_file}" up'
+        # Run compose in background with SIGINT ignored in the child before exec.
+        # Go programs (docker compose) preserve SIG_IGN across exec, so Ctrl+C
+        # from the terminal does not reach docker compose directly. The compose
+        # process stays in the same session so it keeps its controlling terminal,
+        # which is required for proper container stop output and graceful shutdown.
+        # Explicit signals (SIGTERM/SIGKILL) are sent by handle_sigint as needed.
+        compose_bg = (
+            f'( trap \'\' SIGINT; export COMPOSE_MENU=false;'
+            f' exec docker compose -f "{compose_file}" up'
             f' --abort-on-container-exit'
             f' --exit-code-from robovast'
+            f') &\n'
+        )
+        compose_wait = (
+            'COMPOSE_PID=$!\n'
+            'wait "$COMPOSE_PID" 2>/dev/null\n'
+            'WAIT_CODE=$?\n'
+            'while [ "$WAIT_CODE" -ge 128 ] && kill -0 "$COMPOSE_PID" 2>/dev/null; do\n'
+            '    wait "$COMPOSE_PID" 2>/dev/null\n'
+            '    WAIT_CODE=$?\n'
+            'done\n'
+            'COMPOSE_PID=\n'
+            'EXIT_CODE=$WAIT_CODE\n'
+            'if [ "$SIGINT_COUNT" -gt 0 ]; then\n'
+            '    cleanup\n'
+            '    exit 130\n'
+            'fi\n'
         )
         if normalized_secondary:
-            script += f'{compose_cmd}\n'
+            script += compose_bg
+            script += compose_wait
         else:
             script += f'if [ "$USE_SHELL" = true ]; then\n'
             script += f'    docker compose -f "{compose_file}" run --rm robovast /usr/local/bin/fixuid /bin/bash\n'
+            script += '    EXIT_CODE=$?\n'
             script += f'else\n'
-            script += f'    {compose_cmd}\n'
+            # Indent the wait-loop lines for readability inside the else block
+            for line in compose_bg.splitlines(keepends=True):
+                script += f'    {line}'
+            for line in compose_wait.splitlines(keepends=True):
+                script += f'    {line}'
             script += f'fi\n'
 
         if idx < len(execution_tasks):
-            script += 'EXIT_CODE=$?\n'
             script += f'docker compose -f "{compose_file}" down --volumes --timeout 5 2>/dev/null || true\n'
             script += 'if [ $EXIT_CODE -ne 0 ]; then\n'
             script += f'    echo "Error: Config {idx}/{len(execution_tasks)} ({config_name}) failed with exit code $EXIT_CODE"\n'
@@ -500,7 +575,6 @@ def generate_compose_run_script(runs, run_data, config_path_result, pre_command,
             script += '    exit $EXIT_CODE\n'
             script += 'fi\n\n'
         else:
-            script += 'EXIT_CODE=$?\n'
             script += f'docker compose -f "{compose_file}" down --volumes --timeout 5 2>/dev/null || true\n'
             script += 'if [ $EXIT_CODE -eq 0 ]; then\n'
             script += f'    echo ""\n'

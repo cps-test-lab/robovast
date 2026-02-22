@@ -15,8 +15,8 @@ log "Secondary container starting ($(hostname))..."
 log "Running as UID: $(id -u), GID: $(id -g)..."
 
 log "Setting up ROS2 environment..."
-source "/opt/ros/$ROS_DISTRO/setup.bash" --
-source "/ws/install/setup.bash" --
+source "/opt/ros/$ROS_DISTRO/setup.bash"
+source "/ws/install/setup.bash"
 
 exec > >(stdbuf -oL tee -a "${LOG_FILE}")
 exec 2>&1

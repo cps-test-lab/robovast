@@ -85,16 +85,20 @@ RUN \
         python3-zmq python3-msgpack && \
     rm -rf /var/lib/apt/lists/*
 
+# Install MinIO client (mc) for S3 upload in post-run script
+RUN curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc && \
+    chmod +x /usr/local/bin/mc
+
 RUN mkdir -p /ws/src
 
 # hadolint ignore=DL3003
 RUN  git clone "https://github.com/cps-test-lab/scenario-execution.git" /ws/src/scenario-execution && \
      cd /ws/src/scenario-execution && \
-     git checkout 61292ece27599c076766470c9914939ff085a293 && \
+     git checkout b9d700cb931c41e7ba230d9fa7491640084be56e && \
      cd /ws && \
      git clone "https://github.com/cps-test-lab/scenario-execution-server.git" /ws/src/scenario-execution-server && \
      cd /ws/src/scenario-execution-server && \
-     git checkout b7484cf2f98fec9f57226406d932771a7c3068b8 && \
+     git checkout 4a3f2dc000f65fd9ca459e21b5385673ec518377 && \
      cd /ws && \
      . "/opt/ros/${ROS_DISTRO}/setup.bash" && \
      colcon build
@@ -109,10 +113,6 @@ ENV CDEPTH=24
 ENV QT_X11_NO_MITSHM=1
 
 RUN mkdir -p /out && chmod 777 /out
-
-# Install MinIO client (mc) for S3 upload in post-run script
-RUN curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc && \
-    chmod +x /usr/local/bin/mc
 
 RUN USER=ubuntu && \
     GROUP=ubuntu && \
