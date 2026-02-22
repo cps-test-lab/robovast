@@ -166,6 +166,11 @@ def prepare_run_configs(out_dir, run_data):
     entrypoint_dst = os.path.join(out_dir, "entrypoint.sh")
     shutil.copy2(entrypoint_src, entrypoint_dst)
 
+    # Copy secondary_entrypoint.sh so secondary containers can use it
+    secondary_entrypoint_src = str(files('robovast.execution.data').joinpath('secondary_entrypoint.sh'))
+    secondary_entrypoint_dst = os.path.join(out_dir, "secondary_entrypoint.sh")
+    shutil.copy2(secondary_entrypoint_src, secondary_entrypoint_dst)
+
     # Copy collect_sysinfo.py to the out directory so it can be mounted
     # into the container alongside entrypoint.sh for both local and cluster runs.
     collect_sysinfo_src = str(files('robovast.execution.data').joinpath('collect_sysinfo.py'))

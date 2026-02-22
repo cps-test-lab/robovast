@@ -17,7 +17,7 @@
 import logging
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -50,18 +50,31 @@ class ConfigurationConfig(BaseModel):
         return v
 
 
-class KubernetesResourcesConfig(BaseModel):
+class ResourcesConfig(BaseModel):
     cpu: int
     memory: Optional[str] = None
 
 
-class KubernetesConfig(BaseModel):
-    resources: KubernetesResourcesConfig
+class SecondaryContainerConfig(BaseModel):
+    name: str
+    resources: ResourcesConfig
+
+    @model_validator(mode='before')
+    @classmethod
+    def extract_name(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            name = next((k for k in data if k != 'resources'), None)
+            if name is None:
+                raise ValueError("Secondary container entry must have a name key alongside 'resources'")
+            resources = data.get('resources', {})
+            return {'name': name, 'resources': resources}
+        return data
 
 
 class ExecutionConfig(BaseModel):
     image: str
-    kubernetes: KubernetesConfig
+    resources: ResourcesConfig
+    secondary_containers: Optional[list[SecondaryContainerConfig]] = None
     env: Optional[list[dict[str, str]]] = None
     runs: int
     scenario_file: Optional[str] = None

@@ -17,7 +17,7 @@ spec:
     spec:
       restartPolicy: Never
       containers:
-        - name: test-container
+        - name: robovast
           image: {image}
           command: ["/bin/bash", "/config/entrypoint.sh"]
           env:

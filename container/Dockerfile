@@ -78,14 +78,25 @@ RUN \
         libgl1 && \
     rm -rf /var/lib/apt/lists/*
 
+# scenario-execution-server dependencies
+RUN \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        python3-zmq python3-msgpack && \
+    rm -rf /var/lib/apt/lists/*
+
 RUN mkdir -p /ws/src
 
 # hadolint ignore=DL3003
 RUN  git clone "https://github.com/cps-test-lab/scenario-execution.git" /ws/src/scenario-execution && \
      cd /ws/src/scenario-execution && \
-     git checkout 7671a6ddc6543a2c8a3da3b33894b0d22534a870 && \
-     . "/opt/ros/${ROS_DISTRO}/setup.bash" && \
+     git checkout 61292ece27599c076766470c9914939ff085a293 && \
      cd /ws && \
+     git clone "https://github.com/cps-test-lab/scenario-execution-server.git" /ws/src/scenario-execution-server && \
+     cd /ws/src/scenario-execution-server && \
+     git checkout b7484cf2f98fec9f57226406d932771a7c3068b8 && \
+     cd /ws && \
+     . "/opt/ros/${ROS_DISTRO}/setup.bash" && \
      colcon build
 
 # Environment variables

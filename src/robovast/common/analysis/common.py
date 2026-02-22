@@ -135,23 +135,23 @@ def read_output_files(data_dir: str, reader_func: Callable[[Path], pd.DataFrame]
     return combined_df
 
 
-def read_output_csv(test_dir: Path, filename: str, skiprows: int = 0) -> pd.DataFrame:
+def read_output_csv(test_dir: str, filename: str, skiprows: int = 0) -> pd.DataFrame:
     """
     Read a CSV file from a test directory, skipping the first line (comment).
 
     Args:
-        test_dir: Path to the test directory
+        test_dir: Path to the test directory as a string
         filename: Name of the CSV file to read
 
     Returns:
         DataFrame with the CSV data
     """
-    csv_path = test_dir / filename
-    if not csv_path.exists():
+    csv_path = os.path.join(test_dir, filename)
+    if not os.path.exists(csv_path):
         raise FileNotFoundError(f"{filename} not found in {test_dir}")
 
     # Read CSV, skipping the first line (comment)
-    df = pd.read_csv(csv_path, skiprows=skiprows)
+    df = pd.read_csv(Path(csv_path), skiprows=skiprows)
     return df
 
 
