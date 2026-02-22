@@ -51,7 +51,7 @@ class ConfigurationConfig(BaseModel):
 
 
 class KubernetesResourcesConfig(BaseModel):
-    cpu: int | float | str
+    cpu: int
     memory: Optional[str] = None
 
 
