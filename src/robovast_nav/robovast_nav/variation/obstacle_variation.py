@@ -17,6 +17,7 @@
 from typing import Optional
 
 import numpy as np
+import os
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from robovast.common import convert_dataclasses_to_dict
@@ -25,6 +26,8 @@ from robovast.common.variation import VariationGuiRenderer
 from ..gui.navigation_gui import NavigationGui
 from ..obstacle_placer import ObstaclePlacer
 from .nav_base_variation import NavVariation
+from ..path_generator import PathGenerator
+from ..object_shapes import get_obstacle_dimensions, get_object_type_from_model_path
 
 
 class ObstacleConfig(BaseModel):
@@ -63,17 +66,36 @@ class ObstacleVariationGuiRenderer(VariationGuiRenderer):
 
     def update_gui(self, config, path):
         for obstacle in config["config"].get('static_objects', []):
-            shape = None
-            if "box" in obstacle["model"]:
-                shape = "box"
-            elif "cylinder" in obstacle["model"]:
-                shape = "cylinder"
-            if shape == 'box':
-                pose = obstacle['spawn_pose']
-                x = pose['position']['x']
-                y = pose['position']['y']
-                yaw = pose['orientation']['yaw']
-                self.gui_object.draw_obstacle(x, y, {'width': 1, 'length': 1, 'height': 1}, yaw, shape=shape)
+            # Get model path and determine shape
+            model_path = obstacle.get('model', '')
+            object_type = get_object_type_from_model_path(model_path)
+            
+            if object_type == 'cylinder':
+                shape = 'circle'
+            else:
+                shape = 'box'
+            
+            # Parse xacro_arguments to get actual dimensions
+            xacro_args_str = obstacle.get('xacro_arguments', '')
+            dimensions = get_obstacle_dimensions(xacro_args_str)
+            
+            # Prepare draw_args based on object type
+            if object_type == 'cylinder':
+                # For cylinder, use diameter
+                radius = dimensions.get('radius', 0.25)
+                draw_args = {'diameter': radius * 2}
+            else:
+                # Default to box with parsed dimensions
+                draw_args = {
+                    'width': dimensions.get('width', 0.5),
+                    'length': dimensions.get('length', 0.5)
+                }
+            
+            pose = obstacle['spawn_pose']
+            x = pose['position']['x']
+            y = pose['position']['y']
+            yaw = pose['orientation']['yaw']
+            self.gui_object.draw_obstacle(x, y, draw_args, yaw, shape=shape)
 
 
 class ObstacleVariation(NavVariation):
@@ -104,102 +126,113 @@ class ObstacleVariation(NavVariation):
         except Exception as e:  # pylint: disable=broad-except
             raise ValueError(f"Error determining map file for config {config['name']}: {e}") from e
 
-        # Initialize obstacle_objects as an empty list to accumulate all obstacles
-        obstacle_objects = []
+        # Get start and goal poses from config (set by previous variations)
+        start_pose = config['config'].get('start_pose')
+        goal_poses = config['config'].get('goal_poses', [])
+        goal_pose = config['config'].get('goal_pose')
+        
+        # Handle both legacy goal_pose (singular) and current goal_poses (plural, from PathVariationRandom)
+        if goal_pose and not goal_poses:
+            goal_poses = [goal_pose]
+        
+        if not start_pose or not goal_poses:
+            raise ValueError(
+                f"start_pose and goal_pose(s) are required for path-dependent obstacle placement. "
+                f"Config '{config['name']}' missing: "
+                f"{'start_pose ' if not start_pose else ''}"
+                f"{'goal_pose(s) ' if not goal_poses else ''}"
+                f"Make sure a path variation (like PathVariationRandom) runs before ObstacleVariation."
+            )
 
-        if 'start_pose' not in config['config'] or 'goal_poses' not in config['config']:
-            self.progress_update("start_pose and/or goal_poses not defined in config, placing obstacles randomly (idependent of path)...")
+        self.progress_update(f"Placing obstacles along path from start_pose to {len(goal_poses)} goal_pose(s)...")
 
-            for obstacle_config in obstacle_configs:
-                # Accumulate obstacles from each obstacle_config
-                obstacles = placer.place_obstacles_random(
-                    map_file_path,
-                    obstacle_config.amount,
-                    obstacle_config.model,
-                    obstacle_config.xacro_arguments,
-                )
-                obstacle_objects.extend(obstacles)
+        waypoints = [start_pose] + goal_poses
+
+        # Check if path is already available from previous variation
+        if '_path' in config:
+            path = config['_path']
+            self.progress_update("Using pre-generated path from previous variation")
         else:
-            raise NotImplementedError("Path-dependent obstacle placement is not implemented yet.")
-            # waypoints = [
-            #     config["config"]["start_pose"],
-            # ] + config["config"]["goal_poses"]
+            # Generate path if not available
+            path_generator = PathGenerator(map_file_path, self.parameters.robot_diameter)
+            path = path_generator.generate_path(waypoints, [])
+            self.progress_update("Generated new path for obstacle placement")
 
-            # path_generator = PathGenerator(map_file_path, self.parameters.robot_diameter)
-            # path = path_generator.generate_path(waypoints, [])
+        obstacle_objects = []
+        for obstacle_config in obstacle_configs:
+            if obstacle_config.amount > 0:
+                max_attempts = 10
+                attempt = 0
+                navigable_config_found = False
 
-            # for obstacle_config in obstacle_configs:
-            #     if obstacle_config.amount > 0:
-            #         max_attempts = 10
-            #         attempt = 0
-            #         navigable_config_found = False
+                while (
+                    attempt < max_attempts
+                    and not navigable_config_found
+                ):
+                    attempt += 1
 
-            #         while (
-            #             attempt < max_attempts
-            #             and not navigable_config_found
-            #         ):
-            #             attempt += 1
+                    try:
+                        placed_obstacles = placer.place_obstacles(
+                            path,
+                            obstacle_config.max_distance,
+                            obstacle_config.amount,
+                            obstacle_config.model,
+                            obstacle_config.xacro_arguments,
+                            robot_diameter=self.parameters.robot_diameter,
+                            waypoints=waypoints,
+                        )
+                    except Exception as e:
+                        self.progress_update(f"Error placing obstacles: {e}")
+                        placed_obstacles = []
 
-            #             try:
-            #                 obstacle_objects = placer.place_obstacles(
-            #                     path,
-            #                     obstacle_config.max_distance,
-            #                     obstacle_config.amount,
-            #                     obstacle_config.model,
-            #                     obstacle_config.xacro_arguments,
-            #                     robot_diameter=self.parameters.robot_diameter,
-            #                     waypoints=waypoints,
-            #                 )
-            #             except Exception as e:
-            #                 self.progress_update(f"Error placing obstacles: {e}")
-            #                 obstacle_objects = []
+                    # Check if we got the expected number of obstacles
+                    if len(placed_obstacles) == obstacle_config.amount:
+                        # Test with all obstacles so far (existing + new ones)
+                        test_obstacles = obstacle_objects + placed_obstacles
+                        
+                        # Validate navigation with the combined obstacle set
+                        self.progress_update(f"Validating navigation on map {map_file_path} with {len(test_obstacles)} total obstacles")
+                        if os.path.exists(map_file_path):
+                            try:
+                                generator = PathGenerator(
+                                    map_file_path, self.parameters.robot_diameter
+                                )
 
-            #             if not obstacle_objects:
-            #                 navigable_config_found = True
+                                # Check if navigation is still possible with all obstacles
+                                validation_path = generator.generate_path(
+                                    waypoints,
+                                    test_obstacles,
+                                )
 
-            #             # Validate navigation with the placed obstacles
-            #             if obstacle_objects and config['config']["map_file"]:
-            #                 self.progress_update(f"Validating navigation on map {map_path} with {len(obstacle_objects)} obstacles")
-            #                 if os.path.exists(map_path):
-            #                     try:
-            #                         generator = PathGenerator(
-            #                             map_path, self.parameters.robot_diameter
-            #                         )
+                                if validation_path:
+                                    # Success! Add these obstacles to our collection
+                                    obstacle_objects.extend(placed_obstacles)
+                                    navigable_config_found = True
+                                    self.progress_update(
+                                        f"Successfully placed {obstacle_config.amount} obstacles for config"
+                                    )
+                                else:
+                                    self.progress_update(
+                                        f"Attempt {attempt}/{max_attempts}: obstacles block navigation, retrying..."
+                                    )
 
-            #                         # Check if navigation is still possible
-            #                         path = generator.generate_path(
-            #                             waypoints,
-            #                             obstacle_objects,
-            #                         )
+                            except Exception as e:
+                                self.progress_update(
+                                    f"Attempt {attempt}/{max_attempts}: validation error: {str(e)}, retrying..."
+                                )
+                        else:
+                            raise FileNotFoundError(f"Map file not found: {map_file_path}")
+                    else:
+                        self.progress_update(
+                            f"Attempt {attempt}/{max_attempts}: only placed {len(placed_obstacles)}/{obstacle_config.amount} obstacles, retrying..."
+                        )
 
-            #                         if path:
-            #                             # Success! Navigation is still possible
-            #                             navigable_config_found = True
-            #                             self.progress_update(
-            #                                 f"Successfully placed {obstacle_config.amount} obstacles for config"
-            #                             )
-            #                         else:
-            #                             self.progress_update(
-            #                                 f"Try to set obstacles {
-            #                                     attempt}/{max_attempts}: obstacles block navigation, retrying..."
-            #                             )
-
-            #                     except Exception as e:
-            #                         self.progress_update(
-            #                             f"Attempt {attempt}/{max_attempts}: validation error: {str(e)}, retrying..."
-            #                         )
-            #                 else:
-            #                     raise FileNotFoundError(f"Warning: Map file not found: {map_path}")
-
-            #             # If we couldn't find a navigable configuration after
-            #             # all attempts
-            #             if not navigable_config_found:
-            #                 if obstacle_config.amount > 0:
-            #                     self.progress_update(
-            #                         f"Warning: Could not place {obstacle_config['amount']
-            #                                                     } obstacles for config while maintaining navigation"
-            #                     )
-            #                     raise ValueError("Could not place obstacles while maintaining navigation")
+                # If we couldn't find a navigable configuration after all attempts
+                if not navigable_config_found:
+                    self.progress_update(
+                        f"Warning: Could not place {obstacle_config.amount} obstacles for config while maintaining navigation"
+                    )
+                    raise ValueError(f"Could not place {obstacle_config.amount} obstacles while maintaining navigation after {max_attempts} attempts")
 
         # Always create variation with parameter, even if obstacle_objects is empty
         # This ensures consistent naming and parameters in scenario.config

@@ -288,9 +288,6 @@ class ConfigEditor(QMainWindow):
         """)
         button_layout.addWidget(self.save_as_button)
 
-        # Add spacer to push buttons to the left
-        button_layout.addStretch()
-
         editor_container_layout.addWidget(button_container)
 
         self.left_splitter.addWidget(editor_container)

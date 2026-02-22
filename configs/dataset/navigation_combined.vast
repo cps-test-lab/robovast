@@ -1,0 +1,1883 @@
+metadata:
+  dataset_iri: https://cps-test-lab.github.io/robovast-datasets/2026-robovast-navigation/
+  scenarios: scenarios
+  runs: runs
+  agents: robots
+  environments: environments
+configuration:
+- name: hallways10m0o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hallways/maps/hallways.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 10.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 0
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: hallways10m2o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hallways/maps/hallways.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 10.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 2
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: hallways10m6o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hallways/maps/hallways.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 10.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 6
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: hallways15m0o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hallways/maps/hallways.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 15.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 0
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: hallways15m3o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hallways/maps/hallways.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 15.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 3
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: hallways15m9o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hallways/maps/hallways.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 15.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 9
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: hallways20m0o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hallways/maps/hallways.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 20.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 0
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: hallways20m12o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hallways/maps/hallways.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 20.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 12
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: hallways20m4o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hallways/maps/hallways.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 20.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 4
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: hallways25m0o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hallways/maps/hallways.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 25.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 0
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: hallways25m15o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hallways/maps/hallways.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 25.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 15
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: hallways25m5o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hallways/maps/hallways.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 25.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 5
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: hallways5m0o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hallways/maps/hallways.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 5.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 0
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: hallways5m1o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hallways/maps/hallways.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 5.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 1
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: hallways5m3o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hallways/maps/hallways.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 5.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 3
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: hospital10m0o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRasterized:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hospital/maps/hospital.yaml
+      raster_size: 4.0
+      path_length: 10
+      path_length_tolerance: 2
+      robot_diameter: 0.35
+      raster_offset_y: 1.0
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 0
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 111
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: hospital10m2o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRasterized:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hospital/maps/hospital.yaml
+      raster_size: 4.0
+      path_length: 10
+      path_length_tolerance: 2
+      robot_diameter: 0.35
+      raster_offset_y: 1.0
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 2
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 103
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: hospital10m6o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRasterized:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hospital/maps/hospital.yaml
+      raster_size: 4.0
+      path_length: 10
+      path_length_tolerance: 2
+      robot_diameter: 0.35
+      raster_offset_y: 1.0
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 6
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 103
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: hospital15m0o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRasterized:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hospital/maps/hospital.yaml
+      raster_size: 4.0
+      path_length: 15
+      path_length_tolerance: 2
+      robot_diameter: 0.35
+      raster_offset_y: 1.0
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 0
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 25
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: hospital15m3o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRasterized:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hospital/maps/hospital.yaml
+      raster_size: 4.0
+      path_length: 15
+      path_length_tolerance: 2
+      robot_diameter: 0.35
+      raster_offset_y: 1.0
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 3
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 23
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: hospital15m9o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRasterized:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hospital/maps/hospital.yaml
+      raster_size: 4.0
+      path_length: 15
+      path_length_tolerance: 2
+      robot_diameter: 0.35
+      raster_offset_y: 1.0
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 9
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 88
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: hospital20m0o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRasterized:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hospital/maps/hospital.yaml
+      raster_size: 4.0
+      path_length: 20
+      path_length_tolerance: 2
+      robot_diameter: 0.35
+      raster_offset_y: 1.0
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 4
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 88
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: hospital20m12o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRasterized:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hospital/maps/hospital.yaml
+      raster_size: 4.0
+      path_length: 20
+      path_length_tolerance: 2
+      robot_diameter: 0.35
+      raster_offset_y: 1.0
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 12
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 91
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: hospital20m4o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRasterized:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hospital/maps/hospital.yaml
+      raster_size: 4.0
+      path_length: 20
+      path_length_tolerance: 2
+      robot_diameter: 0.35
+      raster_offset_y: 1.0
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 4
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: hospital25m0o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRasterized:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hospital/maps/hospital.yaml
+      raster_size: 4.0
+      path_length: 25
+      path_length_tolerance: 2
+      robot_diameter: 0.35
+      raster_offset_y: 1.0
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 0
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 91
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: hospital25m15o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRasterized:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hospital/maps/hospital.yaml
+      raster_size: 4.0
+      path_length: 25
+      path_length_tolerance: 2
+      robot_diameter: 0.35
+      raster_offset_y: 1.0
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 15
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 96
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: hospital25m5o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRasterized:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hospital/maps/hospital.yaml
+      raster_size: 4.0
+      path_length: 25
+      path_length_tolerance: 2
+      robot_diameter: 0.35
+      raster_offset_y: 1.0
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 5
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 96
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: hospital5m0o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRasterized:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hospital/maps/hospital.yaml
+      raster_size: 4.0
+      path_length: 5
+      path_length_tolerance: 2
+      robot_diameter: 0.35
+      raster_offset_y: 1.0
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 0
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 103
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: hospital5m1o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRasterized:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hospital/maps/hospital.yaml
+      raster_size: 4.0
+      path_length: 5
+      path_length_tolerance: 2
+      robot_diameter: 0.35
+      raster_offset_y: 1.0
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 1
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 103
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: hospital5m3o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRasterized:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hospital/maps/hospital.yaml
+      raster_size: 4.0
+      path_length: 5
+      path_length_tolerance: 2
+      robot_diameter: 0.35
+      raster_offset_y: 1.0
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 3
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 111
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: office10m0o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/office/maps/office.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 10.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 0
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: office10m2o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/office/maps/office.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 10.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 2
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: office10m6o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/office/maps/office.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 10.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 6
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: office15m0o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/office/maps/office.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 15.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 0
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: office15m3o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/office/maps/office.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 15.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 3
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: office15m9o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/office/maps/office.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 15.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 9
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: office20m0o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/office/maps/office.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 20.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 0
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: office20m12o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/office/maps/office.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 20.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 12
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: office20m4o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/office/maps/office.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 20.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 4
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: office25m0o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/office/maps/office.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 25.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 0
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: office25m15o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/office/maps/office.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 25.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 15
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: office25m5o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/office/maps/office.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 25.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 5
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: office5m0o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/office/maps/office.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 5.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 0
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: office5m1o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/office/maps/office.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 5.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 1
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: office5m3o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/office/maps/office.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 5.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 3
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: rooms10m0o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRasterized:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/rooms/maps/rooms.yaml
+      raster_size: 3.0
+      path_length: 10
+      path_length_tolerance: 1
+      robot_diameter: 0.35
+      raster_offset_y: 1.0
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 0
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 103
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: rooms10m2o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRasterized:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/rooms/maps/rooms.yaml
+      raster_size: 3.0
+      path_length: 10
+      path_length_tolerance: 1
+      robot_diameter: 0.35
+      raster_offset_y: 1.0
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 2
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 103
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: rooms10m6o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRasterized:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/rooms/maps/rooms.yaml
+      raster_size: 3.0
+      path_length: 10
+      path_length_tolerance: 1
+      robot_diameter: 0.35
+      raster_offset_y: 1.0
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 6
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 103
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: rooms15m0o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRasterized:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/rooms/maps/rooms.yaml
+      raster_size: 3.0
+      path_length: 15
+      path_length_tolerance: 1
+      robot_diameter: 0.35
+      raster_offset_y: 1.0
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 0
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 103
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: rooms15m3o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRasterized:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/rooms/maps/rooms.yaml
+      raster_size: 3.0
+      path_length: 15
+      path_length_tolerance: 1
+      robot_diameter: 0.35
+      raster_offset_y: 1.0
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 3
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 103
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: rooms15m9o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRasterized:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/rooms/maps/rooms.yaml
+      raster_size: 3.0
+      path_length: 15
+      path_length_tolerance: 1
+      robot_diameter: 0.35
+      raster_offset_y: 1.0
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 9
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 103
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: rooms5m0o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRasterized:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/rooms/maps/rooms.yaml
+      raster_size: 3.0
+      path_length: 5
+      path_length_tolerance: 1
+      robot_diameter: 0.35
+      raster_offset_y: 1.0
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 0
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 103
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: rooms5m1o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRasterized:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/rooms/maps/rooms.yaml
+      raster_size: 3.0
+      path_length: 5
+      path_length_tolerance: 1
+      robot_diameter: 0.35
+      raster_offset_y: 1.0
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 1
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 103
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: rooms5m3o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRasterized:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/rooms/maps/rooms.yaml
+      raster_size: 3.0
+      path_length: 5
+      path_length_tolerance: 1
+      robot_diameter: 0.35
+      raster_offset_y: 1.0
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 3
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 103
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: university10m0o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hbrs/maps/frontiers_brsu_building_c.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 10.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 0
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: university10m2o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hbrs/maps/frontiers_brsu_building_c.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 10.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 2
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: university10m6o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hbrs/maps/frontiers_brsu_building_c.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 10.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 6
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: university15m0o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hbrs/maps/frontiers_brsu_building_c.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 15.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 0
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: university15m3o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hbrs/maps/frontiers_brsu_building_c.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 15.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 3
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: university15m9o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hbrs/maps/frontiers_brsu_building_c.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 15.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 9
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: university20m0o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hbrs/maps/frontiers_brsu_building_c.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 20.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 0
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: university20m12o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hbrs/maps/frontiers_brsu_building_c.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 20.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 12
+        max_distance: 2.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: university20m4o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hbrs/maps/frontiers_brsu_building_c.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 20.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 4
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: university25m0o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hbrs/maps/frontiers_brsu_building_c.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 25.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 0
+        max_distance: 2.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: university25m15o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hbrs/maps/frontiers_brsu_building_c.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 25.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 15
+        max_distance: 2.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: university25m5o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hbrs/maps/frontiers_brsu_building_c.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 25.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 5
+        max_distance: 2.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: university5m0o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hbrs/maps/frontiers_brsu_building_c.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 5.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 0
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: university5m1o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hbrs/maps/frontiers_brsu_building_c.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 5.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 1
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+- name: university5m3o
+  scenario_file: scenario.osc
+  variations:
+  - PathVariationRandom:
+      map_file: /home/sam/RoboVAST/robovast/configs/dataset/maps/hbrs/maps/frontiers_brsu_building_c.yaml
+      start_pose: start_pose
+      goal_pose: goal_pose
+      path_length: 5.0
+      num_paths: 25
+      path_length_tolerance: 1.0
+      min_distance: 1.0
+      seed: 42
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      obstacle_configs:
+      - amount: 3
+        max_distance: 1.0
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: 89
+      robot_diameter: 0.35
+  - ParameterVariationList:
+      name: laserscan_gaussian_noise_std_deviation
+      values:
+      - 0.0
+      - 0.05
+      - 0.1
+execution:
+  image: ghcr.io/cps-test-lab/robovast:latest
+  kubernetes:
+    resources:
+      cpu: 6
+  runs: 1
+  test_files_filter:
+  - '**/files/*'
+analysis:
+  preprocessing:
+  - ../../tools/ros2_exec.sh rosbags_to_csv.py
+  visualization:
+  - Analysis:
+      single_test: analysis/analysis_single_test.ipynb
+      config: analysis/analysis_config.ipynb
+      run: analysis/analysis_run.ipynb

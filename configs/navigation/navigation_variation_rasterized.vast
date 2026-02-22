@@ -11,16 +11,13 @@ configuration:
       #- floorplans/hallways/hallways.variation
       num_variations: 1
       seed: 1
-  - PathVariationRandom:
-      start_pose: start_pose
-      goal_poses: goal_poses
-      num_goal_poses: 3
+  - PathVariationRasterized:
+      num_goal_poses: 1
+      raster_size: 3.0
       path_length: 10.0
-      num_paths: 2
-      path_length_tolerance: 0.5
-      min_distance: 1.0
-      seed: 42
+      path_length_tolerance: 2.5
       robot_diameter: 0.35
+      raster_offset_y: 4.5
   - ObstacleVariation:
       name: static_objects
       obstacle_configs:
