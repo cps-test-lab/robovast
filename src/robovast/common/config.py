@@ -51,29 +51,58 @@ class ConfigurationConfig(BaseModel):
 
 
 class ResourcesConfig(BaseModel):
-    cpu: int
+    cpu: Optional[int] = None
     memory: Optional[str] = None
 
 
 class SecondaryContainerConfig(BaseModel):
     name: str
-    resources: ResourcesConfig
+    resources: Optional[ResourcesConfig] = None
 
     @model_validator(mode='before')
     @classmethod
     def extract_name(cls, data: Any) -> Any:
+        if isinstance(data, str):
+            return {'name': data, 'resources': None}
         if isinstance(data, dict):
             name = next((k for k in data if k != 'resources'), None)
             if name is None:
                 raise ValueError("Secondary container entry must have a name key alongside 'resources'")
-            resources = data.get('resources', {})
+            resources = data.get('resources') or None
             return {'name': name, 'resources': resources}
         return data
 
 
+def normalize_secondary_containers(secondary_containers) -> list[dict]:
+    """Normalize secondary container entries to a uniform dict format with 'name' and 'resources' keys.
+
+    Handles three input shapes:
+    - Pydantic SecondaryContainerConfig objects (with .name / .resources attributes)
+    - Already-normalized dicts with a 'name' key
+    - Raw YAML dicts of the form {<container_name>: None, 'resources': {...}}
+    """
+    result = []
+    for sc in (secondary_containers or []):
+        if hasattr(sc, 'name'):
+            result.append({
+                'name': sc.name,
+                'resources': {'cpu': sc.resources.cpu, 'memory': sc.resources.memory}
+                if sc.resources is not None else {}
+            })
+        elif isinstance(sc, dict) and 'name' in sc:
+            result.append(sc)
+        elif isinstance(sc, dict):
+            # Raw YAML format: {<name>: None, 'resources': {...}}
+            name = next((k for k in sc if k != 'resources'), None)
+            if name is None:
+                raise ValueError(f"Cannot extract container name from secondary_containers entry: {sc}")
+            result.append({'name': name, 'resources': sc.get('resources') or {}})
+    return result
+
+
 class ExecutionConfig(BaseModel):
     image: str
-    resources: ResourcesConfig
+    resources: Optional[ResourcesConfig] = None
     secondary_containers: Optional[list[SecondaryContainerConfig]] = None
     env: Optional[list[dict[str, str]]] = None
     runs: int

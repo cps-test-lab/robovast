@@ -30,7 +30,8 @@ from kubernetes import config as kube_config
 
 from robovast.common import (create_execution_yaml,
                              get_execution_env_variables, get_run_id,
-                             load_config, prepare_run_configs)
+                             load_config, normalize_secondary_containers,
+                             prepare_run_configs)
 from robovast.common.config_generation import generate_scenario_variations
 from robovast.execution.cluster_execution.kubernetes import (
     check_pod_running, upload_configs_to_s3)
@@ -169,7 +170,7 @@ class JobRunner:
 
         # Create manifest with env vars from config
         self.manifest = self.get_job_manifest(parameters["image"],
-                                              parameters["resources"],
+                                              parameters.get("resources") or {},
                                               execution_params.get("env", []),
                                               self.run_as_user,
                                               execution_params.get("secondary_containers") or [])
@@ -365,11 +366,14 @@ class JobRunner:
                     {'name': 'CONTAINER_NAME', 'value': sc_name},
                 ],
                 'resources': {
-                    'requests': {'cpu': str(sc_resources['cpu'])},
-                    'limits': {'cpu': str(sc_resources['cpu'])},
+                    'requests': {},
+                    'limits': {},
                 },
                 'volumeMounts': shared_volume_mounts,
             }
+            if sc_resources.get('cpu'):
+                secondary_spec['resources']['requests']['cpu'] = str(sc_resources['cpu'])
+                secondary_spec['resources']['limits']['cpu'] = str(sc_resources['cpu'])
             if sc_resources.get('memory'):
                 secondary_spec['resources']['requests']['memory'] = sc_resources['memory']
                 secondary_spec['resources']['limits']['memory'] = sc_resources['memory']
@@ -722,34 +726,22 @@ class JobRunner:
             resources = {'cpu': resources.cpu, 'memory': resources.memory}
 
         # Normalize secondary_containers: may be Pydantic models, normalized dicts, or raw YAML dicts
-        normalized_secondary = []
-        for sc in (secondary_containers or []):
-            if hasattr(sc, 'name'):
-                normalized_secondary.append({
-                    'name': sc.name,
-                    'resources': {'cpu': sc.resources.cpu, 'memory': sc.resources.memory},
-                })
-            elif isinstance(sc, dict) and 'name' in sc:
-                normalized_secondary.append(sc)
-            elif isinstance(sc, dict):
-                # Raw YAML format: {<name>: None, 'resources': {...}}
-                name = next((k for k in sc if k != 'resources'), None)
-                if name is None:
-                    raise ValueError(f"Cannot extract container name from secondary_containers entry: {sc}")
-                normalized_secondary.append({'name': name, 'resources': sc.get('resources', {})})
-        self.secondary_containers = normalized_secondary
+        self.secondary_containers = normalize_secondary_containers(secondary_containers)
 
         logger.debug(f"Using run_as_user={run_as_user} for job containers")
 
-        yaml_str = JOB_TEMPLATE.format(image=image, cpu=resources["cpu"], namespace=self.namespace)
+        yaml_str = JOB_TEMPLATE.format(image=image, namespace=self.namespace)
         manifest = yaml.safe_load(yaml_str)
 
         main_container = manifest['spec']['template']['spec']['containers'][0]
         main_container.setdefault('securityContext', {})['runAsUser'] = run_as_user
 
-        if resources.get("memory"):
-            main_container['resources']['requests']['memory'] = resources["memory"]
-            main_container['resources']['limits']['memory'] = resources["memory"]
+        if resources.get('cpu'):
+            main_container['resources']['requests']['cpu'] = str(resources['cpu'])
+            main_container['resources']['limits']['cpu'] = str(resources['cpu'])
+        if resources.get('memory'):
+            main_container['resources']['requests']['memory'] = resources['memory']
+            main_container['resources']['limits']['memory'] = resources['memory']
 
         # Add custom environment variables
         if env:

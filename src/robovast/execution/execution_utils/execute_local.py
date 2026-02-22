@@ -21,41 +21,13 @@ import tempfile
 
 from robovast.common import (generate_execution_yaml_script,
                              get_execution_env_variables, load_config,
+                             normalize_secondary_containers,
                              prepare_run_configs)
 from robovast.common.cli import get_project_config
 from robovast.common.config_generation import generate_scenario_variations
 
 logger = logging.getLogger(__name__)
 
-
-def _normalize_secondary_containers(secondary_containers):
-    """Normalize secondary container entries to a uniform dict format with 'name' and 'resources' keys.
-
-    Handles three input shapes:
-    - Pydantic SecondaryContainerConfig objects (with .name / .resources attributes)
-    - Already-normalized dicts with a 'name' key
-    - Raw YAML dicts of the form {<container_name>: None, 'resources': {...}}
-    """
-    result = []
-    for sc in (secondary_containers or []):
-        if hasattr(sc, 'name'):
-            result.append({
-                'name': sc.name,
-                'resources': {
-                    'cpu': sc.resources.cpu,
-                    'memory': sc.resources.memory,
-                }
-            })
-        elif isinstance(sc, dict) and 'name' in sc:
-            result.append(sc)
-        elif isinstance(sc, dict):
-            # Raw YAML format: {<name>: None, 'resources': {...}}
-            name = next((k for k in sc if k != 'resources'), None)
-            if name is None:
-                raise ValueError(f"Cannot extract container name from secondary_containers entry: {sc}")
-            resources = sc.get('resources', {})
-            result.append({'name': name, 'resources': resources})
-    return result
 
 
 def initialize_local_execution(config, output_dir, runs, feedback_callback=logging.debug):
@@ -270,13 +242,16 @@ mkdir -p "${RESULTS_DIR}"
 
 
 def _compose_resources_block(cpu, memory, indent="    "):
-    """Return deploy.resources.limits YAML lines for a service."""
+    """Return deploy.resources.limits YAML lines for a service, or empty string if none specified."""
+    if not cpu and not memory:
+        return ""
     lines = [
         f"{indent}deploy:",
         f"{indent}  resources:",
         f"{indent}    limits:",
-        f"{indent}      cpus: '{cpu}'",
     ]
+    if cpu:
+        lines.append(f"{indent}      cpus: '{cpu}'")
     if memory:
         lines.append(f"{indent}      memory: {memory}")
     return "\n".join(lines)
@@ -349,14 +324,15 @@ def _build_compose_yaml(
 
     # Resource limits for main container
     res = _compose_resources_block(main_cpu, main_memory)
-    lines.append(res)
+    if res:
+        lines.append(res)
 
     lines.append(f"    user: \"{uid}:{gid}\"")
     lines.append("    command: [\"/bin/bash\", \"/config/entrypoint.sh\"]")
 
     for sc in secondary_containers:
         sc_name = sc['name']
-        sc_cpu = sc['resources']['cpu']
+        sc_cpu = sc['resources'].get('cpu')
         sc_memory = sc['resources'].get('memory')
 
         lines.append(f"  {sc_name}:")
@@ -375,7 +351,8 @@ def _build_compose_yaml(
         lines.append(f"      - CONTAINER_NAME={sc_name}")
 
         sc_res = _compose_resources_block(sc_cpu, sc_memory)
-        lines.append(sc_res)
+        if sc_res:
+            lines.append(sc_res)
 
         lines.append(f"    user: \"{uid}:{gid}\"")
         lines.append('    command: ["/bin/bash", "/config/secondary_entrypoint.sh"]')
@@ -426,13 +403,13 @@ def generate_compose_run_script(runs, run_data, config_path_result, pre_command,
     gid = run_as_user
 
     # Resources for main container
-    resources = execution_params.get("resources", {})
-    main_cpu = resources.get("cpu", 1)
+    resources = execution_params.get("resources") or {}
+    main_cpu = resources.get("cpu")
     main_memory = resources.get("memory")
 
     # Secondary containers
     secondary_containers = execution_params.get("secondary_containers") or []
-    normalized_secondary = _normalize_secondary_containers(secondary_containers)
+    normalized_secondary = normalize_secondary_containers(secondary_containers)
 
     script = RUN_SCRIPT_HEADER.replace(
         'DOCKER_IMAGE="ghcr.io/cps-test-lab/robovast:latest"',
@@ -501,7 +478,7 @@ def generate_compose_run_script(runs, run_data, config_path_result, pre_command,
         script += 'COMPOSE_EOF\n\n'
 
         compose_cmd = (
-            f'docker compose -f "{compose_file}" up'
+            f'COMPOSE_MENU=false docker compose -f "{compose_file}" up'
             f' --abort-on-container-exit'
             f' --exit-code-from robovast'
         )

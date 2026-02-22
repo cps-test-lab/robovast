@@ -30,8 +30,6 @@ spec:
               resourceFieldRef:
                 resource: limits.memory
           resources:
-            requests:
-              cpu: {cpu}
-            limits:
-              cpu: {cpu}
+            requests: {}
+            limits: {}
 """
