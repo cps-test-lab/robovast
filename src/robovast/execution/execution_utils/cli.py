@@ -333,7 +333,7 @@ def download(output, force):
     """Download result files from the cluster S3 (MinIO) server.
 
     Downloads all test run results from the MinIO S3 server embedded in the
-    robovast pod. Each run is stored in a separate S3 bucket ('run-*') and
+    robovast pod. Each run is stored in a separate S3 bucket (``run-*``) and
     downloaded into a subdirectory of the output directory.
 
     Use ``--force`` to re-download runs that already exist locally.

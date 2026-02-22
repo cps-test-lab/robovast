@@ -81,8 +81,10 @@ def _get_cluster_info():
     node_labels = {}
     cpu_manager_policies = {}
     try:
-        from kubernetes import client as k8s_client_lib  # pylint: disable=import-outside-toplevel
-        from kubernetes import config as k8s_config  # pylint: disable=import-outside-toplevel
+        from kubernetes import \
+            client as k8s_client_lib  # pylint: disable=import-outside-toplevel
+        from kubernetes import \
+            config as k8s_config  # pylint: disable=import-outside-toplevel
 
         try:
             k8s_config.load_incluster_config()
@@ -105,7 +107,8 @@ def _get_cluster_info():
 
         # Warn if any node does not have the Static CPU Manager policy enabled
         if cpu_manager_policies:
-            logger.debug(f"Static CPU Manager policy is enabled on {len(cpu_manager_policies)} node(s): {', '.join(cpu_manager_policies.keys())}")
+            logger.debug(f"Static CPU Manager policy is enabled on {
+                         len(cpu_manager_policies)} node(s): {', '.join(cpu_manager_policies.keys())}")
 
     except Exception as exc:  # pragma: no cover - best-effort, non-fatal
         logger.warning("Failed to collect cluster node information: %s", exc)

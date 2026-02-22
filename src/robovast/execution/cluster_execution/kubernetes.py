@@ -169,7 +169,7 @@ def upload_configs_to_s3(config_dir, bucket_name, cluster_config, namespace="def
         cluster_config: BaseConfig instance providing S3 endpoint/credentials.
         namespace (str): Kubernetes namespace (used for port-forwarding).
     """
-    from .s3_client import ClusterS3Client
+    from .s3_client import ClusterS3Client # pylint: disable=import-outside-toplevel
 
     if not os.path.isdir(config_dir):
         raise FileNotFoundError(f"Config directory does not exist: {config_dir}")

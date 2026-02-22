@@ -20,7 +20,6 @@ import logging
 import yaml
 from kubernetes import client, config
 
-from ..cluster_execution.cluster_setup import get_cluster_namespace
 from ..cluster_execution.kubernetes import apply_manifests, delete_manifests
 from .base_config import BaseConfig
 
