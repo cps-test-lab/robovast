@@ -15,11 +15,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+
 class BaseConfig(object):
     """Base class for cluster configurations."""
 
     def setup_cluster(self, **kwargs):
-        """Set up transfer mechanism for the cluster.
+        """Set up the MinIO S3 server in the cluster.
 
         Args:
             **kwargs: Cluster-specific configuration options
@@ -31,16 +32,12 @@ class BaseConfig(object):
         raise NotImplementedError("get_instance_type_command method must be implemented by subclasses.")
 
     def cleanup_cluster(self, **kwargs):
-        """Clean up transfer mechanism for the cluster.
+        """Clean up the MinIO S3 server from the cluster.
 
         Args:
             **kwargs: Cluster-specific configuration options
         """
         raise NotImplementedError("cleanup_cluster method must be implemented by subclasses.")
-
-    def get_job_volumes(self):
-        """Get volume definitions for job pods."""
-        raise NotImplementedError("get_job_volumes method must be implemented by subclasses.")
 
     def prepare_setup_cluster(self, output_dir, **kwargs):
         """Prepare the cluster for the test run.
@@ -50,3 +47,23 @@ class BaseConfig(object):
             **kwargs: Cluster-specific configuration options
         """
         raise NotImplementedError("prepare_setup_cluster method must be implemented by subclasses.")
+
+    def get_s3_endpoint(self) -> str:
+        """Return the cluster-internal S3 endpoint URL for the embedded MinIO server.
+
+        Subclasses may override this to point to an external S3 service.
+
+        Returns:
+            str: S3 endpoint URL, e.g. 'http://robovast:9000'
+        """
+        return "http://robovast:9000"
+
+    def get_s3_credentials(self) -> tuple:
+        """Return the (access_key, secret_key) pair for the S3 server.
+
+        Subclasses may override this to supply credentials for an external S3 service.
+
+        Returns:
+            tuple[str, str]: (access_key, secret_key)
+        """
+        return ("minioadmin", "minioadmin")

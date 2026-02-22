@@ -16,16 +16,14 @@
 # SPDX-License-Identifier: Apache-2.0
 import io
 import logging
-import time
 
 import yaml
 from kubernetes import client, config
 
-from ..cluster_execution.cluster_setup import get_cluster_namespace
 from ..cluster_execution.kubernetes import apply_manifests, delete_manifests
 from .base_config import BaseConfig
 
-NFS_MANIFEST_AZURE = """---
+MINIO_MANIFEST_AZURE = """---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -46,32 +44,32 @@ metadata:
     role: robovast
 spec:
   containers:
-  - name: robovast
-    image: itsthenetwork/nfs-server-alpine:latest
+  - name: minio
+    image: minio/minio:latest
+    args: ["server", "/data", "--console-address", ":9001"]
     env:
-    - name: SHARED_DIRECTORY
-      value: /exports
+    - name: MINIO_ROOT_USER
+      value: "minioadmin"
+    - name: MINIO_ROOT_PASSWORD
+      value: "minioadmin"
     ports:
-      - name: nfs
-        containerPort: 2049
-    securityContext:
-      privileged: true
+    - name: s3
+      containerPort: 9000
+    - name: console
+      containerPort: 9001
     volumeMounts:
-      - mountPath: /exports
-        name: mypvc
-  - name: http-server
-    image: nginx:alpine
-    ports:
-      - name: http
-        containerPort: 80
-    volumeMounts:
-      - mountPath: /usr/share/nginx/html
-        name: mypvc
-        readOnly: true
+    - mountPath: /data
+      name: minio-storage
+    readinessProbe:
+      httpGet:
+        path: /minio/health/ready
+        port: 9000
+      initialDelaySeconds: 10
+      periodSeconds: 5
   volumes:
-    - name: mypvc
-      persistentVolumeClaim:
-        claimName: robovast-pvc
+  - name: minio-storage
+    persistentVolumeClaim:
+      claimName: robovast-pvc
 ---
 apiVersion: v1
 kind: Service
@@ -79,14 +77,12 @@ metadata:
   name: robovast
 spec:
   ports:
-    - name: nfs
-      port: 2049
-    - name: mountd
-      port: 20048
-    - name: rpcbind
-      port: 111
-    - name: http
-      port: 9998
+  - name: s3
+    port: 9000
+    targetPort: 9000
+  - name: console
+    port: 9001
+    targetPort: 9001
   selector:
     role: robovast
 """
@@ -95,109 +91,50 @@ spec:
 class AzureClusterConfig(BaseConfig):
 
     def setup_cluster(self, storage_size="10Gi", **kwargs):
-        """Set up transfer mechanism for Azure cluster.
+        """Set up MinIO S3 server for Azure cluster.
 
         Args:
             storage_size (str): Size of the persistent volume (default: "10Gi")
             **kwargs: Additional cluster-specific options (ignored)
         """
-        logging.info("Setting up RoboVAST in Azure cluster...")
+        logging.info("Setting up RoboVAST MinIO S3 server in Azure cluster...")
         logging.info(f"Storage size: {storage_size}")
 
-        # Load Kubernetes configuration
         config.load_kube_config()
-
-        # Initialize API clients
         k8s_client = client.ApiClient()
 
-        logging.debug("Applying RoboVAST manifest to Kubernetes cluster...")
         try:
-            try:
-                yaml_objects = yaml.safe_load_all(io.StringIO(NFS_MANIFEST_AZURE.format(storage_size=storage_size)))
-            except yaml.YAMLError as e:
-                raise RuntimeError(f"Failed to parse RoboVAST manifest YAML: {str(e)}") from e
-            namespace = kwargs.get('namespace', 'default')
+            yaml_objects = yaml.safe_load_all(io.StringIO(MINIO_MANIFEST_AZURE.format(storage_size=storage_size)))
+        except yaml.YAMLError as e:
+            raise RuntimeError(f"Failed to parse MinIO manifest YAML: {str(e)}") from e
+
+        namespace = kwargs.get('namespace', 'default')
+        try:
             apply_manifests(k8s_client, yaml_objects, namespace=namespace)
-
         except Exception as e:
-            raise RuntimeError(f"Error applying RoboVAST manifest: {str(e)}") from e
+            raise RuntimeError(f"Error applying MinIO manifest: {str(e)}") from e
 
-        # Wait for service to be ready and get its ClusterIP
-        core_v1 = client.CoreV1Api()
-        try:
-            max_retries = 30
-            for i in range(max_retries):
-                try:
-                    service = core_v1.read_namespaced_service(
-                        name="robovast",
-                        namespace=namespace
-                    )
-                    if service.spec.cluster_ip:
-                        nfs_server_ip = service.spec.cluster_ip
-                        logging.info(f"NFS server available at: {nfs_server_ip}")
-                        break
-                except client.exceptions.ApiException:
-                    if i < max_retries - 1:
-                        logging.info(f"Waiting for robovast service... ({i+1}s)")
-                        time.sleep(1)
-                    else:
-                        logging.warning("Service not ready yet, but continuing...")
-        except Exception as e:
-            logging.warning(f"Could not retrieve NFS server IP: {e}")
+        logging.info(f"MinIO S3 server available at: {self.get_s3_endpoint()}")
 
     def cleanup_cluster(self, storage_size="10Gi", **kwargs):
-        """Clean up transfer mechanism for Azure cluster.
+        """Clean up MinIO S3 server for Azure cluster.
 
         Args:
             storage_size (str): Size of the persistent volume (default: "10Gi")
             **kwargs: Additional cluster-specific options (ignored)
         """
-        logging.debug("Cleaning up RoboVAST in Azure cluster...")
-        # Load Kubernetes configuration
+        logging.debug("Cleaning up RoboVAST MinIO in Azure cluster...")
         config.load_kube_config()
-
-        # Initialize API client
         core_v1 = client.CoreV1Api()
 
         try:
-            yaml_objects = yaml.safe_load_all(io.StringIO(NFS_MANIFEST_AZURE.format(storage_size=storage_size)))
+            yaml_objects = yaml.safe_load_all(io.StringIO(MINIO_MANIFEST_AZURE.format(storage_size=storage_size)))
         except yaml.YAMLError as e:
-            raise RuntimeError(f"Failed to parse PVC manifest YAML: {str(e)}") from e
+            raise RuntimeError(f"Failed to parse MinIO manifest YAML: {str(e)}") from e
 
         namespace = kwargs.get('namespace', 'default')
         delete_manifests(core_v1, yaml_objects, namespace=namespace)
-        logging.debug("NFS manifest deleted successfully!")
-
-    def get_job_volumes(self):
-        """Get job volumes for Azure cluster."""
-        # Load Kubernetes configuration
-        config.load_kube_config()
-
-        # Initialize API client
-        core_v1 = client.CoreV1Api()
-
-        # Get the robovast service to retrieve its ClusterIP
-        namespace = get_cluster_namespace()
-        try:
-            service = core_v1.read_namespaced_service(
-                name="robovast",
-                namespace=namespace
-            )
-            nfs_server = service.spec.cluster_ip
-            logging.debug(f"Retrieved NFS server IP: {nfs_server}")
-        except Exception as e:
-            logging.warning(f"Failed to retrieve robovast service IP: {e}. Falling back to DNS name.")
-            nfs_server = f"robovast.{namespace}.svc.cluster.local"
-
-        return [
-            {
-                "name": "data-storage",
-                "nfs": {
-                    "server": nfs_server,
-                    "path": "/"
-                }
-            }
-        ]
+        logging.debug("MinIO manifest deleted successfully!")
 
     def prepare_setup_cluster(self, output_dir, storage_size="10Gi", **kwargs):
         """Prepare any prerequisites before setting up the cluster.
@@ -205,26 +142,31 @@ class AzureClusterConfig(BaseConfig):
         Args:
             output_dir (str): Directory where setup files will be written
             storage_size (str): Size of the persistent volume (default: "10Gi")
-            **kwargs: Additional cluster-specific options (ignored)
+            **kwargs: Cluster-specific options (ignored)
         """
         with open(f"{output_dir}/robovast-manifest.yaml", "w") as f:
-            f.write(NFS_MANIFEST_AZURE.format(storage_size=storage_size))
+            f.write(MINIO_MANIFEST_AZURE.format(storage_size=storage_size))
 
-        # Create README with setup instructions
         readme_content = f"""# Azure Cluster Setup Instructions
+
+Uses MinIO backed by an Azure managed-csi PVC ({storage_size}).
 
 ## Setup Steps
 
-### 1. Apply the RoboVAST Server Manifest
-
-This manifest creates a PersistentVolumeClaim with {storage_size} of storage.
-
-Apply the RoboVAST server manifest:
+### 1. Apply the RoboVAST MinIO Manifest
 
 ```bash
 kubectl apply -f robovast-manifest.yaml
 ```
 
+### 2. Wait for the pod to be ready
+
+```bash
+kubectl wait --for=condition=ready pod/robovast --timeout=120s
+```
+
+MinIO S3 API is available at `http://robovast:9000` (cluster-internal).
+MinIO console is available at port 9001.
 """
         with open(f"{output_dir}/README_azure.md", "w") as f:
             f.write(readme_content)

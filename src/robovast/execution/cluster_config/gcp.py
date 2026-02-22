@@ -20,11 +20,10 @@ import logging
 import yaml
 from kubernetes import client, config
 
-from ..cluster_execution.cluster_setup import get_cluster_namespace
 from ..cluster_execution.kubernetes import apply_manifests, delete_manifests
 from .base_config import BaseConfig
 
-NFS_MANIFEST_GCP = """---
+MINIO_MANIFEST_GCP = """---
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
@@ -55,37 +54,32 @@ metadata:
     role: robovast
 spec:
   containers:
-  - name: robovast
-    image: adnanhodzic/nfs-server-k8s
+  - name: minio
+    image: minio/minio:latest
+    args: ["server", "/data", "--console-address", ":9001"]
+    env:
+    - name: MINIO_ROOT_USER
+      value: "minioadmin"
+    - name: MINIO_ROOT_PASSWORD
+      value: "minioadmin"
     ports:
-      - name: nfs
-        containerPort: 2049
-      - name: mountd
-        containerPort: 20048
-      - name: rpcbind
-        containerPort: 111
-    securityContext:
-      privileged: true
-      capabilities:
-        add:
-        - SYS_ADMIN
-        - SETPCAP
+    - name: s3
+      containerPort: 9000
+    - name: console
+      containerPort: 9001
     volumeMounts:
-      - mountPath: /exports
-        name: mypvc
-  - name: http-server
-    image: nginx:alpine
-    ports:
-      - name: http
-        containerPort: 80
-    volumeMounts:
-      - mountPath: /usr/share/nginx/html
-        name: mypvc
-        readOnly: true
+    - mountPath: /data
+      name: minio-storage
+    readinessProbe:
+      httpGet:
+        path: /minio/health/ready
+        port: 9000
+      initialDelaySeconds: 10
+      periodSeconds: 5
   volumes:
-    - name: mypvc
-      persistentVolumeClaim:
-        claimName: robovast-pvc
+  - name: minio-storage
+    persistentVolumeClaim:
+      claimName: robovast-pvc
 ---
 apiVersion: v1
 kind: Service
@@ -93,14 +87,12 @@ metadata:
   name: robovast
 spec:
   ports:
-    - name: nfs
-      port: 2049
-    - name: mountd
-      port: 20048
-    - name: rpcbind
-      port: 111
-    - name: http
-      port: 9998
+  - name: s3
+    port: 9000
+    targetPort: 9000
+  - name: console
+    port: 9001
+    targetPort: 9001
   selector:
     role: robovast
 """
@@ -109,82 +101,60 @@ spec:
 class GcpClusterConfig(BaseConfig):
 
     def setup_cluster(self, storage_size="10Gi", disk_type="pd-standard", **kwargs):
-        """Set up transfer mechanism for GCP cluster.
+        """Set up MinIO S3 server for GCP cluster.
 
         Args:
             storage_size (str): Size of the persistent volume (default: "10Gi")
             disk_type (str): GCP PD type for StorageClass (default: "pd-standard")
             **kwargs: Additional cluster-specific options (ignored)
         """
-        logging.info("Setting up RoboVAST in GCP cluster...")
+        logging.info("Setting up RoboVAST MinIO S3 server in GCP cluster...")
         logging.info(f"Storage size: {storage_size}")
         logging.info(f"Disk type: {disk_type}")
 
-        # Load Kubernetes configuration
         config.load_kube_config()
-
-        # Initialize API clients
         k8s_client = client.ApiClient()
 
-        logging.debug("Applying RoboVAST manifest to Kubernetes cluster...")
         try:
-            try:
-                yaml_objects = yaml.safe_load_all(
-                    io.StringIO(
-                        NFS_MANIFEST_GCP.format(storage_size=storage_size, disk_type=disk_type)
-                    )
-                )
-            except yaml.YAMLError as e:
-                raise RuntimeError(f"Failed to parse RoboVAST manifest YAML: {str(e)}") from e
-            namespace = kwargs.get('namespace', 'default')
-            apply_manifests(k8s_client, yaml_objects, namespace=namespace)
+            yaml_objects = yaml.safe_load_all(
+                io.StringIO(MINIO_MANIFEST_GCP.format(storage_size=storage_size, disk_type=disk_type))
+            )
+        except yaml.YAMLError as e:
+            raise RuntimeError(f"Failed to parse MinIO manifest YAML: {str(e)}") from e
 
+        namespace = kwargs.get('namespace', 'default')
+        try:
+            apply_manifests(k8s_client, yaml_objects, namespace=namespace)
         except Exception as e:
-            raise RuntimeError(f"Error applying RoboVAST manifest: {str(e)}") from e
+            raise RuntimeError(f"Error applying MinIO manifest: {str(e)}") from e
+
+        logging.info(f"MinIO S3 server available at: {self.get_s3_endpoint()}")
 
     def cleanup_cluster(self, storage_size="10Gi", disk_type="pd-standard", **kwargs):
-        """Clean up transfer mechanism for GCP cluster.
+        """Clean up MinIO S3 server for GCP cluster.
 
         Args:
             storage_size (str): Size of the persistent volume (default: "10Gi")
             disk_type (str): GCP PD type for StorageClass (default: "pd-standard")
             **kwargs: Additional cluster-specific options (ignored)
         """
-        logging.debug("Cleaning up RoboVAST in GCP cluster...")
-        # Load Kubernetes configuration
+        logging.debug("Cleaning up RoboVAST MinIO in GCP cluster...")
         config.load_kube_config()
-
-        # Initialize API client
         core_v1 = client.CoreV1Api()
 
         try:
             yaml_objects = yaml.safe_load_all(
-                io.StringIO(
-                    NFS_MANIFEST_GCP.format(storage_size=storage_size, disk_type=disk_type)
-                )
+                io.StringIO(MINIO_MANIFEST_GCP.format(storage_size=storage_size, disk_type=disk_type))
             )
         except yaml.YAMLError as e:
-            raise RuntimeError(f"Failed to parse PVC manifest YAML: {str(e)}") from e
+            raise RuntimeError(f"Failed to parse MinIO manifest YAML: {str(e)}") from e
 
         namespace = kwargs.get('namespace', 'default')
         delete_manifests(core_v1, yaml_objects, namespace=namespace)
-        logging.debug("NFS manifest deleted successfully!")
+        logging.debug("MinIO manifest deleted successfully!")
         logging.info("-----")
         logging.info("Warning: Persistent volumes may need to be deleted manually in GCP console.")
         logging.info("-----")
-
-    def get_job_volumes(self):
-        """Get job volumes for GCP cluster."""
-        namespace = get_cluster_namespace()
-        return [
-            {
-                "name": "data-storage",
-                "nfs": {
-                    "server": f"robovast.{namespace}.svc.cluster.local",
-                    "path": "/"
-                }
-            }
-        ]
 
     def prepare_setup_cluster(self, output_dir, storage_size="10Gi", disk_type="pd-standard", **kwargs):
         """Prepare any prerequisites before setting up the cluster.
@@ -193,28 +163,31 @@ class GcpClusterConfig(BaseConfig):
             output_dir (str): Directory where setup files will be written
             storage_size (str): Size of the persistent volume (default: "10Gi")
             disk_type (str): GCP PD type for StorageClass (default: "pd-standard")
-            **kwargs: Additional cluster-specific options (ignored)
+            **kwargs: Cluster-specific options (ignored)
         """
         with open(f"{output_dir}/robovast-manifest.yaml", "w") as f:
-            f.write(NFS_MANIFEST_GCP.format(storage_size=storage_size, disk_type=disk_type))
+            f.write(MINIO_MANIFEST_GCP.format(storage_size=storage_size, disk_type=disk_type))
 
-        # Create README with setup instructions
         readme_content = f"""# GCP Cluster Setup Instructions
+
+Uses MinIO backed by a GCP Persistent Disk PVC ({storage_size}, type `{disk_type}`).
 
 ## Setup Steps
 
-### 1. Apply the RoboVAST Server Manifest
-
-This manifest creates a PersistentVolumeClaim with {storage_size} of storage.
-
-The StorageClass uses GCP Persistent Disk type `{disk_type}`.
-
-Apply the RoboVAST server manifest:
+### 1. Apply the RoboVAST MinIO Manifest
 
 ```bash
 kubectl apply -f robovast-manifest.yaml
 ```
 
+### 2. Wait for the pod to be ready
+
+```bash
+kubectl wait --for=condition=ready pod/robovast --timeout=120s
+```
+
+MinIO S3 API is available at `http://robovast:9000` (cluster-internal).
+MinIO console is available at port 9001.
 """
         with open(f"{output_dir}/README_gcp.md", "w") as f:
             f.write(readme_content)
