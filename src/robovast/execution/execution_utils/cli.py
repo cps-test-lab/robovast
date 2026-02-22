@@ -329,12 +329,17 @@ def monitor(interval, once):
               help='Directory where all runs will be downloaded (uses project results dir if not specified)')
 @click.option('--force', '-f', is_flag=True,
               help='Force re-download even if files already exist locally')
-def download(output, force):
+@click.option('--verbose', '-v', is_flag=True,
+              help='Print per-file progress instead of a single-line progress bar per run')
+def download(output, force, verbose):
     """Download result files from the cluster S3 (MinIO) server.
 
     Downloads all test run results from the MinIO S3 server embedded in the
     robovast pod. Each run is stored in a separate S3 bucket (``run-*``) and
     downloaded into a subdirectory of the output directory.
+
+    By default a single progress bar line is shown for each run. Use
+    ``--verbose`` to print individual file names instead.
 
     Use ``--force`` to re-download runs that already exist locally.
 
@@ -356,7 +361,7 @@ def download(output, force):
         config_name = load_cluster_config_name()
         cluster_config = get_cluster_config(config_name)
         downloader = ResultDownloader(namespace=get_cluster_namespace(), cluster_config=cluster_config)
-        count = downloader.download_results(output, force)
+        count = downloader.download_results(output, force, verbose=verbose)
         click.echo(f"✓ Download of {count} runs completed successfully!")
 
     except Exception as e:

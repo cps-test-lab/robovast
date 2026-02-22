@@ -5,7 +5,7 @@ OUTPUT_DIR="/out"
 LOG_DIR="${OUTPUT_DIR}/logs"
 mkdir -p "${LOG_DIR}"
 
-LOG_FILE="${LOG_DIR}/secondary_$(hostname).log"
+LOG_FILE="${LOG_DIR}/system_${CONTAINER_NAME}.log"
 
 log() {
     echo "$@" | tee -a "${LOG_FILE}"
@@ -23,4 +23,4 @@ exec 2>&1
 
 SOCKET="/ipc/${CONTAINER_NAME}"
 log "Starting scenario-execution-server-ros on socket '${SOCKET}'..."
-exec ros2 run scenario_execution_server_ros scenario_execution_server_ros --socket "${SOCKET}"
+exec ros2 run scenario_execution_server_ros scenario_execution_server_ros --watchdog 3 --socket "${SOCKET}"

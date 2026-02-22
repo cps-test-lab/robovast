@@ -18,12 +18,46 @@
 import logging
 import os
 import sys
+from typing import Callable, Optional, Tuple
 
 from kubernetes import client, config
 
 from .s3_client import ClusterS3Client
 
 logger = logging.getLogger(__name__)
+
+_BAR_WIDTH = 20
+
+
+def _format_size(num_bytes: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if num_bytes < 1024:
+            return f"{num_bytes:.1f} {unit}"
+        num_bytes /= 1024
+    return f"{num_bytes:.1f} TB"
+
+
+def _make_progress_callback(prefix: str, bucket_name: str) -> Tuple[Callable, Callable]:
+    """Return ``(callback, get_total_bytes)`` for single-line progress display.
+
+    The callback signature is ``(current, total, file_size_bytes)`` and updates
+    the current terminal line in place using ``\\r``.  ``get_total_bytes()``
+    returns the cumulative downloaded byte count.
+    """
+    state = {"total_bytes": 0}
+
+    def callback(current: int, total: int, size_bytes: int) -> None:
+        state["total_bytes"] += size_bytes
+        filled = int(_BAR_WIDTH * current / total) if total > 0 else _BAR_WIDTH
+        bar = "█" * filled + "░" * (_BAR_WIDTH - filled)
+        size_str = _format_size(state["total_bytes"])
+        sys.stdout.write(f"\r{prefix} {bucket_name}  [{bar}]  {current}/{total}  {size_str}   ")
+        sys.stdout.flush()
+
+    def get_total_bytes() -> int:
+        return state["total_bytes"]
+
+    return callback, get_total_bytes
 
 
 class ResultDownloader:
@@ -79,7 +113,8 @@ class ResultDownloader:
             logger.debug(f"Available runs: {buckets}")
         return buckets
 
-    def download_results(self, output_directory: str, force: bool = False) -> int:
+    def download_results(self, output_directory: str, force: bool = False,
+                         verbose: bool = False) -> int:
         """Download all run results from MinIO to output_directory.
 
         Each run bucket ('run-*') is downloaded into a subdirectory named after
@@ -88,6 +123,7 @@ class ResultDownloader:
         Args:
             output_directory (str): Local directory where results are written.
             force (bool): Re-download files that already exist locally.
+            verbose (bool): Print per-file progress instead of a single-line bar.
 
         Returns:
             int: Number of buckets successfully downloaded.
@@ -113,22 +149,55 @@ class ResultDownloader:
             for idx, bucket_name in enumerate(available_runs, start=1):
                 run_dir = os.path.join(output_directory, bucket_name)
                 prefix = f"[{idx}/{total_runs}]"
+
                 if not force and os.path.exists(run_dir) and os.listdir(run_dir):
-                    logger.info(
-                        f"{prefix} '{bucket_name}' already exists locally, skipping "
-                        "(use --force to re-download)"
-                    )
+                    if verbose:
+                        logger.info(
+                            f"{prefix} '{bucket_name}' already exists locally, skipping "
+                            "(use --force to re-download)"
+                        )
+                    else:
+                        print(f"{prefix} {bucket_name}  skipped (already exists locally)")
                     downloaded_count += 1
                     continue
 
                 try:
-                    logger.info(f"{prefix} Downloading '{bucket_name}'...")
-                    count = s3.download_bucket(bucket_name, output_directory, force=force)
-                    logger.info(f"{prefix} Downloaded {count} file(s) for '{bucket_name}'")
+                    if verbose:
+                        logger.info(f"{prefix} Downloading '{bucket_name}'...")
+                        progress_callback = None
+                        get_total_bytes: Optional[Callable] = None
+                    else:
+                        sys.stdout.write(f"\r{prefix} {bucket_name}  downloading...   ")
+                        sys.stdout.flush()
+                        progress_callback, get_total_bytes = _make_progress_callback(
+                            prefix, bucket_name
+                        )
+
+                    count = s3.download_bucket(
+                        bucket_name, output_directory, force=force,
+                        progress_callback=progress_callback,
+                    )
+
+                    if verbose:
+                        logger.info(f"{prefix} Downloaded {count} file(s) for '{bucket_name}'")
+                    else:
+                        bar = "█" * _BAR_WIDTH
+                        size_str = _format_size(get_total_bytes())
+                        sys.stdout.write(
+                            f"\r{prefix} {bucket_name}  [{bar}]  {count} files  {size_str}  done\n"
+                        )
+                        sys.stdout.flush()
+
                     downloaded_count += 1
                     s3.delete_bucket(bucket_name)
-                    logger.info(f"{prefix} Removed '{bucket_name}' from S3")
+                    if verbose:
+                        logger.info(f"{prefix} Removed '{bucket_name}' from S3")
+
                 except Exception as e:
-                    logger.error(f"{prefix} Failed to download '{bucket_name}': {e}")
+                    if verbose:
+                        logger.error(f"{prefix} Failed to download '{bucket_name}': {e}")
+                    else:
+                        sys.stdout.write(f"\r{prefix} {bucket_name}  ERROR: {e}\n")
+                        sys.stdout.flush()
 
         return downloaded_count
