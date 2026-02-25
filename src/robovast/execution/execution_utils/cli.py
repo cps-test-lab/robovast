@@ -68,8 +68,8 @@ def local():
               help='Override the number of runs specified in the config')
 @click.option('--output', '-o', default=None,
               help='Output directory (uses project results dir if not specified)')
-@click.option('--shell', '-s', is_flag=True,
-              help='Instead of running the scenario, login with shell')
+@click.option('--start-only', is_flag=True,
+              help='Start the robovast container with a shell, skipping the entrypoint script')
 @click.option('--no-gui',  is_flag=True,
               help='Disable host GUI support')
 @click.option('--network-host',  is_flag=True,
@@ -78,7 +78,7 @@ def local():
               help='Use a custom Docker image')
 @click.option('--abort-on-failure', is_flag=True,
               help='Stop execution after the first failed test config (default: continue)')
-def run(config, runs, output, shell, no_gui, network_host, image, abort_on_failure):
+def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_failure):
     """Execute scenario configurations locally using Docker.
 
     Runs scenario configurations in Docker containers with bind mounts for configuration
@@ -102,15 +102,15 @@ def run(config, runs, output, shell, no_gui, network_host, image, abort_on_failu
 
         # Build command with options
         cmd = [run_script_path]
-        if shell:
-            cmd.append("--shell")
+        if start_only:
+            cmd.append("--start-only")
         if no_gui:
             cmd.append("--no-gui")
         if network_host:
             cmd.append("--network-host")
         if output:
             os.makedirs(output, exist_ok=True)
-            cmd.extend(["--output", os.path.abspath(output)])
+            cmd.extend(["--results-dir", os.path.abspath(output)])
         if image != 'ghcr.io/cps-test-lab/robovast:latest':
             cmd.extend(["--image", image])
         if abort_on_failure:
@@ -152,7 +152,7 @@ def prepare_run(output_dir, config, runs):
     After preparation, inspect the files in OUTPUT-DIR and execute manually ``cd OUTPUT-DIR; ./run.sh``.
 
     The run.sh script supports the same options as ``vast execution local run``
-    (--shell, --no-gui, --network-host, --output, --image).
+    (--start-only, --no-gui, --network-host, --output, --image).
     """
     try:
         initialize_local_execution(

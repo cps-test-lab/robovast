@@ -154,7 +154,7 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
 # Default Docker image
 DOCKER_IMAGE="ghcr.io/cps-test-lab/robovast:latest"
 USE_GUI=true
-USE_SHELL=false
+START_ONLY=false
 RUN_ID="run-$(date +%Y-%m-%d-%H%M%S)"
 RESULTS_DIR=
 
@@ -233,7 +233,7 @@ OPTIONS:
     --image IMAGE       Use a custom Docker image (default: ghcr.io/cps-test-lab/robovast:latest)
     --no-gui            Disable host GUI support
     --results-dir DIR   Override the results output directory
-    --shell             Launch an interactive shell in the robovast container
+    --start-only        Start the robovast container with a shell, skipping the entrypoint script
     --abort-on-failure  Stop execution after the first failed test config
     -h, --help          Show this help message
 EOF
@@ -254,8 +254,8 @@ while [ $# -gt 0 ]; do
             USE_GUI=false
             shift
             ;;
-        --shell)
-            USE_SHELL=true
+        --start-only)
+            START_ONLY=true
             shift
             ;;
         --abort-on-failure)
@@ -389,7 +389,9 @@ def _build_compose_yaml(
 
     lines.append(f"    user: \"{uid}:{gid}\"")
     lines.append("    stop_grace_period: 60s")
-    lines.append("    command: [\"/bin/bash\", \"/config/entrypoint.sh\"]")
+    lines.append("    command: ${ROBOVAST_COMMAND}")
+    lines.append("    tty: ${ROBOVAST_TTY}")
+    lines.append("    stdin_open: ${ROBOVAST_STDIN_OPEN}")
 
     for sc in secondary_containers:
         sc_name = sc['name']
@@ -426,7 +428,9 @@ def _build_compose_yaml(
         # sends SIGTERM by default, causing non-clean exits and corrupted exit codes
         lines.append("    stop_signal: SIGINT")
         lines.append("    stop_grace_period: 5s")
-        lines.append('    command: ["/bin/bash", "/config/secondary_entrypoint.sh"]')
+        lines.append("    command: ${SECONDARY_COMMAND}")
+        lines.append("    tty: ${ROBOVAST_TTY}")
+        lines.append("    stdin_open: ${ROBOVAST_STDIN_OPEN}")
 
     if has_secondaries:
         lines.append("")
@@ -525,6 +529,20 @@ def generate_compose_run_script(runs, run_data, config_path_result, pre_command,
         else:
             script += "AVAILABLE_MEM=\"$(awk '/MemTotal/ {print $2 * 1024}' /proc/meminfo)\"\n"
 
+        script += '\n# Determine command and interactive settings based on START_ONLY\n'
+        script += 'if [ "$START_ONLY" = true ]; then\n'
+        script += '    ROBOVAST_COMMAND="/bin/bash"\n'
+        script += '    SECONDARY_COMMAND="/bin/bash"\n'
+        script += '    ROBOVAST_TTY="true"\n'
+        script += '    ROBOVAST_STDIN_OPEN="true"\n'
+        script += 'else\n'
+        script += '    # Use string format for command to be consistent with variable substitution\n'
+        script += '    ROBOVAST_COMMAND="/bin/bash /config/entrypoint.sh"\n'
+        script += '    SECONDARY_COMMAND="/bin/bash /config/secondary_entrypoint.sh"\n'
+        script += '    ROBOVAST_TTY="false"\n'
+        script += '    ROBOVAST_STDIN_OPEN="false"\n'
+        script += 'fi\n\n'
+
         env_vars = get_execution_env_variables(run_num, config_name, run_data.get('execution', {}).get('env'))
 
         compose_yaml = _build_compose_yaml(
@@ -548,7 +566,7 @@ def generate_compose_run_script(runs, run_data, config_path_result, pre_command,
         )
 
         script += f'CURRENT_COMPOSE_FILE="{compose_file}"\n'
-        script += 'export DOCKER_IMAGE RESULTS_DIR SCRIPT_DIR AVAILABLE_CPUS AVAILABLE_MEM LIBGL_ALWAYS_SOFTWARE\n'
+        script += 'export DOCKER_IMAGE RESULTS_DIR SCRIPT_DIR AVAILABLE_CPUS AVAILABLE_MEM LIBGL_ALWAYS_SOFTWARE ROBOVAST_COMMAND SECONDARY_COMMAND ROBOVAST_TTY ROBOVAST_STDIN_OPEN\n'
         script += f'cat > "{compose_file}" << \'COMPOSE_EOF\'\n'
         script += compose_yaml + '\n'
         script += 'COMPOSE_EOF\n\n'
@@ -587,7 +605,7 @@ def generate_compose_run_script(runs, run_data, config_path_result, pre_command,
             script += compose_wait
         else:
             script += f'if [ "$USE_SHELL" = true ]; then\n'
-            script += f'    docker compose -f "{compose_file}" run --rm robovast /usr/local/bin/fixuid /bin/bash\n'
+            script += f'    docker compose -f "{compose_file}" run --rm robovast /bin/bash\n'
             script += '    EXIT_CODE=$?\n'
             script += f'else\n'
             # Indent the wait-loop lines for readability inside the else block
