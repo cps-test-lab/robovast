@@ -156,15 +156,64 @@ def get_execution_env_variables(run_num, config_name, additional_env=None):
     return env_vars
 
 
-def prepare_run_configs(out_dir, run_data):
+_LOCAL_POST_RUN_BLOCK = """\
+    POST_COMMAND_PARAM=""
+    if [ -n "${POST_COMMAND}" ]; then
+        if [ -e "${POST_COMMAND}" ]; then
+            POST_COMMAND_PARAM="--post-run ${POST_COMMAND}"
+            log "Post-command set to: ${POST_COMMAND}"
+        else
+            log "ERROR: Post-command '${POST_COMMAND}' does not exist."
+            exit 1
+        fi
+    fi"""
+
+_CLUSTER_POST_RUN_BLOCK = """\
+    # Build the S3 upload script; output is mirrored to the S3 bucket after the run
+    S3_UPLOAD_SCRIPT="/tmp/s3_upload.sh"
+    cat > "${S3_UPLOAD_SCRIPT}" << 'UPLOAD_EOF'
+#!/bin/bash
+set -e
+mc alias set myminio "${S3_ENDPOINT}" "${S3_ACCESS_KEY}" "${S3_SECRET_KEY}" --quiet
+mc mirror /out/ "myminio/${S3_BUCKET}/${S3_PREFIX}/"
+UPLOAD_EOF
+    chmod +x "${S3_UPLOAD_SCRIPT}"
+
+    if [ -n "${POST_COMMAND}" ]; then
+        if [ -e "${POST_COMMAND}" ]; then
+            COMBINED_SCRIPT="/tmp/combined_post_run.sh"
+            cat > "${COMBINED_SCRIPT}" << COMBINED_EOF
+#!/bin/bash
+set -e
+source "${POST_COMMAND}"
+"${S3_UPLOAD_SCRIPT}"
+COMBINED_EOF
+            chmod +x "${COMBINED_SCRIPT}"
+            POST_COMMAND_PARAM="--post-run ${COMBINED_SCRIPT}"
+            log "Post-command '${POST_COMMAND}' combined with S3 upload."
+        else
+            log "ERROR: Post-command '${POST_COMMAND}' does not exist."
+            exit 1
+        fi
+    else
+        POST_COMMAND_PARAM="--post-run ${S3_UPLOAD_SCRIPT}"
+    fi"""
+
+
+def prepare_run_configs(out_dir, run_data, cluster=False):
     # Create the output directory structure
     logger.debug(f"Run Configs: {pformat(run_data)}")
     os.makedirs(out_dir, exist_ok=True)
 
-    # Copy entrypoint.sh to the out directory
+    # Inject the run-mode-specific post-run block into the shared entrypoint template
     entrypoint_src = str(files('robovast.execution.data').joinpath('entrypoint.sh'))
+    with open(entrypoint_src, 'r', encoding='utf-8') as f:
+        entrypoint_content = f.read()
+    post_run_block = _CLUSTER_POST_RUN_BLOCK if cluster else _LOCAL_POST_RUN_BLOCK
+    entrypoint_content = entrypoint_content.replace('    # @@POST_RUN_BLOCK@@', post_run_block)
     entrypoint_dst = os.path.join(out_dir, "entrypoint.sh")
-    shutil.copy2(entrypoint_src, entrypoint_dst)
+    with open(entrypoint_dst, 'w', encoding='utf-8') as f:
+        f.write(entrypoint_content)
 
     # Copy secondary_entrypoint.sh so secondary containers can use it
     secondary_entrypoint_src = str(files('robovast.execution.data').joinpath('secondary_entrypoint.sh'))

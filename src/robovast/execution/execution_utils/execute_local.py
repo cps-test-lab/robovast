@@ -539,9 +539,10 @@ def generate_compose_run_script(runs, run_data, config_path_result, pre_command,
         # Explicit signals (SIGTERM/SIGKILL) are sent by handle_sigint as needed.
         compose_bg = (
             f'( trap \'\' SIGINT; export COMPOSE_MENU=false;'
-            f' exec docker compose -f "{compose_file}" up'
+            f' docker compose -f "{compose_file}" up'
             f' --abort-on-container-exit'
             f' --exit-code-from robovast'
+            f' 2> >(grep -v "Aborting on container exit" >&2)'
             f') &\n'
         )
         compose_wait = (

@@ -572,7 +572,8 @@ def prepare_run(output, config, runs, cluster_config, options):  # pylint: disab
         out_dir = os.path.join(output, "out_template")
         prepare_run_configs(
             out_dir,
-            job_runner.run_data
+            job_runner.run_data,
+            cluster=True
         )
 
         # Create jobs directory

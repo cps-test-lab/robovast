@@ -678,7 +678,7 @@ class JobRunner:
             logger.debug(f"Using temporary directory: {temp_dir}")
 
             out_dir = os.path.join(temp_dir, "out_template")
-            prepare_run_configs(out_dir, self.run_data)
+            prepare_run_configs(out_dir, self.run_data, cluster=True)
 
             # Inject instance type command into entrypoint.sh if the cluster config provides one
             entrypoint_path = os.path.join(out_dir, "entrypoint.sh")
