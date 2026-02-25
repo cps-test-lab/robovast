@@ -241,7 +241,7 @@ def run(config, runs, detach):  # pylint: disable=function-redefined
             click.echo()
             click.echo("Jobs are now running in detached mode.")
             click.echo()
-            click.echo("To check job status, use: kubectl get jobs")
+            click.echo("To check job status, use: vast execution cluster monitor")
             click.echo("To clean up jobs, use: vast execution cluster run-cleanup")
             click.echo()
         else:

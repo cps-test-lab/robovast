@@ -75,13 +75,7 @@ RUN \
         ros-${ROS_DISTRO}-nav2-minimal-tb4-description \
         ros-${ROS_DISTRO}-rmw-cyclonedds-cpp \
         ros-${ROS_DISTRO}-rmw-zenoh-cpp \
-        libgl1 && \
-    rm -rf /var/lib/apt/lists/*
-
-# scenario-execution-server dependencies
-RUN \
-    apt-get update && \
-    apt-get install -y --no-install-recommends \
+        libgl1 \
         python3-zmq python3-msgpack && \
     rm -rf /var/lib/apt/lists/*
 

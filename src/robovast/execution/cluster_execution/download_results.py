@@ -49,9 +49,9 @@ def _make_progress_callback(prefix: str, bucket_name: str) -> Tuple[Callable, Ca
     def callback(current: int, total: int, size_bytes: int) -> None:
         state["total_bytes"] += size_bytes
         filled = int(_BAR_WIDTH * current / total) if total > 0 else _BAR_WIDTH
-        bar = "█" * filled + "░" * (_BAR_WIDTH - filled)
+        progress_bar = "█" * filled + "░" * (_BAR_WIDTH - filled)
         size_str = _format_size(state["total_bytes"])
-        sys.stdout.write(f"\r{prefix} {bucket_name}  [{bar}]  {current}/{total}  {size_str}   ")
+        sys.stdout.write(f"\r{prefix} {bucket_name}  [{progress_bar}]  {current}/{total}  {size_str}   ")
         sys.stdout.flush()
 
     def get_total_bytes() -> int:
