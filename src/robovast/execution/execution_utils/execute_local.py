@@ -416,6 +416,11 @@ def _build_compose_yaml(
         lines.append("volumes:")
         lines.append("  shared_tmp:")
         lines.append("  shared_ipc:")
+        lines.append("    driver: local")
+        lines.append("    driver_opts:")
+        lines.append("      type: tmpfs")
+        lines.append("      device: tmpfs")
+        lines.append('      o: "mode=0777"')
 
     return "\n".join(lines)
 
