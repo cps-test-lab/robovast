@@ -219,6 +219,70 @@ def rosbags_bt_to_csv(
         return False, f"Error executing rosbags_bt_to_csv: {e}"
 
 
+def rosbags_action_to_yaml(
+    results_dir: str,
+    config_dir: str,
+    action: str,
+    yaml_filename: Optional[str] = None,
+    provenance_file: Optional[str] = None,
+) -> Tuple[bool, str]:
+    """Extract ROS2 action feedback and status from rosbags to YAML format.
+
+    Reads /<action>/_action/feedback and /<action>/_action/status topics from
+    ROS bag files and writes the messages to a YAML file containing a list of
+    feedback entries and a list of status entries.
+
+    Args:
+        results_dir: Path to the run-<id> directory to process
+        config_dir: Directory containing the config file (for resolving relative paths)
+        action: Action name to extract (e.g. 'navigate_to_pose')
+        yaml_filename: Output YAML file name (default: action_<action>.yaml)
+
+    Returns:
+        Tuple of (success, message)
+
+    Example usage in .vast config:
+        postprocessing:
+          - rosbags_action_to_yaml:
+              action: navigate_to_pose
+          - rosbags_action_to_yaml:
+              action: navigate_to_pose
+              yaml_filename: nav_action.yaml
+    """
+    script_path = str(files('robovast.common.data').joinpath('docker_exec.sh'))
+
+    action_name = action.lstrip('/')
+    effective_yaml_filename = yaml_filename or f"action_{action_name}.yaml"
+
+    cmd = [script_path]
+    if provenance_file:
+        cmd.extend(["--provenance-file", provenance_file])
+    cmd.append("rosbags_action_to_yaml.py")
+    if provenance_file:
+        cmd.extend(["--provenance-file", f"/provenance/{os.path.basename(provenance_file)}"])
+    cmd.extend(["--yaml-filename", effective_yaml_filename])
+    cmd.append(action_name)
+    cmd.append(results_dir)
+
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=os.path.dirname(script_path),
+            check=False,
+            capture_output=True,
+            text=True,
+            env={**os.environ, 'PYTHONUNBUFFERED': '1'}
+        )
+
+        if result.returncode != 0:
+            return False, f"rosbags_action_to_yaml failed with exit code {result.returncode}\n{result.stderr}"
+
+        return True, f"Action '{action_name}' data extracted to YAML successfully"
+
+    except Exception as e:
+        return False, f"Error executing rosbags_action_to_yaml: {e}"
+
+
 def rosbags_to_csv(
     results_dir: str,
     config_dir: str,
