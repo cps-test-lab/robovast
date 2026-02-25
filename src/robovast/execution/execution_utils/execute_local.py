@@ -329,6 +329,7 @@ def _build_compose_yaml(
     gid,
     main_cpu,
     main_memory,
+    main_gpu,
     secondary_containers,
     use_gui_block,
 ):
@@ -356,6 +357,8 @@ def _build_compose_yaml(
     lines.append("  robovast:")
     lines.append(f"    image: ${{DOCKER_IMAGE}}")
     lines.append(f"    container_name: robovast")
+    if main_gpu:
+        lines.append("    runtime: nvidia")
 
     if has_secondaries:
         lines.append("    ipc: shareable")
@@ -381,6 +384,10 @@ def _build_compose_yaml(
     if use_gui_block:
         lines.append("      - DISPLAY=${DISPLAY:-:0}")
         lines.append("      - LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-0}")
+    if main_gpu:
+        lines.append("      - QT_X11_NO_MITSHM=1")
+        lines.append("      - NVIDIA_VISIBLE_DEVICES=all")
+        lines.append("      - NVIDIA_DRIVER_CAPABILITIES=all")
 
     # Resource limits for main container
     res = _compose_resources_block(main_cpu, main_memory)
@@ -397,10 +404,13 @@ def _build_compose_yaml(
         sc_name = sc['name']
         sc_cpu = sc['resources'].get('cpu')
         sc_memory = sc['resources'].get('memory')
+        sc_gpu = sc['resources'].get('gpu')
 
         lines.append(f"  {sc_name}:")
         lines.append(f"    image: ${{DOCKER_IMAGE}}")
         lines.append(f"    container_name: {sc_name}")
+        if sc_gpu:
+            lines.append("    runtime: nvidia")
         lines.append(f"    network_mode: service:robovast")
         lines.append(f"    ipc: service:robovast")
         lines.append(f"    depends_on:")
@@ -418,6 +428,10 @@ def _build_compose_yaml(
         if use_gui_block:
             lines.append("      - DISPLAY=${DISPLAY:-:0}")
             lines.append("      - LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-0}")
+        if sc_gpu:
+            lines.append("      - QT_X11_NO_MITSHM=1")
+            lines.append("      - NVIDIA_VISIBLE_DEVICES=all")
+            lines.append("      - NVIDIA_DRIVER_CAPABILITIES=all")
 
         sc_res = _compose_resources_block(sc_cpu, sc_memory)
         if sc_res:
@@ -486,6 +500,7 @@ def generate_compose_run_script(runs, run_data, config_path_result, pre_command,
     resources = execution_params.get("resources") or {}
     main_cpu = resources.get("cpu")
     main_memory = resources.get("memory")
+    main_gpu = resources.get("gpu")
 
     # Secondary containers
     secondary_containers = execution_params.get("secondary_containers") or []
@@ -561,6 +576,7 @@ def generate_compose_run_script(runs, run_data, config_path_result, pre_command,
             gid=gid,
             main_cpu=main_cpu,
             main_memory=main_memory,
+            main_gpu=main_gpu,
             secondary_containers=normalized_secondary,
             use_gui_block=True,
         )

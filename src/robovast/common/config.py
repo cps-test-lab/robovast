@@ -53,6 +53,7 @@ class ConfigurationConfig(BaseModel):
 class ResourcesConfig(BaseModel):
     cpu: Optional[int] = None
     memory: Optional[str] = None
+    gpu: Optional[int] = None
 
 
 class SecondaryContainerConfig(BaseModel):
@@ -86,7 +87,7 @@ def normalize_secondary_containers(secondary_containers) -> list[dict]:
         if hasattr(sc, 'name'):
             result.append({
                 'name': sc.name,
-                'resources': {'cpu': sc.resources.cpu, 'memory': sc.resources.memory}
+                'resources': {'cpu': sc.resources.cpu, 'memory': sc.resources.memory, 'gpu': sc.resources.gpu}
                 if sc.resources is not None else {}
             })
         elif isinstance(sc, dict) and 'name' in sc:
