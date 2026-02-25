@@ -163,6 +163,8 @@ CLEANUP_DONE=0
 COMPOSE_PID=
 LOG_PID=
 SIGINT_COUNT=0
+ABORT_ON_FAILURE=false
+OVERALL_EXIT_CODE=0
 
 # Cleanup function
 cleanup() {
@@ -232,6 +234,7 @@ OPTIONS:
     --no-gui            Disable host GUI support
     --results-dir DIR   Override the results output directory
     --shell             Launch an interactive shell in the robovast container
+    --abort-on-failure  Stop execution after the first failed test config
     -h, --help          Show this help message
 EOF
 }
@@ -253,6 +256,10 @@ while [ $# -gt 0 ]; do
             ;;
         --shell)
             USE_SHELL=true
+            shift
+            ;;
+        --abort-on-failure)
+            ABORT_ON_FAILURE=true
             shift
             ;;
         --results-dir)
@@ -570,22 +577,28 @@ def generate_compose_run_script(runs, run_data, config_path_result, pre_command,
         if idx < len(execution_tasks):
             script += f'docker compose -f "{compose_file}" down --volumes --timeout 5 2>/dev/null || true\n'
             script += 'if [ $EXIT_CODE -ne 0 ]; then\n'
-            script += f'    echo "Error: Config {idx}/{len(execution_tasks)} ({config_name}) failed with exit code $EXIT_CODE"\n'
-            script += '    cleanup\n'
-            script += '    exit $EXIT_CODE\n'
+            script += f'    echo "Warning: Config {idx}/{len(execution_tasks)} ({config_name}) failed with exit code $EXIT_CODE"\n'
+            script += '    OVERALL_EXIT_CODE=$EXIT_CODE\n'
+            script += '    if [ "$ABORT_ON_FAILURE" = true ]; then\n'
+            script += '        cleanup\n'
+            script += '        exit $EXIT_CODE\n'
+            script += '    fi\n'
             script += 'fi\n\n'
         else:
             script += f'docker compose -f "{compose_file}" down --volumes --timeout 5 2>/dev/null || true\n'
-            script += 'if [ $EXIT_CODE -eq 0 ]; then\n'
+            script += 'if [ $EXIT_CODE -ne 0 ]; then\n'
+            script += '    OVERALL_EXIT_CODE=$EXIT_CODE\n'
+            script += 'fi\n'
+            script += 'if [ $OVERALL_EXIT_CODE -eq 0 ]; then\n'
             script += f'    echo ""\n'
             script += f'    echo "{"=" * 60}"\n'
             script += f'    echo "All {len(execution_tasks)} config(s) completed successfully!"\n'
             script += f'    echo "{"=" * 60}"\n'
             script += 'else\n'
-            script += f'    echo "Error: Config {idx}/{len(execution_tasks)} ({config_name}) failed with exit code $EXIT_CODE"\n'
+            script += f'    echo "Error: One or more of {len(execution_tasks)} config(s) failed (last exit code: $OVERALL_EXIT_CODE)"\n'
             script += 'fi\n'
             script += 'cleanup\n'
-            script += 'exit $EXIT_CODE\n'
+            script += 'exit $OVERALL_EXIT_CODE\n'
 
     try:
         with open(output_script_path, 'w') as f:

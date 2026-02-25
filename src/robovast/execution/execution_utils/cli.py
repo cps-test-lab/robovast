@@ -76,11 +76,14 @@ def local():
               help='Use host network mode')
 @click.option('--image', '-i', default='ghcr.io/cps-test-lab/robovast:latest',
               help='Use a custom Docker image')
-def run(config, runs, output, shell, no_gui, network_host, image):
+@click.option('--abort-on-failure', is_flag=True,
+              help='Stop execution after the first failed test config (default: continue)')
+def run(config, runs, output, shell, no_gui, network_host, image, abort_on_failure):
     """Execute scenario configurations locally using Docker.
 
     Runs scenario configurations in Docker containers with bind mounts for configuration
-    and output data. By default, runs all configurations from the project configuration.
+    and output data. By default, runs all configurations from the project configuration
+    and continues past failures. Use ``--abort-on-failure`` to stop at the first failure.
     GUI support is enabled by default (requires X11 server on host).
 
     Prerequisites:
@@ -110,6 +113,8 @@ def run(config, runs, output, shell, no_gui, network_host, image):
             cmd.extend(["--output", os.path.abspath(output)])
         if image != 'ghcr.io/cps-test-lab/robovast:latest':
             cmd.extend(["--image", image])
+        if abort_on_failure:
+            cmd.append("--abort-on-failure")
 
         logging.debug(f"Executing run script: {run_script_path}")
 
