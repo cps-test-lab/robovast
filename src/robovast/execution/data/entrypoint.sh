@@ -1,7 +1,9 @@
 #!/bin/bash
 set -e
 
-eval $(fixuid -q)
+# @@INIT_BLOCK@@
+
+SCENARIO_EXECUTION_PARAMETERS="-t"
 
 # Setup
 OUTPUT_DIR="/out"

@@ -156,6 +156,10 @@ def get_execution_env_variables(run_num, config_name, additional_env=None):
     return env_vars
 
 
+_LOCAL_INIT_BLOCK = "eval $(fixuid -q)"
+
+_CLUSTER_INIT_BLOCK = ""
+
 _LOCAL_POST_RUN_BLOCK = """\
     POST_COMMAND_PARAM=""
     if [ -n "${POST_COMMAND}" ]; then
@@ -209,6 +213,8 @@ def prepare_run_configs(out_dir, run_data, cluster=False):
     entrypoint_src = str(files('robovast.execution.data').joinpath('entrypoint.sh'))
     with open(entrypoint_src, 'r', encoding='utf-8') as f:
         entrypoint_content = f.read()
+    init_block = _CLUSTER_INIT_BLOCK if cluster else _LOCAL_INIT_BLOCK
+    entrypoint_content = entrypoint_content.replace('# @@INIT_BLOCK@@', init_block)
     post_run_block = _CLUSTER_POST_RUN_BLOCK if cluster else _LOCAL_POST_RUN_BLOCK
     entrypoint_content = entrypoint_content.replace('    # @@POST_RUN_BLOCK@@', post_run_block)
     entrypoint_dst = os.path.join(out_dir, "entrypoint.sh")

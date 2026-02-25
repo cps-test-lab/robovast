@@ -478,7 +478,7 @@ def generate_compose_run_script(runs, run_data, config_path_result, pre_command,
     execution_params = run_data.get("execution", {})
     run_as_user = execution_params.get("run_as_user")
     if run_as_user is None:
-        run_as_user = 1000
+        run_as_user = os.getuid()
     uid = run_as_user
     gid = run_as_user
 
