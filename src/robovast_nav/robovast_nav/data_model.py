@@ -14,6 +14,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import math
 from dataclasses import dataclass
 
 
@@ -24,12 +25,22 @@ class Position:
     x: float
     y: float
 
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Position):
+            return NotImplemented
+        return math.isclose(self.x, other.x) and math.isclose(self.y, other.y)
+
 
 @dataclass
 class Orientation:
     """Represents an orientation in radians."""
 
     yaw: float
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Orientation):
+            return NotImplemented
+        return math.isclose(self.yaw, other.yaw)
 
 
 @dataclass
@@ -38,6 +49,11 @@ class Pose:
 
     position: Position
     orientation: Orientation
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Pose):
+            return NotImplemented
+        return self.position == other.position and self.orientation == other.orientation
 
 
 @dataclass
