@@ -24,6 +24,7 @@ from importlib.metadata import entry_points
 
 import click
 import yaml
+from matplotlib import pyplot as plt
 
 from robovast.common import (convert_dataclasses_to_dict, filter_configs,
                              generate_scenario_variations,
@@ -66,8 +67,9 @@ def gui(debug):
 
 
 @configuration.command(name='list')
+@click.option('--visualize', is_flag=True, help="Plot configurations")
 @click.option('--debug', is_flag=True, help='Show internal values starting with _')
-def list_cmd(debug):
+def list_cmd(debug, visualize):
     """List scenario configs without generating files.
 
     This command shows all configs that would be generated from the
@@ -103,8 +105,88 @@ def list_cmd(debug):
 
             output = "\n".join(output_parts)
             click.echo(output)
+            if visualize:
+                for config in configs:
+                    fig, ax = plt.subplots()
+                    plot_map(ax, config)
+                    plot_config(ax, config)
+                    if not os.path.exists("figs"):
+                        os.makedirs("figs")
+                    plt.savefig("figs/" + config.get("name") + ".png", bbox_inches='tight')
     except Exception as e:
         handle_cli_exception(e)
+
+
+def plot_map(ax, config):
+    """
+    Plot the occupancy grid
+    """
+    import matplotlib.pyplot as plt
+
+    map_file = "environments/secorolab/maps/secorolab.yaml"
+    # map_file = config.get("_map_file")
+    with open(map_file, "r") as f:
+        meta_data = yaml.safe_load(f)
+
+    pgm_file = map_file.replace(".yaml", ".pgm")
+    im = plt.imread(pgm_file)
+
+    resolution = meta_data.get("resolution")
+    x_orig, y_orig, yaw = meta_data.get("origin")
+    ymax, xmax = im.shape
+
+    ax.imshow(
+        im,
+        cmap="gray",
+        origin="upper",
+        extent=(
+            x_orig,
+            (xmax * resolution) - abs(x_orig),
+            y_orig,
+            (ymax * resolution) - abs(y_orig),
+        ),
+    )
+
+def plot_config(ax, config):
+    """
+    Plot start and goal poses.
+
+    Also plots the path if it is computed and included in the config.
+    """
+    _config = config.get("config")
+    start_pose = _config.get("start_pose")
+    ax.scatter(
+        start_pose["position"]["x"],
+        start_pose["position"]["y"],
+        color="green",
+        marker="*",
+        label="start pose",
+    )
+    goal_poses = _config.get("goal_poses")
+    for i, g in enumerate(goal_poses):
+        x = g["position"]["x"]
+        y = g["position"]["y"]
+        ax.scatter(
+            x,
+            y,
+            color="blue",
+            marker="o",
+            label="goal pose",
+        )
+        ax.annotate(f"g{i}", (x, y), fontsize=10)
+
+    if config.get("_path"):
+        x_path = []
+        y_path = []
+        for p in config.get("_path"):
+            x_path.append(p.x)
+            y_path.append(p.y)
+
+        ax.plot(x_path, y_path, color="red")
+
+    ax.set_aspect("equal", adjustable="box")
+    # hide axes and borders
+    ax.axis("off")
 
 
 @configuration.command()
