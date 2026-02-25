@@ -280,10 +280,17 @@ done
 # GUI setup
 GUI_DEVICES=""
 GUI_ENV=""
+HAS_DRI=false
 if [ "$USE_GUI" = true ]; then
-    xhost +local:docker > /dev/null 2>&1
+    xhost +local: > /dev/null 2>&1
     GUI_ENV="DISPLAY=${DISPLAY}"
     GUI_DEVICES="/tmp/.X11-unix:/tmp/.X11-unix:rw"
+    if [ -e /dev/dri ]; then
+        HAS_DRI=true
+        export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-0}"
+    else
+        export LIBGL_ALWAYS_SOFTWARE=1
+    fi
 fi
 
 mkdir -p "${RESULTS_DIR}"
@@ -358,6 +365,9 @@ def _build_compose_yaml(
     lines.append(f'      - "{quote(script_dir_var)}/out_template/entrypoint.sh:/config/entrypoint.sh:ro"')
     lines.append(f'      - "{quote(script_dir_var)}/out_template/collect_sysinfo.py:/config/collect_sysinfo.py:ro"')
     lines.extend(_config_volume_mounts())
+    if use_gui_block:
+        lines.append("      - /tmp/.X11-unix:/tmp/.X11-unix:rw")
+        lines.append("      - /dev/dri:/dev/dri")
 
     lines.append("    environment:")
     for key, value in env_vars.items():
@@ -369,7 +379,8 @@ def _build_compose_yaml(
     lines.append("      - AVAILABLE_CPUS=${AVAILABLE_CPUS}")
     lines.append("      - AVAILABLE_MEM=${AVAILABLE_MEM}")
     if use_gui_block:
-        lines.append("      - DISPLAY=${DISPLAY}")
+        lines.append("      - DISPLAY=${DISPLAY:-:0}")
+        lines.append("      - LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-0}")
 
     # Resource limits for main container
     res = _compose_resources_block(main_cpu, main_memory)
@@ -397,8 +408,14 @@ def _build_compose_yaml(
         lines.append(f'      - "{quote(script_dir_var)}/out_template/secondary_entrypoint.sh:/config/secondary_entrypoint.sh:ro"')
         lines.append(f'      - "{quote(script_dir_var)}/out_template/collect_sysinfo.py:/config/collect_sysinfo.py:ro"')
         lines.extend(_config_volume_mounts())
+        if use_gui_block:
+            lines.append("      - /tmp/.X11-unix:/tmp/.X11-unix:rw")
+            lines.append("      - /dev/dri:/dev/dri")
         lines.append("    environment:")
         lines.append(f"      - CONTAINER_NAME={sc_name}")
+        if use_gui_block:
+            lines.append("      - DISPLAY=${DISPLAY:-:0}")
+            lines.append("      - LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-0}")
 
         sc_res = _compose_resources_block(sc_cpu, sc_memory)
         if sc_res:
@@ -531,7 +548,7 @@ def generate_compose_run_script(runs, run_data, config_path_result, pre_command,
         )
 
         script += f'CURRENT_COMPOSE_FILE="{compose_file}"\n'
-        script += 'export DOCKER_IMAGE RESULTS_DIR SCRIPT_DIR AVAILABLE_CPUS AVAILABLE_MEM\n'
+        script += 'export DOCKER_IMAGE RESULTS_DIR SCRIPT_DIR AVAILABLE_CPUS AVAILABLE_MEM LIBGL_ALWAYS_SOFTWARE\n'
         script += f'cat > "{compose_file}" << \'COMPOSE_EOF\'\n'
         script += compose_yaml + '\n'
         script += 'COMPOSE_EOF\n\n'
