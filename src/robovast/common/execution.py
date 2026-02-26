@@ -221,10 +221,14 @@ def prepare_run_configs(out_dir, run_data, cluster=False):
     with open(entrypoint_dst, 'w', encoding='utf-8') as f:
         f.write(entrypoint_content)
 
-    # Copy secondary_entrypoint.sh so secondary containers can use it
+    # Copy secondary_entrypoint.sh so secondary containers can use it (with init block replacement)
     secondary_entrypoint_src = str(files('robovast.execution.data').joinpath('secondary_entrypoint.sh'))
+    with open(secondary_entrypoint_src, 'r', encoding='utf-8') as f:
+        secondary_entrypoint_content = f.read()
+    secondary_entrypoint_content = secondary_entrypoint_content.replace('# @@INIT_BLOCK@@', init_block)
     secondary_entrypoint_dst = os.path.join(out_dir, "secondary_entrypoint.sh")
-    shutil.copy2(secondary_entrypoint_src, secondary_entrypoint_dst)
+    with open(secondary_entrypoint_dst, 'w', encoding='utf-8') as f:
+        f.write(secondary_entrypoint_content)
 
     # Copy collect_sysinfo.py to the out directory so it can be mounted
     # into the container alongside entrypoint.sh for both local and cluster runs.

@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-eval $(fixuid -q)
+# @@INIT_BLOCK@@
 
 OUTPUT_DIR="/out"
 LOG_DIR="${OUTPUT_DIR}/logs"
