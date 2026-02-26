@@ -35,7 +35,7 @@ except ImportError:
     _HAS_NUMPY = False
 
 
-def msg_to_dict(msg):
+def msg_to_dict(msg):  # pylint: disable=too-many-return-statements
     """Recursively convert a ROS message to a Python dict/list for YAML serialization.
 
     Special handling:
