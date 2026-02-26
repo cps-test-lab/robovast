@@ -369,6 +369,9 @@ class MapVisualizer:
         if self.ax is None:
             raise ValueError("No figure created. Call create_figure() first")
 
+        if not obstacles:
+            return
+
         for obstacle in obstacles:
             # Extract position
             position = obstacle.get('spawn_pose', {}).get('position', {})

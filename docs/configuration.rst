@@ -396,7 +396,7 @@ Commands to run for postprocessing test results. These are executed before the a
        - rosbags_to_webm:
            topic: /camera/image_raw/compressed
            fps: 30
-       - rosbags_action_to_yaml:
+       - rosbags_action_to_csv:
            action: navigate_to_pose
        - command:
            script: ../../../tools/custom_script.sh
@@ -414,7 +414,7 @@ To list all available plugins and their descriptions:
 - ``rosbags_bt_to_csv``: Convert ROS behavior tree logs to CSV format (no parameters).
 - ``rosbags_to_csv``: Convert all ROS messages from rosbags to CSV format. Optional ``skip_topics`` parameter (list of topic names to skip).
 - ``rosbags_to_webm``: Convert a ``sensor_msgs/msg/CompressedImage`` topic from ROS bags to WebM video files (VP9 codec). Optional ``topic`` parameter (compressed image topic name, default ``/camera/image_raw/compressed``) and ``fps`` parameter (fallback frame rate when timestamps are unavailable, default ``30``).
-- ``rosbags_action_to_yaml``: Extract ROS2 action feedback and status messages to a YAML file. Reads ``/<action>/_action/feedback`` and ``/<action>/_action/status`` topics. Required ``action`` parameter (action name, e.g. ``navigate_to_pose``). Optional ``yaml_filename`` parameter (default: ``action_<action>.yaml``). Goal UUIDs are written as hex strings and all timestamps as decimal seconds.
+- ``rosbags_action_to_csv``: Extract ROS2 action feedback and status messages to two CSV files (``<filename_prefix>_feedback.csv`` and ``<filename_prefix>_status.csv``). Reads ``/<action>/_action/feedback`` and ``/<action>/_action/status`` topics. Nested data is flattened to columns. Required ``action`` parameter (action name, e.g. ``navigate_to_pose``). Optional ``filename_prefix`` parameter (default: ``action_<action>``).
 - ``command``: Execute arbitrary commands or scripts. Requires ``script`` parameter, optional ``args`` parameter (list).
 - ``compress``: Create a gzipped tarball (``run-<id>.tar.gz``) for each run directory; runs on the host (no Docker). Optional ``output_dir`` (default: results directory), ``exclude_dirs`` (directory names to exclude, default ``['.cache']``), ``overwrite`` (if ``false``, skip when a tarball already exists; default ``false``).
 

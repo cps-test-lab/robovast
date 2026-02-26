@@ -76,7 +76,7 @@ def _make_progress_callback(prefix: str, bucket_name: str) -> Tuple[Callable, Ca
         size_str = _format_size(state["total_bytes"])
         elapsed = time.monotonic() - state["start_time"]
         rate_str = _format_rate(state["total_bytes"] / elapsed) if elapsed > 0 else _format_rate(0)
-        files_str = f"{current:0{_FILE_COUNT_WIDTH}d}/{total:0{_FILE_COUNT_WIDTH}d}"
+        files_str = f"{current:{_FILE_COUNT_WIDTH}d}/{total:{_FILE_COUNT_WIDTH}d}"
         pct = 100.0 * current / total if total > 0 else 100.0
         pct_str = f"{pct:.1f}%".rjust(_PCT_WIDTH)
         sys.stdout.write(
@@ -223,7 +223,7 @@ class ResultDownloader:
                         rate_str = (
                             _format_rate(total_bytes / elapsed) if elapsed > 0 else _format_rate(0)
                         )
-                        files_str = f"{count:0{_FILE_COUNT_WIDTH}d}"
+                        files_str = f"{count:{_FILE_COUNT_WIDTH}d}"
                         pct_str = "100.0%".rjust(_PCT_WIDTH)
                         sys.stdout.write(
                             f"\r{prefix} {bucket_name}  [{progressbar}]  {pct_str}  {files_str} files  "

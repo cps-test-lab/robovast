@@ -74,6 +74,7 @@ def _scrollbar_css(theme: str) -> str:
     return f"""
 <style id="robovast-scrollbar-style">
   html {{
+    font-size: 14px;
     color-scheme: {color_scheme};
   }}
   :root {{
@@ -169,24 +170,24 @@ def format_notebook_error_html(error_str: str) -> str:
     # Parse the error to extract meaningful information
     in_traceback = False
     for line in lines:
-        line = line.strip()
-        if not line:
-            continue
+        stripped = line.strip()
 
-        if "Traceback" in line:
+        if "Traceback" in (stripped if stripped else line):
             in_traceback = True
             continue
 
         if in_traceback:
-            if any(err_type in line for err_type in ['Error:', 'Exception:', 'AttributeError:', 'NameError:', 'TypeError:', 'ValueError:', 'ImportError:', 'KeyError:', 'IndexError:']):
-                if ':' in line:
-                    error_type = line.split(':')[0].strip()
-                    error_message = ':'.join(line.split(':')[1:]).strip()
+            if stripped and any(err_type in stripped for err_type in ['Error:', 'Exception:', 'AttributeError:', 'NameError:', 'TypeError:', 'ValueError:', 'ImportError:', 'KeyError:', 'IndexError:']):
+                if ':' in stripped:
+                    error_type = stripped.split(':')[0].strip()
+                    error_message = ':'.join(stripped.split(':')[1:]).strip()
                 else:
-                    error_type = line
+                    error_type = stripped
                 break
-            else:
-                traceback_lines.append(line)
+            # Skip redundant "Cell In[X], line Y" - we show this in the header
+            if stripped and re.search(r'Cell In\[\d+\], line \d+', stripped):
+                continue
+            traceback_lines.append(line)  # Preserve original for newlines and indentation
 
     # If no specific error was found, use the last non-empty line
     if not error_message and lines:
@@ -212,20 +213,20 @@ def format_notebook_error_html(error_str: str) -> str:
         else:
             start_line = 1
 
+        # Show a few lines after the error for context
+        end_line = len(source_lines) if not error_line_number else min(
+            len(source_lines), error_line_number + 2)
+
         for i, line in enumerate(source_lines, start=1):
-            # Skip lines before start_line
-            if i < start_line:
+            if i < start_line or i > end_line:
                 continue
 
             escaped_line = html.escape(line)
-            # Highlight the error line if we know which one it is
             if error_line_number and i == error_line_number:
                 formatted_lines.append(
                     f'<span class="line-number error-line-number">{i:3d}</span>'
                     f'<span class="error-line">{escaped_line}</span>'
                 )
-                # Stop displaying lines after the error line
-                break
             else:
                 formatted_lines.append(
                     f'<span class="line-number">{i:3d}</span>'
@@ -237,15 +238,15 @@ def format_notebook_error_html(error_str: str) -> str:
         # Build header with cell info and error line number
         header_parts = []
         if cell_info:
-            header_parts.append(f'<strong>📍 {cell_info}</strong>')
+            header_parts.append(f'<strong>{cell_info}</strong>')
         if error_line_number:
-            header_parts.append(f'<span style="color: #dc3545; font-weight: bold;">Error on line {error_line_number}</span>')
+            header_parts.append(f'Line {error_line_number}')
 
-        header = ' - '.join(header_parts) if header_parts else '💻 Failing Cell Code'
+        header = ' · ' .join(header_parts) if header_parts else 'Failing code'
 
         cell_source_html = f"""
             <div class="cell-source">
-                <h4>{header}</h4>
+                <div class="cell-source-header">{header}</div>
                 <pre><code>{formatted_code}</code></pre>
             </div>
         """
@@ -260,6 +261,7 @@ def format_notebook_error_html(error_str: str) -> str:
     <style>
         body {{
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-size: 14px;
             background: #f8f9fa;
             padding: 20px;
             margin: 0;
@@ -274,20 +276,21 @@ def format_notebook_error_html(error_str: str) -> str:
         }}
 
         .error-content {{
-            padding: 30px;
+            padding: 20px;
         }}
 
         .cell-source {{
             background: #f8f9fa;
             border-left: 4px solid #6c757d;
-            padding: 20px;
-            margin-bottom: 20px;
+            padding: 14px 16px;
+            margin-bottom: 16px;
+            border-radius: 0 4px 4px 0;
         }}
 
-        .cell-source h4 {{
+        .cell-source-header {{
             color: #495057;
-            margin: 0 0 15px 0;
-            font-size: 1.1rem;
+            margin: 0 0 10px 0;
+            font-size: 0.85rem;
         }}
 
         .cell-source pre {{
@@ -301,7 +304,7 @@ def format_notebook_error_html(error_str: str) -> str:
 
         .cell-source code {{
             font-family: 'Courier New', 'Consolas', monospace;
-            font-size: 0.9rem;
+            font-size: 0.8rem;
             line-height: 1.6;
             display: block;
         }}
@@ -338,19 +341,22 @@ def format_notebook_error_html(error_str: str) -> str:
         }}
 
         .error-type {{
-            background: #f8f9fa;
+            background: #fff5f5;
             border-left: 4px solid #dc3545;
-            padding: 20px;
-            margin-bottom: 20px;
+            padding: 16px 20px;
+            margin-bottom: 16px;
+            border-radius: 0 6px 6px 0;
         }}
 
         .error-type h3 {{
             color: #dc3545;
-            margin: 0 0 10px 0;
-            font-size: 1.2rem;
+            margin: 0 0 6px 0;
+            font-size: 0.9rem;
+            font-weight: 600;
         }}
 
         .error-message {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             color: #333;
             line-height: 1.5;
         }}
@@ -358,15 +364,23 @@ def format_notebook_error_html(error_str: str) -> str:
         .traceback-content {{
             background: #2c3e50;
             color: #ecf0f1;
-            padding: 15px;
+            padding: 12px 15px;
             border-radius: 4px;
-            font-family: 'Courier New', monospace;
-            font-size: 0.9rem;
-            line-height: 1.4;
+            font-family: 'Courier New', Consolas, monospace;
+            font-size: 0.75rem;
+            line-height: 1.5;
             overflow-x: auto;
-            max-height: 300px;
+            max-height: 200px;
             overflow-y: auto;
-            margin-top: 15px;
+            margin: 12px 0 0 0;
+            white-space: pre;
+            word-break: normal;
+        }}
+
+        .traceback-label {{
+            color: #6c757d;
+            font-size: 0.8rem;
+            margin-bottom: 6px;
         }}
     </style>
 </head>
@@ -374,13 +388,10 @@ def format_notebook_error_html(error_str: str) -> str:
     <div class="error-container">
         <div class="error-content">
             <div class="error-type">
-                <h3>🚨 {error_type}</h3>
-                <div class="error-message">{error_message or 'No detailed error message available.'}</div>
+                <div class="error-message">🚨 {error_type}:{error_message or 'No detailed error message available.'}</div>
             </div>
 
-            {cell_source_html}
-
-            {"<div class='traceback-content'>" + '<br>'.join(traceback_lines) + "</div>" if traceback_lines else ""}
+            {f'<pre class="traceback-content">' + html.escape('\n'.join(traceback_lines)) + '</pre>' if traceback_lines else ''}
         </div>
     </div>
 </body>
@@ -554,9 +565,50 @@ class JupyterNotebookRunner(CancellableWorkload):
             try:
                 executor.preprocess(notebook, {'metadata': {'path': os.path.dirname(data_path)}})
             except Exception as e:
+                # Export only successfully executed cells (exclude failing cell and later)
+                error_str = str(e)
+                cell_match = re.search(r'Error in cell (\d+) of \d+:', error_str)
+                if cell_match:
+                    failing_cell_1based = int(cell_match.group(1))
+                    # Keep only cells before the failing one (0-based index)
+                    truncate_at = failing_cell_1based - 1
+                    nb_copy = nbformat.v4.new_notebook(metadata=notebook.metadata)
+                    nb_copy.cells = list(notebook.cells[:truncate_at])
+                else:
+                    # Cannot determine failing cell; show only the error
+                    nb_copy = None
+
                 error_html = format_notebook_error_html(str(e))
+                error_body_match = re.search(
+                    r'<body[^>]*>(.*?)</body>', error_html, re.DOTALL | re.IGNORECASE)
+                error_content = (
+                    error_body_match.group(1).strip() if error_body_match else error_html)
+                error_banner = (
+                    '<div class="error-banner" style="background: #dc3545; color: white; '
+                    'padding: 10px 16px; margin: 16px 0; border-radius: 4px; font-size: 13px; font-weight: 600;">'
+                    'Execution stopped due to an error in a cell. Output above shows completed cells.</div>')
+
+                if nb_copy and nb_copy.cells:
+                    html_exporter = HTMLExporter()
+                    html_exporter.template_name = 'lab'
+                    html_exporter.theme = detect_theme()
+                    try:
+                        html_exporter.exclude_input = True
+                        html_exporter.exclude_input_prompt = True
+                        html_exporter.exclude_output_prompt = False
+                    except Exception:
+                        pass
+
+                    (partial_body, _) = html_exporter.from_notebook_node(nb_copy)
+                    partial_body = _inject_css_into_html_head(
+                        partial_body, _scrollbar_css(html_exporter.theme))
+                    combined_html = partial_body.replace(
+                        '</body>', f'\n{error_banner}\n<div style="margin-top: 1em;">{error_content}</div>\n</body>')
+                else:
+                    combined_html = error_html
+
                 with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False) as temp_file:
-                    temp_file.write(error_html)
+                    temp_file.write(combined_html)
                     temp_file_path = temp_file.name
                 return False, temp_file_path
             self.progress_callback(90, "Converting to HTML...")
@@ -616,7 +668,7 @@ class LoadingOverlay(QFrame):
         self.message_label = QLabel("Loading content...")
         self.message_label.setStyleSheet("""
             color: white;
-            font-size: 14px;
+            font-size: 12px;
             font-weight: bold;
             padding: 10px;
         """)
@@ -771,6 +823,7 @@ class DataAnalysisWidget(QWidget):
                     background-color: {bg};
                     color: {fg};
                     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                    font-size: 14px;
                     -webkit-font-smoothing: antialiased;
                     -moz-osx-font-smoothing: grayscale;
                 }}
@@ -811,6 +864,7 @@ class DataAnalysisWidget(QWidget):
                     background-color: {bg};
                     color: {fg};
                     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                    font-size: 14px;
                     -webkit-font-smoothing: antialiased;
                     -moz-osx-font-smoothing: grayscale;
                     display: flex;
@@ -823,13 +877,13 @@ class DataAnalysisWidget(QWidget):
                     text-align: center;
                 }}
                 .error-title {{
-                    font-size: 24px;
+                    font-size: 18px;
                     font-weight: bold;
                     margin-bottom: 10px;
                     color: {border_color};
                 }}
                 .error-message {{
-                    font-size: 16px;
+                    font-size: 14px;
                     line-height: 1.5;
                     color: {fg};
                     opacity: 0.8;
@@ -881,9 +935,9 @@ class DataAnalysisWidget(QWidget):
 
             error_html = f"""
             <html>
-            <body style="font-family: sans-serif; text-align: center; padding-top: 50px; background-color: {bg}; color: {fg};">
-                <h4>{html_file if html_file else "Analysis not available"}</h4>
-                <p style="font-size: small;">The requested notebook analysis is not defined.</p>
+            <body style="font-family: sans-serif; font-size: 14px; text-align: center; padding-top: 50px; background-color: {bg}; color: {fg};">
+                <h4 style="font-size: 16px;">{html_file if html_file else "Analysis not available"}</h4>
+                <p style="font-size: 12px;">The requested notebook analysis is not defined.</p>
             </body>
             </html>
             """
