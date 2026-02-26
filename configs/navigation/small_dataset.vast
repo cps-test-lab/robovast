@@ -15942,9 +15942,9 @@ execution:
   runs: 3
   scenario_file: scenario.osc
   test_files_filter:
-  - '**/files/*'
-  - '**/small_dataset_maps/*.stl'
-  - '**/small_dataset_maps/**/maps/*'
+  - 'files/*'
+  - 'small_dataset_maps/*.stl'
+  - 'small_dataset_maps/**/maps/*'
 analysis:
   postprocessing:
     - rosbags_to_csv

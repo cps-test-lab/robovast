@@ -29,8 +29,8 @@ execution:
   - ENABLE_X11: "false"
   scenario_file: scenario.osc
   test_files_filter:
-  - "**/files/*.py"
-  - "**/files/*.sh"
+  - "files/*.py"
+  - "files/*.sh"
   pre_command: /config/files/pre_command.sh
   post_command: /config/files/post_command.sh
 analysis:

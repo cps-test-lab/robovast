@@ -42,7 +42,7 @@ execution:
   runs: 10
   scenario_file: scenario.osc
   test_files_filter:
-  - "**/files/*"
+  - "files/*"
 analysis:
   postprocessing:
     - rosbags_to_csv

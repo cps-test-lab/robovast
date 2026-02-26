@@ -620,8 +620,8 @@ def generate_compose_run_script(runs, run_data, config_path_result, pre_command,
             script += compose_bg
             script += compose_wait
         else:
-            script += f'if [ "$USE_SHELL" = true ]; then\n'
-            script += f'    docker compose -f "{compose_file}" run --rm robovast /bin/bash\n'
+            script += f'if [ "$START_ONLY" = true ]; then\n'
+            script += f'    docker compose -f "{compose_file}" run --rm --entrypoint /bin/bash robovast\n'
             script += '    EXIT_CODE=$?\n'
             script += f'else\n'
             # Indent the wait-loop lines for readability inside the else block
