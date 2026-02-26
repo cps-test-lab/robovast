@@ -28,25 +28,33 @@ from .s3_client import ClusterS3Client
 logger = logging.getLogger(__name__)
 
 _BAR_WIDTH = 20
+_FILE_COUNT_WIDTH = 6
+_PCT_WIDTH = 7     # e.g. " 34.2%"
+_SIZE_WIDTH = 11   # e.g. "  156.23 MB"
+_RATE_WIDTH = 12   # e.g. "   8.12 MB/s"
 
 
 def _format_size(num_bytes: int) -> str:
+    if num_bytes == 0:
+        return "0 B".rjust(_SIZE_WIDTH)
+    val = float(num_bytes)
     for unit in ("B", "KB", "MB", "GB"):
-        if num_bytes < 1024:
-            return f"{num_bytes:.1f} {unit}"
-        num_bytes /= 1024
-    return f"{num_bytes:.1f} TB"
+        if val < 1024:
+            return f"{val:.2f} {unit}".rjust(_SIZE_WIDTH)
+        val /= 1024
+    return f"{val:.2f} TB".rjust(_SIZE_WIDTH)
 
 
 def _format_rate(bytes_per_sec: float) -> str:
-    """Return a human-readable throughput string (e.g. '12.3 MB/s')."""
+    """Return a human-readable throughput string (e.g. '  8.12 MB/s')."""
     if bytes_per_sec <= 0:
-        return "0 B/s"
+        return "0 B/s".rjust(_RATE_WIDTH)
+    val = bytes_per_sec
     for unit in ("B/s", "KB/s", "MB/s", "GB/s"):
-        if bytes_per_sec < 1024:
-            return f"{bytes_per_sec:.1f} {unit}"
-        bytes_per_sec /= 1024
-    return f"{bytes_per_sec:.1f} TB/s"
+        if val < 1024:
+            return f"{val:.2f} {unit}".rjust(_RATE_WIDTH)
+        val /= 1024
+    return f"{val:.2f} TB/s".rjust(_RATE_WIDTH)
 
 
 def _make_progress_callback(prefix: str, bucket_name: str) -> Tuple[Callable, Callable, Callable]:
@@ -67,9 +75,12 @@ def _make_progress_callback(prefix: str, bucket_name: str) -> Tuple[Callable, Ca
         progress_bar = "█" * filled + "░" * (_BAR_WIDTH - filled)
         size_str = _format_size(state["total_bytes"])
         elapsed = time.monotonic() - state["start_time"]
-        rate_str = _format_rate(state["total_bytes"] / elapsed) if elapsed > 0 else "0 B/s"
+        rate_str = _format_rate(state["total_bytes"] / elapsed) if elapsed > 0 else _format_rate(0)
+        files_str = f"{current:0{_FILE_COUNT_WIDTH}d}/{total:0{_FILE_COUNT_WIDTH}d}"
+        pct = 100.0 * current / total if total > 0 else 100.0
+        pct_str = f"{pct:.1f}%".rjust(_PCT_WIDTH)
         sys.stdout.write(
-            f"\r{prefix} {bucket_name}  [{progress_bar}]  {current}/{total}  {size_str}  {rate_str}   "
+            f"\r{prefix} {bucket_name}  [{progress_bar}]  {pct_str}  {files_str}  {size_str}  {rate_str}   "
         )
         sys.stdout.flush()
 
@@ -210,10 +221,12 @@ class ResultDownloader:
                         size_str = _format_size(total_bytes)
                         elapsed = get_elapsed()
                         rate_str = (
-                            _format_rate(total_bytes / elapsed) if elapsed > 0 else "0 B/s"
+                            _format_rate(total_bytes / elapsed) if elapsed > 0 else _format_rate(0)
                         )
+                        files_str = f"{count:0{_FILE_COUNT_WIDTH}d}"
+                        pct_str = "100.0%".rjust(_PCT_WIDTH)
                         sys.stdout.write(
-                            f"\r{prefix} {bucket_name}  [{progressbar}]  {count} files  "
+                            f"\r{prefix} {bucket_name}  [{progressbar}]  {pct_str}  {files_str} files  "
                             f"{size_str}  {rate_str}  done\n"
                         )
                         sys.stdout.flush()
