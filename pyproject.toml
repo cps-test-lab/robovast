@@ -69,6 +69,7 @@ rosbags_tf_to_csv = "robovast.common.postprocessing_plugins:rosbags_tf_to_csv"
 rosbags_bt_to_csv = "robovast.common.postprocessing_plugins:rosbags_bt_to_csv"
 rosbags_to_csv = "robovast.common.postprocessing_plugins:rosbags_to_csv"
 rosbags_to_webm = "robovast.common.postprocessing_plugins:rosbags_to_webm"
+rosbags_action_to_yaml = "robovast.common.postprocessing_plugins:rosbags_action_to_yaml"
 compress = "robovast.common.postprocessing_plugins:compress"
 
 [build-system]

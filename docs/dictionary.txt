@@ -36,3 +36,4 @@ orchestrator
 gzipped
 namespace
 subdirectory
+entrypoint
