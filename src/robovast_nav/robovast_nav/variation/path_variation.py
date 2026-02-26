@@ -41,7 +41,8 @@ class PoseConfig(BaseModel):
 class PathVariationRandomConfig(BaseModel):
     model_config = ConfigDict(extra='forbid')
     start_pose: str | PoseConfig
-    goal_pose: str | dict  # Can be a reference like "@goal_pose" or a dict with x, y, yaw
+    goal_poses: str | list[dict] | list[PoseConfig]  # Can be a reference like "@goal_poses" or "@goal_pose"
+    num_goal_poses: Optional[int] = None  # Number of goal poses to generate (optional, defaults based on target parameter)
     map_file: Optional[str] = None
     path_length: float
     num_paths: int
@@ -62,6 +63,39 @@ class PathVariationGuiRenderer(VariationGuiRenderer):
                                       alpha=0.8, label='Path',
                                       show_endpoints=True)
 
+        # Handle both single goal pose and multiple goal poses
+        # Check both possible parameter names
+        goal_poses = config.get('config', {}).get('goal_poses', None)
+        goal_pose = config.get('config', {}).get('goal_pose', None)
+        
+        if goal_pose is not None:
+            # Single pose parameter
+            goal_poses_list = [goal_pose]
+            label = 'Goal Pose'
+        elif goal_poses is not None:
+            # Multiple poses parameter
+            if isinstance(goal_poses, list):
+                goal_poses_list = goal_poses
+                label = 'Goal Poses'
+            else:
+                goal_poses_list = [goal_poses]
+                label = 'Goal Pose'
+        else:
+            goal_poses_list = []
+            label = 'Goal Poses'
+
+        if goal_poses_list:
+            # Extract x and y coordinates from Pose objects
+            x_coords = [pose.position.x for pose in goal_poses_list]
+            y_coords = [pose.position.y for pose in goal_poses_list]
+            
+            self.gui_object.map_visualizer.ax.scatter(x_coords, y_coords,
+                                                      s=10,  # marker size
+                                                      c='blue',
+                                                      alpha=0.9,
+                                                      label=label,
+                                                      zorder=10)
+                
         # Visualize raster points if available
         raster_points = config.get('_raster_points', None)
         if raster_points:
@@ -70,11 +104,13 @@ class PathVariationGuiRenderer(VariationGuiRenderer):
             y_coords = [point[1] for point in raster_points]
             self.gui_object.map_visualizer.ax.scatter(x_coords, y_coords,
                                                       s=3,  # marker size
-                                                      c='blue',
+                                                      c='gray',
                                                       alpha=0.3,
                                                       label='Raster Points',
                                                       zorder=2)
-            self.gui_object.canvas.draw()
+        
+        # Final canvas draw to update display
+        self.gui_object.canvas.draw()
 
 
 class PathVariationRandom(NavVariation):
@@ -87,19 +123,44 @@ class PathVariationRandom(NavVariation):
     def variation(self, in_configs):
         self.progress_update("Running Path Variation...")
         results = []
-
+        
         for config in in_configs:
+            # Detect if we should output single pose or multiple poses based on parameter name
+            # Use the configuration reference to determine target parameter
+            goal_param_name = 'goal_poses'  # Default
+            if isinstance(self.parameters.goal_poses, str):
+                ref_name = self.parameters.goal_poses.lstrip('@')
+                goal_param_name = ref_name
+            
+            single_pose_mode = goal_param_name == 'goal_pose'
+            
+            # Set default num_goal_poses if not specified
+            if self.parameters.num_goal_poses is None:
+                self.parameters.num_goal_poses = 1 
+                
+            self.progress_update(f"Detected target parameter '{goal_param_name}' - generating {self.parameters.num_goal_poses} goal pose(s)")
+
             # calculate all start/goal poses for configuration
             for path_index in range(self.parameters.num_paths):
                 current_seed = self.parameters.seed + path_index
                 print(f"Generating path for configuration {config['name']}, path index {path_index}, seed {current_seed}")
-                start_pose, goal_pose, path, map_file = self.generate_path_for_config(
+                start_pose, goal_poses, path, map_file = self.generate_path_for_config(
                     self.base_path, config, path_index, current_seed
                 )
 
+                # Format goal_poses based on the target parameter
+                if single_pose_mode and len(goal_poses) >= 1:
+                    # Single pose mode: output the first pose directly (not in a list)
+                    formatted_goal_poses = goal_poses[0]
+                    target_param = 'goal_pose'
+                else:
+                    # Multiple poses mode: output as list
+                    formatted_goal_poses = goal_poses
+                    target_param = 'goal_poses'
+
                 new_config = self.update_config(config, {
                     'start_pose': start_pose,
-                    'goal_pose': goal_pose},
+                    target_param: formatted_goal_poses},
                     other_values={
                         '_path': path,
                         '_map_file': map_file
@@ -109,7 +170,7 @@ class PathVariationRandom(NavVariation):
         return results
 
     def generate_path_for_config(self, cache_path, config, path_index, seed):
-        """Generate a single path for a config.
+        """Generate a single path with multiple goal poses for a config.
 
         Args:
             cache_path: Path for caching results
@@ -118,7 +179,7 @@ class PathVariationRandom(NavVariation):
             seed: Random seed for generation
 
         Returns:
-            Tuple of (start_pose, goal_pose, path, map_file_path)
+            Tuple of (start_pose, goal_poses, path, map_file_path)
         """
         try:
             map_file_path = self.get_map_file(self.parameters.map_file, config)
@@ -137,9 +198,9 @@ class PathVariationRandom(NavVariation):
         file_cache = FileCache(cache_path, "robovast_path_generation_", [self.parameters, seed])
         cache = file_cache.get_cached_file([map_file_path], binary=True)
         if cache:
-            cached_start_pose, cached_goal_pose, cached_path = pickle.loads(cache)
-            self.progress_update(f"Using cached start/goal poses {cached_start_pose} -> {cached_goal_pose}")
-            return cached_start_pose, cached_goal_pose, cached_path, map_file_path
+            cached_start_pose, cached_goal_poses, cached_path = pickle.loads(cache)
+            self.progress_update(f"Using cached start/goal poses {cached_start_pose} -> {cached_goal_poses}")
+            return cached_start_pose, cached_goal_poses, cached_path, map_file_path
 
         path_generator = PathGenerator(map_file_path)
 
@@ -162,20 +223,38 @@ class PathVariationRandom(NavVariation):
 
             waypoints = [start_pose]
 
-            # Generate goal pose
-            goal_poses_list = waypoint_generator.generate_waypoints(
-                num_waypoints=1,
-                robot_diameter=self.parameters.robot_diameter,
-                min_distance=self.parameters.min_distance,  # Minimum distance between waypoints
-                max_distance=self.parameters.path_length,
-                initial_start_pose=start_pose
-            )
-            if not goal_poses_list:
-                self.progress_update("   no valid goal poses found")
+            # Generate multiple goal poses sequentially within target radii
+            self.progress_update(f"  Generating {self.parameters.num_goal_poses} goal poses sequentially")
+            target_distance_per_segment = self.parameters.path_length / self.parameters.num_goal_poses
+            
+            goal_poses_list = []
+            previous_pose = start_pose
+            
+            for goal_idx in range(self.parameters.num_goal_poses):
+                self.progress_update(f"    Generating goal pose {goal_idx + 1}/{self.parameters.num_goal_poses}")
+                
+                # Generate next goal pose within the target radius from previous pose
+                next_goal_poses = waypoint_generator.generate_waypoints(
+                    num_waypoints=1,
+                    robot_diameter=self.parameters.robot_diameter,
+                    min_distance=self.parameters.min_distance,
+                    max_distance=target_distance_per_segment,
+                    initial_start_pose=previous_pose
+                )
+                
+                if not next_goal_poses:
+                    self.progress_update(f"    Failed to generate goal pose {goal_idx + 1}")
+                    break
+                    
+                next_goal_pose = next_goal_poses[0]
+                goal_poses_list.append(next_goal_pose)
+                previous_pose = next_goal_pose
+                
+            if len(goal_poses_list) < self.parameters.num_goal_poses:
+                self.progress_update(f"   not enough valid goal poses found (got {len(goal_poses_list)}, needed {self.parameters.num_goal_poses})")
                 attempt += 1
                 continue
-            # Take the last goal pose as the final goal
-            goal_pose = goal_poses_list[-1]
+            
             waypoints.extend(goal_poses_list)
 
             self.progress_update(f"  Generated waypoints: {waypoints}")
@@ -209,7 +288,7 @@ class PathVariationRandom(NavVariation):
         if not path_found:
             raise ValueError("Failed to generate valid path within maximum attempts.")
 
-        # Convert numpy types to native Python types
+        # Convert numpy types to native Python types for start pose
         start_pose = Pose(
             position=Position(
                 x=float(start_pose.position.x),
@@ -219,28 +298,33 @@ class PathVariationRandom(NavVariation):
                 yaw=float(start_pose.orientation.yaw)
             )
         )
-        goal_pose = Pose(
-            position=Position(
-                x=float(goal_pose.position.x),
-                y=float(goal_pose.position.y)
-            ),
-            orientation=Orientation(
-                yaw=float(goal_pose.orientation.yaw)
-            )
-        )
+        
+        # Convert numpy types to native Python types for goal poses
+        goal_poses = []
+        for goal_pose in goal_poses_list:
+            goal_poses.append(Pose(
+                position=Position(
+                    x=float(goal_pose.position.x),
+                    y=float(goal_pose.position.y)
+                ),
+                orientation=Orientation(
+                    yaw=float(goal_pose.orientation.yaw)
+                )
+            ))
 
-        self.progress_update(f"  Found path after {attempt} attempts: {start_pose} -> {goal_pose}")
-        file_content = pickle.dumps((start_pose, goal_pose, path))
+        self.progress_update(f"  Found path after {attempt} attempts: {start_pose} -> {goal_poses}")
+        file_content = pickle.dumps((start_pose, goal_poses, path))
         file_cache.save_file_to_cache(
             input_files=[map_file_path],
             file_content=file_content,
             binary=True)
-        return start_pose, goal_pose, path, map_file_path
+        return start_pose, goal_poses, path, map_file_path
 
 
 class PathVariationRasterizedConfig(BaseModel):
     model_config = ConfigDict(extra='forbid')
     start_pose: Optional[str | PoseConfig] = None
+    num_goal_poses: Optional[int] = 1  # Number of goal poses to generate
     map_file: Optional[str] = None
     raster_size: float  # Grid spacing for square rasterization in meters
     raster_offset_x: float = 0.0  # Offset for raster grid in x direction (meters)
@@ -309,61 +393,225 @@ class PathVariationRasterized(NavVariation):
                     for x, y in raster_points
                 ]
 
-            # Generate paths from each start pose to all reachable raster points
-            path_index = 0
-            path_generator = PathGenerator(map_file_path)
-            for start_idx, start_pose in enumerate(start_poses):
-                for goal_idx, (goal_x, goal_y) in enumerate(raster_points):
-                    # Skip if start and goal are the same raster point
-                    if start_pose is not None and \
-                       abs(start_pose.position.x - goal_x) < self.parameters.raster_size / 2 and \
-                       abs(start_pose.position.y - goal_y) < self.parameters.raster_size / 2:
-                        continue
-
-                    # Create goal pose from raster point
-                    goal_pose = Pose(
-                        position=Position(x=goal_x, y=goal_y),
-                        orientation=Orientation(yaw=0.0)
-                    )
-
-                    self.progress_update(
-                        f"Generating path {path_index}: start {start_idx} -> goal raster point {goal_idx}"
-                    )
-
-                    # Generate path directly
-                    waypoints = [start_pose, goal_pose]
-                    path = path_generator.generate_path(waypoints, [])
-
-                    if path:
-                        # Calculate path length
-                        path_length = self._calculate_path_length(path)
-
-                        # Check if path length is within tolerance
-                        min_length = self.parameters.path_length - self.parameters.path_length_tolerance
-                        max_length = self.parameters.path_length + self.parameters.path_length_tolerance
-
-                        if min_length <= path_length <= max_length:
-                            new_config = self.update_config(config, {
-                                'start_pose': start_pose,
-                                'goal_pose': goal_pose},
-                                other_values={
-                                    '_path': path,
-                                    '_map_file': map_file_path,
-                                    '_raster_points': raster_points,
-                                    '_path_length': path_length
-                            })
-                            results.append(new_config)
-                        else:
-                            self.progress_update(
-                                f"  Path length {path_length:.2f}m outside tolerance "
-                                f"[{min_length:.2f}, {max_length:.2f}]"
-                            )
-                    else:
-                        self.progress_update(f"  No path found from {start_pose} to {goal_pose}")
-
-                    path_index += 1
+            # Choose behavior based on num_goal_poses
+            if self.parameters.num_goal_poses == 1:
+                # Original behavior: all points to all other points
+                results.extend(self._generate_single_goal_configs(
+                    config, start_poses, raster_points, 
+                    map_file_path
+                ))
+            else:
+                # New behavior: multiple goal poses with search radius algorithm
+                results.extend(self._generate_multi_goal_configs(
+                    config, start_poses, raster_points,
+                    map_file_path
+                ))
 
         return results
+
+    def _generate_single_goal_configs(self, config, start_poses, raster_points, 
+                                    map_file_path):
+        """Original behavior: generate paths from each start pose to all reachable raster points."""
+        results = []
+        path_index = 0
+        path_generator = PathGenerator(map_file_path)
+        
+        for start_idx, start_pose in enumerate(start_poses):
+            for goal_idx, (goal_x, goal_y) in enumerate(raster_points):
+                # Skip if start and goal are the same raster point
+                if start_pose is not None and \
+                   abs(start_pose.position.x - goal_x) < self.parameters.raster_size / 2 and \
+                   abs(start_pose.position.y - goal_y) < self.parameters.raster_size / 2:
+                    continue
+
+                # Create goal pose from raster point
+                goal_pose = Pose(
+                    position=Position(x=goal_x, y=goal_y),
+                    orientation=Orientation(yaw=0.0)
+                )
+
+                self.progress_update(
+                    f"Generating path {path_index}: start {start_idx} -> goal raster point {goal_idx}"
+                )
+
+                # Generate path directly
+                waypoints = [start_pose, goal_pose]
+                path = path_generator.generate_path(waypoints, [])
+
+                if path:
+                    # Calculate path length
+                    path_length = self._calculate_path_length(path)
+
+                    # Check if path length is within tolerance
+                    min_length = self.parameters.path_length - self.parameters.path_length_tolerance
+                    max_length = self.parameters.path_length + self.parameters.path_length_tolerance
+
+                    if min_length <= path_length <= max_length:
+                        # Format goal_poses based on num_goal_poses
+                        if self.parameters.num_goal_poses == 1:
+                            formatted_goal_poses = goal_pose
+                            target_param = 'goal_pose'
+                        else:
+                            formatted_goal_poses = [goal_pose]
+                            target_param = 'goal_poses'
+                        
+                        new_config = self.update_config(config, {
+                            'start_pose': start_pose,
+                            target_param: formatted_goal_poses},
+                            other_values={
+                                '_path': path,
+                                '_map_file': map_file_path,
+                                '_raster_points': raster_points,
+                                '_path_length': path_length
+                        })
+                        results.append(new_config)
+                    else:
+                        self.progress_update(
+                            f'  Path length {path_length:.2f}m outside tolerance '
+                            f'[{min_length:.2f}, {max_length:.2f}]'
+                        )
+                else:
+                    self.progress_update(f"  No path found from {start_pose} to {goal_pose}")
+
+                path_index += 1
+        
+        return results
+
+    def _generate_multi_goal_configs(self, config, start_poses, raster_points,
+                                   map_file_path):
+        """New behavior: generate multiple goal poses using search radius algorithm."""
+        results = []
+        path_generator = PathGenerator(map_file_path)
+        
+        for start_idx, start_pose in enumerate(start_poses):
+            self.progress_update(f"Generating multi-goal path for start pose {start_idx}")
+            
+            # Calculate optimal search radius and bonus distance
+            search_radius, bonus_distance = self._calculate_search_parameters()
+            
+            # Generate goal poses iteratively
+            goal_poses_list = []
+            current_pose = start_pose
+            waypoints = [start_pose]
+            
+            for goal_idx in range(self.parameters.num_goal_poses):
+                is_final_goal = goal_idx == self.parameters.num_goal_poses - 1
+                search_dist = search_radius + bonus_distance if is_final_goal else search_radius
+                
+                # Find next goal pose within search distance
+                next_goal = self._find_goal_within_distance(
+                    current_pose, raster_points, search_dist, goal_poses_list
+                )
+                
+                if next_goal is None:
+                    self.progress_update(f"  No valid goal pose found within distance {search_dist:.2f}m for goal {goal_idx + 1}")
+                    break
+                    
+                goal_poses_list.append(next_goal)
+                waypoints.append(next_goal)
+                current_pose = next_goal
+            
+            # Only proceed if we found all required goal poses
+            if len(goal_poses_list) == self.parameters.num_goal_poses:
+                # Generate path through all waypoints
+                path = path_generator.generate_path(waypoints, [])
+                
+                if path:
+                    # Calculate path length
+                    path_length = self._calculate_path_length(path)
+
+                    # Check if path length is within tolerance
+                    min_length = self.parameters.path_length - self.parameters.path_length_tolerance
+                    max_length = self.parameters.path_length + self.parameters.path_length_tolerance
+
+                    if min_length <= path_length <= max_length:
+                        # Format goal_poses based on num_goal_poses
+                        if self.parameters.num_goal_poses == 1:
+                            formatted_goal_poses = goal_poses_list[0] if goal_poses_list else None
+                            target_param = 'goal_pose'
+                        else:
+                            formatted_goal_poses = goal_poses_list
+                            target_param = 'goal_poses'
+                        
+                        new_config = self.update_config(config, {
+                            'start_pose': start_pose,
+                            target_param: formatted_goal_poses},
+                            other_values={
+                                '_path': path,
+                                '_map_file': map_file_path,
+                                '_raster_points': raster_points,
+                                '_path_length': path_length
+                        })
+                        results.append(new_config)
+                        self.progress_update(f"  Generated valid multi-goal path with {len(goal_poses_list)} goals")
+                    else:
+                        self.progress_update(
+                            f'  Path length {path_length:.2f}m outside tolerance '
+                            f'[{min_length:.2f}, {max_length:.2f}]'
+                        )
+                else:
+                    self.progress_update(f"  No path found through waypoints")
+            else:
+                self.progress_update(f"  Could not find all {self.parameters.num_goal_poses} goal poses")
+        
+        return results
+
+    def _calculate_search_parameters(self):
+        """Calculate optimal search radius and bonus distance."""
+        # Calculate with tolerances
+        max_path_length = self.parameters.path_length + self.parameters.path_length_tolerance
+        min_path_length = self.parameters.path_length - self.parameters.path_length_tolerance
+        
+        max_required_points = max_path_length / self.parameters.raster_size
+        min_required_points = min_path_length / self.parameters.raster_size
+        
+        total_points = self.parameters.num_goal_poses + 1  # +1 for start pose
+        
+        # Calculate search radius and bonus for both cases
+        max_search_radius = int(max_required_points // total_points)
+        max_bonus = max_required_points % total_points
+        
+        min_search_radius = int(min_required_points // total_points)
+        min_bonus = min_required_points % total_points
+        
+        # Choose the one with smaller bonus distance
+        if max_bonus <= min_bonus:
+            search_radius = max_search_radius * self.parameters.raster_size
+            bonus_distance = max_bonus * self.parameters.raster_size
+        else:
+            search_radius = min_search_radius * self.parameters.raster_size
+            bonus_distance = min_bonus * self.parameters.raster_size
+        
+        self.progress_update(f"  Search radius: {search_radius:.2f}m, bonus distance: {bonus_distance:.2f}m")
+        return search_radius, bonus_distance
+
+    def _find_goal_within_distance(self, current_pose, raster_points, max_distance, existing_goals):
+        """Find a raster point within max_distance of current_pose that hasn't been used."""
+        for x, y in raster_points:
+            # Skip if this point is too close to current pose (same raster point)
+            if abs(current_pose.position.x - x) < self.parameters.raster_size / 2 and \
+               abs(current_pose.position.y - y) < self.parameters.raster_size / 2:
+                continue
+            
+            # Skip if this point is already used as a goal
+            point_used = False
+            for existing_goal in existing_goals:
+                if abs(existing_goal.position.x - x) < self.parameters.raster_size / 2 and \
+                   abs(existing_goal.position.y - y) < self.parameters.raster_size / 2:
+                    point_used = True
+                    break
+            if point_used:
+                continue
+            
+            # Check if within distance
+            distance = math.sqrt((current_pose.position.x - x)**2 + (current_pose.position.y - y)**2)
+            if distance <= max_distance:
+                return Pose(
+                    position=Position(x=x, y=y),
+                    orientation=Orientation(yaw=0.0)
+                )
+        
+        return None
 
     def _generate_raster_points(self, waypoint_generator):
         """Generate valid raster points covering the map using a square grid.
