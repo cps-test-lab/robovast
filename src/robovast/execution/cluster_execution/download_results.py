@@ -18,6 +18,7 @@
 import logging
 import os
 import sys
+import time
 from typing import Callable, Optional, Tuple
 
 from kubernetes import client, config
@@ -37,27 +38,50 @@ def _format_size(num_bytes: int) -> str:
     return f"{num_bytes:.1f} TB"
 
 
-def _make_progress_callback(prefix: str, bucket_name: str) -> Tuple[Callable, Callable]:
-    """Return ``(callback, get_total_bytes)`` for single-line progress display.
+def _format_rate(bytes_per_sec: float) -> str:
+    """Return a human-readable throughput string (e.g. '12.3 MB/s')."""
+    if bytes_per_sec <= 0:
+        return "0 B/s"
+    for unit in ("B/s", "KB/s", "MB/s", "GB/s"):
+        if bytes_per_sec < 1024:
+            return f"{bytes_per_sec:.1f} {unit}"
+        bytes_per_sec /= 1024
+    return f"{bytes_per_sec:.1f} TB/s"
+
+
+def _make_progress_callback(prefix: str, bucket_name: str) -> Tuple[Callable, Callable, Callable]:
+    """Return ``(callback, get_total_bytes, get_elapsed)`` for single-line progress display.
 
     The callback signature is ``(current, total, file_size_bytes)`` and updates
     the current terminal line in place using ``\\r``.  ``get_total_bytes()``
-    returns the cumulative downloaded byte count.
+    returns the cumulative downloaded byte count.  ``get_elapsed()`` returns
+    elapsed seconds since the first callback (or 0 if none yet).
     """
-    state = {"total_bytes": 0}
+    state: dict = {"total_bytes": 0, "start_time": None}
 
     def callback(current: int, total: int, size_bytes: int) -> None:
+        if state["start_time"] is None:
+            state["start_time"] = time.monotonic()
         state["total_bytes"] += size_bytes
         filled = int(_BAR_WIDTH * current / total) if total > 0 else _BAR_WIDTH
         progress_bar = "█" * filled + "░" * (_BAR_WIDTH - filled)
         size_str = _format_size(state["total_bytes"])
-        sys.stdout.write(f"\r{prefix} {bucket_name}  [{progress_bar}]  {current}/{total}  {size_str}   ")
+        elapsed = time.monotonic() - state["start_time"]
+        rate_str = _format_rate(state["total_bytes"] / elapsed) if elapsed > 0 else "0 B/s"
+        sys.stdout.write(
+            f"\r{prefix} {bucket_name}  [{progress_bar}]  {current}/{total}  {size_str}  {rate_str}   "
+        )
         sys.stdout.flush()
 
     def get_total_bytes() -> int:
         return state["total_bytes"]
 
-    return callback, get_total_bytes
+    def get_elapsed() -> float:
+        if state["start_time"] is None:
+            return 0.0
+        return time.monotonic() - state["start_time"]
+
+    return callback, get_total_bytes, get_elapsed
 
 
 class ResultDownloader:
@@ -169,7 +193,7 @@ class ResultDownloader:
                     else:
                         sys.stdout.write(f"\r{prefix} {bucket_name}  downloading...   ")
                         sys.stdout.flush()
-                        progress_callback, get_total_bytes = _make_progress_callback(
+                        progress_callback, get_total_bytes, get_elapsed = _make_progress_callback(
                             prefix, bucket_name
                         )
 
@@ -182,9 +206,15 @@ class ResultDownloader:
                         logger.info(f"{prefix} Downloaded {count} file(s) for '{bucket_name}'")
                     else:
                         progressbar = "█" * _BAR_WIDTH
-                        size_str = _format_size(get_total_bytes())
+                        total_bytes = get_total_bytes()
+                        size_str = _format_size(total_bytes)
+                        elapsed = get_elapsed()
+                        rate_str = (
+                            _format_rate(total_bytes / elapsed) if elapsed > 0 else "0 B/s"
+                        )
                         sys.stdout.write(
-                            f"\r{prefix} {bucket_name}  [{progressbar}]  {count} files  {size_str}  done\n"
+                            f"\r{prefix} {bucket_name}  [{progressbar}]  {count} files  "
+                            f"{size_str}  {rate_str}  done\n"
                         )
                         sys.stdout.flush()
 
