@@ -30,7 +30,8 @@ logger = logging.getLogger(__name__)
 
 
 
-def initialize_local_execution(config, output_dir, runs, feedback_callback=logging.debug):
+def initialize_local_execution(config, output_dir, runs, feedback_callback=logging.debug,
+                               skip_resource_allocation=False):
     """Initialize common setup for local execution commands.
 
     Performs all common setup steps including:
@@ -143,7 +144,8 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
                        f"Consider setting 'run_as_user: {host_uid}' in your .vast config for local testing.")
 
     generate_compose_run_script(runs, run_data, config_path_result, pre_command, post_command,
-                                docker_image, results_dir, os.path.join(config_dir, "run.sh"))
+                                docker_image, results_dir, os.path.join(config_dir, "run.sh"),
+                                skip_resource_allocation=skip_resource_allocation)
     return os.path.join(config_dir, "run.sh")
 
 
@@ -332,6 +334,7 @@ def _build_compose_yaml(
     main_gpu,
     secondary_containers,
     use_gui_block,
+    skip_resource_allocation=False,
 ):
     """Build the docker-compose YAML content for one test run as a shell heredoc string."""
 
@@ -390,9 +393,10 @@ def _build_compose_yaml(
         lines.append("      - NVIDIA_DRIVER_CAPABILITIES=all")
 
     # Resource limits for main container
-    res = _compose_resources_block(main_cpu, main_memory)
-    if res:
-        lines.append(res)
+    if not skip_resource_allocation:
+        res = _compose_resources_block(main_cpu, main_memory)
+        if res:
+            lines.append(res)
 
     lines.append(f"    user: \"{uid}:{gid}\"")
     lines.append("    stop_grace_period: 60s")
@@ -434,9 +438,10 @@ def _build_compose_yaml(
             lines.append("      - NVIDIA_VISIBLE_DEVICES=all")
             lines.append("      - NVIDIA_DRIVER_CAPABILITIES=all")
 
-        sc_res = _compose_resources_block(sc_cpu, sc_memory)
-        if sc_res:
-            lines.append(sc_res)
+        if not skip_resource_allocation:
+            sc_res = _compose_resources_block(sc_cpu, sc_memory)
+            if sc_res:
+                lines.append(sc_res)
 
         lines.append(f"    user: \"{uid}:{gid}\"")
         # ROS2 nodes respond to SIGINT for graceful shutdown; docker compose
@@ -462,7 +467,8 @@ def _build_compose_yaml(
 
 
 def generate_compose_run_script(runs, run_data, config_path_result, pre_command, post_command,
-                                docker_image, results_dir, output_script_path):
+                                docker_image, results_dir, output_script_path,
+                                skip_resource_allocation=False):
     """Generate a shell script to run Docker Compose stacks sequentially.
 
     Args:
@@ -580,6 +586,7 @@ def generate_compose_run_script(runs, run_data, config_path_result, pre_command,
             main_gpu=main_gpu,
             secondary_containers=normalized_secondary,
             use_gui_block=True,
+            skip_resource_allocation=skip_resource_allocation,
         )
 
         script += f'CURRENT_COMPOSE_FILE="{compose_file}"\n'

@@ -78,7 +78,10 @@ def local():
               help='Use a custom Docker image')
 @click.option('--abort-on-failure', is_flag=True,
               help='Stop execution after the first failed test config (default: continue)')
-def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_failure):
+@click.option('--skip-resource-allocation', is_flag=True,
+              help='Do not add CPU/memory reservations to docker compose run')
+def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_failure,
+        skip_resource_allocation):
     """Execute scenario configurations locally using Docker.
 
     Runs scenario configurations in Docker containers with bind mounts for configuration
@@ -97,7 +100,8 @@ def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_
     """
     try:
         run_script_path = initialize_local_execution(
-            config, None, runs, feedback_callback=click.echo
+            config, None, runs, feedback_callback=click.echo,
+            skip_resource_allocation=skip_resource_allocation
         )
 
         # Build command with options
@@ -131,7 +135,9 @@ def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_
               help='Run only a specific configuration by name')
 @click.option('--runs', '-r', type=int, default=None,
               help='Override the number of runs specified in the config')
-def prepare_run(output_dir, config, runs):
+@click.option('--skip-resource-allocation', is_flag=True,
+              help='Do not add CPU/memory reservations to docker compose run')
+def prepare_run(output_dir, config, runs, skip_resource_allocation):
     """Prepare run without executing.
 
     Generates all necessary configuration files and a ``run.sh`` script for
@@ -152,11 +158,12 @@ def prepare_run(output_dir, config, runs):
     After preparation, inspect the files in OUTPUT-DIR and execute manually ``cd OUTPUT-DIR; ./run.sh``.
 
     The run.sh script supports the same options as ``vast execution local run``
-    (--start-only, --no-gui, --network-host, --output, --image).
+    (--start-only, --no-gui, --network-host, --output, --image, --abort-on-failure).
     """
     try:
         initialize_local_execution(
-            config, output_dir, runs, feedback_callback=click.echo
+            config, output_dir, runs, feedback_callback=click.echo,
+            skip_resource_allocation=skip_resource_allocation
         )
 
         click.echo(f"\nFor local execution, run: \n\n{os.path.join(output_dir, 'run.sh')}\n")
