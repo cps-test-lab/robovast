@@ -425,6 +425,7 @@ def _build_compose_yaml(
             lines.append("      - /dev/dri:/dev/dri")
         lines.append("    environment:")
         lines.append(f"      - CONTAINER_NAME={sc_name}")
+        lines.append("      - ROS_LOG_DIR=/out/logs")
         if use_gui_block:
             lines.append("      - DISPLAY=${DISPLAY:-:0}")
             lines.append("      - LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-0}")

@@ -364,6 +364,7 @@ class JobRunner:
                 'command': ['/bin/bash', '/config/secondary_entrypoint.sh'],
                 'env': [
                     {'name': 'CONTAINER_NAME', 'value': sc_name},
+                    {'name': 'ROS_LOG_DIR', 'value': '/out/logs'},
                 ],
                 'resources': {
                     'requests': {},

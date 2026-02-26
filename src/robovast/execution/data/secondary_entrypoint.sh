@@ -3,6 +3,9 @@ set -e
 
 # @@INIT_BLOCK@@
 
+WATCHDOG_TIMEOUT=3
+CONNECT_TIMEOUT=15
+
 OUTPUT_DIR="/out"
 LOG_DIR="${OUTPUT_DIR}/logs"
 mkdir -p "${LOG_DIR}"
@@ -25,4 +28,4 @@ exec 2>&1
 
 SOCKET="/ipc/${CONTAINER_NAME}"
 log "Starting scenario-execution-server-ros on socket '${SOCKET}'..."
-exec ros2 run scenario_execution_server_ros scenario_execution_server_ros --watchdog 3 --socket "${SOCKET}"
+exec ros2 run scenario_execution_server_ros scenario_execution_server_ros --watchdog ${WATCHDOG_TIMEOUT} --connect-timeout ${CONNECT_TIMEOUT} --socket "${SOCKET}"
