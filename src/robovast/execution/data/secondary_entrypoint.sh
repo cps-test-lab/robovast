@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e
 
+eval $(fixuid -q)
+
 OUTPUT_DIR="/out"
 LOG_DIR="${OUTPUT_DIR}/logs"
 mkdir -p "${LOG_DIR}"
