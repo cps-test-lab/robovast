@@ -181,10 +181,10 @@ class ResultDownloader:
                     if verbose:
                         logger.info(f"{prefix} Downloaded {count} file(s) for '{bucket_name}'")
                     else:
-                        bar = "█" * _BAR_WIDTH
+                        progressbar = "█" * _BAR_WIDTH
                         size_str = _format_size(get_total_bytes())
                         sys.stdout.write(
-                            f"\r{prefix} {bucket_name}  [{bar}]  {count} files  {size_str}  done\n"
+                            f"\r{prefix} {bucket_name}  [{progressbar}]  {count} files  {size_str}  done\n"
                         )
                         sys.stdout.flush()
 
