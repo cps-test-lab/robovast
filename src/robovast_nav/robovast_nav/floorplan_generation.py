@@ -77,7 +77,7 @@ def _create_config_for_floorplan(
     return new_config
 
 
-def generate_floorplan_variations(base_path, variation_files, num_variations, seed_value, output_dir, progress_update_callback):
+def generate_floorplan_variations(base_path, variation_files, num_variations, seed_value, output_dir, progress_update_callback, temporary_files_dir=None):
     if not os.path.exists(base_path):
         progress_update_callback(f"✗ Path not found: {base_path}")
         return None
@@ -88,9 +88,15 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
         progress_update_callback(f"✗ Script not found at: {script_path}")
         raise FileNotFoundError(f"Script not found at: {script_path}")
 
-    temp_base_obj = tempfile.TemporaryDirectory(prefix="floorplan_variation_")
-    temp_base = temp_base_obj.name
-    progress_update_callback(f"Created temporary directory: {temp_base}")
+    if temporary_files_dir is not None:
+        temp_base = os.path.join(temporary_files_dir, "floorplan_variation")
+        os.makedirs(temp_base, exist_ok=True)
+        temp_base_obj = None
+        progress_update_callback(f"Using persistent directory for intermediate files: {temp_base}")
+    else:
+        temp_base_obj = tempfile.TemporaryDirectory(prefix="floorplan_variation_")
+        temp_base = temp_base_obj.name
+        progress_update_callback(f"Created temporary directory: {temp_base}")
 
     all_map_dirs = []
     floorplan_names = []
@@ -262,7 +268,7 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
     return floorplan_names
 
 
-def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progress_update_callback):
+def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progress_update_callback, temporary_files_dir=None):
     """Generate artifacts (maps and meshes) from existing floorplan files.
 
     Args:
@@ -270,6 +276,9 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
         floorplan_files: List of floorplan (.fpm) file paths
         output_dir: Directory where artifacts will be generated
         progress_update_callback: Callback function for progress updates
+        temporary_files_dir: Optional directory to preserve intermediate files
+                             (json-ld, fpm). If None, a temp dir is used and
+                             cleaned up automatically.
 
     Returns:
         List of floorplan names (subdirectory names) that were generated
@@ -284,9 +293,15 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
         progress_update_callback(f"✗ Script not found at: {script_path}")
         raise FileNotFoundError(f"Script not found at: {script_path}")
 
-    temp_base_obj = tempfile.TemporaryDirectory(prefix="floorplan_generation_")
-    temp_base = temp_base_obj.name
-    progress_update_callback(f"Created temporary directory: {temp_base}")
+    if temporary_files_dir is not None:
+        temp_base = os.path.join(temporary_files_dir, "floorplan_generation")
+        os.makedirs(temp_base, exist_ok=True)
+        temp_base_obj = None
+        progress_update_callback(f"Using persistent directory for intermediate files: {temp_base}")
+    else:
+        temp_base_obj = tempfile.TemporaryDirectory(prefix="floorplan_generation_")
+        temp_base = temp_base_obj.name
+        progress_update_callback(f"Created temporary directory: {temp_base}")
 
     all_artifacts_dirs = []
     floorplan_names = []

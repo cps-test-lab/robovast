@@ -33,9 +33,9 @@ def progress_update(msg):
     logger.info(msg)
 
 
-def execute_variation(base_dir, configs, variation_class, parameters, general_parameters, progress_update_callback, scenario_file, output_dir=None):
+def execute_variation(base_dir, configs, variation_class, parameters, general_parameters, progress_update_callback, scenario_file, output_dir=None, temporary_files_dir=None):
     logger.debug(f"Executing variation: {variation_class.__name__}")
-    variation = variation_class(base_dir, parameters, general_parameters, progress_update_callback, scenario_file, output_dir)
+    variation = variation_class(base_dir, parameters, general_parameters, progress_update_callback, scenario_file, output_dir, temporary_files_dir=temporary_files_dir)
     try:
         configs = variation.variation(copy.deepcopy(configs))
     except Exception as e:
@@ -227,7 +227,7 @@ def _get_variation_classes(scenario_config):
     return variation_classes
 
 
-def generate_scenario_variations(variation_file, progress_update_callback=None, variation_classes=None, output_dir=None, test_files_filter=None):
+def generate_scenario_variations(variation_file, progress_update_callback=None, variation_classes=None, output_dir=None, test_files_filter=None, include_temporary_files=False):
     if not progress_update_callback:
         progress_update_callback = logger.debug
     progress_update_callback("Start generating configs.")
@@ -257,6 +257,10 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         output_dir = temp_path.name
 
     general_parameters = parameters.get('general', {})
+    temporary_files_dir = None
+    if include_temporary_files:
+        temporary_files_dir = os.path.join(output_dir, "temporary_files")
+        os.makedirs(temporary_files_dir, exist_ok=True)
 
     # Get scenario parameters once (same for all configurations)
     if scenario_file is None:
@@ -314,7 +318,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                         raise ValueError(f"Variation class {variation_class.__name__} has GUI_RENDERER_CLASS defined but no GUI_CLASS.")
                     variation_gui_classes[variation_gui_class].append(variation_gui_renderer_class)
             result = execute_variation(os.path.dirname(variation_file), current_configs, variation_class,
-                                       variation_parameters, general_parameters, progress_update_callback, scenario_file, output_dir)
+                                       variation_parameters, general_parameters, progress_update_callback, scenario_file, output_dir, temporary_files_dir=temporary_files_dir)
             if result is None or len(result) == 0:
                 # If a variation step fails or produces no results, stop the pipeline
                 progress_update_callback(f"Variation pipeline stopped at {variation_class.__name__} - no configs to process")

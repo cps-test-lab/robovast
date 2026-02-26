@@ -109,7 +109,11 @@ def list_cmd(debug):
 
 @configuration.command()
 @click.argument('output-dir', type=click.Path())
-def generate(output_dir):
+@click.option('--include-temporary-files', is_flag=True, default=False,
+              help='Preserve intermediate files created during variation '
+                   '(e.g. json-ld and fpm files from floorplan generation) '
+                   'in a "temporary_files" subdirectory of OUTPUT_DIR.')
+def generate(output_dir, include_temporary_files):
     """Generate test configurations and output files.
 
     Creates all configurations and associated files in the
@@ -127,12 +131,15 @@ def generate(output_dir):
         run_data, _ = generate_scenario_variations(
             variation_file=config,
             progress_update_callback=None,
-            output_dir=output_dir
+            output_dir=output_dir,
+            include_temporary_files=include_temporary_files,
         )
         configs = run_data["configs"]
 
         if configs:
             click.echo(f"✓ Successfully generated {len(configs)} scenario configurations in directory '{output_dir}'.")
+            if include_temporary_files:
+                click.echo(f"  Intermediate files preserved in '{os.path.join(output_dir, 'temporary_files')}'.")
         else:
             click.echo("✗ Failed to generate scenario configurations", err=True)
             sys.exit(1)

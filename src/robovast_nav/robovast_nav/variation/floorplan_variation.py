@@ -132,7 +132,8 @@ class FloorplanGeneration(NavVariation):
             self.base_path,
             self.parameters.floorplans,
             self.output_dir,
-            self.progress_update
+            self.progress_update,
+            temporary_files_dir=self.temporary_files_dir,
         )
 
         if not floorplan_names:
@@ -180,7 +181,8 @@ class FloorplanVariation(NavVariation):
                                                         self.parameters.num_variations,
                                                         self.parameters.seed,
                                                         self.output_dir,
-                                                        self.progress_update)
+                                                        self.progress_update,
+                                                        temporary_files_dir=self.temporary_files_dir)
 
         if not floorplan_names:
             raise ValueError("Floorplan variation failed, no result returned")

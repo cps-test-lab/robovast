@@ -53,7 +53,7 @@ class Variation():
     GUI_CLASS = None  # Could be set to a GUI class for editing
     GUI_RENDERER_CLASS = None  # Could be set to a GUI renderer class
 
-    def __init__(self, base_path, parameters, general_parameters, progress_update_callback, scenario_file, output_dir):
+    def __init__(self, base_path, parameters, general_parameters, progress_update_callback, scenario_file, output_dir, *, temporary_files_dir=None):
         # Reset shared config index for each new Variation instance so
         # generated short names start from 1 for this variation run.
         reset_config_index()
@@ -66,6 +66,7 @@ class Variation():
         self.progress_update_callback = progress_update_callback
         self.scenario_file = scenario_file
         self.output_dir = output_dir
+        self.temporary_files_dir = temporary_files_dir
         # Track the next index for each parent config name
         self._config_child_indices = {}
 
