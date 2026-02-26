@@ -301,6 +301,41 @@ Additional environment variables to set in the test container. Each list item sh
      - CUSTOM_VAR: custom_value
      - ENABLE_X11: "false"
 
+local
+^^^^^
+
+**Type:** Dictionary
+
+**Required:** No
+
+**Applies to:** Local execution only (ignored for cluster runs)
+
+Configuration options that apply only when running tests locally (e.g. ``vast execution local run``).
+
+local.parameter_overrides
+""""""""""""""""""""""""""
+
+**Type:** List of dictionaries (key-value pairs)
+
+**Required:** No
+
+Overrides for scenario parameters that are added to the generated ``scenario.config`` **only for local runs**. Each list item is a single key-value pair. Values override whatever was produced by configuration variations. Nested dicts are supported (values are replaced entirely).
+
+Parameters are validated against the scenario file (``.osc``); only parameters defined in the scenario are allowed.
+
+.. code-block:: yaml
+
+   execution:
+     scenario_file: scenario.osc
+     local:
+       parameter_overrides:
+       - headless: "False"
+       - use_rviz: "True"
+
+.. note::
+
+   Parameter values must match the types expected by the scenario. If the scenario defines a parameter as a string (e.g. ``headless: string = "False"``), use quoted values.
+
 kubernetes
 ^^^^^^^^^^
 

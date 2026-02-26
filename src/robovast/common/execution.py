@@ -14,6 +14,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import copy
 import datetime
 import json
 import logging
@@ -204,6 +205,38 @@ COMBINED_EOF
     fi"""
 
 
+def _apply_local_parameter_overrides(config, parameter_overrides, valid_param_names,
+                                      scenario_name, scenario_path):
+    """Apply local parameter overrides to config, validating against scenario parameters.
+
+    Args:
+        config: The scenario config dict to modify (will be mutated)
+        parameter_overrides: List of dicts, each with a single key-value (e.g. [{"headless": False}])
+        valid_param_names: Set or list of parameter names defined in the scenario
+        scenario_name: Name of the scenario (for error messages)
+        scenario_path: Path to scenario file (for error messages)
+
+    Raises:
+        ValueError: If any override key is not a valid scenario parameter
+    """
+    if not parameter_overrides:
+        return
+    merged = {}
+    for item in parameter_overrides:
+        if isinstance(item, dict):
+            merged.update(item)
+    if not merged:
+        return
+    valid_set = set(valid_param_names) if valid_param_names else set()
+    invalid = [k for k in merged if k not in valid_set]
+    if invalid:
+        raise ValueError(
+            f"Invalid parameter_overrides in execution.local for scenario '{scenario_name}': "
+            f"{invalid}. Valid parameters in {scenario_path} are: {sorted(valid_set)}"
+        )
+    config.update(merged)
+
+
 def prepare_run_configs(out_dir, run_data, cluster=False):
     # Create the output directory structure
     logger.debug(f"Run Configs: {pformat(run_data)}")
@@ -271,6 +304,23 @@ def prepare_run_configs(out_dir, run_data, cluster=False):
     except Exception as e:
         raise RuntimeError(f"Could not get scenario name from {original_scenario_path}: {e}") from e
 
+    # Resolve valid scenario parameter names for parameter_overrides validation
+    existing_scenario_parameters = next(iter(scenario_params.values())) if scenario_params else []
+    valid_param_names = [
+        p.get('name') for p in existing_scenario_parameters
+        if isinstance(p, dict) and 'name' in p
+    ]
+
+    # Get local parameter overrides (only applied when not running on cluster)
+    parameter_overrides = []
+    if not cluster:
+        local_config = run_data.get("execution", {}).get("local")
+        if local_config is not None:
+            if hasattr(local_config, 'parameter_overrides'):
+                parameter_overrides = local_config.parameter_overrides or []
+            elif isinstance(local_config, dict):
+                parameter_overrides = local_config.get("parameter_overrides") or []
+
     for config_data in run_data["configs"]:
         test_config_dir = os.path.join(out_dir, config_data.get("name"), "_config")
 
@@ -288,12 +338,17 @@ def prepare_run_configs(out_dir, run_data, cluster=False):
         if "config" in config_data:
             config = config_data.get('config')
             if config is not None:
-                wrapped_config_data = {scenario_name: config}
+                config_dict = convert_dataclasses_to_dict(copy.deepcopy(config))
+                if parameter_overrides:
+                    _apply_local_parameter_overrides(
+                        config_dict, parameter_overrides, valid_param_names,
+                        scenario_name, original_scenario_path
+                    )
+                wrapped_config_data = {scenario_name: config_dict}
                 dst_path = os.path.join(out_dir, config_data.get("name"), 'scenario.config')
                 os.makedirs(os.path.dirname(dst_path), exist_ok=True)
                 with open(dst_path, 'w') as f:
-                    converted_config_data = convert_dataclasses_to_dict(wrapped_config_data)
-                    yaml.dump(converted_config_data, f, default_flow_style=False, sort_keys=False)
+                    yaml.dump(wrapped_config_data, f, default_flow_style=False, sort_keys=False)
 
 
 def generate_execution_yaml_script(runs, execution_params=None, output_dir_var="${RESULTS_DIR}"):

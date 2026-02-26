@@ -60,6 +60,8 @@ Afterwards you can verify the scenario, the RoboVAST-configuration and the docke
     # check that a standalone non-GUI environment (like in Kubernetes) works
     ./test_run/run.sh --no-gui
 
+To enable GUI visualization (e.g. RViz) for local runs while keeping cluster runs headless, add ``execution.local.parameter_overrides`` in your ``.vast`` file (see :doc:`configuration`).
+
 Next, it is important to verify that the output (e.g. ROS bag) is stored correctly. 
 
 .. code-block:: bash

@@ -101,6 +101,13 @@ def normalize_secondary_containers(secondary_containers) -> list[dict]:
     return result
 
 
+class LocalExecutionConfig(BaseModel):
+    """Configuration for local execution only (not applied in cluster runs)."""
+
+    model_config = ConfigDict(extra='allow')
+    parameter_overrides: Optional[list[dict[str, Any]]] = None
+
+
 class ExecutionConfig(BaseModel):
     image: str
     resources: Optional[ResourcesConfig] = None
@@ -109,6 +116,7 @@ class ExecutionConfig(BaseModel):
     runs: int
     scenario_file: Optional[str] = None
     test_files_filter: Optional[list[str]] = None
+    local: Optional[LocalExecutionConfig] = None
 
     @field_validator('env')
     @classmethod
