@@ -68,19 +68,25 @@ def local():
               help='Override the number of runs specified in the config')
 @click.option('--output', '-o', default=None,
               help='Output directory (uses project results dir if not specified)')
-@click.option('--shell', '-s', is_flag=True,
-              help='Instead of running the scenario, login with shell')
+@click.option('--start-only', is_flag=True,
+              help='Start the robovast container with a shell, skipping the entrypoint script')
 @click.option('--no-gui',  is_flag=True,
               help='Disable host GUI support')
 @click.option('--network-host',  is_flag=True,
               help='Use host network mode')
 @click.option('--image', '-i', default='ghcr.io/cps-test-lab/robovast:latest',
               help='Use a custom Docker image')
-def run(config, runs, output, shell, no_gui, network_host, image):
+@click.option('--abort-on-failure', is_flag=True,
+              help='Stop execution after the first failed test config (default: continue)')
+@click.option('--skip-resource-allocation', is_flag=True,
+              help='Do not add CPU/memory reservations to docker compose run')
+def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_failure,
+        skip_resource_allocation):
     """Execute scenario configurations locally using Docker.
 
     Runs scenario configurations in Docker containers with bind mounts for configuration
-    and output data. By default, runs all configurations from the project configuration.
+    and output data. By default, runs all configurations from the project configuration
+    and continues past failures. Use ``--abort-on-failure`` to stop at the first failure.
     GUI support is enabled by default (requires X11 server on host).
 
     Prerequisites:
@@ -94,22 +100,25 @@ def run(config, runs, output, shell, no_gui, network_host, image):
     """
     try:
         run_script_path = initialize_local_execution(
-            config, None, runs, feedback_callback=click.echo
+            config, None, runs, feedback_callback=click.echo,
+            skip_resource_allocation=skip_resource_allocation
         )
 
         # Build command with options
         cmd = [run_script_path]
-        if shell:
-            cmd.append("--shell")
+        if start_only:
+            cmd.append("--start-only")
         if no_gui:
             cmd.append("--no-gui")
         if network_host:
             cmd.append("--network-host")
         if output:
             os.makedirs(output, exist_ok=True)
-            cmd.extend(["--output", os.path.abspath(output)])
+            cmd.extend(["--results-dir", os.path.abspath(output)])
         if image != 'ghcr.io/cps-test-lab/robovast:latest':
             cmd.extend(["--image", image])
+        if abort_on_failure:
+            cmd.append("--abort-on-failure")
 
         logging.debug(f"Executing run script: {run_script_path}")
 
@@ -126,7 +135,9 @@ def run(config, runs, output, shell, no_gui, network_host, image):
               help='Run only a specific configuration by name')
 @click.option('--runs', '-r', type=int, default=None,
               help='Override the number of runs specified in the config')
-def prepare_run(output_dir, config, runs):
+@click.option('--skip-resource-allocation', is_flag=True,
+              help='Do not add CPU/memory reservations to docker compose run')
+def prepare_run(output_dir, config, runs, skip_resource_allocation):
     """Prepare run without executing.
 
     Generates all necessary configuration files and a ``run.sh`` script for
@@ -147,11 +158,12 @@ def prepare_run(output_dir, config, runs):
     After preparation, inspect the files in OUTPUT-DIR and execute manually ``cd OUTPUT-DIR; ./run.sh``.
 
     The run.sh script supports the same options as ``vast execution local run``
-    (--shell, --no-gui, --network-host, --output, --image).
+    (--start-only, --no-gui, --network-host, --output, --image, --abort-on-failure).
     """
     try:
         initialize_local_execution(
-            config, output_dir, runs, feedback_callback=click.echo
+            config, output_dir, runs, feedback_callback=click.echo,
+            skip_resource_allocation=skip_resource_allocation
         )
 
         click.echo(f"\nFor local execution, run: \n\n{os.path.join(output_dir, 'run.sh')}\n")
@@ -241,7 +253,7 @@ def run(config, runs, detach):  # pylint: disable=function-redefined
             click.echo()
             click.echo("Jobs are now running in detached mode.")
             click.echo()
-            click.echo("To check job status, use: kubectl get jobs")
+            click.echo("To check job status, use: vast execution cluster monitor")
             click.echo("To clean up jobs, use: vast execution cluster run-cleanup")
             click.echo()
         else:
@@ -329,12 +341,17 @@ def monitor(interval, once):
               help='Directory where all runs will be downloaded (uses project results dir if not specified)')
 @click.option('--force', '-f', is_flag=True,
               help='Force re-download even if files already exist locally')
-def download(output, force):
+@click.option('--verbose', '-v', is_flag=True,
+              help='Print per-file progress instead of a single-line progress bar per run')
+def download(output, force, verbose):
     """Download result files from the cluster S3 (MinIO) server.
 
     Downloads all test run results from the MinIO S3 server embedded in the
     robovast pod. Each run is stored in a separate S3 bucket (``run-*``) and
     downloaded into a subdirectory of the output directory.
+
+    By default a single progress bar line is shown for each run. Use
+    ``--verbose`` to print individual file names instead.
 
     Use ``--force`` to re-download runs that already exist locally.
 
@@ -356,7 +373,7 @@ def download(output, force):
         config_name = load_cluster_config_name()
         cluster_config = get_cluster_config(config_name)
         downloader = ResultDownloader(namespace=get_cluster_namespace(), cluster_config=cluster_config)
-        count = downloader.download_results(output, force)
+        count = downloader.download_results(output, force, verbose=verbose)
         click.echo(f"✓ Download of {count} runs completed successfully!")
 
     except Exception as e:
@@ -562,7 +579,8 @@ def prepare_run(output, config, runs, cluster_config, options):  # pylint: disab
         out_dir = os.path.join(output, "out_template")
         prepare_run_configs(
             out_dir,
-            job_runner.run_data
+            job_runner.run_data,
+            cluster=True
         )
 
         # Create jobs directory

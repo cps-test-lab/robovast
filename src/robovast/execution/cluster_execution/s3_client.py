@@ -237,13 +237,16 @@ class ClusterS3Client:
         self._s3.delete_bucket(Bucket=bucket_name)
         logger.debug(f"Deleted bucket: {bucket_name}")
 
-    def download_bucket(self, bucket_name: str, local_dir: str, force: bool = False):
+    def download_bucket(self, bucket_name: str, local_dir: str, force: bool = False,
+                        progress_callback=None):
         """Download all objects from a bucket into local_dir/{bucket_name}/.
 
         Args:
             bucket_name (str): Source bucket.
             local_dir (str): Local base directory. Files are placed in local_dir/bucket_name/.
             force (bool): Re-download files that already exist locally.
+            progress_callback: Optional callable ``(current, total, size_bytes)`` invoked after
+                each file is downloaded. When *None* each file is logged via ``logger.info``.
 
         Returns:
             int: Number of files downloaded.
@@ -270,10 +273,16 @@ class ClusterS3Client:
                 continue
 
             os.makedirs(os.path.dirname(local_path), exist_ok=True)
-            downloaded += 1
-            size_str = _format_size(size_bytes)
-            logger.info(f"  [{downloaded}/{total}] {key} ({size_str})")
-            self._s3.download_file(bucket_name, key, local_path)
+
+            if progress_callback is None:
+                downloaded += 1
+                size_str = _format_size(size_bytes)
+                logger.info(f"  [{downloaded}/{total}] {key} ({size_str})")
+                self._s3.download_file(bucket_name, key, local_path)
+            else:
+                self._s3.download_file(bucket_name, key, local_path)
+                downloaded += 1
+                progress_callback(downloaded, total, size_bytes)
 
         logger.debug(f"Downloaded {downloaded} file(s) from s3://{bucket_name}")
         return downloaded

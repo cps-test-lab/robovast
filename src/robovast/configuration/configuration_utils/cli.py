@@ -27,7 +27,7 @@ import yaml
 
 from robovast.common import (convert_dataclasses_to_dict, filter_configs,
                              generate_scenario_variations,
-                             get_scenario_parameters)
+                             get_scenario_parameters, prepare_run_configs)
 from robovast.common.cli import get_project_config, handle_cli_exception
 
 
@@ -124,6 +124,8 @@ def generate(output_dir):
     click.echo(f"Generating scenario configurations...")
 
     try:
+        os.makedirs(output_dir, exist_ok=True)
+
         run_data, _ = generate_scenario_variations(
             variation_file=config,
             progress_update_callback=None,
@@ -132,6 +134,8 @@ def generate(output_dir):
         configs = run_data["configs"]
 
         if configs:
+            config_path_result = os.path.join(output_dir, "out_template")
+            prepare_run_configs(config_path_result, run_data)
             click.echo(f"✓ Successfully generated {len(configs)} scenario configurations in directory '{output_dir}'.")
         else:
             click.echo("✗ Failed to generate scenario configurations", err=True)

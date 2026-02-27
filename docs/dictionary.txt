@@ -37,3 +37,5 @@ gzipped
 namespace
 subdirectory
 entrypoint
+RViz
+localhost

@@ -30,7 +30,8 @@ from kubernetes import config as kube_config
 
 from robovast.common import (create_execution_yaml,
                              get_execution_env_variables, get_run_id,
-                             load_config, prepare_run_configs)
+                             load_config, normalize_secondary_containers,
+                             prepare_run_configs)
 from robovast.common.config_generation import generate_scenario_variations
 from robovast.execution.cluster_execution.kubernetes import (
     check_pod_running, upload_configs_to_s3)
@@ -169,9 +170,10 @@ class JobRunner:
 
         # Create manifest with env vars from config
         self.manifest = self.get_job_manifest(parameters["image"],
-                                              parameters["kubernetes"]["resources"],
+                                              parameters.get("resources") or {},
                                               execution_params.get("env", []),
-                                              self.run_as_user)
+                                              self.run_as_user,
+                                              execution_params.get("secondary_containers") or [])
 
         if not self.configs:
             raise ValueError("No scenario configs generated.")
@@ -264,17 +266,22 @@ class JobRunner:
 
         spec = job_manifest['spec']['template']['spec']
 
-        # Two purpose-specific emptyDir volumes: config (shared with initContainer) and out (main only)
+        # Volumes: config (populated by initContainer), out (shared output), dshm (shared /dev/shm),
+        # ipc (named sockets between main and secondary containers)
         spec['volumes'] = [
             {'name': 'config', 'emptyDir': {}},
             {'name': 'out', 'emptyDir': {}},
+            {'name': 'dshm', 'emptyDir': {'medium': 'Memory'}},
+            {'name': 'ipc', 'emptyDir': {}},
+            {'name': 'tmp', 'emptyDir': {}},
         ]
 
         # Build the initContainer that downloads all needed files from S3 into /config/
-        # After downloading, chmod +x all scripts so the main container can execute them.
+        # After downloading, chmod +x all scripts so the containers can execute them.
         init_cmd = (
             f"mc alias set myminio \"$S3_ENDPOINT\" \"$S3_ACCESS_KEY\" \"$S3_SECRET_KEY\" && "
             f"mc cp myminio/$S3_BUCKET/entrypoint.sh /config/ && "
+            f"mc cp myminio/$S3_BUCKET/secondary_entrypoint.sh /config/ && "
             f"mc cp myminio/$S3_BUCKET/collect_sysinfo.py /config/ && "
             f"mc cp myminio/$S3_BUCKET/scenario.osc /config/ && "
             f"mc mirror myminio/$S3_BUCKET/_config/ /config/ || true && "
@@ -302,7 +309,15 @@ class JobRunner:
             }
         ]
 
-        # Add environment variables and volume mounts to the main container
+        shared_volume_mounts = [
+            {'name': 'config', 'mountPath': '/config', 'readOnly': True},
+            {'name': 'out', 'mountPath': '/out', 'readOnly': False},
+            {'name': 'dshm', 'mountPath': '/dev/shm'},
+            {'name': 'ipc', 'mountPath': '/ipc'},
+            {'name': 'tmp', 'mountPath': '/tmp'},
+        ]
+
+        # Add environment variables and volume mounts to the main (robovast) container
         containers = spec['containers']
         if containers:
             if 'env' not in containers[0]:
@@ -337,11 +352,35 @@ class JobRunner:
                     'value': str(self.post_command)
                 })
 
-            # Main container only needs /config (read-only, populated by initContainer) and /out
-            containers[0]['volumeMounts'] = [
-                {'name': 'config', 'mountPath': '/config', 'readOnly': True},
-                {'name': 'out', 'mountPath': '/out', 'readOnly': False},
-            ]
+            containers[0]['volumeMounts'] = shared_volume_mounts
+
+        # Add secondary containers
+        for sc in self.secondary_containers:
+            sc_name = sc['name']
+            sc_resources = sc['resources']
+            secondary_spec = {
+                'name': sc_name,
+                'image': job_manifest['spec']['template']['spec']['containers'][0]['image'],
+                'command': ['/bin/bash', '/config/secondary_entrypoint.sh'],
+                'env': [
+                    {'name': 'CONTAINER_NAME', 'value': sc_name},
+                    {'name': 'ROS_LOG_DIR', 'value': '/out/logs'},
+                ],
+                'resources': {
+                    'requests': {},
+                    'limits': {},
+                },
+                'volumeMounts': shared_volume_mounts,
+            }
+            if sc_resources.get('cpu'):
+                secondary_spec['resources']['requests']['cpu'] = str(sc_resources['cpu'])
+                secondary_spec['resources']['limits']['cpu'] = str(sc_resources['cpu'])
+            if sc_resources.get('memory'):
+                secondary_spec['resources']['requests']['memory'] = sc_resources['memory']
+                secondary_spec['resources']['limits']['memory'] = sc_resources['memory']
+            if self.run_as_user is not None:
+                secondary_spec.setdefault('securityContext', {})['runAsUser'] = self.run_as_user
+            containers.append(secondary_spec)
 
         return job_manifest
 
@@ -640,7 +679,7 @@ class JobRunner:
             logger.debug(f"Using temporary directory: {temp_dir}")
 
             out_dir = os.path.join(temp_dir, "out_template")
-            prepare_run_configs(out_dir, self.run_data)
+            prepare_run_configs(out_dir, self.run_data, cluster=True)
 
             # Inject instance type command into entrypoint.sh if the cluster config provides one
             entrypoint_path = os.path.join(out_dir, "entrypoint.sh")
@@ -666,14 +705,16 @@ class JobRunner:
             logger.info(f"Uploading config files to S3 bucket '{bucket_name}'...")
             upload_configs_to_s3(out_dir, bucket_name, self.cluster_config, self.namespace)
 
-    def get_job_manifest(self, image: str, kubernetes_resources: dict, env: list, run_as_user: int = None) -> dict:
+    def get_job_manifest(self, image: str, resources: dict, env: list, run_as_user: int = None,
+                         secondary_containers: list = None) -> dict:
         """Generate the base Kubernetes job manifest from templates.
 
         Args:
             image: Docker image to use
-            kubernetes_resources: Resource limits/requests
+            resources: Resource limits/requests for the main container (cpu, memory)
             env: List of environment variables
             run_as_user: UID to run container as (defaults to 1000 if None)
+            secondary_containers: List of secondary container configs (name + resources)
 
         Returns:
             Dictionary containing the job manifest
@@ -681,29 +722,34 @@ class JobRunner:
         if run_as_user is None:
             run_as_user = 1000
 
+        # Normalize resources: may be a dict or a Pydantic model
+        if hasattr(resources, 'cpu'):
+            resources = {'cpu': resources.cpu, 'memory': resources.memory}
+
+        # Normalize secondary_containers: may be Pydantic models, normalized dicts, or raw YAML dicts
+        self.secondary_containers = normalize_secondary_containers(secondary_containers)
+
         logger.debug(f"Using run_as_user={run_as_user} for job containers")
 
-        yaml_str = JOB_TEMPLATE.format(image=image, cpu=kubernetes_resources["cpu"], namespace=self.namespace)
+        yaml_str = JOB_TEMPLATE.format(image=image, namespace=self.namespace)
         manifest = yaml.safe_load(yaml_str)
 
-        manifest['spec']['template']['spec']['containers'][0].setdefault('securityContext', {})['runAsUser'] = run_as_user
+        main_container = manifest['spec']['template']['spec']['containers'][0]
+        main_container.setdefault('securityContext', {})['runAsUser'] = run_as_user
 
-        if "memory" in kubernetes_resources:
-            # Add memory resource if specified
-            manifest['spec']['template']['spec']['containers'][0]['resources'] = {
-                'limits': {
-                    'memory': kubernetes_resources["memory"]
-                },
-                'requests': {
-                    'memory': kubernetes_resources["memory"]
-                }
-            }
-        # Add environment variables
+        if resources.get('cpu'):
+            main_container['resources']['requests']['cpu'] = str(resources['cpu'])
+            main_container['resources']['limits']['cpu'] = str(resources['cpu'])
+        if resources.get('memory'):
+            main_container['resources']['requests']['memory'] = resources['memory']
+            main_container['resources']['limits']['memory'] = resources['memory']
+
+        # Add custom environment variables
         if env:
             for env_var in env:
                 if isinstance(env_var, dict):
                     for key, value in env_var.items():
-                        manifest['spec']['template']['spec']['containers'][0].setdefault('env', []).append({
+                        main_container.setdefault('env', []).append({
                             'name': key,
                             'value': str(value)
                         })

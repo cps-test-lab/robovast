@@ -17,7 +17,7 @@
 import logging
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -50,22 +50,76 @@ class ConfigurationConfig(BaseModel):
         return v
 
 
-class KubernetesResourcesConfig(BaseModel):
-    cpu: int
+class ResourcesConfig(BaseModel):
+    cpu: Optional[int] = None
     memory: Optional[str] = None
+    gpu: Optional[int] = None
 
 
-class KubernetesConfig(BaseModel):
-    resources: KubernetesResourcesConfig
+class SecondaryContainerConfig(BaseModel):
+    name: str
+    resources: Optional[ResourcesConfig] = None
+
+    @model_validator(mode='before')
+    @classmethod
+    def extract_name(cls, data: Any) -> Any:
+        if isinstance(data, str):
+            return {'name': data, 'resources': None}
+        if isinstance(data, dict):
+            name = next((k for k in data if k != 'resources'), None)
+            if name is None:
+                raise ValueError("Secondary container entry must have a name key alongside 'resources'")
+            resources = data.get('resources') or None
+            return {'name': name, 'resources': resources}
+        return data
+
+
+def normalize_secondary_containers(secondary_containers) -> list[dict]:
+    """Normalize secondary container entries to a uniform dict format with 'name' and 'resources' keys.
+
+    Handles three input shapes:
+    - Pydantic SecondaryContainerConfig objects (with .name / .resources attributes)
+    - Already-normalized dicts with a 'name' key
+    - Raw YAML dicts of the form {<container_name>: None, 'resources': {...}}
+    """
+    result = []
+    for sc in (secondary_containers or []):
+        if hasattr(sc, 'name'):
+            result.append({
+                'name': sc.name,
+                'resources': {'cpu': sc.resources.cpu, 'memory': sc.resources.memory, 'gpu': sc.resources.gpu}
+                if sc.resources is not None else {}
+            })
+        elif isinstance(sc, dict) and 'name' in sc:
+            result.append(sc)
+        elif isinstance(sc, dict):
+            # Raw YAML format: {<name>: None, 'resources': {...}}
+            name = next((k for k in sc if k != 'resources'), None)
+            if name is None:
+                raise ValueError(f"Cannot extract container name from secondary_containers entry: {sc}")
+            result.append({'name': name, 'resources': sc.get('resources') or {}})
+    return result
+
+
+class LocalExecutionConfig(BaseModel):
+    """Configuration for local execution only (not applied in cluster runs)."""
+
+    model_config = ConfigDict(extra='allow')
+    parameter_overrides: Optional[list[dict[str, Any]]] = None
 
 
 class ExecutionConfig(BaseModel):
+    model_config = ConfigDict(extra='forbid')
     image: str
-    kubernetes: KubernetesConfig
+    resources: Optional[ResourcesConfig] = None
+    secondary_containers: Optional[list[SecondaryContainerConfig]] = None
     env: Optional[list[dict[str, str]]] = None
     runs: int
     scenario_file: Optional[str] = None
     test_files_filter: Optional[list[str]] = None
+    pre_command: Optional[str] = None
+    post_command: Optional[str] = None
+    local: Optional[LocalExecutionConfig] = None
 
     @field_validator('env')
     @classmethod
