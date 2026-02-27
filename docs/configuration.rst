@@ -325,7 +325,7 @@ CPU and memory limits for the main (primary) container. Used by Docker Compose f
 - ``memory`` (Optional): Memory limit (e.g., ``8Gi``, ``4096Mi``)
 
 secondary_containers
-^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^
 
 **Type:** List of container definitions
 
