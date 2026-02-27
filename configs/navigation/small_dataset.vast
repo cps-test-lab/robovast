@@ -15936,9 +15936,8 @@ configuration:
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 execution:
   image: ghcr.io/cps-test-lab/robovast:latest
-  kubernetes:
-    resources:
-      cpu: 9
+  resources:
+    cpu: 9
   runs: 3
   scenario_file: scenario.osc
   test_files_filter:

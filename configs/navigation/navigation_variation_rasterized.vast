@@ -34,9 +34,8 @@ configuration:
       - 0.1
 execution:
   image: ghcr.io/cps-test-lab/robovast:latest
-  kubernetes:
-    resources:
-      cpu: 8
+  resources:
+    cpu: 8
   runs: 10
   scenario_file: scenario.osc
   test_files_filter:

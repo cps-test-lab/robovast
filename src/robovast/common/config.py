@@ -109,6 +109,7 @@ class LocalExecutionConfig(BaseModel):
 
 
 class ExecutionConfig(BaseModel):
+    model_config = ConfigDict(extra='forbid')
     image: str
     resources: Optional[ResourcesConfig] = None
     secondary_containers: Optional[list[SecondaryContainerConfig]] = None

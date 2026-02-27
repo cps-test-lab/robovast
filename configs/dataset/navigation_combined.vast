@@ -1867,9 +1867,8 @@ configuration:
       - 0.1
 execution:
   image: ghcr.io/cps-test-lab/robovast:latest
-  kubernetes:
-    resources:
-      cpu: 6
+  resources:
+    cpu: 6
   runs: 1
   test_files_filter:
   - '**/files/*'

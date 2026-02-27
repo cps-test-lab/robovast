@@ -21,9 +21,8 @@ configuration:
   - initial_population: 123
 execution:
   image: ghcr.io/cps-test-lab/robovast:latest
-  kubernetes:
-    resources:
-      cpu: 1
+  resources:
+    cpu: 1
   runs: 20
   env:
   - ENABLE_X11: "false"

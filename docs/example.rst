@@ -105,7 +105,7 @@ Execution
 
      For the execution, it is expected that the connection to the Kubernetes cluster is set up properly.
 
-The ``execution`` section of the ``.vast`` configuration specifies all necessary parameters for running the tests, including the scenario file to execute:
+The ``execution`` section of the ``.vast`` configuration specifies all necessary parameters for running the tests, including the scenario file to execute. For multi-container setups and CPU/memory allocation, see ``resources`` and ``secondary_containers`` in :doc:`configuration`.
 
 .. literalinclude:: ../configs/examples/growth_sim/growth_sim.vast
    :language: yaml
