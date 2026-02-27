@@ -28,7 +28,8 @@ import yaml
 from robovast.common import prepare_run_configs
 from robovast.common.cli import get_project_config, handle_cli_exception
 from robovast.execution.cluster_execution.cluster_execution import (
-    JobRunner, cleanup_cluster_run, get_cluster_run_job_counts_per_run)
+    JobRunner, cleanup_cluster_run, get_cluster_run_job_counts_per_run,
+    _label_safe_run_id)
 from robovast.execution.cluster_execution.cluster_setup import (
     delete_server, get_cluster_config, get_cluster_namespace,
     load_cluster_config_name, setup_server)
@@ -463,14 +464,19 @@ def setup(list_configs, namespace, options, force, cluster_config):
 
 
 @cluster.command(name='run-cleanup')
-def run_cleanup():
+@click.option('--run-id', '-i', default=None,
+              help='Clean only jobs for this run (e.g. run-2025-02-27-123456). Without this, cleans all scenario-runs jobs.')
+def run_cleanup(run_id):
     """Clean up jobs and pods from a cluster run.
 
-    Removes all scenario execution jobs and their associated pods.
-    This is useful after running with --detach to clean up resources
-    once jobs have completed.
+    Removes scenario execution jobs and their associated pods. By default
+    removes all runs. Use --run-id to clean only a specific run.
+
+    Useful after running with --detach to clean up resources once jobs
+    have completed.
 
     Usage: vast execution cluster run-cleanup
+    Usage: vast execution cluster run-cleanup --run-id run-2025-02-27-123456
     """
     try:
         namespace = get_cluster_namespace()
@@ -481,8 +487,23 @@ def run_cleanup():
             click.echo(f"✗ Error: {k8s_msg}", err=True)
             sys.exit(1)
 
-        click.echo("Cleaning up scenario run jobs and pods...")
-        cleanup_cluster_run(namespace=namespace)
+        if run_id:
+            per_run = get_cluster_run_job_counts_per_run(namespace)
+            label_safe = _label_safe_run_id(run_id)
+            if label_safe not in per_run:
+                available = sorted(per_run.keys())
+                if available:
+                    click.echo(f"Run '{run_id}' not found in cluster.", err=True)
+                    click.echo("Available run-ids:", err=True)
+                    for rid in available:
+                        click.echo(f"  - {rid}", err=True)
+                else:
+                    click.echo("No scenario run jobs in cluster.", err=True)
+                sys.exit(1)
+            click.echo(f"Cleaning up jobs and pods for run '{run_id}'...")
+        else:
+            click.echo("Cleaning up all scenario run jobs and pods...")
+        cleanup_cluster_run(namespace=namespace, run_id=run_id)
         click.echo("✓ Cleanup completed successfully!")
 
     except Exception as e:

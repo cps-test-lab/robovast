@@ -41,39 +41,55 @@ from .manifests import JOB_TEMPLATE
 logger = logging.getLogger(__name__)
 
 
-def cleanup_cluster_run(namespace="default"):
-    """Clean up all scenario run jobs and pods from the cluster.
+def _label_safe_run_id(run_id: str) -> str:
+    """Convert run_id to a valid Kubernetes label value.
 
-    This function removes all Kubernetes jobs and pods with the label
-    'jobgroup=scenario-runs' from the given namespace. It's used after
-    a detached run to clean up resources once jobs have completed.
+    Label values must be 63 chars or less, alphanumeric, hyphens, periods.
+    """
+    s = run_id.lower().replace("_", "-")
+    return "".join(c for c in s if c.isalnum() or c in "-.")[:63]
+
+
+def cleanup_cluster_run(namespace="default", run_id=None):
+    """Clean up scenario run jobs and pods from the cluster.
+
+    If run_id is given, removes only jobs and pods for that run (with
+    label jobgroup=scenario-runs,run-id=<run_id>). Otherwise removes all
+    jobs and pods with label 'jobgroup=scenario-runs'.
+
+    Used after a detached run to clean up resources once jobs have completed.
     """
     kube_config.load_kube_config()
     k8s_client = client.CoreV1Api()
     k8s_batch_client = client.BatchV1Api()
 
+    label_selector = "jobgroup=scenario-runs"
+    if run_id is not None:
+        label_safe = _label_safe_run_id(run_id)
+        label_selector = f"jobgroup=scenario-runs,run-id={label_safe}"
+
     # Cleanup jobs
     try:
-        logger.debug("Deleting all jobs with label 'jobgroup=scenario-runs'")
+        logger.debug(f"Deleting jobs with label selector '{label_selector}'")
         k8s_batch_client.delete_collection_namespaced_job(
             namespace=namespace,
-            label_selector="jobgroup=scenario-runs",
+            label_selector=label_selector,
             body=client.V1DeleteOptions(grace_period_seconds=0)
         )
-        logger.info("Successfully deleted all scenario-runs jobs")
+        logger.info("Successfully deleted scenario-runs jobs")
     except client.rest.ApiException as e:
         logger.error(f"Error deleting jobs with label selector: {e}")
         raise
 
     # Cleanup pods
     try:
-        logger.debug("Deleting all pods with label 'jobgroup=scenario-runs'")
+        logger.debug(f"Deleting pods with label selector '{label_selector}'")
         k8s_client.delete_collection_namespaced_pod(
             namespace=namespace,
-            label_selector="jobgroup=scenario-runs",
+            label_selector=label_selector,
             body=client.V1DeleteOptions(grace_period_seconds=0)
         )
-        logger.debug("Successfully cleaned up all scenario-runs pods")
+        logger.debug("Successfully cleaned up scenario-runs pods")
     except client.rest.ApiException as e:
         logger.error(f"Error deleting pods with label selector: {e}")
         raise
@@ -304,7 +320,7 @@ class JobRunner:
         job_manifest = copy.deepcopy(self.manifest)
 
         # Replace template variables
-        label_safe_run_id = self._label_safe_run_id(self.run_id)
+        label_safe_run_id = _label_safe_run_id(self.run_id)
         self.replace_template(job_manifest, "$RUN_ID", label_safe_run_id)
         self.replace_template(job_manifest, "$ITEM",
                               f"{scenario_key.replace('/', '-').replace('_', '-')}-{run_number}")
@@ -444,16 +460,6 @@ class JobRunner:
         Bucket names must be lowercase, 3-63 chars, no underscores.
         """
         return run_id.lower().replace("_", "-")
-
-    @staticmethod
-    def _label_safe_run_id(run_id: str) -> str:
-        """Convert run_id to a valid Kubernetes label value.
-
-        Label values must be 63 chars or less, alphanumeric, hyphens, periods.
-        """
-        s = run_id.lower().replace("_", "-")
-        # Strip invalid chars (only alphanumeric, hyphen, period allowed)
-        return "".join(c for c in s if c.isalnum() or c in "-.")[:63]
 
     def get_remaining_jobs(self, job_names):
         running_jobs = []
@@ -619,7 +625,7 @@ class JobRunner:
         """Delete jobs. If run_id is given, only delete jobs with that run-id label."""
         label_selector = "jobgroup=scenario-runs"
         if run_id is not None:
-            label_safe = self._label_safe_run_id(run_id)
+            label_safe = _label_safe_run_id(run_id)
             label_selector = f"jobgroup=scenario-runs,run-id={label_safe}"
         try:
             logger.debug(f"Deleting jobs with label selector '{label_selector}'")
@@ -715,7 +721,7 @@ class JobRunner:
         """Delete pods. If run_id is given, only delete pods with that run-id label."""
         label_selector = "jobgroup=scenario-runs"
         if run_id is not None:
-            label_safe = self._label_safe_run_id(run_id)
+            label_safe = _label_safe_run_id(run_id)
             label_selector = f"jobgroup=scenario-runs,run-id={label_safe}"
         try:
             logger.debug(f"Deleting pods with label selector '{label_selector}'")
