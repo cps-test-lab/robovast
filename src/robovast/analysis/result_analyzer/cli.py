@@ -25,6 +25,7 @@ from robovast.common.cli import get_project_config, handle_cli_exception
 from robovast.common.postprocessing import load_postprocessing_plugins
 
 from ...common import run_postprocessing
+from ..merge_results import merge_results
 
 
 @click.group()
@@ -140,6 +141,37 @@ def result_analyzer_cmd(results_dir, force, skip_postprocessing):
         window.deleteLater()
         sys.exit(exit_code)
 
+    except Exception as e:
+        handle_cli_exception(e)
+
+
+@analysis.command(name='merge-results')
+@click.argument('merged_run_dir', type=click.Path())
+@click.option('--results-dir', '-r', default=None,
+              help='Source directory containing run-* dirs (uses project results dir if not specified)')
+def merge_results_cmd(merged_run_dir, results_dir):
+    """Merge run-dirs with identical configs into one merged_run_dir.
+
+    Groups run-dir/config-dir by config_identifier from config.yaml.
+    Test folders (0, 1, 2, ...) from all runs are renumbered and copied.
+    Original run-dirs are not modified.
+
+    Requires project initialization with ``vast init`` first (unless ``--results-dir`` is specified).
+    """
+    if results_dir is not None:
+        source_dir = results_dir
+    else:
+        project_config = get_project_config()
+        source_dir = project_config.results_dir
+
+    click.echo(f"Merging from {source_dir} into {merged_run_dir}...")
+    try:
+        success, message = merge_results(source_dir, merged_run_dir)
+        if success:
+            click.echo(f"✓ {message}")
+        else:
+            click.echo(f"✗ {message}", err=True)
+            sys.exit(1)
     except Exception as e:
         handle_cli_exception(e)
 

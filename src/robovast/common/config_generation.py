@@ -324,6 +324,15 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                 logger.debug(f"Variation result after {variation_class.__name__}: \n{pformat(result)}")
             current_configs = result
 
+        # Add metadata for config identifier (used by prepare_run_configs)
+        variation_type_names = [
+            list(item.keys())[0] for item in (config.get("variations") or [])
+            if isinstance(item, dict)
+        ]
+        for c in current_configs:
+            c["_config_block"] = config
+            c["_variation_type_names"] = variation_type_names
+
         configs.extend(current_configs)
 
     # Extract execution parameters from execution section

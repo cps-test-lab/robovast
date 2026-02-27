@@ -15,9 +15,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import copy
+import json
+import logging
+import os
+import pickle
 
 from ..common import get_scenario_parameters
 from ..config import get_validated_config
+from ..file_cache2 import CacheKey, FileCache2
+
+logger = logging.getLogger(__name__)
 
 # Module-level counter for generating short, unique config indexes.
 # All variation classes can call `get_config_index()` to obtain a new
@@ -47,11 +54,27 @@ def get_config_index():
     return _config_index
 
 
+def _to_cache_jsonable(value):
+    """Convert value to JSON-serializable form for cache key hashing."""
+    if isinstance(value, (str, int, float, bool, type(None))):
+        return value
+    if isinstance(value, dict):
+        return {k: _to_cache_jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_cache_jsonable(v) for v in value]
+    if isinstance(value, bytes):
+        return value.hex()
+    if hasattr(value, "model_dump") and callable(getattr(value, "model_dump")):
+        return _to_cache_jsonable(value.model_dump())
+    return str(value)
+
+
 class Variation():
 
     CONFIG_CLASS = None  # Pydantic model class for config validation
     GUI_CLASS = None  # Could be set to a GUI class for editing
     GUI_RENDERER_CLASS = None  # Could be set to a GUI renderer class
+    CACHE_ID = None  # Subclasses set to enable caching (e.g. "robovast_mt_generation_")
 
     def __init__(self, base_path, parameters, general_parameters, progress_update_callback, scenario_file, output_dir):
         # Reset shared config index for each new Variation instance so
@@ -72,6 +95,23 @@ class Variation():
     def variation(self, in_configs):
         # vary in_configs and return result
         return None
+
+    def get_cache_input_files(self, in_configs):
+        """Return file paths that affect variation output. Override when using CACHE_ID."""
+        return []
+
+    def _build_cache_key(self, in_configs):
+        """Build cache key from all input data. Used by execute_variation when CACHE_ID is set."""
+        key = CacheKey()
+        key.add("class", self.__class__.__name__)
+        key.add("base_path", self.base_path)
+        key.add("scenario_file", self.scenario_file)
+        key.add("parameters", self.parameters)
+        key.add("in_configs", _to_cache_jsonable(in_configs))
+        for path in self.get_cache_input_files(in_configs):
+            resolved = path if os.path.isabs(path) else os.path.join(self.base_path, path)
+            key.add_file(resolved)
+        return key
 
     def progress_update(self, msg):
         self.progress_update_callback(f"{self.__class__.__name__}: {msg}")
