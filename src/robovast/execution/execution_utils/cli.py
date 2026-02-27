@@ -616,7 +616,9 @@ def prepare_run(output, config, runs, cluster_config, options):  # pylint: disab
         namespace = get_cluster_namespace()
 
         # Initialize job runner (this prepares all scenarios)
-        job_runner = JobRunner(config_path, config, runs, cluster_config, namespace=namespace)
+        job_runner = JobRunner(
+            config_path, config, runs, cluster_config,
+            namespace=namespace)
 
         click.echo(f"Preparing run configuration 'ID: {job_runner.run_id}', test configs: {
                    len(job_runner.configs)}, runs per test config: {job_runner.num_runs}...")
@@ -661,8 +663,14 @@ def prepare_run(output, config, runs, cluster_config, options):  # pylint: disab
             yaml.dump_all(all_jobs, f, default_flow_style=False)
 
         cluster_config.prepare_setup_cluster(output, **cluster_kwargs)
+        from robovast.execution.cluster_execution.kueue_setup import (
+            prepare_kueue_setup,
+        )
+        prepare_kueue_setup(output, namespace=namespace)
 
-        generate_upload_script(output, job_runner.run_id, namespace, cluster_config)
+        generate_upload_script(
+            output, job_runner.run_id, namespace, cluster_config,
+        )
 
         click.echo(f"✓ Successfully prepared {job_count} job manifests in directory'{
                    output}'.\n\nFollow README files to set up and execute.\n")
@@ -731,6 +739,10 @@ if __name__ == "__main__":
     readme_content = """# Execution Instructions
 This directory contains the necessary manifests to set up the RoboVAST execution environment on a cluster.
 
+### 0. Set up Kueue (job queueing)
+
+Follow README_kueue.md to install Kueue and apply the queue manifests.
+
 ### 1. Set up the MinIO S3 server
 
 Follow README_<CLUSTER CONFIG>.md for cluster-specific setup instructions.
@@ -761,5 +773,6 @@ kubectl replace --force -f all-jobs.yaml
 
 For a single job file: ``kubectl replace --force -f jobs/<job-name>.yaml -n <namespace>``
 """
+    readme_content = readme_content.rstrip()
     with open(f"{output_dir}/README.md", "w") as f:
         f.write(readme_content)

@@ -798,6 +798,10 @@ class JobRunner:
         yaml_str = JOB_TEMPLATE.format(image=image, namespace=self.namespace)
         manifest = yaml.safe_load(yaml_str)
 
+        manifest.setdefault("metadata", {}).setdefault("labels", {})[
+            "kueue.x-k8s.io/queue-name"
+        ] = "robovast"
+
         main_container = manifest['spec']['template']['spec']['containers'][0]
         main_container.setdefault('securityContext', {})['runAsUser'] = run_as_user
 

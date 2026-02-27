@@ -25,6 +25,8 @@ import yaml
 
 from robovast.common.cli.project_config import ProjectConfig
 
+from .kueue_setup import apply_kueue_queues, install_kueue_helm, uninstall_kueue_helm
+
 logger = logging.getLogger(__name__)
 
 # Flag file name to store the cluster config name that was used for setup
@@ -213,6 +215,12 @@ def setup_server(config_name=None, list_configs=False, force=False, **cluster_kw
         )
 
     cluster_config = get_cluster_config(config_name)
+
+    # Install Kueue and queues first (always)
+    namespace = cluster_kwargs.get("namespace", "default")
+    install_kueue_helm()
+    apply_kueue_queues(namespace=namespace)
+
     cluster_config.setup_cluster(**cluster_kwargs)
 
     # Save the config name and kwargs to flag file after successful setup
@@ -257,6 +265,9 @@ def delete_server(config_name=None, **cluster_kwargs_override):
     else:
         # Explicit config: use only CLI-provided kwargs (e.g. -n namespace)
         cluster_kwargs = dict(cluster_kwargs_override)
+
+    # Uninstall Kueue first (always, since we always install it)
+    uninstall_kueue_helm()
 
     cluster_config = get_cluster_config(config_name)
     cluster_config.cleanup_cluster(**cluster_kwargs)
