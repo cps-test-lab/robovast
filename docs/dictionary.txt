@@ -37,3 +37,4 @@ gzipped
 namespace
 subdirectory
 entrypoint
+RViz

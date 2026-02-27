@@ -319,7 +319,7 @@ local.parameter_overrides
 
 **Required:** No
 
-Overrides for scenario parameters that are added to the generated ``scenario.config`` **only for local runs**. Each list item is a single key-value pair. Values override whatever was produced by configuration variations. Nested dicts are supported (values are replaced entirely).
+Overrides for scenario parameters that are added to the generated ``scenario.config`` **only for local runs**. Each list item is a single key-value pair. Values override whatever was produced by configuration variations. Nested dictionaries are supported (values are replaced entirely).
 
 Parameters are validated against the scenario file (``.osc``); only parameters defined in the scenario are allowed.
 
