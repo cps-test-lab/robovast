@@ -299,6 +299,8 @@ def monitor(interval, once):
 
         CURSOR_UP = "\033[A"
         CLEAR_LINE = "\033[2K"
+        BAR_WIDTH = 20
+        PCT_WIDTH = 7
         prev_line_count = [0]  # use list so inner def can mutate
 
         def _print_status_lines():
@@ -311,9 +313,13 @@ def monitor(interval, once):
                 finished = c["completed"] + c["failed"]
                 if c["running"] or c["pending"]:
                     all_done = False
+                pct = 100.0 * finished / total if total > 0 else 100.0
+                filled = int(BAR_WIDTH * finished / total) if total > 0 else BAR_WIDTH
+                progress_bar = "█" * filled + "░" * (BAR_WIDTH - filled)
+                pct_str = f"{pct:.1f}%".rjust(PCT_WIDTH)
                 line = (
-                    f"{run_id}: {finished}/{total} done "
-                    f"({c['completed']} ok, {c['failed']} fail)  "
+                    f"{run_id}  [{progress_bar}]  {pct_str}  "
+                    f"{finished}/{total}  ({c['completed']} ok, {c['failed']} fail)  "
                     f"Running: {c['running']}  Pending: {c['pending']}"
                 )
                 lines.append(line)
