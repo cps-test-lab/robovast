@@ -233,17 +233,25 @@ class TestResultsAnalyzer(QMainWindow):
         if not item_path:
             return
 
+        directory_path = Path(item_path)
+        run_type = self.get_run_type(directory_path) if directory_path.is_dir() else None
+
         # Create context menu
         menu = QMenu(self)
         copy_path_action = menu.addAction("Copy Path")
 
+        # Config-level: add Copy vast cluster/local run command actions
+        copy_cluster_action = None
+        copy_local_action = None
+        if run_type == RunType.CONFIG:
+            config_name = directory_path.name
+            copy_cluster_action = menu.addAction("Copy vast cluster run command")
+            copy_local_action = menu.addAction("Copy vast local run command")
+
         # Add "Open Notebook in VS Code" action if applicable
         open_notebook_action = None
-        directory_path = Path(item_path)
-        if directory_path.is_dir():
-            run_type = self.get_run_type(directory_path)
-            if run_type is not None:
-                open_notebook_action = menu.addAction("Open Notebook in VS Code")
+        if directory_path.is_dir() and run_type is not None:
+            open_notebook_action = menu.addAction("Open Notebook in VS Code")
 
         # Show menu and get selected action
         action = menu.exec(self.tree.viewport().mapToGlobal(position))
@@ -252,6 +260,12 @@ class TestResultsAnalyzer(QMainWindow):
         if action == copy_path_action:
             clipboard = QApplication.clipboard()
             clipboard.setText(str(item_path))
+        elif action == copy_cluster_action and run_type == RunType.CONFIG:
+            clipboard = QApplication.clipboard()
+            clipboard.setText(f"vast execution cluster run -r 1 -c {config_name}")
+        elif action == copy_local_action and run_type == RunType.CONFIG:
+            clipboard = QApplication.clipboard()
+            clipboard.setText(f"vast execution local run -r 1 -c {config_name}")
         elif action == open_notebook_action:
             self.open_notebook_in_vscode(directory_path)
 
