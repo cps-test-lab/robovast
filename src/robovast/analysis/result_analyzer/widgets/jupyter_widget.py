@@ -199,58 +199,6 @@ def format_notebook_error_html(error_str: str) -> str:
         else:
             error_message = last_line
 
-    # Create a clean HTML error page
-    # Escape HTML in cell source and preserve formatting
-    cell_source_html = ""
-    if cell_source:
-        # Split into lines and add line numbers with highlighting
-        source_lines = cell_source.split('\n')
-        formatted_lines = []
-
-        # Determine the range of lines to show (max 10 lines before error)
-        if error_line_number:
-            start_line = max(1, error_line_number - 10)
-        else:
-            start_line = 1
-
-        # Show a few lines after the error for context
-        end_line = len(source_lines) if not error_line_number else min(
-            len(source_lines), error_line_number + 2)
-
-        for i, line in enumerate(source_lines, start=1):
-            if i < start_line or i > end_line:
-                continue
-
-            escaped_line = html.escape(line)
-            if error_line_number and i == error_line_number:
-                formatted_lines.append(
-                    f'<span class="line-number error-line-number">{i:3d}</span>'
-                    f'<span class="error-line">{escaped_line}</span>'
-                )
-            else:
-                formatted_lines.append(
-                    f'<span class="line-number">{i:3d}</span>'
-                    f'<span class="code-line">{escaped_line}</span>'
-                )
-
-        formatted_code = '\n'.join(formatted_lines)
-
-        # Build header with cell info and error line number
-        header_parts = []
-        if cell_info:
-            header_parts.append(f'<strong>{cell_info}</strong>')
-        if error_line_number:
-            header_parts.append(f'Line {error_line_number}')
-
-        header = ' · ' .join(header_parts) if header_parts else 'Failing code'
-
-        cell_source_html = f"""
-            <div class="cell-source">
-                <div class="cell-source-header">{header}</div>
-                <pre><code>{formatted_code}</code></pre>
-            </div>
-        """
-
     html_template = f"""
 <!DOCTYPE html>
 <html lang="en">
