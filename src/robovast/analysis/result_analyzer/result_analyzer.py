@@ -452,23 +452,24 @@ class TestResultsAnalyzer(QMainWindow):
                         tree_item.setData(0, Qt.UserRole, str(folder_path))
                         display_text = test_number
                         if self.is_test_directory(folder_path):
-                            test_status = self.get_test_status(folder_path)
+                            test_status, summary = self.get_test_status(folder_path)
                             passed_bg, passed_fg = self.get_theme_colors("passed")
                             failed_bg, failed_fg = self.get_theme_colors("failed")
                             unknown_bg, unknown_fg = self.get_theme_colors("unknown")
+                            suffix = f" – {summary}" if summary else ""
                             if test_status == "passed":
                                 tree_item.setData(0, Qt.UserRole + 1, "passed")
-                                display_text = f"✓ {test_number}"
+                                display_text = f"✓ {test_number}{suffix}"
                                 tree_item.setBackground(0, QBrush(QColor(passed_bg)))
                                 tree_item.setForeground(0, QBrush(QColor(passed_fg)))
                             elif test_status == "failed":
                                 tree_item.setData(0, Qt.UserRole + 1, "failed")
-                                display_text = f"✗ {test_number}"
+                                display_text = f"✗ {test_number}{suffix}"
                                 tree_item.setBackground(0, QBrush(QColor(failed_bg)))
                                 tree_item.setForeground(0, QBrush(QColor(failed_fg)))
                             else:
                                 tree_item.setData(0, Qt.UserRole + 1, "unknown")
-                                display_text = f"? {test_number}"
+                                display_text = f"? {test_number}{suffix}"
                                 tree_item.setBackground(0, QBrush(QColor(unknown_bg)))
                                 tree_item.setForeground(0, QBrush(QColor(unknown_fg)))
                         tree_item.setText(0, display_text)
@@ -639,7 +640,7 @@ class TestResultsAnalyzer(QMainWindow):
                 if rid != run_id:
                     continue
                 if self.is_test_directory(folder_path):
-                    test_status = self.get_test_status(folder_path)
+                    test_status, _ = self.get_test_status(folder_path)
                     stats[test_status] = stats.get(test_status, 0) + 1
                     stats['total'] += 1
         except Exception as e:
@@ -648,11 +649,14 @@ class TestResultsAnalyzer(QMainWindow):
         return stats
 
     def get_test_status(self, directory_path):
-        """Get test status from test.xml"""
+        """Get test status and optional short summary from test.xml.
+        Returns (status, summary) where status is 'passed', 'failed', or 'unknown',
+        and summary is a short descriptive string or None.
+        """
         test_xml_path = directory_path / "test.xml"
 
         if not test_xml_path.exists():
-            return "unknown"
+            return "unknown", None
 
         try:
             tree = ET.parse(test_xml_path)
@@ -662,13 +666,48 @@ class TestResultsAnalyzer(QMainWindow):
             if testsuite is not None:
                 errors = int(testsuite.get('errors', 0))
                 failures = int(testsuite.get('failures', 0))
+                status = "passed" if (errors == 0 and failures == 0) else "failed"
 
-                return "passed" if (errors == 0 and failures == 0) else "failed"
+                summary = None
+                if status == "failed":
+                    failure_text = self._get_failure_text(root)
+                    summary = self._extract_failure_summary(failure_text)
+
+                return status, summary
 
         except Exception as e:
             print(f"Error parsing test.xml in {directory_path}: {e}")
 
-        return "unknown"
+        return "unknown", None
+
+    def _get_failure_text(self, root):
+        """Get failure element text from parsed test.xml root."""
+        for testcase in root.iter('testcase'):
+            failure = testcase.find('failure')
+            if failure is not None:
+                return failure.text or failure.get('message', '') or ''
+        return ''
+
+    def _extract_failure_summary(self, failure_text):
+        """Extract short summary from failure message text.
+        Algorithm: last '[✕] -- ' -> text after on that line;
+        else last '[✓] -- ' -> text after on that line;
+        if single-line message and no marker found -> take it completely.
+        """
+        if not failure_text:
+            return None
+        for marker in ("[✕] -- ", "[✓] -- "):
+            idx = failure_text.rfind(marker)
+            if idx >= 0:
+                start = idx + len(marker)
+                end = failure_text.find("\n", start)
+                rest = failure_text[start:end] if end >= 0 else failure_text[start:]
+                s = rest.strip()
+                return s if s else None
+        if "\n" not in failure_text:
+            s = failure_text.strip()
+            return s if s else None
+        return None
 
     def is_test_directory(self, directory_path):
         """Check if directory is a test directory"""
