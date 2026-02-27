@@ -28,7 +28,7 @@ import yaml
 from robovast.common import prepare_run_configs
 from robovast.common.cli import get_project_config, handle_cli_exception
 from robovast.execution.cluster_execution.cluster_execution import (
-    JobRunner, cleanup_cluster_run, get_cluster_run_job_counts)
+    JobRunner, cleanup_cluster_run, get_cluster_run_job_counts_per_run)
 from robovast.execution.cluster_execution.cluster_setup import (
     delete_server, get_cluster_config, get_cluster_namespace,
     load_cluster_config_name, setup_server)
@@ -190,13 +190,17 @@ def cluster():
               help='Override the number of runs specified in the config')
 @click.option('--detach', '-d', is_flag=True,
               help='Exit after creating jobs without waiting for completion')
-def run(config, runs, detach):  # pylint: disable=function-redefined
+@click.option('--cleanup', is_flag=True,
+              help='Clean up previous runs before starting (default: do not cleanup; allows multiple parallel runs)')
+def run(config, runs, detach, cleanup):  # pylint: disable=function-redefined
     """Execute scenarios on a Kubernetes cluster.
 
     Deploys all test configurations (or a specific one) as Kubernetes jobs
     for distributed parallel execution.
 
     Use --detach to exit immediately after creating jobs without waiting.
+    Use --cleanup to remove previous runs before starting (by default,
+    previous runs are left intact so multiple runs can run in parallel).
     Use 'vast execution cluster run-cleanup' to clean up jobs afterwards.
 
     Requires project initialization with ``vast init`` first.
@@ -245,7 +249,9 @@ def run(config, runs, detach):  # pylint: disable=function-redefined
     logging.debug(pod_msg)
 
     try:
-        job_runner = JobRunner(project_config.config_path, config, runs, cluster_config, namespace=namespace)
+        job_runner = JobRunner(
+            project_config.config_path, config, runs, cluster_config,
+            namespace=namespace, cleanup_before_run=cleanup)
         job_runner.run(detached=detach)
 
         if detach:
@@ -275,8 +281,8 @@ def run(config, runs, detach):  # pylint: disable=function-redefined
 def monitor(interval, once):
     """Monitor scenario execution jobs on the cluster.
 
-    Continuously displays how many jobs have finished (completed or failed),
-    how many are currently running, and how many are still pending.
+    Displays progress per run: how many jobs have finished (completed or failed),
+    how many are running, and how many are pending for each run.
 
     This is intended for monitoring jobs created by
     ``vast execution cluster run -d``.
@@ -291,37 +297,53 @@ def monitor(interval, once):
             sys.exit(1)
         logging.debug(k8s_msg)
 
-        def _print_status_line():
-            counts = get_cluster_run_job_counts(namespace)
-            finished = counts["completed"] + counts["failed"]
-            running = counts["running"]
-            pending = counts["pending"]
+        CURSOR_UP = "\033[A"
+        CLEAR_LINE = "\033[2K"
+        prev_line_count = [0]  # use list so inner def can mutate
 
-            line = (
-                f"Finished: {finished} "
-                f"(completed: {counts['completed']}, failed: {counts['failed']})  "
-                f"Running: {running}  Pending: {pending}"
-            )
+        def _print_status_lines():
+            per_run = get_cluster_run_job_counts_per_run(namespace)
+            lines = []
+            all_done = True
+            for run_id in sorted(per_run.keys()):
+                c = per_run[run_id]
+                total = c["completed"] + c["failed"] + c["running"] + c["pending"]
+                finished = c["completed"] + c["failed"]
+                if c["running"] or c["pending"]:
+                    all_done = False
+                line = (
+                    f"{run_id}: {finished}/{total} done "
+                    f"({c['completed']} ok, {c['failed']} fail)  "
+                    f"Running: {c['running']}  Pending: {c['pending']}"
+                )
+                lines.append(line)
 
-            # Pad line to ensure we fully overwrite previous content
-            width = max(len(line), 80)
-            padded_line = line.ljust(width)
+            if not lines:
+                lines.append("No scenario run jobs found.")
 
-            sys.stdout.write("\r" + padded_line)
+            # Move cursor up and overwrite previous output
+            for _ in range(prev_line_count[0]):
+                sys.stdout.write(CURSOR_UP)
+            for i, line in enumerate(lines):
+                sys.stdout.write("\r" + CLEAR_LINE + line + "\n")
+            # Clear any extra lines from previous iteration
+            for _ in range(len(lines), prev_line_count[0]):
+                sys.stdout.write("\r" + CLEAR_LINE + "\n")
+            prev_line_count[0] = len(lines)
             sys.stdout.flush()
-            return counts
+            return all_done, per_run
 
         if once:
-            _print_status_line()
-            sys.stdout.write("\n")
-            sys.stdout.flush()
+            _print_status_lines()
             return
 
         click.echo("Monitoring scenario run jobs (press Ctrl+C to stop)...")
+        sys.stdout.write("\n")  # leave room for status lines
+        sys.stdout.flush()
 
         while True:
-            counts = _print_status_line()
-            if counts["running"] == 0 and counts["pending"] == 0:
+            all_done, per_run = _print_status_lines()
+            if all_done:
                 sys.stdout.write("\n")
                 sys.stdout.flush()
                 click.echo("All jobs finished.")
@@ -329,7 +351,6 @@ def monitor(interval, once):
             time.sleep(interval)
 
     except KeyboardInterrupt:
-        # Move to the next line cleanly on interrupt
         sys.stdout.write("\n")
         sys.stdout.flush()
     except Exception as e:

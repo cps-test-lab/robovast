@@ -2,10 +2,11 @@
 JOB_TEMPLATE = """apiVersion: batch/v1
 kind: Job
 metadata:
-  name: $TEST_ID
+  name: $RUN_ID-$TEST_ID
   namespace: {namespace}
   labels:
     jobgroup: scenario-runs
+    run-id: $RUN_ID
 spec:
   backoffLimit: 0
   # activeDeadlineSeconds: 10000000
@@ -14,6 +15,7 @@ spec:
       name: scenario-runs
       labels:
         jobgroup: scenario-runs
+        run-id: $RUN_ID
     spec:
       restartPolicy: Never
       containers:

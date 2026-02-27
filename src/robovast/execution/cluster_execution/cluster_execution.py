@@ -127,9 +127,60 @@ def get_cluster_run_job_counts(namespace="default"):
     return counts
 
 
+def get_cluster_run_job_counts_per_run(namespace="default"):
+    """Get status counts per run_id for scenario run jobs.
+
+    Returns a dict mapping run_id (or "<legacy>" for jobs without run-id label)
+    to counts dict with keys completed, failed, running, pending.
+    """
+    kube_config.load_kube_config()
+    k8s_batch_client = client.BatchV1Api()
+
+    try:
+        job_list = k8s_batch_client.list_namespaced_job(
+            namespace=namespace,
+            label_selector="jobgroup=scenario-runs",
+        )
+    except client.rest.ApiException as e:
+        logger.error(f"Error listing jobs with label selector: {e}")
+        raise
+
+    per_run = {}
+
+    for job in job_list.items:
+        run_id = "<legacy>"
+        if job.metadata.labels and "run-id" in job.metadata.labels:
+            run_id = job.metadata.labels["run-id"]
+
+        if run_id not in per_run:
+            per_run[run_id] = {"completed": 0, "failed": 0, "running": 0, "pending": 0}
+
+        status = job.status
+        if status is None:
+            per_run[run_id]["pending"] += 1
+            continue
+
+        succeeded = status.succeeded or 0
+        failed = status.failed or 0
+        active = status.active or 0
+
+        if succeeded >= 1:
+            per_run[run_id]["completed"] += 1
+        elif failed >= 1:
+            per_run[run_id]["failed"] += 1
+        elif active >= 1:
+            per_run[run_id]["running"] += 1
+        else:
+            per_run[run_id]["pending"] += 1
+
+    return per_run
+
+
 class JobRunner:
-    def __init__(self, config_path, single_config=None, num_runs=None, cluster_config=None, namespace="default"):
+    def __init__(self, config_path, single_config=None, num_runs=None, cluster_config=None,
+                 namespace="default", cleanup_before_run=False):
         self.cluster_config = cluster_config
+        self.cleanup_before_run = cleanup_before_run
         self.namespace = namespace
         if not self.cluster_config:
             raise ValueError("Cluster config must be provided to JobRunner")
@@ -253,6 +304,8 @@ class JobRunner:
         job_manifest = copy.deepcopy(self.manifest)
 
         # Replace template variables
+        label_safe_run_id = self._label_safe_run_id(self.run_id)
+        self.replace_template(job_manifest, "$RUN_ID", label_safe_run_id)
         self.replace_template(job_manifest, "$ITEM",
                               f"{scenario_key.replace('/', '-').replace('_', '-')}-{run_number}")
         self.replace_template(job_manifest, "$TEST_ID",
@@ -391,6 +444,16 @@ class JobRunner:
         Bucket names must be lowercase, 3-63 chars, no underscores.
         """
         return run_id.lower().replace("_", "-")
+
+    @staticmethod
+    def _label_safe_run_id(run_id: str) -> str:
+        """Convert run_id to a valid Kubernetes label value.
+
+        Label values must be 63 chars or less, alphanumeric, hyphens, periods.
+        """
+        s = run_id.lower().replace("_", "-")
+        # Strip invalid chars (only alphanumeric, hyphen, period allowed)
+        return "".join(c for c in s if c.isalnum() or c in "-.")[:63]
 
     def get_remaining_jobs(self, job_names):
         running_jobs = []
@@ -552,16 +615,20 @@ class JobRunner:
             secs = seconds % 60
             return f"{hours}h {minutes}m {secs:.1f}s"
 
-    def cleanup_jobs(self):
-        # cleanup all jobs with label jobgroup: scenario-runs in a single call
+    def cleanup_jobs(self, run_id=None):
+        """Delete jobs. If run_id is given, only delete jobs with that run-id label."""
+        label_selector = "jobgroup=scenario-runs"
+        if run_id is not None:
+            label_safe = self._label_safe_run_id(run_id)
+            label_selector = f"jobgroup=scenario-runs,run-id={label_safe}"
         try:
-            logger.debug(f"Deleting all jobs with label 'jobgroup=scenario-runs'")
+            logger.debug(f"Deleting jobs with label selector '{label_selector}'")
             self.k8s_batch_client.delete_collection_namespaced_job(
                 namespace=self.namespace,
-                label_selector="jobgroup=scenario-runs",
+                label_selector=label_selector,
                 body=client.V1DeleteOptions(grace_period_seconds=0)
             )
-            logger.info(f"Successfully deleted all scenario-runs jobs")
+            logger.info("Successfully deleted scenario-runs jobs")
         except client.rest.ApiException as e:
             logger.error(f"Error deleting jobs with label selector: {e}")
 
@@ -569,29 +636,16 @@ class JobRunner:
         # Ensure Kubernetes clients are initialized before running
         self._ensure_k8s_initialized()
 
-        # check if k8s element names have "$ITEM" template
+        # check if k8s element names have required templates
         manifest_data = self.manifest
-        if '$TEST_ID' not in manifest_data['metadata']['name']:
-            raise ValueError("Manifest element names need to contain '$TEST_ID' template")
+        if '$RUN_ID' not in manifest_data['metadata']['name'] or '$TEST_ID' not in manifest_data['metadata']['name']:
+            raise ValueError("Manifest element names need to contain '$RUN_ID' and '$TEST_ID' templates")
 
-        # Cleaning up previous k8s elements
-        # Get the job name prefix by replacing templates
-        job_prefix = manifest_data['metadata']['name'].replace("$TEST_ID", "").replace("$ITEM", "")
-
-        # Clean up existing jobs that match our naming pattern
-        job_list = self.k8s_batch_client.list_namespaced_job(namespace=self.namespace)
-        jobs_to_cleanup = []
-        for job in job_list.items:
-            if job.metadata.name.startswith(job_prefix):
-                jobs_to_cleanup.append(job.metadata.name)
-                logger.debug(f"Found existing job to cleanup: {job.metadata.name}")
-
-        if jobs_to_cleanup:
-            logger.debug(f"Cleaning up {len(jobs_to_cleanup)} existing jobs...")
+        # Optionally clean up previous runs before starting
+        if self.cleanup_before_run:
+            logger.debug("Cleaning up previous scenario-runs jobs and pods...")
+            self.cleanup_pods()
             self.cleanup_jobs()
-
-        # Clean up existing pods with label jobgroup: scenario-runs
-        self.cleanup_pods()
 
         # upload all config files to S3 bucket
         logger.debug(f"Uploading task config files for {len(self.configs)} scenarios to S3...")
@@ -647,26 +701,30 @@ class JobRunner:
         logger.info("Collecting job statistics...")
         self.collect_job_statistics(all_jobs)
 
-        # Clean up
-        self.cleanup_pods()
-        self.cleanup_jobs()
-        logger.info(f"Cleaned up jobs.")
+        # Clean up only this run's jobs and pods
+        self.cleanup_pods(run_id=self.run_id)
+        self.cleanup_jobs(run_id=self.run_id)
+        logger.info("Cleaned up jobs.")
 
         # Print comprehensive statistics
         self.print_run_statistics()
 
         logger.debug(f"MinIO S3 pod is left running for reuse")
 
-    def cleanup_pods(self):
-        # Cleanup pods with label jobgroup: scenario-runs
+    def cleanup_pods(self, run_id=None):
+        """Delete pods. If run_id is given, only delete pods with that run-id label."""
+        label_selector = "jobgroup=scenario-runs"
+        if run_id is not None:
+            label_safe = self._label_safe_run_id(run_id)
+            label_selector = f"jobgroup=scenario-runs,run-id={label_safe}"
         try:
-            logger.debug(f"Deleting all pods with label 'jobgroup=scenario-runs'")
+            logger.debug(f"Deleting pods with label selector '{label_selector}'")
             self.k8s_client.delete_collection_namespaced_pod(
                 namespace=self.namespace,
-                label_selector="jobgroup=scenario-runs",
+                label_selector=label_selector,
                 body=client.V1DeleteOptions(grace_period_seconds=0)
             )
-            logger.debug(f"Successfully cleaned up all scenario-runs pods")
+            logger.debug("Successfully cleaned up scenario-runs pods")
         except client.rest.ApiException as e:
             logger.error(f"Error deleting pods with label selector: {e}")
 
