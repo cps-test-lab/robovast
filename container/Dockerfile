@@ -92,7 +92,7 @@ RUN  git clone "https://github.com/cps-test-lab/scenario-execution.git" /ws/src/
      cd /ws && \
      git clone "https://github.com/cps-test-lab/scenario-execution-server.git" /ws/src/scenario-execution-server && \
      cd /ws/src/scenario-execution-server && \
-     git checkout 1cb00003684205be2368a6f2c5145e1b87387f1b && \
+     git checkout 2d2c082d926c3b88c1fe51ed29e4ceaa160eade2 && \
      cd /ws && \
      . "/opt/ros/${ROS_DISTRO}/setup.bash" && \
      colcon build
