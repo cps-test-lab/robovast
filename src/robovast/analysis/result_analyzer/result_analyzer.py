@@ -243,6 +243,7 @@ class TestResultsAnalyzer(QMainWindow):
         # Config-level: add Copy vast cluster/local run command actions
         copy_cluster_action = None
         copy_local_action = None
+        config_name = None
         if run_type == RunType.CONFIG:
             config_name = directory_path.name
             copy_cluster_action = menu.addAction("Copy vast cluster run command")
