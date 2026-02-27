@@ -112,7 +112,8 @@ def list_cmd(debug, visualize):
                     plot_config(ax, config)
                     if not os.path.exists("figs"):
                         os.makedirs("figs")
-                    plt.savefig("figs/" + config.get("name") + ".png", bbox_inches='tight')
+                    plt.savefig("figs/" + config.get("name") + ".png", bbox_inches='tight', dpi=300)
+                    plt.close(fig)
     except Exception as e:
         handle_cli_exception(e)
 
@@ -155,24 +156,16 @@ def plot_config(ax, config):
     """
     _config = config.get("config")
     start_pose = _config.get("start_pose")
-    ax.scatter(
-        start_pose["position"]["x"],
-        start_pose["position"]["y"],
-        color="green",
-        marker="*",
-        label="start pose",
-    )
+    x = start_pose["position"]["x"]
+    y = start_pose["position"]["y"]
+    circle = plt.Circle((x, y), 0.35, color="green", alpha=0.5, label="start_pose")
+    ax.add_patch(circle)
     goal_poses = _config.get("goal_poses")
     for i, g in enumerate(goal_poses):
         x = g["position"]["x"]
         y = g["position"]["y"]
-        ax.scatter(
-            x,
-            y,
-            color="blue",
-            marker="o",
-            label="goal pose",
-        )
+        circle = plt.Circle((x, y), 0.35, color="blue", alpha=0.5, label="goal pose")
+        ax.add_patch(circle)
         ax.annotate(f"g{i}", (x, y), fontsize=10)
 
     if config.get("_path"):
