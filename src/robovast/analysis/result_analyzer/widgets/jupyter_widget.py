@@ -145,27 +145,6 @@ def format_notebook_error_html(error_str: str) -> str:
     error_type = "Execution Error"
     error_message = ""
     traceback_lines = []
-    cell_info = None
-    cell_source = None
-    error_line_number = None
-
-    # Check if error message contains cell information
-    cell_match = re.search(r'Error in cell (\d+) of (\d+):', clean_error)
-    if cell_match:
-        cell_num = cell_match.group(1)
-        total_cells = cell_match.group(2)
-        cell_info = f"Cell {cell_num} of {total_cells}"
-
-    # Extract cell source code if present
-    source_match = re.search(r'--- Cell Source ---\n(.*?)\n--- End Cell Source ---', clean_error, re.DOTALL)
-    if source_match:
-        cell_source = source_match.group(1).strip()
-
-    # Try to extract the line number from the traceback
-    # Look for patterns like "line 5" or "<ipython-input-X>, line 5"
-    line_match = re.search(r'line (\d+)', clean_error)
-    if line_match:
-        error_line_number = int(line_match.group(1))
 
     # Parse the error to extract meaningful information
     in_traceback = False
