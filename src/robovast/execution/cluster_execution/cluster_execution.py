@@ -194,10 +194,11 @@ def get_cluster_run_job_counts_per_run(namespace="default"):
 
 class JobRunner:
     def __init__(self, config_path, single_config=None, num_runs=None, cluster_config=None,
-                 namespace="default", cleanup_before_run=False):
+                 namespace="default", cleanup_before_run=False, log_tree=False):
         self.cluster_config = cluster_config
         self.cleanup_before_run = cleanup_before_run
         self.namespace = namespace
+        self.log_tree = log_tree
         if not self.cluster_config:
             raise ValueError("Cluster config must be provided to JobRunner")
 
@@ -419,6 +420,11 @@ class JobRunner:
                 containers[0]['env'].append({
                     'name': 'POST_COMMAND',
                     'value': str(self.post_command)
+                })
+            if self.log_tree:
+                containers[0]['env'].append({
+                    'name': 'SCENARIO_EXECUTION_PARAMETERS',
+                    'value': '-t'
                 })
 
             containers[0]['volumeMounts'] = shared_volume_mounts

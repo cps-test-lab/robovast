@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 def initialize_local_execution(config, output_dir, runs, feedback_callback=logging.debug,
-                               skip_resource_allocation=False):
+                               skip_resource_allocation=True, log_tree=False):
     """Initialize common setup for local execution commands.
 
     Performs all common setup steps including:
@@ -145,7 +145,8 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
 
     generate_compose_run_script(runs, run_data, config_path_result, pre_command, post_command,
                                 docker_image, results_dir, os.path.join(config_dir, "run.sh"),
-                                skip_resource_allocation=skip_resource_allocation)
+                                skip_resource_allocation=skip_resource_allocation,
+                                log_tree=log_tree)
     return os.path.join(config_dir, "run.sh")
 
 
@@ -167,6 +168,7 @@ LOG_PID=
 SIGINT_COUNT=0
 ABORT_ON_FAILURE=false
 OVERALL_EXIT_CODE=0
+SCENARIO_EXECUTION_PARAMS=""
 
 # Cleanup function
 cleanup() {
@@ -237,6 +239,7 @@ OPTIONS:
     --results-dir DIR   Override the results output directory
     --start-only        Start the robovast container with a shell, skipping the entrypoint script
     --abort-on-failure  Stop execution after the first failed test config
+    --log-tree, -t      Pass --log-tree to scenario execution
     -h, --help          Show this help message
 EOF
 }
@@ -262,6 +265,10 @@ while [ $# -gt 0 ]; do
             ;;
         --abort-on-failure)
             ABORT_ON_FAILURE=true
+            shift
+            ;;
+        --log-tree | -t)
+            SCENARIO_EXECUTION_PARAMS="-t"
             shift
             ;;
         --results-dir)
@@ -334,7 +341,8 @@ def _build_compose_yaml(
     main_gpu,
     secondary_containers,
     use_gui_block,
-    skip_resource_allocation=False,
+    skip_resource_allocation=True,
+    scenario_execution_params='',
 ):
     """Build the docker-compose YAML content for one test run as a shell heredoc string."""
 
@@ -384,6 +392,8 @@ def _build_compose_yaml(
         lines.append(f'      - POST_COMMAND={post_command}')
     lines.append("      - AVAILABLE_CPUS=${AVAILABLE_CPUS}")
     lines.append("      - AVAILABLE_MEM=${AVAILABLE_MEM}")
+    if scenario_execution_params:
+        lines.append(f"      - SCENARIO_EXECUTION_PARAMETERS={scenario_execution_params}")
     if use_gui_block:
         lines.append("      - DISPLAY=${DISPLAY:-:0}")
         lines.append("      - LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-0}")
@@ -468,7 +478,7 @@ def _build_compose_yaml(
 
 def generate_compose_run_script(runs, run_data, config_path_result, pre_command, post_command,
                                 docker_image, results_dir, output_script_path,
-                                skip_resource_allocation=False):
+                                skip_resource_allocation=False, log_tree=False):
     """Generate a shell script to run Docker Compose stacks sequentially.
 
     Args:
@@ -566,6 +576,7 @@ def generate_compose_run_script(runs, run_data, config_path_result, pre_command,
         script += 'fi\n\n'
 
         env_vars = get_execution_env_variables(run_num, config_name, run_data.get('execution', {}).get('env'))
+        scenario_execution_params = "-t" if log_tree else "${SCENARIO_EXECUTION_PARAMS}"
 
         compose_yaml = _build_compose_yaml(
             docker_image=docker_image,
@@ -587,10 +598,11 @@ def generate_compose_run_script(runs, run_data, config_path_result, pre_command,
             secondary_containers=normalized_secondary,
             use_gui_block=True,
             skip_resource_allocation=skip_resource_allocation,
+            scenario_execution_params=scenario_execution_params,
         )
 
         script += f'CURRENT_COMPOSE_FILE="{compose_file}"\n'
-        script += 'export DOCKER_IMAGE RESULTS_DIR SCRIPT_DIR AVAILABLE_CPUS AVAILABLE_MEM LIBGL_ALWAYS_SOFTWARE ROBOVAST_COMMAND SECONDARY_COMMAND ROBOVAST_TTY ROBOVAST_STDIN_OPEN\n'
+        script += 'export DOCKER_IMAGE RESULTS_DIR SCRIPT_DIR AVAILABLE_CPUS AVAILABLE_MEM LIBGL_ALWAYS_SOFTWARE ROBOVAST_COMMAND SECONDARY_COMMAND ROBOVAST_TTY ROBOVAST_STDIN_OPEN SCENARIO_EXECUTION_PARAMS\n'
         script += f'cat > "{compose_file}" << \'COMPOSE_EOF\'\n'
         script += compose_yaml + '\n'
         script += 'COMPOSE_EOF\n\n'

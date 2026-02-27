@@ -221,6 +221,18 @@ def install_kueue_helm():
                 f"--namespace={KUEUE_NAMESPACE}",
             ]
         )
+        # Wait for CRDs after upgrade (upgrade may update CRDs)
+        subprocess.run(
+            [
+                "kubectl",
+                "wait",
+                "--for=condition=established",
+                "crd/resourceflavors.kueue.x-k8s.io",
+                "--timeout=60s",
+            ],
+            capture_output=True,
+            check=False,
+        )
         return
 
     logger.info("Installing Kueue via Helm in namespace %s...", KUEUE_NAMESPACE)
@@ -234,7 +246,19 @@ def install_kueue_helm():
             f"--namespace={KUEUE_NAMESPACE}",
         ]
     )
-    logger.info("Kueue installed successfully. Waiting for controller to be ready...")
+    logger.info("Kueue installed successfully. Waiting for controller and CRDs...")
+    # Wait for ResourceFlavor CRD to be established (CRDs install before controller)
+    subprocess.run(
+        [
+            "kubectl",
+            "wait",
+            "--for=condition=established",
+            "crd/resourceflavors.kueue.x-k8s.io",
+            "--timeout=120s",
+        ],
+        capture_output=True,
+        check=False,
+    )
     # Wait for deployment to be ready
     subprocess.run(
         [
@@ -326,9 +350,10 @@ Requires [Helm](https://helm.sh/) to be installed.
 
 ## 2. Apply ResourceFlavor, ClusterQueue, and LocalQueue
 
-After Kueue controller is ready:
+Wait for Kueue CRDs to be established, then apply:
 
 ```bash
+kubectl wait --for=condition=established crd/resourceflavors.kueue.x-k8s.io --timeout=60s
 kubectl apply -f kueue-queue-setup.yaml
 ```
 
