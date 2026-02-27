@@ -15,7 +15,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Kueue installation and queue setup for cluster execution."""
+"""Kueue installation, queue setup, and workload cleanup for cluster execution."""
 
 import logging
 import subprocess
@@ -31,6 +31,11 @@ KUEUE_HELM_REPO = "oci://registry.k8s.io/kueue/charts/kueue"
 KUEUE_HELM_VERSION = "0.16.1"
 KUEUE_QUEUE_NAME = "robovast"
 CLUSTER_QUEUE_NAME = "robovast-cluster-queue"
+
+# Workload CRD for cleanup (v1beta2 used by Kueue 0.16+)
+KUEUE_WORKLOAD_GROUP = "kueue.x-k8s.io"
+KUEUE_WORKLOAD_VERSION = "v1beta2"
+KUEUE_WORKLOAD_PLURAL = "workloads"
 
 # Fallback quotas when cluster resources cannot be queried
 DEFAULT_CPU_QUOTA = 8
@@ -78,6 +83,52 @@ def _parse_resource(val):
         return float(parse_quantity(val))
     except (ValueError, TypeError):
         return 0
+
+
+def cleanup_kueue_workloads(
+    namespace="default",
+    label_selector=None,
+    run_id=None,
+    k8s_batch_client=None,
+):
+    """Delete Kueue Workload objects for scenario run jobs.
+
+    Workloads don't inherit job labels (jobgroup, run-id). They use
+    kueue.x-k8s.io/queue-name=robovast. We delete all workloads in the robovast
+    queue; all scenario runs use this dedicated queue. If Kueue is not installed
+    (Workload CRD missing), logs and returns without failing.
+
+    Args:
+        namespace: Kubernetes namespace
+        label_selector: Unused (kept for API compatibility)
+        run_id: Unused (kept for API compatibility)
+        k8s_batch_client: Unused (kept for API compatibility)
+    """
+    try:
+        custom_api = client.CustomObjectsApi()
+        delete_opts = client.V1DeleteOptions(
+            grace_period_seconds=0, propagation_policy="Background"
+        )
+        queue_selector = "kueue.x-k8s.io/queue-name=robovast"
+
+        logger.debug(f"Deleting Kueue workloads with selector '{queue_selector}'")
+        custom_api.delete_collection_namespaced_custom_object(
+            group=KUEUE_WORKLOAD_GROUP,
+            version=KUEUE_WORKLOAD_VERSION,
+            namespace=namespace,
+            plural=KUEUE_WORKLOAD_PLURAL,
+            label_selector=queue_selector,
+            body=delete_opts,
+        )
+        logger.info("Successfully deleted scenario-runs Kueue workloads")
+    except client.rest.ApiException as e:
+        if e.status == 404:
+            logger.debug(
+                "Kueue Workload CRD not found (Kueue may not be installed), skipping workload cleanup"
+            )
+        else:
+            logger.error(f"Error deleting Kueue workloads: {e}")
+            raise
 
 
 def get_cluster_allocatable_resources():

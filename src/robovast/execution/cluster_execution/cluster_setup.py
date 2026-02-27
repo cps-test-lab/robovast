@@ -25,7 +25,7 @@ import yaml
 
 from robovast.common.cli.project_config import ProjectConfig
 
-from .kueue_setup import apply_kueue_queues, install_kueue_helm, uninstall_kueue_helm
+from .kubernetes_kueue import apply_kueue_queues, install_kueue_helm, uninstall_kueue_helm
 
 logger = logging.getLogger(__name__)
 

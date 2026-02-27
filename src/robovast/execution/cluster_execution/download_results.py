@@ -134,6 +134,41 @@ class ResultDownloader:
                 sys.exit(1)
             raise
 
+    def _run_finished_in_kubernetes(self, run_id: str) -> bool:
+        """Return True if this run can be downloaded: all its Kubernetes jobs have finished.
+
+        A run is considered finished when either:
+        - No jobs exist for this run_id (already cleaned up or never submitted), or
+        - All jobs for this run have completed (succeeded or failed).
+
+        Returns False if any job is still running or pending.
+        """
+        try:
+            config.load_kube_config()
+            batch_v1 = client.BatchV1Api()
+            label_selector = f"jobgroup=scenario-runs,run-id={run_id}"
+            job_list = batch_v1.list_namespaced_job(
+                namespace=self.namespace,
+                label_selector=label_selector,
+            )
+        except Exception as e:
+            logger.warning(f"Could not query Kubernetes for run '{run_id}': {e}")
+            return False
+
+        if not job_list.items:
+            return True
+
+        for job in job_list.items:
+            status = job.status
+            if status is None:
+                return False
+            active = status.active or 0
+            if active >= 1:
+                return False
+            if status.completion_time is None and (status.failed or 0) == 0 and (status.succeeded or 0) == 0:
+                return False
+        return True
+
     def list_available_runs(self, s3_client: ClusterS3Client) -> list:
         """Return sorted list of bucket names that represent completed runs.
 
@@ -170,9 +205,15 @@ class ResultDownloader:
             access_key=self.access_key,
             secret_key=self.secret_key,
         ) as s3:
-            available_runs = self.list_available_runs(s3)
+            all_runs = self.list_available_runs(s3)
+            available_runs = [r for r in all_runs if self._run_finished_in_kubernetes(r)]
+            skipped = len(all_runs) - len(available_runs)
+            if skipped:
+                logger.info(
+                    f"Skipping {skipped} run(s) that are still in progress."
+                )
             if not available_runs:
-                logger.info("No runs found to download.")
+                logger.info("No finished runs found to download.")
                 return 0
 
             logger.info(
@@ -244,3 +285,20 @@ class ResultDownloader:
                         sys.stdout.flush()
 
         return downloaded_count
+
+    def cleanup_s3_buckets(self, run_id: Optional[str] = None) -> int:
+        """Remove run buckets from S3 without downloading them.
+
+        Args:
+            run_id: If provided, only the bucket with this exact name is removed.
+                    If None, all run buckets (run-*) are removed.
+
+        Returns:
+            int: Number of buckets successfully removed.
+        """
+        with ClusterS3Client(
+            namespace=self.namespace,
+            access_key=self.access_key,
+            secret_key=self.secret_key,
+        ) as s3:
+            return s3.cleanup_run_buckets(run_id=run_id)

@@ -18,6 +18,7 @@
 import logging
 import os
 import signal
+from typing import Optional
 import socket
 import subprocess
 import sys
@@ -193,6 +194,40 @@ class ClusterS3Client:
         response = self._s3.list_buckets()
         buckets = [b["Name"] for b in response.get("Buckets", []) if b["Name"].startswith("run-")]
         return sorted(buckets)
+
+    def cleanup_run_buckets(self, run_id: Optional[str] = None) -> int:
+        """Remove run buckets from S3 without downloading them.
+
+        Args:
+            run_id: If provided, only the bucket with this exact name is removed.
+                    If None, all run buckets (run-*) are removed.
+
+        Returns:
+            int: Number of buckets successfully removed.
+        """
+        all_runs = self.list_run_buckets()
+        if run_id:
+            buckets_to_remove = [b for b in all_runs if b == run_id]
+            if not buckets_to_remove:
+                logger.info(f"No bucket matching '{run_id}' found.")
+                return 0
+        else:
+            buckets_to_remove = all_runs
+
+        if not buckets_to_remove:
+            logger.info("No run buckets found to remove.")
+            return 0
+
+        removed_count = 0
+        for bucket_name in buckets_to_remove:
+            try:
+                self.delete_bucket(bucket_name)
+                removed_count += 1
+                logger.info(f"Removed '{bucket_name}' from S3")
+            except Exception as e:
+                logger.error(f"Failed to remove '{bucket_name}': {e}")
+
+        return removed_count
 
     # ------------------------------------------------------------------
     # Upload / download

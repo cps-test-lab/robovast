@@ -17,8 +17,10 @@
 
 import copy
 import datetime
+import hashlib
 import logging
 import os
+import re
 import sys
 import tempfile
 import time
@@ -36,6 +38,7 @@ from robovast.common.config_generation import generate_scenario_variations
 from robovast.execution.cluster_execution.kubernetes import (
     check_pod_running, upload_configs_to_s3)
 
+from .kubernetes_kueue import cleanup_kueue_workloads
 from .manifests import JOB_TEMPLATE
 
 logger = logging.getLogger(__name__)
@@ -50,12 +53,46 @@ def _label_safe_run_id(run_id: str) -> str:
     return "".join(c for c in s if c.isalnum() or c in "-.")[:63]
 
 
-def cleanup_cluster_run(namespace="default", run_id=None):
-    """Clean up scenario run jobs and pods from the cluster.
+def _short_job_name(run_id: str, scenario_key: str, run_number: int) -> str:
+    """Create a short Kubernetes job name (max 63 chars) for run-id-config-test.
 
-    If run_id is given, removes only jobs and pods for that run (with
+    Format: r<4chars>-<config8chars><hash4>-<test_number>
+    - run_id: "run-2026-02-27-141130" -> "r" + last 4 of timestamp = "r1130"
+    - scenario_key: first 8 alphanumeric for readability, rest as 4-char hash for uniqueness
+    - run_number: as-is (e.g. 0, 1, ...)
+    Labels keep full run-id for identifying.
+    """
+    # r + last 4 chars of run_id (typically the HHMM part of timestamp)
+    run_suffix = run_id.split("-")[-1][-4:] if "-" in run_id else run_id[-4:]
+    run_part = f"r{run_suffix}"
+
+    # First 8 alphanumeric chars for readability, rest as hash for uniqueness
+    config_alpha = re.sub(r"[^a-zA-Z0-9]", "", scenario_key)[:8]
+    config_hash = hashlib.md5(scenario_key.encode()).hexdigest()[:4]
+    config_part = f"{config_alpha}{config_hash}" if config_alpha else config_hash
+
+    return f"{run_part}-{config_part}-{run_number}"
+
+
+def _full_job_name(run_id: str, scenario_key: str, run_number: int) -> str:
+    """Full descriptive job name for pod annotation (run_id-scenario_key-run_number).
+
+    No length limit; stored in annotations, not in resource names or labels.
+    """
+    safe_config = scenario_key.replace("/", "-").replace("_", "-")
+    return f"{run_id}-{safe_config}-{run_number}"
+
+
+def cleanup_cluster_run(namespace="default", run_id=None):
+    """Clean up scenario run jobs, pods, and Kueue workloads from the cluster.
+
+    If run_id is given, removes only jobs, pods, and workloads for that run (with
     label jobgroup=scenario-runs,run-id=<run_id>). Otherwise removes all
-    jobs and pods with label 'jobgroup=scenario-runs'.
+    such resources with label 'jobgroup=scenario-runs'.
+
+    Includes Kueue Workload objects since they may not be cleaned up correctly
+    when jobs finish or are deleted. If Kueue is not installed, workload
+    cleanup is skipped without failing.
 
     Used after a detached run to clean up resources once jobs have completed.
     """
@@ -68,13 +105,24 @@ def cleanup_cluster_run(namespace="default", run_id=None):
         label_safe = _label_safe_run_id(run_id)
         label_selector = f"jobgroup=scenario-runs,run-id={label_safe}"
 
+    # Cleanup Kueue workloads first (before deleting jobs); workloads don't inherit job
+    # labels, so we match by job UIDs or queue name
+    cleanup_kueue_workloads(
+        namespace=namespace,
+        label_selector=label_selector,
+        run_id=run_id,
+        k8s_batch_client=k8s_batch_client,
+    )
+
     # Cleanup jobs
     try:
         logger.debug(f"Deleting jobs with label selector '{label_selector}'")
         k8s_batch_client.delete_collection_namespaced_job(
             namespace=namespace,
             label_selector=label_selector,
-            body=client.V1DeleteOptions(grace_period_seconds=0)
+            body=client.V1DeleteOptions(
+                grace_period_seconds=0, propagation_policy="Background"
+            ),
         )
         logger.info("Successfully deleted scenario-runs jobs")
     except client.rest.ApiException as e:
@@ -87,7 +135,9 @@ def cleanup_cluster_run(namespace="default", run_id=None):
         k8s_client.delete_collection_namespaced_pod(
             namespace=namespace,
             label_selector=label_selector,
-            body=client.V1DeleteOptions(grace_period_seconds=0)
+            body=client.V1DeleteOptions(
+                grace_period_seconds=0, propagation_policy="Background"
+            ),
         )
         logger.debug("Successfully cleaned up scenario-runs pods")
     except client.rest.ApiException as e:
@@ -323,6 +373,10 @@ class JobRunner:
         # Replace template variables
         label_safe_run_id = _label_safe_run_id(self.run_id)
         self.replace_template(job_manifest, "$RUN_ID", label_safe_run_id)
+        self.replace_template(job_manifest, "$JOB_NAME",
+                              _short_job_name(self.run_id, scenario_key, run_number))
+        self.replace_template(job_manifest, "$JOB_FULL_NAME",
+                              _full_job_name(self.run_id, scenario_key, run_number))
         self.replace_template(job_manifest, "$ITEM",
                               f"{scenario_key.replace('/', '-').replace('_', '-')}-{run_number}")
         self.replace_template(job_manifest, "$TEST_ID",
@@ -638,7 +692,9 @@ class JobRunner:
             self.k8s_batch_client.delete_collection_namespaced_job(
                 namespace=self.namespace,
                 label_selector=label_selector,
-                body=client.V1DeleteOptions(grace_period_seconds=0)
+                body=client.V1DeleteOptions(
+                    grace_period_seconds=0, propagation_policy="Background"
+                ),
             )
             logger.info("Successfully deleted scenario-runs jobs")
         except client.rest.ApiException as e:
@@ -650,8 +706,8 @@ class JobRunner:
 
         # check if k8s element names have required templates
         manifest_data = self.manifest
-        if '$RUN_ID' not in manifest_data['metadata']['name'] or '$TEST_ID' not in manifest_data['metadata']['name']:
-            raise ValueError("Manifest element names need to contain '$RUN_ID' and '$TEST_ID' templates")
+        if '$JOB_NAME' not in manifest_data['metadata']['name']:
+            raise ValueError("Manifest metadata.name must contain '$JOB_NAME' template")
 
         # Optionally clean up previous runs before starting
         if self.cleanup_before_run:
@@ -734,7 +790,9 @@ class JobRunner:
             self.k8s_client.delete_collection_namespaced_pod(
                 namespace=self.namespace,
                 label_selector=label_selector,
-                body=client.V1DeleteOptions(grace_period_seconds=0)
+                body=client.V1DeleteOptions(
+                    grace_period_seconds=0, propagation_policy="Background"
+                ),
             )
             logger.debug("Successfully cleaned up scenario-runs pods")
         except client.rest.ApiException as e:

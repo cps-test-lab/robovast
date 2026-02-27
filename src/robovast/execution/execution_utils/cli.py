@@ -474,6 +474,29 @@ def setup(list_configs, namespace, options, force, cluster_config):
         handle_cli_exception(e)
 
 
+@cluster.command(name='download-cleanup')
+@click.option('--run-id', '-i', default=None,
+              help='Only remove this run\'s bucket (e.g. run-2025-02-27-123456). Without this, removes all run buckets.')
+def download_cleanup(run_id):
+    """Remove result buckets from cluster S3 without downloading.
+
+    Deletes run result buckets (run-*) from the MinIO S3 server in the cluster.
+    Does not download any data; use ``vast execution cluster download`` if you
+    need the results first.
+
+    Use --run-id to remove only a specific run's bucket.
+    """
+    try:
+        config_name = load_cluster_config_name()
+        cluster_config = get_cluster_config(config_name)
+        downloader = ResultDownloader(namespace=get_cluster_namespace(), cluster_config=cluster_config)
+        count = downloader.cleanup_s3_buckets(run_id=run_id)
+        click.echo(f"✓ Removed {count} bucket(s) from S3.")
+
+    except Exception as e:
+        handle_cli_exception(e)
+
+
 @cluster.command(name='run-cleanup')
 @click.option('--run-id', '-i', default=None,
               help='Clean only jobs for this run (e.g. run-2025-02-27-123456). Without this, cleans all scenario-runs jobs.')
@@ -678,7 +701,7 @@ def prepare_run(output, config, runs, cluster_config, options, log_tree):  # pyl
             yaml.dump_all(all_jobs, f, default_flow_style=False)
 
         cluster_config.prepare_setup_cluster(output, **cluster_kwargs)
-        from robovast.execution.cluster_execution.kueue_setup import (
+        from robovast.execution.cluster_execution.kubernetes_kueue import (
             prepare_kueue_setup,
         )
         prepare_kueue_setup(output, namespace=namespace)
