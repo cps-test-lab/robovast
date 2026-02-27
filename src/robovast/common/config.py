@@ -117,6 +117,8 @@ class ExecutionConfig(BaseModel):
     runs: int
     scenario_file: Optional[str] = None
     test_files_filter: Optional[list[str]] = None
+    pre_command: Optional[str] = None
+    post_command: Optional[str] = None
     local: Optional[LocalExecutionConfig] = None
 
     @field_validator('env')
