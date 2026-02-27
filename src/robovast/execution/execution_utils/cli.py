@@ -314,24 +314,43 @@ def monitor(interval, once):
         BAR_WIDTH = 20
         PCT_WIDTH = 7
         prev_line_count = [0]  # use list so inner def can mutate
+        # Jobs may be removed automatically when done (e.g. TTL). Capture total at
+        # start and use it for progress; finished = total - (running + pending).
+        # ok/fail counts also use max-of-seen so they only increase.
+        initial_total_per_run = {}
+        max_ok_per_run = {}
+        max_fail_per_run = {}
 
         def _print_status_lines():
             per_run = get_cluster_run_job_counts_per_run(namespace)
+            all_run_ids = sorted(set(initial_total_per_run.keys()) | set(per_run.keys()))
             lines = []
             all_done = True
-            for run_id in sorted(per_run.keys()):
-                c = per_run[run_id]
-                total = c["completed"] + c["failed"] + c["running"] + c["pending"]
-                finished = c["completed"] + c["failed"]
-                if c["running"] or c["pending"]:
+            for run_id in all_run_ids:
+                c = per_run.get(run_id, {"completed": 0, "failed": 0, "running": 0, "pending": 0})
+                current_total = c["completed"] + c["failed"] + c["running"] + c["pending"]
+                if run_id not in initial_total_per_run:
+                    initial_total_per_run[run_id] = current_total
+                total = initial_total_per_run[run_id]
+                max_ok_per_run[run_id] = max(max_ok_per_run.get(run_id, 0), c["completed"])
+                max_fail_per_run[run_id] = max(max_fail_per_run.get(run_id, 0), c["failed"])
+                still_in_cluster = c["running"] + c["pending"]
+                finished = total - still_in_cluster if total > 0 else 0
+                if still_in_cluster > 0:
                     all_done = False
+                # Ensure ok + fail = finished; jobs removed before we poll are attributed to ok
+                ok = max_ok_per_run[run_id]
+                fail = max_fail_per_run[run_id]
+                remainder = finished - ok - fail
+                if remainder > 0:
+                    ok += remainder
                 pct = 100.0 * finished / total if total > 0 else 100.0
                 filled = int(BAR_WIDTH * finished / total) if total > 0 else BAR_WIDTH
                 progress_bar = "█" * filled + "░" * (BAR_WIDTH - filled)
                 pct_str = f"{pct:.1f}%".rjust(PCT_WIDTH)
                 line = (
                     f"{run_id}  [{progress_bar}]  {pct_str}  "
-                    f"{finished}/{total}  ({c['completed']} ok, {c['failed']} fail)  "
+                    f"{finished}/{total}  ({ok} ok, {fail} fail)  "
                     f"Running: {c['running']}  Pending: {c['pending']}"
                 )
                 lines.append(line)

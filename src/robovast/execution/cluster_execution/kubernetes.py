@@ -90,8 +90,11 @@ def apply_manifests(k8s_client, manifests: list, namespace=None):
 
 
 def delete_manifests(core_v1, manifests: list, namespace=None):
-    """Delete Kubernetes resources from manifests. If namespace is given, use it for each resource."""
-    for yaml_object in manifests:
+    """Delete Kubernetes resources from manifests. If namespace is given, use it for each resource.
+    Resources are deleted in reverse order so dependents (e.g. Pods) are removed before
+    parents (e.g. PVCs) that they reference.
+    """
+    for yaml_object in reversed(manifests):
         if yaml_object is None:
             continue
 
