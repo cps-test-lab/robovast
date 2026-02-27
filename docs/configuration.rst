@@ -301,36 +301,102 @@ Additional environment variables to set in the test container. Each list item sh
      - CUSTOM_VAR: custom_value
      - ENABLE_X11: "false"
 
-kubernetes
-^^^^^^^^^^
+resources
+^^^^^^^^^
 
 **Type:** Dictionary
 
-**Required:** Yes (for cluster execution)
+**Required:** No
 
-Configuration specific to Kubernetes cluster execution.
+**Applies to:** Local and cluster execution
 
-kubernetes.resources
-""""""""""""""""""""
-
-**Type:** Dictionary
-
-**Required:** Yes
-
-Resource requests/limits for Kubernetes pods.
+CPU and memory limits for the main (primary) container. Used by Docker Compose for local runs and by Kubernetes for cluster runs. These values are also exposed as ``AVAILABLE_CPUS`` and ``AVAILABLE_MEM`` environment variables inside the container.
 
 .. code-block:: yaml
 
    execution:
-     kubernetes:
-       resources:
-         cpu: 6
-         memory: 8Gi
+     resources:
+       cpu: 6
+       memory: 8Gi
 
 **Available fields:**
 
-- ``cpu`` (Required): Number of CPU cores (integer or string)
+- ``cpu`` (Optional): Number of CPU cores (integer)
 - ``memory`` (Optional): Memory limit (e.g., ``8Gi``, ``4096Mi``)
+
+secondary_containers
+^^^^^^^^^^^^^^^^^^^^
+
+**Type:** List of container definitions
+
+**Required:** No
+
+**Applies to:** Local and cluster execution
+
+Additional containers that run alongside the main ``robovast`` container in the same pod (Kubernetes) or Docker Compose stack (local). Use this to run separate processes such as the navigation stack or simulation in dedicated containers, each with its own CPU and memory allocation. All containers share the same network namespace and can communicate via localhost.
+
+Each entry is either a container name (string) or a dictionary with the container name as key and optional ``resources`` as value. All secondary containers use the same Docker image as the main container.
+
+.. code-block:: yaml
+
+   execution:
+     resources:
+       cpu: 2
+     secondary_containers:
+     - nav:
+         resources:
+           cpu: 3
+           memory: 4Gi
+     - simulation:
+         resources:
+           cpu: 5
+           memory: 8Gi
+           gpu: 1
+
+**Per-container resources:**
+
+- ``cpu`` (Optional): Number of CPU cores for this container
+- ``memory`` (Optional): Memory limit (e.g., ``4Gi``, ``4096Mi``)
+- ``gpu`` (Optional): Number of GPUs (enables NVIDIA runtime when set)
+
+.. note::
+
+   Secondary containers run the ``secondary_entrypoint.sh`` script and receive ``CONTAINER_NAME`` and ``ROS_LOG_DIR`` environment variables. Ensure your scenario or entrypoint logic handles multiple containers appropriately.
+
+local
+^^^^^
+
+**Type:** Dictionary
+
+**Required:** No
+
+**Applies to:** Local execution only (ignored for cluster runs)
+
+Configuration options that apply only when running tests locally (e.g. ``vast execution local run``).
+
+local.parameter_overrides
+""""""""""""""""""""""""""
+
+**Type:** List of dictionaries (key-value pairs)
+
+**Required:** No
+
+Overrides for scenario parameters that are added to the generated ``scenario.config`` **only for local runs**. Each list item is a single key-value pair. Values override whatever was produced by configuration variations. Nested dictionaries are supported (values are replaced entirely).
+
+Parameters are validated against the scenario file (``.osc``); only parameters defined in the scenario are allowed.
+
+.. code-block:: yaml
+
+   execution:
+     scenario_file: scenario.osc
+     local:
+       parameter_overrides:
+       - headless: "False"
+       - use_rviz: "True"
+
+.. note::
+
+   Parameter values must match the types expected by the scenario. If the scenario defines a parameter as a string (e.g. ``headless: string = "False"``), use quoted values.
 
 
 Analysis Section
@@ -361,6 +427,8 @@ Commands to run for postprocessing test results. These are executed before the a
        - rosbags_to_webm:
            topic: /camera/image_raw/compressed
            fps: 30
+       - rosbags_action_to_csv:
+           action: navigate_to_pose
        - command:
            script: ../../../tools/custom_script.sh
            args: [--arg, value]
@@ -377,6 +445,7 @@ To list all available plugins and their descriptions:
 - ``rosbags_bt_to_csv``: Convert ROS behavior tree logs to CSV format (no parameters).
 - ``rosbags_to_csv``: Convert all ROS messages from rosbags to CSV format. Optional ``skip_topics`` parameter (list of topic names to skip).
 - ``rosbags_to_webm``: Convert a ``sensor_msgs/msg/CompressedImage`` topic from ROS bags to WebM video files (VP9 codec). Optional ``topic`` parameter (compressed image topic name, default ``/camera/image_raw/compressed``) and ``fps`` parameter (fallback frame rate when timestamps are unavailable, default ``30``).
+- ``rosbags_action_to_csv``: Extract ROS2 action feedback and status messages to two CSV files (``<filename_prefix>_feedback.csv`` and ``<filename_prefix>_status.csv``). Reads ``/<action>/_action/feedback`` and ``/<action>/_action/status`` topics. Nested data is flattened to columns. Required ``action`` parameter (action name, e.g. ``navigate_to_pose``). Optional ``filename_prefix`` parameter (default: ``action_<action>``).
 - ``command``: Execute arbitrary commands or scripts. Requires ``script`` parameter, optional ``args`` parameter (list).
 - ``compress``: Create a gzipped tarball (``run-<id>.tar.gz``) for each run directory; runs on the host (no Docker). Optional ``output_dir`` (default: results directory), ``exclude_dirs`` (directory names to exclude, default ``['.cache']``), ``overwrite`` (if ``false``, skip when a tarball already exists; default ``false``).
 
@@ -450,6 +519,14 @@ Here's a complete example showing all major configuration options:
    execution:
      image: ghcr.io/cps-test-lab/robovast:latest
      runs: 20
+     resources:
+       cpu: 4
+       memory: 8Gi
+     secondary_containers:
+     - nav:
+         resources:
+           cpu: 3
+           memory: 4Gi
      pre_command: /config/files/prepare_test.sh
      post_command: /config/files/post_command.sh
      run_as_user: 1000
@@ -458,10 +535,6 @@ Here's a complete example showing all major configuration options:
      - "**/models/*.sdf"
      env:
      - RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
-     kubernetes:
-       resources:
-         cpu: 4
-         memory: 8Gi
    analysis:
      postprocessing:
      - rosbags_tf_to_csv:

@@ -81,7 +81,9 @@ def postprocess_cmd(results_dir, force):
               help='Directory containing test results (uses project results dir if not specified)')
 @click.option('--force', '-f', is_flag=True,
               help='Force postprocessing even if results directory is unchanged (bypasses caching)')
-def result_analyzer_cmd(results_dir, force):
+@click.option('--skip-postprocessing', is_flag=True,
+              help='Skip postprocessing before launching the GUI')
+def result_analyzer_cmd(results_dir, force, skip_postprocessing):
     """Launch the graphical test results analyzer.
 
     Opens a GUI application for interactive exploration and
@@ -97,18 +99,22 @@ def result_analyzer_cmd(results_dir, force):
     # Use provided results_dir or fall back to project results dir
     results_dir = results_dir if results_dir is not None else project_config.results_dir
 
-    # Run postprocessing before launching GUI
-    success, message = run_postprocessing(
-        config_path=config,
-        results_dir=results_dir,
-        output_callback=click.echo,
-        force=force
-    )
+    # Run postprocessing before launching GUI (unless skipped)
+    if not skip_postprocessing:
+        success, message = run_postprocessing(
+            config_path=config,
+            results_dir=results_dir,
+            output_callback=click.echo,
+            force=force
+        )
 
-    if not success:
-        click.echo(f"\n✗ Postprocessing failed: {message}", err=True)
-        click.echo("Cannot launch GUI without successful postprocessing.", err=True)
-        sys.exit(1)
+        if not success:
+            click.echo(f"\n✗ Postprocessing failed: {message}", err=True)
+            if not click.confirm(
+                "Proceed to GUI anyway?",
+                default=True
+            ):
+                sys.exit(1)
 
     try:
         from PySide6.QtWidgets import \

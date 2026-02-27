@@ -35,18 +35,6 @@ reclaimPolicy: Delete
 volumeBindingMode: WaitForFirstConsumer
 ---
 apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: robovast-pvc
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: {storage_size}
-  storageClassName: robovast-storage
----
-apiVersion: v1
 kind: Pod
 metadata:
   name: robovast
@@ -78,8 +66,13 @@ spec:
       periodSeconds: 5
   volumes:
   - name: minio-storage
-    persistentVolumeClaim:
-      claimName: robovast-pvc
+    volumeClaimTemplate:
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        storageClassName: "robovast-storage"
+        resources:
+          requests:
+            storage: {storage_size}
 ---
 apiVersion: v1
 kind: Service
@@ -127,8 +120,6 @@ class GcpClusterConfig(BaseConfig):
             apply_manifests(k8s_client, yaml_objects, namespace=namespace)
         except Exception as e:
             raise RuntimeError(f"Error applying MinIO manifest: {str(e)}") from e
-
-        logging.info(f"MinIO S3 server available at: {self.get_s3_endpoint()}")
 
     def cleanup_cluster(self, storage_size="10Gi", disk_type="pd-standard", **kwargs):
         """Clean up MinIO S3 server for GCP cluster.

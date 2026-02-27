@@ -75,17 +75,26 @@ RUN \
         ros-${ROS_DISTRO}-nav2-minimal-tb4-description \
         ros-${ROS_DISTRO}-rmw-cyclonedds-cpp \
         ros-${ROS_DISTRO}-rmw-zenoh-cpp \
-        libgl1 && \
+        libgl1 \
+        python3-zmq python3-msgpack && \
     rm -rf /var/lib/apt/lists/*
+
+# Install MinIO client (mc) for S3 upload in post-run script
+RUN curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc && \
+    chmod +x /usr/local/bin/mc
 
 RUN mkdir -p /ws/src
 
 # hadolint ignore=DL3003
 RUN  git clone "https://github.com/cps-test-lab/scenario-execution.git" /ws/src/scenario-execution && \
      cd /ws/src/scenario-execution && \
-     git checkout 7671a6ddc6543a2c8a3da3b33894b0d22534a870 && \
-     . "/opt/ros/${ROS_DISTRO}/setup.bash" && \
+     git checkout b9d700cb931c41e7ba230d9fa7491640084be56e && \
      cd /ws && \
+     git clone "https://github.com/cps-test-lab/scenario-execution-server.git" /ws/src/scenario-execution-server && \
+     cd /ws/src/scenario-execution-server && \
+     git checkout 2d2c082d926c3b88c1fe51ed29e4ceaa160eade2 && \
+     cd /ws && \
+     . "/opt/ros/${ROS_DISTRO}/setup.bash" && \
      colcon build
 
 # Environment variables
@@ -98,10 +107,6 @@ ENV CDEPTH=24
 ENV QT_X11_NO_MITSHM=1
 
 RUN mkdir -p /out && chmod 777 /out
-
-# Install MinIO client (mc) for S3 upload in post-run script
-RUN curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc && \
-    chmod +x /usr/local/bin/mc
 
 RUN USER=ubuntu && \
     GROUP=ubuntu && \

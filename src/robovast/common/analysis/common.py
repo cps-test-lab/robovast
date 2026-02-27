@@ -135,25 +135,83 @@ def read_output_files(data_dir: str, reader_func: Callable[[Path], pd.DataFrame]
     return combined_df
 
 
-def read_output_csv(test_dir: Path, filename: str, skiprows: int = 0) -> pd.DataFrame:
+def read_output_csv(test_dir: str, filename: str, skiprows: int = 0) -> pd.DataFrame:
     """
     Read a CSV file from a test directory, skipping the first line (comment).
 
     Args:
-        test_dir: Path to the test directory
+        test_dir: Path to the test directory as a string
         filename: Name of the CSV file to read
 
     Returns:
         DataFrame with the CSV data
     """
-    csv_path = test_dir / filename
-    if not csv_path.exists():
+    csv_path = os.path.join(test_dir, filename)
+    if not os.path.exists(csv_path):
         raise FileNotFoundError(f"{filename} not found in {test_dir}")
 
     # Read CSV, skipping the first line (comment)
-    df = pd.read_csv(csv_path, skiprows=skiprows)
+    df = pd.read_csv(Path(csv_path), skiprows=skiprows)
     return df
 
+
+def _flatten_value(value, key: str, level: int, merge_level: int) -> dict:
+    """Flatten a value (dict, list, or scalar) into top-level key-value pairs."""
+    if isinstance(value, dict) and level < merge_level:
+        result = {}
+        for k, v in value.items():
+            subkey = f"{key}_{k}" if key else k
+            result.update(_flatten_value(v, subkey, level + 1, merge_level))
+        return result
+    elif isinstance(value, list) and level < merge_level:
+        result = {}
+        for i, elem in enumerate(value):
+            subkey = f"{key}_{i}" if key else str(i)
+            result.update(_flatten_value(elem, subkey, level + 1, merge_level))
+        return result
+    else:
+        return {key: value}
+
+
+def _flatten_item_for_merge(item: dict, prefix: str, level: int, merge_level: int) -> dict:
+    """Flatten nested dict/list values into top-level keys, up to merge_level depth."""
+    result = {}
+    for k, v in item.items():
+        key = f"{prefix}_{k}" if prefix else k
+        result.update(_flatten_value(v, key, level, merge_level))
+    return result
+
+
+def read_output_yaml_list(
+    test_dir: str, filename: str, list_key: str, merge_level: int = 0
+) -> pd.DataFrame:
+    """
+    Read a YAML file from a test directory where the specified key contains a list
+    of records (e.g. feedback messages with feedback, goal_id, timestamp per item).
+
+    Args:
+        test_dir: Path to the test directory
+        filename: Name of the YAML file
+        list_key: Key that holds the list (e.g. "feedback")
+        merge_level: How many levels of nested dicts/lists to flatten into columns.
+            0 = keep as-is. 1 = flatten one level (e.g. feedback dict becomes
+            feedback_current_pose, feedback_distance_remaining, ...). Lists
+            become key_0, key_1, etc. 2 = flatten two levels, etc.
+
+    Returns:
+        DataFrame with one row per list item, columns from each item's keys
+    """
+    yaml_path = os.path.join(test_dir, filename)
+    if not os.path.exists(yaml_path):
+        raise FileNotFoundError(f"{filename} not found in {test_dir}")
+    with open(yaml_path, 'r') as f:
+        yaml_data = yaml.safe_load(f)
+    items = yaml_data[list_key]
+    if not isinstance(items, list):
+        raise ValueError(f"Key '{list_key}' does not contain a list, got {type(items)}")
+    if merge_level > 0:
+        items = [_flatten_item_for_merge(item, "", 0, merge_level) for item in items]
+    return pd.DataFrame(items)
 
 def for_each_test(data_dir: str, func: Callable[[Path], None], debug=False) -> None:
     """

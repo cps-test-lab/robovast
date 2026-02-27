@@ -219,6 +219,71 @@ def rosbags_bt_to_csv(
         return False, f"Error executing rosbags_bt_to_csv: {e}"
 
 
+def rosbags_action_to_csv(
+    results_dir: str,
+    config_dir: str,
+    action: str,
+    filename_prefix: Optional[str] = None,
+    provenance_file: Optional[str] = None,
+) -> Tuple[bool, str]:
+    """Extract ROS2 action feedback and status from rosbags to CSV format.
+
+    Reads /<action>/_action/feedback and /<action>/_action/status topics from
+    ROS bag files and writes two CSV files: <filename_prefix>_feedback.csv
+    and <filename_prefix>_status.csv with flattened columns.
+
+    Args:
+        results_dir: Path to the run-<id> directory to process
+        config_dir: Directory containing the config file (for resolving relative paths)
+        action: Action name to extract (e.g. 'navigate_to_pose')
+        filename_prefix: Output filename prefix (default: action_<action>).
+            Produces <prefix>_feedback.csv and <prefix>_status.csv.
+
+    Returns:
+        Tuple of (success, message)
+
+    Example usage in .vast config:
+        postprocessing:
+          - rosbags_action_to_csv:
+              action: navigate_to_pose
+          - rosbags_action_to_csv:
+              action: navigate_to_pose
+              filename_prefix: nav_action
+    """
+    script_path = str(files('robovast.common.data').joinpath('docker_exec.sh'))
+
+    action_name = action.lstrip('/')
+    effective_prefix = filename_prefix or f"action_{action_name}"
+
+    cmd = [script_path]
+    if provenance_file:
+        cmd.extend(["--provenance-file", provenance_file])
+    cmd.append("rosbags_action_to_csv.py")
+    if provenance_file:
+        cmd.extend(["--provenance-file", f"/provenance/{os.path.basename(provenance_file)}"])
+    cmd.extend(["--filename-prefix", effective_prefix])
+    cmd.append(action_name)
+    cmd.append(results_dir)
+
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=os.path.dirname(script_path),
+            check=False,
+            capture_output=True,
+            text=True,
+            env={**os.environ, 'PYTHONUNBUFFERED': '1'}
+        )
+
+        if result.returncode != 0:
+            return False, f"rosbags_action_to_csv failed with exit code {result.returncode}\n{result.stderr}"
+
+        return True, f"Action '{action_name}' data extracted to CSV successfully"
+
+    except Exception as e:
+        return False, f"Error executing rosbags_action_to_csv: {e}"
+
+
 def rosbags_to_csv(
     results_dir: str,
     config_dir: str,

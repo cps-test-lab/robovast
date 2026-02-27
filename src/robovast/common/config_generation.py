@@ -332,6 +332,9 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         "env": execution_section.get('env'),
         "run_as_user": execution_section.get('run_as_user'),
         "image": execution_section.get('image'),
+        "resources": execution_section.get('resources'),
+        "secondary_containers": execution_section.get('secondary_containers'),
+        "local": execution_section.get('local'),
     }
 
     # Build result dictionary
