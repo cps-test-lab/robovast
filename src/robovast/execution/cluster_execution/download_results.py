@@ -17,288 +17,478 @@
 
 import logging
 import os
+import shutil
+import signal
+import socket
+import subprocess
 import sys
+import tarfile
 import time
-from typing import Callable, Optional, Tuple
 
+import requests
 from kubernetes import client, config
 
+from .cluster_execution import get_cluster_run_job_counts_per_run
 from .s3_client import ClusterS3Client
 
 logger = logging.getLogger(__name__)
 
-_BAR_WIDTH = 20
-_FILE_COUNT_WIDTH = 6
-_PCT_WIDTH = 7     # e.g. " 34.2%"
-_SIZE_WIDTH = 11   # e.g. "  156.23 MB"
-_RATE_WIDTH = 12   # e.g. "   8.12 MB/s"
+# Progress bar constants (match cluster monitor style)
+BAR_WIDTH = 20
+CLEAR_LINE = "\033[2K"
 
 
-def _format_size(num_bytes: int) -> str:
-    if num_bytes == 0:
-        return "0 B".rjust(_SIZE_WIDTH)
-    val = float(num_bytes)
-    for unit in ("B", "KB", "MB", "GB"):
-        if val < 1024:
-            return f"{val:.2f} {unit}".rjust(_SIZE_WIDTH)
-        val /= 1024
-    return f"{val:.2f} TB".rjust(_SIZE_WIDTH)
-
-
-def _format_rate(bytes_per_sec: float) -> str:
-    """Return a human-readable throughput string (e.g. '  8.12 MB/s')."""
-    if bytes_per_sec <= 0:
-        return "0 B/s".rjust(_RATE_WIDTH)
-    val = bytes_per_sec
-    for unit in ("B/s", "KB/s", "MB/s", "GB/s"):
-        if val < 1024:
-            return f"{val:.2f} {unit}".rjust(_RATE_WIDTH)
-        val /= 1024
-    return f"{val:.2f} TB/s".rjust(_RATE_WIDTH)
-
-
-def _make_progress_callback(prefix: str, bucket_name: str) -> Tuple[Callable, Callable, Callable]:
-    """Return ``(callback, get_total_bytes, get_elapsed)`` for single-line progress display.
-
-    The callback signature is ``(current, total, file_size_bytes)`` and updates
-    the current terminal line in place using ``\\r``.  ``get_total_bytes()``
-    returns the cumulative downloaded byte count.  ``get_elapsed()`` returns
-    elapsed seconds since the first callback (or 0 if none yet).
-    """
-    state: dict = {"total_bytes": 0, "start_time": None}
-
-    def callback(current: int, total: int, size_bytes: int) -> None:
-        if state["start_time"] is None:
-            state["start_time"] = time.monotonic()
-        state["total_bytes"] += size_bytes
-        filled = int(_BAR_WIDTH * current / total) if total > 0 else _BAR_WIDTH
-        progress_bar = "█" * filled + "░" * (_BAR_WIDTH - filled)
-        size_str = _format_size(state["total_bytes"])
-        elapsed = time.monotonic() - state["start_time"]
-        rate_str = _format_rate(state["total_bytes"] / elapsed) if elapsed > 0 else _format_rate(0)
-        files_str = f"{current:{_FILE_COUNT_WIDTH}d}/{total:{_FILE_COUNT_WIDTH}d}"
-        pct = 100.0 * current / total if total > 0 else 100.0
-        pct_str = f"{pct:.1f}%".rjust(_PCT_WIDTH)
-        sys.stdout.write(
-            f"\r{prefix} {bucket_name}  [{progress_bar}]  {pct_str}  {files_str}  {size_str}  {rate_str}   "
-        )
-        sys.stdout.flush()
-
-    def get_total_bytes() -> int:
-        return state["total_bytes"]
-
-    def get_elapsed() -> float:
-        if state["start_time"] is None:
-            return 0.0
-        return time.monotonic() - state["start_time"]
-
-    return callback, get_total_bytes, get_elapsed
+def _format_size(n):
+    """Format bytes as human-readable string (MiB)."""
+    return f"{n / 1024 / 1024:.1f} MiB"
 
 
 class ResultDownloader:
-    """Downloads run results from the MinIO S3 server embedded in the robovast pod."""
-
     def __init__(self, namespace="default", cluster_config=None):
-        """Create a ResultDownloader.
-
-        Args:
-            namespace (str): Kubernetes namespace of the robovast pod.
-            cluster_config: BaseConfig instance providing S3 endpoint/credentials.
-                            If None, default embedded MinIO credentials are used.
-        """
         self.namespace = namespace
+        self.cluster_config = cluster_config
+        self.port_forward_process = None
+        self.local_port = self._find_available_port()
+        self.remote_port = 80  # HTTP server port in sidecar
 
-        if cluster_config is not None:
-            self.access_key, self.secret_key = cluster_config.get_s3_credentials()
-        else:
-            self.access_key = "minioadmin"
-            self.secret_key = "minioadmin"
+        # Initialize Kubernetes client
+        config.load_kube_config()
+        self.k8s_client = client.CoreV1Api()
 
-        # Verify the robovast pod is accessible
-        self._check_robovast_pod()
+        # Check if transfer-pod exists
+        self.check_transfer_pod_exists()
 
-    def _check_robovast_pod(self):
-        """Exit with an informative error if the robovast pod is not running."""
+        # Set up signal handler for cleanup
+        signal.signal(signal.SIGINT, self._signal_handler)
+        signal.signal(signal.SIGTERM, self._signal_handler)
+
+    def _find_available_port(self, start_port=8080, max_attempts=100):
+        """Find an available port starting from start_port"""
+        for port in range(start_port, start_port + max_attempts):
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.bind(('localhost', port))
+                    logger.debug(f"Found available port: {port}")
+                    return port
+            except OSError:
+                continue
+        raise RuntimeError(f"Could not find an available port in range {start_port}-{start_port + max_attempts}")
+
+    def _signal_handler(self, signum, frame):
+        """Handle signals for graceful cleanup"""
+        logger.info("\nCleaning up...")
+        self.cleanup()
+        sys.exit(0)
+
+    def cleanup(self):
+        """Clean up port-forward process"""
+        if self.port_forward_process:
+            logger.debug("Terminating port-forward...")
+            self.port_forward_process.terminate()
+            try:
+                self.port_forward_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.port_forward_process.kill()
+            self.port_forward_process = None
+
+    def start_port_forward(self):
+        """Start port-forwarding to the HTTP server sidecar"""
+        if self.port_forward_process:
+            return  # Already running
+
+        logger.debug(f"Starting port-forward to robovast:{self.remote_port} -> localhost:{self.local_port}")
+
+        cmd = [
+            "kubectl", "port-forward",
+            "-n", self.namespace,
+            f"pod/robovast",
+            f"{self.local_port}:{self.remote_port}"
+        ]
+
+        self.port_forward_process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+
+        # Wait a moment for port-forward to establish
+        time.sleep(2)
+
+    def check_transfer_pod_exists(self):
+        """Check if transfer-pod exists, exit if not found"""
         try:
-            config.load_kube_config()
-            core_v1 = client.CoreV1Api()
-            pod = core_v1.read_namespaced_pod(name="robovast", namespace=self.namespace)
-            if pod.status.phase not in ("Running", "Pending"):
-                logger.error(
-                    f"Pod 'robovast' exists but is not running (phase: {pod.status.phase})"
-                )
+            pod = self.k8s_client.read_namespaced_pod(
+                name="robovast",
+                namespace=self.namespace
+            )
+            # Check if pod is running
+            if pod.status.phase not in ["Running", "Pending"]:
+                logger.error(f"Transfer pod 'robovast' exists but is not running (status: {pod.status.phase})!")
                 sys.exit(1)
+            logger.debug(f"Found existing transfer pod: robovast")
         except client.exceptions.ApiException as e:
             if e.status == 404:
-                logger.error("Required pod 'robovast' does not exist. Run 'vast execution cluster setup' first.")
+                logger.error(f"Required pod 'robovast' does not exist!")
                 sys.exit(1)
-            raise
+            else:
+                raise
 
-    def _run_finished_in_kubernetes(self, run_id: str) -> bool:
-        """Return True if this run can be downloaded: all its Kubernetes jobs have finished.
+    def list_available_runs(self):
+        """List all available run IDs by listing S3 buckets (run-*).
 
-        A run is considered finished when either:
-        - No jobs exist for this run_id (already cleaned up or never submitted), or
-        - All jobs for this run have completed (succeeded or failed).
+        Excludes runs that still have running or pending jobs.
 
-        Returns False if any job is still running or pending.
+        Returns:
+            tuple: (available_run_ids, excluded_runs) where excluded_runs is a list of
+                   (run_id, running_count, pending_count) for runs not yet downloadable.
         """
         try:
-            config.load_kube_config()
-            batch_v1 = client.BatchV1Api()
-            label_selector = f"jobgroup=scenario-runs,run-id={run_id}"
-            job_list = batch_v1.list_namespaced_job(
+            if self.cluster_config:
+                access_key, secret_key = self.cluster_config.get_s3_credentials()
+            else:
+                access_key, secret_key = "minioadmin", "minioadmin"
+
+            with ClusterS3Client(
                 namespace=self.namespace,
-                label_selector=label_selector,
-            )
+                access_key=access_key,
+                secret_key=secret_key,
+            ) as s3:
+                all_run_ids = s3.list_run_buckets()
+
+            # Exclude runs with running or pending jobs
+            job_counts = get_cluster_run_job_counts_per_run(namespace=self.namespace)
+            available = []
+            excluded = []
+            for rid in all_run_ids:
+                counts = job_counts.get(rid, {})
+                running = counts.get("running", 0)
+                pending = counts.get("pending", 0)
+                if running == 0 and pending == 0:
+                    available.append(rid)
+                else:
+                    excluded.append((rid, running, pending))
+
+            if available:
+                logger.debug(f"Available runs (finished only): {available}")
+            return available, excluded
+
         except Exception as e:
-            logger.warning(f"Could not query Kubernetes for run '{run_id}': {e}")
-            return False
+            logger.error(f"Unexpected error listing runs: {e}")
+            return [], []
 
-        if not job_list.items:
-            return True
-
-        for job in job_list.items:
-            status = job.status
-            if status is None:
-                return False
-            active = status.active or 0
-            if active >= 1:
-                return False
-            if status.completion_time is None and (status.failed or 0) == 0 and (status.succeeded or 0) == 0:
-                return False
-        return True
-
-    def list_available_runs(self, s3_client: ClusterS3Client) -> list:
-        """Return sorted list of bucket names that represent completed runs.
+    def download_results(self, output_directory, force=False, verbose=False, skip_removal=False):
+        """
+        Download all result files from transfer PVC using HTTP server port-forwarding
 
         Args:
-            s3_client: Connected ClusterS3Client instance.
+            output_directory (str): Local directory where files will be downloaded
+            force (bool): Force re-download even if files already exist
+            verbose (bool): If True, emit more detailed logging
+            skip_removal (bool): If True, do not remove remote archive or delete S3 bucket after download
 
         Returns:
-            list[str]: Bucket names matching 'run-*'.
+            int: Number of successfully downloaded runs
         """
-        buckets = s3_client.list_run_buckets()
-        if buckets:
-            logger.debug(f"Available runs: {buckets}")
-        return buckets
 
-    def download_results(self, output_directory: str, force: bool = False,
-                         verbose: bool = False) -> int:
-        """Download all run results from MinIO to output_directory.
-
-        Each run bucket ('run-*') is downloaded into a subdirectory named after
-        the bucket inside output_directory.
-
-        Args:
-            output_directory (str): Local directory where results are written.
-            force (bool): Re-download files that already exist locally.
-            verbose (bool): Print per-file progress instead of a single-line bar.
-
-        Returns:
-            int: Number of buckets successfully downloaded.
-        """
+        # Create output directory
         os.makedirs(output_directory, exist_ok=True)
 
-        with ClusterS3Client(
-            namespace=self.namespace,
-            access_key=self.access_key,
-            secret_key=self.secret_key,
-        ) as s3:
-            all_runs = self.list_available_runs(s3)
-            available_runs = [r for r in all_runs if self._run_finished_in_kubernetes(r)]
-            skipped = len(all_runs) - len(available_runs)
-            if skipped:
+        # Get available runs (excludes runs with running/pending jobs)
+        available_runs, excluded_runs = self.list_available_runs()
+
+        if excluded_runs:
+            for rid, running, pending in excluded_runs:
                 logger.info(
-                    f"Skipping {skipped} run(s) that are still in progress."
+                    "Run %s not downloadable (jobs still running: %d, pending: %d)",
+                    rid, running, pending,
                 )
-            if not available_runs:
-                logger.info("No finished runs found to download.")
-                return 0
 
-            logger.info(
-                f"Downloading {len(available_runs)} run(s) to '{output_directory}'..."
-            )
+        if not available_runs:
+            if excluded_runs:
+                logger.info("No runs ready to download. Wait for jobs to finish and try again.")
+            else:
+                logger.info("No runs found to download.")
+            return 0
 
-            downloaded_count = 0
-            total_runs = len(available_runs)
-            for idx, bucket_name in enumerate(available_runs, start=1):
-                run_dir = os.path.join(output_directory, bucket_name)
-                prefix = f"[{idx}/{total_runs}]"
+        logger.info(f"Downloading {len(available_runs)} run results to directory '{output_directory}'...")
 
-                if not force and os.path.exists(run_dir) and os.listdir(run_dir):
-                    if verbose:
-                        logger.info(
-                            f"{prefix} '{bucket_name}' already exists locally, skipping "
-                            "(use --force to re-download)"
-                        )
-                    else:
-                        print(f"{prefix} {bucket_name}  skipped (already exists locally)")
+        # Start port-forward for downloading
+        self.start_port_forward()
+
+        downloaded_count = 0
+        try:
+            for current_run_id in available_runs:
+                if self._download_run(output_directory, current_run_id, force, verbose, skip_removal):
                     downloaded_count += 1
-                    continue
-
-                try:
-                    if verbose:
-                        logger.info(f"{prefix} Downloading '{bucket_name}'...")
-                        progress_callback = None
-                        get_total_bytes: Optional[Callable] = None
-                    else:
-                        sys.stdout.write(f"\r{prefix} {bucket_name}  downloading...   ")
-                        sys.stdout.flush()
-                        progress_callback, get_total_bytes, get_elapsed = _make_progress_callback(
-                            prefix, bucket_name
-                        )
-
-                    count = s3.download_bucket(
-                        bucket_name, output_directory, force=force,
-                        progress_callback=progress_callback,
-                    )
-
-                    if verbose:
-                        logger.info(f"{prefix} Downloaded {count} file(s) for '{bucket_name}'")
-                    else:
-                        progressbar = "█" * _BAR_WIDTH
-                        total_bytes = get_total_bytes()
-                        size_str = _format_size(total_bytes)
-                        elapsed = get_elapsed()
-                        rate_str = (
-                            _format_rate(total_bytes / elapsed) if elapsed > 0 else _format_rate(0)
-                        )
-                        files_str = f"{count:{_FILE_COUNT_WIDTH}d}"
-                        pct_str = "100.0%".rjust(_PCT_WIDTH)
-                        sys.stdout.write(
-                            f"\r{prefix} {bucket_name}  [{progressbar}]  {pct_str}  {files_str} files  "
-                            f"{size_str}  {rate_str}  done\n"
-                        )
-                        sys.stdout.flush()
-
-                    downloaded_count += 1
-                    s3.delete_bucket(bucket_name)
-                    if verbose:
-                        logger.info(f"{prefix} Removed '{bucket_name}' from S3")
-
-                except Exception as e:
-                    if verbose:
-                        logger.error(f"{prefix} Failed to download '{bucket_name}': {e}")
-                    else:
-                        sys.stdout.write(f"\r{prefix} {bucket_name}  ERROR: {e}\n")
-                        sys.stdout.flush()
+        finally:
+            # Clean up port-forward
+            self.cleanup()
 
         return downloaded_count
 
-    def cleanup_s3_buckets(self, run_id: Optional[str] = None) -> int:
-        """Remove run buckets from S3 without downloading them.
-
-        Args:
-            run_id: If provided, only the bucket with this exact name is removed.
-                    If None, all run buckets (run-*) are removed.
+    def _download_run(self, output_directory, run_id, force=False, verbose=False, skip_removal=False):
+        """
+        Download a specific run via HTTP.
 
         Returns:
-            int: Number of buckets successfully removed.
+            bool: True if download was successful or skipped (already exists), False on failure
         """
-        with ClusterS3Client(
-            namespace=self.namespace,
-            access_key=self.access_key,
-            secret_key=self.secret_key,
-        ) as s3:
-            return s3.cleanup_run_buckets(run_id=run_id)
+        try:
+            if verbose:
+                logger.info(f"Downloading {run_id}...")
+
+            # Check if run directory already exists and is complete
+            run_output_dir = os.path.join(output_directory, run_id)
+            if not force and os.path.exists(run_output_dir) and os.listdir(run_output_dir):
+                if verbose:
+                    logger.info(f"Run {run_id} already exists and appears complete, skipping...")
+                    logger.info(f"Use --force to re-download existing runs")
+                else:
+                    sys.stdout.write("\r" + CLEAR_LINE + f"{run_id}  skipped (already exists)\n")
+                    sys.stdout.flush()
+                return True
+
+            # Create compressed archive on remote pod using archiver container (has tar/gzip)
+            archive_name = f"{run_id}.tar.gz"
+            remote_archive_path = f"/data/{archive_name}"
+
+            # Check if remote archive already exists
+            check_archive_cmd = [
+                "kubectl", "exec", "-n", self.namespace, "robovast",
+                "-c", "archiver",
+                "--",
+                "test", "-f", remote_archive_path
+            ]
+
+            archive_exists = subprocess.run(check_archive_cmd, capture_output=True, text=True, check=False).returncode == 0
+
+            if not archive_exists:
+                if not verbose:
+                    sys.stdout.write("\r" + CLEAR_LINE + f"{run_id}  streaming S3 to tar.gz...")
+                    sys.stdout.flush()
+                logger.debug(f"Streaming S3 bucket {run_id} to tar.gz via archiver container...")
+
+                script_path = os.path.join(os.path.dirname(__file__), "s3_to_targz.py")
+                with open(script_path, encoding="utf-8") as f:
+                    script_content = f.read()
+
+                create_archive_cmd = [
+                    "kubectl", "exec", "-i", "-n", self.namespace, "robovast",
+                    "-c", "archiver",
+                    "--",
+                    "python", "-", run_id
+                ]
+                subprocess.run(
+                    create_archive_cmd,
+                    input=script_content,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                logger.debug(f"Archive created successfully at {remote_archive_path}")
+            else:
+                logger.debug(f"Archive already exists at {remote_archive_path}, reusing...")
+
+            # Now download the pre-created archive via HTTP
+            download_url = f"/{archive_name}"
+
+            # Download the archive with resume support
+            local_archive_path = os.path.join(output_directory, archive_name)
+
+            # When we just created a fresh archive, any local partial is stale - remove it
+            if not archive_exists and os.path.exists(local_archive_path):
+                os.remove(local_archive_path)
+                logger.debug(f"Removed stale partial file (remote archive was just recreated)")
+
+            # Check if partial file exists and get its size (for resume)
+            initial_pos = 0
+            if os.path.exists(local_archive_path):
+                initial_pos = os.path.getsize(local_archive_path)
+                logger.info(f"Found partial download ({initial_pos} bytes), attempting to resume...")
+
+            # Set up headers for resume if partial file exists
+            headers = {}
+            if initial_pos > 0:
+                headers['Range'] = f'bytes={initial_pos}-'
+
+            logger.debug(f"Downloading archive from http://localhost:{self.local_port}{download_url} ...")
+
+            response = requests.get(
+                f"http://localhost:{self.local_port}{download_url}",
+                headers=headers, stream=True, timeout=600
+            )
+
+            # 416 = Range Not Satisfiable (partial is stale or server doesn't support resume)
+            if response.status_code == 416:
+                response.close()
+                if initial_pos > 0:
+                    logger.info(f"Resume not supported or stale partial, restarting full download...")
+                    os.remove(local_archive_path)
+                    initial_pos = 0
+                    headers = {}
+                    response = requests.get(
+                        f"http://localhost:{self.local_port}{download_url}",
+                        headers=headers, stream=True, timeout=600
+                    )
+
+            with response:
+                total_size = 0
+                # Handle different response codes
+                if response.status_code == 206:  # Partial content (resume)
+                    logger.info(f"Resuming download from byte {initial_pos}")
+                    total_size = int(response.headers.get('content-range', '0').split('/')[-1])
+                    downloaded = initial_pos
+                elif response.status_code == 200:  # Full content
+                    if initial_pos > 0:
+                        logger.info(f"Server doesn't support resume, restarting download...")
+                        os.remove(local_archive_path)
+                        initial_pos = 0
+                    total_size = int(response.headers.get('content-length', 0))
+                    downloaded = 0
+                else:
+                    response.raise_for_status()
+
+                # Open file in append mode if resuming, otherwise write mode
+                file_mode = 'ab' if initial_pos > 0 and response.status_code == 206 else 'wb'
+
+                last_pct = [-1]  # mutable to allow update in loop
+                last_size_shown = [-1]  # throttle when total_size unknown
+
+                def _show_progress():
+                    if verbose:
+                        if total_size > 0:
+                            pct = (downloaded / total_size) * 100
+                            logger.info(f"Progress: {pct:.1f}% ({downloaded}/{total_size} bytes)")
+                    else:
+                        # Single-line progress bar (cluster monitor style)
+                        if total_size > 0:
+                            pct = (downloaded / total_size) * 100
+                            filled = int(BAR_WIDTH * downloaded / total_size)
+                            progress_bar = "█" * filled + "░" * (BAR_WIDTH - filled)
+                            size_str = f"{_format_size(downloaded)}/{_format_size(total_size)}"
+                            line = f"{run_id}  [{progress_bar}]  {pct:5.1f}%  {size_str}"
+                            # Throttle: update only when pct changes by >= 1
+                            if int(pct) > last_pct[0]:
+                                last_pct[0] = int(pct)
+                                sys.stdout.write("\r" + CLEAR_LINE + line)
+                                sys.stdout.flush()
+                        else:
+                            # Throttle: update every ~1 MiB when size unknown (or first chunk)
+                            if last_size_shown[0] < 0 or downloaded - last_size_shown[0] >= 1024 * 1024:
+                                last_size_shown[0] = downloaded
+                                size_str = _format_size(downloaded)
+                                sys.stdout.write("\r" + CLEAR_LINE + f"{run_id}  downloading...  {size_str}")
+                                sys.stdout.flush()
+
+                with open(local_archive_path, file_mode) as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            _show_progress()
+
+                if not verbose:
+                    # Final update and newline when done
+                    if total_size > 0:
+                        filled = BAR_WIDTH
+                        progress_bar = "█" * filled + "░" * 0
+                        size_str = f"{_format_size(total_size)}/{_format_size(total_size)}"
+                        sys.stdout.write("\r" + CLEAR_LINE + f"{run_id}  [{progress_bar}]  100.0%  {size_str}\n")
+                    else:
+                        sys.stdout.write("\r" + CLEAR_LINE + f"{run_id}  downloaded  {_format_size(downloaded)}\n")
+                    sys.stdout.flush()
+
+            # Validate the downloaded archive
+            logger.debug(f"Validating downloaded archive...")
+            try:
+                with tarfile.open(local_archive_path, 'r:gz') as tar:
+                    # Try to list contents to validate the archive
+                    tar.getnames()
+                logger.debug(f"Archive validation successful")
+            except (tarfile.TarError, OSError) as e:
+                logger.error(f"Archive validation failed: {e}")
+                logger.info(f"Removing corrupted archive and retrying...")
+                os.remove(local_archive_path)
+                raise RuntimeError("Archive validation failed, retry needed") from e
+
+            # Extract the archive locally
+            logger.debug(f"Extracting archive...")
+
+            # Remove existing extraction directory if force mode or incomplete
+            if force and os.path.exists(run_output_dir):
+                logger.debug(f"Removing existing run directory for clean extraction...")
+                shutil.rmtree(run_output_dir)
+
+            with tarfile.open(local_archive_path, 'r:gz') as tar:
+                tar.extractall(path=output_directory)
+
+            # Remove local tar.gz to save space
+            os.remove(local_archive_path)
+
+            if not skip_removal:
+                # Clean up remote archive using kubectl
+                logger.debug(f"Cleaning up remote archive...")
+                cleanup_cmd = [
+                    "kubectl", "exec", "-n", self.namespace, "robovast",
+                    "-c", "archiver",
+                    "--",
+                    "rm", "-f", remote_archive_path
+                ]
+                subprocess.run(cleanup_cmd, capture_output=True, text=True, check=False)
+
+                # Delete the S3 bucket after successful download
+                logger.debug(f"Deleting S3 bucket {run_id}...")
+                if self.cluster_config:
+                    access_key, secret_key = self.cluster_config.get_s3_credentials()
+                else:
+                    access_key, secret_key = "minioadmin", "minioadmin"
+                with ClusterS3Client(
+                    namespace=self.namespace,
+                    access_key=access_key,
+                    secret_key=secret_key,
+                ) as s3:
+                    s3.delete_bucket(run_id)
+
+            if verbose:
+                logger.info(f"Successfully downloaded run {run_id}")
+            return True
+
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to create archive for run {run_id}: {e}")
+            logger.error(f"stdout: {e.stdout}")
+            logger.error(f"stderr: {e.stderr}")
+
+            # Clean up remote archive on error
+            cleanup_cmd = [
+                "kubectl", "exec", "-n", self.namespace, "robovast",
+                "-c", "archiver",
+                "--",
+                "rm", "-f", remote_archive_path
+            ]
+            subprocess.run(cleanup_cmd, capture_output=True, text=True, check=False)
+            return False
+        except requests.RequestException as e:
+            logger.error(f"Failed to download run {run_id} via HTTP: {e}")
+
+            # Clean up remote archive on error
+            cleanup_cmd = [
+                "kubectl", "exec", "-n", self.namespace, "robovast",
+                "-c", "archiver",
+                "--",
+                "rm", "-f", remote_archive_path
+            ]
+            subprocess.run(cleanup_cmd, capture_output=True, text=True, check=False)
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error downloading run {run_id}: {e}")
+
+            # Clean up remote archive on error
+            cleanup_cmd = [
+                "kubectl", "exec", "-n", self.namespace, "robovast",
+                "-c", "archiver",
+                "--",
+                "rm", "-f", remote_archive_path
+            ]
+            subprocess.run(cleanup_cmd, capture_output=True, text=True, check=False)
+            return False

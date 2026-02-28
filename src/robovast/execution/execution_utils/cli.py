@@ -401,7 +401,9 @@ def monitor(interval, once):
               help='Force re-download even if files already exist locally')
 @click.option('--verbose', '-v', is_flag=True,
               help='Print per-file progress instead of a single-line progress bar per run')
-def download(output, force, verbose):
+@click.option('--skip-removal', is_flag=True,
+              help='Do not remove remote archive or delete S3 bucket after download')
+def download(output, force, verbose, skip_removal):
     """Download result files from the cluster S3 (MinIO) server.
 
     Downloads all test run results from the MinIO S3 server embedded in the
@@ -412,6 +414,8 @@ def download(output, force, verbose):
     ``--verbose`` to print individual file names instead.
 
     Use ``--force`` to re-download runs that already exist locally.
+
+    Use ``--skip-removal`` to keep the remote archive and S3 bucket after download.
 
     Requires project initialization with ``vast init`` first (unless ``--output`` is specified).
     """
@@ -431,7 +435,7 @@ def download(output, force, verbose):
         config_name = load_cluster_config_name()
         cluster_config = get_cluster_config(config_name)
         downloader = ResultDownloader(namespace=get_cluster_namespace(), cluster_config=cluster_config)
-        count = downloader.download_results(output, force, verbose=verbose)
+        count = downloader.download_results(output, force, verbose=verbose, skip_removal=skip_removal)
         click.echo(f"✓ Download of {count} runs completed successfully!")
 
     except Exception as e:
