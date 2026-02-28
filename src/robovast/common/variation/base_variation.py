@@ -15,14 +15,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import copy
-import json
 import logging
 import os
-import pickle
 
 from ..common import get_scenario_parameters
 from ..config import get_validated_config
-from ..file_cache2 import CacheKey, FileCache2
+from ..file_cache2 import CacheKey
 
 logger = logging.getLogger(__name__)
 
