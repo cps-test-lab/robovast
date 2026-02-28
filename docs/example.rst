@@ -26,7 +26,11 @@ To run the example, execute the following commands in the base folder of the Rob
    
    # OR: execute in detached mode (exit immediately, cleanup manually)
    # vast execution cluster run --detach
+   # vast execution cluster monitor  # shows progress per run
    # vast execution cluster run-cleanup  # run this after jobs complete
+   
+   # Multiple runs can run in parallel by default. Use --cleanup to remove
+   # previous runs before starting.
     
    # download results from the cluster
    vast execution cluster download

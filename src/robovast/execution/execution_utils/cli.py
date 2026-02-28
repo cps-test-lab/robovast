@@ -28,7 +28,8 @@ import yaml
 from robovast.common import prepare_run_configs
 from robovast.common.cli import get_project_config, handle_cli_exception
 from robovast.execution.cluster_execution.cluster_execution import (
-    JobRunner, cleanup_cluster_run, get_cluster_run_job_counts)
+    JobRunner, cleanup_cluster_run, get_cluster_run_job_counts_per_run,
+    _label_safe_run_id)
 from robovast.execution.cluster_execution.cluster_setup import (
     delete_server, get_cluster_config, get_cluster_namespace,
     load_cluster_config_name, setup_server)
@@ -78,10 +79,12 @@ def local():
               help='Use a custom Docker image')
 @click.option('--abort-on-failure', is_flag=True,
               help='Stop execution after the first failed test config (default: continue)')
-@click.option('--skip-resource-allocation', is_flag=True,
-              help='Do not add CPU/memory reservations to docker compose run')
+@click.option('--use-resource-allocation', is_flag=True,
+              help='Add CPU/memory reservations to docker compose run (default: skip for local)')
+@click.option('--log-tree', '-t', is_flag=True,
+              help='Log scenario execution live tree')
 def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_failure,
-        skip_resource_allocation):
+        use_resource_allocation, log_tree):
     """Execute scenario configurations locally using Docker.
 
     Runs scenario configurations in Docker containers with bind mounts for configuration
@@ -101,7 +104,8 @@ def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_
     try:
         run_script_path = initialize_local_execution(
             config, None, runs, feedback_callback=click.echo,
-            skip_resource_allocation=skip_resource_allocation
+            skip_resource_allocation=not use_resource_allocation,
+            log_tree=log_tree
         )
 
         # Build command with options
@@ -119,6 +123,8 @@ def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_
             cmd.extend(["--image", image])
         if abort_on_failure:
             cmd.append("--abort-on-failure")
+        if log_tree:
+            cmd.append("-t")
 
         logging.debug(f"Executing run script: {run_script_path}")
 
@@ -135,9 +141,11 @@ def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_
               help='Run only a specific configuration by name')
 @click.option('--runs', '-r', type=int, default=None,
               help='Override the number of runs specified in the config')
-@click.option('--skip-resource-allocation', is_flag=True,
-              help='Do not add CPU/memory reservations to docker compose run')
-def prepare_run(output_dir, config, runs, skip_resource_allocation):
+@click.option('--use-resource-allocation', is_flag=True,
+              help='Add CPU/memory reservations to docker compose run (default: skip for local)')
+@click.option('--log-tree', '-t', is_flag=True,
+              help='Log scenario execution live tree')
+def prepare_run(output_dir, config, runs, use_resource_allocation, log_tree):
     """Prepare run without executing.
 
     Generates all necessary configuration files and a ``run.sh`` script for
@@ -158,12 +166,14 @@ def prepare_run(output_dir, config, runs, skip_resource_allocation):
     After preparation, inspect the files in OUTPUT-DIR and execute manually ``cd OUTPUT-DIR; ./run.sh``.
 
     The run.sh script supports the same options as ``vast execution local run``
-    (--start-only, --no-gui, --network-host, --output, --image, --abort-on-failure).
+    (--start-only, --no-gui, --network-host, --output, --image, --abort-on-failure,
+    --log-tree).
     """
     try:
         initialize_local_execution(
             config, output_dir, runs, feedback_callback=click.echo,
-            skip_resource_allocation=skip_resource_allocation
+            skip_resource_allocation=not use_resource_allocation,
+            log_tree=log_tree
         )
 
         click.echo(f"\nFor local execution, run: \n\n{os.path.join(output_dir, 'run.sh')}\n")
@@ -190,13 +200,19 @@ def cluster():
               help='Override the number of runs specified in the config')
 @click.option('--detach', '-d', is_flag=True,
               help='Exit after creating jobs without waiting for completion')
-def run(config, runs, detach):  # pylint: disable=function-redefined
+@click.option('--cleanup', is_flag=True,
+              help='Clean up previous runs before starting (default: do not cleanup; allows multiple parallel runs)')
+@click.option('--log-tree', '-t', is_flag=True,
+              help='Log scenario execution live tree')
+def run(config, runs, detach, cleanup, log_tree):  # pylint: disable=function-redefined
     """Execute scenarios on a Kubernetes cluster.
 
     Deploys all test configurations (or a specific one) as Kubernetes jobs
     for distributed parallel execution.
 
     Use --detach to exit immediately after creating jobs without waiting.
+    Use --cleanup to remove previous runs before starting (by default,
+    previous runs are left intact so multiple runs can run in parallel).
     Use 'vast execution cluster run-cleanup' to clean up jobs afterwards.
 
     Requires project initialization with ``vast init`` first.
@@ -245,7 +261,9 @@ def run(config, runs, detach):  # pylint: disable=function-redefined
     logging.debug(pod_msg)
 
     try:
-        job_runner = JobRunner(project_config.config_path, config, runs, cluster_config, namespace=namespace)
+        job_runner = JobRunner(
+            project_config.config_path, config, runs, cluster_config,
+            namespace=namespace, cleanup_before_run=cleanup, log_tree=log_tree)
         job_runner.run(detached=detach)
 
         if detach:
@@ -275,8 +293,8 @@ def run(config, runs, detach):  # pylint: disable=function-redefined
 def monitor(interval, once):
     """Monitor scenario execution jobs on the cluster.
 
-    Continuously displays how many jobs have finished (completed or failed),
-    how many are currently running, and how many are still pending.
+    Displays progress per run: how many jobs have finished (completed or failed),
+    how many are running, and how many are pending for each run.
 
     This is intended for monitoring jobs created by
     ``vast execution cluster run -d``.
@@ -291,37 +309,78 @@ def monitor(interval, once):
             sys.exit(1)
         logging.debug(k8s_msg)
 
-        def _print_status_line():
-            counts = get_cluster_run_job_counts(namespace)
-            finished = counts["completed"] + counts["failed"]
-            running = counts["running"]
-            pending = counts["pending"]
+        CURSOR_UP = "\033[A"
+        CLEAR_LINE = "\033[2K"
+        BAR_WIDTH = 20
+        PCT_WIDTH = 7
+        prev_line_count = [0]  # use list so inner def can mutate
+        # Jobs may be removed automatically when done (e.g. TTL). Capture total at
+        # start and use it for progress; finished = total - (running + pending).
+        # ok/fail counts also use max-of-seen so they only increase.
+        initial_total_per_run = {}
+        max_ok_per_run = {}
+        max_fail_per_run = {}
 
-            line = (
-                f"Finished: {finished} "
-                f"(completed: {counts['completed']}, failed: {counts['failed']})  "
-                f"Running: {running}  Pending: {pending}"
-            )
+        def _print_status_lines():
+            per_run = get_cluster_run_job_counts_per_run(namespace)
+            all_run_ids = sorted(set(initial_total_per_run.keys()) | set(per_run.keys()))
+            lines = []
+            all_done = True
+            for run_id in all_run_ids:
+                c = per_run.get(run_id, {"completed": 0, "failed": 0, "running": 0, "pending": 0})
+                current_total = c["completed"] + c["failed"] + c["running"] + c["pending"]
+                if run_id not in initial_total_per_run:
+                    initial_total_per_run[run_id] = current_total
+                total = initial_total_per_run[run_id]
+                max_ok_per_run[run_id] = max(max_ok_per_run.get(run_id, 0), c["completed"])
+                max_fail_per_run[run_id] = max(max_fail_per_run.get(run_id, 0), c["failed"])
+                still_in_cluster = c["running"] + c["pending"]
+                finished = total - still_in_cluster if total > 0 else 0
+                if still_in_cluster > 0:
+                    all_done = False
+                # Ensure ok + fail = finished; jobs removed before we poll are attributed to ok
+                ok = max_ok_per_run[run_id]
+                fail = max_fail_per_run[run_id]
+                remainder = finished - ok - fail
+                if remainder > 0:
+                    ok += remainder
+                pct = 100.0 * finished / total if total > 0 else 100.0
+                filled = int(BAR_WIDTH * finished / total) if total > 0 else BAR_WIDTH
+                progress_bar = "█" * filled + "░" * (BAR_WIDTH - filled)
+                pct_str = f"{pct:.1f}%".rjust(PCT_WIDTH)
+                line = (
+                    f"{run_id}  [{progress_bar}]  {pct_str}  "
+                    f"{finished}/{total}  ({ok} ok, {fail} fail)  "
+                    f"Running: {c['running']}  Pending: {c['pending']}"
+                )
+                lines.append(line)
 
-            # Pad line to ensure we fully overwrite previous content
-            width = max(len(line), 80)
-            padded_line = line.ljust(width)
+            if not lines:
+                lines.append("No scenario run jobs found.")
 
-            sys.stdout.write("\r" + padded_line)
+            # Move cursor up and overwrite previous output
+            for _ in range(prev_line_count[0]):
+                sys.stdout.write(CURSOR_UP)
+            for i, line in enumerate(lines):
+                sys.stdout.write("\r" + CLEAR_LINE + line + "\n")
+            # Clear any extra lines from previous iteration
+            for _ in range(len(lines), prev_line_count[0]):
+                sys.stdout.write("\r" + CLEAR_LINE + "\n")
+            prev_line_count[0] = len(lines)
             sys.stdout.flush()
-            return counts
+            return all_done, per_run
 
         if once:
-            _print_status_line()
-            sys.stdout.write("\n")
-            sys.stdout.flush()
+            _print_status_lines()
             return
 
         click.echo("Monitoring scenario run jobs (press Ctrl+C to stop)...")
+        sys.stdout.write("\n")  # leave room for status lines
+        sys.stdout.flush()
 
         while True:
-            counts = _print_status_line()
-            if counts["running"] == 0 and counts["pending"] == 0:
+            all_done, per_run = _print_status_lines()
+            if all_done:
                 sys.stdout.write("\n")
                 sys.stdout.flush()
                 click.echo("All jobs finished.")
@@ -329,7 +388,6 @@ def monitor(interval, once):
             time.sleep(interval)
 
     except KeyboardInterrupt:
-        # Move to the next line cleanly on interrupt
         sys.stdout.write("\n")
         sys.stdout.flush()
     except Exception as e:
@@ -343,7 +401,16 @@ def monitor(interval, once):
               help='Force re-download even if files already exist locally')
 @click.option('--verbose', '-v', is_flag=True,
               help='Print per-file progress instead of a single-line progress bar per run')
-def download(output, force, verbose):
+@click.option('--skip-removal', is_flag=True,
+              help='Do not remove remote archive or delete S3 bucket after download')
+@click.option('--port-forward-only', is_flag=True,
+              help='Only start port-forward and print URLs; do not download (Ctrl+C to stop)')
+@click.option('--remote-compress-only', is_flag=True,
+              help='Only create .tar.gz archives on the remote pod; do not download')
+@click.option('--no-keep-archive', is_flag=True,
+              help='Remove the local .tar.gz file after extraction (default: keep it)')
+def download(output, force, verbose, skip_removal, port_forward_only, remote_compress_only,
+             no_keep_archive):
     """Download result files from the cluster S3 (MinIO) server.
 
     Downloads all test run results from the MinIO S3 server embedded in the
@@ -355,25 +422,53 @@ def download(output, force, verbose):
 
     Use ``--force`` to re-download runs that already exist locally.
 
-    Requires project initialization with ``vast init`` first (unless ``--output`` is specified).
-    """
-    # Get output directory
-    if output is None:
-        # Get from project configuration
-        project_config = get_project_config()
-        output = project_config.results_dir
+    Use ``--skip-removal`` to keep the remote archive and S3 bucket after download.
 
-    # Validate output parameter
-    if not output:
-        click.echo("Error: --output parameter is required (or use 'vast init' to set default)", err=True)
-        click.echo("Use --help for usage information", err=True)
+    Use ``--port-forward-only`` to start a port-forward and print HTTP URLs for
+    manual download (e.g. with curl). Press Ctrl+C to stop.
+
+    Use ``--remote-compress-only`` to create compressed archives on the remote
+    pod without downloading. Useful to pre-compress before downloading later
+    via ``--port-forward-only`` or a full download run.
+
+    By default the downloaded .tar.gz is kept after extraction; use
+    ``--no-keep-archive`` to remove it to save space.
+
+    Requires project initialization with ``vast init`` first (unless ``--output``
+    is specified, or when using ``--port-forward-only`` or ``--remote-compress-only``).
+    """
+    if port_forward_only and remote_compress_only:
+        click.echo("Error: --port-forward-only and --remote-compress-only are mutually exclusive", err=True)
         sys.exit(1)
 
     try:
         config_name = load_cluster_config_name()
         cluster_config = get_cluster_config(config_name)
         downloader = ResultDownloader(namespace=get_cluster_namespace(), cluster_config=cluster_config)
-        count = downloader.download_results(output, force, verbose=verbose)
+
+        if port_forward_only:
+            downloader.port_forward_only()
+            return
+
+        if remote_compress_only:
+            count = downloader.remote_compress_only(force=force, verbose=verbose)
+            click.echo(f"✓ Compressed {count} runs on remote pod.")
+            return
+
+        # Full download
+        if output is None:
+            project_config = get_project_config()
+            output = project_config.results_dir
+
+        if not output:
+            click.echo("Error: --output parameter is required (or use 'vast init' to set default)", err=True)
+            click.echo("Use --help for usage information", err=True)
+            sys.exit(1)
+
+        count = downloader.download_results(
+            output, force, verbose=verbose, skip_removal=skip_removal,
+            keep_archive=not no_keep_archive
+        )
         click.echo(f"✓ Download of {count} runs completed successfully!")
 
     except Exception as e:
@@ -435,15 +530,43 @@ def setup(list_configs, namespace, options, force, cluster_config):
         handle_cli_exception(e)
 
 
+@cluster.command(name='download-cleanup')
+@click.option('--run-id', '-i', default=None,
+              help='Only remove this run\'s bucket (e.g. run-2025-02-27-123456). Without this, removes all run buckets.')
+def download_cleanup(run_id):
+    """Remove result buckets from cluster S3 without downloading.
+
+    Deletes run result buckets (run-*) from the MinIO S3 server in the cluster.
+    Does not download any data; use ``vast execution cluster download`` if you
+    need the results first.
+
+    Use --run-id to remove only a specific run's bucket.
+    """
+    try:
+        config_name = load_cluster_config_name()
+        cluster_config = get_cluster_config(config_name)
+        downloader = ResultDownloader(namespace=get_cluster_namespace(), cluster_config=cluster_config)
+        count = downloader.cleanup_s3_buckets(run_id=run_id)
+        click.echo(f"✓ Removed {count} bucket(s) from S3.")
+
+    except Exception as e:
+        handle_cli_exception(e)
+
+
 @cluster.command(name='run-cleanup')
-def run_cleanup():
+@click.option('--run-id', '-i', default=None,
+              help='Clean only jobs for this run (e.g. run-2025-02-27-123456). Without this, cleans all scenario-runs jobs.')
+def run_cleanup(run_id):
     """Clean up jobs and pods from a cluster run.
 
-    Removes all scenario execution jobs and their associated pods.
-    This is useful after running with --detach to clean up resources
-    once jobs have completed.
+    Removes scenario execution jobs and their associated pods. By default
+    removes all runs. Use --run-id to clean only a specific run.
+
+    Useful after running with --detach to clean up resources once jobs
+    have completed.
 
     Usage: vast execution cluster run-cleanup
+    Usage: vast execution cluster run-cleanup --run-id run-2025-02-27-123456
     """
     try:
         namespace = get_cluster_namespace()
@@ -454,8 +577,23 @@ def run_cleanup():
             click.echo(f"✗ Error: {k8s_msg}", err=True)
             sys.exit(1)
 
-        click.echo("Cleaning up scenario run jobs and pods...")
-        cleanup_cluster_run(namespace=namespace)
+        if run_id:
+            per_run = get_cluster_run_job_counts_per_run(namespace)
+            label_safe = _label_safe_run_id(run_id)
+            if label_safe not in per_run:
+                available = sorted(per_run.keys())
+                if available:
+                    click.echo(f"Run '{run_id}' not found in cluster.", err=True)
+                    click.echo("Available run-ids:", err=True)
+                    for rid in available:
+                        click.echo(f"  - {rid}", err=True)
+                else:
+                    click.echo("No scenario run jobs in cluster.", err=True)
+                sys.exit(1)
+            click.echo(f"Cleaning up jobs and pods for run '{run_id}'...")
+        else:
+            click.echo("Cleaning up all scenario run jobs and pods...")
+        cleanup_cluster_run(namespace=namespace, run_id=run_id)
         click.echo("✓ Cleanup completed successfully!")
 
     except Exception as e:
@@ -511,24 +649,28 @@ def cleanup(config_name, namespace, options):
               help='Override the cluster configuration specified in the config')
 @click.option('--option', '-o', 'options', multiple=True,
               help='Cluster-specific option in key=value format (can be used multiple times)')
-def prepare_run(output, config, runs, cluster_config, options):  # pylint: disable=function-redefined
+@click.option('--log-tree', '-t', is_flag=True,
+              help='Log scenario execution live tree')
+def prepare_run(output, config, runs, cluster_config, options, log_tree):  # pylint: disable=function-redefined
     """Prepare complete setup for manual deployment.
 
     Generates all necessary files for cluster execution and writes them to
     the specified output directory.
 
     The output directory will contain:
+    - ``kueue-queue-setup.yaml`` and ``README_kueue.md`` — Kueue queue manifests and setup instructions
     - config/ directory with all scenario configurations
     - jobs/ directory with individual job manifest YAML files
     - ``all-jobs.yaml`` file with all jobs combined
-    - ``copy_configs.py`` script to upload test configurations to the cluster
+    - ``upload_configs.py`` script to upload test configurations to the cluster
     - README.md with general execution instructions
     - Cluster-specific setup files (manifests, templates, README)
 
     The generated package is self-contained and can be used to:
-    1. Set up the cluster infrastructure (NFS server, PVCs)
-    2. Upload configuration files to the cluster
-    3. Deploy and execute all scenario jobs
+    1. Set up Kueue (job queueing) — follow README_kueue.md
+    2. Set up the cluster infrastructure (MinIO S3 server, PVCs)
+    3. Upload configuration files to the cluster
+    4. Deploy and execute all scenario jobs
 
     Cluster-specific options can be passed using --option key=value.
 
@@ -565,10 +707,12 @@ def prepare_run(output, config, runs, cluster_config, options):  # pylint: disab
         except Exception as e:
             raise RuntimeError(f"Failed to get cluster config: {e}") from e
 
-        namespace = get_cluster_namespace()
+        namespace = cluster_kwargs.get("namespace", get_cluster_namespace())
 
         # Initialize job runner (this prepares all scenarios)
-        job_runner = JobRunner(config_path, config, runs, cluster_config, namespace=namespace)
+        job_runner = JobRunner(
+            config_path, config, runs, cluster_config,
+            namespace=namespace, log_tree=log_tree)
 
         click.echo(f"Preparing run configuration 'ID: {job_runner.run_id}', test configs: {
                    len(job_runner.configs)}, runs per test config: {job_runner.num_runs}...")
@@ -613,8 +757,14 @@ def prepare_run(output, config, runs, cluster_config, options):  # pylint: disab
             yaml.dump_all(all_jobs, f, default_flow_style=False)
 
         cluster_config.prepare_setup_cluster(output, **cluster_kwargs)
+        from robovast.execution.cluster_execution.kubernetes_kueue import (
+            prepare_kueue_setup,
+        )
+        prepare_kueue_setup(output, namespace=namespace)
 
-        generate_upload_script(output, job_runner.run_id, namespace, cluster_config)
+        generate_upload_script(
+            output, job_runner.run_id, namespace, cluster_config,
+        )
 
         click.echo(f"✓ Successfully prepared {job_count} job manifests in directory'{
                    output}'.\n\nFollow README files to set up and execute.\n")
@@ -683,6 +833,10 @@ if __name__ == "__main__":
     readme_content = """# Execution Instructions
 This directory contains the necessary manifests to set up the RoboVAST execution environment on a cluster.
 
+### 0. Set up Kueue (job queueing)
+
+Follow README_kueue.md to install Kueue and apply the queue manifests.
+
 ### 1. Set up the MinIO S3 server
 
 Follow README_<CLUSTER CONFIG>.md for cluster-specific setup instructions.
@@ -713,5 +867,6 @@ kubectl replace --force -f all-jobs.yaml
 
 For a single job file: ``kubectl replace --force -f jobs/<job-name>.yaml -n <namespace>``
 """
+    readme_content = readme_content.rstrip()
     with open(f"{output_dir}/README.md", "w") as f:
         f.write(readme_content)

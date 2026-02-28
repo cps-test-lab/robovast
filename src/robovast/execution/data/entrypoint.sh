@@ -3,7 +3,7 @@ set -e
 
 # @@INIT_BLOCK@@
 
-SCENARIO_EXECUTION_PARAMETERS=""
+SCENARIO_EXECUTION_PARAMETERS="${SCENARIO_EXECUTION_PARAMETERS:-}"
 
 # Setup
 OUTPUT_DIR="/out"
@@ -97,6 +97,7 @@ else
 
     if [ -e /config/scenario.config ]; then
         log "Starting scenario execution with config file..."
+        log "Commandline: ros2 run scenario_execution_ros scenario_execution_ros -o ${OUTPUT_DIR} /config/scenario.osc ${POST_COMMAND_PARAM} --scenario-parameter-file /config/scenario.config ${SCENARIO_EXECUTION_PARAMETERS}"
         exec ros2 run scenario_execution_ros scenario_execution_ros -o ${OUTPUT_DIR} /config/scenario.osc ${POST_COMMAND_PARAM} --scenario-parameter-file /config/scenario.config ${SCENARIO_EXECUTION_PARAMETERS}
     else
         log "Starting scenario execution without config file..."

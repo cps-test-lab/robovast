@@ -64,15 +64,31 @@ spec:
         port: 9000
       initialDelaySeconds: 10
       periodSeconds: 5
+  - name: http-server
+    image: nginx:alpine
+    ports:
+      - name: http
+        containerPort: 80
+    volumeMounts:
+      - mountPath: /usr/share/nginx/html
+        name: minio-storage
+        readOnly: true
+  - name: archiver
+    image: python:3.12-alpine
+    command: ["sh", "-c", "pip install --no-cache-dir boto3 && exec sleep infinity"]
+    volumeMounts:
+      - mountPath: /data
+        name: minio-storage
   volumes:
   - name: minio-storage
-    volumeClaimTemplate:
-      spec:
-        accessModes: [ "ReadWriteOnce" ]
-        storageClassName: "robovast-storage"
-        resources:
-          requests:
-            storage: {storage_size}
+    ephemeral:
+      volumeClaimTemplate:
+        spec:
+          accessModes: [ "ReadWriteOnce" ]
+          storageClassName: "robovast-storage"
+          resources:
+            requests:
+              storage: {storage_size}
 ---
 apiVersion: v1
 kind: Service
@@ -86,6 +102,10 @@ spec:
   - name: console
     port: 9001
     targetPort: 9001
+  - name: http
+    port: 9998
+    targetPort: 80
+    protocol: TCP
   selector:
     role: robovast
 """
@@ -154,8 +174,10 @@ class GcpClusterConfig(BaseConfig):
             output_dir (str): Directory where setup files will be written
             storage_size (str): Size of the persistent volume (default: "10Gi")
             disk_type (str): GCP PD type for StorageClass (default: "pd-standard")
-            **kwargs: Cluster-specific options (ignored)
+            **kwargs: Cluster-specific options (e.g. namespace)
         """
+        storage_size = kwargs.get("storage_size", storage_size)
+        disk_type = kwargs.get("disk_type", disk_type)
         with open(f"{output_dir}/robovast-manifest.yaml", "w") as f:
             f.write(MINIO_MANIFEST_GCP.format(storage_size=storage_size, disk_type=disk_type))
 
@@ -179,6 +201,8 @@ kubectl wait --for=condition=ready pod/robovast --timeout=120s
 
 MinIO S3 API is available at `http://robovast:9000` (cluster-internal).
 MinIO console is available at port 9001.
+HTTP server (nginx) serves `/data` contents on port 9998 for result downloads.
+The archiver sidecar (Python+boto3) streams S3 bucket contents to run-*.tar.gz in /data.
 """
         with open(f"{output_dir}/README_gcp.md", "w") as f:
             f.write(readme_content)

@@ -17,8 +17,10 @@
 
 import copy
 import datetime
+import hashlib
 import logging
 import os
+import re
 import sys
 import tempfile
 import time
@@ -36,44 +38,108 @@ from robovast.common.config_generation import generate_scenario_variations
 from robovast.execution.cluster_execution.kubernetes import (
     check_pod_running, upload_configs_to_s3)
 
+from .kubernetes_kueue import cleanup_kueue_workloads
 from .manifests import JOB_TEMPLATE
 
 logger = logging.getLogger(__name__)
 
 
-def cleanup_cluster_run(namespace="default"):
-    """Clean up all scenario run jobs and pods from the cluster.
+def _label_safe_run_id(run_id: str) -> str:
+    """Convert run_id to a valid Kubernetes label value.
 
-    This function removes all Kubernetes jobs and pods with the label
-    'jobgroup=scenario-runs' from the given namespace. It's used after
-    a detached run to clean up resources once jobs have completed.
+    Label values must be 63 chars or less, alphanumeric, hyphens, periods.
+    """
+    s = run_id.lower().replace("_", "-")
+    return "".join(c for c in s if c.isalnum() or c in "-.")[:63]
+
+
+def _short_job_name(run_id: str, scenario_key: str, run_number: int) -> str:
+    """Create a short Kubernetes job name (max 63 chars) for run-id-config-test.
+
+    Format: r<4chars>-<config8chars><hash4>-<test_number>
+    - run_id: "run-2026-02-27-141130" -> "r" + last 4 of timestamp = "r1130"
+    - scenario_key: first 8 alphanumeric for readability, rest as 4-char hash for uniqueness
+    - run_number: as-is (e.g. 0, 1, ...)
+    Labels keep full run-id for identifying.
+    """
+    # r + last 4 chars of run_id (typically the HHMM part of timestamp)
+    run_suffix = run_id.split("-")[-1][-4:] if "-" in run_id else run_id[-4:]
+    run_part = f"r{run_suffix}"
+
+    # First 8 alphanumeric chars for readability, rest as hash for uniqueness
+    config_alpha = re.sub(r"[^a-zA-Z0-9]", "", scenario_key)[:8]
+    config_hash = hashlib.md5(scenario_key.encode()).hexdigest()[:4]
+    config_part = f"{config_alpha}{config_hash}" if config_alpha else config_hash
+
+    return f"{run_part}-{config_part}-{run_number}"
+
+
+def _full_job_name(run_id: str, scenario_key: str, run_number: int) -> str:
+    """Full descriptive job name for pod annotation (run_id-scenario_key-run_number).
+
+    No length limit; stored in annotations, not in resource names or labels.
+    """
+    safe_config = scenario_key.replace("/", "-").replace("_", "-")
+    return f"{run_id}-{safe_config}-{run_number}"
+
+
+def cleanup_cluster_run(namespace="default", run_id=None):
+    """Clean up scenario run jobs, pods, and Kueue workloads from the cluster.
+
+    If run_id is given, removes only jobs, pods, and workloads for that run (with
+    label jobgroup=scenario-runs,run-id=<run_id>). Otherwise removes all
+    such resources with label 'jobgroup=scenario-runs'.
+
+    Includes Kueue Workload objects since they may not be cleaned up correctly
+    when jobs finish or are deleted. If Kueue is not installed, workload
+    cleanup is skipped without failing.
+
+    Used after a detached run to clean up resources once jobs have completed.
     """
     kube_config.load_kube_config()
     k8s_client = client.CoreV1Api()
     k8s_batch_client = client.BatchV1Api()
 
+    label_selector = "jobgroup=scenario-runs"
+    if run_id is not None:
+        label_safe = _label_safe_run_id(run_id)
+        label_selector = f"jobgroup=scenario-runs,run-id={label_safe}"
+
+    # Cleanup Kueue workloads first (before deleting jobs); workloads don't inherit job
+    # labels, so we match by job UIDs or queue name
+    cleanup_kueue_workloads(
+        namespace=namespace,
+        label_selector=label_selector,
+        run_id=run_id,
+        k8s_batch_client=k8s_batch_client,
+    )
+
     # Cleanup jobs
     try:
-        logger.debug("Deleting all jobs with label 'jobgroup=scenario-runs'")
+        logger.debug(f"Deleting jobs with label selector '{label_selector}'")
         k8s_batch_client.delete_collection_namespaced_job(
             namespace=namespace,
-            label_selector="jobgroup=scenario-runs",
-            body=client.V1DeleteOptions(grace_period_seconds=0)
+            label_selector=label_selector,
+            body=client.V1DeleteOptions(
+                grace_period_seconds=0, propagation_policy="Background"
+            ),
         )
-        logger.info("Successfully deleted all scenario-runs jobs")
+        logger.info("Successfully deleted scenario-runs jobs")
     except client.rest.ApiException as e:
         logger.error(f"Error deleting jobs with label selector: {e}")
         raise
 
     # Cleanup pods
     try:
-        logger.debug("Deleting all pods with label 'jobgroup=scenario-runs'")
+        logger.debug(f"Deleting pods with label selector '{label_selector}'")
         k8s_client.delete_collection_namespaced_pod(
             namespace=namespace,
-            label_selector="jobgroup=scenario-runs",
-            body=client.V1DeleteOptions(grace_period_seconds=0)
+            label_selector=label_selector,
+            body=client.V1DeleteOptions(
+                grace_period_seconds=0, propagation_policy="Background"
+            ),
         )
-        logger.debug("Successfully cleaned up all scenario-runs pods")
+        logger.debug("Successfully cleaned up scenario-runs pods")
     except client.rest.ApiException as e:
         logger.error(f"Error deleting pods with label selector: {e}")
         raise
@@ -127,10 +193,62 @@ def get_cluster_run_job_counts(namespace="default"):
     return counts
 
 
+def get_cluster_run_job_counts_per_run(namespace="default"):
+    """Get status counts per run_id for scenario run jobs.
+
+    Returns a dict mapping run_id (or "<legacy>" for jobs without run-id label)
+    to counts dict with keys completed, failed, running, pending.
+    """
+    kube_config.load_kube_config()
+    k8s_batch_client = client.BatchV1Api()
+
+    try:
+        job_list = k8s_batch_client.list_namespaced_job(
+            namespace=namespace,
+            label_selector="jobgroup=scenario-runs",
+        )
+    except client.rest.ApiException as e:
+        logger.error(f"Error listing jobs with label selector: {e}")
+        raise
+
+    per_run = {}
+
+    for job in job_list.items:
+        run_id = "<legacy>"
+        if job.metadata.labels and "run-id" in job.metadata.labels:
+            run_id = job.metadata.labels["run-id"]
+
+        if run_id not in per_run:
+            per_run[run_id] = {"completed": 0, "failed": 0, "running": 0, "pending": 0}
+
+        status = job.status
+        if status is None:
+            per_run[run_id]["pending"] += 1
+            continue
+
+        succeeded = status.succeeded or 0
+        failed = status.failed or 0
+        active = status.active or 0
+
+        if succeeded >= 1:
+            per_run[run_id]["completed"] += 1
+        elif failed >= 1:
+            per_run[run_id]["failed"] += 1
+        elif active >= 1:
+            per_run[run_id]["running"] += 1
+        else:
+            per_run[run_id]["pending"] += 1
+
+    return per_run
+
+
 class JobRunner:
-    def __init__(self, config_path, single_config=None, num_runs=None, cluster_config=None, namespace="default"):
+    def __init__(self, config_path, single_config=None, num_runs=None, cluster_config=None,
+                 namespace="default", cleanup_before_run=False, log_tree=False):
         self.cluster_config = cluster_config
+        self.cleanup_before_run = cleanup_before_run
         self.namespace = namespace
+        self.log_tree = log_tree
         if not self.cluster_config:
             raise ValueError("Cluster config must be provided to JobRunner")
 
@@ -253,6 +371,12 @@ class JobRunner:
         job_manifest = copy.deepcopy(self.manifest)
 
         # Replace template variables
+        label_safe_run_id = _label_safe_run_id(self.run_id)
+        self.replace_template(job_manifest, "$RUN_ID", label_safe_run_id)
+        self.replace_template(job_manifest, "$JOB_NAME",
+                              _short_job_name(self.run_id, scenario_key, run_number))
+        self.replace_template(job_manifest, "$JOB_FULL_NAME",
+                              _full_job_name(self.run_id, scenario_key, run_number))
         self.replace_template(job_manifest, "$ITEM",
                               f"{scenario_key.replace('/', '-').replace('_', '-')}-{run_number}")
         self.replace_template(job_manifest, "$TEST_ID",
@@ -350,6 +474,11 @@ class JobRunner:
                 containers[0]['env'].append({
                     'name': 'POST_COMMAND',
                     'value': str(self.post_command)
+                })
+            if self.log_tree:
+                containers[0]['env'].append({
+                    'name': 'SCENARIO_EXECUTION_PARAMETERS',
+                    'value': '-t'
                 })
 
             containers[0]['volumeMounts'] = shared_volume_mounts
@@ -552,16 +681,22 @@ class JobRunner:
             secs = seconds % 60
             return f"{hours}h {minutes}m {secs:.1f}s"
 
-    def cleanup_jobs(self):
-        # cleanup all jobs with label jobgroup: scenario-runs in a single call
+    def cleanup_jobs(self, run_id=None):
+        """Delete jobs. If run_id is given, only delete jobs with that run-id label."""
+        label_selector = "jobgroup=scenario-runs"
+        if run_id is not None:
+            label_safe = _label_safe_run_id(run_id)
+            label_selector = f"jobgroup=scenario-runs,run-id={label_safe}"
         try:
-            logger.debug(f"Deleting all jobs with label 'jobgroup=scenario-runs'")
+            logger.debug(f"Deleting jobs with label selector '{label_selector}'")
             self.k8s_batch_client.delete_collection_namespaced_job(
                 namespace=self.namespace,
-                label_selector="jobgroup=scenario-runs",
-                body=client.V1DeleteOptions(grace_period_seconds=0)
+                label_selector=label_selector,
+                body=client.V1DeleteOptions(
+                    grace_period_seconds=0, propagation_policy="Background"
+                ),
             )
-            logger.info(f"Successfully deleted all scenario-runs jobs")
+            logger.info("Successfully deleted scenario-runs jobs")
         except client.rest.ApiException as e:
             logger.error(f"Error deleting jobs with label selector: {e}")
 
@@ -569,29 +704,16 @@ class JobRunner:
         # Ensure Kubernetes clients are initialized before running
         self._ensure_k8s_initialized()
 
-        # check if k8s element names have "$ITEM" template
+        # check if k8s element names have required templates
         manifest_data = self.manifest
-        if '$TEST_ID' not in manifest_data['metadata']['name']:
-            raise ValueError("Manifest element names need to contain '$TEST_ID' template")
+        if '$JOB_NAME' not in manifest_data['metadata']['name']:
+            raise ValueError("Manifest metadata.name must contain '$JOB_NAME' template")
 
-        # Cleaning up previous k8s elements
-        # Get the job name prefix by replacing templates
-        job_prefix = manifest_data['metadata']['name'].replace("$TEST_ID", "").replace("$ITEM", "")
-
-        # Clean up existing jobs that match our naming pattern
-        job_list = self.k8s_batch_client.list_namespaced_job(namespace=self.namespace)
-        jobs_to_cleanup = []
-        for job in job_list.items:
-            if job.metadata.name.startswith(job_prefix):
-                jobs_to_cleanup.append(job.metadata.name)
-                logger.debug(f"Found existing job to cleanup: {job.metadata.name}")
-
-        if jobs_to_cleanup:
-            logger.debug(f"Cleaning up {len(jobs_to_cleanup)} existing jobs...")
+        # Optionally clean up previous runs before starting
+        if self.cleanup_before_run:
+            logger.debug("Cleaning up previous scenario-runs jobs and pods...")
+            self.cleanup_pods()
             self.cleanup_jobs()
-
-        # Clean up existing pods with label jobgroup: scenario-runs
-        self.cleanup_pods()
 
         # upload all config files to S3 bucket
         logger.debug(f"Uploading task config files for {len(self.configs)} scenarios to S3...")
@@ -647,26 +769,32 @@ class JobRunner:
         logger.info("Collecting job statistics...")
         self.collect_job_statistics(all_jobs)
 
-        # Clean up
-        self.cleanup_pods()
-        self.cleanup_jobs()
-        logger.info(f"Cleaned up jobs.")
+        # Clean up only this run's jobs and pods
+        self.cleanup_pods(run_id=self.run_id)
+        self.cleanup_jobs(run_id=self.run_id)
+        logger.info("Cleaned up jobs.")
 
         # Print comprehensive statistics
         self.print_run_statistics()
 
         logger.debug(f"MinIO S3 pod is left running for reuse")
 
-    def cleanup_pods(self):
-        # Cleanup pods with label jobgroup: scenario-runs
+    def cleanup_pods(self, run_id=None):
+        """Delete pods. If run_id is given, only delete pods with that run-id label."""
+        label_selector = "jobgroup=scenario-runs"
+        if run_id is not None:
+            label_safe = _label_safe_run_id(run_id)
+            label_selector = f"jobgroup=scenario-runs,run-id={label_safe}"
         try:
-            logger.debug(f"Deleting all pods with label 'jobgroup=scenario-runs'")
+            logger.debug(f"Deleting pods with label selector '{label_selector}'")
             self.k8s_client.delete_collection_namespaced_pod(
                 namespace=self.namespace,
-                label_selector="jobgroup=scenario-runs",
-                body=client.V1DeleteOptions(grace_period_seconds=0)
+                label_selector=label_selector,
+                body=client.V1DeleteOptions(
+                    grace_period_seconds=0, propagation_policy="Background"
+                ),
             )
-            logger.debug(f"Successfully cleaned up all scenario-runs pods")
+            logger.debug("Successfully cleaned up scenario-runs pods")
         except client.rest.ApiException as e:
             logger.error(f"Error deleting pods with label selector: {e}")
 
@@ -733,6 +861,10 @@ class JobRunner:
 
         yaml_str = JOB_TEMPLATE.format(image=image, namespace=self.namespace)
         manifest = yaml.safe_load(yaml_str)
+
+        manifest.setdefault("metadata", {}).setdefault("labels", {})[
+            "kueue.x-k8s.io/queue-name"
+        ] = "robovast"
 
         main_container = manifest['spec']['template']['spec']['containers'][0]
         main_container.setdefault('securityContext', {})['runAsUser'] = run_as_user

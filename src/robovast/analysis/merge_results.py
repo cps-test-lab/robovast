@@ -16,6 +16,7 @@
 
 """Merge run-dirs with identical configs into one merged output."""
 
+import hashlib
 import logging
 import shutil
 from pathlib import Path
@@ -99,13 +100,21 @@ def merge_results(results_dir: str, merged_run_dir: str) -> tuple[bool, str]:
         return False, "No config-dirs with config.yaml found to merge."
 
     # Build merged output - remove existing so runs are idempotent
-    merged_path = Path(merged_run_dir).resolve()
+    merged_base = Path(merged_run_dir).resolve()
     results_path = Path(results_dir).resolve()
-    if merged_path == results_path:
+    if merged_base == results_path:
         return False, (
             f"merged_run_dir must not equal results_dir (would delete source): "
             f"{merged_run_dir}"
         )
+
+    # Compute a deterministic pseudo run-id from the sorted source run ids so the
+    # output mirrors the results/ layout: merged_run_dir/run-<pseudo id>/...
+    all_source_run_ids = sorted({run_id for sources in groups.values() for run_id, _, _ in sources})
+    pseudo_id = hashlib.sha256("|".join(all_source_run_ids).encode()).hexdigest()[:8]
+    pseudo_run_dir = f"run-{pseudo_id}"
+    merged_path = merged_base / pseudo_run_dir
+
     if merged_path.exists():
         shutil.rmtree(merged_path)
     merged_path.mkdir(parents=True, exist_ok=True)
@@ -175,4 +184,4 @@ def merge_results(results_dir: str, merged_run_dir: str) -> tuple[bool, str]:
             shutil.copytree(src_test_path, dst_test, dirs_exist_ok=True)
             total_tests += 1
 
-    return True, f"Merged {len(groups)} config(s), {total_tests} test(s) into {merged_run_dir}"
+    return True, f"Merged {len(groups)} config(s), {total_tests} test(s) into {merged_run_dir}/{pseudo_run_dir}"

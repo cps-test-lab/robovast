@@ -89,9 +89,16 @@ def apply_manifests(k8s_client, manifests: list, namespace=None):
         raise RuntimeError(f"Error applying manifest: {str(e)}") from e
 
 
-def delete_manifests(core_v1, manifests: list, namespace=None):
-    """Delete Kubernetes resources from manifests. If namespace is given, use it for each resource."""
-    for yaml_object in manifests:
+def delete_manifests(core_v1, manifests, namespace=None):
+    """Delete Kubernetes resources from manifests. If namespace is given, use it for each resource.
+    Resources are deleted in reverse order so dependents (e.g. Pods) are removed before
+    parents (e.g. PVCs) that they reference.
+
+    Args:
+        manifests: Iterable of YAML objects (list or generator from yaml.safe_load_all).
+    """
+    manifests = list(manifests)  # consume generator; reversed() requires a sequence
+    for yaml_object in reversed(manifests):
         if yaml_object is None:
             continue
 
