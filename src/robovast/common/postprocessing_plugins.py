@@ -219,6 +219,68 @@ def rosbags_bt_to_csv(
         return False, f"Error executing rosbags_bt_to_csv: {e}"
 
 
+def rosbags_localization_error_to_csv(
+    results_dir: str,
+    config_dir: str,
+    topic: Optional[str] = None,
+    provenance_file: Optional[str] = None,
+) -> Tuple[bool, str]:
+    """Extract localization error (covariance) data from rosbags to CSV format.
+
+    Extracts pose and covariance data from PoseWithCovarianceStamped messages
+    in ROS bag files and converts them to CSV format. Useful for analyzing
+    localization uncertainty, AMCL performance, and pose estimation quality.
+    The output includes pose (position and orientation) and key covariance
+    values (diagonal elements for x, y, z, roll, pitch, yaw and some
+    off-diagonal correlations).
+
+    Args:
+        results_dir: Path to the run-<id> directory to process
+        config_dir: Directory containing the config file (for resolving relative paths)
+        topic: Optional topic name containing PoseWithCovarianceStamped messages
+               (default: /amcl_pose)
+
+    Returns:
+        Tuple of (success, message)
+
+    Example usage in .vast config:
+        postprocessing:
+          - rosbags_localization_error_to_csv
+          - rosbags_localization_error_to_csv:
+              topic: /amcl_pose
+    """
+    # Get docker_exec.sh from package data
+    script_path = str(files('robovast.common.data').joinpath('docker_exec.sh'))
+
+    cmd = [script_path]
+    if provenance_file:
+        cmd.extend(["--provenance-file", provenance_file])
+    cmd.append("rosbags_localization_error_to_csv.py")
+    if provenance_file:
+        cmd.extend(["--provenance-file", f"/provenance/{os.path.basename(provenance_file)}"])
+    if topic:
+        cmd.extend(["--topic", topic])
+    cmd.append(results_dir)
+
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=os.path.dirname(script_path),
+            check=False,
+            capture_output=True,
+            text=True,
+            env={**os.environ, 'PYTHONUNBUFFERED': '1'}
+        )
+
+        if result.returncode != 0:
+            return False, f"rosbags_localization_error_to_csv failed with exit code {result.returncode}\n{result.stderr}"
+
+        return True, "Localization error data converted to CSV successfully"
+
+    except Exception as e:
+        return False, f"Error executing rosbags_localization_error_to_csv: {e}"
+
+
 def rosbags_action_to_csv(
     results_dir: str,
     config_dir: str,

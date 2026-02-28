@@ -59,6 +59,38 @@ def extract_pose_metrics(poses_csv_path: str) -> Optional[Tuple[float, float]]:
         return None
 
 
+def extract_localization_error_metrics(localization_error_csv_path: str) -> Optional[Tuple[float, float]]:
+    """
+    Extract mean and variance of localization covariance from a localization_error.csv file.
+    
+    Uses combined positional uncertainty: sqrt(covariance.x_x + covariance.y_y)
+    
+    Args:
+        localization_error_csv_path: Path to the localization_error.csv file
+        
+    Returns:
+        Tuple of (mean_covariance, variance_covariance) or None if file is invalid
+    """
+    try:
+        df = pd.read_csv(localization_error_csv_path)
+        
+        if len(df) < 1:
+            return None
+        
+        # Compute combined positional uncertainty (standard deviation from variance)
+        # covariance.x_x and covariance.y_y are variances, so we sum them and take sqrt
+        positional_std = np.sqrt(df['covariance.x_x'] + df['covariance.y_y'])
+        
+        # Calculate mean and variance of this uncertainty across the run
+        mean_cov = float(positional_std.mean())
+        var_cov = float(positional_std.var())
+        
+        return mean_cov, var_cov
+    except Exception as e:
+        print(f"Error processing {localization_error_csv_path}: {e}", file=sys.stderr)
+        return None
+
+
 def is_successful_test_run(test_xml_path: Path) -> bool:
     """
     Check whether a test run is successful based on failures=0 in test.xml.
@@ -82,19 +114,24 @@ def is_successful_test_run(test_xml_path: Path) -> bool:
         return False
 
 
-def process_test_type(test_type_path: str, successful_only: bool = False) -> Tuple[List[float], List[float]]:
+def process_test_type(test_type_path: str, successful_only: bool = False, 
+                     extract_localization: bool = False) -> Tuple[List[float], List[float], List[float], List[float]]:
     """
     Process all runs in a test type folder and extract metrics.
     
     Args:
         test_type_path: Path to the test type folder containing run subfolders
         successful_only: If True, include only runs with failures=0 in test.xml
+        extract_localization: If True, also extract localization error metrics
         
     Returns:
-        Tuple of (times_list, distances_list)
+        Tuple of (times_list, distances_list, loc_means_list, loc_vars_list)
+        If extract_localization is False, loc_means_list and loc_vars_list will be empty
     """
     times = []
     distances = []
+    loc_means = []
+    loc_vars = []
     
     test_type_dir = Path(test_type_path)
     
@@ -121,28 +158,51 @@ def process_test_type(test_type_path: str, successful_only: bool = False) -> Tup
                 time_taken, distance_traveled = result
                 times.append(time_taken)
                 distances.append(distance_traveled)
-                print(f"  Run {run_dir.name}: time={time_taken:.2f}s, distance={distance_traveled:.2f}m")
+                
+                # Extract localization error if requested
+                if extract_localization:
+                    loc_error_csv = run_dir / 'localization_error.csv'
+                    if loc_error_csv.exists():
+                        loc_result = extract_localization_error_metrics(str(loc_error_csv))
+                        if loc_result is not None:
+                            mean_cov, var_cov = loc_result
+                            loc_means.append(mean_cov)
+                            loc_vars.append(var_cov)
+                            print(f"  Run {run_dir.name}: time={time_taken:.2f}s, distance={distance_traveled:.2f}m, "
+                                  f"loc_mean={mean_cov:.4f}m, loc_var={var_cov:.6f}m²")
+                        else:
+                            print(f"  Run {run_dir.name}: time={time_taken:.2f}s, distance={distance_traveled:.2f}m, "
+                                  f"localization_error.csv failed to process", file=sys.stderr)
+                    else:
+                        print(f"  Run {run_dir.name}: time={time_taken:.2f}s, distance={distance_traveled:.2f}m, "
+                              f"no localization_error.csv (skipped)")
+                else:
+                    print(f"  Run {run_dir.name}: time={time_taken:.2f}s, distance={distance_traveled:.2f}m")
             else:
                 print(f"  Run {run_dir.name}: Failed to process", file=sys.stderr)
         else:
             print(f"  Run {run_dir.name}: No poses.csv found (skipped)")
     
-    return times, distances
+    return times, distances, loc_means, loc_vars
 
 
 def save_metrics_to_csv(test_type_name: str, times: List[float], 
-                       distances: List[float], output_dir: str) -> Tuple[str, str]:
+                       distances: List[float], output_dir: str,
+                       loc_means: Optional[List[float]] = None,
+                       loc_vars: Optional[List[float]] = None) -> Tuple[str, ...]:
     """
-    Save time and distance metrics to separate CSV files.
+    Save time, distance, and optionally localization error metrics to separate CSV files.
     
     Args:
         test_type_name: Name of the test type
         times: List of time values
         distances: List of distance values
         output_dir: Directory to save CSV files
+        loc_means: Optional list of mean covariance values
+        loc_vars: Optional list of covariance variance values
         
     Returns:
-        Tuple of (time_csv_path, distance_csv_path)
+        Tuple of CSV paths (time, distance, [loc_mean, loc_var] if provided)
     """
     os.makedirs(output_dir, exist_ok=True)
     
@@ -162,7 +222,29 @@ def save_metrics_to_csv(test_type_name: str, times: List[float],
         for i, dist_val in enumerate(distances):
             writer.writerow([i, dist_val])
     
-    return time_csv_path, distance_csv_path
+    result_paths = [time_csv_path, distance_csv_path]
+    
+    # Save localization error means if provided
+    if loc_means is not None and len(loc_means) > 0:
+        loc_mean_csv_path = os.path.join(output_dir, f"{test_type_name}_loc_error_means.csv")
+        with open(loc_mean_csv_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['run_index', 'mean_covariance_meters'])
+            for i, mean_cov in enumerate(loc_means):
+                writer.writerow([i, mean_cov])
+        result_paths.append(loc_mean_csv_path)
+    
+    # Save localization error variances if provided
+    if loc_vars is not None and len(loc_vars) > 0:
+        loc_var_csv_path = os.path.join(output_dir, f"{test_type_name}_loc_error_vars.csv")
+        with open(loc_var_csv_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['run_index', 'variance_covariance_meters_squared'])
+            for i, var_cov in enumerate(loc_vars):
+                writer.writerow([i, var_cov])
+        result_paths.append(loc_var_csv_path)
+    
+    return tuple(result_paths)
 
 
 def fit_distributions(data: np.ndarray) -> Dict[str, Tuple]:
@@ -922,23 +1004,29 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Extract metrics from two test types
+  # Extract metrics from two test types (time, distance only)
   python3 compare_navigation_tests.py -t /path/to/test_type_1 /path/to/test_type_2
 
+  # Extract metrics including localization error (requires localization_error.csv in run folders)
+  python3 compare_navigation_tests.py -t /path/to/test_type_1 /path/to/test_type_2 -m time distance loc_error_mean loc_error_var
+
   # Extract metrics from successful runs only (test.xml failures=0)
-  python3 compare_navigation_tests.py -t /path/to/test_type_1 --successful-only
+  python3 compare_navigation_tests.py -t /path/to/test_type_1 --successful-only -m time distance loc_error_mean
   
   # Compare extracted metrics
   python3 compare_navigation_tests.py -c test_type_1 test_type_2 -m time
   
-  # Compare both time and distance
-  python3 compare_navigation_tests.py -c test_type_1 test_type_2 -m time distance
+  # Compare both time and localization error mean
+  python3 compare_navigation_tests.py -c test_type_1 test_type_2 -m time loc_error_mean
+  
+  # Compare all metrics (time, distance, localization error mean and variance)
+  python3 compare_navigation_tests.py -c test_type_1 test_type_2 -m time distance loc_error_mean loc_error_var
   
   # Sum two distributions and compare to a target (e.g., top-half + bottom-half vs full-map)
   # Try different methods if variance doesn't match:
   python3 compare_navigation_tests.py --sum test_top test_bottom test_full -m time distance
-  python3 compare_navigation_tests.py --sum test_top test_bottom test_full --sum-method convolution -m time distance
-  python3 compare_navigation_tests.py --sum test_top test_bottom test_full --sum-method bootstrap -m time distance
+  python3 compare_navigation_tests.py --sum test_top test_bottom test_full --sum-method convolution -m time loc_error_mean
+  python3 compare_navigation_tests.py --sum test_top test_bottom test_full --sum-method bootstrap -m loc_error_var
         """
     )
     
@@ -954,9 +1042,11 @@ Examples:
                             'convolution: all pairs (larger variance, assumes independence); '
                             'monte_carlo: random resample (min size); bootstrap: resample (max size) '
                             '(default: pairwise)')
-    parser.add_argument('-m', '--metrics', nargs='+', choices=['time', 'distance'],
+    parser.add_argument('-m', '--metrics', nargs='+', 
+                       choices=['time', 'distance', 'loc_error_mean', 'loc_error_var'],
                        default=['time', 'distance'],
-                       help='Metrics to compare (time, distance, or both)')
+                       help='Metrics to compare: time, distance, loc_error_mean (mean covariance), '
+                            'loc_error_var (variance of covariance)')
     parser.add_argument('-o', '--output-dir', default='navigation_comparison_results',
                        help='Output directory for results')
     parser.add_argument('--no-display', action='store_true',
@@ -975,6 +1065,9 @@ Examples:
     
     # Extract metrics if test types are provided
     if args.test_types:
+        # Determine if we need to extract localization error metrics
+        extract_loc = any(m in ['loc_error_mean', 'loc_error_var'] for m in args.metrics)
+        
         print(f"Extracting metrics from {len(args.test_types)} test type(s)...\n")
         
         for test_type_path in args.test_types:
@@ -982,11 +1075,19 @@ Examples:
             test_type_name = test_type_dir.name
             
             print(f"Processing {test_type_name}...")
-            times, distances = process_test_type(test_type_path, successful_only=args.successful_only)
+            times, distances, loc_means, loc_vars = process_test_type(
+                test_type_path, 
+                successful_only=args.successful_only,
+                extract_localization=extract_loc
+            )
             
             if times and distances:
                 print(f"  Successfully extracted {len(times)} runs")
-                save_metrics_to_csv(test_type_name, times, distances, args.output_dir)
+                if extract_loc and loc_means:
+                    print(f"  Extracted localization error metrics for {len(loc_means)} runs")
+                save_metrics_to_csv(test_type_name, times, distances, args.output_dir,
+                                  loc_means=loc_means if extract_loc else None,
+                                  loc_vars=loc_vars if extract_loc else None)
             else:
                 print(f"  No valid data found", file=sys.stderr)
     
@@ -1001,10 +1102,18 @@ Examples:
                 file1 = os.path.join(metric_dir, f"{test1_name}_times.csv")
                 file2 = os.path.join(metric_dir, f"{test2_name}_times.csv")
                 metric_label = "Time (seconds)"
-            else:  # distance
+            elif metric == 'distance':
                 file1 = os.path.join(metric_dir, f"{test1_name}_distances.csv")
                 file2 = os.path.join(metric_dir, f"{test2_name}_distances.csv")
                 metric_label = "Distance (meters)"
+            elif metric == 'loc_error_mean':
+                file1 = os.path.join(metric_dir, f"{test1_name}_loc_error_means.csv")
+                file2 = os.path.join(metric_dir, f"{test2_name}_loc_error_means.csv")
+                metric_label = "Mean Localization Error (meters)"
+            else:  # loc_error_var
+                file1 = os.path.join(metric_dir, f"{test1_name}_loc_error_vars.csv")
+                file2 = os.path.join(metric_dir, f"{test2_name}_loc_error_vars.csv")
+                metric_label = "Localization Error Variance (meters²)"
             
             if not os.path.exists(file1) or not os.path.exists(file2):
                 print(f"Warning: Could not find metric files for {metric}", file=sys.stderr)
@@ -1062,11 +1171,21 @@ Examples:
                 file2 = os.path.join(metric_dir, f"{name2}_times.csv")
                 file_target = os.path.join(metric_dir, f"{name_target}_times.csv")
                 metric_label = "Time (seconds)"
-            else:  # distance
+            elif metric == 'distance':
                 file1 = os.path.join(metric_dir, f"{name1}_distances.csv")
                 file2 = os.path.join(metric_dir, f"{name2}_distances.csv")
                 file_target = os.path.join(metric_dir, f"{name_target}_distances.csv")
                 metric_label = "Distance (meters)"
+            elif metric == 'loc_error_mean':
+                file1 = os.path.join(metric_dir, f"{name1}_loc_error_means.csv")
+                file2 = os.path.join(metric_dir, f"{name2}_loc_error_means.csv")
+                file_target = os.path.join(metric_dir, f"{name_target}_loc_error_means.csv")
+                metric_label = "Mean Localization Error (meters)"
+            else:  # loc_error_var
+                file1 = os.path.join(metric_dir, f"{name1}_loc_error_vars.csv")
+                file2 = os.path.join(metric_dir, f"{name2}_loc_error_vars.csv")
+                file_target = os.path.join(metric_dir, f"{name_target}_loc_error_vars.csv")
+                metric_label = "Localization Error Variance (meters²)"
             
             if not os.path.exists(file1) or not os.path.exists(file2) or not os.path.exists(file_target):
                 print(f"Warning: Could not find all required metric files for {metric}", file=sys.stderr)
