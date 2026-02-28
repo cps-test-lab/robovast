@@ -241,7 +241,7 @@ def test_vast_workflow(vast_file_path, config=None):  # pylint: disable=too-many
             if config:
                 cmd_exec.extend(["-c", config])
             
-            result = run_command(cmd_exec, cwd=temp_output)
+            result = run_command(cmd_exec, cwd=repo_root)
             
             if result != 0:
                 print("✗ vast execution local run failed")

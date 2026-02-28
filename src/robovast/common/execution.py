@@ -26,6 +26,11 @@ from pprint import pformat
 import yaml
 
 from .common import convert_dataclasses_to_dict, get_scenario_parameters
+from .config_identifier import (
+    compute_config_identifier,
+    hash_file_content,
+    hash_test_files,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -272,16 +277,35 @@ def prepare_run_configs(out_dir, run_data, cluster=False):
     run_config_dir = os.path.join(out_dir, "_config")
     os.makedirs(run_config_dir, exist_ok=True)
 
+    vast_file_path = os.path.dirname(run_data["vast"])
+
+    # Prepare run_data for configurations.yaml (strip internal keys used for identifier)
+    run_data_for_dump = copy.deepcopy(run_data)
+    for c in run_data_for_dump.get("configs", []):
+        c.pop("_config_block", None)
+        c.pop("_variation_type_names", None)
+
     # Save scenario variations as YAML in _config subdirectory
     scenario_variations_path = os.path.join(run_config_dir, "configurations.yaml")
     with open(scenario_variations_path, 'w') as f:
-        yaml.dump(convert_dataclasses_to_dict(run_data), f, default_flow_style=False, sort_keys=False)
+        yaml.dump(convert_dataclasses_to_dict(run_data_for_dump), f, default_flow_style=False, sort_keys=False)
     logger.debug(f"Saved configurations to {scenario_variations_path}")
 
-    vast_file_path = os.path.dirname(run_data["vast"])
-    # copy scenario_file
-    scenario_file_path = os.path.join(vast_file_path, run_data["scenario_file"])
-    shutil.copy2(scenario_file_path, out_dir)
+    # Compute hashes once per run (reused for all configs)
+    test_files_hash = hash_test_files(vast_file_path, run_data.get("_test_files", []))
+    scenario_file_path_for_hash = (
+        run_data["scenario_file"]
+        if os.path.isabs(run_data["scenario_file"])
+        else os.path.join(vast_file_path, run_data["scenario_file"])
+    )
+    scenario_file_hash = (
+        hash_file_content(scenario_file_path_for_hash)
+        if os.path.isfile(scenario_file_path_for_hash)
+        else ""
+    )
+
+    # Copy scenario_file
+    shutil.copy2(scenario_file_path_for_hash, out_dir)
 
     # Copy test files
     for config_file in run_data.get("_test_files", []):
@@ -320,6 +344,26 @@ def prepare_run_configs(out_dir, run_data, cluster=False):
 
     for config_data in run_data["configs"]:
         test_config_dir = os.path.join(out_dir, config_data.get("name"), "_config")
+
+        # Compute and write config identifier for merge-results
+        config_block = config_data.get("_config_block", {})
+        variation_type_names = config_data.get("_variation_type_names", [])
+        config_identifier, sub_identifier = compute_config_identifier(
+            vast_file_path,
+            config_block,
+            test_files_hash,
+            scenario_file_hash,
+            variation_type_names,
+        )
+        config_yaml_path = os.path.join(out_dir, config_data.get("name"), "config.yaml")
+        os.makedirs(os.path.dirname(config_yaml_path), exist_ok=True)
+        with open(config_yaml_path, "w") as f:
+            yaml.dump(
+                {"config_identifier": config_identifier, "sub_identifier": sub_identifier},
+                f,
+                default_flow_style=False,
+                sort_keys=False,
+            )
 
         # Copy config files
         if "_config_files" in config_data:
