@@ -5,13 +5,13 @@ A Python script for probabilistic comparison of robot navigation test results us
 ## Features
 
 - **Metric Extraction**: Automatically extracts time taken and distance traveled from `poses.csv` files in test runs
-- **Distribution Fitting**: Tests data against 5 distributions (normal, exponential, lognormal, gamma, weibull)
+- **Distribution Fitting**: Tests data against 6 distributions (normal, exponential, lognormal, gamma, weibull, poisson)
+- **Visualization**: Generates distribution plots with best-fit curves and comparison overlays for visual analysis
 - **Comprehensive Statistical Tests**: 
   - Mann-Whitney U test (tests if distributions differ)
   - Kolmogorov-Smirnov test (tests if distributions differ)
   - Levene's test (tests if variances are equal)
   - Fligner-Killeen test (alternative variance test)
-  - Mood's median test (tests if medians are equal)
   - Brunner-Munzel test (robust alternative to Mann-Whitney)
 - **Detailed Analysis**: Provides distribution parameters, skewness, kurtosis, and goodness-of-fit metrics
 - **CSV Output**: Saves extracted metrics and comparison results for further analysis
@@ -140,6 +140,8 @@ run_index,time_seconds
 ### Comparison Results
 - `comparison_{test1}_vs_{test2}_time.csv`: Time comparison statistics
 - `comparison_{test1}_vs_{test2}_distance.csv`: Distance comparison statistics
+- `distribution_{test_type}_{metric}.png`: Individual distribution plots with best-fit curve
+- `comparison_{test1}_vs_{test2}_{metric}.png`: Side-by-side comparison with overlaid best-fit distributions
 
 Example comparison CSV:
 ```
@@ -155,6 +157,13 @@ ks_pvalue,0.2
 levene_pvalue,0.293
 ...
 ```
+mean_2,50.4650
+...
+mann_whitney_pvalue,0.2
+ks_pvalue,0.2
+levene_pvalue,0.293
+...
+```
 
 ## Understanding the Output
 
@@ -163,9 +172,13 @@ levene_pvalue,0.293
 Each test type gets a distribution analysis that shows:
 - **Sample statistics**: Mean, standard deviation, median, min, max
 - **Shape statistics**: Skewness (asymmetry) and kurtosis (tail heaviness)
-- **Normality Test**: Shapiro-Wilk p-value indicates if data is normally distributed
-  - p > 0.05: Data appears normal
-  - p ≤ 0.05: Data is not normally distributed
+- **Normality Tests**: Two tests check if data is normally distributed:
+  - **Shapiro-Wilk test**: Best for small samples (n < 50)
+    - p > 0.05: Data appears normal
+    - p ≤ 0.05: Data is not normally distributed
+  - **Jarque-Bera test**: Tests based on skewness and kurtosis
+    - p > 0.05: Data appears normal
+    - p ≤ 0.05: Data is not normally distributed
 - **Best fit distribution**: The distribution that best matches the data
 - **Distribution fit statistics**: Kolmogorov-Smirnov test results for each distribution
 
@@ -189,11 +202,7 @@ Statistical tests compare two test types:
 4. **Fligner-Killeen test** (nonparametric variance test)
    - Alternative to Levene's that doesn't assume normality
 
-5. **Mood's median test** (median comparison)
-   - Tests if medians are different
-   - More resistant to outliers than mean comparison
-
-6. **Brunner-Munzel test** (robust alternative to Mann-Whitney)
+5. **Brunner-Munzel test** (robust alternative to Mann-Whitney)
    - Uses ranks like Mann-Whitney but more robust
 
 ### Interpreting Results

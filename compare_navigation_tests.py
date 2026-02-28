@@ -19,8 +19,9 @@ import pandas as pd
 from scipy import stats
 from scipy.stats import (
     kstest, normaltest, shapiro, anderson, jarque_bera,
-    gamma, expon, weibull_min, lognorm, norm
+    gamma, expon, weibull_min, lognorm, norm, poisson
 )
+import matplotlib.pyplot as plt
 
 warnings.filterwarnings('ignore')
 
@@ -176,6 +177,14 @@ def fit_distributions(data: np.ndarray) -> Dict[str, Tuple]:
     except:
         pass
     
+    try:
+        # Poisson distribution
+        # Estimate lambda parameter using method of moments
+        mu = np.mean(data)
+        distributions['poisson'] = (mu,)
+    except:
+        pass
+    
     return distributions
 
 
@@ -200,7 +209,8 @@ def compute_goodness_of_fit(data: np.ndarray, dist_name: str,
         'exponential': expon,
         'lognormal': lognorm,
         'gamma': gamma,
-        'weibull': weibull_min
+        'weibull': weibull_min,
+        'poisson': poisson
     }
     
     if dist_name not in dist_map:
@@ -244,17 +254,26 @@ def analyze_distribution_fit(data: np.ndarray) -> Tuple[str, Dict]:
         'median': float(np.median(data)),
         'min': float(np.min(data)),
         'max': float(np.max(data)),
-        'skewness': float(stats.skew(data)),
-        'kurtosis': float(stats.kurtosis(data)),
+        'skewness': float(stats.skew(data)), # < 0 is long left tail, > 0 is long right tail
+        'kurtosis': float(stats.kurtosis(data)), # < 0 is light-tailed, > 0 is heavy-tailed
     }
     
     # Test for normality
     try:
         _, norm_pval = shapiro(data)
         analysis['shapiro_pvalue'] = norm_pval
-        analysis['is_normal'] = norm_pval > 0.05
+        analysis['shapiro_normal'] = norm_pval > 0.05
     except:
-        analysis['is_normal'] = False
+        analysis['shapiro_normal'] = False
+    
+    # Jarque-Bera test for normality
+    try:
+        jb_stat, jb_pval = jarque_bera(data)
+        analysis['jarque_bera_statistic'] = float(jb_stat)
+        analysis['jarque_bera_pvalue'] = jb_pval
+        analysis['jarque_bera_normal'] = jb_pval > 0.05
+    except:
+        pass
     
     # Fit distributions
     fitted_dists = fit_distributions(data)
@@ -310,7 +329,9 @@ def compare_two_distributions(name1: str, data1: np.ndarray,
         'median_2': float(np.median(data2)),
     }
     
-    # Mann-Whitney U test (tests if distributions are different)
+    # Mann-Whitney U test: Tests if two distributions have the same location (median).
+    # Non-parametric alternative to t-test. Robust against non-normal data.
+    # Most powerful for detecting shifts in central tendency.
     try:
         u_stat, u_pval = stats.mannwhitneyu(data1, data2, alternative='two-sided')
         results['mann_whitney_u'] = float(u_stat)
@@ -319,7 +340,9 @@ def compare_two_distributions(name1: str, data1: np.ndarray,
     except:
         pass
     
-    # Kolmogorov-Smirnov test (tests if distributions are different)
+    # Kolmogorov-Smirnov test: Tests if two distributions are fundamentally different
+    # across their entire cumulative distribution function (shape and location).
+    # More sensitive to differences in the tails of distributions.
     try:
         ks_stat, ks_pval = stats.ks_2samp(data1, data2)
         results['ks_statistic'] = float(ks_stat)
@@ -328,7 +351,9 @@ def compare_two_distributions(name1: str, data1: np.ndarray,
     except:
         pass
     
-    # Levene's test (tests if variances are equal)
+    # Levene's test: Tests if two distributions have equal variances.
+    # More robust than Bartlett's test. Recommended for non-normal data.
+    # Uses absolute deviations from the mean.
     try:
         levene_stat, levene_pval = stats.levene(data1, data2)
         results['levene_statistic'] = float(levene_stat)
@@ -337,7 +362,9 @@ def compare_two_distributions(name1: str, data1: np.ndarray,
     except:
         pass
     
-    # Fligner-Killeen test (alternative variance test)
+    # Fligner-Killeen test: Non-parametric test for equal variances.
+    # Less sensitive to outliers than Levene's. Better for severely non-normal distributions.
+    # Uses ranks instead of actual values.
     try:
         fk_stat, fk_pval = stats.fligner(data1, data2)
         results['fligner_statistic'] = float(fk_stat)
@@ -346,16 +373,10 @@ def compare_two_distributions(name1: str, data1: np.ndarray,
     except:
         pass
     
-    # Mood's median test
-    try:
-        med_stat, med_pval, med_med, med_cont = stats.median_test(data1, data2)
-        results['mood_median_statistic'] = float(med_stat)
-        results['mood_median_pvalue'] = float(med_pval)
-        results['mood_median_significant'] = med_pval < 0.05
-    except:
-        pass
-    
-    # Brunner-Munzel test (alternative to Mann-Whitney)
+
+    # Brunner-Munzel test: Non-parametric test for stochastic dominance.
+    # More robust than Mann-Whitney when variances are unequal.
+    # Tests if one distribution tends to have larger values than the other.
     try:
         bm_stat, bm_pval = stats.brunnermunzel(data1, data2)
         results['brunner_munzel_statistic'] = float(bm_stat)
@@ -365,6 +386,191 @@ def compare_two_distributions(name1: str, data1: np.ndarray,
         pass
     
     return results
+
+
+def plot_distribution(name: str, data: np.ndarray, analysis: Dict, 
+                     metric_name: str, output_dir: str) -> str:
+    """
+    Plot histogram with the best-fit distribution curve.
+    
+    Args:
+        name: Name of the test type
+        data: Array of numerical data
+        analysis: Analysis dictionary containing fit information
+        metric_name: Name of the metric (Time or Distance)
+        output_dir: Directory to save the plot
+        
+    Returns:
+        Path to the saved figure
+    """
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    # Plot histogram
+    ax.hist(data, bins=20, density=True, alpha=0.7, color='steelblue', edgecolor='black')
+    
+    # Plot only the best-fit distribution
+    dist_map = {
+        'normal': norm,
+        'exponential': expon,
+        'lognormal': lognorm,
+        'gamma': gamma,
+        'weibull': weibull_min,
+        'poisson': poisson,
+    }
+    
+    best_dist_name = analysis['best_fit_distribution']
+    if best_dist_name in dist_map:
+        fit_info = analysis['distribution_fits'].get(best_dist_name, {})
+        params = fit_info.get('parameters')
+        
+        if params is not None:
+            dist = dist_map[best_dist_name]
+            try:
+                # Generate appropriate x range for this distribution
+                x_min = max(data.min() * 0.95, 0) if best_dist_name in ['exponential', 'gamma', 'weibull', 'lognormal', 'poisson'] else data.min() * 0.95
+                x_max = data.max() * 1.05
+                
+                # Handle discrete (poisson) vs continuous distributions
+                if best_dist_name == 'poisson':
+                    # For poisson, use integer x values and PMF
+                    x = np.arange(int(x_min), int(x_max) + 1)
+                    y = dist.pmf(x, *params)
+                    ax.plot(x, y, 'ro-', linewidth=2, markersize=4, label=f'{best_dist_name} fit')
+                else:
+                    # For continuous distributions, use PDF
+                    x = np.linspace(x_min, x_max, 200)
+                    y = dist.pdf(x, *params)
+                    ax.plot(x, y, color='red', linewidth=2.5, label=f'{best_dist_name} fit')
+            except Exception as e:
+                print(f"Warning: Could not plot {best_dist_name} for {name}: {e}", file=sys.stderr)
+    
+    ax.set_xlabel(metric_name)
+    ax.set_ylabel('Density')
+    ax.set_title(f'{metric_name} Distribution: {name}\n(Best fit: {analysis["best_fit_distribution"]})')
+    ax.legend(fontsize=11)
+    ax.grid(True, alpha=0.3)
+    
+    # Save figure
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, f"distribution_{name}_{metric_name.lower().replace(' ', '_')}.png")
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    return output_path
+
+
+def plot_comparison(name1: str, data1: np.ndarray, analysis1: Dict, 
+                   name2: str, data2: np.ndarray, analysis2: Dict,
+                   metric_name: str, output_dir: str) -> str:
+    """
+    Create comparison plots overlaying best-fit distributions of two test types.
+    
+    Args:
+        name1: Name of first test type
+        data1: Data from first test type
+        analysis1: Analysis dictionary for first test type
+        name2: Name of second test type
+        data2: Data from second test type
+        analysis2: Analysis dictionary for second test type
+        metric_name: Name of the metric (Time or Distance)
+        output_dir: Directory to save the plot
+        
+    Returns:
+        Path to the saved figure
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    
+    # Plot 1: Overlaid histograms with fitted distributions
+    ax = axes[0]
+    ax.hist(data1, bins=15, alpha=0.5, color='steelblue', edgecolor='black', density=True)
+    ax.hist(data2, bins=15, alpha=0.5, color='orange', edgecolor='black', density=True)
+    
+    # Plot best-fit distributions for both test types
+    dist_map = {
+        'normal': norm,
+        'exponential': expon,
+        'lognormal': lognorm,
+        'gamma': gamma,
+        'weibull': weibull_min,
+        'poisson': poisson,
+    }
+    
+    # Plot distribution 1
+    dist1_name = analysis1['best_fit_distribution']
+    if dist1_name in dist_map:
+        fit_info1 = analysis1['distribution_fits'].get(dist1_name, {})
+        params1 = fit_info1.get('parameters')
+        if params1 is not None:
+            try:
+                # Generate appropriate x range for this distribution
+                x1_min = max(data1.min() * 0.95, 0) if dist1_name in ['exponential', 'gamma', 'weibull', 'lognormal', 'poisson'] else data1.min() * 0.95
+                x1_max = data1.max() * 1.05
+                
+                # Handle discrete (poisson) vs continuous distributions
+                if dist1_name == 'poisson':
+                    x1 = np.arange(int(x1_min), int(x1_max) + 1)
+                    y1 = dist_map[dist1_name].pmf(x1, *params1)
+                    ax.plot(x1, y1, 'o-', color='darkblue', linewidth=2, markersize=4, label=f'{name1} ({dist1_name})')
+                else:
+                    x1 = np.linspace(x1_min, x1_max, 200)
+                    y1 = dist_map[dist1_name].pdf(x1, *params1)
+                    ax.plot(x1, y1, color='darkblue', linewidth=2.5, label=f'{name1} ({dist1_name})')
+            except Exception as e:
+                print(f"Warning: Could not plot {dist1_name} for {name1}: {e}", file=sys.stderr)
+    
+    # Plot distribution 2
+    dist2_name = analysis2['best_fit_distribution']
+    if dist2_name in dist_map:
+        fit_info2 = analysis2['distribution_fits'].get(dist2_name, {})
+        params2 = fit_info2.get('parameters')
+        if params2 is not None:
+            try:
+                # Generate appropriate x range for this distribution
+                x2_min = max(data2.min() * 0.95, 0) if dist2_name in ['exponential', 'gamma', 'weibull', 'lognormal', 'poisson'] else data2.min() * 0.95
+                x2_max = data2.max() * 1.05
+                
+                # Handle discrete (poisson) vs continuous distributions
+                if dist2_name == 'poisson':
+                    x2 = np.arange(int(x2_min), int(x2_max) + 1)
+                    y2 = dist_map[dist2_name].pmf(x2, *params2)
+                    ax.plot(x2, y2, 'o-', color='darkorange', linewidth=2, markersize=4, label=f'{name2} ({dist2_name})')
+                else:
+                    x2 = np.linspace(x2_min, x2_max, 200)
+                    y2 = dist_map[dist2_name].pdf(x2, *params2)
+                    ax.plot(x2, y2, color='darkorange', linewidth=2.5, label=f'{name2} ({dist2_name})')
+            except Exception as e:
+                print(f"Warning: Could not plot {dist2_name} for {name2}: {e}", file=sys.stderr)
+    
+    ax.set_xlabel(metric_name)
+    ax.set_ylabel('Density')
+    ax.set_title('Overlaid Distributions with Fits')
+    ax.legend(fontsize=10)
+    ax.grid(True, alpha=0.3)
+    
+    # Plot 2: Box plots for comparison
+    ax = axes[1]
+    box_data = [data1, data2]
+    bp = ax.boxplot(box_data, labels=[name1, name2], patch_artist=True)
+    
+    # Color the boxes
+    colors = ['steelblue', 'orange']
+    for patch, color in zip(bp['boxes'], colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.7)
+    
+    ax.set_ylabel(metric_name)
+    ax.set_title('Summary Statistics')
+    ax.grid(True, alpha=0.3, axis='y')
+    
+    # Save figure
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, f"comparison_{name1}_vs_{name2}_{metric_name.lower().replace(' ', '_')}.png")
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    return output_path
 
 
 def print_distribution_analysis(name: str, analysis: Dict, metric_name: str):
@@ -388,10 +594,16 @@ def print_distribution_analysis(name: str, analysis: Dict, metric_name: str):
     print(f"Skewness: {analysis['skewness']:.4f}")
     print(f"Kurtosis: {analysis['kurtosis']:.4f}")
     
-    if analysis.get('is_normal'):
+    if analysis.get('shapiro_normal'):
         print(f"Shapiro-Wilk p-value: {analysis['shapiro_pvalue']:.4f} (Normal)")
     else:
         print(f"Shapiro-Wilk p-value: {analysis['shapiro_pvalue']:.4f} (Not Normal)")
+    
+    if 'jarque_bera_pvalue' in analysis:
+        if analysis['jarque_bera_normal']:
+            print(f"Jarque-Bera p-value: {analysis['jarque_bera_pvalue']:.4f} (Normal)")
+        else:
+            print(f"Jarque-Bera p-value: {analysis['jarque_bera_pvalue']:.4f} (Not Normal)")
     
     print(f"\nBest fit distribution: {analysis['best_fit_distribution']}")
     
@@ -445,10 +657,7 @@ def print_comparison_results(comparison: Dict, metric_name: str):
         sig = "SIGNIFICANT" if comparison['fligner_significant'] else "NOT SIGNIFICANT"
         print(f"  Fligner-Killeen variance test: p = {comparison['fligner_pvalue']:.4f} ({sig})")
     
-    if 'mood_median_pvalue' in comparison:
-        sig = "SIGNIFICANT" if comparison['mood_median_significant'] else "NOT SIGNIFICANT"
-        print(f"  Mood's median test: p = {comparison['mood_median_pvalue']:.4f} ({sig})")
-    
+
     if 'brunner_munzel_pvalue' in comparison:
         sig = "SIGNIFICANT" if comparison['brunner_munzel_significant'] else "NOT SIGNIFICANT"
         print(f"  Brunner-Munzel test: p = {comparison['brunner_munzel_pvalue']:.4f} ({sig})")
@@ -578,6 +787,15 @@ Examples:
             )
             save_comparison_to_csv(comparison, output_csv)
             print(f"\nResults saved to {output_csv}")
+            
+            # Generate plots
+            plot1_path = plot_distribution(test1_name, data1, analysis1, metric_label, args.output_dir)
+            plot2_path = plot_distribution(test2_name, data2, analysis2, metric_label, args.output_dir)
+            comp_plot_path = plot_comparison(test1_name, data1, analysis1, test2_name, data2, analysis2, metric_label, args.output_dir)
+            
+            print(f"Distribution plot for {test1_name}: {plot1_path}")
+            print(f"Distribution plot for {test2_name}: {plot2_path}")
+            print(f"Comparison plot: {comp_plot_path}")
 
 
 if __name__ == '__main__':
