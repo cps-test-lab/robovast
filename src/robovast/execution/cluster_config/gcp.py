@@ -85,7 +85,7 @@ spec:
       volumeClaimTemplate:
         spec:
           accessModes: [ "ReadWriteOnce" ]
-          storageClassName: "standard-rwo"
+          storageClassName: "robovast-storage"
           resources:
             requests:
               storage: {storage_size}
@@ -174,8 +174,10 @@ class GcpClusterConfig(BaseConfig):
             output_dir (str): Directory where setup files will be written
             storage_size (str): Size of the persistent volume (default: "10Gi")
             disk_type (str): GCP PD type for StorageClass (default: "pd-standard")
-            **kwargs: Cluster-specific options (ignored)
+            **kwargs: Cluster-specific options (e.g. namespace)
         """
+        storage_size = kwargs.get("storage_size", storage_size)
+        disk_type = kwargs.get("disk_type", disk_type)
         with open(f"{output_dir}/robovast-manifest.yaml", "w") as f:
             f.write(MINIO_MANIFEST_GCP.format(storage_size=storage_size, disk_type=disk_type))
 

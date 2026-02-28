@@ -9,7 +9,7 @@ metadata:
     run-id: $RUN_ID
 spec:
   backoffLimit: 0
-  ttlSecondsAfterFinished: 10
+  ttlSecondsAfterFinished: 3
   # activeDeadlineSeconds: 10000000
   template:
     metadata:
