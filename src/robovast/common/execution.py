@@ -274,9 +274,6 @@ def prepare_run_configs(out_dir, run_data, cluster=False):
     collect_sysinfo_dst = os.path.join(out_dir, "collect_sysinfo.py")
     shutil.copy2(collect_sysinfo_src, collect_sysinfo_dst)
 
-    # Copy vast file to the out directory
-    shutil.copy2(run_data["vast"], out_dir)
-
     run_config_dir = os.path.join(out_dir, "_config")
     os.makedirs(run_config_dir, exist_ok=True)
 
