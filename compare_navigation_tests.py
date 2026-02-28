@@ -61,15 +61,17 @@ def extract_pose_metrics(poses_csv_path: str) -> Optional[Tuple[float, float]]:
 
 def extract_localization_error_metrics(localization_error_csv_path: str) -> Optional[Tuple[float, float]]:
     """
-    Extract mean and variance of localization covariance from a localization_error.csv file.
-    
-    Uses combined positional uncertainty: sqrt(covariance.x_x + covariance.y_y)
+    Extract mean and variance of localization error from a localization_error.csv file.
+
+    Supports two formats:
+    - New format: uses ``error_distance_meters`` (estimated pose vs ground truth)
+    - Legacy format: computes ``sqrt(covariance.x_x + covariance.y_y)``
     
     Args:
         localization_error_csv_path: Path to the localization_error.csv file
         
     Returns:
-        Tuple of (mean_covariance, variance_covariance) or None if file is invalid
+        Tuple of (mean_error, variance_error) or None if file is invalid
     """
     try:
         df = pd.read_csv(localization_error_csv_path)
@@ -77,15 +79,26 @@ def extract_localization_error_metrics(localization_error_csv_path: str) -> Opti
         if len(df) < 1:
             return None
         
-        # Compute combined positional uncertainty (standard deviation from variance)
-        # covariance.x_x and covariance.y_y are variances, so we sum them and take sqrt
-        positional_std = np.sqrt(df['covariance.x_x'] + df['covariance.y_y'])
+        if 'error_distance_meters' in df.columns:
+            metric_series = df['error_distance_meters']
+        elif 'covariance.x_x' in df.columns and 'covariance.y_y' in df.columns:
+            metric_series = np.sqrt(df['covariance.x_x'] + df['covariance.y_y'])
+        else:
+            missing_cols = [
+                col for col in ['error_distance_meters', 'covariance.x_x', 'covariance.y_y']
+                if col not in df.columns
+            ]
+            print(
+                f"Error processing {localization_error_csv_path}: missing required columns ({', '.join(missing_cols)})",
+                file=sys.stderr,
+            )
+            return None
+
+        # Calculate mean and variance of localization metric
+        mean_err = float(metric_series.mean())
+        var_err = float(metric_series.var())
         
-        # Calculate mean and variance of this uncertainty across the run
-        mean_cov = float(positional_std.mean())
-        var_cov = float(positional_std.var())
-        
-        return mean_cov, var_cov
+        return mean_err, var_err
     except Exception as e:
         print(f"Error processing {localization_error_csv_path}: {e}", file=sys.stderr)
         return None

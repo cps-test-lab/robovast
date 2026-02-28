@@ -15,7 +15,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Extract localization error (covariance) data from ROS2 rosbags."""
+"""Extract localization error (estimated vs ground truth) from ROS2 rosbags."""
 import argparse
 import csv
 import math
@@ -23,6 +23,7 @@ import os
 import sys
 import time
 from multiprocessing import Pool, cpu_count
+from collections import defaultdict
 
 import rosbag2_py
 from rclpy.serialization import deserialize_message
@@ -30,30 +31,57 @@ from rosbags_common import find_rosbags, write_provenance_entry
 from rosidl_runtime_py.utilities import get_message
 
 
-def quat_to_rpy(x, y, z, w):
-    """Convert quaternion (x, y, z, w) to roll, pitch, yaw in radians."""
-    roll = math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y))
-    pitch = math.asin(2 * (w * y - z * x))
-    yaw = math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
-    return roll, pitch, yaw
-
-
 def process_rosbag_wrapper(args):
     """Wrapper function for multiprocessing that unpacks arguments."""
-    bag_path, topic, csv_filename = args
-    return process_rosbag(bag_path, topic, csv_filename)
+    bag_path, amcl_topic, gt_topic, csv_filename = args
+    return process_rosbag(bag_path, amcl_topic, gt_topic, csv_filename)
 
 
-def process_rosbag(bag_path, topic, csv_filename):
-    """Process a single rosbag and extract localization error data to CSV."""
+def find_nearest_pose(poses_dict, timestamp, max_time_diff=0.5):
+    """
+    Find the ground truth pose nearest to the given timestamp.
+    
+    Args:
+        poses_dict: Dictionary mapping timestamps to poses
+        timestamp: Target timestamp
+        max_time_diff: Maximum allowed time difference in seconds
+        
+    Returns:
+        Pose (x, y) tuple or None if no close match found
+    """
+    timestamps = sorted(poses_dict.keys())
+    
+    # Find the closest timestamp
+    closest_idx = None
+    min_diff = float('inf')
+    
+    for i, ts in enumerate(timestamps):
+        diff = abs(float(ts) - float(timestamp))
+        if diff < min_diff:
+            min_diff = diff
+            closest_idx = i
+    
+    if closest_idx is not None and min_diff <= max_time_diff:
+        closest_ts = timestamps[closest_idx]
+        return poses_dict[closest_ts]
+    
+    return None
+
+
+def process_rosbag(bag_path, amcl_topic, gt_topic, csv_filename):
+    """Process a single rosbag and extract localization error (AMCL vs ground truth)."""
     try:
         reader = rosbag2_py.SequentialReader()
-        reader.open(
-            rosbag2_py.StorageOptions(uri=bag_path, storage_id="mcap"),
-            rosbag2_py.ConverterOptions(
-                input_serialization_format="cdr", output_serialization_format="cdr"
-            ),
-        )
+        try:
+            reader.open(
+                rosbag2_py.StorageOptions(uri=bag_path, storage_id="mcap"),
+                rosbag2_py.ConverterOptions(
+                    input_serialization_format="cdr", output_serialization_format="cdr"
+                ),
+            )
+        except Exception as e:
+            print(f"✗ {bag_path}: Skipped (cannot open rosbag: {e})")
+            return 0
 
         topic_types = reader.get_all_topics_and_types()
 
@@ -63,91 +91,100 @@ def process_rosbag(bag_path, topic, csv_filename):
                     return topic_type.type
             raise ValueError(f"topic {topic_name} not in bag")
 
-        # Check if topic exists
+        # Check if both topics exist
         try:
-            msg_type_name = typename(topic)
+            amcl_type_name = typename(amcl_topic)
+            gt_type_name = typename(gt_topic)
         except ValueError as e:
             print(f"✗ {bag_path}: {e}")
             return 0
 
-        msg_type = get_message(msg_type_name)
+        amcl_type = get_message(amcl_type_name)
+        gt_type = get_message(gt_type_name)
+        
+        # First pass: collect all poses
+        amcl_poses = {}  # timestamp -> (x, y)
+        gt_poses = {}    # timestamp -> (x, y)
+        
+        reader = rosbag2_py.SequentialReader()
+        try:
+            reader.open(
+                rosbag2_py.StorageOptions(uri=bag_path, storage_id="mcap"),
+                rosbag2_py.ConverterOptions(
+                    input_serialization_format="cdr", output_serialization_format="cdr"
+                ),
+            )
+        except Exception as e:
+            print(f"✗ {bag_path}: Skipped during read pass (cannot open rosbag: {e})")
+            return 0
+        
+        while reader.has_next():
+            topic_name, data, timestamp = reader.read_next()
+            ts_sec = timestamp / 1000000000.0  # Convert nanoseconds to seconds
+            
+            if topic_name == amcl_topic:
+                msg = deserialize_message(data, amcl_type)
+                pose = msg.pose.pose
+                amcl_poses[ts_sec] = (pose.position.x, pose.position.y)
+            elif topic_name == gt_topic:
+                msg = deserialize_message(data, gt_type)
+                pose = msg.pose.pose
+                gt_poses[ts_sec] = (pose.position.x, pose.position.y)
+        
+        if not amcl_poses:
+            print(f"✗ {bag_path}: No AMCL poses found")
+            return 0
+        
+        if not gt_poses:
+            print(f"✗ {bag_path}: No ground truth poses found")
+            return 0
+        
+        # Compute errors for each AMCL pose matched with nearest ground truth
+        fieldnames = ['timestamp', 'error_x_meters', 'error_y_meters', 'error_distance_meters']
         record_count = 0
-
-        # Covariance matrix is 6x6 (36 values) for [x, y, z, roll, pitch, yaw]
-        # We'll extract the diagonal values (variance) and some key correlations
-        fieldnames = [
-            'timestamp',
-            'position.x', 'position.y', 'position.z',
-            'orientation.roll', 'orientation.pitch', 'orientation.yaw',
-            'covariance.x_x', 'covariance.y_y', 'covariance.z_z',
-            'covariance.roll_roll', 'covariance.pitch_pitch', 'covariance.yaw_yaw',
-            'covariance.x_y', 'covariance.x_yaw', 'covariance.y_yaw'
-        ]
-
+        
         csv_file_path = os.path.join(os.path.dirname(bag_path), csv_filename)
-
+        
         with open(csv_file_path, 'w', newline='') as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
-
-            while reader.has_next():
-                topic_name, data, timestamp = reader.read_next()
-
-                if topic_name != topic:
-                    continue
-
-                msg = deserialize_message(data, msg_type)
-
-                # Extract pose
-                pose = msg.pose.pose
-                position = pose.position
-                orientation = pose.orientation
-
-                # Convert quaternion to roll, pitch, yaw
-                roll, pitch, yaw = quat_to_rpy(
-                    orientation.x, orientation.y, orientation.z, orientation.w
-                )
-
-                # Extract covariance matrix (6x6 = 36 values)
-                # Row-major order: [x, y, z, roll, pitch, yaw]
-                cov = msg.pose.covariance
+            
+            for amcl_ts in sorted(amcl_poses.keys()):
+                amcl_x, amcl_y = amcl_poses[amcl_ts]
                 
-                writer.writerow({
-                    'timestamp': timestamp / 1000000000.0,
-                    'position.x': position.x,
-                    'position.y': position.y,
-                    'position.z': position.z,
-                    'orientation.roll': roll,
-                    'orientation.pitch': pitch,
-                    'orientation.yaw': yaw,
-                    # Diagonal elements (variances)
-                    'covariance.x_x': cov[0],      # [0,0]
-                    'covariance.y_y': cov[7],      # [1,1]
-                    'covariance.z_z': cov[14],     # [2,2]
-                    'covariance.roll_roll': cov[21],  # [3,3]
-                    'covariance.pitch_pitch': cov[28], # [4,4]
-                    'covariance.yaw_yaw': cov[35], # [5,5]
-                    # Key off-diagonal elements (covariances)
-                    'covariance.x_y': cov[1],      # [0,1]
-                    'covariance.x_yaw': cov[5],    # [0,5]
-                    'covariance.y_yaw': cov[11],   # [1,5]
-                })
-                record_count += 1
-
+                # Find nearest ground truth pose
+                gt_pose = find_nearest_pose(gt_poses, amcl_ts, max_time_diff=0.5)
+                
+                if gt_pose is not None:
+                    gt_x, gt_y = gt_pose
+                    
+                    # Calculate error (estimated - ground truth)
+                    error_x = amcl_x - gt_x
+                    error_y = amcl_y - gt_y
+                    error_distance = math.sqrt(error_x**2 + error_y**2)
+                    
+                    writer.writerow({
+                        'timestamp': amcl_ts,
+                        'error_x_meters': error_x,
+                        'error_y_meters': error_y,
+                        'error_distance_meters': error_distance,
+                    })
+                    record_count += 1
+        
         if record_count > 0:
             print(f"✓ {csv_file_path}: {record_count} localization error records")
             return record_count
         else:
-            print(f"✗ {bag_path}: No localization error records found")
+            print(f"✗ {bag_path}: No error records generated (mismatched timestamps?)")
             return 0
 
     except Exception as e:
-        # Suppress verbose traceback for common errors like missing/corrupt rosbags
+        # Suppress verbose traceback for common errors
         error_msg = str(e)
         if "No storage could be initialized" in error_msg or "Could not open" in error_msg:
             print(f"✗ {bag_path}: Skipped (no valid rosbag data)")
-        else:
-            print(f"✗ {bag_path}: Error - {error_msg}")
+            return 0
+        print(f"✗ {bag_path}: Error - {error_msg}")
         return -2
 
 
@@ -160,10 +197,16 @@ def main():
         help=f"Number of parallel workers (default: {cpu_count()})"
     )
     parser.add_argument(
-        "--topic",
+        "--amcl-topic",
         type=str,
         default="/amcl_pose",
-        help="Topic containing PoseWithCovarianceStamped messages (default: /amcl_pose)"
+        help="Topic containing AMCL pose (PoseWithCovarianceStamped messages, default: /amcl_pose)"
+    )
+    parser.add_argument(
+        "--gt-topic",
+        type=str,
+        default="/ground_truth_odom",
+        help="Topic containing ground truth odometry (Odometry messages, default: /ground_truth_odom)"
     )
     parser.add_argument(
         "input",
@@ -194,7 +237,7 @@ def main():
 
     # Process rosbags in parallel
     start_time = time.time()
-    pool_args = [(bag_path, args.topic, args.csv_filename) for bag_path in rosbag_paths]
+    pool_args = [(bag_path, args.amcl_topic, args.gt_topic, args.csv_filename) for bag_path in rosbag_paths]
 
     if args.workers > 1 and len(rosbag_paths) > 1:
         with Pool(processes=args.workers) as pool:
@@ -229,12 +272,12 @@ def main():
                     output_rel=csv_rel,
                     sources_rel=[bag_rel],
                     plugin_name="rosbags_localization_error_to_csv",
-                    params={"topic": args.topic, "csv_filename": args.csv_filename},
+                    params={"amcl_topic": args.amcl_topic, "gt_topic": args.gt_topic, "csv_filename": args.csv_filename},
                 )
 
-    # Return success if at least one rosbag was processed successfully
-    # Only fail if ALL rosbags failed or none were found
-    return 0 if success_count > 0 else 1
+    # Return success for postprocessing even when all rosbags are skipped.
+    # Failed or incomplete runs may legitimately have missing/corrupted bag data.
+    return 0
 
 
 if __name__ == "__main__":

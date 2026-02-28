@@ -222,23 +222,24 @@ def rosbags_bt_to_csv(
 def rosbags_localization_error_to_csv(
     results_dir: str,
     config_dir: str,
-    topic: Optional[str] = None,
+    amcl_topic: Optional[str] = None,
+    gt_topic: Optional[str] = None,
     provenance_file: Optional[str] = None,
 ) -> Tuple[bool, str]:
-    """Extract localization error (covariance) data from rosbags to CSV format.
+    """Extract localization error (estimated vs ground truth) data from rosbags to CSV format.
 
-    Extracts pose and covariance data from PoseWithCovarianceStamped messages
-    in ROS bag files and converts them to CSV format. Useful for analyzing
-    localization uncertainty, AMCL performance, and pose estimation quality.
-    The output includes pose (position and orientation) and key covariance
-    values (diagonal elements for x, y, z, roll, pitch, yaw and some
-    off-diagonal correlations).
+    Extracts AMCL estimated poses and ground truth odometry poses from ROS bag files,
+    compares them by timestamp, and converts the localization errors to CSV format.
+    Useful for analyzing localization accuracy, AMCL performance, and pose estimation error.
+    The output includes timestamp, error components (x, y), and total error distance.
 
     Args:
         results_dir: Path to the run-<id> directory to process
         config_dir: Directory containing the config file (for resolving relative paths)
-        topic: Optional topic name containing PoseWithCovarianceStamped messages
-               (default: /amcl_pose)
+        amcl_topic: Optional topic name containing AMCL pose (PoseWithCovarianceStamped)
+                   (default: /amcl_pose)
+        gt_topic: Optional topic name containing ground truth odometry (Odometry)
+                 (default: /ground_truth_odom)
 
     Returns:
         Tuple of (success, message)
@@ -247,7 +248,8 @@ def rosbags_localization_error_to_csv(
         postprocessing:
           - rosbags_localization_error_to_csv
           - rosbags_localization_error_to_csv:
-              topic: /amcl_pose
+              amcl_topic: /amcl_pose
+              gt_topic: /ground_truth_odom
     """
     # Get docker_exec.sh from package data
     script_path = str(files('robovast.common.data').joinpath('docker_exec.sh'))
@@ -258,8 +260,10 @@ def rosbags_localization_error_to_csv(
     cmd.append("rosbags_localization_error_to_csv.py")
     if provenance_file:
         cmd.extend(["--provenance-file", f"/provenance/{os.path.basename(provenance_file)}"])
-    if topic:
-        cmd.extend(["--topic", topic])
+    if amcl_topic:
+        cmd.extend(["--amcl-topic", amcl_topic])
+    if gt_topic:
+        cmd.extend(["--gt-topic", gt_topic])
     cmd.append(results_dir)
 
     try:
@@ -275,7 +279,7 @@ def rosbags_localization_error_to_csv(
         if result.returncode != 0:
             return False, f"rosbags_localization_error_to_csv failed with exit code {result.returncode}\n{result.stderr}"
 
-        return True, "Localization error data converted to CSV successfully"
+        return True, "Localization error data (estimated vs ground truth) converted to CSV successfully"
 
     except Exception as e:
         return False, f"Error executing rosbags_localization_error_to_csv: {e}"
