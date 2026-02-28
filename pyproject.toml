@@ -52,7 +52,6 @@ execution = "robovast.execution.execution_utils.cli:execution"
 analysis = "robovast.analysis.result_analyzer.cli:analysis"
 
 [tool.poetry.plugins."robovast.cluster_configs"]
-minimal_s3 = "robovast.execution.cluster_config.minimal_s3:MinimalS3ClusterConfig"
 minikube = "robovast.execution.cluster_config.minikube:MinikubeClusterConfig"
 rke2 = "robovast.execution.cluster_config.rke2:Rke2ClusterConfig"
 gcp = "robovast.execution.cluster_config.gcp:GcpClusterConfig"

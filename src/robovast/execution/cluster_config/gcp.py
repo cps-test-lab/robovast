@@ -64,15 +64,25 @@ spec:
         port: 9000
       initialDelaySeconds: 10
       periodSeconds: 5
+  - name: http-server
+    image: nginx:alpine
+    ports:
+      - name: http
+        containerPort: 80
+    volumeMounts:
+      - mountPath: /usr/share/nginx/html
+        name: minio-storage
+        readOnly: true
   volumes:
   - name: minio-storage
-    volumeClaimTemplate:
-      spec:
-        accessModes: [ "ReadWriteOnce" ]
-        storageClassName: "robovast-storage"
-        resources:
-          requests:
-            storage: {storage_size}
+    ephemeral:
+      volumeClaimTemplate:
+        spec:
+          accessModes: [ "ReadWriteOnce" ]
+          storageClassName: "standard-rwo"
+          resources:
+            requests:
+              storage: {storage_size}
 ---
 apiVersion: v1
 kind: Service
@@ -86,6 +96,10 @@ spec:
   - name: console
     port: 9001
     targetPort: 9001
+  - name: http
+    port: 9998
+    targetPort: 80
+    protocol: TCP
   selector:
     role: robovast
 """
