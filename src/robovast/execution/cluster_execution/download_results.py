@@ -43,6 +43,15 @@ def _format_size(n):
     return f"{n / 1024 / 1024:.1f} MiB"
 
 
+def _format_rate(bytes_per_sec):
+    """Format bytes/sec as human-readable string."""
+    if bytes_per_sec >= 1024 * 1024:
+        return f"{bytes_per_sec / 1024 / 1024:.1f} MiB/s"
+    if bytes_per_sec >= 1024:
+        return f"{bytes_per_sec / 1024:.1f} KiB/s"
+    return f"{bytes_per_sec:.0f} B/s"
+
+
 class ResultDownloader:
     def __init__(self, namespace="default", cluster_config=None):
         self.namespace = namespace
@@ -354,12 +363,15 @@ class ResultDownloader:
 
                 last_pct = [-1]  # mutable to allow update in loop
                 last_size_shown = [-1]  # throttle when total_size unknown
+                start_time = time.time()
 
                 def _show_progress():
+                    elapsed = time.time() - start_time
+                    rate = (downloaded / elapsed) if elapsed > 0 else 0
                     if verbose:
                         if total_size > 0:
                             pct = (downloaded / total_size) * 100
-                            logger.info(f"Progress: {pct:.1f}% ({downloaded}/{total_size} bytes)")
+                            logger.info(f"Progress: {pct:.1f}% ({downloaded}/{total_size} bytes) {_format_rate(rate)}")
                     else:
                         # Single-line progress bar (cluster monitor style)
                         if total_size > 0:
@@ -367,7 +379,8 @@ class ResultDownloader:
                             filled = int(BAR_WIDTH * downloaded / total_size)
                             progress_bar = "█" * filled + "░" * (BAR_WIDTH - filled)
                             size_str = f"{_format_size(downloaded)}/{_format_size(total_size)}"
-                            line = f"{run_id}  [{progress_bar}]  {pct:5.1f}%  {size_str}"
+                            rate_str = _format_rate(rate)
+                            line = f"{run_id}  [{progress_bar}]  {pct:5.1f}%  {size_str}  {rate_str}"
                             # Throttle: update only when pct changes by >= 1
                             if int(pct) > last_pct[0]:
                                 last_pct[0] = int(pct)
@@ -378,7 +391,7 @@ class ResultDownloader:
                             if last_size_shown[0] < 0 or downloaded - last_size_shown[0] >= 1024 * 1024:
                                 last_size_shown[0] = downloaded
                                 size_str = _format_size(downloaded)
-                                sys.stdout.write("\r" + CLEAR_LINE + f"{run_id}  downloading...  {size_str}")
+                                sys.stdout.write("\r" + CLEAR_LINE + f"{run_id}  downloading...  {size_str}  {_format_rate(rate)}")
                                 sys.stdout.flush()
 
                 with open(local_archive_path, file_mode) as f:
@@ -390,13 +403,15 @@ class ResultDownloader:
 
                 if not verbose:
                     # Final update and newline when done
+                    elapsed = time.time() - start_time
+                    rate = (downloaded / elapsed) if elapsed > 0 else 0
                     if total_size > 0:
                         filled = BAR_WIDTH
                         progress_bar = "█" * filled + "░" * 0
                         size_str = f"{_format_size(total_size)}/{_format_size(total_size)}"
-                        sys.stdout.write("\r" + CLEAR_LINE + f"{run_id}  [{progress_bar}]  100.0%  {size_str}\n")
+                        sys.stdout.write("\r" + CLEAR_LINE + f"{run_id}  [{progress_bar}]  100.0%  {size_str}  {_format_rate(rate)}\n")
                     else:
-                        sys.stdout.write("\r" + CLEAR_LINE + f"{run_id}  downloaded  {_format_size(downloaded)}\n")
+                        sys.stdout.write("\r" + CLEAR_LINE + f"{run_id}  downloaded  {_format_size(downloaded)}  {_format_rate(rate)}\n")
                     sys.stdout.flush()
 
             # Validate the downloaded archive
