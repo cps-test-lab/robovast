@@ -143,8 +143,36 @@ This will:
 - Validate decomposition of complex navigation tasks
 
 **Sum methods:**
-- `--sum-method pairwise` (default): Sums corresponding samples (requires equal sample sizes)
-- `--sum-method monte_carlo`: Randomly samples from each distribution and sums (handles unequal sizes)
+
+The variance of the summed distribution depends on how you combine the samples. If variances don't match expected values, try different methods:
+
+- `--sum-method pairwise` (default): Sums by index (run0_top + run0_bottom, etc.)
+  - **Variance**: Smaller (introduces correlation)
+  - **Use when**: Runs are sequential/paired from same experiment
+  - **Issue**: Artificial correlation reduces variance compared to theory
+  
+- `--sum-method convolution`: All pairs (Cartesian product: every run1 × every run2)
+  - **Variance**: Larger (assumes complete independence)
+  - **Sample count**: n1 × n2 combinations
+  - **Use when**: You want to explore all possible pairings
+  - **Limitation**: Quadratic growth in samples can be slow for large datasets
+  
+- `--sum-method monte_carlo`: Random resampling with replacement
+  - **Sample count**: min(n1, n2) 
+  - **Variance**: Intermediate (depends on randomization)
+  - **Use when**: You want fast computation with moderate sample size
+  
+- `--sum-method bootstrap`: Bootstrap resampling with replacement
+  - **Sample count**: max(n1, n2)
+  - **Variance**: Intermediate (more samples than monte_carlo)
+  - **Use when**: You want larger sample size for better distribution representation
+
+**Example troubleshooting:**
+```bash
+# If pairwise variance is too small, try convolution or bootstrap
+python3 compare_navigation_tests.py --sum test_top test_bottom test_full \
+  --sum-method convolution -m time distance -o results
+```
 
 ### Command Line Options
 
@@ -161,7 +189,13 @@ This will:
                           the result to TARGET distribution
 
 --sum-method              Method for summing distributions:
-                          'pairwise' (default) or 'monte_carlo'
+                          'pairwise': Sum by index (smaller variance, introduces 
+                                      correlation)
+                          'convolution': All pairs/Cartesian product (larger 
+                                        variance, assumes independence)
+                          'monte_carlo': Random resampling (min sample size)
+                          'bootstrap': Bootstrap resampling (max sample size)
+                          Default: pairwise
 
 -m, --metrics             Metrics to compare: time, distance, or both
                           Default: time distance
@@ -203,13 +237,24 @@ run_index,time_seconds
 - `distribution_{test1}+{test2}_{metric}.png`: Distribution plot of the summed data
 - `comparison_{test1}+{test2}_vs_{target}_{metric}.png`: Side-by-side comparison plot
 
-The sum comparison CSV includes additional fields:
+The sum comparison CSV includes additional fields for mean and variance analysis:
+
+**Mean Analysis Fields:**
 - `sum_component_1`, `sum_component_2`: Names of the two test types being summed
 - `mean_component_1`, `mean_component_2`: Individual means of the components
 - `expected_sum_mean`: Theoretical sum of means (mean1 + mean2)
 - `actual_sum_mean`: Actual mean of the summed distribution
 - `mean_difference`: Difference between summed mean and target mean
 - `mean_difference_pct`: Percentage difference
+
+**Variance Analysis Fields:**
+- `var_component_1`, `var_component_2`: Individual variances of the components
+- `expected_sum_var`: Theoretical sum of variances (var1 + var2) assuming independence
+- `actual_sum_var`: Actual variance of the summed distribution
+- `var_difference`: Difference between summed variance and target variance
+- `var_difference_pct`: Percentage difference in variance
+
+These fields help you verify not just that the means add up, but also that the variability (spread) of the combined distribution matches expectations.
 
 Example comparison CSV:
 ```

@@ -731,29 +731,53 @@ def sum_distributions(data1: np.ndarray, data2: np.ndarray,
         data1: First data array
         data2: Second data array
         method: Method for summing distributions:
-                - 'pairwise': Pairwise sum (requires equal sample sizes)
-                - 'monte_carlo': Random sampling and summing (n=min(len(data1), len(data2)))
+                - 'pairwise': Pairwise sum by index (run0+run0, run1+run1, etc.)
+                  Introduces correlation, results in smaller variance.
+                - 'convolution': All pairs (Cartesian product). Each value from data1 
+                  combined with each value from data2. Results in n1*n2 samples.
+                  Assumes independence, larger variance.
+                - 'monte_carlo': Random resampling with replacement (n=min(len(data1), len(data2)))
+                - 'bootstrap': Bootstrap resampling with replacement (n=max(len(data1), len(data2)))
         
     Returns:
         Array of summed values
     """
     if method == 'pairwise':
-        # Pairwise summing - requires equal sample sizes
+        # Pairwise summing by index - introduces correlation
         min_size = min(len(data1), len(data2))
         if len(data1) != len(data2):
             print(f"Warning: Sample sizes differ ({len(data1)} vs {len(data2)}). "
                   f"Using first {min_size} samples from each.", file=sys.stderr)
         return data1[:min_size] + data2[:min_size]
     
+    elif method == 'convolution':
+        # Cartesian product (all pairs) - assumes independence
+        # Creates n1 * n2 samples
+        result = []
+        for val1 in data1:
+            for val2 in data2:
+                result.append(val1 + val2)
+        return np.array(result)
+    
     elif method == 'monte_carlo':
         # Monte Carlo: randomly sample from each distribution and sum
+        # Uses smaller sample size
         n_samples = min(len(data1), len(data2))
         samples1 = np.random.choice(data1, size=n_samples, replace=True)
         samples2 = np.random.choice(data2, size=n_samples, replace=True)
         return samples1 + samples2
     
+    elif method == 'bootstrap':
+        # Bootstrap: resample both distributions independently with replacement
+        # Uses larger sample size for better representation
+        n_samples = max(len(data1), len(data2))
+        samples1 = np.random.choice(data1, size=n_samples, replace=True)
+        samples2 = np.random.choice(data2, size=n_samples, replace=True)
+        return samples1 + samples2
+    
     else:
-        raise ValueError(f"Unknown method: {method}. Use 'pairwise' or 'monte_carlo'")
+        raise ValueError(f"Unknown method: {method}. Use 'pairwise', 'convolution', "
+                        f"'monte_carlo', or 'bootstrap'")
 
 
 def compare_summed_distributions(name1: str, data1: np.ndarray,
@@ -815,6 +839,8 @@ def compare_summed_distributions(name1: str, data1: np.ndarray,
     comparison['sum_component_1'] = name1
     comparison['sum_component_2'] = name2
     comparison['sum_method'] = sum_method
+    
+    # Mean analysis
     comparison['mean_component_1'] = float(np.mean(data1))
     comparison['mean_component_2'] = float(np.mean(data2))
     comparison['expected_sum_mean'] = float(np.mean(data1) + np.mean(data2))
@@ -823,6 +849,23 @@ def compare_summed_distributions(name1: str, data1: np.ndarray,
     comparison['mean_difference_pct'] = float(
         100 * (np.mean(summed_data) - np.mean(data_target)) / np.mean(data_target)
         if np.mean(data_target) != 0 else 0
+    )
+    
+    # Variance analysis
+    var_component_1 = float(np.var(data1))
+    var_component_2 = float(np.var(data2))
+    var_target = float(np.var(data_target))
+    actual_sum_var = float(np.var(summed_data))
+    expected_sum_var = var_component_1 + var_component_2
+    
+    comparison['var_component_1'] = var_component_1
+    comparison['var_component_2'] = var_component_2
+    comparison['expected_sum_var'] = expected_sum_var
+    comparison['actual_sum_var'] = actual_sum_var
+    comparison['var_difference'] = float(actual_sum_var - var_target)
+    comparison['var_difference_pct'] = float(
+        100 * (actual_sum_var - var_target) / var_target
+        if var_target != 0 else 0
     )
     
     if not no_display:
@@ -835,6 +878,15 @@ def compare_summed_distributions(name1: str, data1: np.ndarray,
         print(f"  Target ({name_target}): {comparison['mean_2']:.4f}")
         print(f"  Difference (sum - target): {comparison['mean_difference']:.4f} "
               f"({comparison['mean_difference_pct']:.2f}%)")
+        
+        print(f"\nVariance Comparison:")
+        print(f"  {name1} variance: {comparison['var_component_1']:.4f}")
+        print(f"  {name2} variance: {comparison['var_component_2']:.4f}")
+        print(f"  Expected sum (var1 + var2): {comparison['expected_sum_var']:.4f}")
+        print(f"  Actual sum variance: {comparison['actual_sum_var']:.4f}")
+        print(f"  Target ({name_target}) variance: {var_target:.4f}")
+        print(f"  Difference (sum - target): {comparison['var_difference']:.4f} "
+              f"({comparison['var_difference_pct']:.2f}%)")
     
     # Save comparison results
     os.makedirs(output_dir, exist_ok=True)
@@ -883,7 +935,10 @@ Examples:
   python3 compare_navigation_tests.py -c test_type_1 test_type_2 -m time distance
   
   # Sum two distributions and compare to a target (e.g., top-half + bottom-half vs full-map)
+  # Try different methods if variance doesn't match:
   python3 compare_navigation_tests.py --sum test_top test_bottom test_full -m time distance
+  python3 compare_navigation_tests.py --sum test_top test_bottom test_full --sum-method convolution -m time distance
+  python3 compare_navigation_tests.py --sum test_top test_bottom test_full --sum-method bootstrap -m time distance
         """
     )
     
@@ -893,9 +948,12 @@ Examples:
                        help='Names of two test types to compare (from extracted metrics)')
     parser.add_argument('--sum', nargs=3, metavar=('TEST1', 'TEST2', 'TARGET'),
                        help='Sum TEST1 and TEST2 distributions, compare to TARGET')
-    parser.add_argument('--sum-method', choices=['pairwise', 'monte_carlo'],
+    parser.add_argument('--sum-method', choices=['pairwise', 'convolution', 'monte_carlo', 'bootstrap'],
                        default='pairwise',
-                       help='Method for summing distributions (default: pairwise)')
+                       help='Method for summing distributions. pairwise: by index (smaller variance); '
+                            'convolution: all pairs (larger variance, assumes independence); '
+                            'monte_carlo: random resample (min size); bootstrap: resample (max size) '
+                            '(default: pairwise)')
     parser.add_argument('-m', '--metrics', nargs='+', choices=['time', 'distance'],
                        default=['time', 'distance'],
                        help='Metrics to compare (time, distance, or both)')
