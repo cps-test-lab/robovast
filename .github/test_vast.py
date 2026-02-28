@@ -222,7 +222,7 @@ def test_vast_workflow(vast_file_path, config=None):  # pylint: disable=too-many
             print("✓ vast init executed successfully")
             
             # Check for .robovast_project file (critical for execution step)
-            if not os.path.exists(os.path.join(repo_root, '.robovast_project')):
+            if not os.path.exists(os.path.join(temp_output, '.robovast_project')):
                 print("✗ .robovast_project file not found - execution step will fail")
                 return False
             
@@ -250,7 +250,7 @@ def test_vast_workflow(vast_file_path, config=None):  # pylint: disable=too-many
             print("✓ vast execution local run executed successfully")
             
             # Check output structure
-            if not check_results_dir_structure(os.path.join(repo_root, "results")):
+            if not check_results_dir_structure(os.path.join(temp_output, "results")):
                 return False
             
             print("✓ Output structure is valid")
