@@ -722,6 +722,148 @@ def save_comparison_to_csv(comparison: Dict, output_csv: str):
                 writer.writerow([key, value])
 
 
+def sum_distributions(data1: np.ndarray, data2: np.ndarray, 
+                     method: str = 'pairwise') -> np.ndarray:
+    """
+    Sum two distributions to create a combined distribution.
+    
+    Args:
+        data1: First data array
+        data2: Second data array
+        method: Method for summing distributions:
+                - 'pairwise': Pairwise sum (requires equal sample sizes)
+                - 'monte_carlo': Random sampling and summing (n=min(len(data1), len(data2)))
+        
+    Returns:
+        Array of summed values
+    """
+    if method == 'pairwise':
+        # Pairwise summing - requires equal sample sizes
+        min_size = min(len(data1), len(data2))
+        if len(data1) != len(data2):
+            print(f"Warning: Sample sizes differ ({len(data1)} vs {len(data2)}). "
+                  f"Using first {min_size} samples from each.", file=sys.stderr)
+        return data1[:min_size] + data2[:min_size]
+    
+    elif method == 'monte_carlo':
+        # Monte Carlo: randomly sample from each distribution and sum
+        n_samples = min(len(data1), len(data2))
+        samples1 = np.random.choice(data1, size=n_samples, replace=True)
+        samples2 = np.random.choice(data2, size=n_samples, replace=True)
+        return samples1 + samples2
+    
+    else:
+        raise ValueError(f"Unknown method: {method}. Use 'pairwise' or 'monte_carlo'")
+
+
+def compare_summed_distributions(name1: str, data1: np.ndarray,
+                                 name2: str, data2: np.ndarray,
+                                 name_target: str, data_target: np.ndarray,
+                                 metric_name: str, output_dir: str,
+                                 sum_method: str = 'pairwise',
+                                 no_display: bool = False) -> Dict:
+    """
+    Sum two distributions and compare the result to a target distribution.
+    
+    Args:
+        name1: Name of first test type
+        data1: Data from first test type
+        name2: Name of second test type
+        data2: Data from second test type
+        name_target: Name of target test type
+        data_target: Data from target test type
+        metric_name: Name of the metric (Time or Distance)
+        output_dir: Directory to save results
+        sum_method: Method for summing distributions ('pairwise' or 'monte_carlo')
+        no_display: If True, skip printing results
+        
+    Returns:
+        Dictionary with comparison results
+    """
+    # Sum the first two distributions
+    summed_data = sum_distributions(data1, data2, method=sum_method)
+    summed_name = f"{name1}+{name2}"
+    
+    if not no_display:
+        print(f"\n{'='*70}")
+        print(f"Summed Distribution Analysis: {summed_name}")
+        print(f"{'='*70}")
+        print(f"Original samples: {name1}={len(data1)}, {name2}={len(data2)}")
+        print(f"Summed samples: {len(summed_data)}")
+        print(f"Summed mean: {np.mean(summed_data):.4f}")
+        print(f"  (Expected if independent: {np.mean(data1) + np.mean(data2):.4f})")
+        print(f"Summed std: {np.std(summed_data):.4f}")
+        print(f"  (Expected if independent: {np.sqrt(np.var(data1) + np.var(data2)):.4f})")
+    
+    # Analyze summed distribution
+    _, analysis_summed = analyze_distribution_fit(summed_data)
+    
+    # Analyze target distribution
+    _, analysis_target = analyze_distribution_fit(data_target)
+    
+    if not no_display:
+        print_distribution_analysis(summed_name, analysis_summed, metric_name)
+        print_distribution_analysis(name_target, analysis_target, metric_name)
+    
+    # Compare summed vs target
+    comparison = compare_two_distributions(
+        summed_name, summed_data,
+        name_target, data_target
+    )
+    
+    # Add additional context about the sum
+    comparison['sum_component_1'] = name1
+    comparison['sum_component_2'] = name2
+    comparison['sum_method'] = sum_method
+    comparison['mean_component_1'] = float(np.mean(data1))
+    comparison['mean_component_2'] = float(np.mean(data2))
+    comparison['expected_sum_mean'] = float(np.mean(data1) + np.mean(data2))
+    comparison['actual_sum_mean'] = float(np.mean(summed_data))
+    comparison['mean_difference'] = float(np.mean(summed_data) - np.mean(data_target))
+    comparison['mean_difference_pct'] = float(
+        100 * (np.mean(summed_data) - np.mean(data_target)) / np.mean(data_target)
+        if np.mean(data_target) != 0 else 0
+    )
+    
+    if not no_display:
+        print_comparison_results(comparison, metric_name)
+        print(f"\nMean Comparison:")
+        print(f"  {name1} mean: {comparison['mean_component_1']:.4f}")
+        print(f"  {name2} mean: {comparison['mean_component_2']:.4f}")
+        print(f"  Expected sum: {comparison['expected_sum_mean']:.4f}")
+        print(f"  Actual sum: {comparison['actual_sum_mean']:.4f}")
+        print(f"  Target ({name_target}): {comparison['mean_2']:.4f}")
+        print(f"  Difference (sum - target): {comparison['mean_difference']:.4f} "
+              f"({comparison['mean_difference_pct']:.2f}%)")
+    
+    # Save comparison results
+    os.makedirs(output_dir, exist_ok=True)
+    output_csv = os.path.join(
+        output_dir,
+        f"sum_comparison_{name1}+{name2}_vs_{name_target}_{metric_name.lower().replace(' ', '_').replace('(', '').replace(')', '')}.csv"
+    )
+    save_comparison_to_csv(comparison, output_csv)
+    
+    if not no_display:
+        print(f"\nResults saved to {output_csv}")
+    
+    # Generate plots
+    plot_summed = plot_distribution(summed_name, summed_data, analysis_summed, 
+                                   metric_name, output_dir)
+    plot_target = plot_distribution(name_target, data_target, analysis_target,
+                                   metric_name, output_dir)
+    plot_comp = plot_comparison(summed_name, summed_data, analysis_summed,
+                               name_target, data_target, analysis_target,
+                               metric_name, output_dir)
+    
+    if not no_display:
+        print(f"Summed distribution plot: {plot_summed}")
+        print(f"Target distribution plot: {plot_target}")
+        print(f"Comparison plot: {plot_comp}")
+    
+    return comparison
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Compare robot navigation tests using statistical distributions',
@@ -732,13 +874,16 @@ Examples:
   python3 compare_navigation_tests.py -t /path/to/test_type_1 /path/to/test_type_2
 
   # Extract metrics from successful runs only (test.xml failures=0)
-    python3 compare_navigation_tests.py -t /path/to/test_type_1 --successful-only
+  python3 compare_navigation_tests.py -t /path/to/test_type_1 --successful-only
   
   # Compare extracted metrics
   python3 compare_navigation_tests.py -c test_type_1 test_type_2 -m time
   
   # Compare both time and distance
   python3 compare_navigation_tests.py -c test_type_1 test_type_2 -m time distance
+  
+  # Sum two distributions and compare to a target (e.g., top-half + bottom-half vs full-map)
+  python3 compare_navigation_tests.py --sum test_top test_bottom test_full -m time distance
         """
     )
     
@@ -746,6 +891,11 @@ Examples:
                        help='Paths to test type folders to extract metrics')
     parser.add_argument('-c', '--compare', nargs=2, 
                        help='Names of two test types to compare (from extracted metrics)')
+    parser.add_argument('--sum', nargs=3, metavar=('TEST1', 'TEST2', 'TARGET'),
+                       help='Sum TEST1 and TEST2 distributions, compare to TARGET')
+    parser.add_argument('--sum-method', choices=['pairwise', 'monte_carlo'],
+                       default='pairwise',
+                       help='Method for summing distributions (default: pairwise)')
     parser.add_argument('-m', '--metrics', nargs='+', choices=['time', 'distance'],
                        default=['time', 'distance'],
                        help='Metrics to compare (time, distance, or both)')
@@ -759,7 +909,7 @@ Examples:
     args = parser.parse_args()
     
     # Check that at least one action is specified
-    if not args.test_types and not args.compare:
+    if not args.test_types and not args.compare and not args.sum:
         parser.print_help()
         sys.exit(1)
     
@@ -841,6 +991,49 @@ Examples:
             print(f"Distribution plot for {test1_name}: {plot1_path}")
             print(f"Distribution plot for {test2_name}: {plot2_path}")
             print(f"Comparison plot: {comp_plot_path}")
+    
+    # Sum distributions and compare to target if requested
+    if args.sum:
+        name1, name2, name_target = args.sum
+        
+        for metric in args.metrics:
+            metric_dir = args.output_dir
+            
+            if metric == 'time':
+                file1 = os.path.join(metric_dir, f"{name1}_times.csv")
+                file2 = os.path.join(metric_dir, f"{name2}_times.csv")
+                file_target = os.path.join(metric_dir, f"{name_target}_times.csv")
+                metric_label = "Time (seconds)"
+            else:  # distance
+                file1 = os.path.join(metric_dir, f"{name1}_distances.csv")
+                file2 = os.path.join(metric_dir, f"{name2}_distances.csv")
+                file_target = os.path.join(metric_dir, f"{name_target}_distances.csv")
+                metric_label = "Distance (meters)"
+            
+            if not os.path.exists(file1) or not os.path.exists(file2) or not os.path.exists(file_target):
+                print(f"Warning: Could not find all required metric files for {metric}", file=sys.stderr)
+                print(f"  Need: {file1}, {file2}, {file_target}", file=sys.stderr)
+                continue
+            
+            # Read data
+            df1 = pd.read_csv(file1)
+            df2 = pd.read_csv(file2)
+            df_target = pd.read_csv(file_target)
+            
+            data1 = df1.iloc[:, 1].values  # Second column
+            data2 = df2.iloc[:, 1].values  # Second column
+            data_target = df_target.iloc[:, 1].values  # Second column
+            
+            # Sum distributions and compare to target
+            compare_summed_distributions(
+                name1, data1,
+                name2, data2,
+                name_target, data_target,
+                metric_label,
+                args.output_dir,
+                sum_method=args.sum_method,
+                no_display=args.no_display
+            )
 
 
 if __name__ == '__main__':

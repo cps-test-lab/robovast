@@ -112,6 +112,40 @@ python3 compare_navigation_tests.py \
   -o comparison_results
 ```
 
+### 4. Sum Distributions and Compare to Target
+
+For scenarios where you have partial test types (e.g., top-half + bottom-half of a map) and want to verify that their sum matches a full test type:
+
+```bash
+# First extract metrics from all three test types
+python3 compare_navigation_tests.py \
+  -t /path/to/test_top_half \
+     /path/to/test_bottom_half \
+     /path/to/test_full_map \
+  -o comparison_results
+
+# Sum top + bottom and compare to full
+python3 compare_navigation_tests.py \
+  --sum test_top_half test_bottom_half test_full_map \
+  -m time distance \
+  -o comparison_results
+```
+
+This will:
+1. Pairwise sum the distributions from test_top_half and test_bottom_half
+2. Compare the summed distribution to test_full_map
+3. Report whether the assumption holds (sum of parts ≈ whole)
+4. Provide detailed statistics including mean difference and percentage difference
+
+**Use cases:**
+- Verify that partial coverage tests sum to complete coverage
+- Check if sequential navigation segments combine as expected
+- Validate decomposition of complex navigation tasks
+
+**Sum methods:**
+- `--sum-method pairwise` (default): Sums corresponding samples (requires equal sample sizes)
+- `--sum-method monte_carlo`: Randomly samples from each distribution and sums (handles unequal sizes)
+
 ### Command Line Options
 
 ```
@@ -122,6 +156,12 @@ python3 compare_navigation_tests.py \
 
 -c, --compare             Names of two test types to compare 
                           (from extracted metrics)
+
+--sum TEST1 TEST2 TARGET  Sum TEST1 and TEST2 distributions, then compare 
+                          the result to TARGET distribution
+
+--sum-method              Method for summing distributions:
+                          'pairwise' (default) or 'monte_carlo'
 
 -m, --metrics             Metrics to compare: time, distance, or both
                           Default: time distance
@@ -157,6 +197,19 @@ run_index,time_seconds
 - `comparison_{test1}_vs_{test2}_distance.csv`: Distance comparison statistics
 - `distribution_{test_type}_{metric}.png`: Individual distribution plots with best-fit curve
 - `comparison_{test1}_vs_{test2}_{metric}.png`: Side-by-side comparison with overlaid best-fit distributions
+
+### Sum Comparison Results (when using --sum)
+- `sum_comparison_{test1}+{test2}_vs_{target}_{metric}.csv`: Statistical comparison of summed distribution vs target
+- `distribution_{test1}+{test2}_{metric}.png`: Distribution plot of the summed data
+- `comparison_{test1}+{test2}_vs_{target}_{metric}.png`: Side-by-side comparison plot
+
+The sum comparison CSV includes additional fields:
+- `sum_component_1`, `sum_component_2`: Names of the two test types being summed
+- `mean_component_1`, `mean_component_2`: Individual means of the components
+- `expected_sum_mean`: Theoretical sum of means (mean1 + mean2)
+- `actual_sum_mean`: Actual mean of the summed distribution
+- `mean_difference`: Difference between summed mean and target mean
+- `mean_difference_pct`: Percentage difference
 
 Example comparison CSV:
 ```
@@ -260,6 +313,37 @@ python3 compare_navigation_tests.py \
 
 # 5. Review results
 cat my_results/comparison_test_type_A_vs_test_type_B_time.csv
+```
+
+### Example: Verifying Map Decomposition
+
+If you have a full map test and two partial map tests (e.g., top/bottom halves):
+
+```bash
+# 1. Extract metrics from all three test types
+python3 compare_navigation_tests.py \
+  -t /path/to/results/test_top_half \
+     /path/to/results/test_bottom_half \
+     /path/to/results/test_full_map \
+  -o map_validation_results
+
+# 2. Verify that top + bottom ≈ full
+python3 compare_navigation_tests.py \
+  --sum test_top_half test_bottom_half test_full_map \
+  -m time distance \
+  -o map_validation_results
+
+# 3. Review the mean comparison
+# The output will show:
+#   - Mean of top_half
+#   - Mean of bottom_half
+#   - Expected sum (top + bottom)
+#   - Actual sum mean
+#   - Target (full_map) mean
+#   - Difference and percentage difference
+#
+# Statistical tests will tell you if the summed distribution
+# significantly differs from the full map distribution
 ```
 
 ## Data Format
