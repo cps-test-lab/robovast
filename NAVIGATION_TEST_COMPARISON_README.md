@@ -45,9 +45,18 @@ python3 compare_navigation_tests.py \
 
 This will:
 - Scan each test type folder for numbered run subfolders (0, 1, 2, etc.)
-- Extract `poses.csv` from each successful run
+- Extract `poses.csv` from each run that contains it
 - Calculate total time (from first to last timestamp) and total distance (sum of pose changes)
 - Save results to `{test_type_name}_times.csv` and `{test_type_name}_distances.csv`
+
+To include only successful runs based on `test.xml` (`failures=0`):
+
+```bash
+python3 compare_navigation_tests.py \
+  -t /path/to/test_type_1 /path/to/test_type_2 \
+  --successful-only \
+  -o results_output_dir
+```
 
 **Example with your data:**
 ```bash
@@ -122,13 +131,19 @@ python3 compare_navigation_tests.py \
 
 --no-display              Skip printing results to console
                           (results still saved to CSV)
+
+--successful-only         During extraction, include only runs where
+                          test.xml has failures=0
 ```
 
 ## Output Files
 
 ### Extracted Metrics
-- `{test_type_name}_times.csv`: Time in seconds for each successful run
-- `{test_type_name}_distances.csv`: Distance in meters for each successful run
+- `{test_type_name}_times.csv`: Time in seconds for each included run
+- `{test_type_name}_distances.csv`: Distance in meters for each included run
+
+By default, included runs are those with a valid `poses.csv`. When `--successful-only` is used,
+only runs with `test.xml` and `failures=0` are included.
 
 Example:
 ```
@@ -252,7 +267,8 @@ cat my_results/comparison_test_type_A_vs_test_type_B_time.csv
 The script expects:
 - Test type folders containing numbered run subfolders (0, 1, 2, ...)
 - Each run folder may contain a `poses.csv` file
-- Runs without `poses.csv` are skipped (unsuccessful runs)
+- Runs without `poses.csv` are skipped
+- If `--successful-only` is set, runs without `test.xml` or with `failures != 0` are skipped
 
 ### Expected CSV Structure for poses.csv:
 ```csv

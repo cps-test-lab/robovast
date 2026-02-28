@@ -10,6 +10,7 @@ import argparse
 import csv
 import os
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 import warnings
@@ -58,12 +59,36 @@ def extract_pose_metrics(poses_csv_path: str) -> Optional[Tuple[float, float]]:
         return None
 
 
-def process_test_type(test_type_path: str) -> Tuple[List[float], List[float]]:
+def is_successful_test_run(test_xml_path: Path) -> bool:
+    """
+    Check whether a test run is successful based on failures=0 in test.xml.
+
+    Args:
+        test_xml_path: Path to the run's test.xml file
+
+    Returns:
+        True if failures attribute equals 0, False otherwise
+    """
+    try:
+        root = ET.parse(test_xml_path).getroot()
+        failures = root.attrib.get('failures')
+
+        if failures is None:
+            return False
+
+        return float(failures) == 0.0
+    except Exception as e:
+        print(f"  Could not parse {test_xml_path}: {e} (skipped)", file=sys.stderr)
+        return False
+
+
+def process_test_type(test_type_path: str, successful_only: bool = False) -> Tuple[List[float], List[float]]:
     """
     Process all runs in a test type folder and extract metrics.
     
     Args:
         test_type_path: Path to the test type folder containing run subfolders
+        successful_only: If True, include only runs with failures=0 in test.xml
         
     Returns:
         Tuple of (times_list, distances_list)
@@ -77,6 +102,16 @@ def process_test_type(test_type_path: str) -> Tuple[List[float], List[float]]:
     for run_dir in sorted(test_type_dir.iterdir()):
         if not run_dir.is_dir() or run_dir.name.startswith('_'):
             continue
+
+        if successful_only:
+            test_xml_path = run_dir / 'test.xml'
+            if not test_xml_path.exists():
+                print(f"  Run {run_dir.name}: No test.xml found (skipped)")
+                continue
+
+            if not is_successful_test_run(test_xml_path):
+                print(f"  Run {run_dir.name}: test.xml failures != 0 (skipped)")
+                continue
         
         poses_csv = run_dir / 'poses.csv'
         
@@ -695,6 +730,9 @@ def main():
 Examples:
   # Extract metrics from two test types
   python3 compare_navigation_tests.py -t /path/to/test_type_1 /path/to/test_type_2
+
+  # Extract metrics from successful runs only (test.xml failures=0)
+    python3 compare_navigation_tests.py -t /path/to/test_type_1 --successful-only
   
   # Compare extracted metrics
   python3 compare_navigation_tests.py -c test_type_1 test_type_2 -m time
@@ -715,6 +753,8 @@ Examples:
                        help='Output directory for results')
     parser.add_argument('--no-display', action='store_true',
                        help='Skip printing results to console')
+    parser.add_argument('--successful-only', action='store_true',
+                       help='During extraction, include only runs where test.xml has failures=0')
     
     args = parser.parse_args()
     
@@ -734,7 +774,7 @@ Examples:
             test_type_name = test_type_dir.name
             
             print(f"Processing {test_type_name}...")
-            times, distances = process_test_type(test_type_path)
+            times, distances = process_test_type(test_type_path, successful_only=args.successful_only)
             
             if times and distances:
                 print(f"  Successfully extracted {len(times)} runs")
