@@ -379,6 +379,11 @@ def compare_two_distributions(name1: str, data1: np.ndarray,
     # Tests if one distribution tends to have larger values than the other.
     try:
         bm_stat, bm_pval = stats.brunnermunzel(data1, data2)
+        # Check for NaN p-value (occurs when distributions are completely separated)
+        if np.isnan(bm_pval):
+            # When completely separated, distributions are definitively different
+            bm_pval = 0.0 if (np.mean(data1) != np.mean(data2)) else 1.0
+            bm_stat = np.inf if not np.isfinite(bm_stat) else bm_stat
         results['brunner_munzel_statistic'] = float(bm_stat)
         results['brunner_munzel_pvalue'] = float(bm_pval)
         results['brunner_munzel_significant'] = bm_pval < 0.05
