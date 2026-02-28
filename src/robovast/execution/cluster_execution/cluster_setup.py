@@ -25,6 +25,7 @@ import yaml
 
 from robovast.common.cli.project_config import ProjectConfig
 
+from .cluster_execution import cleanup_cluster_run
 from .kubernetes_kueue import apply_kueue_queues, install_kueue_helm, uninstall_kueue_helm
 
 logger = logging.getLogger(__name__)
@@ -266,7 +267,15 @@ def delete_server(config_name=None, **cluster_kwargs_override):
         # Explicit config: use only CLI-provided kwargs (e.g. -n namespace)
         cluster_kwargs = dict(cluster_kwargs_override)
 
-    # Uninstall Kueue first (always, since we always install it)
+    # Clean up scenario run jobs and pods first (before uninstalling Kueue,
+    # so the Kueue controller is still running to handle job finalizer removal)
+    namespace = cluster_kwargs.get("namespace", "default")
+    try:
+        cleanup_cluster_run(namespace=namespace)
+    except Exception as e:
+        logger.warning(f"Failed to clean up scenario run jobs during cluster cleanup: {e}")
+
+    # Uninstall Kueue (always, since we always install it)
     uninstall_kueue_helm()
 
     cluster_config = get_cluster_config(config_name)

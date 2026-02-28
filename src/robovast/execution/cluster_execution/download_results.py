@@ -124,6 +124,166 @@ class ResultDownloader:
         # Wait a moment for port-forward to establish
         time.sleep(2)
 
+    def list_remote_archives(self):
+        """Return a list of .tar.gz filenames present in /data/ on the pod."""
+        try:
+            result = subprocess.run(
+                [
+                    "kubectl", "exec", "-n", self.namespace, "robovast",
+                    "-c", "archiver",
+                    "--",
+                    "sh", "-c", "ls /data/*.tar.gz 2>/dev/null || true",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            files = []
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if line:
+                    files.append(os.path.basename(line))
+            return files
+        except Exception as e:
+            logger.warning(f"Could not list remote archives: {e}")
+            return []
+
+    def port_forward_only(self):
+        """Start a port-forward to the HTTP sidecar and print downloadable URLs.
+
+        Keeps the tunnel open until the user presses Ctrl+C.
+        """
+        self.start_port_forward()
+        base_url = f"http://localhost:{self.local_port}"
+
+        archives = self.list_remote_archives()
+        if archives:
+            print(f"Port-forward active — {base_url}")
+            print(f"Downloadable archives ({len(archives)}):")
+            for name in sorted(archives):
+                print(f"  {base_url}/{name}")
+            print()
+            print("Example:  curl -O <url>")
+        else:
+            print(f"Port-forward active — {base_url}")
+            print("No .tar.gz archives found on the pod yet.")
+
+        print("Press Ctrl+C to stop the port-forward.")
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("\nStopping port-forward...")
+        finally:
+            self.cleanup()
+
+    def remote_compress_only(self, force=False, verbose=False):
+        """Create compressed archives on the remote pod for all available runs.
+
+        Streams S3 bucket contents to tar.gz on the pod. Does not start
+        port-forward or download. Use ``port_forward_only`` afterwards to
+        download via HTTP, or run full ``download`` later.
+
+        Args:
+            force (bool): Overwrite existing remote archives
+            verbose (bool): Print detailed progress
+
+        Returns:
+            int: Number of runs for which archives were created or already existed
+        """
+        available_runs, excluded_runs = self.list_available_runs()
+
+        if excluded_runs:
+            for rid, running, pending in excluded_runs:
+                logger.info(
+                    "Run %s not ready (jobs still running: %d, pending: %d)",
+                    rid, running, pending,
+                )
+
+        if not available_runs:
+            if excluded_runs:
+                logger.info("No runs ready. Wait for jobs to finish and try again.")
+            else:
+                logger.info("No runs found.")
+            return 0
+
+        logger.info(f"Compressing {len(available_runs)} runs on remote pod...")
+        count = 0
+        for run_id in available_runs:
+            if self._create_remote_archive(run_id, force=force, verbose=verbose):
+                count += 1
+        return count
+
+    def _create_remote_archive(self, run_id, force=False, verbose=False):
+        """Create compressed archive on remote pod from S3 bucket.
+
+        Returns:
+            bool: True if archive exists or was created successfully
+        """
+        archive_name = f"{run_id}.tar.gz"
+        remote_archive_path = f"/data/{archive_name}"
+
+        check_archive_cmd = [
+            "kubectl", "exec", "-n", self.namespace, "robovast",
+            "-c", "archiver",
+            "--",
+            "test", "-f", remote_archive_path
+        ]
+        archive_exists = subprocess.run(
+            check_archive_cmd, capture_output=True, text=True, check=False
+        ).returncode == 0
+
+        if archive_exists and not force:
+            if verbose:
+                logger.info(f"Run {run_id}: archive already exists at {remote_archive_path}, skipping")
+            else:
+                sys.stdout.write("\r" + CLEAR_LINE + f"{run_id}  skipped (archive exists)\n")
+                sys.stdout.flush()
+            return True
+
+        if archive_exists and force:
+            rm_cmd = [
+                "kubectl", "exec", "-n", self.namespace, "robovast",
+                "-c", "archiver",
+                "--",
+                "rm", "-f", remote_archive_path
+            ]
+            subprocess.run(rm_cmd, capture_output=True, text=True, check=False)
+            archive_exists = False
+
+        try:
+            if not verbose:
+                sys.stdout.write("\r" + CLEAR_LINE + f"{run_id}  streaming S3 to tar.gz...")
+                sys.stdout.flush()
+            logger.debug(f"Streaming S3 bucket {run_id} to tar.gz via archiver container...")
+
+            script_path = os.path.join(os.path.dirname(__file__), "s3_to_targz.py")
+            with open(script_path, encoding="utf-8") as f:
+                script_content = f.read()
+
+            create_archive_cmd = [
+                "kubectl", "exec", "-i", "-n", self.namespace, "robovast",
+                "-c", "archiver",
+                "--",
+                "python", "-", run_id
+            ]
+            subprocess.run(
+                create_archive_cmd,
+                input=script_content,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            if verbose:
+                logger.info(f"Created archive at {remote_archive_path}")
+            else:
+                sys.stdout.write("\r" + CLEAR_LINE + f"{run_id}  compressed to {archive_name}\n")
+                sys.stdout.flush()
+            return True
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to create archive for run {run_id}: {e}")
+            return False
+
     def check_transfer_pod_exists(self):
         """Check if transfer-pod exists, exit if not found"""
         try:
@@ -186,7 +346,8 @@ class ResultDownloader:
             logger.error(f"Unexpected error listing runs: {e}")
             return [], []
 
-    def download_results(self, output_directory, force=False, verbose=False, skip_removal=False):
+    def download_results(self, output_directory, force=False, verbose=False, skip_removal=True,
+                        keep_archive=True):
         """
         Download all result files from transfer PVC using HTTP server port-forwarding
 
@@ -194,7 +355,8 @@ class ResultDownloader:
             output_directory (str): Local directory where files will be downloaded
             force (bool): Force re-download even if files already exist
             verbose (bool): If True, emit more detailed logging
-            skip_removal (bool): If True, do not remove remote archive or delete S3 bucket after download
+            skip_removal (bool): If True, do not remove remote archive or delete S3 bucket after download (default: True)
+            keep_archive (bool): If True, keep the local .tar.gz file after extraction (default: True)
 
         Returns:
             int: Number of successfully downloaded runs
@@ -228,7 +390,8 @@ class ResultDownloader:
         downloaded_count = 0
         try:
             for current_run_id in available_runs:
-                if self._download_run(output_directory, current_run_id, force, verbose, skip_removal):
+                if self._download_run(output_directory, current_run_id, force, verbose, skip_removal,
+                                     keep_archive):
                     downloaded_count += 1
         finally:
             # Clean up port-forward
@@ -236,7 +399,8 @@ class ResultDownloader:
 
         return downloaded_count
 
-    def _download_run(self, output_directory, run_id, force=False, verbose=False, skip_removal=False):
+    def _download_run(self, output_directory, run_id, force=False, verbose=False, skip_removal=True,
+                     keep_archive=True):
         """
         Download a specific run via HTTP.
 
@@ -271,6 +435,23 @@ class ResultDownloader:
             ]
 
             archive_exists = subprocess.run(check_archive_cmd, capture_output=True, text=True, check=False).returncode == 0
+
+            if archive_exists:
+                sys.stdout.write(f"{run_id}  Remote archive already exists at {remote_archive_path}. Overwrite? [y/N] ")
+                sys.stdout.flush()
+                answer = sys.stdin.readline().strip().lower()
+                if answer in ("y", "yes"):
+                    logger.debug(f"Removing existing remote archive {remote_archive_path}...")
+                    rm_cmd = [
+                        "kubectl", "exec", "-n", self.namespace, "robovast",
+                        "-c", "archiver",
+                        "--",
+                        "rm", "-f", remote_archive_path
+                    ]
+                    subprocess.run(rm_cmd, capture_output=True, text=True, check=False)
+                    archive_exists = False
+                else:
+                    logger.debug(f"Reusing existing remote archive {remote_archive_path}.")
 
             if not archive_exists:
                 if not verbose:
@@ -438,8 +619,8 @@ class ResultDownloader:
             with tarfile.open(local_archive_path, 'r:gz') as tar:
                 tar.extractall(path=output_directory)
 
-            # Remove local tar.gz to save space
-            os.remove(local_archive_path)
+            if not keep_archive:
+                os.remove(local_archive_path)
 
             if not skip_removal:
                 # Clean up remote archive using kubectl
@@ -473,37 +654,13 @@ class ResultDownloader:
             logger.error(f"Failed to create archive for run {run_id}: {e}")
             logger.error(f"stdout: {e.stdout}")
             logger.error(f"stderr: {e.stderr}")
-
-            # Clean up remote archive on error
-            cleanup_cmd = [
-                "kubectl", "exec", "-n", self.namespace, "robovast",
-                "-c", "archiver",
-                "--",
-                "rm", "-f", remote_archive_path
-            ]
-            subprocess.run(cleanup_cmd, capture_output=True, text=True, check=False)
+            logger.info(f"Remote archive kept at {remote_archive_path} for inspection")
             return False
         except requests.RequestException as e:
             logger.error(f"Failed to download run {run_id} via HTTP: {e}")
-
-            # Clean up remote archive on error
-            cleanup_cmd = [
-                "kubectl", "exec", "-n", self.namespace, "robovast",
-                "-c", "archiver",
-                "--",
-                "rm", "-f", remote_archive_path
-            ]
-            subprocess.run(cleanup_cmd, capture_output=True, text=True, check=False)
+            logger.info(f"Remote archive kept at {remote_archive_path} for inspection")
             return False
         except Exception as e:
             logger.error(f"Unexpected error downloading run {run_id}: {e}")
-
-            # Clean up remote archive on error
-            cleanup_cmd = [
-                "kubectl", "exec", "-n", self.namespace, "robovast",
-                "-c", "archiver",
-                "--",
-                "rm", "-f", remote_archive_path
-            ]
-            subprocess.run(cleanup_cmd, capture_output=True, text=True, check=False)
+            logger.info(f"Remote archive kept at {remote_archive_path} for inspection")
             return False

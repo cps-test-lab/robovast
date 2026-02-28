@@ -403,7 +403,14 @@ def monitor(interval, once):
               help='Print per-file progress instead of a single-line progress bar per run')
 @click.option('--skip-removal', is_flag=True,
               help='Do not remove remote archive or delete S3 bucket after download')
-def download(output, force, verbose, skip_removal):
+@click.option('--port-forward-only', is_flag=True,
+              help='Only start port-forward and print URLs; do not download (Ctrl+C to stop)')
+@click.option('--remote-compress-only', is_flag=True,
+              help='Only create .tar.gz archives on the remote pod; do not download')
+@click.option('--no-keep-archive', is_flag=True,
+              help='Remove the local .tar.gz file after extraction (default: keep it)')
+def download(output, force, verbose, skip_removal, port_forward_only, remote_compress_only,
+             no_keep_archive):
     """Download result files from the cluster S3 (MinIO) server.
 
     Downloads all test run results from the MinIO S3 server embedded in the
@@ -417,25 +424,51 @@ def download(output, force, verbose, skip_removal):
 
     Use ``--skip-removal`` to keep the remote archive and S3 bucket after download.
 
-    Requires project initialization with ``vast init`` first (unless ``--output`` is specified).
-    """
-    # Get output directory
-    if output is None:
-        # Get from project configuration
-        project_config = get_project_config()
-        output = project_config.results_dir
+    Use ``--port-forward-only`` to start a port-forward and print HTTP URLs for
+    manual download (e.g. with curl). Press Ctrl+C to stop.
 
-    # Validate output parameter
-    if not output:
-        click.echo("Error: --output parameter is required (or use 'vast init' to set default)", err=True)
-        click.echo("Use --help for usage information", err=True)
+    Use ``--remote-compress-only`` to create compressed archives on the remote
+    pod without downloading. Useful to pre-compress before downloading later
+    via ``--port-forward-only`` or a full download run.
+
+    By default the downloaded .tar.gz is kept after extraction; use
+    ``--no-keep-archive`` to remove it to save space.
+
+    Requires project initialization with ``vast init`` first (unless ``--output``
+    is specified, or when using ``--port-forward-only`` or ``--remote-compress-only``).
+    """
+    if port_forward_only and remote_compress_only:
+        click.echo("Error: --port-forward-only and --remote-compress-only are mutually exclusive", err=True)
         sys.exit(1)
 
     try:
         config_name = load_cluster_config_name()
         cluster_config = get_cluster_config(config_name)
         downloader = ResultDownloader(namespace=get_cluster_namespace(), cluster_config=cluster_config)
-        count = downloader.download_results(output, force, verbose=verbose, skip_removal=skip_removal)
+
+        if port_forward_only:
+            downloader.port_forward_only()
+            return
+
+        if remote_compress_only:
+            count = downloader.remote_compress_only(force=force, verbose=verbose)
+            click.echo(f"✓ Compressed {count} runs on remote pod.")
+            return
+
+        # Full download
+        if output is None:
+            project_config = get_project_config()
+            output = project_config.results_dir
+
+        if not output:
+            click.echo("Error: --output parameter is required (or use 'vast init' to set default)", err=True)
+            click.echo("Use --help for usage information", err=True)
+            sys.exit(1)
+
+        count = downloader.download_results(
+            output, force, verbose=verbose, skip_removal=skip_removal,
+            keep_archive=not no_keep_archive
+        )
         click.echo(f"✓ Download of {count} runs completed successfully!")
 
     except Exception as e:
