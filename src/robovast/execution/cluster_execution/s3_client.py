@@ -18,11 +18,12 @@
 import logging
 import os
 import signal
-from typing import Optional
+import sys
 import socket
 import subprocess
-import sys
+import tempfile
 import time
+from typing import Optional
 
 import boto3
 from botocore.client import Config
@@ -64,7 +65,7 @@ class ClusterS3Client:
     instead of port-forwarding to the embedded MinIO pod.
     """
 
-    def __init__(self, namespace="default", endpoint=None, access_key="minioadmin", secret_key="minioadmin"):
+    def __init__(self, namespace="default", endpoint=None, access_key="minioadmin", secret_key="minioadmin", context=None):
         """Create a ClusterS3Client.
 
         Args:
@@ -72,10 +73,12 @@ class ClusterS3Client:
             endpoint (str): Override S3 endpoint URL. If None, a kubectl port-forward is used.
             access_key (str): S3 access key.
             secret_key (str): S3 secret key.
+            context (str): Kubernetes context to use. None uses the active context.
         """
         self.namespace = namespace
         self.access_key = access_key
         self.secret_key = secret_key
+        self.context = context
         self._port_forward_process = None
         self._s3 = None
 
@@ -140,8 +143,11 @@ class ClusterS3Client:
         logger.debug(
             f"Starting port-forward robovast:{S3_PORT} -> localhost:{self._local_port}"
         )
+        ctx_args = ["--context", self.context] if self.context else []
         cmd = [
-            "kubectl", "port-forward",
+            "kubectl",
+        ] + ctx_args + [
+            "port-forward",
             "-n", self.namespace,
             "pod/robovast",
             f"{self._local_port}:{S3_PORT}",
@@ -184,6 +190,16 @@ class ClusterS3Client:
                 logger.debug(f"Bucket already exists: {bucket_name}")
             else:
                 raise
+
+    def bucket_exists(self, bucket_name: str) -> bool:
+        """Return True if the named bucket already exists."""
+        try:
+            self._s3.head_bucket(Bucket=bucket_name)
+            return True
+        except ClientError as e:
+            if e.response["Error"]["Code"] in ("404", "NoSuchBucket"):
+                return False
+            raise
 
     def list_run_buckets(self) -> list:
         """List all buckets whose names start with 'run-'.
@@ -321,3 +337,97 @@ class ClusterS3Client:
 
         logger.debug(f"Downloaded {downloaded} file(s) from s3://{bucket_name}")
         return downloaded
+
+
+# ---------------------------------------------------------------------------
+# Higher-level helpers
+# ---------------------------------------------------------------------------
+
+def upload_configs_to_s3(config_dir: str, bucket_name: str, cluster_config, namespace: str = "default", context: str = None) -> None:
+    """Upload a prepared config directory to an S3 bucket.
+
+    Creates the bucket (if absent) and uploads the entire *config_dir* tree to the
+    bucket root, preserving relative paths.
+
+    Args:
+        config_dir: Local directory containing generated config files.
+        bucket_name: S3 bucket name (e.g. ``'run-20260220-123456'``).
+        cluster_config: BaseConfig instance providing S3 endpoint/credentials.
+        namespace: Kubernetes namespace used for port-forwarding.
+        context: Kubernetes context to use. None uses the active context.
+    """
+    if not os.path.isdir(config_dir):
+        raise FileNotFoundError(f"Config directory does not exist: {config_dir}")
+
+    access_key, secret_key = cluster_config.get_s3_credentials()
+    logger.debug(f"Uploading config files to s3://{bucket_name}/ ...")
+    try:
+        with ClusterS3Client(namespace=namespace, access_key=access_key, secret_key=secret_key, context=context) as s3:
+            s3.create_bucket(bucket_name)
+            s3.upload_directory(bucket_name, config_dir)
+        logger.debug(f"Successfully uploaded all config files to s3://{bucket_name}/")
+    except Exception as e:
+        logger.error(f"Failed to upload config files to S3: {e}")
+        sys.exit(1)
+
+
+def upload_run_configs(run_id: str, run_data: dict, num_runs: int, cluster_config, namespace: str = "default", context: str = None) -> None:
+    """Prepare run config files and upload them to an S3 bucket.
+
+    Opens a **single** port-forward for both the existence check and the upload.
+    Raises :class:`RuntimeError` if the bucket derived from *run_id* already exists
+    rather than silently appending a numeric suffix.
+
+    Args:
+        run_id: Run identifier (e.g. ``'run-2026-03-01-120000'``).
+        run_data: Scenario variation data produced by ``generate_scenario_variations``.
+        num_runs: Number of runs (used by ``create_execution_yaml``).
+        cluster_config: BaseConfig instance providing S3 credentials and optional
+                        ``get_instance_type_command()``.
+        namespace: Kubernetes namespace.
+        context: Kubernetes context to use. None uses the active context.
+
+    Raises:
+        RuntimeError: If an S3 bucket for *run_id* already exists.
+    """
+    # Inline imports to avoid circular dependencies at module load time.
+    from robovast.common import create_execution_yaml, prepare_run_configs  # pylint: disable=import-outside-toplevel
+
+    access_key, secret_key = cluster_config.get_s3_credentials()
+
+    with ClusterS3Client(namespace=namespace, access_key=access_key, secret_key=secret_key, context=context) as s3:
+        bucket_name = run_id.lower().replace("_", "-")
+        if s3.bucket_exists(bucket_name):
+            raise RuntimeError(
+                f"S3 bucket '{bucket_name}' already exists. "
+                f"A run with ID '{run_id}' is already in progress or was not cleaned up. "
+                f"Clean up the existing run first or wait until the next second."
+            )
+
+        # Prepare config files and upload inside the same port-forward session.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out_dir = os.path.join(temp_dir, "out_template")
+            prepare_run_configs(out_dir, run_data, cluster=True)
+
+            # Inject instance-type detection command into entrypoint.sh when supported.
+            entrypoint_path = os.path.join(out_dir, "entrypoint.sh")
+            try:
+                instance_type_cmd = None
+                if hasattr(cluster_config, "get_instance_type_command"):
+                    instance_type_cmd = cluster_config.get_instance_type_command()
+                if instance_type_cmd and os.path.exists(entrypoint_path):
+                    with open(entrypoint_path, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    placeholder = 'INSTANCE_TYPE=""'
+                    if placeholder in content:
+                        content = content.replace(placeholder, instance_type_cmd, 1)
+                        with open(entrypoint_path, "w", encoding="utf-8") as f:
+                            f.write(content)
+            except Exception as exc:  # pragma: no cover – best-effort, non-fatal
+                logger.warning(f"Could not inject instance type command into entrypoint.sh: {exc}")
+
+            create_execution_yaml(num_runs, out_dir, execution_params=run_data.get("execution", {}))
+
+            logger.info(f"Uploading config files to S3 bucket '{bucket_name}'...")
+            s3.create_bucket(bucket_name)
+            s3.upload_directory(bucket_name, out_dir)

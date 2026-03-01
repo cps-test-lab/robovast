@@ -30,13 +30,12 @@ import yaml
 from kubernetes import client
 from kubernetes import config as kube_config
 
-from robovast.common import (create_execution_yaml,
-                             get_execution_env_variables, get_run_id,
-                             load_config, normalize_secondary_containers,
-                             prepare_run_configs)
+from robovast.common import (get_execution_env_variables, get_run_id,
+                             load_config, normalize_secondary_containers)
+from robovast.common.cluster_context import resolve_resources
 from robovast.common.config_generation import generate_scenario_variations
-from robovast.execution.cluster_execution.kubernetes import (
-    check_pod_running, upload_configs_to_s3)
+from robovast.execution.cluster_execution.kubernetes import check_pod_running
+from robovast.execution.cluster_execution.s3_client import upload_run_configs
 
 from .kubernetes_kueue import cleanup_kueue_workloads
 from .manifests import JOB_TEMPLATE
@@ -83,7 +82,7 @@ def _full_job_name(run_id: str, scenario_key: str, run_number: int) -> str:
     return f"{run_id}-{safe_config}-{run_number}"
 
 
-def cleanup_cluster_run(namespace="default", run_id=None):
+def cleanup_cluster_run(namespace="default", run_id=None, context=None):
     """Clean up scenario run jobs, pods, and Kueue workloads from the cluster.
 
     If run_id is given, removes only jobs, pods, and workloads for that run (with
@@ -95,8 +94,13 @@ def cleanup_cluster_run(namespace="default", run_id=None):
     cleanup is skipped without failing.
 
     Used after a detached run to clean up resources once jobs have completed.
+
+    Args:
+        namespace: Kubernetes namespace.
+        run_id: If given, clean only this run's jobs/pods/workloads.
+        context: Kubernetes context name to use. ``None`` uses the active context.
     """
-    kube_config.load_kube_config()
+    kube_config.load_kube_config(context=context)
     k8s_client = client.CoreV1Api()
     k8s_batch_client = client.BatchV1Api()
 
@@ -145,14 +149,18 @@ def cleanup_cluster_run(namespace="default", run_id=None):
         raise
 
 
-def get_cluster_run_job_counts(namespace="default"):
+def get_cluster_run_job_counts(namespace="default", context=None):
     """Get aggregate status counts for scenario run jobs.
 
     Counts all Kubernetes jobs in the given namespace with the label
     ``jobgroup=scenario-runs`` and classifies each job as completed,
     failed, running, or pending based on its status fields.
+
+    Args:
+        namespace: Kubernetes namespace.
+        context: Kubernetes context name to use. ``None`` uses the active context.
     """
-    kube_config.load_kube_config()
+    kube_config.load_kube_config(context=context)
     k8s_batch_client = client.BatchV1Api()
 
     try:
@@ -183,23 +191,27 @@ def get_cluster_run_job_counts(namespace="default"):
 
         if succeeded >= 1:
             counts["completed"] += 1
-        elif failed >= 1:
-            counts["failed"] += 1
         elif active >= 1:
             counts["running"] += 1
+        elif failed >= 1:
+            counts["failed"] += 1
         else:
             counts["pending"] += 1
 
     return counts
 
 
-def get_cluster_run_job_counts_per_run(namespace="default"):
+def get_cluster_run_job_counts_per_run(namespace="default", context=None):
     """Get status counts per run_id for scenario run jobs.
 
     Returns a dict mapping run_id (or "<legacy>" for jobs without run-id label)
     to counts dict with keys completed, failed, running, pending.
+
+    Args:
+        namespace: Kubernetes namespace.
+        context: Kubernetes context name to use. ``None`` uses the active context.
     """
-    kube_config.load_kube_config()
+    kube_config.load_kube_config(context=context)
     k8s_batch_client = client.BatchV1Api()
 
     try:
@@ -232,10 +244,10 @@ def get_cluster_run_job_counts_per_run(namespace="default"):
 
         if succeeded >= 1:
             per_run[run_id]["completed"] += 1
-        elif failed >= 1:
-            per_run[run_id]["failed"] += 1
         elif active >= 1:
             per_run[run_id]["running"] += 1
+        elif failed >= 1:
+            per_run[run_id]["failed"] += 1
         else:
             per_run[run_id]["pending"] += 1
 
@@ -244,11 +256,13 @@ def get_cluster_run_job_counts_per_run(namespace="default"):
 
 class JobRunner:
     def __init__(self, config_path, single_config=None, num_runs=None, cluster_config=None,
-                 namespace="default", cleanup_before_run=False, log_tree=False):
+                 namespace="default", cleanup_before_run=False, log_tree=False,
+                 kube_context=None):
         self.cluster_config = cluster_config
         self.cleanup_before_run = cleanup_before_run
         self.namespace = namespace
         self.log_tree = log_tree
+        self.kube_context = kube_context
         if not self.cluster_config:
             raise ValueError("Cluster config must be provided to JobRunner")
 
@@ -293,6 +307,11 @@ class JobRunner:
                                               self.run_as_user,
                                               execution_params.get("secondary_containers") or [])
 
+        # Apply execution timeout as activeDeadlineSeconds on the Kubernetes job spec
+        timeout = parameters.get("timeout")
+        if timeout:
+            self.manifest['spec']['activeDeadlineSeconds'] = int(timeout)
+
         if not self.configs:
             raise ValueError("No scenario configs generated.")
         # Filter scenarios if single_config is specified
@@ -333,8 +352,8 @@ class JobRunner:
         if self._k8s_initialized:
             return
 
-        logger.debug("Initializing Kubernetes connection...")
-        kube_config.load_kube_config()
+        logger.debug(f"Initializing Kubernetes connection (context={self.kube_context!r})...")
+        kube_config.load_kube_config(context=self.kube_context)
         self.k8s_client = client.CoreV1Api()
         self.k8s_batch_client = client.BatchV1Api()
         self.k8s_api_client = client.ApiClient()
@@ -486,7 +505,7 @@ class JobRunner:
         # Add secondary containers
         for sc in self.secondary_containers:
             sc_name = sc['name']
-            sc_resources = sc['resources']
+            sc_resources = resolve_resources(sc['resources'], self.kube_context)
             secondary_spec = {
                 'name': sc_name,
                 'image': job_manifest['spec']['template']['spec']['containers'][0]['image'],
@@ -799,39 +818,16 @@ class JobRunner:
             logger.error(f"Error deleting pods with label selector: {e}")
 
     def upload_tasks_to_s3(self):
-        """Upload all run config files to an S3 bucket (one bucket per run_id)."""
+        """Prepare and upload run config files to S3.
 
-        bucket_name = self._bucket_name_for_run(self.run_id)
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            logger.debug(f"Using temporary directory: {temp_dir}")
-
-            out_dir = os.path.join(temp_dir, "out_template")
-            prepare_run_configs(out_dir, self.run_data, cluster=True)
-
-            # Inject instance type command into entrypoint.sh if the cluster config provides one
-            entrypoint_path = os.path.join(out_dir, "entrypoint.sh")
-            try:
-                instance_type_cmd = None
-                if hasattr(self.cluster_config, "get_instance_type_command"):
-                    instance_type_cmd = self.cluster_config.get_instance_type_command()
-
-                if instance_type_cmd and os.path.exists(entrypoint_path):
-                    with open(entrypoint_path, "r", encoding="utf-8") as f:
-                        content = f.read()
-                    placeholder = 'INSTANCE_TYPE=""'
-                    if placeholder in content:
-                        content = content.replace(placeholder, instance_type_cmd, 1)
-                        with open(entrypoint_path, "w", encoding="utf-8") as f:
-                            f.write(content)
-            except Exception as exc:  # pragma: no cover - best-effort, non-fatal
-                logger.warning(f"Could not inject instance type command into entrypoint.sh: {exc}")
-
-            create_execution_yaml(self.num_runs, out_dir,
-                                  execution_params=self.run_data.get("execution", {}))
-
-            logger.info(f"Uploading config files to S3 bucket '{bucket_name}'...")
-            upload_configs_to_s3(out_dir, bucket_name, self.cluster_config, self.namespace)
+        Delegates to :func:`~robovast.execution.cluster_execution.s3_client.upload_run_configs`
+        which performs the existence check and upload in a single port-forward session.
+        Raises :class:`RuntimeError` if the bucket already exists.
+        """
+        upload_run_configs(
+            self.run_id, self.run_data, self.num_runs, self.cluster_config, self.namespace,
+            context=self.kube_context
+        )
 
     def get_job_manifest(self, image: str, resources: dict, env: list, run_as_user: int = None,
                          secondary_containers: list = None) -> dict:
@@ -853,6 +849,9 @@ class JobRunner:
         # Normalize resources: may be a dict or a Pydantic model
         if hasattr(resources, 'cpu'):
             resources = {'cpu': resources.cpu, 'memory': resources.memory}
+
+        # Resolve per-cluster resource values for the active Kubernetes context
+        resources = resolve_resources(resources, self.kube_context)
 
         # Normalize secondary_containers: may be Pydantic models, normalized dicts, or raw YAML dicts
         self.secondary_containers = normalize_secondary_containers(secondary_containers)

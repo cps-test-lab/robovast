@@ -27,6 +27,8 @@ import yaml
 
 from robovast.common import prepare_run_configs
 from robovast.common.cli import get_project_config, handle_cli_exception
+from robovast.common.cluster_context import (get_active_kube_context, get_config_context_names,
+                                             require_context_for_multi_cluster)
 from robovast.execution.cluster_execution.cluster_execution import (
     JobRunner, cleanup_cluster_run, get_cluster_run_job_counts_per_run,
     _label_safe_run_id)
@@ -198,31 +200,41 @@ def cluster():
               help='Run only a specific configuration by name')
 @click.option('--runs', '-r', type=int, default=None,
               help='Override the number of runs specified in the config')
-@click.option('--detach', '-d', is_flag=True,
-              help='Exit after creating jobs without waiting for completion')
+@click.option('--follow/--no-follow', '-f/ ', default=False,
+              help='Follow job execution and wait for completion (default: exit immediately after creating jobs)')
 @click.option('--cleanup', is_flag=True,
               help='Clean up previous runs before starting (default: do not cleanup; allows multiple parallel runs)')
 @click.option('--log-tree', '-t', is_flag=True,
               help='Log scenario execution live tree')
-def run(config, runs, detach, cleanup, log_tree):  # pylint: disable=function-redefined
+@click.option('--context', '-x', 'kube_context', default=None,
+              help='Kubernetes context to use (default: active context in kubeconfig)')
+def run(config, runs, follow, cleanup, log_tree, kube_context):  # pylint: disable=function-redefined
     """Execute scenarios on a Kubernetes cluster.
 
     Deploys all test configurations (or a specific one) as Kubernetes jobs
     for distributed parallel execution.
 
-    Use --detach to exit immediately after creating jobs without waiting.
+    By default, exits immediately after creating jobs.
+    Use --follow to wait for all jobs to complete before returning.
     Use --cleanup to remove previous runs before starting (by default,
     previous runs are left intact so multiple runs can run in parallel).
     Use 'vast execution cluster run-cleanup' to clean up jobs afterwards.
+    Use --context to target a specific Kubernetes cluster.
 
     Requires project initialization with ``vast init`` first.
     """
+    try:
+        require_context_for_multi_cluster(kube_context)
+    except ValueError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    context_key = kube_context
     # Get project configuration
     project_config = get_project_config()
 
     # Check Kubernetes access (namespace-scoped so RBAC namespace-only users succeed)
-    k8s_client = get_kubernetes_client()
-    namespace = get_cluster_namespace()
+    k8s_client = get_kubernetes_client(context=kube_context)
+    namespace = get_cluster_namespace(context_key)
     click.echo("Checking Kubernetes cluster access...")
     k8s_ok, k8s_msg = check_kubernetes_access(k8s_client, namespace=namespace)
     if not k8s_ok:
@@ -238,7 +250,7 @@ def run(config, runs, detach, cleanup, log_tree):  # pylint: disable=function-re
 
     if pod_ok:
         try:
-            config_name = load_cluster_config_name()
+            config_name = load_cluster_config_name(context_key)
             if config_name:
                 logging.debug(f"Auto-detected cluster config: {config_name}")
             else:
@@ -263,10 +275,11 @@ def run(config, runs, detach, cleanup, log_tree):  # pylint: disable=function-re
     try:
         job_runner = JobRunner(
             project_config.config_path, config, runs, cluster_config,
-            namespace=namespace, cleanup_before_run=cleanup, log_tree=log_tree)
-        job_runner.run(detached=detach)
+            namespace=namespace, cleanup_before_run=cleanup, log_tree=log_tree,
+            kube_context=kube_context)
+        job_runner.run(detached=not follow)
 
-        if detach:
+        if not follow:
             click.echo(f"✓ Jobs created successfully (Run ID: {job_runner.run_id})")
             click.echo()
             click.echo("Jobs are now running in detached mode.")
@@ -290,96 +303,166 @@ def run(config, runs, detach, cleanup, log_tree):  # pylint: disable=function-re
               help='Polling interval in seconds')
 @click.option('--once', is_flag=True,
               help='Print job status once and exit')
-def monitor(interval, once):
+@click.option('--context', '-x', 'kube_context', default=None,
+              help='Kubernetes context to use (default: active context in kubeconfig)')
+def monitor(interval, once, kube_context):
     """Monitor scenario execution jobs on the cluster.
 
     Displays progress per run: how many jobs have finished (completed or failed),
     how many are running, and how many are pending for each run.
 
+    By default, monitors only the contexts referenced in the .vast config file.
+    Falls back to the active kubeconfig context when no per-cluster config is
+    defined. Use --context to restrict monitoring to a single cluster.
+    Only contexts with active or past jobs are shown.
+
     This is intended for monitoring jobs created by
-    ``vast execution cluster run -d``.
+    ``vast execution cluster run``.
     """
     try:
-        namespace = get_cluster_namespace()
-        k8s_client = get_kubernetes_client()
-        click.echo("Checking Kubernetes cluster access...")
-        k8s_ok, k8s_msg = check_kubernetes_access(k8s_client, namespace=namespace)
-        if not k8s_ok:
-            click.echo(f"✗ Error: {k8s_msg}", err=True)
-            sys.exit(1)
-        logging.debug(k8s_msg)
-
         CURSOR_UP = "\033[A"
         CLEAR_LINE = "\033[2K"
         BAR_WIDTH = 20
         PCT_WIDTH = 7
-        prev_line_count = [0]  # use list so inner def can mutate
-        # Jobs may be removed automatically when done (e.g. TTL). Capture total at
-        # start and use it for progress; finished = total - (running + pending).
-        # ok/fail counts also use max-of-seen so they only increase.
-        initial_total_per_run = {}
-        max_ok_per_run = {}
-        max_fail_per_run = {}
 
-        def _print_status_lines():
-            per_run = get_cluster_run_job_counts_per_run(namespace)
-            all_run_ids = sorted(set(initial_total_per_run.keys()) | set(per_run.keys()))
+        # Build list of (label, kube_context_name) to monitor
+        if not kube_context:
+            # Use contexts referenced in the .vast config file
+            try:
+                from robovast.common.cli.project_config import ProjectConfig  # pylint: disable=import-outside-toplevel
+                pc = ProjectConfig.load()
+                config_path = pc.config_path if pc else None
+            except Exception:
+                config_path = None
+
+            config_names = get_config_context_names(config_path) if config_path else set()
+            if config_names:
+                contexts_to_monitor = sorted((n, n) for n in config_names)
+            else:
+                # No per-cluster config — fall back to active context
+                active = get_active_kube_context()
+                contexts_to_monitor = [(active or "(active)", active)]
+            namespace = get_cluster_namespace()
+        else:
+            context_key = kube_context
+            namespace = get_cluster_namespace(context_key)
+            contexts_to_monitor = [(kube_context, kube_context)]
+
+        multi = len(contexts_to_monitor) > 1
+
+        # Per-context state (keyed by kube_context_name)
+        initial_total: dict[str, dict] = {}   # ctx -> {run_id: total}
+        max_ok: dict[str, dict] = {}          # ctx -> {run_id: max_ok}
+        max_fail: dict[str, dict] = {}        # ctx -> {run_id: max_fail}
+        last_per_run: dict[str, dict] = {}    # ctx -> last known per_run
+        prev_line_count = [0]
+
+        def _build_run_lines(label, ctx, per_run):
+            """Return (lines, all_done) for a single context."""
+            ctx_initial = initial_total.setdefault(ctx, {})
+            ctx_ok = max_ok.setdefault(ctx, {})
+            ctx_fail = max_fail.setdefault(ctx, {})
+
+            all_run_ids = sorted(set(ctx_initial.keys()) | set(per_run.keys()))
             lines = []
             all_done = True
+            indent = "  " if multi else ""
+
             for run_id in all_run_ids:
                 c = per_run.get(run_id, {"completed": 0, "failed": 0, "running": 0, "pending": 0})
                 current_total = c["completed"] + c["failed"] + c["running"] + c["pending"]
-                if run_id not in initial_total_per_run:
-                    initial_total_per_run[run_id] = current_total
-                total = initial_total_per_run[run_id]
-                max_ok_per_run[run_id] = max(max_ok_per_run.get(run_id, 0), c["completed"])
-                max_fail_per_run[run_id] = max(max_fail_per_run.get(run_id, 0), c["failed"])
+                if run_id not in ctx_initial:
+                    ctx_initial[run_id] = current_total
+                total = ctx_initial[run_id]
+                ctx_ok[run_id] = max(ctx_ok.get(run_id, 0), c["completed"])
+                ctx_fail[run_id] = max(ctx_fail.get(run_id, 0), c["failed"])
                 still_in_cluster = c["running"] + c["pending"]
                 finished = total - still_in_cluster if total > 0 else 0
                 if still_in_cluster > 0:
                     all_done = False
-                # Ensure ok + fail = finished; jobs removed before we poll are attributed to ok
-                ok = max_ok_per_run[run_id]
-                fail = max_fail_per_run[run_id]
+                ok = ctx_ok[run_id]
+                fail = ctx_fail[run_id]
                 remainder = finished - ok - fail
                 if remainder > 0:
                     ok += remainder
                 pct = 100.0 * finished / total if total > 0 else 100.0
                 filled = int(BAR_WIDTH * finished / total) if total > 0 else BAR_WIDTH
-                progress_bar = "█" * filled + "░" * (BAR_WIDTH - filled)
+                bar = "█" * filled + "░" * (BAR_WIDTH - filled)
                 pct_str = f"{pct:.1f}%".rjust(PCT_WIDTH)
-                line = (
-                    f"{run_id}  [{progress_bar}]  {pct_str}  "
+                lines.append(
+                    f"{indent}{run_id}  [{bar}]  {pct_str}  "
                     f"{finished}/{total}  ({ok} ok, {fail} fail)  "
                     f"Running: {c['running']}  Pending: {c['pending']}"
                 )
-                lines.append(line)
-
             if not lines:
-                lines.append("No scenario run jobs found.")
+                lines.append(f"{indent}No scenario run jobs found.")
+            return lines, all_done
 
-            # Move cursor up and overwrite previous output
+        def _print_status_lines():
+            all_lines = []
+            everything_done = True
+            for label, ctx in contexts_to_monitor:
+                unreachable = False
+                try:
+                    import logging as _logging  # pylint: disable=import-outside-toplevel
+                    _urllib3_logger = _logging.getLogger("urllib3")
+                    _prev_level = _urllib3_logger.level
+                    _urllib3_logger.setLevel(_logging.ERROR)
+                    try:
+                        per_run = get_cluster_run_job_counts_per_run(namespace, context=ctx)
+                    finally:
+                        _urllib3_logger.setLevel(_prev_level)
+                except Exception as exc:
+                    # Keep displaying even if one context is unreachable
+                    per_run = {}
+                    unreachable = True
+                    logging.debug(f"Could not query context {ctx!r}: {exc}")
+                # Use last known data when unreachable so bars stay meaningful
+                if unreachable and ctx in last_per_run:
+                    per_run = last_per_run[ctx]
+                elif not unreachable:
+                    last_per_run[ctx] = per_run
+                # Skip contexts that have no jobs at all (and never had any)
+                if not per_run and ctx not in initial_total:
+                    if unreachable:
+                        indent = "  " if multi else ""
+                        if multi:
+                            all_lines.append(f"[{label}]")
+                        all_lines.append(f"{indent}(unreachable)")
+                        everything_done = False
+                    continue
+                if multi:
+                    ctx_label_str = f"[{label}]" + (" (unreachable)" if unreachable else "")
+                    all_lines.append(ctx_label_str)
+                elif unreachable:
+                    all_lines.append("(unreachable - showing last known state)")
+                run_lines, done = _build_run_lines(label, ctx, per_run)
+                all_lines.extend(run_lines)
+                if not done:
+                    everything_done = False
+
+            # Erase previous output and redraw
             for _ in range(prev_line_count[0]):
                 sys.stdout.write(CURSOR_UP)
-            for i, line in enumerate(lines):
+            for line in all_lines:
                 sys.stdout.write("\r" + CLEAR_LINE + line + "\n")
-            # Clear any extra lines from previous iteration
-            for _ in range(len(lines), prev_line_count[0]):
+            for _ in range(len(all_lines), prev_line_count[0]):
                 sys.stdout.write("\r" + CLEAR_LINE + "\n")
-            prev_line_count[0] = len(lines)
+            prev_line_count[0] = len(all_lines)
             sys.stdout.flush()
-            return all_done, per_run
+            return everything_done
 
         if once:
             _print_status_lines()
             return
 
-        click.echo("Monitoring scenario run jobs (press Ctrl+C to stop)...")
-        sys.stdout.write("\n")  # leave room for status lines
+        ctx_label = "configured contexts" if multi else f"context '{contexts_to_monitor[0][0]}'"
+        click.echo(f"Monitoring scenario run jobs on {ctx_label} (press Ctrl+C to stop)...")
+        sys.stdout.write("\n")
         sys.stdout.flush()
 
         while True:
-            all_done, per_run = _print_status_lines()
+            all_done = _print_status_lines()
             if all_done:
                 sys.stdout.write("\n")
                 sys.stdout.flush()
@@ -409,8 +492,10 @@ def monitor(interval, once):
               help='Only create .tar.gz archives on the remote pod; do not download')
 @click.option('--no-keep-archive', is_flag=True,
               help='Remove the local .tar.gz file after extraction (default: keep it)')
+@click.option('--context', '-x', 'kube_context', default=None,
+              help='Kubernetes context to use (default: active context in kubeconfig)')
 def download(output, force, verbose, skip_removal, port_forward_only, remote_compress_only,
-             no_keep_archive):
+             no_keep_archive, kube_context):
     """Download result files from the cluster S3 (MinIO) server.
 
     Downloads all test run results from the MinIO S3 server embedded in the
@@ -442,9 +527,12 @@ def download(output, force, verbose, skip_removal, port_forward_only, remote_com
         sys.exit(1)
 
     try:
-        config_name = load_cluster_config_name()
+        require_context_for_multi_cluster(kube_context)
+        context_key = kube_context
+        config_name = load_cluster_config_name(context_key)
         cluster_config = get_cluster_config(config_name)
-        downloader = ResultDownloader(namespace=get_cluster_namespace(), cluster_config=cluster_config)
+        downloader = ResultDownloader(namespace=get_cluster_namespace(context_key), cluster_config=cluster_config,
+                                      context=kube_context)
 
         if port_forward_only:
             downloader.port_forward_only()
@@ -484,8 +572,10 @@ def download(output, force, verbose, skip_removal, port_forward_only, remote_com
               help='Cluster-specific option in key=value format (can be used multiple times)')
 @click.option('--force', '-f', is_flag=True,
               help='Force re-setup even if cluster is already set up')
+@click.option('--context', '-x', 'kube_context', default=None,
+              help='Kubernetes context to use (default: active context in kubeconfig)')
 @click.argument('cluster_config', required=False)
-def setup(list_configs, namespace, options, force, cluster_config):
+def setup(list_configs, namespace, options, force, kube_context, cluster_config):
     """Set up the Kubernetes cluster for execution.
 
     Deploys a MinIO S3 server in the Kubernetes cluster. The server is used
@@ -513,8 +603,16 @@ def setup(list_configs, namespace, options, force, cluster_config):
         click.echo("Error: CLUSTER_CONFIG argument is required when not using --list", err=True)
         sys.exit(1)
 
+    try:
+        require_context_for_multi_cluster(kube_context)
+    except ValueError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
     # Parse cluster-specific options
     cluster_kwargs = {"namespace": namespace}
+    if kube_context is not None:
+        cluster_kwargs["kube_context"] = kube_context
     for option in options:
         if '=' not in option:
             click.echo(f"Error: Invalid option format '{option}'. Expected key=value", err=True)
@@ -533,19 +631,24 @@ def setup(list_configs, namespace, options, force, cluster_config):
 @cluster.command(name='download-cleanup')
 @click.option('--run-id', '-i', default=None,
               help='Only remove this run\'s bucket (e.g. run-2025-02-27-123456). Without this, removes all run buckets.')
-def download_cleanup(run_id):
+@click.option('--context', '-x', 'kube_context', default=None,
+              help='Kubernetes context to use (default: active context in kubeconfig)')
+def download_cleanup(run_id, kube_context):
     """Remove result buckets from cluster S3 without downloading.
 
-    Deletes run result buckets (run-*) from the MinIO S3 server in the cluster.
+    Deletes run result buckets (``run-*``) from the MinIO S3 server in the cluster.
     Does not download any data; use ``vast execution cluster download`` if you
     need the results first.
 
     Use --run-id to remove only a specific run's bucket.
     """
     try:
-        config_name = load_cluster_config_name()
+        require_context_for_multi_cluster(kube_context)
+        context_key = kube_context
+        config_name = load_cluster_config_name(context_key)
         cluster_config = get_cluster_config(config_name)
-        downloader = ResultDownloader(namespace=get_cluster_namespace(), cluster_config=cluster_config)
+        downloader = ResultDownloader(namespace=get_cluster_namespace(context_key), cluster_config=cluster_config,
+                                      context=kube_context)
         count = downloader.cleanup_s3_buckets(run_id=run_id)
         click.echo(f"✓ Removed {count} bucket(s) from S3.")
 
@@ -556,7 +659,9 @@ def download_cleanup(run_id):
 @cluster.command(name='run-cleanup')
 @click.option('--run-id', '-i', default=None,
               help='Clean only jobs for this run (e.g. run-2025-02-27-123456). Without this, cleans all scenario-runs jobs.')
-def run_cleanup(run_id):
+@click.option('--context', '-x', 'kube_context', default=None,
+              help='Kubernetes context to use (default: active context in kubeconfig)')
+def run_cleanup(run_id, kube_context):
     """Clean up jobs and pods from a cluster run.
 
     Removes scenario execution jobs and their associated pods. By default
@@ -569,8 +674,10 @@ def run_cleanup(run_id):
     Usage: vast execution cluster run-cleanup --run-id run-2025-02-27-123456
     """
     try:
-        namespace = get_cluster_namespace()
-        k8s_client = get_kubernetes_client()
+        require_context_for_multi_cluster(kube_context)
+        context_key = kube_context
+        namespace = get_cluster_namespace(context_key)
+        k8s_client = get_kubernetes_client(context=kube_context)
         click.echo("Checking Kubernetes cluster access...")
         k8s_ok, k8s_msg = check_kubernetes_access(k8s_client, namespace=namespace)
         if not k8s_ok:
@@ -578,7 +685,7 @@ def run_cleanup(run_id):
             sys.exit(1)
 
         if run_id:
-            per_run = get_cluster_run_job_counts_per_run(namespace)
+            per_run = get_cluster_run_job_counts_per_run(namespace, context=kube_context)
             label_safe = _label_safe_run_id(run_id)
             if label_safe not in per_run:
                 available = sorted(per_run.keys())
@@ -593,7 +700,7 @@ def run_cleanup(run_id):
             click.echo(f"Cleaning up jobs and pods for run '{run_id}'...")
         else:
             click.echo("Cleaning up all scenario run jobs and pods...")
-        cleanup_cluster_run(namespace=namespace, run_id=run_id)
+        cleanup_cluster_run(namespace=namespace, run_id=run_id, context=kube_context)
         click.echo("✓ Cleanup completed successfully!")
 
     except Exception as e:
@@ -607,7 +714,9 @@ def run_cleanup(run_id):
               help='Kubernetes namespace to clean up (required when using --cluster-config without prior setup)')
 @click.option('--option', '-o', 'options', multiple=True,
               help='Cluster-specific option in key=value format (can be used multiple times)')
-def cleanup(config_name, namespace, options):
+@click.option('--context', '-x', 'kube_context', default=None,
+              help='Kubernetes context to use (default: active context in kubeconfig)')
+def cleanup(config_name, namespace, options, kube_context):
     """Clean up the Kubernetes cluster setup.
 
     Removes the NFS server pod and service from the Kubernetes cluster
@@ -623,9 +732,12 @@ def cleanup(config_name, namespace, options):
     setup was done in a non-default namespace.
     """
     try:
+        require_context_for_multi_cluster(kube_context)
         cluster_kwargs = {}
         if namespace is not None:
             cluster_kwargs["namespace"] = namespace
+        if kube_context is not None:
+            cluster_kwargs["kube_context"] = kube_context
         for option in options:
             if '=' not in option:
                 click.echo(f"Error: Invalid option format '{option}'. Expected key=value", err=True)
@@ -651,7 +763,9 @@ def cleanup(config_name, namespace, options):
               help='Cluster-specific option in key=value format (can be used multiple times)')
 @click.option('--log-tree', '-t', is_flag=True,
               help='Log scenario execution live tree')
-def prepare_run(output, config, runs, cluster_config, options, log_tree):  # pylint: disable=function-redefined
+@click.option('--context', '-x', 'kube_context', default=None,
+              help='Kubernetes context to use (default: active context in kubeconfig)')
+def prepare_run(output, config, runs, cluster_config, options, log_tree, kube_context):  # pylint: disable=function-redefined
     """Prepare complete setup for manual deployment.
 
     Generates all necessary files for cluster execution and writes them to
@@ -677,6 +791,8 @@ def prepare_run(output, config, runs, cluster_config, options, log_tree):  # pyl
     Requires project initialization with ``vast init`` first.
     """
     try:
+        require_context_for_multi_cluster(kube_context)
+        context_key = kube_context
         # Get project configuration
         project_config = get_project_config()
         config_path = project_config.config_path
@@ -694,7 +810,7 @@ def prepare_run(output, config, runs, cluster_config, options, log_tree):  # pyl
             cluster_kwargs[key] = value
 
         if cluster_config is None:
-            cluster_config = load_cluster_config_name()
+            cluster_config = load_cluster_config_name(context_key)
             if cluster_config:
                 logging.debug(f"Auto-detected cluster config: {cluster_config}")
             else:
@@ -707,12 +823,13 @@ def prepare_run(output, config, runs, cluster_config, options, log_tree):  # pyl
         except Exception as e:
             raise RuntimeError(f"Failed to get cluster config: {e}") from e
 
-        namespace = cluster_kwargs.get("namespace", get_cluster_namespace())
+        namespace = cluster_kwargs.get("namespace", get_cluster_namespace(context_key))
 
         # Initialize job runner (this prepares all scenarios)
         job_runner = JobRunner(
             config_path, config, runs, cluster_config,
-            namespace=namespace, log_tree=log_tree)
+            namespace=namespace, log_tree=log_tree,
+            kube_context=kube_context)
 
         click.echo(f"Preparing run configuration 'ID: {job_runner.run_id}', test configs: {
                    len(job_runner.configs)}, runs per test config: {job_runner.num_runs}...")
@@ -760,7 +877,7 @@ def prepare_run(output, config, runs, cluster_config, options, log_tree):  # pyl
         from robovast.execution.cluster_execution.kubernetes_kueue import (
             prepare_kueue_setup,
         )
-        prepare_kueue_setup(output, namespace=namespace)
+        prepare_kueue_setup(output, namespace=namespace, kube_context=kube_context)
 
         generate_upload_script(
             output, job_runner.run_id, namespace, cluster_config,
@@ -793,7 +910,7 @@ Namespace: {namespace}
 
 import os
 import sys
-from robovast.execution.cluster_execution.kubernetes import upload_configs_to_s3
+from robovast.execution.cluster_execution.s3_client import upload_configs_to_s3
 from robovast.execution.cluster_config.base_config import BaseConfig
 
 

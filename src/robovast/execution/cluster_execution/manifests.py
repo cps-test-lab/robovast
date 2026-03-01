@@ -10,7 +10,6 @@ metadata:
 spec:
   backoffLimit: 0
   ttlSecondsAfterFinished: 3
-  # activeDeadlineSeconds: 10000000
   template:
     metadata:
       name: scenario-runs

@@ -148,7 +148,7 @@ def result_analyzer_cmd(results_dir, force, skip_postprocessing):
 @analysis.command(name='merge-results')
 @click.argument('merged_run_dir', type=click.Path())
 @click.option('--results-dir', '-r', default=None,
-              help='Source directory containing run-* dirs (uses project results dir if not specified)')
+              help='Source directory containing run-\\* dirs (uses project results dir if not specified)')
 def merge_results_cmd(merged_run_dir, results_dir):
     """Merge run-dirs with identical configs into one merged_run_dir.
 

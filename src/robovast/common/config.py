@@ -15,7 +15,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
 
@@ -51,9 +51,28 @@ class ConfigurationConfig(BaseModel):
 
 
 class ResourcesConfig(BaseModel):
-    cpu: Optional[int] = None
-    memory: Optional[str] = None
-    gpu: Optional[int] = None
+    """Resource limits for a container.
+
+    Each field accepts either a plain scalar (the default, works for all
+    clusters) or a per-cluster list when different clusters need different
+    allocations::
+
+        # Simple – same for every cluster
+        resources:
+          cpu: 8
+          memory: 16Gi
+
+        # Per-cluster – keys are the real Kubernetes context names
+        resources:
+          cpu:
+            - gke_my-project_us-central1_my-cluster: 4
+            - minikube: 8
+          memory:
+            - gke_my-project_us-central1_my-cluster: 10Gi
+            - minikube: 20Gi
+    """
+    cpu: Optional[Union[int, list[dict[str, int]]]] = None
+    memory: Optional[Union[str, list[dict[str, str]]]] = None
 
 
 class SecondaryContainerConfig(BaseModel):
@@ -87,7 +106,7 @@ def normalize_secondary_containers(secondary_containers) -> list[dict]:
         if hasattr(sc, 'name'):
             result.append({
                 'name': sc.name,
-                'resources': {'cpu': sc.resources.cpu, 'memory': sc.resources.memory, 'gpu': sc.resources.gpu}
+                'resources': {'cpu': sc.resources.cpu, 'memory': sc.resources.memory}
                 if sc.resources is not None else {}
             })
         elif isinstance(sc, dict) and 'name' in sc:
@@ -101,15 +120,7 @@ def normalize_secondary_containers(secondary_containers) -> list[dict]:
     return result
 
 
-class LocalExecutionConfig(BaseModel):
-    """Configuration for local execution only (not applied in cluster runs)."""
-
-    model_config = ConfigDict(extra='allow')
-    parameter_overrides: Optional[list[dict[str, Any]]] = None
-
-
 class ExecutionConfig(BaseModel):
-    model_config = ConfigDict(extra='forbid')
     image: str
     resources: Optional[ResourcesConfig] = None
     secondary_containers: Optional[list[SecondaryContainerConfig]] = None
@@ -117,9 +128,7 @@ class ExecutionConfig(BaseModel):
     runs: int
     scenario_file: Optional[str] = None
     test_files_filter: Optional[list[str]] = None
-    pre_command: Optional[str] = None
-    post_command: Optional[str] = None
-    local: Optional[LocalExecutionConfig] = None
+    timeout: Optional[int] = None  # Maximum execution time in seconds per test run
 
     @field_validator('env')
     @classmethod

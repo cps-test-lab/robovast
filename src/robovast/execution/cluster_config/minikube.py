@@ -85,7 +85,7 @@ class MinikubeClusterConfig(BaseConfig):
         """
         logging.info("Setting up RoboVAST MinIO S3 server in minikube cluster...")
 
-        config.load_kube_config()
+        config.load_kube_config(context=kwargs.get('kube_context'))
         k8s_client = client.ApiClient()
 
         try:
@@ -108,7 +108,7 @@ class MinikubeClusterConfig(BaseConfig):
             **kwargs: Additional cluster-specific options (ignored)
         """
         logging.debug("Cleaning up RoboVAST MinIO in minikube cluster...")
-        config.load_kube_config()
+        config.load_kube_config(context=kwargs.get('kube_context'))
         core_v1 = client.CoreV1Api()
 
         try:

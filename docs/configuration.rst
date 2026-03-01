@@ -177,6 +177,27 @@ Number of times to execute each test configuration. Multiple runs allow for stat
    execution:
      runs: 20
 
+timeout
+^^^^^^^
+
+**Type:** Integer (seconds)
+
+**Required:** No
+
+**Applies to:** Local and cluster execution
+
+Maximum wall-clock time (in seconds) allowed for a single test run.
+
+- **Local (Docker Compose):** A watchdog process kills the Compose stack once the limit is reached.
+- **Cluster (Kubernetes):** Sets ``activeDeadlineSeconds`` on the Job spec; Kubernetes terminates the pod when the deadline expires.
+
+If omitted (or ``null``), there is no time limit.
+
+.. code-block:: yaml
+
+   execution:
+     timeout: 3600   # 1 hour per test run
+
 scenario_file
 ^^^^^^^^^^^^^
 
@@ -321,8 +342,19 @@ CPU and memory limits for the main (primary) container. Used by Docker Compose f
 
 **Available fields:**
 
-- ``cpu`` (Optional): Number of CPU cores (integer)
-- ``memory`` (Optional): Memory limit (e.g., ``8Gi``, ``4096Mi``)
+- ``cpu`` (Optional): Number of CPU cores (integer), or a per-cluster list
+- ``memory`` (Optional): Memory limit (e.g., ``8Gi``, ``4096Mi``), or a per-cluster list
+
+**Per-cluster resource values** are supported when multiple clusters need
+different allocations.  See :ref:`cluster-execution` for the full syntax.
+
+.. code-block:: yaml
+
+   execution:
+     resources:
+       cpu:
+         - gcp-c4: 4     # 4 CPUs on the gcp-c4 cluster
+         - local:   8     # 8 CPUs when running locally
 
 secondary_containers
 ^^^^^^^^^^^^^^^^^^^^
@@ -355,9 +387,12 @@ Each entry is either a container name (string) or a dictionary with the containe
 
 **Per-container resources:**
 
-- ``cpu`` (Optional): Number of CPU cores for this container
-- ``memory`` (Optional): Memory limit (e.g., ``4Gi``, ``4096Mi``)
+- ``cpu`` (Optional): Number of CPU cores for this container, or a per-cluster list
+- ``memory`` (Optional): Memory limit (e.g., ``4Gi``, ``4096Mi``), or a per-cluster list
 - ``gpu`` (Optional): Number of GPUs (enables NVIDIA runtime when set)
+
+Per-cluster lists follow the same syntax as the main ``resources`` field.
+See :ref:`cluster-execution` for details.
 
 .. note::
 

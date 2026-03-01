@@ -55,11 +55,24 @@ spec:
         port: 9000
       initialDelaySeconds: 5
       periodSeconds: 5
+  - name: http-server
+    image: nginx:alpine
+    ports:
+      - name: http
+        containerPort: 80
+    volumeMounts:
+      - mountPath: /usr/share/nginx/html
+        name: minio-storage
+        readOnly: true
+  - name: archiver
+    image: python:3.12-alpine
+    command: ["sh", "-c", "pip install --no-cache-dir boto3 && exec sleep infinity"]
+    volumeMounts:
+      - mountPath: /data
+        name: minio-storage
   volumes:
   - name: minio-storage
-    hostPath:
-      path: /transfer
-      type: DirectoryOrCreate
+    emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
@@ -77,6 +90,10 @@ spec:
     port: 9001
     targetPort: 9001
     protocol: TCP
+  - name: http
+    port: 9998
+    targetPort: 80
+    protocol: TCP
   selector:
     role: robovast
 """
@@ -92,10 +109,8 @@ class Rke2ClusterConfig(BaseConfig):
         """
         logging.info("Setting up RoboVAST MinIO S3 server in RKE2 cluster...")
         logging.info("")
-        logging.info("Please ensure that folder /transfer exists on all cluster nodes and is writable.")
-        logging.info("")
 
-        config.load_kube_config()
+        config.load_kube_config(context=kwargs.get('kube_context'))
         k8s_client = client.ApiClient()
 
         try:
@@ -118,7 +133,7 @@ class Rke2ClusterConfig(BaseConfig):
             **kwargs: Additional cluster-specific options (ignored)
         """
         logging.debug("Cleaning up RoboVAST MinIO in RKE2 cluster...")
-        config.load_kube_config()
+        config.load_kube_config(context=kwargs.get('kube_context'))
         core_v1 = client.CoreV1Api()
 
         try:

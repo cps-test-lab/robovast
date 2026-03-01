@@ -125,7 +125,7 @@ class GcpClusterConfig(BaseConfig):
         logging.info(f"Storage size: {storage_size}")
         logging.info(f"Disk type: {disk_type}")
 
-        config.load_kube_config()
+        config.load_kube_config(context=kwargs.get('kube_context'))
         k8s_client = client.ApiClient()
 
         try:
@@ -150,7 +150,7 @@ class GcpClusterConfig(BaseConfig):
             **kwargs: Additional cluster-specific options (ignored)
         """
         logging.debug("Cleaning up RoboVAST MinIO in GCP cluster...")
-        config.load_kube_config()
+        config.load_kube_config(context=kwargs.get('kube_context'))
         core_v1 = client.CoreV1Api()
 
         try:

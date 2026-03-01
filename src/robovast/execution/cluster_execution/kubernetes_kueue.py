@@ -131,11 +131,14 @@ def cleanup_kueue_workloads(
             raise
 
 
-def get_cluster_allocatable_resources():
+def get_cluster_allocatable_resources(kube_context=None):
     """Query the cluster for available CPU and memory (allocatable minus requested).
 
     Sums allocatable from all nodes, subtracts requests from Running/Pending pods,
     and returns the available capacity for Kueue quotas.
+
+    Args:
+        kube_context: Kubernetes context to use. None uses the active context.
 
     Returns:
         tuple: (cpu_quota: int, memory_quota: str) e.g. (8, "32Gi").
@@ -145,7 +148,7 @@ def get_cluster_allocatable_resources():
         try:
             config.load_incluster_config()
         except config.ConfigException:
-            config.load_kube_config()
+            config.load_kube_config(context=kube_context)
 
         v1 = client.CoreV1Api()
         total_allocatable_cpu = 0.0
@@ -226,9 +229,10 @@ def _run_helm(args, check=True):
     return True, ""
 
 
-def _run_kubectl_apply(yaml_content, check=True):
+def _run_kubectl_apply(yaml_content, check=True, kube_context=None):
     """Apply YAML via kubectl. Returns success."""
-    cmd = ["kubectl", "apply", "-f", "-"]
+    ctx_args = ["--context", kube_context] if kube_context else []
+    cmd = ["kubectl"] + ctx_args + ["apply", "-f", "-"]
     logger.debug("Applying Kueue queue manifests via kubectl")
     result = subprocess.run(
         cmd,
@@ -247,14 +251,19 @@ def _run_kubectl_apply(yaml_content, check=True):
     return True
 
 
-def install_kueue_helm():
+def install_kueue_helm(kube_context=None):
     """Install Kueue via Helm in kueue-system namespace.
 
     Requires Helm to be installed and in PATH.
     If Kueue is already installed, upgrades to the specified version.
+
+    Args:
+        kube_context: Kubernetes context to use. None uses the active context.
     """
+    ctx_helm = [f"--kube-context={kube_context}"] if kube_context else []
+    ctx_kubectl = ["--context", kube_context] if kube_context else []
     result = subprocess.run(
-        ["helm", "list", "-n", KUEUE_NAMESPACE, "-q", "-f", KUEUE_HELM_RELEASE],
+        ["helm", "list", "-n", KUEUE_NAMESPACE, "-q", "-f", KUEUE_HELM_RELEASE] + ctx_helm,
         capture_output=True,
         text=True,
     )
@@ -270,12 +279,11 @@ def install_kueue_helm():
                 KUEUE_HELM_REPO,
                 f"--version={KUEUE_HELM_VERSION}",
                 f"--namespace={KUEUE_NAMESPACE}",
-            ]
+            ] + ctx_helm
         )
         # Wait for CRDs after upgrade (upgrade may update CRDs)
         subprocess.run(
-            [
-                "kubectl",
+            ["kubectl"] + ctx_kubectl + [
                 "wait",
                 "--for=condition=established",
                 "crd/resourceflavors.kueue.x-k8s.io",
@@ -295,13 +303,12 @@ def install_kueue_helm():
             f"--version={KUEUE_HELM_VERSION}",
             "--create-namespace",
             f"--namespace={KUEUE_NAMESPACE}",
-        ]
+        ] + ctx_helm
     )
     logger.info("Kueue installed successfully. Waiting for controller and CRDs...")
     # Wait for ResourceFlavor CRD to be established (CRDs install before controller)
     subprocess.run(
-        [
-            "kubectl",
+        ["kubectl"] + ctx_kubectl + [
             "wait",
             "--for=condition=established",
             "crd/resourceflavors.kueue.x-k8s.io",
@@ -312,8 +319,7 @@ def install_kueue_helm():
     )
     # Wait for deployment to be ready
     subprocess.run(
-        [
-            "kubectl",
+        ["kubectl"] + ctx_kubectl + [
             "rollout",
             "status",
             "deployment/kueue-controller-manager",
@@ -326,11 +332,16 @@ def install_kueue_helm():
     )
 
 
-def uninstall_kueue_helm():
-    """Uninstall Kueue Helm release from kueue-system namespace."""
+def uninstall_kueue_helm(kube_context=None):
+    """Uninstall Kueue Helm release from kueue-system namespace.
+
+    Args:
+        kube_context: Kubernetes context to use. None uses the active context.
+    """
     logger.info("Uninstalling Kueue Helm release...")
+    ctx_helm = [f"--kube-context={kube_context}"] if kube_context else []
     ok, err = _run_helm(
-        ["uninstall", KUEUE_HELM_RELEASE, f"--namespace={KUEUE_NAMESPACE}"],
+        ["uninstall", KUEUE_HELM_RELEASE, f"--namespace={KUEUE_NAMESPACE}"] + ctx_helm,
         check=False,
     )
     if not ok:
@@ -340,15 +351,16 @@ def uninstall_kueue_helm():
             raise RuntimeError(f"Failed to uninstall Kueue: {err}")
 
 
-def apply_kueue_queues(namespace="default"):
+def apply_kueue_queues(namespace="default", kube_context=None):
     """Create ResourceFlavor, ClusterQueue, and LocalQueue for RoboVAST.
 
     Quotas are set from cluster allocatable CPU and memory.
 
     Args:
         namespace: Kubernetes namespace for the LocalQueue (execution namespace)
+        kube_context: Kubernetes context to use. None uses the active context.
     """
-    cpu_quota, memory_quota = get_cluster_allocatable_resources()
+    cpu_quota, memory_quota = get_cluster_allocatable_resources(kube_context=kube_context)
     yaml_content = KUEUE_QUEUES_YAML.format(
         namespace=namespace,
         queue_name=KUEUE_QUEUE_NAME,
@@ -356,7 +368,7 @@ def apply_kueue_queues(namespace="default"):
         cpu_quota=cpu_quota,
         memory_quota=memory_quota,
     ).strip()
-    _run_kubectl_apply(yaml_content)
+    _run_kubectl_apply(yaml_content, kube_context=kube_context)
     logger.info(
         "Kueue queues configured: LocalQueue '%s' in namespace '%s'",
         KUEUE_QUEUE_NAME,
@@ -364,7 +376,7 @@ def apply_kueue_queues(namespace="default"):
     )
 
 
-def prepare_kueue_setup(output_dir, namespace="default"):
+def prepare_kueue_setup(output_dir, namespace="default", kube_context=None):
     """Write Kueue queue manifests and README to output_dir.
 
     Quotas are set from cluster allocatable CPU and memory when cluster is
@@ -373,8 +385,9 @@ def prepare_kueue_setup(output_dir, namespace="default"):
     Args:
         output_dir: Directory to write files
         namespace: Kubernetes namespace for LocalQueue
+        kube_context: Kubernetes context to use. None uses the active context.
     """
-    cpu_quota, memory_quota = get_cluster_allocatable_resources()
+    cpu_quota, memory_quota = get_cluster_allocatable_resources(kube_context=kube_context)
     yaml_content = KUEUE_QUEUES_YAML.format(
         namespace=namespace,
         queue_name=KUEUE_QUEUE_NAME,

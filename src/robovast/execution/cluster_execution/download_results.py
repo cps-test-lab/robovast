@@ -53,15 +53,16 @@ def _format_rate(bytes_per_sec):
 
 
 class ResultDownloader:
-    def __init__(self, namespace="default", cluster_config=None):
+    def __init__(self, namespace="default", cluster_config=None, context=None):
         self.namespace = namespace
         self.cluster_config = cluster_config
+        self.context = context
         self.port_forward_process = None
         self.local_port = self._find_available_port()
         self.remote_port = 80  # HTTP server port in sidecar
 
         # Initialize Kubernetes client
-        config.load_kube_config()
+        config.load_kube_config(context=context)
         self.k8s_client = client.CoreV1Api()
 
         # Check if transfer-pod exists
@@ -107,10 +108,11 @@ class ResultDownloader:
 
         logger.debug(f"Starting port-forward to robovast:{self.remote_port} -> localhost:{self.local_port}")
 
-        cmd = [
-            "kubectl", "port-forward",
+        ctx_args = ["--context", self.context] if self.context else []
+        cmd = ["kubectl"] + ctx_args + [
+            "port-forward",
             "-n", self.namespace,
-            f"pod/robovast",
+            "pod/robovast",
             f"{self.local_port}:{self.remote_port}"
         ]
 
@@ -127,9 +129,10 @@ class ResultDownloader:
     def list_remote_archives(self):
         """Return a list of .tar.gz filenames present in /data/ on the pod."""
         try:
+            ctx_args = ["--context", self.context] if self.context else []
             result = subprocess.run(
-                [
-                    "kubectl", "exec", "-n", self.namespace, "robovast",
+                ["kubectl"] + ctx_args + [
+                    "exec", "-n", self.namespace, "robovast",
                     "-c", "archiver",
                     "--",
                     "sh", "-c", "ls /data/*.tar.gz 2>/dev/null || true",
@@ -222,9 +225,11 @@ class ResultDownloader:
         """
         archive_name = f"{run_id}.tar.gz"
         remote_archive_path = f"/data/{archive_name}"
+        unfinished_flag_path = f"{remote_archive_path}_unfinished"
 
-        check_archive_cmd = [
-            "kubectl", "exec", "-n", self.namespace, "robovast",
+        ctx_args = ["--context", self.context] if self.context else []
+        check_archive_cmd = ["kubectl"] + ctx_args + [
+            "exec", "-n", self.namespace, "robovast",
             "-c", "archiver",
             "--",
             "test", "-f", remote_archive_path
@@ -233,23 +238,46 @@ class ResultDownloader:
             check_archive_cmd, capture_output=True, text=True, check=False
         ).returncode == 0
 
-        if archive_exists and not force:
-            if verbose:
-                logger.info(f"Run {run_id}: archive already exists at {remote_archive_path}, skipping")
-            else:
-                sys.stdout.write("\r" + CLEAR_LINE + f"{run_id}  skipped (archive exists)\n")
-                sys.stdout.flush()
-            return True
-
-        if archive_exists and force:
-            rm_cmd = [
-                "kubectl", "exec", "-n", self.namespace, "robovast",
+        if archive_exists:
+            # Check if unfinished flag is present (incomplete previous run)
+            check_flag_cmd = ["kubectl"] + ctx_args + [
+                "exec", "-n", self.namespace, "robovast",
                 "-c", "archiver",
                 "--",
-                "rm", "-f", remote_archive_path
+                "test", "-f", unfinished_flag_path
             ]
-            subprocess.run(rm_cmd, capture_output=True, text=True, check=False)
-            archive_exists = False
+            flag_exists = subprocess.run(
+                check_flag_cmd, capture_output=True, text=True, check=False
+            ).returncode == 0
+
+            if flag_exists:
+                logger.info(f"Run {run_id}: incomplete archive found (unfinished flag present), recreating...")
+                for path in (remote_archive_path, unfinished_flag_path):
+                    subprocess.run(
+                        ["kubectl"] + ctx_args + [
+                            "exec", "-n", self.namespace, "robovast",
+                            "-c", "archiver", "--", "rm", "-f", path
+                        ],
+                        capture_output=True, text=True, check=False,
+                    )
+                archive_exists = False
+            elif not force:
+                if verbose:
+                    logger.info(f"Run {run_id}: archive already exists at {remote_archive_path}, skipping")
+                else:
+                    sys.stdout.write("\r" + CLEAR_LINE + f"{run_id}  skipped (archive exists)\n")
+                    sys.stdout.flush()
+                return True
+            else:
+                # force=True and no unfinished flag — remove the complete archive
+                subprocess.run(
+                    ["kubectl"] + ctx_args + [
+                        "exec", "-n", self.namespace, "robovast",
+                        "-c", "archiver", "--", "rm", "-f", remote_archive_path
+                    ],
+                    capture_output=True, text=True, check=False,
+                )
+                archive_exists = False
 
         try:
             if not verbose:
@@ -257,12 +285,21 @@ class ResultDownloader:
                 sys.stdout.flush()
             logger.debug(f"Streaming S3 bucket {run_id} to tar.gz via archiver container...")
 
+            # Mark archive creation as in progress
+            subprocess.run(
+                ["kubectl"] + ctx_args + [
+                    "exec", "-n", self.namespace, "robovast",
+                    "-c", "archiver", "--", "touch", unfinished_flag_path
+                ],
+                capture_output=True, text=True, check=False,
+            )
+
             script_path = os.path.join(os.path.dirname(__file__), "s3_to_targz.py")
             with open(script_path, encoding="utf-8") as f:
                 script_content = f.read()
 
-            create_archive_cmd = [
-                "kubectl", "exec", "-i", "-n", self.namespace, "robovast",
+            create_archive_cmd = ["kubectl"] + ctx_args + [
+                "exec", "-i", "-n", self.namespace, "robovast",
                 "-c", "archiver",
                 "--",
                 "python", "-", run_id
@@ -274,6 +311,16 @@ class ResultDownloader:
                 text=True,
                 check=True,
             )
+
+            # Archive created successfully — remove the unfinished flag
+            subprocess.run(
+                ["kubectl"] + ctx_args + [
+                    "exec", "-n", self.namespace, "robovast",
+                    "-c", "archiver", "--", "rm", "-f", unfinished_flag_path
+                ],
+                capture_output=True, text=True, check=False,
+            )
+
             if verbose:
                 logger.info(f"Created archive at {remote_archive_path}")
             else:
@@ -322,11 +369,12 @@ class ResultDownloader:
                 namespace=self.namespace,
                 access_key=access_key,
                 secret_key=secret_key,
+                context=self.context,
             ) as s3:
                 all_run_ids = s3.list_run_buckets()
 
             # Exclude runs with running or pending jobs
-            job_counts = get_cluster_run_job_counts_per_run(namespace=self.namespace)
+            job_counts = get_cluster_run_job_counts_per_run(namespace=self.namespace, context=self.context)
             available = []
             excluded = []
             for rid in all_run_ids:
@@ -425,10 +473,12 @@ class ResultDownloader:
             # Create compressed archive on remote pod using archiver container (has tar/gzip)
             archive_name = f"{run_id}.tar.gz"
             remote_archive_path = f"/data/{archive_name}"
+            unfinished_flag_path = f"{remote_archive_path}_unfinished"
 
             # Check if remote archive already exists
-            check_archive_cmd = [
-                "kubectl", "exec", "-n", self.namespace, "robovast",
+            ctx_args = ["--context", self.context] if self.context else []
+            check_archive_cmd = ["kubectl"] + ctx_args + [
+                "exec", "-n", self.namespace, "robovast",
                 "-c", "archiver",
                 "--",
                 "test", "-f", remote_archive_path
@@ -437,21 +487,46 @@ class ResultDownloader:
             archive_exists = subprocess.run(check_archive_cmd, capture_output=True, text=True, check=False).returncode == 0
 
             if archive_exists:
-                sys.stdout.write(f"{run_id}  Remote archive already exists at {remote_archive_path}. Overwrite? [y/N] ")
-                sys.stdout.flush()
-                answer = sys.stdin.readline().strip().lower()
-                if answer in ("y", "yes"):
-                    logger.debug(f"Removing existing remote archive {remote_archive_path}...")
-                    rm_cmd = [
-                        "kubectl", "exec", "-n", self.namespace, "robovast",
-                        "-c", "archiver",
-                        "--",
-                        "rm", "-f", remote_archive_path
-                    ]
-                    subprocess.run(rm_cmd, capture_output=True, text=True, check=False)
+                # Check whether a previous creation was interrupted
+                check_flag_cmd = ["kubectl"] + ctx_args + [
+                    "exec", "-n", self.namespace, "robovast",
+                    "-c", "archiver",
+                    "--",
+                    "test", "-f", unfinished_flag_path
+                ]
+                flag_exists = subprocess.run(
+                    check_flag_cmd, capture_output=True, text=True, check=False
+                ).returncode == 0
+
+                if flag_exists:
+                    logger.info(
+                        f"Run {run_id}: incomplete remote archive detected (unfinished flag present), recreating..."
+                    )
+                    for path in (remote_archive_path, unfinished_flag_path):
+                        subprocess.run(
+                            ["kubectl"] + ctx_args + [
+                                "exec", "-n", self.namespace, "robovast",
+                                "-c", "archiver", "--", "rm", "-f", path
+                            ],
+                            capture_output=True, text=True, check=False,
+                        )
                     archive_exists = False
                 else:
-                    logger.debug(f"Reusing existing remote archive {remote_archive_path}.")
+                    sys.stdout.write(f"{run_id}  Remote archive already exists at {remote_archive_path}. Overwrite? [y/N] ")
+                    sys.stdout.flush()
+                    answer = sys.stdin.readline().strip().lower()
+                    if answer in ("y", "yes"):
+                        logger.debug(f"Removing existing remote archive {remote_archive_path}...")
+                        subprocess.run(
+                            ["kubectl"] + ctx_args + [
+                                "exec", "-n", self.namespace, "robovast",
+                                "-c", "archiver", "--", "rm", "-f", remote_archive_path
+                            ],
+                            capture_output=True, text=True, check=False,
+                        )
+                        archive_exists = False
+                    else:
+                        logger.debug(f"Reusing existing remote archive {remote_archive_path}.")
 
             if not archive_exists:
                 if not verbose:
@@ -459,12 +534,21 @@ class ResultDownloader:
                     sys.stdout.flush()
                 logger.debug(f"Streaming S3 bucket {run_id} to tar.gz via archiver container...")
 
+                # Mark archive creation as in progress
+                subprocess.run(
+                    ["kubectl"] + ctx_args + [
+                        "exec", "-n", self.namespace, "robovast",
+                        "-c", "archiver", "--", "touch", unfinished_flag_path
+                    ],
+                    capture_output=True, text=True, check=False,
+                )
+
                 script_path = os.path.join(os.path.dirname(__file__), "s3_to_targz.py")
                 with open(script_path, encoding="utf-8") as f:
                     script_content = f.read()
 
-                create_archive_cmd = [
-                    "kubectl", "exec", "-i", "-n", self.namespace, "robovast",
+                create_archive_cmd = ["kubectl"] + ctx_args + [
+                    "exec", "-i", "-n", self.namespace, "robovast",
                     "-c", "archiver",
                     "--",
                     "python", "-", run_id
@@ -476,6 +560,16 @@ class ResultDownloader:
                     text=True,
                     check=True,
                 )
+
+                # Archive created successfully — remove the unfinished flag
+                subprocess.run(
+                    ["kubectl"] + ctx_args + [
+                        "exec", "-n", self.namespace, "robovast",
+                        "-c", "archiver", "--", "rm", "-f", unfinished_flag_path
+                    ],
+                    capture_output=True, text=True, check=False,
+                )
+
                 logger.debug(f"Archive created successfully at {remote_archive_path}")
             else:
                 logger.debug(f"Archive already exists at {remote_archive_path}, reusing...")
@@ -617,7 +711,23 @@ class ResultDownloader:
                 shutil.rmtree(run_output_dir)
 
             with tarfile.open(local_archive_path, 'r:gz') as tar:
-                tar.extractall(path=output_directory)
+                members = tar.getmembers()
+                total = len(members)
+                if not verbose and total > 0:
+                    for i, member in enumerate(members, 1):
+                        tar.extract(member, path=output_directory)
+                        pct = (i / total) * 100
+                        filled = int(BAR_WIDTH * i / total)
+                        progress_bar = "█" * filled + "░" * (BAR_WIDTH - filled)
+                        sys.stdout.write(
+                            "\r" + CLEAR_LINE +
+                            f"{run_id}  extracting  [{progress_bar}]  {pct:5.1f}%  {i}/{total} files"
+                        )
+                        sys.stdout.flush()
+                    sys.stdout.write("\r" + CLEAR_LINE + f"{run_id}  extracted  {total} files\n")
+                    sys.stdout.flush()
+                else:
+                    tar.extractall(path=output_directory)
 
             if not keep_archive:
                 os.remove(local_archive_path)
@@ -625,8 +735,8 @@ class ResultDownloader:
             if not skip_removal:
                 # Clean up remote archive using kubectl
                 logger.debug(f"Cleaning up remote archive...")
-                cleanup_cmd = [
-                    "kubectl", "exec", "-n", self.namespace, "robovast",
+                cleanup_cmd = ["kubectl"] + ctx_args + [
+                    "exec", "-n", self.namespace, "robovast",
                     "-c", "archiver",
                     "--",
                     "rm", "-f", remote_archive_path
@@ -643,6 +753,7 @@ class ResultDownloader:
                     namespace=self.namespace,
                     access_key=access_key,
                     secret_key=secret_key,
+                    context=self.context,
                 ) as s3:
                     s3.delete_bucket(run_id)
 

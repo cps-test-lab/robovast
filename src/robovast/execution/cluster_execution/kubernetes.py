@@ -15,8 +15,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
-import os
-import sys
 
 from kubernetes import client, config, utils
 from kubernetes.client.rest import ApiException
@@ -24,15 +22,18 @@ from kubernetes.client.rest import ApiException
 logger = logging.getLogger(__name__)
 
 
-def get_kubernetes_client():
+def get_kubernetes_client(context=None):
     """Get a Kubernetes API client.
+
+    Args:
+        context: Kubernetes context name to use. ``None`` uses the active context.
     """
     try:
         # Load kube config
         try:
             config.load_incluster_config()
         except config.ConfigException:
-            config.load_kube_config()
+            config.load_kube_config(context=context)
 
         # Create API client
         return client.CoreV1Api()
@@ -112,11 +113,12 @@ def delete_manifests(core_v1, manifests, namespace=None):
         ns = yaml_object.get('metadata', {}).get('namespace', 'default')
 
         try:
+            delete_options = client.V1DeleteOptions(grace_period_seconds=0)
             if kind == 'Pod':
                 core_v1.delete_namespaced_pod(
                     name=name,
                     namespace=ns,
-                    body=client.V1DeleteOptions()
+                    body=delete_options,
                 )
                 logger.debug(f"Deleted Pod/{name} from namespace {ns}")
 
@@ -124,34 +126,34 @@ def delete_manifests(core_v1, manifests, namespace=None):
                 core_v1.delete_namespaced_service(
                     name=name,
                     namespace=ns,
-                    body=client.V1DeleteOptions()
+                    body=delete_options,
                 )
                 logger.debug(f"Deleted Service/{name} from namespace {ns}")
             elif kind == 'ConfigMap':
                 core_v1.delete_namespaced_config_map(
                     name=name,
                     namespace=ns,
-                    body=client.V1DeleteOptions()
+                    body=delete_options,
                 )
                 logger.debug(f"Deleted ConfigMap/{name} from namespace {ns}")
             elif kind == 'PersistentVolumeClaim':
                 core_v1.delete_namespaced_persistent_volume_claim(
                     name=name,
                     namespace=ns,
-                    body=client.V1DeleteOptions()
+                    body=delete_options,
                 )
                 logger.debug(f"Deleted PersistentVolumeClaim/{name} from namespace {ns}")
             elif kind == 'PersistentVolume':
                 core_v1.delete_persistent_volume(
                     name=name,
-                    body=client.V1DeleteOptions()
+                    body=delete_options,
                 )
                 logger.debug(f"Deleted PersistentVolume/{name}")
             elif kind == 'StorageClass':
                 storage_api = client.StorageV1Api()
                 storage_api.delete_storage_class(
                     name=name,
-                    body=client.V1DeleteOptions()
+                    body=delete_options,
                 )
                 logger.debug(f"Deleted StorageClass/{name}")
             else:
@@ -162,40 +164,6 @@ def delete_manifests(core_v1, manifests, namespace=None):
                 logger.info(f"{kind}/{name} not found, skipping deletion")
             else:
                 raise
-
-
-def upload_configs_to_s3(config_dir, bucket_name, cluster_config, namespace="default"):
-    """Upload run configuration files to S3 bucket.
-
-    Creates the bucket and uploads the entire config_dir to the bucket root,
-    preserving the directory structure.
-
-    Args:
-        config_dir (str): Local directory containing generated config files.
-        bucket_name (str): S3 bucket name (e.g. 'run-20260220-123456').
-        cluster_config: BaseConfig instance providing S3 endpoint/credentials.
-        namespace (str): Kubernetes namespace (used for port-forwarding).
-    """
-    from .s3_client import ClusterS3Client # pylint: disable=import-outside-toplevel
-
-    if not os.path.isdir(config_dir):
-        raise FileNotFoundError(f"Config directory does not exist: {config_dir}")
-
-    access_key, secret_key = cluster_config.get_s3_credentials()
-
-    logger.debug(f"Uploading config files to s3://{bucket_name}/ ...")
-    try:
-        with ClusterS3Client(
-            namespace=namespace,
-            access_key=access_key,
-            secret_key=secret_key,
-        ) as s3:
-            s3.create_bucket(bucket_name)
-            s3.upload_directory(bucket_name, config_dir)
-        logger.debug(f"Successfully uploaded all config files to s3://{bucket_name}/")
-    except Exception as e:
-        logger.error(f"Failed to upload config files to S3: {e}")
-        sys.exit(1)
 
 
 def check_kubernetes_access(k8s_client, namespace="default"):
