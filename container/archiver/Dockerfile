@@ -13,6 +13,6 @@ FROM python:3.12-alpine
 
 RUN apk add --no-cache pigz \
  && pip install --no-cache-dir \
-        boto3 \
-        google-auth \
-        google-api-python-client
+        boto3==1.42 \
+        google-auth==2.48 \
+        google-api-python-client==2.190

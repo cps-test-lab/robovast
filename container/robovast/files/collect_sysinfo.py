@@ -177,7 +177,6 @@ def get_platform_info() -> Dict[str, Any]:
     """
     Collect a broad set of information from the Python `platform` module.
     """
-    uname = platform.uname()
     return {
         "platform": platform.platform(aliased=True, terse=False),
         "system": platform.system(),
