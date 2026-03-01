@@ -451,7 +451,7 @@ current working directory and walks up to the root.
 
 .. code-block:: ini
 
-   ROBOVAST_SHARE_TYPE=<provider>   # nextcloud  or  gdrive
+   ROBOVAST_SHARE_TYPE=<provider>   # e.g. nextcloud
 
 **Provider-specific variables** are listed in the sections below.
 
@@ -492,44 +492,6 @@ Example usage:
 
    # Force recreation of the tar.gz even if it already exists
    vast execution cluster upload-to-share --force
-
-Google Drive
-^^^^^^^^^^^^
-
-Uploads to a Google Drive folder using a **service account** with write access
-to the target folder.  The folder **must** be located in a **Shared Drive** —
-service accounts have no personal storage quota and cannot write to regular
-"My Drive" folders.
-
-Prerequisites:
-
-1. Create a service account in Google Cloud Console and download its JSON key
-   file.
-2. Add the service account email address as a member of the Shared Drive
-   (or share a specific folder within it) with at least "Contributor" role.
-
-.. code-block:: ini
-
-   ROBOVAST_SHARE_TYPE=gdrive
-
-   # Full URL or just the folder ID from the address bar.
-   # Example URL: https://drive.google.com/drive/folders/1AbCdEfGhIjKlMnOpQrStUv
-   ROBOVAST_SHARE_URL=https://drive.google.com/drive/folders/<folder-id>
-
-   # Absolute or project-relative path to the service account JSON key file.
-   ROBOVAST_GDRIVE_SERVICE_ACCOUNT_JSON=/home/user/.secrets/my-project-sa.json
-
-.. note::
-
-   ``google-auth`` and ``google-api-python-client`` are pre-installed in the
-   ``robovast-archiver`` image, so no extra setup is needed inside the pod.
-
-Example usage:
-
-.. code-block:: bash
-
-   vast execution cluster upload-to-share
-   vast execution cluster upload-to-share --keep-archive
 
 Progress output
 ^^^^^^^^^^^^^^^
@@ -608,9 +570,6 @@ Share provider API reference
    :undoc-members:
 
 .. autoclass:: robovast.execution.cluster_execution.share_providers.nextcloud.NextcloudShareProvider
-   :members:
-
-.. autoclass:: robovast.execution.cluster_execution.share_providers.gdrive.GDriveShareProvider
    :members:
 
 .. autoclass:: robovast.execution.cluster_execution.upload_to_share.ShareUploader

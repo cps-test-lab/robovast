@@ -32,7 +32,7 @@ def load_share_provider_plugins() -> dict[str, type[BaseShareProvider]]:
     :class:`~robovast.execution.cluster_execution.share_providers.base.BaseShareProvider`.
 
     Returns:
-        dict mapping share-type name (e.g. ``"nextcloud"``, ``"gdrive"``) to
+        dict mapping share-type name (e.g. ``"nextcloud"`` ) to
         the provider class.
     """
     plugins: dict[str, type[BaseShareProvider]] = {}

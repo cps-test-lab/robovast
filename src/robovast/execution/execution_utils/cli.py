@@ -599,7 +599,7 @@ def download_to_share(force, verbose, keep_archive, skip_removal, kube_context):
     directory.  Required variables:
 
     \b
-    ROBOVAST_SHARE_TYPE  — share provider: ``nextcloud`` or ``gdrive``
+    ROBOVAST_SHARE_TYPE  — share provider: ``nextcloud``
 
     Additional variables depend on the share type.  Run with no ``.env`` file
     to see a list of required variables for the detected share type.
@@ -627,7 +627,7 @@ def download_to_share(force, verbose, keep_archive, skip_removal, kube_context):
         raise click.UsageError(
             "ROBOVAST_SHARE_TYPE is not set.\n"
             "Add it to a .env file in your project directory.\n"
-            "Supported values: nextcloud, gdrive\n"
+            "Supported values: nextcloud\n"
             "Example .env:\n"
             "  ROBOVAST_SHARE_TYPE=nextcloud\n"
             "  ROBOVAST_SHARE_URL=https://cloud.example.com/s/AbCdEfGhIjKlMn"

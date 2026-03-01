@@ -59,7 +59,7 @@ class BaseShareProvider(ABC):
        ``[tool.poetry.plugins."robovast.share_providers"]``.
     """
 
-    #: Short identifier for the provider, e.g. ``"nextcloud"`` or ``"gdrive"``.
+    #: Short identifier for the provider, e.g. ``"nextcloud"`` .
     SHARE_TYPE: str = ""
 
     def __init__(self) -> None:
