@@ -23,8 +23,34 @@ from scipy.stats import (
     gamma, expon, weibull_min, lognorm, norm, poisson
 )
 import matplotlib.pyplot as plt
+from matplotlib import font_manager
 
 warnings.filterwarnings('ignore')
+
+SINGLE_COLUMN = 3.4
+TWO_COLUMNS = 7.0
+
+
+def configure_plot_style() -> None:
+    """Load IEEE plotting style used by figures.ipynb."""
+    script_dir = Path(__file__).resolve().parent
+    candidate_paths = [
+        script_dir / 'ieee.txt',
+        Path.cwd() / 'ieee.txt',
+    ]
+
+    for style_path in candidate_paths:
+        if style_path.exists():
+            plt.style.use(str(style_path))
+            available_fonts = {f.name for f in font_manager.fontManager.ttflist}
+            if 'Times New Roman' not in available_fonts:
+                plt.rcParams['font.family'] = 'DejaVu Serif'
+            return
+
+    print("Warning: ieee.txt not found; using default matplotlib style", file=sys.stderr)
+
+
+configure_plot_style()
 
 
 def extract_pose_metrics(poses_csv_path: str) -> Optional[Tuple[float, float]]:
@@ -457,7 +483,7 @@ def print_source_pose_vs_distance_differences_analysis(analysis: Dict) -> None:
 
 def plot_pose_distribution_vs_distance_means(analysis: Dict, output_dir: str) -> str:
     """Create plots for pose-position distribution vs distance-mean distribution analysis."""
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig, axes = plt.subplots(2, 2, figsize=(TWO_COLUMNS, TWO_COLUMNS))
 
     pose_points = analysis['pose_points']
     distance_means = analysis['distance_means']
@@ -513,7 +539,7 @@ def plot_pose_distribution_vs_distance_means(analysis: Dict, output_dir: str) ->
 
 def plot_source_pose_vs_distance_differences(analysis: Dict, output_dir: str) -> str:
     """Create plots for source-vs-others pose-difference vs mean-distance-difference analysis."""
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    fig, axes = plt.subplots(1, 2, figsize=(TWO_COLUMNS, SINGLE_COLUMN))
 
     combined_pose_diffs = analysis['combined_pose_diffs']
     distance_mean_diffs = analysis['distance_mean_diffs']
@@ -1134,7 +1160,7 @@ def plot_distribution(name: str, data: np.ndarray, analysis: Dict,
     Returns:
         Path to the saved figure
     """
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(TWO_COLUMNS, SINGLE_COLUMN))
     
     # Plot histogram
     ax.hist(data, bins=20, density=True, alpha=0.7, color='steelblue', edgecolor='black')
@@ -1210,7 +1236,7 @@ def plot_comparison(name1: str, data1: np.ndarray, analysis1: Dict,
     Returns:
         Path to the saved figure
     """
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    fig, axes = plt.subplots(1, 2, figsize=(TWO_COLUMNS, SINGLE_COLUMN))
     
     # Plot 1: Overlaid histograms with fitted distributions
     ax = axes[0]
@@ -1316,7 +1342,7 @@ def plot_pose_variance_correlation(test_type_base_name: str, analysis: Dict, out
     Returns:
         Path to the saved figure
     """
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig, axes = plt.subplots(2, 2, figsize=(TWO_COLUMNS, TWO_COLUMNS))
     
     variant_analyses = analysis['variant_analyses']
     variant_names = [v['variant_name'] for v in variant_analyses]
