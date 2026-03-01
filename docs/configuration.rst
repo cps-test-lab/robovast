@@ -184,11 +184,11 @@ timeout
 
 **Required:** No
 
-**Applies to:** Local and cluster execution
+**Applies to:** Cluster execution (Kubernetes). For local execution, this value is currently not enforced.
 
 Maximum wall-clock time (in seconds) allowed for a single test run.
 
-- **Local (Docker Compose):** A watchdog process kills the Compose stack once the limit is reached.
+- **Local (Docker Compose):** Currently not enforced; local runs will continue past this timeout and must be stopped manually.
 - **Cluster (Kubernetes):** Sets ``activeDeadlineSeconds`` on the Job spec; Kubernetes terminates the pod when the deadline expires.
 
 If omitted (or ``null``), there is no time limit.

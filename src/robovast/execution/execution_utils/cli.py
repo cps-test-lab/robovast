@@ -200,7 +200,7 @@ def cluster():
               help='Run only a specific configuration by name')
 @click.option('--runs', '-r', type=int, default=None,
               help='Override the number of runs specified in the config')
-@click.option('--follow/--no-follow', '-f/ ', default=False,
+@click.option('--follow', '-f', is_flag=True, default=False,
               help='Follow job execution and wait for completion (default: exit immediately after creating jobs)')
 @click.option('--cleanup', is_flag=True,
               help='Clean up previous runs before starting (default: do not cleanup; allows multiple parallel runs)')

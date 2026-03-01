@@ -16,7 +16,6 @@
 
 import copy
 import logging
-import os
 
 from ..common import get_scenario_parameters
 from ..config import get_validated_config
