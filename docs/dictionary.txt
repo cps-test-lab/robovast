@@ -44,3 +44,12 @@ queueing
 Kueue
 gz
 Ctrl
+kubectl
+archiver
+nginx
+auth
+oversubscription
+airgapped
+boto
+observability
+entrypoints
