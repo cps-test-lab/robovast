@@ -30,7 +30,6 @@ This module provides :class:`ShareUploader`, which:
 """
 
 import logging
-import os
 import subprocess
 import sys
 import threading
@@ -97,7 +96,7 @@ class ShareUploader:
         3. On success: remove the remote archive from ``/data/`` unless
            *keep_archive* is ``True``.  Also delete the S3 bucket for the run
            unless *skip_removal* is ``True`` (mirrors ``cluster download``
-           behaviour).
+           behavior).
         4. On failure: keep both the remote archive and the S3 bucket so the
            user can retry or fall back to ``cluster download``.
 

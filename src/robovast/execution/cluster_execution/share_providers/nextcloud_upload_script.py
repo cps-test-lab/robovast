@@ -86,9 +86,9 @@ class _ProgressReader:
         elapsed = max(time.monotonic() - self._start, 1e-6)
         rate = self._sent / elapsed
         filled = int(BAR_WIDTH * self._sent / self.total)
-        bar = "█" * filled + "░" * (BAR_WIDTH - filled)
+        progressbar = "█" * filled + "░" * (BAR_WIDTH - filled)
         line = (
-            f"{self._run_id}  [{bar}]  {pct:5.1f}%  "
+            f"{self._run_id}  [{progressbar}]  {pct:5.1f}%  "
             f"{_fmt_size(self._sent)}/{_fmt_size(self.total)}  {_fmt_rate(rate)}"
         )
         sys.stdout.write("\r" + line + CLEAR_EOL)
@@ -156,8 +156,7 @@ def upload(run_id: str, share_url: str) -> None:
             },
         )
         try:
-            with urllib.request.urlopen(req, timeout=300) as resp:
-                status = resp.status
+            urllib.request.urlopen(req, timeout=300)
         except urllib.error.HTTPError as exc:
             sys.stdout.write("\n")
             sys.stderr.write(

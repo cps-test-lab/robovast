@@ -53,3 +53,6 @@ airgapped
 boto
 observability
 entrypoints
+stdin
+Nextcloud
+Subclasses
