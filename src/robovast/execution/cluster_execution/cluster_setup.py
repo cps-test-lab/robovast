@@ -19,13 +19,13 @@
 
 import logging
 import os
+import re
 from importlib.metadata import entry_points
 
 import yaml
 
 from robovast.common.cli.project_config import ProjectConfig
 
-from .cluster_execution import cleanup_cluster_run
 from .kubernetes_kueue import apply_kueue_queues, install_kueue_helm, uninstall_kueue_helm
 
 logger = logging.getLogger(__name__)
@@ -34,8 +34,18 @@ logger = logging.getLogger(__name__)
 CLUSTER_CONFIG_FLAG_FILE = ".robovast_cluster_config"
 
 
-def get_cluster_config_flag_path():
+def _sanitize_context_key(key: str) -> str:
+    """Sanitize a context key so it can be used safely as a filename suffix."""
+    return re.sub(r'[^A-Za-z0-9_-]', '_', key)
+
+
+def get_cluster_config_flag_path(context_key=None):
     """Get the path to the cluster config flag file.
+
+    When *context_key* is given the file is named
+    ``.robovast_cluster_config.<key>`` so separate setups for different
+    clusters coexist.  When it is ``None`` the legacy single-file name
+    ``.robovast_cluster_config`` is used.
 
     The flag file is stored in the same directory as the project file.
 
@@ -52,17 +62,22 @@ def get_cluster_config_flag_path():
         )
 
     project_dir = os.path.dirname(project_file)
-    return os.path.join(project_dir, CLUSTER_CONFIG_FLAG_FILE)
+    if context_key:
+        filename = f"{CLUSTER_CONFIG_FLAG_FILE}.{_sanitize_context_key(context_key)}"
+    else:
+        filename = CLUSTER_CONFIG_FLAG_FILE
+    return os.path.join(project_dir, filename)
 
 
-def save_cluster_setup_info(config_name, setup_kwargs):
+def save_cluster_setup_info(config_name, setup_kwargs, context_key=None):
     """Save the cluster setup info to a flag file.
 
     Args:
         config_name (str): Name of the cluster config plugin used for setup
         setup_kwargs (dict): Arguments passed to the setup function
+        context_key (str, optional): Kubernetes context name for the flag file.
     """
-    flag_path = get_cluster_config_flag_path()
+    flag_path = get_cluster_config_flag_path(context_key)
     data = {
         "name": config_name,
         "kwargs": setup_kwargs
@@ -71,14 +86,17 @@ def save_cluster_setup_info(config_name, setup_kwargs):
         yaml.dump(data, f, default_flow_style=False)
 
 
-def load_cluster_setup_info():
+def load_cluster_setup_info(context_key=None):
     """Load the cluster setup info from the flag file.
+
+    Args:
+        context_key (str, optional): Kubernetes context name.
 
     Returns:
         tuple: (config_name, setup_kwargs)
     """
     try:
-        flag_path = get_cluster_config_flag_path()
+        flag_path = get_cluster_config_flag_path(context_key)
         if os.path.exists(flag_path):
             with open(flag_path, 'r') as f:
                 content = f.read().strip()
@@ -97,30 +115,40 @@ def load_cluster_setup_info():
     return None, {}
 
 
-def load_cluster_config_name():
+def load_cluster_config_name(context_key=None):
     """Load the cluster config name from the flag file.
+
+    Args:
+        context_key (str, optional): Kubernetes context name.
 
     Returns:
         str: Name of the cluster config plugin, or None if file doesn't exist
     """
-    name, _ = load_cluster_setup_info()
+    name, _ = load_cluster_setup_info(context_key)
     return name
 
 
-def get_cluster_namespace():
+def get_cluster_namespace(context_key=None):
     """Load the cluster namespace from the setup flag file.
+
+    Args:
+        context_key (str, optional): Kubernetes context name.
 
     Returns:
         str: Kubernetes namespace for cluster execution, or "default" if not set
     """
-    _, kwargs = load_cluster_setup_info()
+    _, kwargs = load_cluster_setup_info(context_key)
     return kwargs.get("namespace", "default")
 
 
-def delete_cluster_config_flag():
-    """Delete the cluster config flag file."""
+def delete_cluster_config_flag(context_key=None):
+    """Delete the cluster config flag file.
+
+    Args:
+        context_key (str, optional): Kubernetes context name.
+    """
     try:
-        flag_path = get_cluster_config_flag_path()
+        flag_path = get_cluster_config_flag_path(context_key)
         if os.path.exists(flag_path):
             os.remove(flag_path)
     except RuntimeError:
@@ -208,10 +236,14 @@ def setup_server(config_name=None, list_configs=False, force=False, **cluster_kw
         )
 
     # Check if cluster is already set up
-    existing_config = load_cluster_config_name()
+    kube_context = cluster_kwargs.pop('kube_context', None)
+    context_key = kube_context
+
+    existing_config = load_cluster_config_name(context_key)
     if existing_config and not force:
+        key_label = f" for context '{context_key}'" if context_key else ""
         raise RuntimeError(
-            f"Cluster is already set up with '{existing_config}' config.\n"
+            f"Cluster is already set up with '{existing_config}' config{key_label}.\n"
             f"Run 'vast execution cluster cleanup' first to clean up the existing setup."
         )
 
@@ -219,14 +251,14 @@ def setup_server(config_name=None, list_configs=False, force=False, **cluster_kw
 
     # Install Kueue and queues first (always)
     namespace = cluster_kwargs.get("namespace", "default")
-    install_kueue_helm()
-    apply_kueue_queues(namespace=namespace)
+    install_kueue_helm(kube_context=kube_context)
+    apply_kueue_queues(namespace=namespace, kube_context=kube_context)
 
-    cluster_config.setup_cluster(**cluster_kwargs)
+    cluster_config.setup_cluster(kube_context=kube_context, **cluster_kwargs)
 
     # Save the config name and kwargs to flag file after successful setup
-    flag_path = get_cluster_config_flag_path()
-    save_cluster_setup_info(config_name, cluster_kwargs)
+    flag_path = get_cluster_config_flag_path(context_key)
+    save_cluster_setup_info(config_name, cluster_kwargs, context_key)
     logger.debug(f"Cluster config '{config_name}' saved to {flag_path}")
 
 
@@ -246,8 +278,11 @@ def delete_server(config_name=None, **cluster_kwargs_override):
     cluster_kwargs = {}
 
     # Auto-detect config from flag file if not provided
+    kube_context = cluster_kwargs_override.get('kube_context')
+    context_key = kube_context
+
     if config_name is None:
-        name, stored_kwargs = load_cluster_setup_info()
+        name, stored_kwargs = load_cluster_setup_info(context_key)
         config_name = name
 
         # Use stored kwargs for cleanup; CLI overrides take precedence
@@ -270,16 +305,18 @@ def delete_server(config_name=None, **cluster_kwargs_override):
     # Clean up scenario run jobs and pods first (before uninstalling Kueue,
     # so the Kueue controller is still running to handle job finalizer removal)
     namespace = cluster_kwargs.get("namespace", "default")
+    kube_context = cluster_kwargs.pop("kube_context", None)
     try:
-        cleanup_cluster_run(namespace=namespace)
+        from .cluster_execution import cleanup_cluster_run  # pylint: disable=import-outside-toplevel,cyclic-import
+        cleanup_cluster_run(namespace=namespace, context=kube_context)
     except Exception as e:
         logger.warning(f"Failed to clean up scenario run jobs during cluster cleanup: {e}")
 
     # Uninstall Kueue (always, since we always install it)
-    uninstall_kueue_helm()
+    uninstall_kueue_helm(kube_context=kube_context)
 
     cluster_config = get_cluster_config(config_name)
-    cluster_config.cleanup_cluster(**cluster_kwargs)
+    cluster_config.cleanup_cluster(kube_context=kube_context, **cluster_kwargs)
 
     # Delete the flag file after successful cleanup
-    delete_cluster_config_flag()
+    delete_cluster_config_flag(context_key)

@@ -39,3 +39,17 @@ subdirectory
 entrypoint
 RViz
 localhost
+kubeconfig
+queueing
+Kueue
+gz
+Ctrl
+kubectl
+archiver
+nginx
+auth
+oversubscription
+airgapped
+boto
+observability
+entrypoints

@@ -100,7 +100,7 @@ class AzureClusterConfig(BaseConfig):
         logging.info("Setting up RoboVAST MinIO S3 server in Azure cluster...")
         logging.info(f"Storage size: {storage_size}")
 
-        config.load_kube_config()
+        config.load_kube_config(context=kwargs.get('kube_context'))
         k8s_client = client.ApiClient()
 
         try:
@@ -124,7 +124,7 @@ class AzureClusterConfig(BaseConfig):
             **kwargs: Additional cluster-specific options (ignored)
         """
         logging.debug("Cleaning up RoboVAST MinIO in Azure cluster...")
-        config.load_kube_config()
+        config.load_kube_config(context=kwargs.get('kube_context'))
         core_v1 = client.CoreV1Api()
 
         try:

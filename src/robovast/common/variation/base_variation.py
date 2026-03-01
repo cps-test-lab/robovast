@@ -16,11 +16,9 @@
 
 import copy
 import logging
-import os
 
 from ..common import get_scenario_parameters
 from ..config import get_validated_config
-from ..file_cache2 import CacheKey
 
 logger = logging.getLogger(__name__)
 
@@ -97,19 +95,6 @@ class Variation():
     def get_cache_input_files(self, in_configs):
         """Return file paths that affect variation output. Override when using CACHE_ID."""
         return []
-
-    def _build_cache_key(self, in_configs):
-        """Build cache key from all input data. Used by execute_variation when CACHE_ID is set."""
-        key = CacheKey()
-        key.add("class", self.__class__.__name__)
-        key.add("base_path", self.base_path)
-        key.add("scenario_file", self.scenario_file)
-        key.add("parameters", self.parameters)
-        key.add("in_configs", _to_cache_jsonable(in_configs))
-        for path in self.get_cache_input_files(in_configs):
-            resolved = path if os.path.isabs(path) else os.path.join(self.base_path, path)
-            key.add_file(resolved)
-        return key
 
     def progress_update(self, msg):
         self.progress_update_callback(f"{self.__class__.__name__}: {msg}")

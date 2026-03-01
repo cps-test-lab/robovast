@@ -519,6 +519,9 @@ def generate_compose_run_script(runs, run_data, config_path_result, pre_command,
     main_memory = resources.get("memory")
     main_gpu = resources.get("gpu")
 
+    # Execution timeout (seconds) – None means no limit
+    timeout = execution_params.get("timeout")
+
     # Secondary containers
     secondary_containers = execution_params.get("secondary_containers") or []
     normalized_secondary = normalize_secondary_containers(secondary_containers)
@@ -530,6 +533,11 @@ def generate_compose_run_script(runs, run_data, config_path_result, pre_command,
         'RESULTS_DIR=',
         f'RESULTS_DIR="{results_dir}/${{RUN_ID}}"', 1
     )
+
+    # Warn if timeout is configured (not respected in local runs)
+    if timeout:
+        script += f'echo "Warning: execution.timeout is set to {timeout}s but is not enforced during local runs."\n'
+        script += f'echo ""\n'
 
     # Copy out_template to results dir
     script += f'echo "Copying out_template contents to ${{RESULTS_DIR}}..."\n'
@@ -621,8 +629,8 @@ def generate_compose_run_script(runs, run_data, config_path_result, pre_command,
             f' 2> >(grep -v "Aborting on container exit" >&2)'
             f') &\n'
         )
-        compose_wait = (
-            'COMPOSE_PID=$!\n'
+        compose_wait = 'COMPOSE_PID=$!\n'
+        compose_wait += (
             'wait "$COMPOSE_PID" 2>/dev/null\n'
             'WAIT_CODE=$?\n'
             'while [ "$WAIT_CODE" -ge 128 ] && kill -0 "$COMPOSE_PID" 2>/dev/null; do\n'
@@ -630,6 +638,8 @@ def generate_compose_run_script(runs, run_data, config_path_result, pre_command,
             '    WAIT_CODE=$?\n'
             'done\n'
             'COMPOSE_PID=\n'
+        )
+        compose_wait += (
             'EXIT_CODE=$WAIT_CODE\n'
             'if [ "$SIGINT_COUNT" -gt 0 ]; then\n'
             '    cleanup\n'
