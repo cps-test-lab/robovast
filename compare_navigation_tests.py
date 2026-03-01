@@ -104,6 +104,602 @@ def extract_localization_error_metrics(localization_error_csv_path: str) -> Opti
         return None
 
 
+def extract_poses_from_scenario_config(scenario_config_path: str) -> Optional[Tuple[Tuple[float, float], List[Tuple[float, float]]]]:
+    """
+    Extract start and goal poses from scenario.config file (YAML format).
+    
+    Args:
+        scenario_config_path: Path to scenario.config file
+        
+    Returns:
+        Tuple of (start_pose, goal_poses) where poses are (x, y) tuples, or None if invalid
+    """
+    try:
+        import yaml
+        
+        with open(scenario_config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        
+        if 'test_scenario' not in config:
+            return None
+        
+        scenario = config['test_scenario']
+        
+        # Extract start pose
+        if 'start_pose' not in scenario:
+            return None
+        
+        start_data = scenario['start_pose']['position']
+        start_pose = (float(start_data['x']), float(start_data['y']))
+        
+        # Extract goal poses
+        goal_poses = []
+        if 'goal_poses' in scenario:
+            for goal in scenario['goal_poses']:
+                goal_data = goal['position']
+                goal_poses.append((float(goal_data['x']), float(goal_data['y'])))
+        
+        return start_pose, goal_poses
+    except Exception as e:
+        print(f"Error parsing scenario.config at {scenario_config_path}: {e}", file=sys.stderr)
+        return None
+
+
+def safe_pearson_corr(x: np.ndarray, y: np.ndarray) -> float:
+    """
+    Compute Pearson correlation robustly for small/constant samples.
+
+    Args:
+        x: First data array
+        y: Second data array
+
+    Returns:
+        Correlation coefficient, or 0.0 when undefined
+    """
+    if len(x) < 2 or len(y) < 2:
+        return 0.0
+    if np.std(x) == 0 or np.std(y) == 0:
+        return 0.0
+
+    corr = np.corrcoef(x, y)[0, 1]
+    return 0.0 if np.isnan(corr) else float(corr)
+
+
+def collect_variant_pose_and_distance_stats(variant_path: str) -> Optional[Dict]:
+    """
+    Collect scenario pose data and run distance metrics for a single variant.
+
+    Args:
+        variant_path: Path to a single variant directory containing scenario.config and run folders
+
+    Returns:
+        Dictionary with pose and distance statistics, or None if invalid
+    """
+    variant_dir = Path(variant_path)
+    if not variant_dir.is_dir():
+        return None
+
+    scenario_config = variant_dir / 'scenario.config'
+    if not scenario_config.exists():
+        return None
+
+    poses_data = extract_poses_from_scenario_config(str(scenario_config))
+    if not poses_data:
+        return None
+
+    start_pose, goal_poses = poses_data
+
+    distances = []
+    for run_dir in sorted(variant_dir.iterdir()):
+        if not run_dir.is_dir() or run_dir.name.startswith('_'):
+            continue
+
+        poses_csv = run_dir / 'poses.csv'
+        if poses_csv.exists():
+            metrics = extract_pose_metrics(str(poses_csv))
+            if metrics:
+                _, dist_val = metrics
+                distances.append(dist_val)
+
+    if len(distances) == 0:
+        return None
+
+    all_pose_points = [start_pose] + list(goal_poses)
+    pose_array = np.array(all_pose_points, dtype=float)
+    goal_array = np.array(goal_poses, dtype=float) if len(goal_poses) > 0 else np.empty((0, 2), dtype=float)
+
+    if len(goal_poses) > 0:
+        goal_centroid = (float(np.mean(goal_array[:, 0])), float(np.mean(goal_array[:, 1])))
+    else:
+        goal_centroid = start_pose
+
+    pose_centroid = (float(np.mean(pose_array[:, 0])), float(np.mean(pose_array[:, 1])))
+
+    return {
+        'variant_name': variant_dir.name,
+        'variant_path': str(variant_dir),
+        'start_pose': start_pose,
+        'goal_poses': goal_poses,
+        'goal_centroid': goal_centroid,
+        'all_pose_points': all_pose_points,
+        'pose_centroid': pose_centroid,
+        'distances': np.array(distances, dtype=float),
+        'num_runs': len(distances),
+        'distance_mean': float(np.mean(distances)),
+        'distance_var': float(np.var(distances)),
+        'distance_std': float(np.std(distances)),
+    }
+
+
+def analyze_pose_distribution_vs_distance_means(variant_paths: List[str]) -> Optional[Dict]:
+    """
+    Compare variance of pose-position distribution vs variance of per-variant distance means.
+
+    Method:
+    1) Build a single distribution using all start/goal positions from each variant's scenario.config.
+    2) Build a distribution of mean traveled distances (one mean per variant).
+    3) Compare variances and measure correlation between variant pose centroid and variant distance mean.
+
+    Args:
+        variant_paths: Paths to variants to include
+
+    Returns:
+        Analysis dictionary, or None if insufficient data
+    """
+    variant_stats = []
+    for variant_path in variant_paths:
+        stats_data = collect_variant_pose_and_distance_stats(variant_path)
+        if stats_data:
+            variant_stats.append(stats_data)
+        else:
+            print(f"Warning: Skipping invalid or incomplete variant: {variant_path}", file=sys.stderr)
+
+    if len(variant_stats) < 2:
+        return None
+
+    all_pose_points = []
+    for stats_data in variant_stats:
+        all_pose_points.extend(stats_data['all_pose_points'])
+
+    pose_array = np.array(all_pose_points, dtype=float)
+    pose_norms = np.linalg.norm(pose_array, axis=1)
+    distance_means = np.array([v['distance_mean'] for v in variant_stats], dtype=float)
+
+    variant_pose_centroids = np.array([v['pose_centroid'] for v in variant_stats], dtype=float)
+    variant_pose_centroid_norms = np.linalg.norm(variant_pose_centroids, axis=1)
+
+    pose_x_var = float(np.var(pose_array[:, 0]))
+    pose_y_var = float(np.var(pose_array[:, 1]))
+    pose_spatial_var = float(np.var(pose_norms))
+    distance_mean_var = float(np.var(distance_means))
+
+    return {
+        'num_variants': len(variant_stats),
+        'num_pose_samples': len(all_pose_points),
+        'variant_stats': variant_stats,
+        'pose_points': pose_array,
+        'pose_norms': pose_norms,
+        'distance_means': distance_means,
+        'pose_x_var': pose_x_var,
+        'pose_y_var': pose_y_var,
+        'pose_spatial_var': pose_spatial_var,
+        'distance_mean_var': distance_mean_var,
+        'variance_ratio_distance_to_pose_spatial': (
+            float(distance_mean_var / pose_spatial_var) if pose_spatial_var > 0 else np.inf
+        ),
+        'centroid_x_to_distance_mean_corr': safe_pearson_corr(variant_pose_centroids[:, 0], distance_means),
+        'centroid_y_to_distance_mean_corr': safe_pearson_corr(variant_pose_centroids[:, 1], distance_means),
+        'centroid_spatial_to_distance_mean_corr': safe_pearson_corr(variant_pose_centroid_norms, distance_means),
+    }
+
+
+def compute_pose_difference_between_variants(source_stats: Dict, target_stats: Dict) -> Dict:
+    """
+    Compute geometric pose differences between two variants using scenario.config poses.
+
+    Args:
+        source_stats: Source variant stats from collect_variant_pose_and_distance_stats
+        target_stats: Target variant stats from collect_variant_pose_and_distance_stats
+
+    Returns:
+        Dictionary with start/goal/combined pose differences
+    """
+    source_start = np.array(source_stats['start_pose'], dtype=float)
+    target_start = np.array(target_stats['start_pose'], dtype=float)
+    start_diff = float(np.linalg.norm(source_start - target_start))
+
+    source_goal_centroid = np.array(source_stats['goal_centroid'], dtype=float)
+    target_goal_centroid = np.array(target_stats['goal_centroid'], dtype=float)
+    goal_centroid_diff = float(np.linalg.norm(source_goal_centroid - target_goal_centroid))
+
+    source_goals = source_stats['goal_poses']
+    target_goals = target_stats['goal_poses']
+    pairwise_goal_diff = 0.0
+    if len(source_goals) > 0 and len(target_goals) > 0:
+        pair_count = min(len(source_goals), len(target_goals))
+        goal_diffs = []
+        for idx in range(pair_count):
+            src_goal = np.array(source_goals[idx], dtype=float)
+            tgt_goal = np.array(target_goals[idx], dtype=float)
+            goal_diffs.append(float(np.linalg.norm(src_goal - tgt_goal)))
+        if len(goal_diffs) > 0:
+            pairwise_goal_diff = float(np.mean(goal_diffs))
+
+    available_components = [start_diff, goal_centroid_diff]
+    if pairwise_goal_diff > 0:
+        available_components.append(pairwise_goal_diff)
+
+    combined_pose_diff = float(np.mean(available_components))
+
+    return {
+        'start_diff': start_diff,
+        'goal_centroid_diff': goal_centroid_diff,
+        'pairwise_goal_diff': pairwise_goal_diff,
+        'combined_pose_diff': combined_pose_diff,
+    }
+
+
+def analyze_source_pose_vs_distance_differences(source_variant_path: str, other_variant_paths: List[str]) -> Optional[Dict]:
+    """
+    Compare source-vs-others pose differences against source-vs-others mean-distance differences.
+
+    Args:
+        source_variant_path: Path to source variant
+        other_variant_paths: Paths to comparison variants
+
+    Returns:
+        Analysis dictionary, or None if insufficient data
+    """
+    source_stats = collect_variant_pose_and_distance_stats(source_variant_path)
+    if not source_stats:
+        return None
+
+    comparisons = []
+    for other_path in other_variant_paths:
+        other_stats = collect_variant_pose_and_distance_stats(other_path)
+        if not other_stats:
+            print(f"Warning: Skipping invalid comparison variant: {other_path}", file=sys.stderr)
+            continue
+
+        pose_diff = compute_pose_difference_between_variants(source_stats, other_stats)
+        distance_mean_diff = float(abs(other_stats['distance_mean'] - source_stats['distance_mean']))
+
+        comparisons.append({
+            'other_variant_name': other_stats['variant_name'],
+            'other_variant_path': other_stats['variant_path'],
+            'other_distance_mean': other_stats['distance_mean'],
+            'other_num_runs': other_stats['num_runs'],
+            'distance_mean_diff': distance_mean_diff,
+            **pose_diff,
+        })
+
+    if len(comparisons) < 2:
+        return None
+
+    combined_pose_diffs = np.array([c['combined_pose_diff'] for c in comparisons], dtype=float)
+    start_diffs = np.array([c['start_diff'] for c in comparisons], dtype=float)
+    goal_centroid_diffs = np.array([c['goal_centroid_diff'] for c in comparisons], dtype=float)
+    distance_mean_diffs = np.array([c['distance_mean_diff'] for c in comparisons], dtype=float)
+
+    return {
+        'source_variant_name': source_stats['variant_name'],
+        'source_variant_path': source_stats['variant_path'],
+        'source_distance_mean': source_stats['distance_mean'],
+        'source_num_runs': source_stats['num_runs'],
+        'num_comparisons': len(comparisons),
+        'comparisons': comparisons,
+        'combined_pose_diffs': combined_pose_diffs,
+        'start_diffs': start_diffs,
+        'goal_centroid_diffs': goal_centroid_diffs,
+        'distance_mean_diffs': distance_mean_diffs,
+        'combined_pose_diff_var': float(np.var(combined_pose_diffs)),
+        'distance_mean_diff_var': float(np.var(distance_mean_diffs)),
+        'combined_pose_to_distance_diff_corr': safe_pearson_corr(combined_pose_diffs, distance_mean_diffs),
+        'start_to_distance_diff_corr': safe_pearson_corr(start_diffs, distance_mean_diffs),
+        'goal_centroid_to_distance_diff_corr': safe_pearson_corr(goal_centroid_diffs, distance_mean_diffs),
+    }
+
+
+def print_pose_distribution_vs_distance_means_analysis(analysis: Dict) -> None:
+    """Print results for pose-position distribution vs distance-mean distribution analysis."""
+    print("\n" + "=" * 90)
+    print("POSE-POSITION DISTRIBUTION vs DISTANCE-MEAN DISTRIBUTION")
+    print("=" * 90)
+
+    print(f"Variants analyzed:       {analysis['num_variants']}")
+    print(f"Total pose samples:      {analysis['num_pose_samples']}")
+    print(f"Distance means samples:  {len(analysis['distance_means'])}")
+
+    print("\nVariance summary:")
+    print(f"  Pose X variance:                 {analysis['pose_x_var']:.6f}")
+    print(f"  Pose Y variance:                 {analysis['pose_y_var']:.6f}")
+    print(f"  Pose spatial variance:           {analysis['pose_spatial_var']:.6f}")
+    print(f"  Distance-mean variance:          {analysis['distance_mean_var']:.6f}")
+    print(f"  Distance/Pose-spatial variance:  {analysis['variance_ratio_distance_to_pose_spatial']:.6f}")
+
+    print("\nCorrelation (variant pose centroid ↔ variant distance mean):")
+    print(f"  Centroid X ↔ Distance mean:      {analysis['centroid_x_to_distance_mean_corr']:.6f}")
+    print(f"  Centroid Y ↔ Distance mean:      {analysis['centroid_y_to_distance_mean_corr']:.6f}")
+    print(f"  Centroid spatial ↔ Distance mean:{analysis['centroid_spatial_to_distance_mean_corr']:.6f}")
+
+    print("\nPer-variant distance means:")
+    for variant in analysis['variant_stats']:
+        print(f"  {variant['variant_name']}: mean={variant['distance_mean']:.4f} m, runs={variant['num_runs']}")
+
+
+def print_source_pose_vs_distance_differences_analysis(analysis: Dict) -> None:
+    """Print results for source-vs-others pose-difference vs distance-mean-difference analysis."""
+    print("\n" + "=" * 90)
+    print("SOURCE POSE-DIFFERENCE vs MEAN-DISTANCE-DIFFERENCE")
+    print("=" * 90)
+
+    print(f"Source variant:        {analysis['source_variant_name']}")
+    print(f"Source mean distance:  {analysis['source_distance_mean']:.4f} m")
+    print(f"Comparisons:           {analysis['num_comparisons']}")
+
+    print("\nDistribution variance summary:")
+    print(f"  Combined pose-diff variance:      {analysis['combined_pose_diff_var']:.6f}")
+    print(f"  Distance-mean-diff variance:      {analysis['distance_mean_diff_var']:.6f}")
+
+    print("\nCorrelation (larger pose difference ↔ larger mean-distance difference):")
+    print(f"  Combined pose diff ↔ distance diff: {analysis['combined_pose_to_distance_diff_corr']:.6f}")
+    print(f"  Start diff ↔ distance diff:         {analysis['start_to_distance_diff_corr']:.6f}")
+    print(f"  Goal centroid diff ↔ distance diff: {analysis['goal_centroid_to_distance_diff_corr']:.6f}")
+
+    print("\nPer-comparison details:")
+    for comp in analysis['comparisons']:
+        print(
+            f"  {analysis['source_variant_name']} vs {comp['other_variant_name']}: "
+            f"pose_diff={comp['combined_pose_diff']:.4f}, "
+            f"distance_mean_diff={comp['distance_mean_diff']:.4f}"
+        )
+
+
+def plot_pose_distribution_vs_distance_means(analysis: Dict, output_dir: str) -> str:
+    """Create plots for pose-position distribution vs distance-mean distribution analysis."""
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+    pose_points = analysis['pose_points']
+    distance_means = analysis['distance_means']
+    variant_names = [v['variant_name'] for v in analysis['variant_stats']]
+    variant_centroids = np.array([v['pose_centroid'] for v in analysis['variant_stats']], dtype=float)
+
+    ax = axes[0, 0]
+    ax.scatter(pose_points[:, 0], pose_points[:, 1], alpha=0.6, s=50, color='steelblue')
+    ax.set_title('All Start/Goal Pose Positions')
+    ax.set_xlabel('X')
+    ax.set_ylabel('Y')
+    ax.grid(True, alpha=0.3)
+
+    ax = axes[0, 1]
+    ax.hist(distance_means, bins=min(10, len(distance_means)), alpha=0.7, color='orange', edgecolor='black')
+    ax.set_title('Distribution of Variant Mean Distances')
+    ax.set_xlabel('Mean Distance (m)')
+    ax.set_ylabel('Count')
+    ax.grid(True, alpha=0.3)
+
+    ax = axes[1, 0]
+    centroid_norms = np.linalg.norm(variant_centroids, axis=1)
+    ax.scatter(centroid_norms, distance_means, s=120, alpha=0.7, color='purple')
+    for idx, name in enumerate(variant_names):
+        ax.annotate(name, (centroid_norms[idx], distance_means[idx]), fontsize=8, ha='center', va='bottom')
+    ax.set_title('Variant Pose-Centroid Norm vs Mean Distance')
+    ax.set_xlabel('Pose-Centroid Spatial Norm')
+    ax.set_ylabel('Mean Distance (m)')
+    ax.grid(True, alpha=0.3)
+
+    ax = axes[1, 1]
+    ax.axis('off')
+    summary = (
+        f"num_variants: {analysis['num_variants']}\n"
+        f"num_pose_samples: {analysis['num_pose_samples']}\n\n"
+        f"pose_x_var: {analysis['pose_x_var']:.6f}\n"
+        f"pose_y_var: {analysis['pose_y_var']:.6f}\n"
+        f"pose_spatial_var: {analysis['pose_spatial_var']:.6f}\n"
+        f"distance_mean_var: {analysis['distance_mean_var']:.6f}\n\n"
+        f"centroid_spatial_to_distance_mean_corr:\n"
+        f"{analysis['centroid_spatial_to_distance_mean_corr']:.6f}"
+    )
+    ax.text(0.05, 0.95, summary, transform=ax.transAxes, va='top', fontsize=10, fontfamily='monospace')
+
+    fig.suptitle('Pose Distribution vs Distance-Mean Distribution', fontsize=14, weight='bold')
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, 'pose_distribution_vs_distance_means.png')
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    return output_path
+
+
+def plot_source_pose_vs_distance_differences(analysis: Dict, output_dir: str) -> str:
+    """Create plots for source-vs-others pose-difference vs mean-distance-difference analysis."""
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    combined_pose_diffs = analysis['combined_pose_diffs']
+    distance_mean_diffs = analysis['distance_mean_diffs']
+    other_names = [c['other_variant_name'] for c in analysis['comparisons']]
+
+    ax = axes[0]
+    ax.scatter(combined_pose_diffs, distance_mean_diffs, s=120, alpha=0.7, color='teal')
+    for idx, name in enumerate(other_names):
+        ax.annotate(name, (combined_pose_diffs[idx], distance_mean_diffs[idx]), fontsize=8, ha='center', va='bottom')
+    if len(combined_pose_diffs) > 1 and np.std(combined_pose_diffs) > 0:
+        coeffs = np.polyfit(combined_pose_diffs, distance_mean_diffs, 1)
+        line = np.poly1d(coeffs)
+        x_vals = np.linspace(float(np.min(combined_pose_diffs)), float(np.max(combined_pose_diffs)), 100)
+        ax.plot(x_vals, line(x_vals), 'r--', linewidth=2, alpha=0.8, label='Trend')
+        ax.legend()
+    ax.set_title('Pose Difference vs Mean Distance Difference')
+    ax.set_xlabel('Combined Pose Difference')
+    ax.set_ylabel('Mean Distance Difference (m)')
+    ax.grid(True, alpha=0.3)
+
+    ax = axes[1]
+    ax.axis('off')
+    summary = (
+        f"source: {analysis['source_variant_name']}\n"
+        f"source_mean_distance: {analysis['source_distance_mean']:.4f}\n"
+        f"comparisons: {analysis['num_comparisons']}\n\n"
+        f"combined_pose_diff_var: {analysis['combined_pose_diff_var']:.6f}\n"
+        f"distance_mean_diff_var: {analysis['distance_mean_diff_var']:.6f}\n\n"
+        f"combined_pose_to_distance_diff_corr:\n"
+        f"{analysis['combined_pose_to_distance_diff_corr']:.6f}"
+    )
+    ax.text(0.05, 0.95, summary, transform=ax.transAxes, va='top', fontsize=10, fontfamily='monospace')
+
+    fig.suptitle('Source vs Others: Pose-Diff vs Distance-Mean-Diff', fontsize=14, weight='bold')
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, f"source_pose_vs_distance_diff_{analysis['source_variant_name']}.png")
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    return output_path
+
+
+def analyze_pose_variance_correlation(test_type_base_path: str) -> Optional[Dict]:
+    """
+    Analyze correlation between scenario config pose variance and navigation distance variance.
+    
+    For a test type base (e.g., "mt-geometric-gaussian"), finds all variants (1-1, 1-2, etc.),
+    extracts poses from each variant's scenario.config, and correlates configuration-level
+    pose variance with the distance variance observed across all runs in that variant.
+    
+    Args:
+        test_type_base_path: Base path containing test type variants (parent directory)
+        
+    Returns:
+        Dictionary with pose variance and distance correlation analysis, or None if insufficient data
+    """
+    parent_dir = Path(test_type_base_path).parent
+    test_type_base = Path(test_type_base_path).name.rsplit('-', 2)[0]  # Remove -1-1 or -1-2 suffix
+    
+    variant_analyses = []
+    
+    # Find all variants of this test type
+    for potential_variant in sorted(parent_dir.glob(f"{test_type_base}-*")):
+        if not potential_variant.is_dir():
+            continue
+        
+        scenario_config = potential_variant / 'scenario.config'
+        if not scenario_config.exists():
+            continue
+        
+        # Extract poses from scenario config
+        poses_data = extract_poses_from_scenario_config(str(scenario_config))
+        if not poses_data:
+            continue
+        
+        start_pose, goal_poses = poses_data
+        
+        # Extract distance variance from all runs in this variant
+        distances = []
+        for run_dir in sorted(potential_variant.iterdir()):
+            if not run_dir.is_dir():
+                continue
+            
+            poses_csv = run_dir / 'poses.csv'
+            if poses_csv.exists():
+                metrics = extract_pose_metrics(str(poses_csv))
+                if metrics:
+                    time_val, dist_val = metrics
+                    distances.append(dist_val)
+        
+        if len(distances) > 0:
+            distance_var = float(np.var(distances))
+            distance_mean = float(np.mean(distances))
+            
+            # Compute centroid of goal poses
+            if goal_poses:
+                goal_array = np.array(goal_poses)
+                goal_centroid = (float(np.mean(goal_array[:, 0])), float(np.mean(goal_array[:, 1])))
+                goal_x_var = float(np.var(goal_array[:, 0]))
+                goal_y_var = float(np.var(goal_array[:, 1]))
+                goal_spatial_var = float(np.var(np.linalg.norm(goal_array, axis=1)))
+            else:
+                goal_centroid = (0.0, 0.0)
+                goal_x_var = 0.0
+                goal_y_var = 0.0
+                goal_spatial_var = 0.0
+            
+            variant_analyses.append({
+                'variant_name': potential_variant.name,
+                'start_pose': start_pose,
+                'goal_poses': goal_poses,
+                'goal_centroid': goal_centroid,
+                'goal_x_var': goal_x_var,
+                'goal_y_var': goal_y_var,
+                'goal_spatial_var': goal_spatial_var,
+                'num_runs': len(distances),
+                'distances': np.array(distances),
+                'distance_var': distance_var,
+                'distance_mean': distance_mean,
+                'distance_std': float(np.std(distances)),
+            })
+    
+    if len(variant_analyses) < 2:
+        return None
+    
+    # Aggregate data across variants
+    all_start_x = [v['start_pose'][0] for v in variant_analyses]
+    all_start_y = [v['start_pose'][1] for v in variant_analyses]
+    all_goal_centroids = [v['goal_centroid'] for v in variant_analyses]
+    all_distance_vars = [v['distance_var'] for v in variant_analyses]
+    all_distance_means = [v['distance_mean'] for v in variant_analyses]
+    
+    # Calculate variance of poses across variants
+    start_x_var_across_variants = float(np.var(all_start_x))
+    start_y_var_across_variants = float(np.var(all_start_y))
+    start_spatial_var = float(np.var(np.linalg.norm(np.array([all_start_x, all_start_y]).T, axis=1)))
+    
+    goal_centroid_array = np.array(all_goal_centroids)
+    goal_x_var_across_variants = float(np.var(goal_centroid_array[:, 0]))
+    goal_y_var_across_variants = float(np.var(goal_centroid_array[:, 1]))
+    goal_spatial_var_across_variants = float(np.var(np.linalg.norm(goal_centroid_array, axis=1)))
+    
+    # Correlate pose variance with distance variance
+    combined_pose_var = start_spatial_var + goal_spatial_var_across_variants
+    
+    correlation_pose_distance = float(np.corrcoef(
+        np.array(all_distance_vars),
+        combined_pose_var * np.ones(len(all_distance_vars))
+    )[0, 1]) if len(all_distance_vars) > 1 else 0.0
+    
+    # Correlate start position with distance variance
+    start_x_distance_corr = float(np.corrcoef(all_start_x, all_distance_vars)[0, 1]) if len(all_start_x) > 1 else 0.0
+    start_y_distance_corr = float(np.corrcoef(all_start_y, all_distance_vars)[0, 1]) if len(all_start_y) > 1 else 0.0
+    
+    # Correlate goal position with distance variance
+    goal_x_distance_corr = float(np.corrcoef(goal_centroid_array[:, 0], all_distance_vars)[0, 1]) if len(all_distance_vars) > 1 else 0.0
+    goal_y_distance_corr = float(np.corrcoef(goal_centroid_array[:, 1], all_distance_vars)[0, 1]) if len(all_distance_vars) > 1 else 0.0
+    
+    # Correlate spatial distances with distance variance
+    start_spatial_distances = np.linalg.norm(np.array([all_start_x, all_start_y]).T, axis=1)
+    goal_spatial_distances = np.linalg.norm(goal_centroid_array, axis=1)
+    start_spatial_distance_corr = float(np.corrcoef(start_spatial_distances, all_distance_vars)[0, 1]) if len(all_distance_vars) > 1 else 0.0
+    goal_spatial_distance_corr = float(np.corrcoef(goal_spatial_distances, all_distance_vars)[0, 1]) if len(all_distance_vars) > 1 else 0.0
+    
+    return {
+        'test_type_base': test_type_base,
+        'num_variants': len(variant_analyses),
+        'variant_analyses': variant_analyses,
+        'start_x_var': start_x_var_across_variants,
+        'start_y_var': start_y_var_across_variants,
+        'start_spatial_var': start_spatial_var,
+        'goal_x_var': goal_x_var_across_variants,
+        'goal_y_var': goal_y_var_across_variants,
+        'goal_spatial_var': goal_spatial_var_across_variants,
+        'combined_pose_var': combined_pose_var,
+        'distance_variances': np.array(all_distance_vars),
+        'distance_means': np.array(all_distance_means),
+        'start_x_distance_corr': start_x_distance_corr,
+        'start_y_distance_corr': start_y_distance_corr,
+        'goal_x_distance_corr': goal_x_distance_corr,
+        'goal_y_distance_corr': goal_y_distance_corr,
+        'start_spatial_distance_corr': start_spatial_distance_corr,
+        'goal_spatial_distance_corr': goal_spatial_distance_corr,
+    }
+
+
 def is_successful_test_run(test_xml_path: Path) -> bool:
     """
     Check whether a test run is successful based on failures=0 in test.xml.
@@ -708,6 +1304,115 @@ def plot_comparison(name1: str, data1: np.ndarray, analysis1: Dict,
     return output_path
 
 
+def plot_pose_variance_correlation(test_type_base_name: str, analysis: Dict, output_dir: str) -> str:
+    """
+    Plot pose variance analysis across test type variants and correlation with distance.
+    
+    Args:
+        test_type_base_name: Base name of the test type (e.g., mt-geometric-gaussian)
+        analysis: Analysis dictionary from analyze_pose_variance_correlation
+        output_dir: Directory to save the plot
+        
+    Returns:
+        Path to the saved figure
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    
+    variant_analyses = analysis['variant_analyses']
+    variant_names = [v['variant_name'] for v in variant_analyses]
+    start_poses = [v['start_pose'] for v in variant_analyses]
+    goal_centroids = [v['goal_centroid'] for v in variant_analyses]
+    distance_vars = [v['distance_var'] for v in variant_analyses]
+    
+    # Plot 1: Start poses across variants
+    ax = axes[0, 0]
+    start_poses_array = np.array(start_poses)
+    ax.scatter(start_poses_array[:, 0], start_poses_array[:, 1], s=150, alpha=0.7, color='steelblue')
+    for i, name in enumerate(variant_names):
+        ax.annotate(name, (start_poses_array[i, 0], start_poses_array[i, 1]), 
+                   fontsize=8, ha='center', va='bottom')
+    ax.set_xlabel('Start Position X (m)')
+    ax.set_ylabel('Start Position Y (m)')
+    ax.set_title('Start Pose Variance Across Variants')
+    ax.grid(True, alpha=0.3)
+    
+    # Plot 2: Goal centroids across variants
+    ax = axes[0, 1]
+    goal_cents_array = np.array(goal_centroids)
+    ax.scatter(goal_cents_array[:, 0], goal_cents_array[:, 1], s=150, alpha=0.7, color='orange')
+    for i, name in enumerate(variant_names):
+        ax.annotate(name, (goal_cents_array[i, 0], goal_cents_array[i, 1]), 
+                   fontsize=8, ha='center', va='bottom')
+    ax.set_xlabel('Goal Centroid X (m)')
+    ax.set_ylabel('Goal Centroid Y (m)')
+    ax.set_title('Goal Pose Centroid Variance Across Variants')
+    ax.grid(True, alpha=0.3)
+    
+    # Plot 3: Pose configuration variance vs distance variance
+    ax = axes[1, 0]
+    start_x_vals = [v['start_pose'][0] for v in variant_analyses]
+    
+    ax.scatter(start_x_vals, distance_vars, s=150, alpha=0.7, color='steelblue')
+    
+    # Add trend line if enough data
+    if len(start_x_vals) > 1:
+        z = np.polyfit(start_x_vals, distance_vars, 1)
+        p = np.poly1d(z)
+        x_trend = np.linspace(np.min(start_x_vals), np.max(start_x_vals), 100)
+        ax.plot(x_trend, p(x_trend), "r--", alpha=0.8, linewidth=2, label='Trend')
+    
+    for i, name in enumerate(variant_names):
+        ax.annotate(name, (start_x_vals[i], distance_vars[i]), 
+                   fontsize=8, ha='center', va='bottom')
+    
+    ax.set_xlabel('Start Position X (m)')
+    ax.set_ylabel('Distance Variance (m²)')
+    ax.set_title(f'Configuration Pose Variance ↔ Distance Variance\n'
+                f'(Start X corr: {analysis["start_x_distance_corr"]:.3f})')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    # Plot 4: Summary statistics table
+    ax = axes[1, 1]
+    ax.axis('off')
+    
+    summary_text = f"""
+Test Type: {analysis['test_type_base']}
+Number of Variants: {analysis['num_variants']}
+
+Pose Variance (across variants):
+  Start X: {analysis['start_x_var']:.6f} m²
+  Start Y: {analysis['start_y_var']:.6f} m²
+  Goal X:  {analysis['goal_x_var']:.6f} m²
+  Goal Y:  {analysis['goal_y_var']:.6f} m²
+
+Distance Variance (across runs):
+  Min: {np.min(analysis['distance_variances']):.1f} m²
+  Max: {np.max(analysis['distance_variances']):.1f} m²
+  Mean: {np.mean(analysis['distance_variances']):.1f} m²
+
+Correlations (config → run):
+  Start X ↔ Distance:  {analysis['start_x_distance_corr']:.4f}
+  Start Y ↔ Distance:  {analysis['start_y_distance_corr']:.4f}
+"""
+    
+    ax.text(0.1, 0.9, summary_text, transform=ax.transAxes, 
+           fontsize=10, verticalalignment='top', fontfamily='monospace',
+           bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
+    
+    fig.suptitle(f'Pose Variance Correlation: {analysis["test_type_base"]}', 
+                fontsize=14, weight='bold')
+    
+    # Save figure
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, f"pose_variance_correlation_{analysis['test_type_base']}.png")
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    return output_path
+
+
 def print_distribution_analysis(name: str, analysis: Dict, metric_name: str):
     """
     Print distribution analysis results.
@@ -748,6 +1453,68 @@ def print_distribution_analysis(name: str, analysis: Dict, metric_name: str):
         if 'fit_stats' in fit_info and 'ks_pvalue' in fit_info['fit_stats']:
             ks_pval = fit_info['fit_stats']['ks_pvalue']
             print(f"    KS Test p-value: {ks_pval:.4f}")
+
+
+def print_pose_variance_analysis(test_type_base: str, analysis: Dict) -> None:
+    """
+    Print pose variance correlation analysis results.
+    
+    Args:
+        test_type_base: Base name of the test type
+        analysis: Analysis dictionary from analyze_pose_variance_correlation
+    """
+    print("\n" + "="*90)
+    print(f"POSE VARIANCE CORRELATION ANALYSIS: {test_type_base}")
+    print("="*90)
+    
+    print(f"\nTest Type:          {analysis['test_type_base']}")
+    print(f"Total Variants:     {analysis['num_variants']}")
+    print(f"Distance Variances: Min={np.min(analysis['distance_variances']):.1f} m², "
+          f"Max={np.max(analysis['distance_variances']):.1f} m², "
+          f"Mean={np.mean(analysis['distance_variances']):.1f} m²")
+    
+    # Per-variant breakdown
+    print("\n" + "-"*90)
+    print("PER-VARIANT ANALYSIS:")
+    print("-"*90)
+    print(f"{'Variant':<30} {'# Runs':<10} {'Start Pose':<20} {'Goal Centroid':<20} {'Distance Var':<15}")
+    print("-"*90)
+    
+    for variant_analysis in analysis['variant_analyses']:
+        variant_name = variant_analysis['variant_name']
+        num_runs = variant_analysis['num_runs']
+        start_pose = variant_analysis['start_pose']
+        goal_centroid = variant_analysis['goal_centroid']
+        distance_var = variant_analysis['distance_var']
+        
+        start_str = f"({start_pose[0]:.3f}, {start_pose[1]:.3f})"
+        goal_str = f"({goal_centroid[0]:.3f}, {goal_centroid[1]:.3f})"
+        
+        print(f"{variant_name:<30} {num_runs:<10} {start_str:<20} {goal_str:<20} {distance_var:>13.1f} m²")
+    
+    # Configuration-level pose variance (across variants)
+    print("\n" + "-"*90)
+    print("CONFIGURATION-LEVEL POSE VARIANCE (Across Variants):")
+    print("-"*90)
+    print(f"  Start Position X:   {analysis['start_x_var']:.6f} m²")
+    print(f"  Start Position Y:   {analysis['start_y_var']:.6f} m²")
+    print(f"  Start Spatial:      {analysis['start_spatial_var']:.6f} m²")
+    print(f"  Goal Position X:    {analysis['goal_x_var']:.6f} m²")
+    print(f"  Goal Position Y:    {analysis['goal_y_var']:.6f} m²")
+    print(f"  Goal Spatial:       {analysis['goal_spatial_var']:.6f} m²")
+    
+    # Correlation coefficients
+    print("\n" + "-"*90)
+    print("CORRELATION: Configuration Pose Variance ↔ Run Distance Variance:")
+    print("-"*90)
+    print(f"  Start X ↔ Distance Var:     {analysis['start_x_distance_corr']:.6f}")
+    print(f"  Start Y ↔ Distance Var:     {analysis['start_y_distance_corr']:.6f}")
+    print(f"  Goal X ↔ Distance Var:      {analysis['goal_x_distance_corr']:.6f}")
+    print(f"  Goal Y ↔ Distance Var:      {analysis['goal_y_distance_corr']:.6f}")
+    print(f"  Start Spatial ↔ Distance:   {analysis['start_spatial_distance_corr']:.6f}")
+    print(f"  Goal Spatial ↔ Distance:    {analysis['goal_spatial_distance_corr']:.6f}")
+    
+    print("\n" + "="*90 + "\n")
 
 
 def print_comparison_results(comparison: Dict, metric_name: str):
@@ -1040,6 +1807,18 @@ Examples:
   python3 compare_navigation_tests.py --sum test_top test_bottom test_full -m time distance
   python3 compare_navigation_tests.py --sum test_top test_bottom test_full --sum-method convolution -m time loc_error_mean
   python3 compare_navigation_tests.py --sum test_top test_bottom test_full --sum-method bootstrap -m loc_error_var
+
+  # Analyze pose variance correlation within a single test type
+  # Shows how variation in start/goal poses affects distance variance
+  python3 compare_navigation_tests.py --pose-variance /path/to/test_type_geometric_1 -o outputs
+  python3 compare_navigation_tests.py --pose-variance /path/to/test_type_geometric_1 /path/to/test_type_geometric_2 -o outputs
+
+    # Compare variance of pose-position distribution vs variance of per-variant mean distances
+    python3 compare_navigation_tests.py --pose-dist-variance /path/to/variant_1 /path/to/variant_2 /path/to/variant_3 -o outputs
+
+    # Source-vs-others: compare pose differences to mean-distance differences
+    # First argument is source variant, remaining arguments are comparison variants
+    python3 compare_navigation_tests.py --pose-diff-vs-source /path/to/source_variant /path/to/other_variant_1 /path/to/other_variant_2 -o outputs
         """
     )
     
@@ -1060,6 +1839,15 @@ Examples:
                        default=['time', 'distance'],
                        help='Metrics to compare: time, distance, loc_error_mean (mean covariance), '
                             'loc_error_var (variance of covariance)')
+    parser.add_argument('--pose-variance', nargs='+',
+                       help='Analyze pose variance correlation for one or more test types '
+                            '(shows how pose variation affects distance variance within each test type)')
+    parser.add_argument('--pose-dist-variance', nargs='+',
+                       help='Compare distribution variance of all scenario.config start/goal positions '
+                           'against distribution variance of per-variant mean traveled distances')
+    parser.add_argument('--pose-diff-vs-source', nargs='+',
+                       help='Source-vs-others comparison: first path is source variant, '
+                           'remaining paths are comparison variants')
     parser.add_argument('-o', '--output-dir', default='navigation_comparison_results',
                        help='Output directory for results')
     parser.add_argument('--no-display', action='store_true',
@@ -1070,7 +1858,14 @@ Examples:
     args = parser.parse_args()
     
     # Check that at least one action is specified
-    if not args.test_types and not args.compare and not args.sum:
+    if (
+        not args.test_types
+        and not args.compare
+        and not args.sum
+        and not args.pose_variance
+        and not args.pose_dist_variance
+        and not args.pose_diff_vs_source
+    ):
         parser.print_help()
         sys.exit(1)
     
@@ -1224,6 +2019,72 @@ Examples:
                 sum_method=args.sum_method,
                 no_display=args.no_display
             )
+    
+    # Analyze pose variance correlation if requested
+    if args.pose_variance:
+        print(f"Analyzing pose variance correlation for {len(args.pose_variance)} test type(s)...\n")
+        
+        for test_type_path in args.pose_variance:
+            test_type_dir = Path(test_type_path)
+            test_type_name = test_type_dir.name
+            
+            print(f"Processing {test_type_name}...")
+            
+            analysis = analyze_pose_variance_correlation(test_type_path)
+            
+            if analysis:
+                if not args.no_display:
+                    print_pose_variance_analysis(test_type_name, analysis)
+                
+                # Generate plot
+                plot_path = plot_pose_variance_correlation(test_type_name, analysis, args.output_dir)
+                print(f"  Pose variance plot saved to: {plot_path}")
+            else:
+                print(f"  Failed to analyze pose variance for {test_type_name}", file=sys.stderr)
+
+    # Compare variance of pose-position distribution vs variance of distance-mean distribution
+    if args.pose_dist_variance:
+        print(f"Analyzing pose-position distribution vs distance-mean distribution for {len(args.pose_dist_variance)} variant(s)...\n")
+        analysis = analyze_pose_distribution_vs_distance_means(args.pose_dist_variance)
+
+        if analysis:
+            if not args.no_display:
+                print_pose_distribution_vs_distance_means_analysis(analysis)
+
+            plot_path = plot_pose_distribution_vs_distance_means(analysis, args.output_dir)
+            print(f"  Pose distribution vs distance means plot saved to: {plot_path}")
+        else:
+            print("  Failed to analyze pose-position distribution vs distance means (need at least 2 valid variants)", file=sys.stderr)
+
+    # Source-vs-others pose-difference vs distance-mean-difference analysis
+    if args.pose_diff_vs_source:
+        if len(args.pose_diff_vs_source) < 3:
+            print(
+                "Error: --pose-diff-vs-source requires at least 3 paths: source + at least 2 comparison variants",
+                file=sys.stderr,
+            )
+        else:
+            source_variant = args.pose_diff_vs_source[0]
+            other_variants = args.pose_diff_vs_source[1:]
+
+            print(
+                f"Analyzing source-vs-others pose/distance differences: source=\"{Path(source_variant).name}\", "
+                f"comparisons={len(other_variants)}...\n"
+            )
+
+            analysis = analyze_source_pose_vs_distance_differences(source_variant, other_variants)
+
+            if analysis:
+                if not args.no_display:
+                    print_source_pose_vs_distance_differences_analysis(analysis)
+
+                plot_path = plot_source_pose_vs_distance_differences(analysis, args.output_dir)
+                print(f"  Source-vs-others pose/distance diff plot saved to: {plot_path}")
+            else:
+                print(
+                    "  Failed source-vs-others analysis (need 1 valid source and at least 2 valid comparison variants)",
+                    file=sys.stderr,
+                )
 
 
 if __name__ == '__main__':
