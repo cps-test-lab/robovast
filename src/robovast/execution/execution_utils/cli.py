@@ -567,16 +567,18 @@ def download(output, force, verbose, skip_removal, port_forward_only, remote_com
         handle_cli_exception(e)
 
 
-@cluster.command(name='download-to-share')
+@cluster.command(name='upload-to-share')
 @click.option('--force', '-f', is_flag=True,
               help='Force recreation of the remote tar.gz archive even if it already exists')
 @click.option('--verbose', '-v', is_flag=True,
               help='Print detailed progress')
 @click.option('--keep-archive', is_flag=True,
               help='Keep the tar.gz in the pod /data/ after a successful upload')
+@click.option('--skip-removal', is_flag=True,
+              help='Do not delete the S3 bucket after a successful upload')
 @click.option('--context', '-x', 'kube_context', default=None,
               help='Kubernetes context to use (default: active context in kubeconfig)')
-def download_to_share(force, verbose, keep_archive, kube_context):
+def download_to_share(force, verbose, keep_archive, skip_removal, kube_context):
     """Upload run archives from the cluster pod to a remote share service.
 
     Results are transferred entirely inside the archiver sidecar of the
@@ -589,8 +591,9 @@ def download_to_share(force, verbose, keep_archive, kube_context):
        ``cluster download``).  Skips this step if the archive already exists.
     2. Uploads the archive to the configured share service from inside the pod.
     3. Removes the archive from the pod on success (unless ``--keep-archive``).
-    4. Keeps the archive if the upload fails so you can retry or fall back
-       to ``cluster download``.
+    4. Deletes the S3 bucket on success (unless ``--skip-removal``).
+    5. Keeps both the archive and the bucket if the upload fails so you can
+       retry or fall back to ``cluster download``.
 
     Configuration is read from a ``.env`` file in the current or any parent
     directory.  Required variables:
@@ -646,6 +649,10 @@ def download_to_share(force, verbose, keep_archive, kube_context):
         handle_cli_exception(e)
         return
 
+    share_url = os.environ.get("ROBOVAST_SHARE_URL", "").strip()
+    if share_url:
+        click.echo(f"Share target ({share_type}): {share_url}")
+
     try:
         require_context_for_multi_cluster(kube_context)
         context_key = kube_context
@@ -661,6 +668,7 @@ def download_to_share(force, verbose, keep_archive, kube_context):
             force=force,
             verbose=verbose,
             keep_archive=keep_archive,
+            skip_removal=skip_removal,
         )
         click.echo(f"✓ Uploaded {count} run(s) to {share_type} successfully!")
 

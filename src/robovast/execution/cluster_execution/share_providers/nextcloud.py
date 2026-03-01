@@ -15,7 +15,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Nextcloud share provider for ``cluster download-to-share``."""
+"""Nextcloud share provider for ``cluster upload-to-share``."""
 
 import os
 

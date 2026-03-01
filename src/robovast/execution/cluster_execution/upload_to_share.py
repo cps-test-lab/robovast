@@ -36,6 +36,7 @@ import sys
 import threading
 
 from .download_results import ResultDownloader
+from .s3_client import ClusterS3Client
 from .share_providers.base import BaseShareProvider
 
 logger = logging.getLogger(__name__)
@@ -83,6 +84,7 @@ class ShareUploader:
         force: bool = False,
         verbose: bool = False,
         keep_archive: bool = False,
+        skip_removal: bool = False,
     ) -> int:
         """Create tar.gz archives on the pod then upload them to the share.
 
@@ -93,9 +95,11 @@ class ShareUploader:
         2. Execute the provider's upload script inside the archiver container,
            streaming progress to the local terminal.
         3. On success: remove the remote archive from ``/data/`` unless
-           *keep_archive* is ``True``.
-        4. On failure: keep the remote archive (allows a normal
-           ``cluster download`` later or a retry).
+           *keep_archive* is ``True``.  Also delete the S3 bucket for the run
+           unless *skip_removal* is ``True`` (mirrors ``cluster download``
+           behaviour).
+        4. On failure: keep both the remote archive and the S3 bucket so the
+           user can retry or fall back to ``cluster download``.
 
         Args:
             force: If ``True``, recreate the tar.gz archive even if it already
@@ -104,6 +108,8 @@ class ShareUploader:
                 single-line progress bar.
             keep_archive: If ``True``, do not remove the tar.gz from ``/data/``
                 after a successful upload.
+            skip_removal: If ``True``, do not delete the S3 bucket after a
+                successful upload.
 
         Returns:
             int: Number of runs successfully uploaded.
@@ -140,6 +146,8 @@ class ShareUploader:
             if success:
                 if not keep_archive:
                     self._remove_remote_archive(run_id)
+                if not skip_removal:
+                    self._delete_run_s3(run_id)
                 uploaded += 1
 
         return uploaded
@@ -251,6 +259,25 @@ class ShareUploader:
             sys.stdout.flush()
             logger.debug("Upload exception for %s: %s", run_id, exc, exc_info=True)
             return False
+
+    def _delete_run_s3(self, run_id: str) -> None:
+        """Delete the S3 bucket for *run_id* after a successful upload."""
+        logger.debug("Deleting S3 bucket %s...", run_id)
+        try:
+            if self.cluster_config:
+                access_key, secret_key = self.cluster_config.get_s3_credentials()
+            else:
+                access_key, secret_key = "minioadmin", "minioadmin"
+            with ClusterS3Client(
+                namespace=self.namespace,
+                access_key=access_key,
+                secret_key=secret_key,
+                context=self.context,
+            ) as s3:
+                s3.delete_bucket(run_id)
+            logger.debug("Deleted S3 bucket %s", run_id)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("Could not delete S3 bucket %s: %s", run_id, exc)
 
     def _remove_remote_archive(self, run_id: str) -> None:
         """Remove the tar.gz from /data/ in the archiver container."""

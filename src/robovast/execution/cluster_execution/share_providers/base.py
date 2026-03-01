@@ -15,7 +15,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Abstract base class for share providers used by ``cluster download-to-share``."""
+"""Abstract base class for share providers used by ``cluster upload-to-share``."""
 
 import os
 from abc import ABC, abstractmethod

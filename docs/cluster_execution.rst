@@ -409,18 +409,18 @@ The resolution logic for per-cluster resources lives in
 
 .. _cluster-sharing:
 
-Sharing Results via ``cluster download-to-share``
+Sharing Results via ``cluster upload-to-share``
 -------------------------------------------------
 
 Instead of downloading cluster results to a local machine and then
 re-uploading them to a shared folder (Nextcloud, Google Drive, …), the
-``download-to-share`` command performs the entire transfer **inside the
+``upload-to-share`` command performs the entire transfer **inside the
 archiver sidecar of the robovast pod**.  No data ever reaches the user's
 machine.
 
 .. code-block:: bash
 
-   vast execution cluster download-to-share
+   vast execution cluster upload-to-share
 
 How it works
 ^^^^^^^^^^^^
@@ -485,26 +485,28 @@ Example usage:
 .. code-block:: bash
 
    # Upload all available runs
-   vast execution cluster download-to-share
+   vast execution cluster upload-to-share
 
    # Keep the pod-side archive after upload (so you can also download it)
-   vast execution cluster download-to-share --keep-archive
+   vast execution cluster upload-to-share --keep-archive
 
    # Force recreation of the tar.gz even if it already exists
-   vast execution cluster download-to-share --force
+   vast execution cluster upload-to-share --force
 
 Google Drive
 ^^^^^^^^^^^^
 
 Uploads to a Google Drive folder using a **service account** with write access
-to the target folder.  The folder can be in "My Drive" or a Shared Drive.
+to the target folder.  The folder **must** be located in a **Shared Drive** —
+service accounts have no personal storage quota and cannot write to regular
+"My Drive" folders.
 
 Prerequisites:
 
 1. Create a service account in Google Cloud Console and download its JSON key
    file.
-2. Share the target Drive folder with the service account email address
-   (grant "Editor" role).
+2. Add the service account email address as a member of the Shared Drive
+   (or share a specific folder within it) with at least "Contributor" role.
 
 .. code-block:: ini
 
@@ -526,8 +528,8 @@ Example usage:
 
 .. code-block:: bash
 
-   vast execution cluster download-to-share
-   vast execution cluster download-to-share --keep-archive
+   vast execution cluster upload-to-share
+   vast execution cluster upload-to-share --keep-archive
 
 Progress output
 ^^^^^^^^^^^^^^^

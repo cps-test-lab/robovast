@@ -15,7 +15,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Share provider plugin loading for cluster download-to-share."""
+"""Share provider plugin loading for cluster upload-to-share."""
 
 from importlib.metadata import entry_points
 

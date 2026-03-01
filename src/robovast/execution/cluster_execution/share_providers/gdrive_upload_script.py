@@ -46,7 +46,7 @@ from googleapiclient.http import MediaIoBaseUpload
 # Progress bar helpers (match download_results.py style)
 # ---------------------------------------------------------------------------
 BAR_WIDTH = 20
-CLEAR_LINE = "\033[2K"
+CLEAR_EOL = "\033[K"
 _DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 
 
@@ -74,7 +74,7 @@ def _render_progress(run_id, sent, total, start_time):
         f"{run_id}  [{bar}]  {pct:5.1f}%  "
         f"{_fmt_size(sent)}/{_fmt_size(total)}  {_fmt_rate(rate)}"
     )
-    sys.stdout.write("\r" + CLEAR_LINE + line)
+    sys.stdout.write("\r" + line + CLEAR_EOL)
     sys.stdout.flush()
 
 
@@ -100,6 +100,25 @@ def upload(run_id: str, folder_id: str, sa_json_content: str) -> None:
     )
     service = build("drive", "v3", credentials=credentials, cache_discovery=False)
 
+    # Check for an existing file with the same name in the target folder.
+    query = (
+        f"name = {filename!r} and '{folder_id}' in parents and trashed = false"
+    )
+    existing = service.files().list(
+        q=query,
+        fields="files(id, name)",
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
+    ).execute().get("files", [])
+    if existing:
+        sys.stderr.write(
+            f"ERROR: {filename} already exists in the target Google Drive folder "
+            f"(file id: {existing[0]['id']}).\n"
+            "Use --force to overwrite (re-create the archive) or delete the "
+            "existing file manually.\n"
+        )
+        sys.exit(1)
+
     file_metadata = {"name": filename, "parents": [folder_id]}
 
     sys.stdout.write(f"{run_id}  uploading to Google Drive...\n")
@@ -115,7 +134,9 @@ def upload(run_id: str, folder_id: str, sa_json_content: str) -> None:
             chunksize=_CHUNK_SIZE,
             resumable=True,
         )
-        request = service.files().create(body=file_metadata, media_body=media)
+        request = service.files().create(
+            body=file_metadata, media_body=media, supportsAllDrives=True
+        )
 
         response = None
         while response is None:
@@ -128,7 +149,7 @@ def upload(run_id: str, folder_id: str, sa_json_content: str) -> None:
                     _render_progress(run_id, sent, total, start_time)
 
     _render_progress(run_id, total, total, start_time)
-    sys.stdout.write("\r" + CLEAR_LINE + f"{run_id}  uploaded ({_fmt_size(total)})  ✓\n")
+    sys.stdout.write("\r" + f"{run_id}  uploaded ({_fmt_size(total)})  ✓" + CLEAR_EOL + "\n")
     sys.stdout.flush()
 
 

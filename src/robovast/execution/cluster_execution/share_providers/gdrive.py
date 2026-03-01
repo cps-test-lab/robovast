@@ -15,7 +15,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Google Drive share provider for ``cluster download-to-share``."""
+"""Google Drive share provider for ``cluster upload-to-share``."""
 
 import os
 import re
@@ -42,8 +42,9 @@ class GDriveShareProvider(BaseShareProvider):
     """Upload run archives to a Google Drive folder via a service account.
 
     The service account must have write access to the target folder (share
-    the folder with the service account email).  The folder may be a shared
-    drive or a regular "My Drive" folder.
+    the folder with the service account email).  The folder **must** be located
+    in a Shared Drive — service accounts have no storage quota of their own
+    and cannot upload to regular "My Drive" folders.
 
     Required ``.env`` variables:
 

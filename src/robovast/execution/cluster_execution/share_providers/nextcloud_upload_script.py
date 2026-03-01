@@ -42,7 +42,7 @@ import urllib.request
 # Progress bar helpers (match download_results.py style)
 # ---------------------------------------------------------------------------
 BAR_WIDTH = 20
-CLEAR_LINE = "\033[2K"
+CLEAR_EOL = "\033[K"
 
 
 def _fmt_size(n):
@@ -91,7 +91,7 @@ class _ProgressReader:
             f"{self._run_id}  [{bar}]  {pct:5.1f}%  "
             f"{_fmt_size(self._sent)}/{_fmt_size(self.total)}  {_fmt_rate(rate)}"
         )
-        sys.stdout.write("\r" + CLEAR_LINE + line)
+        sys.stdout.write("\r" + line + CLEAR_EOL)
         sys.stdout.flush()
 
     # Required so urllib can inspect the request body size
@@ -169,7 +169,7 @@ def upload(run_id: str, share_url: str) -> None:
             sys.stderr.write(f"ERROR: Upload failed: {exc.reason}\n")
             sys.exit(1)
 
-    sys.stdout.write("\r" + CLEAR_LINE + f"{run_id}  uploaded ({_fmt_size(total)})  ✓\n")
+    sys.stdout.write("\r" + f"{run_id}  uploaded ({_fmt_size(total)})  ✓" + CLEAR_EOL + "\n")
     sys.stdout.flush()
 
 
