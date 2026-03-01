@@ -3,81 +3,48 @@
 
 import argparse
 import os
-import signal
 import subprocess
 import sys
 import tempfile
 import traceback
 from pathlib import Path
 
-# Global variable to track the current subprocess
-_current_process = None  # pylint: disable=invalid-name
-
-def _signal_handler(signum, frame):
-    """Handle signals and forward them to the subprocess."""
-    if _current_process is not None:
-        print(f"\nReceived signal {signum}, forwarding to subprocess...")
-        try:
-            _current_process.send_signal(signum)
-        except ProcessLookupError:
-            # Process already terminated
-            pass
-
 def run_command(cmd, cwd=None, check=True):
-    """Run a command and return the result."""
-    global _current_process  # pylint: disable=global-statement
-    
+    """Run a command, stream its output, and return the exit code.
+
+    On failure always prints clearly labelled stdout and stderr so CI logs
+    contain enough context to debug the problem.
+    """
     print(f"Running: {' '.join(cmd)}")
-    
-    # Set up signal handler
-    old_sigint_handler = signal.signal(signal.SIGINT, _signal_handler)
-    old_sigterm_handler = signal.signal(signal.SIGTERM, _signal_handler)
-    
-    try:
-        _current_process = subprocess.Popen(
-            cmd,
-            cwd=cwd
-        )
-        
-        # Wait for process to complete
-        returncode = _current_process.wait()
-        
-        _current_process = None
-        
-        # Restore old signal handlers
-        signal.signal(signal.SIGINT, old_sigint_handler)
-        signal.signal(signal.SIGTERM, old_sigterm_handler)
-        
-        if check and returncode != 0:
-            raise subprocess.CalledProcessError(returncode, cmd)
-        
-        return returncode
-    
-    except KeyboardInterrupt:
-        # Handle Ctrl+C gracefully
-        print("\nInterrupted by user")
-        if _current_process is not None:
-            try:
-                _current_process.send_signal(signal.SIGINT)
-                _current_process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                print("Process did not terminate, forcing kill...")
-                _current_process.kill()
-                _current_process.wait()
-            except ProcessLookupError:
-                pass
-        _current_process = None
-        signal.signal(signal.SIGINT, old_sigint_handler)
-        signal.signal(signal.SIGTERM, old_sigterm_handler)
-        raise
-    
-    finally:
-        # Ensure we restore signal handlers
-        try:
-            signal.signal(signal.SIGINT, old_sigint_handler)
-            signal.signal(signal.SIGTERM, old_sigterm_handler)
-        except (ValueError, OSError):
-            pass
+
+    result = subprocess.run(
+        cmd,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+
+    # Always emit stdout so progress is visible in the CI log.
+    if result.stdout:
+        sys.stdout.write(result.stdout)
+        sys.stdout.flush()
+
+    if result.returncode != 0:
+        print(f"\n✗ Command exited with code {result.returncode}")
+        if result.stdout:
+            print("--- stdout ---")
+            print(result.stdout)
+        if result.stderr:
+            print("--- stderr ---")
+            print(result.stderr)
+        if check:
+            raise subprocess.CalledProcessError(
+                result.returncode, cmd, result.stdout, result.stderr
+            )
+
+    return result.returncode
 
 
 def check_results_dir_structure(results_dir):  # pylint: disable=too-many-return-statements

@@ -208,7 +208,7 @@ def cluster():
               help='Log scenario execution live tree')
 @click.option('--context', '-x', 'kube_context', default=None,
               help='Kubernetes context to use (default: active context in kubeconfig)')
-def run(config, runs, follow, cleanup, log_tree, kube_context):  # pylint: disable=function-redefined
+def run(config, runs, follow, cleanup, log_tree, kube_context):  # pylint: disable=function-redefined,redefined-outer-name
     """Execute scenarios on a Kubernetes cluster.
 
     Deploys all test configurations (or a specific one) as Kubernetes jobs
@@ -320,10 +320,10 @@ def monitor(interval, once, kube_context):
     ``vast execution cluster run``.
     """
     try:
-        CURSOR_UP = "\033[A"
-        CLEAR_LINE = "\033[2K"
-        BAR_WIDTH = 20
-        PCT_WIDTH = 7
+        cursor_up = "\033[A"
+        clear_line = "\033[2K"
+        bar_width = 20
+        pct_width = 7
 
         # Build list of (label, kube_context_name) to monitor
         if not kube_context:
@@ -386,11 +386,11 @@ def monitor(interval, once, kube_context):
                 if remainder > 0:
                     ok += remainder
                 pct = 100.0 * finished / total if total > 0 else 100.0
-                filled = int(BAR_WIDTH * finished / total) if total > 0 else BAR_WIDTH
-                bar = "█" * filled + "░" * (BAR_WIDTH - filled)
-                pct_str = f"{pct:.1f}%".rjust(PCT_WIDTH)
+                filled = int(bar_width * finished / total) if total > 0 else bar_width
+                progress_bar = "█" * filled + "░" * (bar_width - filled)
+                pct_str = f"{pct:.1f}%".rjust(pct_width)
                 lines.append(
-                    f"{indent}{run_id}  [{bar}]  {pct_str}  "
+                    f"{indent}{run_id}  [{progress_bar}]  {pct_str}  "
                     f"{finished}/{total}  ({ok} ok, {fail} fail)  "
                     f"Running: {c['running']}  Pending: {c['pending']}"
                 )
@@ -404,10 +404,9 @@ def monitor(interval, once, kube_context):
             for label, ctx in contexts_to_monitor:
                 unreachable = False
                 try:
-                    import logging as _logging  # pylint: disable=import-outside-toplevel
-                    _urllib3_logger = _logging.getLogger("urllib3")
+                    _urllib3_logger = logging.getLogger("urllib3")
                     _prev_level = _urllib3_logger.level
-                    _urllib3_logger.setLevel(_logging.ERROR)
+                    _urllib3_logger.setLevel(logging.ERROR)
                     try:
                         per_run = get_cluster_run_job_counts_per_run(namespace, context=ctx)
                     finally:
@@ -443,11 +442,11 @@ def monitor(interval, once, kube_context):
 
             # Erase previous output and redraw
             for _ in range(prev_line_count[0]):
-                sys.stdout.write(CURSOR_UP)
+                sys.stdout.write(cursor_up)
             for line in all_lines:
-                sys.stdout.write("\r" + CLEAR_LINE + line + "\n")
+                sys.stdout.write("\r" + clear_line + line + "\n")
             for _ in range(len(all_lines), prev_line_count[0]):
-                sys.stdout.write("\r" + CLEAR_LINE + "\n")
+                sys.stdout.write("\r" + clear_line + "\n")
             prev_line_count[0] = len(all_lines)
             sys.stdout.flush()
             return everything_done
@@ -874,7 +873,7 @@ def prepare_run(output, config, runs, cluster_config, options, log_tree, kube_co
             yaml.dump_all(all_jobs, f, default_flow_style=False)
 
         cluster_config.prepare_setup_cluster(output, **cluster_kwargs)
-        from robovast.execution.cluster_execution.kubernetes_kueue import (
+        from robovast.execution.cluster_execution.kubernetes_kueue import (  # pylint: disable=import-outside-toplevel
             prepare_kueue_setup,
         )
         prepare_kueue_setup(output, namespace=namespace, kube_context=kube_context)

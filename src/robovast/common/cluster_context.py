@@ -54,7 +54,7 @@ def get_active_kube_context() -> Optional[str]:
     determined (e.g. kubeconfig is absent).
     """
     try:
-        from kubernetes import config as kube_config
+        from kubernetes import config as kube_config  # pylint: disable=import-outside-toplevel
         _, active = kube_config.list_kube_config_contexts()
         return active["name"] if active else None
     except Exception as exc:
@@ -70,7 +70,7 @@ def list_all_contexts() -> list[tuple[str, str]]:
         Returns an empty list when no kubeconfig is available.
     """
     try:
-        from kubernetes import config as kube_config
+        from kubernetes import config as kube_config  # pylint: disable=import-outside-toplevel
         contexts, _ = kube_config.list_kube_config_contexts()
         return sorted((c["name"], c["name"]) for c in (contexts or []))
     except Exception as exc:
@@ -104,12 +104,12 @@ def get_config_context_names(config_path: str) -> set[str]:
     names: set[str] = set()
 
     # Only the resource fields that support per-cluster lists
-    _RESOURCE_FIELDS = frozenset({"cpu", "memory"})
+    _resource_fields = frozenset({"cpu", "memory"})
 
     def _scan(node: Any) -> None:
         if isinstance(node, dict):
             for key, v in node.items():
-                if key in _RESOURCE_FIELDS and isinstance(v, list):
+                if key in _resource_fields and isinstance(v, list):
                     # Per-cluster resource list: every item must be a single-key dict
                     if v and all(isinstance(item, dict) and len(item) == 1 for item in v):
                         for item in v:
@@ -149,7 +149,7 @@ def require_context_for_multi_cluster(kube_context: Optional[str]) -> None:
         return
 
     try:
-        from robovast.common.cli.project_config import ProjectConfig  # local import – avoid cycles
+        from robovast.common.cli.project_config import ProjectConfig  # pylint: disable=import-outside-toplevel  # local import – avoid cycles
         pc = ProjectConfig.load()
         config_path = pc.config_path if pc else None
     except Exception:

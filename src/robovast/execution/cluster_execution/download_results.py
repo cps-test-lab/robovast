@@ -101,6 +101,29 @@ class ResultDownloader:
                 self.port_forward_process.kill()
             self.port_forward_process = None
 
+    def cleanup_s3_buckets(self, run_id=None) -> int:
+        """Remove run buckets from the cluster S3 (MinIO) without downloading.
+
+        Args:
+            run_id: If provided, only the bucket with this exact name is removed.
+                    If ``None``, all ``run-*`` buckets are removed.
+
+        Returns:
+            int: Number of buckets successfully removed.
+        """
+        if self.cluster_config:
+            access_key, secret_key = self.cluster_config.get_s3_credentials()
+        else:
+            access_key, secret_key = "minioadmin", "minioadmin"
+
+        with ClusterS3Client(
+            namespace=self.namespace,
+            access_key=access_key,
+            secret_key=secret_key,
+            context=self.context,
+        ) as s3:
+            return s3.cleanup_run_buckets(run_id=run_id)
+
     def start_port_forward(self):
         """Start port-forwarding to the HTTP server sidecar"""
         if self.port_forward_process:
@@ -618,6 +641,7 @@ class ResultDownloader:
 
             with response:
                 total_size = 0
+                downloaded = 0
                 # Handle different response codes
                 if response.status_code == 206:  # Partial content (resume)
                     logger.info(f"Resuming download from byte {initial_pos}")

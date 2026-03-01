@@ -218,6 +218,7 @@ def _run_helm(args, check=True):
         capture_output=True,
         text=True,
         timeout=300,
+        check=False,
     )
     if result.returncode != 0:
         logger.warning("Helm command failed: %s", result.stderr)
@@ -240,6 +241,7 @@ def _run_kubectl_apply(yaml_content, check=True, kube_context=None):
         capture_output=True,
         text=True,
         timeout=60,
+        check=False,
     )
     if result.returncode != 0:
         logger.warning("kubectl apply failed: %s", result.stderr)
@@ -266,6 +268,7 @@ def install_kueue_helm(kube_context=None):
         ["helm", "list", "-n", KUEUE_NAMESPACE, "-q", "-f", KUEUE_HELM_RELEASE] + ctx_helm,
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode == 0 and result.stdout.strip():
         logger.info(

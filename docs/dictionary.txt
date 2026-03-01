@@ -39,3 +39,8 @@ subdirectory
 entrypoint
 RViz
 localhost
+kubeconfig
+queueing
+Kueue
+gz
+Ctrl
