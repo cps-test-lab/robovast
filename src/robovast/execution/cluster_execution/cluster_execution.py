@@ -36,7 +36,10 @@ from robovast.common.config_generation import generate_scenario_variations
 from robovast.execution.cluster_execution.kubernetes import check_pod_running
 from robovast.execution.cluster_execution.s3_client import upload_run_configs
 
-from .kubernetes_kueue import cleanup_kueue_workloads
+from .kubernetes_kueue import (
+    cleanup_kueue_workloads,
+    set_cluster_queue_stop_policy,
+)
 from .manifests import JOB_TEMPLATE
 
 logger = logging.getLogger(__name__)
@@ -108,6 +111,11 @@ def cleanup_cluster_run(namespace="default", run_id=None, context=None):
         label_safe = _label_safe_run_id(run_id)
         label_selector = f"jobgroup=scenario-runs,run-id={label_safe}"
 
+    # Soft cleanup step 1: stop the ClusterQueue so Kueue does not admit new jobs
+    # while we are deleting. Runs in best-effort; failure does not abort cleanup.
+    logger.debug("Setting ClusterQueue stopPolicy to HoldAll before cleanup")
+    set_cluster_queue_stop_policy("HoldAll", kube_context=context)
+
     # Cleanup Kueue workloads first (before deleting jobs); workloads don't inherit job
     # labels, so we match by job UIDs or queue name
     cleanup_kueue_workloads(
@@ -132,6 +140,27 @@ def cleanup_cluster_run(namespace="default", run_id=None, context=None):
         logger.error(f"Error deleting jobs with label selector: {e}")
         raise
 
+    # Hard cleanup: force-remove finalizers from any jobs stuck in Terminating.
+    try:
+        remaining_jobs = k8s_batch_client.list_namespaced_job(
+            namespace=namespace,
+            label_selector=label_selector,
+        )
+        for job in remaining_jobs.items:
+            if job.metadata.deletion_timestamp is not None:
+                job_name = job.metadata.name
+                logger.warning(
+                    "Job '%s' is stuck in Terminating state; removing finalizers", job_name
+                )
+                k8s_batch_client.patch_namespaced_job(
+                    name=job_name,
+                    namespace=namespace,
+                    body={"metadata": {"finalizers": None}},
+                )
+                logger.info("Removed finalizers from stuck job '%s'", job_name)
+    except client.rest.ApiException as e:
+        logger.warning("Error while clearing finalizers from stuck jobs: %s", e)
+
     # Cleanup pods
     try:
         logger.debug(f"Deleting pods with label selector '{label_selector}'")
@@ -146,6 +175,29 @@ def cleanup_cluster_run(namespace="default", run_id=None, context=None):
     except client.rest.ApiException as e:
         logger.error(f"Error deleting pods with label selector: {e}")
         raise
+
+    # Force-remove finalizers from any pods stuck in Terminating state.
+    # This can happen when the Job is gone but its underlying Pod has
+    # finalizers that prevent it from being fully deleted.
+    try:
+        remaining_pods = k8s_client.list_namespaced_pod(
+            namespace=namespace,
+            label_selector=label_selector,
+        )
+        for pod in remaining_pods.items:
+            if pod.metadata.deletion_timestamp is not None:
+                pod_name = pod.metadata.name
+                logger.warning(
+                    f"Pod '{pod_name}' is stuck in Terminating state; removing finalizers"
+                )
+                k8s_client.patch_namespaced_pod(
+                    name=pod_name,
+                    namespace=namespace,
+                    body={"metadata": {"finalizers": None}},
+                )
+                logger.info(f"Removed finalizers from stuck pod '{pod_name}'")
+    except client.rest.ApiException as e:
+        logger.warning(f"Error while clearing finalizers from stuck pods: {e}")
 
 
 def get_cluster_run_job_counts(namespace="default", context=None):

@@ -19,6 +19,8 @@
 
 import logging
 import subprocess
+import tempfile
+import os
 
 from kubernetes import client, config
 from kubernetes.utils.quantity import parse_quantity
@@ -36,10 +38,28 @@ CLUSTER_QUEUE_NAME = "robovast-cluster-queue"
 KUEUE_WORKLOAD_GROUP = "kueue.x-k8s.io"
 KUEUE_WORKLOAD_VERSION = "v1beta2"
 KUEUE_WORKLOAD_PLURAL = "workloads"
+KUEUE_RESOURCE_FLAVOR_NAME = "default-flavor"
 
 # Fallback quotas when cluster resources cannot be queried
 DEFAULT_CPU_QUOTA = 8
 DEFAULT_MEMORY_QUOTA = "32Gi"
+
+# values.yaml applied on every Kueue Helm install/upgrade
+KUEUE_HELM_VALUES = """
+controllerManager:
+  manager:
+    configuration:
+      clientConnection:
+        qps: 1000      # High QPS to clear the 10,000 event backlog
+        burst: 2000
+      controller:
+        groupKindConcurrency:
+          Job.batch: 100               # Process finished jobs faster
+          Workload.kueue.x-k8s.io: 100  # Admit new jobs faster
+      # IMPORTANT: Native Kueue cleanup
+      workloadRetentionPolicy:
+        afterFinished: 30s    # Clean up the "Workload" 30s after the Job is done
+"""
 
 # ResourceFlavor + ClusterQueue + LocalQueue (execution namespace set at runtime)
 # {cpu_quota} and {memory_quota} are filled from cluster allocatable resources
@@ -83,6 +103,43 @@ def _parse_resource(val):
         return float(parse_quantity(val))
     except (ValueError, TypeError):
         return 0
+
+
+def set_cluster_queue_stop_policy(stop_policy, kube_context=None):
+    """Set the stopPolicy on the robovast ClusterQueue.
+
+    Useful before bulk job deletion so Kueue does not admit new jobs during cleanup.
+    Common values: ``"HoldAll"`` (pause admission and preempt running workloads),
+    ``"Hold"`` (pause new admissions only), ``"None"`` or empty string to resume.
+
+    Args:
+        stop_policy: Policy string, e.g. ``"HoldAll"``.
+        kube_context: Kubernetes context to use. ``None`` uses the active context.
+    """
+    try:
+        config.load_kube_config(context=kube_context)
+    except config.ConfigException:
+        pass
+    custom_api = client.CustomObjectsApi()
+    body = {"spec": {"stopPolicy": stop_policy or "None"}}
+    try:
+        custom_api.patch_cluster_custom_object(
+            group=KUEUE_WORKLOAD_GROUP,
+            version=KUEUE_WORKLOAD_VERSION,
+            plural="clusterqueues",
+            name=CLUSTER_QUEUE_NAME,
+            body=body,
+        )
+        logger.debug(
+            "ClusterQueue '%s' stopPolicy set to '%s'", CLUSTER_QUEUE_NAME, stop_policy
+        )
+    except client.rest.ApiException as e:
+        if e.status == 404:
+            logger.debug(
+                "ClusterQueue '%s' not found, skipping stopPolicy patch", CLUSTER_QUEUE_NAME
+            )
+        else:
+            logger.warning("Could not set ClusterQueue '%s' stopPolicy: %s", CLUSTER_QUEUE_NAME, e)
 
 
 def cleanup_kueue_workloads(
@@ -182,6 +239,41 @@ def cleanup_kueue_workloads(
                 body=delete_opts,
             )
             logger.info("Successfully deleted scenario-runs Kueue workloads")
+
+        # Hard cleanup: force-remove finalizers from any workloads that are stuck in
+        # Terminating (their own finalizers block deletion after the soft delete above).
+        try:
+            remaining = custom_api.list_namespaced_custom_object(
+                group=KUEUE_WORKLOAD_GROUP,
+                version=KUEUE_WORKLOAD_VERSION,
+                namespace=namespace,
+                plural=KUEUE_WORKLOAD_PLURAL,
+                label_selector=queue_selector,
+            )
+            for wl in remaining.get("items", []):
+                meta = wl.get("metadata", {})
+                if meta.get("deletionTimestamp") or meta.get("finalizers"):
+                    wl_name = meta["name"]
+                    try:
+                        custom_api.patch_namespaced_custom_object(
+                            group=KUEUE_WORKLOAD_GROUP,
+                            version=KUEUE_WORKLOAD_VERSION,
+                            namespace=namespace,
+                            plural=KUEUE_WORKLOAD_PLURAL,
+                            name=wl_name,
+                            body={"metadata": {"finalizers": None}},
+                        )
+                        logger.info(
+                            "Removed finalizers from stuck Kueue workload '%s'", wl_name
+                        )
+                    except client.rest.ApiException as patch_err:
+                        if patch_err.status != 404:
+                            logger.warning(
+                                "Could not patch workload '%s' finalizers: %s", wl_name, patch_err
+                            )
+        except client.rest.ApiException as list_err:
+            logger.warning("Could not list workloads for finalizer hard-cleanup: %s", list_err)
+
     except client.rest.ApiException as e:
         if e.status == 404:
             logger.debug(
@@ -190,6 +282,44 @@ def cleanup_kueue_workloads(
         else:
             logger.error(f"Error deleting Kueue workloads: {e}")
             raise
+
+
+def cleanup_kueue_cluster_resources(kube_context=None):
+    """Force-remove finalizers from ClusterQueue and ResourceFlavor.
+
+    Called during cluster teardown to unblock deletion of Kueue cluster-scoped
+    resources that may be stuck with finalizers preventing ``helm uninstall`` from
+    completing cleanly.
+
+    Args:
+        kube_context: Kubernetes context to use. ``None`` uses the active context.
+    """
+    try:
+        config.load_kube_config(context=kube_context)
+    except config.ConfigException:
+        pass
+    custom_api = client.CustomObjectsApi()
+    patch_body = {"metadata": {"finalizers": None}}
+    for plural, name, label in [
+        ("clusterqueues", CLUSTER_QUEUE_NAME, "ClusterQueue"),
+        ("resourceflavors", KUEUE_RESOURCE_FLAVOR_NAME, "ResourceFlavor"),
+    ]:
+        try:
+            custom_api.patch_cluster_custom_object(
+                group=KUEUE_WORKLOAD_GROUP,
+                version=KUEUE_WORKLOAD_VERSION,
+                plural=plural,
+                name=name,
+                body=patch_body,
+            )
+            logger.info("Removed finalizers from %s '%s'", label, name)
+        except client.rest.ApiException as e:
+            if e.status == 404:
+                logger.debug("%s '%s' not found, skipping finalizer patch", label, name)
+            else:
+                logger.warning(
+                    "Could not remove finalizers from %s '%s': %s", label, name, e
+                )
 
 
 def get_cluster_allocatable_resources(kube_context=None):
@@ -336,15 +466,24 @@ def install_kueue_helm(kube_context=None):
             "Kueue Helm release already exists, upgrading to version %s",
             KUEUE_HELM_VERSION,
         )
-        _run_helm(
-            [
-                "upgrade",
-                KUEUE_HELM_RELEASE,
-                KUEUE_HELM_REPO,
-                f"--version={KUEUE_HELM_VERSION}",
-                f"--namespace={KUEUE_NAMESPACE}",
-            ] + ctx_helm
-        )
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", prefix="kueue_values_", delete=False
+        ) as vf:
+            vf.write(KUEUE_HELM_VALUES)
+            values_path = vf.name
+        try:
+            _run_helm(
+                [
+                    "upgrade",
+                    KUEUE_HELM_RELEASE,
+                    KUEUE_HELM_REPO,
+                    f"--version={KUEUE_HELM_VERSION}",
+                    f"--namespace={KUEUE_NAMESPACE}",
+                    f"--values={values_path}",
+                ] + ctx_helm
+            )
+        finally:
+            os.unlink(values_path)
         # Wait for CRDs after upgrade (upgrade may update CRDs)
         subprocess.run(
             ["kubectl"] + ctx_kubectl + [
@@ -359,16 +498,25 @@ def install_kueue_helm(kube_context=None):
         return
 
     logger.info("Installing Kueue via Helm in namespace %s...", KUEUE_NAMESPACE)
-    _run_helm(
-        [
-            "install",
-            KUEUE_HELM_RELEASE,
-            KUEUE_HELM_REPO,
-            f"--version={KUEUE_HELM_VERSION}",
-            "--create-namespace",
-            f"--namespace={KUEUE_NAMESPACE}",
-        ] + ctx_helm
-    )
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".yaml", prefix="kueue_values_", delete=False
+    ) as vf:
+        vf.write(KUEUE_HELM_VALUES)
+        values_path = vf.name
+    try:
+        _run_helm(
+            [
+                "install",
+                KUEUE_HELM_RELEASE,
+                KUEUE_HELM_REPO,
+                f"--version={KUEUE_HELM_VERSION}",
+                "--create-namespace",
+                f"--namespace={KUEUE_NAMESPACE}",
+                f"--values={values_path}",
+            ] + ctx_helm
+        )
+    finally:
+        os.unlink(values_path)
     logger.info("Kueue installed successfully. Waiting for controller and CRDs...")
     # Wait for ResourceFlavor CRD to be established (CRDs install before controller)
     subprocess.run(
@@ -403,6 +551,9 @@ def uninstall_kueue_helm(kube_context=None):
         kube_context: Kubernetes context to use. None uses the active context.
     """
     logger.info("Uninstalling Kueue Helm release...")
+    # Force-clear finalizers from cluster-scoped Kueue resources first so that helm
+    # uninstall does not hang waiting for them to be garbage-collected.
+    cleanup_kueue_cluster_resources(kube_context=kube_context)
     ctx_helm = [f"--kube-context={kube_context}"] if kube_context else []
     ok, err = _run_helm(
         ["uninstall", KUEUE_HELM_RELEASE, f"--namespace={KUEUE_NAMESPACE}"] + ctx_helm,
