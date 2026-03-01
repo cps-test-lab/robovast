@@ -18,8 +18,9 @@
 Stream S3 bucket contents to a tar.gz file.
 
 Runs inside the archiver sidecar. Connects to MinIO at localhost:9000,
-lists all objects in the given bucket, streams them into a gzipped tarball,
-and writes to /data/{bucket_name}.tar.gz.
+lists all objects in the given bucket, streams them into a gzipped tarball
+using pigz (parallel gzip) for multi-core compression, and writes to
+/data/{bucket_name}.tar.gz.
 
 Usage: python - run-xxx  (script from stdin, bucket name from argv)
   or:  python s3_to_targz.py run-xxx
@@ -31,6 +32,7 @@ Environment variables (optional):
 """
 
 import os
+import subprocess
 import sys
 import tarfile
 
@@ -60,18 +62,32 @@ def main():
 
     paginator = s3.get_paginator("list_objects_v2")
 
-    with open(output_path, "wb") as f:
-        with tarfile.open(fileobj=f, mode="w:gz") as tar:
-            for page in paginator.paginate(Bucket=bucket_name):
-                for obj in page.get("Contents", []):
-                    key = obj["Key"]
-                    size = obj["Size"]
-                    # Use bucket name (run-<id>) as top-level folder in the archive
-                    tar_name = f"{bucket_name}/{key}"
-                    tarinfo = tarfile.TarInfo(name=tar_name)
-                    tarinfo.size = size
-                    body = s3.get_object(Bucket=bucket_name, Key=key)["Body"]
-                    tar.addfile(tarinfo, body)
+    # Stream uncompressed tar into pigz for parallel multi-core compression.
+    with open(output_path, "wb") as out_f:
+        pigz = subprocess.Popen(
+            ["pigz", "-c"],
+            stdin=subprocess.PIPE,
+            stdout=out_f,
+        )
+        try:
+            with tarfile.open(fileobj=pigz.stdin, mode="w|") as tar:
+                for page in paginator.paginate(Bucket=bucket_name):
+                    for obj in page.get("Contents", []):
+                        key = obj["Key"]
+                        size = obj["Size"]
+                        # Use bucket name (run-<id>) as top-level folder in the archive
+                        tar_name = f"{bucket_name}/{key}"
+                        tarinfo = tarfile.TarInfo(name=tar_name)
+                        tarinfo.size = size
+                        body = s3.get_object(Bucket=bucket_name, Key=key)["Body"]
+                        tar.addfile(tarinfo, body)
+        finally:
+            pigz.stdin.close()
+            pigz.wait()
+
+    if pigz.returncode != 0:
+        sys.stderr.write(f"pigz exited with code {pigz.returncode}\n")
+        sys.exit(pigz.returncode)
 
 
 if __name__ == "__main__":

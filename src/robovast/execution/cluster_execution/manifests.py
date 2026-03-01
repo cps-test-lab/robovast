@@ -9,7 +9,7 @@ metadata:
     run-id: $RUN_ID
 spec:
   backoffLimit: 0
-  ttlSecondsAfterFinished: 60
+  ttlSecondsAfterFinished: 5
   template:
     metadata:
       name: scenario-runs

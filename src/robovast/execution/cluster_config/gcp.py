@@ -74,8 +74,8 @@ spec:
         name: minio-storage
         readOnly: true
   - name: archiver
-    image: python:3.12-alpine
-    command: ["sh", "-c", "pip install --no-cache-dir boto3 && exec sleep infinity"]
+    image: ghcr.io/cps-test-lab/robovast-archiver:latest
+    command: ["sleep", "infinity"]
     volumeMounts:
       - mountPath: /data
         name: minio-storage
@@ -202,7 +202,7 @@ kubectl wait --for=condition=ready pod/robovast --timeout=120s
 MinIO S3 API is available at `http://robovast:9000` (cluster-internal).
 MinIO console is available at port 9001.
 HTTP server (nginx) serves `/data` contents on port 9998 for result downloads.
-The archiver sidecar (Python+boto3) streams S3 bucket contents to run-*.tar.gz in /data.
+The archiver sidecar (robovast-archiver image: pigz, boto3, google-auth) streams S3 bucket contents to run-*.tar.gz in /data.
 """
         with open(f"{output_dir}/README_gcp.md", "w") as f:
             f.write(readme_content)

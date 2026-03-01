@@ -24,6 +24,7 @@ import time
 
 import click
 import yaml
+from dotenv import load_dotenv
 
 from robovast.common import prepare_run_configs
 from robovast.common.cli import get_project_config, handle_cli_exception
@@ -37,6 +38,10 @@ from robovast.execution.cluster_execution.cluster_setup import (
     load_cluster_config_name, setup_server)
 from robovast.execution.cluster_execution.download_results import \
     ResultDownloader
+from robovast.execution.cluster_execution.share_providers import \
+    load_share_provider_plugins
+from robovast.execution.cluster_execution.upload_to_share import \
+    ShareUploader
 
 from ..cluster_execution.kubernetes import (check_kubernetes_access,
                                             check_pod_running,
@@ -558,6 +563,117 @@ def download(output, force, verbose, skip_removal, port_forward_only, remote_com
         )
         click.echo(f"✓ Download of {count} runs completed successfully!")
 
+    except Exception as e:
+        handle_cli_exception(e)
+
+
+@cluster.command(name='upload-to-share')
+@click.option('--force', '-f', is_flag=True,
+              help='Force recreation of the remote tar.gz archive even if it already exists')
+@click.option('--verbose', '-v', is_flag=True,
+              help='Print detailed progress')
+@click.option('--keep-archive', is_flag=True,
+              help='Keep the tar.gz in the pod /data/ after a successful upload')
+@click.option('--skip-removal', is_flag=True,
+              help='Do not delete the S3 bucket after a successful upload')
+@click.option('--context', '-x', 'kube_context', default=None,
+              help='Kubernetes context to use (default: active context in kubeconfig)')
+def download_to_share(force, verbose, keep_archive, skip_removal, kube_context):
+    """Upload run archives from the cluster pod to a remote share service.
+
+    Results are transferred entirely inside the archiver sidecar of the
+    robovast pod — no data is downloaded to the local machine.
+
+    For each available run the command:
+
+    \b
+    1. Creates a compressed tar.gz archive in the pod (same as
+       ``cluster download``).  Skips this step if the archive already exists.
+    2. Uploads the archive to the configured share service from inside the pod.
+    3. Removes the archive from the pod on success (unless ``--keep-archive``).
+    4. Deletes the S3 bucket on success (unless ``--skip-removal``).
+    5. Keeps both the archive and the bucket if the upload fails so you can
+       retry or fall back to ``cluster download``.
+
+    Configuration is read from a ``.env`` file in the current or any parent
+    directory.  Required variables:
+
+    \b
+    ROBOVAST_SHARE_TYPE  — share provider: ``nextcloud``
+
+    Additional variables depend on the share type.  Run with no ``.env`` file
+    to see a list of required variables for the detected share type.
+
+    Use ``--keep-archive`` to retain the archive in the pod after upload
+    (useful when you want to also download the results locally later).
+    """
+    # Load .env in priority order:
+    #   1. Next to the .vast config file (dirname of config_path)
+    #   2. Next to the .vast_project file (project_dir)
+    # Falls back to the default cwd-upward search when no project is found.
+    from robovast.common.cli.project_config import ProjectConfig  # pylint: disable=import-outside-toplevel
+    _project_file = ProjectConfig.find_project_file()
+    if _project_file:
+        _project_dir = os.path.dirname(os.path.abspath(_project_file))
+        _pc = ProjectConfig.load()
+        if _pc and _pc.config_path:
+            load_dotenv(os.path.join(os.path.dirname(_pc.config_path), ".env"), override=False)
+        load_dotenv(os.path.join(_project_dir, ".env"), override=False)
+    else:
+        load_dotenv(override=False)
+
+    share_type = os.environ.get("ROBOVAST_SHARE_TYPE", "").strip()
+    if not share_type:
+        raise click.UsageError(
+            "ROBOVAST_SHARE_TYPE is not set.\n"
+            "Add it to a .env file in your project directory.\n"
+            "Supported values: nextcloud\n"
+            "Example .env:\n"
+            "  ROBOVAST_SHARE_TYPE=nextcloud\n"
+            "  ROBOVAST_SHARE_URL=https://cloud.example.com/s/AbCdEfGhIjKlMn"
+        )
+
+    providers = load_share_provider_plugins()
+    if share_type not in providers:
+        available = ", ".join(sorted(providers)) or "(none installed)"
+        raise click.UsageError(
+            f"Unknown share type '{share_type}'.\n"
+            f"Available providers: {available}"
+        )
+
+    try:
+        provider = providers[share_type]()
+    except click.UsageError:
+        raise
+    except Exception as e:
+        handle_cli_exception(e)
+        return
+
+    share_url = os.environ.get("ROBOVAST_SHARE_URL", "").strip()
+    if share_url:
+        click.echo(f"Share target ({share_type}): {share_url}")
+
+    try:
+        require_context_for_multi_cluster(kube_context)
+        context_key = kube_context
+        config_name = load_cluster_config_name(context_key)
+        cluster_config = get_cluster_config(config_name)
+        uploader = ShareUploader(
+            namespace=get_cluster_namespace(context_key),
+            cluster_config=cluster_config,
+            context=kube_context,
+            provider=provider,
+        )
+        count = uploader.upload_runs(
+            force=force,
+            verbose=verbose,
+            keep_archive=keep_archive,
+            skip_removal=skip_removal,
+        )
+        click.echo(f"✓ Uploaded {count} run(s) to {share_type} successfully!")
+
+    except click.UsageError:
+        raise
     except Exception as e:
         handle_cli_exception(e)
 
