@@ -94,15 +94,17 @@ def cleanup_kueue_workloads(
     """Delete Kueue Workload objects for scenario run jobs.
 
     Workloads don't inherit job labels (jobgroup, run-id). They use
-    kueue.x-k8s.io/queue-name=robovast. We delete all workloads in the robovast
-    queue; all scenario runs use this dedicated queue. If Kueue is not installed
-    (Workload CRD missing), logs and returns without failing.
+    kueue.x-k8s.io/queue-name=robovast. When run_id is given, only workloads
+    owned by jobs of that run are deleted (matched via ownerReferences and job
+    UIDs). Without run_id, all workloads in the robovast queue are deleted.
+    If Kueue is not installed (Workload CRD missing), logs and returns without
+    failing.
 
     Args:
         namespace: Kubernetes namespace
-        label_selector: Unused (kept for API compatibility)
-        run_id: Unused (kept for API compatibility)
-        k8s_batch_client: Unused (kept for API compatibility)
+        label_selector: Label selector used to list jobs for run_id scoping
+        run_id: If given, only delete workloads for this run's jobs
+        k8s_batch_client: BatchV1Api client; required when run_id is given
     """
     try:
         custom_api = client.CustomObjectsApi()
@@ -111,16 +113,75 @@ def cleanup_kueue_workloads(
         )
         queue_selector = "kueue.x-k8s.io/queue-name=robovast"
 
-        logger.debug(f"Deleting Kueue workloads with selector '{queue_selector}'")
-        custom_api.delete_collection_namespaced_custom_object(
-            group=KUEUE_WORKLOAD_GROUP,
-            version=KUEUE_WORKLOAD_VERSION,
-            namespace=namespace,
-            plural=KUEUE_WORKLOAD_PLURAL,
-            label_selector=queue_selector,
-            body=delete_opts,
-        )
-        logger.info("Successfully deleted scenario-runs Kueue workloads")
+        if run_id is not None and k8s_batch_client is not None:
+            # Collect UIDs of jobs belonging to this run so we only delete
+            # the workloads that are owned by those jobs.
+            job_uid_selector = label_selector or f"jobgroup=scenario-runs"
+            try:
+                job_list = k8s_batch_client.list_namespaced_job(
+                    namespace=namespace, label_selector=job_uid_selector
+                )
+                run_job_uids = {job.metadata.uid for job in job_list.items}
+            except client.rest.ApiException as e:
+                logger.warning(f"Could not list jobs for run-scoped workload cleanup: {e}")
+                run_job_uids = set()
+
+            if not run_job_uids:
+                logger.debug("No jobs found for run '%s', skipping workload cleanup", run_id)
+                return
+
+            # List all workloads in the queue and delete only those owned by
+            # jobs of the target run.
+            logger.debug(
+                "Deleting Kueue workloads owned by %d job(s) for run '%s'",
+                len(run_job_uids), run_id,
+            )
+            workloads = custom_api.list_namespaced_custom_object(
+                group=KUEUE_WORKLOAD_GROUP,
+                version=KUEUE_WORKLOAD_VERSION,
+                namespace=namespace,
+                plural=KUEUE_WORKLOAD_PLURAL,
+                label_selector=queue_selector,
+            )
+            deleted = 0
+            for wl in workloads.get("items", []):
+                owner_uids = {
+                    ref["uid"]
+                    for ref in (wl.get("metadata", {}).get("ownerReferences") or [])
+                }
+                if owner_uids & run_job_uids:
+                    wl_name = wl["metadata"]["name"]
+                    try:
+                        custom_api.delete_namespaced_custom_object(
+                            group=KUEUE_WORKLOAD_GROUP,
+                            version=KUEUE_WORKLOAD_VERSION,
+                            namespace=namespace,
+                            plural=KUEUE_WORKLOAD_PLURAL,
+                            name=wl_name,
+                            body=delete_opts,
+                        )
+                        deleted += 1
+                    except client.rest.ApiException as e:
+                        if e.status == 404:
+                            pass  # already gone
+                        else:
+                            logger.warning(f"Could not delete workload '{wl_name}': {e}")
+            logger.info(
+                "Successfully deleted %d scenario-runs Kueue workload(s) for run '%s'",
+                deleted, run_id,
+            )
+        else:
+            # No run_id scoping: delete all robovast queue workloads at once
+            logger.debug(f"Deleting all Kueue workloads with selector '{queue_selector}'")
+            custom_api.delete_collection_namespaced_custom_object(
+                group=KUEUE_WORKLOAD_GROUP,
+                version=KUEUE_WORKLOAD_VERSION,
+                namespace=namespace,
+                plural=KUEUE_WORKLOAD_PLURAL,
+                label_selector=queue_selector,
+                body=delete_opts,
+            )
+            logger.info("Successfully deleted scenario-runs Kueue workloads")
     except client.rest.ApiException as e:
         if e.status == 404:
             logger.debug(
