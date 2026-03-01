@@ -11,7 +11,7 @@
 
 FROM python:3.12-alpine
 
-RUN apk add --no-cache pigz \
+RUN apk add --no-cache pigz==2.8-r1 \
  && pip install --no-cache-dir \
         boto3==1.42 \
         google-auth==2.48 \
