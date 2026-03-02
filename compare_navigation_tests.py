@@ -326,7 +326,7 @@ def analyze_pose_distribution_vs_distance_means(variant_paths: List[str]) -> Opt
     }
 
 
-def compute_pose_difference_between_variants(source_stats: Dict, target_stats: Dict) -> Dict:
+def compute_pose_difference_between_variants(source_stats: Dict, target_stats: Dict, method: str = 'nearest') -> Dict:
     """
     Compute geometric pose differences between two variants using scenario.config poses.
 
@@ -335,44 +335,67 @@ def compute_pose_difference_between_variants(source_stats: Dict, target_stats: D
         target_stats: Target variant stats from collect_variant_pose_and_distance_stats
 
     Returns:
-        Dictionary with start/goal/combined pose differences
+        Dictionary with method-specific and combined pose differences
     """
     source_start = np.array(source_stats['start_pose'], dtype=float)
     target_start = np.array(target_stats['start_pose'], dtype=float)
     start_diff = float(np.linalg.norm(source_start - target_start))
 
-    source_goal_centroid = np.array(source_stats['goal_centroid'], dtype=float)
-    target_goal_centroid = np.array(target_stats['goal_centroid'], dtype=float)
-    goal_centroid_diff = float(np.linalg.norm(source_goal_centroid - target_goal_centroid))
-
-    source_goals = source_stats['goal_poses']
-    target_goals = target_stats['goal_poses']
+    nearest_pose_set_diff_sum = 0.0
+    nearest_pose_set_diff_mean = 0.0
+    goal_centroid_diff = 0.0
     pairwise_goal_diff = 0.0
-    if len(source_goals) > 0 and len(target_goals) > 0:
-        pair_count = min(len(source_goals), len(target_goals))
-        goal_diffs = []
-        for idx in range(pair_count):
-            src_goal = np.array(source_goals[idx], dtype=float)
-            tgt_goal = np.array(target_goals[idx], dtype=float)
-            goal_diffs.append(float(np.linalg.norm(src_goal - tgt_goal)))
-        if len(goal_diffs) > 0:
-            pairwise_goal_diff = float(np.mean(goal_diffs))
 
-    available_components = [start_diff, goal_centroid_diff]
-    if pairwise_goal_diff > 0:
-        available_components.append(pairwise_goal_diff)
+    if method == 'nearest':
+        source_pose_points = np.array(source_stats['all_pose_points'], dtype=float)
+        target_pose_points = np.array(target_stats['all_pose_points'], dtype=float)
 
-    combined_pose_diff = float(np.mean(available_components))
+        # Directed nearest-neighbor set distance (source -> target):
+        # for each source pose, find nearest target pose; sum (and mean) those distances.
+        if len(source_pose_points) > 0 and len(target_pose_points) > 0:
+            diffs = source_pose_points[:, None, :] - target_pose_points[None, :, :]
+            distances = np.linalg.norm(diffs, axis=2)
+            nearest_dists = np.min(distances, axis=1)
+            nearest_pose_set_diff_sum = float(np.sum(nearest_dists))
+            nearest_pose_set_diff_mean = float(np.mean(nearest_dists))
+            combined_pose_diff = nearest_pose_set_diff_sum
+        else:
+            combined_pose_diff = np.inf
+    elif method == 'centroid':
+        source_goal_centroid = np.array(source_stats['goal_centroid'], dtype=float)
+        target_goal_centroid = np.array(target_stats['goal_centroid'], dtype=float)
+        goal_centroid_diff = float(np.linalg.norm(source_goal_centroid - target_goal_centroid))
+
+        source_goals = source_stats['goal_poses']
+        target_goals = target_stats['goal_poses']
+        if len(source_goals) > 0 and len(target_goals) > 0:
+            pair_count = min(len(source_goals), len(target_goals))
+            goal_diffs = []
+            for idx in range(pair_count):
+                src_goal = np.array(source_goals[idx], dtype=float)
+                tgt_goal = np.array(target_goals[idx], dtype=float)
+                goal_diffs.append(float(np.linalg.norm(src_goal - tgt_goal)))
+            if len(goal_diffs) > 0:
+                pairwise_goal_diff = float(np.mean(goal_diffs))
+
+        available_components = [start_diff, goal_centroid_diff]
+        if pairwise_goal_diff > 0:
+            available_components.append(pairwise_goal_diff)
+        combined_pose_diff = float(np.mean(available_components))
+    else:
+        raise ValueError(f"Unknown pose-diff method: {method}")
 
     return {
         'start_diff': start_diff,
         'goal_centroid_diff': goal_centroid_diff,
         'pairwise_goal_diff': pairwise_goal_diff,
+        'nearest_pose_set_diff_sum': nearest_pose_set_diff_sum,
+        'nearest_pose_set_diff_mean': nearest_pose_set_diff_mean,
         'combined_pose_diff': combined_pose_diff,
     }
 
 
-def analyze_source_pose_vs_distance_differences(source_variant_path: str, other_variant_paths: List[str]) -> Optional[Dict]:
+def analyze_source_pose_vs_distance_differences(source_variant_path: str, other_variant_paths: List[str], pose_diff_method: str = 'nearest') -> Optional[Dict]:
     """
     Compare source-vs-others pose differences against source-vs-others mean-distance differences.
 
@@ -394,7 +417,7 @@ def analyze_source_pose_vs_distance_differences(source_variant_path: str, other_
             print(f"Warning: Skipping invalid comparison variant: {other_path}", file=sys.stderr)
             continue
 
-        pose_diff = compute_pose_difference_between_variants(source_stats, other_stats)
+        pose_diff = compute_pose_difference_between_variants(source_stats, other_stats, method=pose_diff_method)
         distance_mean_diff = float(abs(other_stats['distance_mean'] - source_stats['distance_mean']))
 
         comparisons.append({
@@ -411,25 +434,36 @@ def analyze_source_pose_vs_distance_differences(source_variant_path: str, other_
 
     combined_pose_diffs = np.array([c['combined_pose_diff'] for c in comparisons], dtype=float)
     start_diffs = np.array([c['start_diff'] for c in comparisons], dtype=float)
+    nearest_pose_set_diffs = np.array([c['nearest_pose_set_diff_sum'] for c in comparisons], dtype=float)
     goal_centroid_diffs = np.array([c['goal_centroid_diff'] for c in comparisons], dtype=float)
     distance_mean_diffs = np.array([c['distance_mean_diff'] for c in comparisons], dtype=float)
+
+    if pose_diff_method == 'nearest':
+        secondary_corr_label = 'Nearest-pose-set diff'
+        secondary_corr_value = safe_pearson_corr(nearest_pose_set_diffs, distance_mean_diffs)
+    else:
+        secondary_corr_label = 'Goal centroid diff'
+        secondary_corr_value = safe_pearson_corr(goal_centroid_diffs, distance_mean_diffs)
 
     return {
         'source_variant_name': source_stats['variant_name'],
         'source_variant_path': source_stats['variant_path'],
         'source_distance_mean': source_stats['distance_mean'],
         'source_num_runs': source_stats['num_runs'],
+        'pose_diff_method': pose_diff_method,
         'num_comparisons': len(comparisons),
         'comparisons': comparisons,
         'combined_pose_diffs': combined_pose_diffs,
         'start_diffs': start_diffs,
+        'nearest_pose_set_diffs': nearest_pose_set_diffs,
         'goal_centroid_diffs': goal_centroid_diffs,
         'distance_mean_diffs': distance_mean_diffs,
         'combined_pose_diff_var': float(np.var(combined_pose_diffs)),
         'distance_mean_diff_var': float(np.var(distance_mean_diffs)),
         'combined_pose_to_distance_diff_corr': safe_pearson_corr(combined_pose_diffs, distance_mean_diffs),
         'start_to_distance_diff_corr': safe_pearson_corr(start_diffs, distance_mean_diffs),
-        'goal_centroid_to_distance_diff_corr': safe_pearson_corr(goal_centroid_diffs, distance_mean_diffs),
+        'secondary_pose_to_distance_diff_corr_label': secondary_corr_label,
+        'secondary_pose_to_distance_diff_corr': secondary_corr_value,
     }
 
 
@@ -477,7 +511,10 @@ def print_source_pose_vs_distance_differences_analysis(analysis: Dict) -> None:
     print("\nCorrelation (larger pose difference ↔ larger mean-distance difference):")
     print(f"  Combined pose diff ↔ distance diff: {analysis['combined_pose_to_distance_diff_corr']:.6f}")
     print(f"  Start diff ↔ distance diff:         {analysis['start_to_distance_diff_corr']:.6f}")
-    print(f"  Goal centroid diff ↔ distance diff: {analysis['goal_centroid_to_distance_diff_corr']:.6f}")
+    print(
+        f"  {analysis['secondary_pose_to_distance_diff_corr_label']} ↔ distance diff: "
+        f"{analysis['secondary_pose_to_distance_diff_corr']:.6f}"
+    )
 
     print("\nPer-comparison details:")
     for comp in analysis['comparisons']:
@@ -2109,7 +2146,12 @@ def plot_standard_comparison_metric(metric: str, metric_label: str, variant_resu
         
         if best_fit in dist_map and params is not None:
             try:
-                y_vals = dist_map[best_fit].pdf(x_vals_temp, *params)
+                # Handle discrete distributions (use pmf with integer x-values)
+                if best_fit == 'poisson':
+                    x_vals_discrete = np.arange(int(x_min_data), int(x_max_data) + 1)
+                    y_vals = dist_map[best_fit].pmf(x_vals_discrete, *params)
+                else:
+                    y_vals = dist_map[best_fit].pdf(x_vals_temp, *params)
                 finite_mask = np.isfinite(y_vals)
                 if np.any(finite_mask):
                     max_peak_y = max(max_peak_y, float(np.max(y_vals[finite_mask])))
@@ -2132,10 +2174,18 @@ def plot_standard_comparison_metric(metric: str, metric_label: str, variant_resu
             
             if best_fit in dist_map and params is not None:
                 try:
-                    y_vals = dist_map[best_fit].pdf(x_vals_temp, *params)
+                    # Handle discrete distributions
+                    if best_fit == 'poisson':
+                        x_temp_discrete = np.arange(int(x_min_data), int(x_max_data) + 1)
+                        y_vals = dist_map[best_fit].pmf(x_temp_discrete, *params)
+                        x_temp_for_threshold = x_temp_discrete.astype(float)
+                    else:
+                        y_vals = dist_map[best_fit].pdf(x_vals_temp, *params)
+                        x_temp_for_threshold = x_vals_temp
+                    
                     finite_mask = np.isfinite(y_vals)
                     if np.any(finite_mask):
-                        x_temp_finite = x_vals_temp[finite_mask]
+                        x_temp_finite = x_temp_for_threshold[finite_mask]
                         y_temp_finite = y_vals[finite_mask]
                         # Find x values where y >= threshold
                         above_threshold_idx = np.where(y_temp_finite >= threshold)[0]
@@ -2196,11 +2246,18 @@ def plot_standard_comparison_metric(metric: str, metric_label: str, variant_resu
         params = fit_info.get('parameters')
         if best_fit in dist_map and params is not None:
             try:
-                y_vals = dist_map[best_fit].pdf(x_vals, *params)
+                # Handle discrete distributions (use pmf with integer x-values)
+                if best_fit == 'poisson':
+                    x_vals_plot = np.arange(int(x_min), int(x_max) + 1)
+                    y_vals = dist_map[best_fit].pmf(x_vals_plot, *params)
+                else:
+                    x_vals_plot = x_vals
+                    y_vals = dist_map[best_fit].pdf(x_vals_plot, *params)
+                
                 finite_mask = np.isfinite(y_vals)
                 if np.any(finite_mask):
                     y_vals_clean = y_vals[finite_mask]
-                    x_vals_clean = x_vals[finite_mask]
+                    x_vals_clean = x_vals_plot[finite_mask]
                     peak_y_vals.append(float(np.max(y_vals_clean)))
                     ax.plot(x_vals_clean, y_vals_clean, color=color, linewidth=2.0, label=label)
                 else:
@@ -2407,6 +2464,9 @@ Examples:
     parser.add_argument('--pose-diff-vs-source', nargs='+',
                        help='Source-vs-others comparison: first path is source variant, '
                            'remaining paths are comparison variants')
+    parser.add_argument('--pose-diff-method', choices=['nearest', 'centroid'], default='nearest',
+                       help='Method for pose-difference computation in --pose-diff-vs-source: '
+                            'nearest (source-to-target nearest-neighbor set distance, default) or centroid (legacy centroid-based method)')
     parser.add_argument('-i', '--input-dir',
                        help='Input directory. For -c/--compare: metric CSV directory. '
                            'For --standard-compare and --sum: parent directory containing variant folders')
@@ -2883,10 +2943,14 @@ Examples:
 
             print(
                 f"Analyzing source-vs-others pose/distance differences: source=\"{Path(source_variant).name}\", "
-                f"comparisons={len(other_variants)}...\n"
+                f"comparisons={len(other_variants)}, method={args.pose_diff_method}...\n"
             )
 
-            analysis = analyze_source_pose_vs_distance_differences(source_variant, other_variants)
+            analysis = analyze_source_pose_vs_distance_differences(
+                source_variant,
+                other_variants,
+                pose_diff_method=args.pose_diff_method,
+            )
 
             if analysis:
                 if not args.no_display:

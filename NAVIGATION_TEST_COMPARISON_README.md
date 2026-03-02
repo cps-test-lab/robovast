@@ -42,8 +42,8 @@ pip install numpy pandas scipy matplotlib pyyaml
 
 -i, --input-dir DIR
   Input directory
-    - for -c and --sum: directory containing extracted metric CSV files
-    - for --standard-compare: parent directory containing variant folders
+    - for -c: directory containing extracted metric CSV files
+    - for --standard-compare and --sum: parent directory containing variant folders
   (default: same as --output-dir)
 
 --sum VARIANT1 [VARIANT2 ...] TARGET_VARIANT
@@ -66,6 +66,11 @@ pip install numpy pandas scipy matplotlib pyyaml
 
 --pose-diff-vs-source SOURCE OTHER [OTHER ...]
     Compare source-vs-others pose differences against mean-distance differences
+
+--pose-diff-method {nearest,centroid}
+  Pose-difference method for --pose-diff-vs-source:
+  nearest = source→target nearest-neighbor pose-set distance (default)
+  centroid = legacy centroid/pairwise-goal method
 
 --successful-only
     During extraction only, keep runs with test.xml failures=0
@@ -370,6 +375,34 @@ python3 compare_navigation_tests.py --pose-diff-vs-source \
   -o semantic_area_sampling_outputs
 ```
 
+### 11b) Choose pose-difference method (`--pose-diff-method`)
+
+Nearest-neighbor pose-set method (default):
+
+```bash
+python3 compare_navigation_tests.py --pose-diff-vs-source \
+  results/run-2026-02-28-030930/mt-semantic-area-sampling-1-1 \
+  results/run-2026-02-28-030930/mt-semantic-area-sampling-1-2 \
+  results/run-2026-02-28-030930/mt-semantic-area-sampling-1-3 \
+  results/run-2026-02-28-030930/mt-semantic-area-sampling-1-4 \
+  results/run-2026-02-28-030930/mt-semantic-area-sampling-1-5 \
+  --pose-diff-method nearest \
+  -o semantic_area_sampling_outputs
+```
+
+Centroid legacy method:
+
+```bash
+python3 compare_navigation_tests.py --pose-diff-vs-source \
+  results/run-2026-02-28-030930/mt-semantic-area-sampling-1-1 \
+  results/run-2026-02-28-030930/mt-semantic-area-sampling-1-2 \
+  results/run-2026-02-28-030930/mt-semantic-area-sampling-1-3 \
+  results/run-2026-02-28-030930/mt-semantic-area-sampling-1-4 \
+  results/run-2026-02-28-030930/mt-semantic-area-sampling-1-5 \
+  --pose-diff-method centroid \
+  -o semantic_area_sampling_outputs
+```
+
 ### 12) Quiet mode for long runs (`--no-display`)
 
 ```bash
@@ -398,9 +431,10 @@ python3 compare_navigation_tests.py --pose-diff-vs-source \
 - `comparison_{test1}_vs_{test2}_{metric}.png`
 
 ### Sum compare (`--sum`)
-- `sum_comparison_{test1}+{test2}_vs_{target}_{metric}.csv`
-- `distribution_{test1}+{test2}_{metric}.png`
-- `comparison_{test1}+{test2}_vs_{target}_{metric}.png`
+- `standard_comparison_{metric}.png`
+- `standard_compare_{metric}.csv`
+- `standard_compare_{metric}_summary.txt`
+- `command.txt`
 
 ### Standard compare (`--standard-compare`)
 - `standard_comparison_{metric}.png`
@@ -415,10 +449,11 @@ python3 compare_navigation_tests.py --pose-diff-vs-source \
 ## Notes
 
 - Use `--list-variants` to discover and explore available variants before extraction
-- For `-c` and `--sum`, use `-i` to specify where extracted CSV files are located (default: same as `-o`)
-- For `--standard-compare`, use `-i` as the parent folder that contains variant directories
+- For `-c`, use `-i` to specify where extracted CSV files are located (default: same as `-o`)
+- For `--standard-compare` and `--sum`, use `-i` as the parent folder that contains variant directories
 - `-i` is not needed for comparison/analysis operations that work directly from run data: `--pose-variance`, `--pose-dist-variance`, `--pose-diff-vs-source`
 - For `--pose-variance`, pass at least one variant path for a test type base (the script discovers sibling variants by prefix).
 - For `--pose-dist-variance`, provide at least 2 valid variant paths.
 - For `--pose-diff-vs-source`, provide at least 3 paths total: 1 source + at least 2 comparison variants.
+- `--pose-diff-method` defaults to `nearest`; use `centroid` for the legacy behavior.
 
