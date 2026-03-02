@@ -108,7 +108,8 @@ def extract_localization_error_metrics(localization_error_csv_path: str) -> Opti
         if 'error_distance_meters' in df.columns:
             metric_series = df['error_distance_meters']
         elif 'covariance.x_x' in df.columns and 'covariance.y_y' in df.columns:
-            metric_series = np.sqrt(df['covariance.x_x'] + df['covariance.y_y'])
+            covariance_sum = df['covariance.x_x'] + df['covariance.y_y']
+            metric_series = np.sqrt(np.clip(covariance_sum, a_min=0.0, a_max=None))
         else:
             missing_cols = [
                 col for col in ['error_distance_meters', 'covariance.x_x', 'covariance.y_y']
@@ -120,9 +121,15 @@ def extract_localization_error_metrics(localization_error_csv_path: str) -> Opti
             )
             return None
 
+        metric_values = np.asarray(metric_series, dtype=float)
+        metric_values = metric_values[np.isfinite(metric_values)]
+
+        if len(metric_values) == 0:
+            return None
+
         # Calculate mean and variance of localization metric
-        mean_err = float(metric_series.mean())
-        var_err = float(metric_series.var())
+        mean_err = float(np.mean(metric_values))
+        var_err = float(np.var(metric_values))
         
         return mean_err, var_err
     except Exception as e:
@@ -1804,6 +1811,436 @@ def compare_summed_distributions(name1: str, data1: np.ndarray,
     return comparison
 
 
+def discover_and_list_variants(parent_dir: str) -> None:
+    """
+    Discover and list all variants in a parent directory.
+    
+    A variant is a directory containing numbered run subdirectories (0, 1, 2, etc.).
+    Prints a formatted table showing each variant and its run count.
+    
+    Args:
+        parent_dir: Path to the parent directory containing variants
+    """
+    parent_path = Path(parent_dir)
+    
+    if not parent_path.is_dir():
+        print(f"Error: Path is not a valid directory: {parent_dir}", file=sys.stderr)
+        return
+    
+    variants = []
+    
+    # Find all subdirectories that contain run folders
+    for subdir in sorted(parent_path.iterdir()):
+        if not subdir.is_dir():
+            continue
+        
+        # Check if this looks like a variant directory
+        run_dirs = sorted([d for d in subdir.iterdir() if d.is_dir() and d.name.isdigit()])
+        if run_dirs:
+            variants.append({
+                'name': subdir.name,
+                'path': str(subdir),
+                'num_runs': len(run_dirs),
+            })
+    
+    if not variants:
+        print(f"No variants found in {parent_dir}")
+        print("(A variant directory should contain numbered run subdirectories like 0, 1, 2, etc.)")
+        return
+    
+    # Print formatted table
+    print(f"\nVariants found in {parent_dir}:\n")
+    print(f"{'Variant Name':<50} {'Runs':<6} {'Path'}")
+    print("-" * 120)
+    
+    for variant in variants:
+        print(f"{variant['name']:<50} {variant['num_runs']:<6} {variant['path']}")
+    
+    print(f"\nTotal: {len(variants)} variant(s)")
+
+
+def resolve_variant_path(variant_identifier: str, input_dir: str) -> Optional[Path]:
+    """
+    Resolve a variant identifier to an existing directory path.
+
+    Resolution order:
+    1) Treat identifier as a direct path
+    2) Treat identifier as a child directory under input_dir
+
+    Args:
+        variant_identifier: Variant name or path
+        input_dir: Parent directory containing variant folders
+
+    Returns:
+        Resolved Path if found, otherwise None
+    """
+    direct_path = Path(variant_identifier)
+    if direct_path.is_dir():
+        return direct_path
+
+    candidate = Path(input_dir) / variant_identifier
+    if candidate.is_dir():
+        return candidate
+
+    return None
+
+
+def get_metric_label(metric: str) -> str:
+    """Get plot/print label for metric key."""
+    metric_labels = {
+        'time': 'Time (seconds)',
+        'distance': 'Distance (meters)',
+        'loc_error_mean': 'Mean Localization Error (meters)',
+        'loc_error_var': 'Localization Error Variance (meters²)',
+    }
+    return metric_labels[metric]
+
+
+def get_metric_title(metric: str) -> str:
+    """Get descriptive title for standard comparison plots (without prefix)."""
+    metric_titles = {
+        'time': 'Execution time distribution per variant',
+        'distance': 'Distance travelled during execution distribution per variant',
+        'loc_error_mean': 'Mean localization error distribution per variant',
+        'loc_error_var': 'Localization error variance distribution per variant',
+    }
+    return metric_titles[metric]
+
+
+def extract_metric_array_for_variant(variant_path: str, metric: str, successful_only: bool = False) -> Optional[np.ndarray]:
+    """
+    Extract a single metric array from one variant directory.
+
+    Args:
+        variant_path: Variant folder path (contains run folders)
+        metric: One of time, distance, loc_error_mean, loc_error_var
+        successful_only: If True, include only failures=0 runs
+
+    Returns:
+        Numpy array of metric values, or None if unavailable
+    """
+    extract_loc = metric in ['loc_error_mean', 'loc_error_var']
+    times, distances, loc_means, loc_vars = process_test_type(
+        variant_path,
+        successful_only=successful_only,
+        extract_localization=extract_loc,
+    )
+
+    if metric == 'time':
+        values = times
+    elif metric == 'distance':
+        values = distances
+    elif metric == 'loc_error_mean':
+        values = loc_means
+    else:
+        values = loc_vars
+
+    if not values:
+        return None
+
+    values_arr = np.array(values, dtype=float)
+    finite_values = values_arr[np.isfinite(values_arr)]
+
+    if len(finite_values) == 0:
+        return None
+
+    if len(finite_values) != len(values_arr):
+        print(
+            f"Warning: Filtered {len(values_arr) - len(finite_values)} non-finite {metric} value(s) in {variant_path}",
+            file=sys.stderr,
+        )
+
+    return finite_values
+
+
+def save_standard_compare_summary_txt(
+    metric: str,
+    metric_label: str,
+    summary_text: str,
+    output_dir: str,
+) -> str:
+    """Save standard comparison summary to a text file."""
+    os.makedirs(output_dir, exist_ok=True)
+    output_txt = os.path.join(output_dir, f"standard_compare_{metric}_summary.txt")
+    
+    with open(output_txt, 'w') as f:
+        f.write(summary_text)
+    
+    return output_txt
+
+
+def save_standard_compare_summary_csv(
+    metric: str,
+    source_result: Dict,
+    dependent_results: List[Dict],
+    output_dir: str,
+) -> str:
+    """Save source-vs-dependents summary for one metric."""
+    os.makedirs(output_dir, exist_ok=True)
+    output_csv = os.path.join(output_dir, f"standard_compare_{metric}.csv")
+
+    source_mean = float(np.mean(source_result['data']))
+    source_var = float(np.var(source_result['data']))
+
+    with open(output_csv, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            'variant_name',
+            'sample_size',
+            'best_fit_distribution',
+            'mean',
+            'variance',
+            'mean_diff_pct_vs_source',
+            'var_diff_pct_vs_source',
+        ])
+
+        writer.writerow([
+            source_result['name'],
+            len(source_result['data']),
+            source_result['analysis']['best_fit_distribution'],
+            source_mean,
+            source_var,
+            0.0,
+            0.0,
+        ])
+
+        for dep_result in dependent_results:
+            dep_mean = float(np.mean(dep_result['data']))
+            dep_var = float(np.var(dep_result['data']))
+
+            mean_diff_pct = float(
+                100.0 * (dep_mean - source_mean) / source_mean if source_mean != 0 else np.nan
+            )
+            var_diff_pct = float(
+                100.0 * (dep_var - source_var) / source_var if source_var != 0 else np.nan
+            )
+
+            writer.writerow([
+                dep_result['name'],
+                len(dep_result['data']),
+                dep_result['analysis']['best_fit_distribution'],
+                dep_mean,
+                dep_var,
+                mean_diff_pct,
+                var_diff_pct,
+            ])
+
+    return output_csv
+
+
+def plot_standard_comparison_metric(metric: str, metric_label: str, variant_results: List[Dict], output_dir: str, show_histogram: bool = True) -> str:
+    """
+    Plot all variant distributions together for one metric.
+
+    Each curve label includes mean, variance, and p-value for distribution fit.
+    Labels are dynamically positioned to avoid covering distribution lines.
+    """
+    fig, ax = plt.subplots(figsize=(TWO_COLUMNS, SINGLE_COLUMN))
+
+    dist_map = {
+        'normal': norm,
+        'exponential': expon,
+        'lognormal': lognorm,
+        'gamma': gamma,
+        'weibull': weibull_min,
+        'poisson': poisson,
+    }
+
+    color_cycle = plt.rcParams.get('axes.prop_cycle', None)
+    if color_cycle is not None:
+        colors = color_cycle.by_key().get('color', ['steelblue', 'orange', 'green', 'red', 'purple'])
+    else:
+        colors = ['steelblue', 'orange', 'green', 'red', 'purple']
+
+    cleaned_variant_results = []
+    for result in variant_results:
+        data = np.asarray(result['data'], dtype=float)
+        finite_data = data[np.isfinite(data)]
+        if len(finite_data) == 0:
+            print(
+                f"Warning: Variant '{result['name']}' has no finite values for plotting ({metric}); skipped",
+                file=sys.stderr,
+            )
+            continue
+
+        cleaned_result = dict(result)
+        cleaned_result['data'] = finite_data
+        cleaned_variant_results.append(cleaned_result)
+
+    if len(cleaned_variant_results) == 0:
+        raise ValueError(f"No finite data available to plot standard comparison for metric '{metric}'")
+
+    all_data = np.concatenate([result['data'] for result in cleaned_variant_results])
+    x_min = float(np.min(all_data))
+    x_max = float(np.max(all_data))
+
+    if x_min == x_max:
+        x_min -= 1.0
+        x_max += 1.0
+
+    # Use tight x-range (no extra padding)
+    x_vals = np.linspace(x_min, x_max, 500)
+    
+    # Compute peak y-value for dynamic label positioning
+    peak_y_vals = []
+
+    for idx, result in enumerate(cleaned_variant_results):
+        color = colors[idx % len(colors)]
+        data = result['data']
+        analysis = result['analysis']
+        best_fit = analysis['best_fit_distribution']
+
+        mean_val = float(np.mean(data))
+        var_val = float(np.var(data))
+
+        # Get p-value for the best fit distribution
+        fit_info = analysis['distribution_fits'].get(best_fit, {})
+        fit_stats = fit_info.get('fit_stats', {})
+        ks_pvalue = fit_stats.get('ks_pvalue')
+        
+        # Extract last number from variant name for shortened display
+        variant_short = result['name'].rsplit('-', 1)[-1] if '-' in result['name'] else result['name']
+        
+        if ks_pvalue is not None:
+            label = f"{variant_short} [{best_fit} p={ks_pvalue:.2f}] μ={mean_val:.1f}, σ²={var_val:.1f}"
+        else:
+            label = f"{variant_short} [{best_fit}] μ={mean_val:.1f}, σ²={var_val:.1f}"
+
+        if show_histogram:
+            ax.hist(
+                data,
+                bins=min(25, max(10, int(np.sqrt(len(data))))),
+                density=True,
+                histtype='step',
+                linewidth=1.2,
+                color=color,
+                alpha=0.5,
+            )
+
+        params = fit_info.get('parameters')
+        if best_fit in dist_map and params is not None:
+            try:
+                y_vals = dist_map[best_fit].pdf(x_vals, *params)
+                finite_mask = np.isfinite(y_vals)
+                if np.any(finite_mask):
+                    y_vals_clean = y_vals[finite_mask]
+                    x_vals_clean = x_vals[finite_mask]
+                    peak_y_vals.append(float(np.max(y_vals_clean)))
+                    ax.plot(x_vals_clean, y_vals_clean, color=color, linewidth=2.0, label=label)
+                else:
+                    peak_y_vals.append(0.0)
+                    ax.plot([], [], color=color, linewidth=2.0, label=label)
+            except Exception:
+                peak_y_vals.append(0.0)
+                ax.plot([], [], color=color, linewidth=2.0, label=label)
+        else:
+            peak_y_vals.append(0.0)
+            ax.plot([], [], color=color, linewidth=2.0, label=label)
+
+    ax.set_xlabel(metric_label)
+    ax.set_ylabel('Density')
+    ax.set_title(get_metric_title(metric))
+    ax.grid(True, alpha=0.3)
+    
+    # Dynamic label placement to avoid covering lines
+    ax.legend(fontsize=8, loc='upper right')
+    
+    # Adjust layout to prevent label clipping
+    ax.set_xlim(x_min, x_max)
+
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, f"standard_comparison_{metric}.png")
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+    return output_path
+
+
+def print_standard_compare_summary(metric_label: str, source_result: Dict, dependent_results: List[Dict], all_results: List[Dict] = None) -> str:
+    """Return distribution analysis and source-relative comparison as a formatted string.
+    
+    Args:
+        metric_label: Label for the metric
+        source_result: Result dictionary for source variant
+        dependent_results: Result dictionaries for dependent variants
+        all_results: Optional list of all results (used to include distribution analysis for each)
+        
+    Returns:
+        Formatted summary text including distribution analysis and comparisons
+    """
+    source_name = source_result['name']
+    source_mean = float(np.mean(source_result['data']))
+    source_var = float(np.var(source_result['data']))
+
+    lines = []
+    lines.append(f"\n{'='*90}")
+    lines.append(f"STANDARD COMPARISON SUMMARY: {metric_label}")
+    lines.append(f"{'='*90}")
+    
+    # Include distribution analysis for each variant
+    if all_results:
+        lines.append("\nDISTRIBUTION ANALYSIS PER VARIANT:")
+        lines.append("-" * 90)
+        for result in all_results:
+            analysis = result['analysis']
+            data = result['data']
+            variant_name = result['name']
+            best_fit = analysis['best_fit_distribution']
+            
+            # Get p-value for the best fit
+            fit_info = analysis['distribution_fits'].get(best_fit, {})
+            fit_stats = fit_info.get('fit_stats', {})
+            ks_pvalue = fit_stats.get('ks_pvalue')
+            
+            lines.append(f"\nVariant: {variant_name}")
+            lines.append(f"  Sample size:        {len(data)}")
+            lines.append(f"  Mean:               {float(np.mean(data)):.4f}")
+            lines.append(f"  Variance:           {float(np.var(data)):.4f}")
+            lines.append(f"  Std Dev:            {float(np.std(data)):.4f}")
+            lines.append(f"  Best fit:           {best_fit}")
+            if ks_pvalue is not None:
+                lines.append(f"  KS-test p-value:    {ks_pvalue:.4f}")
+            
+            # Show all distribution fits
+            lines.append(f"\n  All distribution fits:")
+            for dist_name, fit_info in sorted(analysis['distribution_fits'].items()):
+                fit_stats = fit_info.get('fit_stats', {})
+                dist_pval = fit_stats.get('ks_pvalue')
+                if dist_pval is not None:
+                    lines.append(f"    {dist_name:<15} p-value: {dist_pval:.4f}")
+                else:
+                    lines.append(f"    {dist_name:<15} p-value: N/A")
+    
+    # Comparison summary
+    lines.append(f"\n\n{'='*90}")
+    lines.append("COMPARISON RELATIVE TO SOURCE VARIANT")
+    lines.append(f"{'='*90}")
+    lines.append(f"Source variant: {source_name}")
+    lines.append(f"Source mean:    {source_mean:.6f}")
+    lines.append(f"Source variance:{source_var:.6f}\n")
+    
+    lines.append(f"{'Variant':<35} {'Mean Δ vs Source (%)':>22} {'Var Δ vs Source (%)':>22}")
+    lines.append('-' * 90)
+
+    for dep_result in dependent_results:
+        dep_mean = float(np.mean(dep_result['data']))
+        dep_var = float(np.var(dep_result['data']))
+
+        mean_diff_pct = float(
+            100.0 * (dep_mean - source_mean) / source_mean if source_mean != 0 else np.nan
+        )
+        var_diff_pct = float(
+            100.0 * (dep_var - source_var) / source_var if source_var != 0 else np.nan
+        )
+
+        lines.append(f"{dep_result['name']:<35} {mean_diff_pct:>22.4f} {var_diff_pct:>22.4f}")
+    
+    summary_text = '\n'.join(lines)
+    print(summary_text)
+    return summary_text
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Compare robot navigation tests using statistical distributions',
@@ -1812,6 +2249,12 @@ def main():
 Examples:
   # Extract metrics from two test types (time, distance only)
   python3 compare_navigation_tests.py -t /path/to/test_type_1 /path/to/test_type_2
+
+  # Auto-discover and extract from all variants in a parent folder
+  python3 compare_navigation_tests.py --auto-variants results/run-2026-02-28-030930/ -o semantic_area_sampling_outputs
+  
+  # Combine auto-variants with additional explicit test types
+  python3 compare_navigation_tests.py --auto-variants results/run-2026-02-28-030930/ -t /path/to/other_test_type -o outputs
 
   # Extract metrics including localization error (requires localization_error.csv in run folders)
   python3 compare_navigation_tests.py -t /path/to/test_type_1 /path/to/test_type_2 -m time distance loc_error_mean loc_error_var
@@ -1834,6 +2277,10 @@ Examples:
   python3 compare_navigation_tests.py --sum test_top test_bottom test_full --sum-method convolution -m time loc_error_mean
   python3 compare_navigation_tests.py --sum test_top test_bottom test_full --sum-method bootstrap -m loc_error_var
 
+    # Standard comparison: source variant vs dependent variants
+    # Use -i as the parent directory that contains variant folders
+    python3 compare_navigation_tests.py --standard-compare variant_1 variant_2 variant_3 -i /path/to/variants -o outputs -m time distance
+
   # Analyze pose variance correlation within a single test type
   # Shows how variation in start/goal poses affects distance variance
   python3 compare_navigation_tests.py --pose-variance /path/to/test_type_geometric_1 -o outputs
@@ -1850,10 +2297,17 @@ Examples:
     
     parser.add_argument('-t', '--test-types', nargs='+', 
                        help='Paths to test type folders to extract metrics')
+    parser.add_argument('--auto-variants', 
+                       help='Parent directory containing variant subdirectories; automatically detects all variants and extracts metrics')
+    parser.add_argument('--list-variants',
+                       help='List all available variants in a directory (shows variant names and run counts)')
     parser.add_argument('-c', '--compare', nargs=2, 
                        help='Names of two test types to compare (from extracted metrics)')
     parser.add_argument('--sum', nargs=3, metavar=('TEST1', 'TEST2', 'TARGET'),
                        help='Sum TEST1 and TEST2 distributions, compare to TARGET')
+    parser.add_argument('--standard-compare', nargs='+',
+                       help='Standard comparison mode: first variant is source, remaining variants are dependents. '
+                            'Use -i as parent directory containing variant folders, and -o for outputs')
     parser.add_argument('--sum-method', choices=['pairwise', 'convolution', 'monte_carlo', 'bootstrap'],
                        default='pairwise',
                        help='Method for summing distributions. pairwise: by index (smaller variance); '
@@ -1874,10 +2328,15 @@ Examples:
     parser.add_argument('--pose-diff-vs-source', nargs='+',
                        help='Source-vs-others comparison: first path is source variant, '
                            'remaining paths are comparison variants')
+    parser.add_argument('-i', '--input-dir',
+                       help='Input directory. For -c/--sum: metric CSV directory. '
+                           'For --standard-compare: parent directory containing variant folders')
     parser.add_argument('-o', '--output-dir', default='navigation_comparison_results',
-                       help='Output directory for results')
+                       help='Output directory for results (plots and comparison CSVs)')
     parser.add_argument('--no-display', action='store_true',
                        help='Skip printing results to console')
+    parser.add_argument('--no-histograms', action='store_true',
+                       help='Skip histograms in standard comparison plots (show only distribution curves)')
     parser.add_argument('--successful-only', action='store_true',
                        help='During extraction, include only runs where test.xml has failures=0')
     
@@ -1886,8 +2345,11 @@ Examples:
     # Check that at least one action is specified
     if (
         not args.test_types
+        and not args.auto_variants
+        and not args.list_variants
         and not args.compare
         and not args.sum
+        and not args.standard_compare
         and not args.pose_variance
         and not args.pose_dist_variance
         and not args.pose_diff_vs_source
@@ -1895,7 +2357,55 @@ Examples:
         parser.print_help()
         sys.exit(1)
     
+    # Handle list-variants early (doesn't need output directory)
+    if args.list_variants:
+        discover_and_list_variants(args.list_variants)
+        sys.exit(0)
+    
     os.makedirs(args.output_dir, exist_ok=True)
+    
+    # Set input directory to output directory if not specified (for backward compatibility)
+    if args.standard_compare and args.input_dir is None:
+        print("Error: --standard-compare requires --input-dir (parent directory containing variant folders)", file=sys.stderr)
+        sys.exit(1)
+
+    # Set input directory to output directory if not specified (for backward compatibility)
+    if args.input_dir is None:
+        args.input_dir = args.output_dir
+    
+    if not os.path.isdir(args.input_dir):
+        print(f"Error: Input directory does not exist: {args.input_dir}", file=sys.stderr)
+        sys.exit(1)
+    
+    # Handle auto-variants: discover all variant subdirectories in the parent folder
+    if args.auto_variants:
+        parent_dir = Path(args.auto_variants)
+        if not parent_dir.is_dir():
+            print(f"Error: --auto-variants path is not a valid directory: {args.auto_variants}", file=sys.stderr)
+            sys.exit(1)
+        
+        # Find all subdirectories that contain run folders (0, 1, 2, etc.)
+        # These are candidate variants
+        variant_paths = []
+        for subdir in sorted(parent_dir.iterdir()):
+            if not subdir.is_dir():
+                continue
+            
+            # Check if this looks like a variant directory by looking for run subdirectories
+            run_dirs = [d for d in subdir.iterdir() if d.is_dir() and d.name.isdigit()]
+            if run_dirs:
+                variant_paths.append(str(subdir))
+        
+        if not variant_paths:
+            print(f"Warning: No variant directories found in {args.auto_variants}", file=sys.stderr)
+            print(f"  (A variant directory should contain numbered run subdirectories like 0, 1, 2, etc.)", file=sys.stderr)
+        else:
+            # Prepend auto-discovered variants to test_types if specified
+            if args.test_types:
+                args.test_types = variant_paths + args.test_types
+            else:
+                args.test_types = variant_paths
+            print(f"Auto-discovered {len(variant_paths)} variant(s) in {args.auto_variants}")
     
     # Extract metrics if test types are provided
     if args.test_types:
@@ -1930,7 +2440,7 @@ Examples:
         test1_name, test2_name = args.compare
         
         for metric in args.metrics:
-            metric_dir = args.output_dir
+            metric_dir = args.input_dir
             
             if metric == 'time':
                 file1 = os.path.join(metric_dir, f"{test1_name}_times.csv")
@@ -1998,7 +2508,7 @@ Examples:
         name1, name2, name_target = args.sum
         
         for metric in args.metrics:
-            metric_dir = args.output_dir
+            metric_dir = args.input_dir
             
             if metric == 'time':
                 file1 = os.path.join(metric_dir, f"{name1}_times.csv")
@@ -2045,6 +2555,112 @@ Examples:
                 sum_method=args.sum_method,
                 no_display=args.no_display
             )
+
+    # Standard comparison: source variant vs dependent variants
+    if args.standard_compare:
+        if len(args.standard_compare) < 2:
+            print(
+                "Error: --standard-compare requires at least 2 variant identifiers: source + at least 1 dependent",
+                file=sys.stderr,
+            )
+        else:
+            source_identifier = args.standard_compare[0]
+            dependent_identifiers = args.standard_compare[1:]
+
+            source_path = resolve_variant_path(source_identifier, args.input_dir)
+            if source_path is None:
+                print(
+                    f"Error: Could not resolve source variant '{source_identifier}' in input directory '{args.input_dir}'",
+                    file=sys.stderr,
+                )
+            else:
+                dependent_variants = []
+                for dep_identifier in dependent_identifiers:
+                    dep_path = resolve_variant_path(dep_identifier, args.input_dir)
+                    if dep_path is None:
+                        print(
+                            f"Warning: Could not resolve dependent variant '{dep_identifier}' (skipped)",
+                            file=sys.stderr,
+                        )
+                        continue
+                    dependent_variants.append((dep_identifier, dep_path))
+
+                if len(dependent_variants) == 0:
+                    print(
+                        "Error: No valid dependent variants found for --standard-compare",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        f"Running standard comparison: source='{source_path.name}', "
+                        f"dependents={len(dependent_variants)}, metrics={args.metrics}"
+                    )
+
+                    all_variants = [(source_path.name, source_path, True)] + [
+                        (dep_path.name, dep_path, False) for _, dep_path in dependent_variants
+                    ]
+
+                    for metric in args.metrics:
+                        metric_label = get_metric_label(metric)
+                        variant_results = []
+
+                        for variant_name, variant_path, is_source in all_variants:
+                            metric_data = extract_metric_array_for_variant(
+                                str(variant_path),
+                                metric,
+                                successful_only=args.successful_only,
+                            )
+
+                            if metric_data is None or len(metric_data) == 0:
+                                print(
+                                    f"Warning: No valid {metric} data for variant '{variant_name}' (skipped for this metric)",
+                                    file=sys.stderr,
+                                )
+                                continue
+
+                            _, analysis = analyze_distribution_fit(metric_data)
+                            variant_results.append({
+                                'name': variant_name,
+                                'path': str(variant_path),
+                                'is_source': is_source,
+                                'data': metric_data,
+                                'analysis': analysis,
+                            })
+
+                        source_results = [result for result in variant_results if result['is_source']]
+                        dependent_results = [result for result in variant_results if not result['is_source']]
+
+                        if len(source_results) != 1:
+                            print(
+                                f"Warning: Source variant missing valid {metric} data; skipping metric",
+                                file=sys.stderr,
+                            )
+                            continue
+
+                        if len(dependent_results) == 0:
+                            print(
+                                f"Warning: No dependent variants with valid {metric} data; skipping metric",
+                                file=sys.stderr,
+                            )
+                            continue
+
+                        source_result = source_results[0]
+
+                        if not args.no_display:
+                            for result in variant_results:
+                                print_distribution_analysis(result['name'], result['analysis'], metric_label)
+                            summary_text = print_standard_compare_summary(metric_label, source_result, dependent_results, all_results=variant_results)
+                        else:
+                            summary_text = print_standard_compare_summary(metric_label, source_result, dependent_results, all_results=variant_results)
+
+                        show_histograms = not args.no_histograms
+                        plot_path = plot_standard_comparison_metric(metric, metric_label, variant_results, args.output_dir, show_histogram=show_histograms)
+                        summary_csv = save_standard_compare_summary_csv(metric, source_result, dependent_results, args.output_dir)
+                        summary_txt = save_standard_compare_summary_txt(metric, metric_label, summary_text, args.output_dir)
+
+                        print(f"Standard comparison plot ({metric}): {plot_path}")
+                        print(f"Standard comparison summary ({metric}): {summary_csv}")
+                        print(f"Standard comparison summary text ({metric}): {summary_txt}")
     
     # Analyze pose variance correlation if requested
     if args.pose_variance:
