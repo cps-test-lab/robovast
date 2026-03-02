@@ -87,15 +87,19 @@ def _full_job_name(run_id: str, scenario_key: str, run_number: int) -> str:
 def cleanup_cluster_run(namespace="default", run_id=None, context=None):
     """Clean up scenario run jobs, pods, and Kueue workloads from the cluster.
 
-    If run_id is given, removes only jobs, pods, and workloads for that run (with
-    label jobgroup=scenario-runs,run-id=<run_id>). Otherwise removes all
-    such resources with label 'jobgroup=scenario-runs'.
+    Cleanup order is designed to avoid confusing Kueue's quota tracking:
+    1. HoldAll the ClusterQueue to prevent new admissions during cleanup.
+    2. Delete Workloads first so Kueue releases quota before Jobs disappear.
+    3. Force-clear finalizers on stuck Workloads.
+    4. Delete Jobs (Foreground propagation so pods are reaped by the Job controller).
+    5. Force-clear finalizers on stuck Jobs.
+    6. Delete Pods.
+    7. Force-clear finalizers on stuck Pods.
+    8. Resume the ClusterQueue (stopPolicy -> None) so new runs can be admitted.
 
-    Includes Kueue Workload objects since they may not be cleaned up correctly
-    when jobs finish or are deleted. If Kueue is not installed, workload
-    cleanup is skipped without failing.
-
-    Used after a detached run to clean up resources once jobs have completed.
+    If run_id is given, removes only resources for that run (label
+    ``jobgroup=scenario-runs,run-id=<run_id>``). Otherwise removes all
+    resources with label ``jobgroup=scenario-runs``.
 
     Args:
         namespace: Kubernetes namespace.
@@ -111,13 +115,14 @@ def cleanup_cluster_run(namespace="default", run_id=None, context=None):
         label_safe = _label_safe_run_id(run_id)
         label_selector = f"jobgroup=scenario-runs,run-id={label_safe}"
 
-    # Soft cleanup step 1: stop the ClusterQueue so Kueue does not admit new jobs
-    # while we are deleting. Runs in best-effort; failure does not abort cleanup.
-    logger.debug("Setting ClusterQueue stopPolicy to HoldAll before cleanup")
-    set_cluster_queue_stop_policy("HoldAll", kube_context=context)
+    # Step 1: Stop the ClusterQueue so Kueue does not admit new jobs during cleanup.
+    logger.info("Setting ClusterQueue stopPolicy to HoldAndDrain before cleanup")
+    set_cluster_queue_stop_policy("HoldAndDrain", kube_context=context)
 
-    # Cleanup Kueue workloads first (before deleting jobs); workloads don't inherit job
-    # labels, so we match by job UIDs or queue name
+    # Step 2+3: Delete Workloads FIRST so Kueue can release quota cleanly
+    # before the underlying Jobs disappear. Hard finalizer cleanup is handled
+    # inside cleanup_kueue_workloads.
+    logger.info("Deleting Kueue workloads before jobs (quota-safe order)")
     cleanup_kueue_workloads(
         namespace=namespace,
         label_selector=label_selector,
@@ -125,45 +130,46 @@ def cleanup_cluster_run(namespace="default", run_id=None, context=None):
         k8s_batch_client=k8s_batch_client,
     )
 
-    # Cleanup jobs
+    # Step 4: Delete Jobs with Foreground propagation so the Job controller
+    # reaps pods before the Job object itself is removed.
     try:
-        logger.debug(f"Deleting jobs with label selector '{label_selector}'")
+        logger.info("Deleting jobs with label selector '%s'", label_selector)
         k8s_batch_client.delete_collection_namespaced_job(
             namespace=namespace,
             label_selector=label_selector,
             body=client.V1DeleteOptions(
-                grace_period_seconds=0, propagation_policy="Background"
+                grace_period_seconds=0, propagation_policy="Foreground"
             ),
         )
         logger.info("Successfully deleted scenario-runs jobs")
     except client.rest.ApiException as e:
-        logger.error(f"Error deleting jobs with label selector: {e}")
+        logger.error("Error deleting jobs: %s", e)
         raise
 
-    # Hard cleanup: force-remove finalizers from any jobs stuck in Terminating.
+    # Step 5: Force-clear finalizers on any Jobs still stuck in Terminating.
     try:
         remaining_jobs = k8s_batch_client.list_namespaced_job(
             namespace=namespace,
             label_selector=label_selector,
         )
         for job in remaining_jobs.items:
-            if job.metadata.deletion_timestamp is not None:
-                job_name = job.metadata.name
+            if job.metadata.deletion_timestamp is not None or job.metadata.finalizers:
                 logger.warning(
-                    "Job '%s' is stuck in Terminating state; removing finalizers", job_name
+                    "Job '%s' is stuck (Terminating or has finalizers); clearing finalizers",
+                    job.metadata.name,
                 )
                 k8s_batch_client.patch_namespaced_job(
-                    name=job_name,
+                    name=job.metadata.name,
                     namespace=namespace,
                     body={"metadata": {"finalizers": None}},
                 )
-                logger.info("Removed finalizers from stuck job '%s'", job_name)
+                logger.info("Cleared finalizers on job '%s'", job.metadata.name)
     except client.rest.ApiException as e:
         logger.warning("Error while clearing finalizers from stuck jobs: %s", e)
 
-    # Cleanup pods
+    # Step 6: Delete Pods.
     try:
-        logger.debug(f"Deleting pods with label selector '{label_selector}'")
+        logger.info("Deleting pods with label selector '%s'", label_selector)
         k8s_client.delete_collection_namespaced_pod(
             namespace=namespace,
             label_selector=label_selector,
@@ -171,33 +177,35 @@ def cleanup_cluster_run(namespace="default", run_id=None, context=None):
                 grace_period_seconds=0, propagation_policy="Background"
             ),
         )
-        logger.debug("Successfully cleaned up scenario-runs pods")
+        logger.info("Successfully deleted scenario-runs pods")
     except client.rest.ApiException as e:
-        logger.error(f"Error deleting pods with label selector: {e}")
+        logger.error("Error deleting pods: %s", e)
         raise
 
-    # Force-remove finalizers from any pods stuck in Terminating state.
-    # This can happen when the Job is gone but its underlying Pod has
-    # finalizers that prevent it from being fully deleted.
+    # Step 7: Force-clear finalizers on any Pods still stuck in Terminating.
     try:
         remaining_pods = k8s_client.list_namespaced_pod(
             namespace=namespace,
             label_selector=label_selector,
         )
         for pod in remaining_pods.items:
-            if pod.metadata.deletion_timestamp is not None:
-                pod_name = pod.metadata.name
+            if pod.metadata.deletion_timestamp is not None or pod.metadata.finalizers:
                 logger.warning(
-                    f"Pod '{pod_name}' is stuck in Terminating state; removing finalizers"
+                    "Pod '%s' is stuck (Terminating or has finalizers); clearing finalizers",
+                    pod.metadata.name,
                 )
                 k8s_client.patch_namespaced_pod(
-                    name=pod_name,
+                    name=pod.metadata.name,
                     namespace=namespace,
                     body={"metadata": {"finalizers": None}},
                 )
-                logger.info(f"Removed finalizers from stuck pod '{pod_name}'")
+                logger.info("Cleared finalizers on pod '%s'", pod.metadata.name)
     except client.rest.ApiException as e:
-        logger.warning(f"Error while clearing finalizers from stuck pods: {e}")
+        logger.warning("Error while clearing finalizers from stuck pods: %s", e)
+
+    # Step 8: Resume the ClusterQueue so future runs can be admitted.
+    logger.info("Restoring ClusterQueue stopPolicy to None after cleanup")
+    set_cluster_queue_stop_policy(None, kube_context=context)
 
 
 def get_cluster_run_job_counts(namespace="default", context=None):
@@ -282,7 +290,17 @@ def get_cluster_run_job_counts_per_run(namespace="default", context=None):
             run_id = job.metadata.labels["run-id"]
 
         if run_id not in per_run:
-            per_run[run_id] = {"completed": 0, "failed": 0, "running": 0, "pending": 0}
+            per_run[run_id] = {"completed": 0, "failed": 0, "running": 0, "pending": 0,
+                                "total_job_num": None}
+
+        # Read total-job-num annotation from the first job that has it
+        if per_run[run_id]["total_job_num"] is None and job.metadata.annotations:
+            raw = job.metadata.annotations.get("total-job-num")
+            if raw is not None:
+                try:
+                    per_run[run_id]["total_job_num"] = int(raw)
+                except (ValueError, TypeError):
+                    pass
 
         status = job.status
         if status is None:
@@ -451,6 +469,10 @@ class JobRunner:
                               f"{scenario_key.replace('/', '-').replace('_', '-')}-{run_number}")
         self.replace_template(job_manifest, "$TEST_ID",
                               f"{scenario_key}-{run_number}")
+
+        # Stamp total job count so the cluster monitor can always show the run total
+        total_jobs = len(self.configs) * self.num_runs
+        self.replace_template(job_manifest, "$TOTAL_JOB_NUM", str(total_jobs))
 
         # S3 connection details from cluster config
         s3_endpoint = self.cluster_config.get_s3_endpoint()

@@ -48,6 +48,13 @@ DEFAULT_MEMORY_QUOTA = "32Gi"
 KUEUE_HELM_VALUES = """
 controllerManager:
   manager:
+    resources:
+      limits:
+        cpu: "2"
+        memory: "8Gi"
+      requests:
+        cpu: "500m"
+        memory: "3Gi"
     configuration:
       clientConnection:
         qps: 1000      # High QPS to clear the 10,000 event backlog
@@ -109,11 +116,11 @@ def set_cluster_queue_stop_policy(stop_policy, kube_context=None):
     """Set the stopPolicy on the robovast ClusterQueue.
 
     Useful before bulk job deletion so Kueue does not admit new jobs during cleanup.
-    Common values: ``"HoldAll"`` (pause admission and preempt running workloads),
-    ``"Hold"`` (pause new admissions only), ``"None"`` or empty string to resume.
+    Common values: ``"Hold"`` (pause new admissions), ``"HoldAndDrain"`` (pause and
+    preempt running workloads), ``"None"`` or empty string to resume.
 
     Args:
-        stop_policy: Policy string, e.g. ``"HoldAll"``.
+        stop_policy: Policy string, e.g. ``"Hold"``.
         kube_context: Kubernetes context to use. ``None`` uses the active context.
     """
     try:
@@ -121,7 +128,7 @@ def set_cluster_queue_stop_policy(stop_policy, kube_context=None):
     except config.ConfigException:
         pass
     custom_api = client.CustomObjectsApi()
-    body = {"spec": {"stopPolicy": stop_policy or "None"}}
+    body = {"spec": {"stopPolicy": stop_policy if stop_policy else "None"}}
     try:
         custom_api.patch_cluster_custom_object(
             group=KUEUE_WORKLOAD_GROUP,

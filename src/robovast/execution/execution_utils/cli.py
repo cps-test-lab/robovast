@@ -17,6 +17,7 @@
 
 """CLI plugin for execution management."""
 
+import datetime
 import logging
 import os
 import sys
@@ -356,10 +357,11 @@ def monitor(interval, once, kube_context):
         multi = len(contexts_to_monitor) > 1
 
         # Per-context state (keyed by kube_context_name)
-        initial_total: dict[str, dict] = {}   # ctx -> {run_id: total}
-        max_ok: dict[str, dict] = {}          # ctx -> {run_id: max_ok}
-        max_fail: dict[str, dict] = {}        # ctx -> {run_id: max_fail}
-        last_per_run: dict[str, dict] = {}    # ctx -> last known per_run
+        initial_total: dict[str, dict] = {}        # ctx -> {run_id: total}
+        max_ok: dict[str, dict] = {}               # ctx -> {run_id: max_ok}
+        max_fail: dict[str, dict] = {}             # ctx -> {run_id: max_fail}
+        last_per_run: dict[str, dict] = {}         # ctx -> last known per_run
+        run_first_finished: dict[str, dict] = {}   # ctx -> {run_id: (timestamp, finished_count)}
         prev_line_count = [0]
 
         def _build_run_lines(label, ctx, per_run):
@@ -367,18 +369,24 @@ def monitor(interval, once, kube_context):
             ctx_initial = initial_total.setdefault(ctx, {})
             ctx_ok = max_ok.setdefault(ctx, {})
             ctx_fail = max_fail.setdefault(ctx, {})
+            ctx_first = run_first_finished.setdefault(ctx, {})
 
             all_run_ids = sorted(set(ctx_initial.keys()) | set(per_run.keys()))
             lines = []
             all_done = True
             indent = "  " if multi else ""
+            now = time.time()
 
             for run_id in all_run_ids:
-                c = per_run.get(run_id, {"completed": 0, "failed": 0, "running": 0, "pending": 0})
+                c = per_run.get(run_id, {"completed": 0, "failed": 0, "running": 0, "pending": 0,
+                                         "total_job_num": None})
                 current_total = c["completed"] + c["failed"] + c["running"] + c["pending"]
                 if run_id not in ctx_initial:
                     ctx_initial[run_id] = current_total
-                total = ctx_initial[run_id]
+                # Prefer annotation-based total so the monitor shows the full run size
+                # even while many jobs are still pending / not yet visible in the API.
+                annotated_total = c.get("total_job_num")
+                total = annotated_total if annotated_total else ctx_initial[run_id]
                 ctx_ok[run_id] = max(ctx_ok.get(run_id, 0), c["completed"])
                 ctx_fail[run_id] = max(ctx_fail.get(run_id, 0), c["failed"])
                 still_in_cluster = c["running"] + c["pending"]
@@ -394,10 +402,32 @@ def monitor(interval, once, kube_context):
                 filled = int(bar_width * finished / total) if total > 0 else bar_width
                 progress_bar = "█" * filled + "░" * (bar_width - filled)
                 pct_str = f"{pct:.1f}%".rjust(pct_width)
+
+                # Track first observed completion for this run (to compute rate/ETA)
+                if finished > 0 and run_id not in ctx_first:
+                    ctx_first[run_id] = (now, finished)
+
+                # Compute rate (jobs/min) and ETA
+                rate_str = ""
+                eta_str = ""
+                if run_id in ctx_first and still_in_cluster > 0:
+                    first_ts, first_finished = ctx_first[run_id]
+                    elapsed = now - first_ts
+                    jobs_since = finished - first_finished
+                    if elapsed >= 10 and jobs_since > 0:
+                        rate_per_min = jobs_since / (elapsed / 60.0)
+                        rate_str = f"  {rate_per_min:.1f} jobs/min"
+                        remaining = total - finished
+                        if remaining > 0 and rate_per_min > 0:
+                            eta_secs = remaining / (rate_per_min / 60.0)
+                            eta_dt = datetime.datetime.fromtimestamp(now + eta_secs)
+                            eta_str = f"  ETA ~{eta_dt.strftime('%H:%M')}"
+
                 lines.append(
                     f"{indent}{run_id}  [{progress_bar}]  {pct_str}  "
                     f"{finished}/{total}  ({ok} ok, {fail} fail)  "
                     f"Running: {c['running']}  Pending: {c['pending']}"
+                    f"{rate_str}{eta_str}"
                 )
             if not lines:
                 lines.append(f"{indent}No scenario run jobs found.")
@@ -409,13 +439,21 @@ def monitor(interval, once, kube_context):
             for label, ctx in contexts_to_monitor:
                 unreachable = False
                 try:
-                    _urllib3_logger = logging.getLogger("urllib3")
-                    _prev_level = _urllib3_logger.level
-                    _urllib3_logger.setLevel(logging.ERROR)
+                    # Suppress urllib3 retry warnings for unreachable contexts;
+                    # both the parent and the connectionpool child logger must be
+                    # silenced because the child may have its own effective level.
+                    _suppressed_loggers = [
+                        logging.getLogger("urllib3"),
+                        logging.getLogger("urllib3.connectionpool"),
+                    ]
+                    _prev_levels = [lg.level for lg in _suppressed_loggers]
+                    for lg in _suppressed_loggers:
+                        lg.setLevel(logging.CRITICAL)
                     try:
                         per_run = get_cluster_run_job_counts_per_run(namespace, context=ctx)
                     finally:
-                        _urllib3_logger.setLevel(_prev_level)
+                        for lg, lvl in zip(_suppressed_loggers, _prev_levels):
+                            lg.setLevel(lvl)
                 except Exception as exc:
                     # Keep displaying even if one context is unreachable
                     per_run = {}
