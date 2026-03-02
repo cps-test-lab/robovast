@@ -17,6 +17,7 @@
 
 """CLI plugin for execution management."""
 
+import datetime
 import logging
 import os
 import sys
@@ -24,6 +25,7 @@ import time
 
 import click
 import yaml
+from dotenv import load_dotenv
 
 from robovast.common import prepare_run_configs
 from robovast.common.cli import get_project_config, handle_cli_exception
@@ -37,6 +39,10 @@ from robovast.execution.cluster_execution.cluster_setup import (
     load_cluster_config_name, setup_server)
 from robovast.execution.cluster_execution.download_results import \
     ResultDownloader
+from robovast.execution.cluster_execution.share_providers import \
+    load_share_provider_plugins
+from robovast.execution.cluster_execution.upload_to_share import \
+    ShareUploader
 
 from ..cluster_execution.kubernetes import (check_kubernetes_access,
                                             check_pod_running,
@@ -351,10 +357,11 @@ def monitor(interval, once, kube_context):
         multi = len(contexts_to_monitor) > 1
 
         # Per-context state (keyed by kube_context_name)
-        initial_total: dict[str, dict] = {}   # ctx -> {run_id: total}
-        max_ok: dict[str, dict] = {}          # ctx -> {run_id: max_ok}
-        max_fail: dict[str, dict] = {}        # ctx -> {run_id: max_fail}
-        last_per_run: dict[str, dict] = {}    # ctx -> last known per_run
+        initial_total: dict[str, dict] = {}        # ctx -> {run_id: total}
+        max_ok: dict[str, dict] = {}               # ctx -> {run_id: max_ok}
+        max_fail: dict[str, dict] = {}             # ctx -> {run_id: max_fail}
+        last_per_run: dict[str, dict] = {}         # ctx -> last known per_run
+        run_first_finished: dict[str, dict] = {}   # ctx -> {run_id: (timestamp, finished_count)}
         prev_line_count = [0]
 
         def _build_run_lines(label, ctx, per_run):
@@ -362,18 +369,24 @@ def monitor(interval, once, kube_context):
             ctx_initial = initial_total.setdefault(ctx, {})
             ctx_ok = max_ok.setdefault(ctx, {})
             ctx_fail = max_fail.setdefault(ctx, {})
+            ctx_first = run_first_finished.setdefault(ctx, {})
 
             all_run_ids = sorted(set(ctx_initial.keys()) | set(per_run.keys()))
             lines = []
             all_done = True
             indent = "  " if multi else ""
+            now = time.time()
 
             for run_id in all_run_ids:
-                c = per_run.get(run_id, {"completed": 0, "failed": 0, "running": 0, "pending": 0})
+                c = per_run.get(run_id, {"completed": 0, "failed": 0, "running": 0, "pending": 0,
+                                         "total_job_num": None})
                 current_total = c["completed"] + c["failed"] + c["running"] + c["pending"]
                 if run_id not in ctx_initial:
                     ctx_initial[run_id] = current_total
-                total = ctx_initial[run_id]
+                # Prefer annotation-based total so the monitor shows the full run size
+                # even while many jobs are still pending / not yet visible in the API.
+                annotated_total = c.get("total_job_num")
+                total = annotated_total if annotated_total else ctx_initial[run_id]
                 ctx_ok[run_id] = max(ctx_ok.get(run_id, 0), c["completed"])
                 ctx_fail[run_id] = max(ctx_fail.get(run_id, 0), c["failed"])
                 still_in_cluster = c["running"] + c["pending"]
@@ -389,10 +402,32 @@ def monitor(interval, once, kube_context):
                 filled = int(bar_width * finished / total) if total > 0 else bar_width
                 progress_bar = "█" * filled + "░" * (bar_width - filled)
                 pct_str = f"{pct:.1f}%".rjust(pct_width)
+
+                # Track first observed completion for this run (to compute rate/ETA)
+                if finished > 0 and run_id not in ctx_first:
+                    ctx_first[run_id] = (now, finished)
+
+                # Compute rate (jobs/min) and ETA
+                rate_str = ""
+                eta_str = ""
+                if run_id in ctx_first and still_in_cluster > 0:
+                    first_ts, first_finished = ctx_first[run_id]
+                    elapsed = now - first_ts
+                    jobs_since = finished - first_finished
+                    if elapsed >= 10 and jobs_since > 0:
+                        rate_per_min = jobs_since / (elapsed / 60.0)
+                        rate_str = f"  {rate_per_min:.1f} jobs/min"
+                        remaining = total - finished
+                        if remaining > 0 and rate_per_min > 0:
+                            eta_secs = remaining / (rate_per_min / 60.0)
+                            eta_dt = datetime.datetime.fromtimestamp(now + eta_secs)
+                            eta_str = f"  ETA ~{eta_dt.strftime('%H:%M')}"
+
                 lines.append(
                     f"{indent}{run_id}  [{progress_bar}]  {pct_str}  "
                     f"{finished}/{total}  ({ok} ok, {fail} fail)  "
                     f"Running: {c['running']}  Pending: {c['pending']}"
+                    f"{rate_str}{eta_str}"
                 )
             if not lines:
                 lines.append(f"{indent}No scenario run jobs found.")
@@ -404,13 +439,21 @@ def monitor(interval, once, kube_context):
             for label, ctx in contexts_to_monitor:
                 unreachable = False
                 try:
-                    _urllib3_logger = logging.getLogger("urllib3")
-                    _prev_level = _urllib3_logger.level
-                    _urllib3_logger.setLevel(logging.ERROR)
+                    # Suppress urllib3 retry warnings for unreachable contexts;
+                    # both the parent and the connectionpool child logger must be
+                    # silenced because the child may have its own effective level.
+                    _suppressed_loggers = [
+                        logging.getLogger("urllib3"),
+                        logging.getLogger("urllib3.connectionpool"),
+                    ]
+                    _prev_levels = [lg.level for lg in _suppressed_loggers]
+                    for lg in _suppressed_loggers:
+                        lg.setLevel(logging.CRITICAL)
                     try:
                         per_run = get_cluster_run_job_counts_per_run(namespace, context=ctx)
                     finally:
-                        _urllib3_logger.setLevel(_prev_level)
+                        for lg, lvl in zip(_suppressed_loggers, _prev_levels):
+                            lg.setLevel(lvl)
                 except Exception as exc:
                     # Keep displaying even if one context is unreachable
                     per_run = {}
@@ -558,6 +601,117 @@ def download(output, force, verbose, skip_removal, port_forward_only, remote_com
         )
         click.echo(f"✓ Download of {count} runs completed successfully!")
 
+    except Exception as e:
+        handle_cli_exception(e)
+
+
+@cluster.command(name='upload-to-share')
+@click.option('--force', '-f', is_flag=True,
+              help='Force recreation of the remote tar.gz archive even if it already exists')
+@click.option('--verbose', '-v', is_flag=True,
+              help='Print detailed progress')
+@click.option('--keep-archive', is_flag=True,
+              help='Keep the tar.gz in the pod /data/ after a successful upload')
+@click.option('--skip-removal', is_flag=True,
+              help='Do not delete the S3 bucket after a successful upload')
+@click.option('--context', '-x', 'kube_context', default=None,
+              help='Kubernetes context to use (default: active context in kubeconfig)')
+def download_to_share(force, verbose, keep_archive, skip_removal, kube_context):
+    """Upload run archives from the cluster pod to a remote share service.
+
+    Results are transferred entirely inside the archiver sidecar of the
+    robovast pod — no data is downloaded to the local machine.
+
+    For each available run the command:
+
+    \b
+    1. Creates a compressed tar.gz archive in the pod (same as
+       ``cluster download``).  Skips this step if the archive already exists.
+    2. Uploads the archive to the configured share service from inside the pod.
+    3. Removes the archive from the pod on success (unless ``--keep-archive``).
+    4. Deletes the S3 bucket on success (unless ``--skip-removal``).
+    5. Keeps both the archive and the bucket if the upload fails so you can
+       retry or fall back to ``cluster download``.
+
+    Configuration is read from a ``.env`` file in the current or any parent
+    directory.  Required variables:
+
+    \b
+    ROBOVAST_SHARE_TYPE  — share provider: ``nextcloud``
+
+    Additional variables depend on the share type.  Run with no ``.env`` file
+    to see a list of required variables for the detected share type.
+
+    Use ``--keep-archive`` to retain the archive in the pod after upload
+    (useful when you want to also download the results locally later).
+    """
+    # Load .env in priority order:
+    #   1. Next to the .vast config file (dirname of config_path)
+    #   2. Next to the .vast_project file (project_dir)
+    # Falls back to the default cwd-upward search when no project is found.
+    from robovast.common.cli.project_config import ProjectConfig  # pylint: disable=import-outside-toplevel
+    _project_file = ProjectConfig.find_project_file()
+    if _project_file:
+        _project_dir = os.path.dirname(os.path.abspath(_project_file))
+        _pc = ProjectConfig.load()
+        if _pc and _pc.config_path:
+            load_dotenv(os.path.join(os.path.dirname(_pc.config_path), ".env"), override=False)
+        load_dotenv(os.path.join(_project_dir, ".env"), override=False)
+    else:
+        load_dotenv(override=False)
+
+    share_type = os.environ.get("ROBOVAST_SHARE_TYPE", "").strip()
+    if not share_type:
+        raise click.UsageError(
+            "ROBOVAST_SHARE_TYPE is not set.\n"
+            "Add it to a .env file in your project directory.\n"
+            "Supported values: nextcloud\n"
+            "Example .env:\n"
+            "  ROBOVAST_SHARE_TYPE=nextcloud\n"
+            "  ROBOVAST_SHARE_URL=https://cloud.example.com/s/AbCdEfGhIjKlMn"
+        )
+
+    providers = load_share_provider_plugins()
+    if share_type not in providers:
+        available = ", ".join(sorted(providers)) or "(none installed)"
+        raise click.UsageError(
+            f"Unknown share type '{share_type}'.\n"
+            f"Available providers: {available}"
+        )
+
+    try:
+        provider = providers[share_type]()
+    except click.UsageError:
+        raise
+    except Exception as e:
+        handle_cli_exception(e)
+        return
+
+    share_url = os.environ.get("ROBOVAST_SHARE_URL", "").strip()
+    if share_url:
+        click.echo(f"Share target ({share_type}): {share_url}")
+
+    try:
+        require_context_for_multi_cluster(kube_context)
+        context_key = kube_context
+        config_name = load_cluster_config_name(context_key)
+        cluster_config = get_cluster_config(config_name)
+        uploader = ShareUploader(
+            namespace=get_cluster_namespace(context_key),
+            cluster_config=cluster_config,
+            context=kube_context,
+            provider=provider,
+        )
+        count = uploader.upload_runs(
+            force=force,
+            verbose=verbose,
+            keep_archive=keep_archive,
+            skip_removal=skip_removal,
+        )
+        click.echo(f"✓ Uploaded {count} run(s) to {share_type} successfully!")
+
+    except click.UsageError:
+        raise
     except Exception as e:
         handle_cli_exception(e)
 

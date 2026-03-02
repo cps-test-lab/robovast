@@ -405,3 +405,172 @@ The resolution logic for per-cluster resources lives in
    :members: get_active_kube_context, list_all_contexts, get_config_context_names,
              require_context_for_multi_cluster, resolve_resource_value, resolve_resources
    :undoc-members:
+
+
+.. _cluster-sharing:
+
+Sharing Results via ``cluster upload-to-share``
+-------------------------------------------------
+
+Instead of downloading cluster results to a local machine and then
+re-uploading them to a shared folder (Nextcloud, Google Drive, …), the
+``upload-to-share`` command performs the entire transfer **inside the
+archiver sidecar of the robovast pod**.  No data ever reaches the user's
+machine.
+
+.. code-block:: bash
+
+   vast execution cluster upload-to-share
+
+How it works
+^^^^^^^^^^^^
+
+For each available run the command:
+
+1. Creates a compressed ``{run_id}.tar.gz`` archive in ``/data/`` on the pod
+   (reuses the same mechanism as ``cluster download``).  If the archive
+   already exists it is reused.
+2. Executes the share-provider upload script inside the archiver container,
+   streaming upload progress back to the local terminal.
+3. Removes the archive from the pod on success  (use ``--keep-archive`` to
+   retain it, e.g. when you also want to download the results locally later).
+4. Keeps the archive if the upload fails, so you can retry or fall back to
+   a plain ``cluster download``.
+
+Configuration via ``.env``
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+All credentials and share URLs are stored in a ``.env`` file in the project
+directory (or any parent directory).  The file is **never** committed to the
+``.vast`` project configuration, keeping secrets out of version control.
+
+Load order:  ``python-dotenv`` searches for ``.env`` starting from the
+current working directory and walks up to the root.
+
+**Required variables (for all share types):**
+
+.. code-block:: ini
+
+   ROBOVAST_SHARE_TYPE=<provider>   # e.g. nextcloud
+
+**Provider-specific variables** are listed in the sections below.
+
+.. note::
+
+   If any required variable is missing, the command prints a clear error
+   message listing what is needed before performing any cluster operation.
+
+Nextcloud
+^^^^^^^^^
+
+The Nextcloud share must be a **public link that allows file uploads without
+a password** ("Allow upload and editing" enabled in the Nextcloud sharing
+dialog).
+
+.. code-block:: ini
+
+   ROBOVAST_SHARE_TYPE=nextcloud
+
+   # Copy the link from the Nextcloud sharing dialog.
+   # Example: https://cloud.example.com/s/AbCdEfGhIjKlMn
+   ROBOVAST_SHARE_URL=https://cloud.example.com/s/<token>
+
+The upload uses the WebDAV public-share endpoint (``/public.php/webdav/``)
+with the share token as the HTTP Basic-Auth username and an empty password.
+Only the standard Python library is used inside the pod — no additional
+packages need to be installed.
+
+Example usage:
+
+.. code-block:: bash
+
+   # Upload all available runs
+   vast execution cluster upload-to-share
+
+   # Keep the pod-side archive after upload (so you can also download it)
+   vast execution cluster upload-to-share --keep-archive
+
+   # Force recreation of the tar.gz even if it already exists
+   vast execution cluster upload-to-share --force
+
+Progress output
+^^^^^^^^^^^^^^^
+
+A single-line progress bar is printed for each run during upload, showing
+the percentage, transferred size, and upload rate:
+
+.. code-block:: text
+
+   run-2026-03-01-120000  [████████████░░░░░░░░]   60.0%  1.2 MiB/2.0 MiB  3.4 MiB/s
+   run-2026-03-01-120000  uploaded (2.0 MiB)  ✓
+
+   ✓ Uploaded 3 run(s) to nextcloud successfully!
+
+Adding a new share provider (plugin system)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Share providers are discovered as **entry-point plugins** under the
+``robovast.share_providers`` group.  To add a new provider:
+
+1. **Create a provider class** that inherits from
+   :class:`~robovast.execution.cluster_execution.share_providers.base.BaseShareProvider`
+   and implements the three abstract methods:
+
+   .. code-block:: python
+
+      from robovast.execution.cluster_execution.share_providers.base import (
+          BaseShareProvider,
+      )
+
+      class MyShareProvider(BaseShareProvider):
+          SHARE_TYPE = "myshare"
+
+          def required_env_vars(self) -> dict[str, str]:
+              return {
+                  "ROBOVAST_SHARE_URL": "URL of the target folder",
+                  "MY_SHARE_TOKEN":     "API token for the share service",
+              }
+
+          def get_upload_script_path(self) -> str:
+              import os
+              return os.path.join(os.path.dirname(__file__), "myshare_upload_script.py")
+
+          def build_pod_env(self) -> dict[str, str]:
+              import os
+              return {
+                  "MY_SHARE_URL":   os.environ["ROBOVAST_SHARE_URL"],
+                  "MY_SHARE_TOKEN": os.environ["MY_SHARE_TOKEN"],
+              }
+
+2. **Create a pod-side upload script** (``myshare_upload_script.py``).  It
+   runs inside the ``robovast-archiver`` image (``python:3.12-alpine`` +
+   ``pigz``, ``boto3``, ``google-auth``, ``google-api-python-client``).  It
+   receives the run ID as ``sys.argv[1]`` and finds the archive at
+   ``/data/{run_id}.tar.gz``.  Env vars from ``build_pod_env()`` are
+   available via ``os.environ``.
+
+3. **Register the provider** in your package's ``pyproject.toml``:
+
+   .. code-block:: toml
+
+      [tool.poetry.plugins."robovast.share_providers"]
+      myshare = "mypackage.myshare:MyShareProvider"
+
+4. Re-install the package (``pip install -e .``) so the entry point is
+   registered.
+
+After that, ``ROBOVAST_SHARE_TYPE=myshare`` in ``.env`` will select your
+provider automatically.
+
+Share provider API reference
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. autoclass:: robovast.execution.cluster_execution.share_providers.base.BaseShareProvider
+   :members:
+   :undoc-members:
+
+.. autoclass:: robovast.execution.cluster_execution.share_providers.nextcloud.NextcloudShareProvider
+   :members:
+
+.. autoclass:: robovast.execution.cluster_execution.upload_to_share.ShareUploader
+   :members:

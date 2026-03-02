@@ -7,6 +7,8 @@ metadata:
   labels:
     jobgroup: scenario-runs
     run-id: $RUN_ID
+  annotations:
+    total-job-num: "$TOTAL_JOB_NUM"
 spec:
   backoffLimit: 0
   ttlSecondsAfterFinished: 60

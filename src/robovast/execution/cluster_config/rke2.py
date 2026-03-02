@@ -65,8 +65,8 @@ spec:
         name: minio-storage
         readOnly: true
   - name: archiver
-    image: python:3.12-alpine
-    command: ["sh", "-c", "pip install --no-cache-dir boto3 && exec sleep infinity"]
+    image: ghcr.io/cps-test-lab/robovast-archiver:latest
+    command: ["sleep", "infinity"]
     volumeMounts:
       - mountPath: /data
         name: minio-storage
