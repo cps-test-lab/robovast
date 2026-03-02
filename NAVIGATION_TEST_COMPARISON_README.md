@@ -46,8 +46,9 @@ pip install numpy pandas scipy matplotlib pyyaml
     - for --standard-compare: parent directory containing variant folders
   (default: same as --output-dir)
 
---sum TEST1 TEST2 TARGET
-    Sum distributions of TEST1+TEST2 and compare with TARGET
+--sum VARIANT1 [VARIANT2 ...] TARGET_VARIANT
+    Sum all but the last variant and compare with the target (last variant)
+    Requires -i as parent directory containing variant folders
 
 --sum-method {pairwise,convolution,monte_carlo,bootstrap}
     Summation strategy (default: pairwise)
@@ -208,29 +209,49 @@ python3 compare_navigation_tests.py -c \
 
 ### 6) Sum distributions and compare to target (`--sum`)
 
-```bash
-python3 compare_navigation_tests.py --sum \
-  mt-remove-by-area-1-1-2 mt-remove-by-area-1-1-3 mt-remove-by-area-1-1-1 \
-  -m time distance \
-  -o remove_by_area_outputs
-```
-
-### 6b) Sum with separate input and output directories
+Sum the first N-1 variants and compare to the last variant. Requires `-i` as parent directory containing variant folders.
 
 ```bash
 python3 compare_navigation_tests.py --sum \
   mt-remove-by-area-1-1-2 mt-remove-by-area-1-1-3 mt-remove-by-area-1-1-1 \
-  -i extraction_results \
+  -i results/run-2026-02-28-030930 \
   -o sum_comparison_results \
   -m time distance
 ```
 
+What this does:
+- Sums variants `mt-remove-by-area-1-1-2 + mt-remove-by-area-1-1-3`
+- Compares the sum to target variant `mt-remove-by-area-1-1-1`
+- Uses specified summing method (default: pairwise)
+- Generates plots + CSV/text summaries (like standard-compare)
+- Saves `command.txt` for easy regeneration
+
+### 6b) Sum with localization error metrics
+
+```bash
+python3 compare_navigation_tests.py --sum \
+  mt-remove-by-area-1-1-2 mt-remove-by-area-1-1-3 mt-remove-by-area-1-1-1 \
+  -i results/run-2026-02-28-030930 \
+  -o sum_comparison_results \
+  -m time distance loc_error_mean loc_error_var
+```
+
 ### 7) Sum with each method (`--sum-method`)
+
+The `--sum-method` argument controls how distributions are combined:
+
+| Method | Behavior | Variance | Use Case |
+|--------|----------|----------|----------|
+| `pairwise` (default) | Pairs by index: run0+run0, run1+run1, ... | Smaller (correlated) | Testing combined execution with paired runs |
+| `convolution` | All pairs (Cartesian product): each value from first combined with each from second | Larger (independent) | Testing all possible combinations |
+| `monte_carlo` | Random resampling with replacement (n = min size) | Variable | Quick approximate variance |
+| `bootstrap` | Bootstrap resampling with replacement (n = max size) | Variable | Conservative variance estimate |
 
 #### pairwise (default)
 ```bash
 python3 compare_navigation_tests.py --sum \
   mt-remove-by-area-1-1-2 mt-remove-by-area-1-1-3 mt-remove-by-area-1-1-1 \
+  -i results/run-2026-02-28-030930 \
   --sum-method pairwise \
   -m distance \
   -o remove_by_area_outputs
@@ -240,8 +261,29 @@ python3 compare_navigation_tests.py --sum \
 ```bash
 python3 compare_navigation_tests.py --sum \
   mt-remove-by-area-1-1-2 mt-remove-by-area-1-1-3 mt-remove-by-area-1-1-1 \
+  -i results/run-2026-02-28-030930 \
   --sum-method convolution \
   -m distance \
+  -o remove_by_area_outputs
+```
+
+#### Monte Carlo
+```bash
+python3 compare_navigation_tests.py --sum \
+  mt-remove-by-area-1-1-2 mt-remove-by-area-1-1-3 mt-remove-by-area-1-1-1 \
+  -i results/run-2026-02-28-030930 \
+  --sum-method monte_carlo \
+  -m time distance \
+  -o remove_by_area_outputs
+```
+
+#### Bootstrap
+```bash
+python3 compare_navigation_tests.py --sum \
+  mt-remove-by-area-1-1-2 mt-remove-by-area-1-1-3 mt-remove-by-area-1-1-1 \
+  -i results/run-2026-02-28-030930 \
+  --sum-method bootstrap \
+  -m loc_error_var \
   -o remove_by_area_outputs
 ```
 
