@@ -38,6 +38,6 @@ analysis:
         script: ./postprocess.sh
   visualization:
   - Analysis:
-      single_run: analysis/analysis_single_run.ipynb
+      run: analysis/analysis_run.ipynb
       config: analysis/analysis_config.ipynb
       campaign: analysis/analysis_campaign.ipynb

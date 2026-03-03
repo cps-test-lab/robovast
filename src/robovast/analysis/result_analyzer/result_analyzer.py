@@ -71,8 +71,8 @@ class RunResultsAnalyzer(QMainWindow):
                             continue
                         config_dir = os.path.dirname(config_file)
 
-                        single_val = values.get("single_run")
-                        single_nb = os.path.join(config_dir, single_val) if single_val else None
+                        run_val = values.get("run")
+                        run_nb = os.path.join(config_dir, run_val) if run_val else None
 
                         config_val = values.get("config")
                         config_nb = os.path.join(config_dir, config_val) if config_val else None
@@ -82,7 +82,7 @@ class RunResultsAnalyzer(QMainWindow):
 
                         workloads.append(
                             JupyterNotebookRunner(name,
-                                                  single_run_nb=single_nb,
+                                                  run_nb=run_nb,
                                                   config_nb=config_nb,
                                                   campaign_nb=campaign_nb)
                         )
@@ -289,8 +289,8 @@ class RunResultsAnalyzer(QMainWindow):
                         continue
 
                     # Get the notebook path based on run type
-                    if run_type == RunType.RUN and "single_run" in values:
-                        notebook_path = os.path.join(os.path.dirname(self.config_file), values["single_run"])
+                    if run_type == RunType.RUN and "run" in values:
+                        notebook_path = os.path.join(os.path.dirname(self.config_file), values["run"])
                         break
                     elif run_type == RunType.CONFIG and "config" in values:
                         notebook_path = os.path.join(os.path.dirname(self.config_file), values["config"])

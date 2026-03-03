@@ -1877,6 +1877,6 @@ analysis:
   - ../../tools/ros2_exec.sh rosbags_to_csv.py
   visualization:
   - Analysis:
-      single_run: analysis/analysis_single_run.ipynb
+      run: analysis/analysis_run.ipynb
       config: analysis/analysis_config.ipynb
       campaign: analysis/analysis_campaign.ipynb

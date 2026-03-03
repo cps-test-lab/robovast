@@ -331,10 +331,10 @@ def format_notebook_error_html(error_str: str) -> str:
 class JupyterNotebookRunner(CancellableWorkload):
     """Thread for executing notebooks without blocking the UI"""
 
-    def __init__(self, name, single_run_nb, config_nb, campaign_nb):
+    def __init__(self, name, run_nb, config_nb, campaign_nb):
         super().__init__(name)
         self.notebook_content = None
-        self.single_run_nb = single_run_nb
+        self.run_nb = run_nb
         self.config_nb = config_nb
         self.campaign_nb = campaign_nb
 
@@ -381,7 +381,7 @@ class JupyterNotebookRunner(CancellableWorkload):
 
     def _get_external_notebook_path(self, run_type) -> str:
         if run_type == RunType.RUN:
-            return self.single_run_nb
+            return self.run_nb
         elif run_type == RunType.CONFIG:
             return self.config_nb
         elif run_type == RunType.CAMPAIGN:
@@ -419,7 +419,7 @@ class JupyterNotebookRunner(CancellableWorkload):
     def get_cache_file_name(self, run_type):
         """Determine CSV files and analysis type based on directory structure"""
         if run_type == RunType.RUN:
-            return "overview_single_run.html"
+            return "overview_run.html"
         elif run_type == RunType.CONFIG:
             return "overview_config.html"
         elif run_type == RunType.CAMPAIGN:

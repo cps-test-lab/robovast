@@ -497,7 +497,7 @@ Defines analysis notebooks for visualization in the analysis GUI. Each entry cre
 
 Each dictionary can have a custom name and three reserved keys for different analysis scopes:
 
-- ``single_run``: Path to Jupyter notebook for analyzing a single run
+- ``run``: Path to Jupyter notebook for analyzing a single run
 - ``config``: Path to Jupyter notebook for analyzing all runs of a configuration
 - ``campaign``: Path to Jupyter notebook for analyzing all runs in a campaign
 
@@ -506,11 +506,11 @@ Each dictionary can have a custom name and three reserved keys for different ana
    analysis:
      visualization:
      - Analysis:
-         single_run: analysis/analysis_single_run.ipynb
+         run: analysis/analysis_run.ipynb
          config: analysis/analysis_config.ipynb
          campaign: analysis/analysis_campaign.ipynb
      - Performance:
-         single_run: analysis/performance_single.ipynb
+         run: analysis/performance_run.ipynb
          config: analysis/performance_config.ipynb
 
 **Notebook requirements:**
@@ -579,6 +579,6 @@ Here's a complete example showing all major configuration options:
      - rosbags_to_webm
      visualization:
      - Analysis:
-         single_run: analysis/analysis_single_run.ipynb
+         run: analysis/analysis_run.ipynb
          config: analysis/analysis_config.ipynb
 campaign: analysis/analysis_campaign.ipynb
