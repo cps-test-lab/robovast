@@ -54,14 +54,6 @@ def _label_safe_campaign(campaign: str) -> str:
     return "".join(c for c in s if c.isalnum() or c in "-.")[:63]
 
 
-def _label_safe_run_id(run_id: str) -> str:
-    """Backward-compatible wrapper for older code expecting _label_safe_run_id.
-
-    Internally delegates to :func:`_label_safe_campaign`.
-    """
-    return _label_safe_campaign(run_id)
-
-
 def _short_job_name(campaign: str, scenario_key: str, run_number: int) -> str:
     """Create a short Kubernetes job name (max 63 chars) for run-id-config-test.
 
