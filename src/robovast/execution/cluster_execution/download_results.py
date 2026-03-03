@@ -28,7 +28,7 @@ import time
 import requests
 from kubernetes import client, config
 
-from .cluster_execution import get_cluster_campaign_job_counts_per_campaign
+from .cluster_execution import get_cluster_job_counts_per_campaign
 from .s3_client import ClusterS3Client
 
 logger = logging.getLogger(__name__)
@@ -397,7 +397,7 @@ class ResultDownloader:
                 all_campaigns = s3.list_campaign_buckets()
 
             # Exclude runs with running or pending jobs
-            job_counts = get_cluster_campaign_job_counts_per_campaign(namespace=self.namespace, context=self.context)
+            job_counts = get_cluster_job_counts_per_campaign(namespace=self.namespace, context=self.context)
             available = []
             excluded = []
             for rid in all_campaigns:

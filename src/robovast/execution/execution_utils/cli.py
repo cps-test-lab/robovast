@@ -32,7 +32,7 @@ from robovast.common.cli import get_project_config, handle_cli_exception
 from robovast.common.cluster_context import (get_active_kube_context, get_config_context_names,
                                              require_context_for_multi_cluster)
 from robovast.execution.cluster_execution.cluster_execution import (
-    JobRunner, cleanup_cluster_campaign, get_cluster_campaign_job_counts_per_campaign,
+    JobRunner, cleanup_cluster_campaign, get_cluster_job_counts_per_campaign,
     _label_safe_campaign)
 from robovast.execution.cluster_execution.cluster_setup import (
     delete_server, get_cluster_config, get_cluster_namespace,
@@ -450,7 +450,7 @@ def monitor(interval, once, kube_context):
                     for lg in _suppressed_loggers:
                         lg.setLevel(logging.CRITICAL)
                     try:
-                        per_run = get_cluster_campaign_job_counts_per_campaign(namespace, context=ctx)
+                        per_run = get_cluster_job_counts_per_campaign(namespace, context=ctx)
                     finally:
                         for lg, lvl in zip(_suppressed_loggers, _prev_levels):
                             lg.setLevel(lvl)
@@ -838,7 +838,7 @@ def run_cleanup(campaign, kube_context):
             sys.exit(1)
 
         if campaign:
-            per_run = get_cluster_campaign_job_counts_per_campaign(namespace, context=kube_context)
+            per_run = get_cluster_job_counts_per_campaign(namespace, context=kube_context)
             label_safe = _label_safe_campaign(campaign)
             if label_safe not in per_run:
                 available = sorted(per_run.keys())

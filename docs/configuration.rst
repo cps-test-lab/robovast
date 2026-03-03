@@ -51,7 +51,7 @@ The ``metadata`` section allows you to provide structured information about the 
 .. code-block:: yaml
 
    metadata:
-     title: "Robot Navigation Run Results"
+     title: "Robot Navigation Results"
      description: "Autonomous navigation performance evaluation"
      creator: "Your Name"
      keywords: ["robotics", "navigation", "ROS2"]
@@ -65,7 +65,7 @@ All fields within ``metadata`` are optional and can be customized according to y
 Configuration Section
 ---------------------
 
-The ``configuration`` section defines run scenarios to be executed. It is a list where each entry represents a scenario with its parameters and variations.
+The ``configuration`` section defines which runs are to be executed. It is a list where each entry represents a scenario with its parameters and variations.
 
 Scenario Definition
 ^^^^^^^^^^^^^^^^^^^
@@ -79,7 +79,7 @@ name
 
 **Required:** Yes
 
-A unique identifier for the scenario. This name will be used as the directory name for run results.
+A unique identifier for the scenario. This name will be used as the directory name for results.
 
 .. code-block:: yaml
 
@@ -581,4 +581,4 @@ Here's a complete example showing all major configuration options:
      - Analysis:
          run: analysis/analysis_run.ipynb
          config: analysis/analysis_config.ipynb
-campaign: analysis/analysis_campaign.ipynb
+         campaign: analysis/analysis_campaign.ipynb

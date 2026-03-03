@@ -260,7 +260,7 @@ def get_cluster_campaign_job_counts(namespace="default", context=None):
     return counts
 
 
-def get_cluster_campaign_job_counts_per_campaign(namespace="default", context=None):
+def get_cluster_job_counts_per_campaign(namespace="default", context=None):
     """Get status counts per campaign for scenario run jobs.
 
     Returns a dict mapping campaign (or "<legacy>" for jobs without campaign-id label)
