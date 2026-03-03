@@ -222,18 +222,18 @@ class ResultDownloader:
         if excluded_runs:
             for rid, running, pending in excluded_runs:
                 logger.info(
-                    "Run %s not ready (jobs still running: %d, pending: %d)",
+                    "Campaign %s not ready (jobs still running: %d, pending: %d)",
                     rid, running, pending,
                 )
 
         if not available_campaigns:
             if excluded_runs:
-                logger.info("No runs ready. Wait for jobs to finish and try again.")
+                logger.info("No campaigns ready. Wait for jobs to finish and try again.")
             else:
-                logger.info("No runs found.")
+                logger.info("No campaigns found.")
             return 0
 
-        logger.info(f"Compressing {len(available_campaigns)} runs on remote pod...")
+        logger.info(f"Compressing {len(available_campaigns)} campaigns on remote pod...")
         count = 0
         for campaign_id in available_campaigns:
             if self._create_remote_archive(campaign_id, force=force, verbose=verbose):
@@ -379,7 +379,7 @@ class ResultDownloader:
         Excludes runs that still have running or pending jobs.
 
         Returns:
-            tuple: (available_run_ids, excluded_runs) where excluded_runs is a list of
+            tuple: (available_campaigns, excluded_runs) where excluded_runs is a list of
                    (campaign_id, running_count, pending_count) for runs not yet downloadable.
         """
         try:
@@ -394,13 +394,13 @@ class ResultDownloader:
                 secret_key=secret_key,
                 context=self.context,
             ) as s3:
-                all_run_ids = s3.list_run_buckets()
+                all_campaigns = s3.list_run_buckets()
 
             # Exclude runs with running or pending jobs
             job_counts = get_cluster_run_job_counts_per_run(namespace=self.namespace, context=self.context)
             available = []
             excluded = []
-            for rid in all_run_ids:
+            for rid in all_campaigns:
                 counts = job_counts.get(rid, {})
                 running = counts.get("running", 0)
                 pending = counts.get("pending", 0)
@@ -460,8 +460,8 @@ class ResultDownloader:
 
         downloaded_count = 0
         try:
-            for current_run_id in available_campaigns:
-                if self._download_run(output_directory, current_run_id, force, verbose, skip_removal,
+            for current_campaign in available_campaigns:
+                if self._download_run(output_directory, current_campaign, force, verbose, skip_removal,
                                      keep_archive):
                     downloaded_count += 1
         finally:
@@ -470,7 +470,7 @@ class ResultDownloader:
 
         return downloaded_count
 
-    def _download_run(self, output_directory, run_id, force=False, verbose=False, skip_removal=True,
+    def _download_run(self, output_directory, campaign, force=False, verbose=False, skip_removal=True,
                      keep_archive=True):
         """
         Download a specific run via HTTP.
@@ -480,21 +480,21 @@ class ResultDownloader:
         """
         try:
             if verbose:
-                logger.info(f"Downloading {run_id}...")
+                logger.info(f"Downloading {campaign}...")
 
             # Check if run directory already exists and is complete
-            run_output_dir = os.path.join(output_directory, run_id)
+            run_output_dir = os.path.join(output_directory, campaign)
             if not force and os.path.exists(run_output_dir) and os.listdir(run_output_dir):
                 if verbose:
-                    logger.info(f"Run {run_id} already exists and appears complete, skipping...")
+                    logger.info(f"Run {campaign} already exists and appears complete, skipping...")
                     logger.info(f"Use --force to re-download existing runs")
                 else:
-                    sys.stdout.write("\r" + CLEAR_LINE + f"{run_id}  skipped (already exists)\n")
+                    sys.stdout.write("\r" + CLEAR_LINE + f"{campaign}  skipped (already exists)\n")
                     sys.stdout.flush()
                 return True
 
             # Create compressed archive on remote pod using archiver container (has tar/gzip)
-            archive_name = f"{run_id}.tar.gz"
+            archive_name = f"{campaign}.tar.gz"
             remote_archive_path = f"/data/{archive_name}"
             unfinished_flag_path = f"{remote_archive_path}_unfinished"
 
@@ -523,7 +523,7 @@ class ResultDownloader:
 
                 if flag_exists:
                     logger.info(
-                        f"Run {run_id}: incomplete remote archive detected (unfinished flag present), recreating..."
+                        f"Run {campaign}: incomplete remote archive detected (unfinished flag present), recreating..."
                     )
                     for path in (remote_archive_path, unfinished_flag_path):
                         subprocess.run(
@@ -535,7 +535,7 @@ class ResultDownloader:
                         )
                     archive_exists = False
                 else:
-                    sys.stdout.write(f"{run_id}  Remote archive already exists at {remote_archive_path}. Overwrite? [y/N] ")
+                    sys.stdout.write(f"{campaign}  Remote archive already exists at {remote_archive_path}. Overwrite? [y/N] ")
                     sys.stdout.flush()
                     answer = sys.stdin.readline().strip().lower()
                     if answer in ("y", "yes"):
@@ -553,9 +553,9 @@ class ResultDownloader:
 
             if not archive_exists:
                 if not verbose:
-                    sys.stdout.write("\r" + CLEAR_LINE + f"{run_id}  streaming S3 to tar.gz...")
+                    sys.stdout.write("\r" + CLEAR_LINE + f"{campaign}  streaming S3 to tar.gz...")
                     sys.stdout.flush()
-                logger.debug(f"Streaming S3 bucket {run_id} to tar.gz via archiver container...")
+                logger.debug(f"Streaming S3 bucket {campaign} to tar.gz via archiver container...")
 
                 # Mark archive creation as in progress
                 subprocess.run(
@@ -574,7 +574,7 @@ class ResultDownloader:
                     "exec", "-i", "-n", self.namespace, "robovast",
                     "-c", "archiver",
                     "--",
-                    "python", "-", run_id
+                    "python", "-", campaign
                 ]
                 subprocess.run(
                     create_archive_cmd,
@@ -679,7 +679,7 @@ class ResultDownloader:
                             progress_bar = "█" * filled + "░" * (BAR_WIDTH - filled)
                             size_str = f"{_format_size(downloaded)}/{_format_size(total_size)}"
                             rate_str = _format_rate(rate)
-                            line = f"{run_id}  [{progress_bar}]  {pct:5.1f}%  {size_str}  {rate_str}"
+                            line = f"{campaign}  [{progress_bar}]  {pct:5.1f}%  {size_str}  {rate_str}"
                             # Throttle: update only when pct changes by >= 1
                             if int(pct) > last_pct[0]:
                                 last_pct[0] = int(pct)
@@ -690,7 +690,7 @@ class ResultDownloader:
                             if last_size_shown[0] < 0 or downloaded - last_size_shown[0] >= 1024 * 1024:
                                 last_size_shown[0] = downloaded
                                 size_str = _format_size(downloaded)
-                                sys.stdout.write("\r" + CLEAR_LINE + f"{run_id}  downloading...  {size_str}  {_format_rate(rate)}")
+                                sys.stdout.write("\r" + CLEAR_LINE + f"{campaign}  downloading...  {size_str}  {_format_rate(rate)}")
                                 sys.stdout.flush()
 
                 with open(local_archive_path, file_mode) as f:
@@ -708,9 +708,9 @@ class ResultDownloader:
                         filled = BAR_WIDTH
                         progress_bar = "█" * filled + "░" * 0
                         size_str = f"{_format_size(total_size)}/{_format_size(total_size)}"
-                        sys.stdout.write("\r" + CLEAR_LINE + f"{run_id}  [{progress_bar}]  100.0%  {size_str}  {_format_rate(rate)}\n")
+                        sys.stdout.write("\r" + CLEAR_LINE + f"{campaign}  [{progress_bar}]  100.0%  {size_str}  {_format_rate(rate)}\n")
                     else:
-                        sys.stdout.write("\r" + CLEAR_LINE + f"{run_id}  downloaded  {_format_size(downloaded)}  {_format_rate(rate)}\n")
+                        sys.stdout.write("\r" + CLEAR_LINE + f"{campaign}  downloaded  {_format_size(downloaded)}  {_format_rate(rate)}\n")
                     sys.stdout.flush()
 
             # Validate the downloaded archive
@@ -745,10 +745,10 @@ class ResultDownloader:
                         progress_bar = "█" * filled + "░" * (BAR_WIDTH - filled)
                         sys.stdout.write(
                             "\r" + CLEAR_LINE +
-                            f"{run_id}  extracting  [{progress_bar}]  {pct:5.1f}%  {i}/{total} files"
+                            f"{campaign}  extracting  [{progress_bar}]  {pct:5.1f}%  {i}/{total} files"
                         )
                         sys.stdout.flush()
-                    sys.stdout.write("\r" + CLEAR_LINE + f"{run_id}  extracted  {total} files\n")
+                    sys.stdout.write("\r" + CLEAR_LINE + f"{campaign}  extracted  {total} files\n")
                     sys.stdout.flush()
                 else:
                     tar.extractall(path=output_directory)
@@ -768,7 +768,7 @@ class ResultDownloader:
                 subprocess.run(cleanup_cmd, capture_output=True, text=True, check=False)
 
                 # Delete the S3 bucket after successful download
-                logger.debug(f"Deleting S3 bucket {run_id}...")
+                logger.debug(f"Deleting S3 bucket {campaign}...")
                 if self.cluster_config:
                     access_key, secret_key = self.cluster_config.get_s3_credentials()
                 else:
@@ -779,23 +779,23 @@ class ResultDownloader:
                     secret_key=secret_key,
                     context=self.context,
                 ) as s3:
-                    s3.delete_bucket(run_id)
+                    s3.delete_bucket(campaign)
 
             if verbose:
-                logger.info(f"Successfully downloaded run {run_id}")
+                logger.info(f"Successfully downloaded run {campaign}")
             return True
 
         except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to create archive for run {run_id}: {e}")
+            logger.error(f"Failed to create archive for run {campaign}: {e}")
             logger.error(f"stdout: {e.stdout}")
             logger.error(f"stderr: {e.stderr}")
             logger.info(f"Remote archive kept at {remote_archive_path} for inspection")
             return False
         except requests.RequestException as e:
-            logger.error(f"Failed to download run {run_id} via HTTP: {e}")
+            logger.error(f"Failed to download run {campaign} via HTTP: {e}")
             logger.info(f"Remote archive kept at {remote_archive_path} for inspection")
             return False
         except Exception as e:
-            logger.error(f"Unexpected error downloading run {run_id}: {e}")
+            logger.error(f"Unexpected error downloading run {campaign}: {e}")
             logger.info(f"Remote archive kept at {remote_archive_path} for inspection")
             return False

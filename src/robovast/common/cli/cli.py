@@ -287,9 +287,9 @@ def import_results(archive, output, force):
                 if len(top_level_dirs) != 1:
                     click.echo(f"Warning: Archive contains multiple top-level directories: {top_level_dirs}")
 
-                run_id = list(top_level_dirs)[0] if top_level_dirs else None
-                if run_id and not run_id.startswith('run-'):
-                    click.echo(f"Warning: Archive does not contain a standard run directory (expected 'run-*', found '{run_id}')")
+                campaign = list(top_level_dirs)[0] if top_level_dirs else None
+                if campaign and not campaign.startswith('run-'):
+                    click.echo(f"Warning: Archive does not contain a standard run directory (expected 'run-*', found '{campaign}')")
 
             click.echo(f"Archive validation successful")
         except (tarfile.TarError, OSError) as e:
@@ -297,8 +297,8 @@ def import_results(archive, output, force):
             sys.exit(1)
 
         # Check if run directory already exists
-        if run_id:
-            run_output_dir = os.path.join(output, run_id)
+        if campaign:
+            run_output_dir = os.path.join(output, campaign)
             if os.path.exists(run_output_dir):
                 if not force:
                     click.echo(f"Error: Run directory already exists: {run_output_dir}", err=True)

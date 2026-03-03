@@ -286,7 +286,7 @@ def run(config, runs, follow, cleanup, log_tree, kube_context):  # pylint: disab
         job_runner.run(detached=not follow)
 
         if not follow:
-            click.echo(f"✓ Jobs created successfully (Run ID: {job_runner.run_id})")
+            click.echo(f"✓ Jobs created successfully (Campaign ID: {job_runner.run_id})")
             click.echo()
             click.echo("Jobs are now running in detached mode.")
             click.echo()

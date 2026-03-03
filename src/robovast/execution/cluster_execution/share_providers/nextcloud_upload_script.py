@@ -18,17 +18,17 @@
 Upload a run archive to a public Nextcloud share via WebDAV.
 
 Runs inside the archiver sidecar (python:3.12-alpine, stdlib + boto3 only).
-The archive must already exist at /data/{run_id}.tar.gz.
+The archive must already exist at /data/{campaign}.tar.gz.
 
-Usage: python - <run_id>  (script from stdin)
-  or:  python nextcloud_upload_script.py <run_id>
+Usage: python - <campaign>  (script from stdin)
+  or:  python nextcloud_upload_script.py <campaign>
 
 Environment variables:
   ROBOVAST_SHARE_URL: Nextcloud public share URL
                       (e.g. https://cloud.example.com/s/AbCdEfGhIjKlMn)
 
 Progress lines are written to stdout in the format:
-  <run_id>  [████████░░░░░░░░░░░░]  xx.x%  X.X MiB  X.X MiB/s
+  <campaign>  [████████░░░░░░░░░░░░]  xx.x%  X.X MiB  X.X MiB/s
 """
 
 import os
@@ -62,11 +62,11 @@ class _ProgressReader:
 
     CHUNK = 256 * 1024  # 256 KiB
 
-    def __init__(self, fh, total, run_id):
+    def __init__(self, fh, total, campaign):
         self._fh = fh
         self.total = total
         self._sent = 0
-        self._run_id = run_id
+        self._campaign = campaign
         self._last_pct = -1
         self._start = time.monotonic()
 
@@ -88,7 +88,7 @@ class _ProgressReader:
         filled = int(BAR_WIDTH * self._sent / self.total)
         progressbar = "█" * filled + "░" * (BAR_WIDTH - filled)
         line = (
-            f"{self._run_id}  [{progressbar}]  {pct:5.1f}%  "
+            f"{self._campaign}  [{progressbar}]  {pct:5.1f}%  "
             f"{_fmt_size(self._sent)}/{_fmt_size(self.total)}  {_fmt_rate(rate)}"
         )
         sys.stdout.write("\r" + line + CLEAR_EOL)
@@ -122,8 +122,8 @@ def _build_webdav_url(share_url: str, filename: str) -> str:
     return webdav_url, token
 
 
-def upload(run_id: str, share_url: str) -> None:
-    archive_path = f"/data/{run_id}.tar.gz"
+def upload(campaign: str, share_url: str) -> None:
+    archive_path = f"/data/{campaign}.tar.gz"
 
     if not os.path.isfile(archive_path):
         sys.stderr.write(f"ERROR: archive not found: {archive_path}\n")
@@ -139,11 +139,11 @@ def upload(run_id: str, share_url: str) -> None:
         credentials.encode()
     ).decode()
 
-    sys.stdout.write(f"{run_id}  uploading to Nextcloud...\n")
+    sys.stdout.write(f"{campaign}  uploading to Nextcloud...\n")
     sys.stdout.flush()
 
     with open(archive_path, "rb") as fh:
-        reader = _ProgressReader(fh, total, run_id)
+        reader = _ProgressReader(fh, total, campaign)
         req = urllib.request.Request(
             webdav_url,
             data=reader,
@@ -168,7 +168,7 @@ def upload(run_id: str, share_url: str) -> None:
             sys.stderr.write(f"ERROR: Upload failed: {exc.reason}\n")
             sys.exit(1)
 
-    sys.stdout.write("\r" + f"{run_id}  uploaded ({_fmt_size(total)})  ✓" + CLEAR_EOL + "\n")
+    sys.stdout.write("\r" + f"{campaign}  uploaded ({_fmt_size(total)})  ✓" + CLEAR_EOL + "\n")
     sys.stdout.flush()
 
 
@@ -179,13 +179,13 @@ def main():
         )
         sys.exit(1)
 
-    run_id = sys.argv[1]
+    campaign = sys.argv[1]
     share_url = os.environ.get("ROBOVAST_SHARE_URL", "")
     if not share_url:
         sys.stderr.write("ERROR: ROBOVAST_SHARE_URL environment variable is not set\n")
         sys.exit(1)
 
-    upload(run_id, share_url)
+    upload(campaign, share_url)
 
 
 if __name__ == "__main__":

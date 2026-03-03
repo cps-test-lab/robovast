@@ -425,9 +425,9 @@ machine.
 How it works
 ^^^^^^^^^^^^
 
-For each available run the command:
+For each available campaign the command:
 
-1. Creates a compressed ``{run_id}.tar.gz`` archive in ``/data/`` on the pod
+1. Creates a compressed ``{campaign_id}.tar.gz`` archive in ``/data/`` on the pod
    (reuses the same mechanism as ``cluster download``).  If the archive
    already exists it is reused.
 2. Executes the share-provider upload script inside the archiver container,
@@ -546,7 +546,7 @@ Share providers are discovered as **entry-point plugins** under the
    runs inside the ``robovast-archiver`` image (``python:3.12-alpine`` +
    ``pigz``, ``boto3``, ``google-auth``, ``google-api-python-client``).  It
    receives the run ID as ``sys.argv[1]`` and finds the archive at
-   ``/data/{run_id}.tar.gz``.  Env vars from ``build_pod_env()`` are
+   ``/data/{campaign}.tar.gz``.  Env vars from ``build_pod_env()`` are
    available via ``os.environ``.
 
 3. **Register the provider** in your package's ``pyproject.toml``:

@@ -371,15 +371,15 @@ def upload_configs_to_s3(config_dir: str, bucket_name: str, cluster_config, name
         sys.exit(1)
 
 
-def upload_run_configs(run_id: str, run_data: dict, num_runs: int, cluster_config, namespace: str = "default", context: str = None) -> None:
-    """Prepare run config files and upload them to an S3 bucket.
+def upload_run_configs(campaign_id: str, run_data: dict, num_runs: int, cluster_config, namespace: str = "default", context: str = None) -> None:
+    """Prepare campaign config files and upload them to an S3 bucket.
 
     Opens a **single** port-forward for both the existence check and the upload.
-    Raises :class:`RuntimeError` if the bucket derived from *run_id* already exists
+    Raises :class:`RuntimeError` if the bucket derived from *campaign_id* already exists
     rather than silently appending a numeric suffix.
 
     Args:
-        run_id: Run identifier (e.g. ``'run-2026-03-01-120000'``).
+        campaign_id: Campaign identifier (e.g. ``'campaign-2026-03-01-120000'``).
         run_data: Scenario variation data produced by ``generate_scenario_variations``.
         num_runs: Number of runs (used by ``create_execution_yaml``).
         cluster_config: BaseConfig instance providing S3 credentials and optional
@@ -388,7 +388,7 @@ def upload_run_configs(run_id: str, run_data: dict, num_runs: int, cluster_confi
         context: Kubernetes context to use. None uses the active context.
 
     Raises:
-        RuntimeError: If an S3 bucket for *run_id* already exists.
+        RuntimeError: If an S3 bucket for *campaign_id* already exists.
     """
     # Inline imports to avoid circular dependencies at module load time.
     from robovast.common import create_execution_yaml, prepare_run_configs  # pylint: disable=import-outside-toplevel
@@ -396,12 +396,12 @@ def upload_run_configs(run_id: str, run_data: dict, num_runs: int, cluster_confi
     access_key, secret_key = cluster_config.get_s3_credentials()
 
     with ClusterS3Client(namespace=namespace, access_key=access_key, secret_key=secret_key, context=context) as s3:
-        bucket_name = run_id.lower().replace("_", "-")
+        bucket_name = campaign_id.lower().replace("_", "-")
         if s3.bucket_exists(bucket_name):
             raise RuntimeError(
                 f"S3 bucket '{bucket_name}' already exists. "
-                f"A run with ID '{run_id}' is already in progress or was not cleaned up. "
-                f"Clean up the existing run first or wait until the next second."
+                f"A campaign with ID '{campaign_id}' is already in progress or was not cleaned up. "
+                f"Clean up the existing campaign first or wait until the next second."
             )
 
         # Prepare config files and upload inside the same port-forward session.

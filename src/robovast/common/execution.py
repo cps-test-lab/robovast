@@ -129,7 +129,7 @@ def _get_cluster_info():
     return cluster_info or None
 
 
-def get_run_id():
+def get_campaign():
     return f"campaign-{datetime.datetime.now().strftime('%Y-%m-%d-%H%M%S')}"
 
 

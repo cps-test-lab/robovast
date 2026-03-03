@@ -159,7 +159,7 @@ def _write_provenance_yaml_per_folder(results_dir: str, entries: List[dict]) -> 
     def norm(s: str) -> str:
         return str(Path(s)) if os.sep != "/" else s
 
-    for _run_id, _config_name, _test_number, folder_path in iter_test_folders(results_dir):
+    for _campaign, _config_name, _test_number, folder_path in iter_test_folders(results_dir):
         folder_rel = norm(os.path.relpath(str(folder_path), results_dir))
         prefix = folder_rel + os.sep
         folder_entries = []
