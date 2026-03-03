@@ -541,7 +541,7 @@ def download(output, force, verbose, skip_removal, port_forward_only, remote_com
     """Download result files from the cluster S3 (MinIO) server.
 
     Downloads all test run results from the MinIO S3 server embedded in the
-    robovast pod. Each run is stored in a separate S3 bucket (``run-*``) and
+    robovast pod. Each run is stored in a separate S3 bucket (``campaign-*``) and
     downloaded into a subdirectory of the output directory.
 
     By default a single progress bar line is shown for each run. Use
@@ -782,18 +782,18 @@ def setup(list_configs, namespace, options, force, kube_context, cluster_config)
 
 
 @cluster.command(name='download-cleanup')
-@click.option('--run-id', '-i', default=None,
-              help='Only remove this run\'s bucket (e.g. run-2025-02-27-123456). Without this, removes all run buckets.')
+@click.option('--campaign', '-i', default=None,
+              help='Only remove this campaign\'s bucket (e.g. campaign-2025-02-27-123456). Without this, removes all campaign buckets.')
 @click.option('--context', '-x', 'kube_context', default=None,
               help='Kubernetes context to use (default: active context in kubeconfig)')
-def download_cleanup(run_id, kube_context):
+def download_cleanup(campaign, kube_context):
     """Remove result buckets from cluster S3 without downloading.
 
-    Deletes run result buckets (``run-*``) from the MinIO S3 server in the cluster.
+    Deletes run result buckets (``campaign-*``) from the MinIO S3 server in the cluster.
     Does not download any data; use ``vast execution cluster download`` if you
     need the results first.
 
-    Use --run-id to remove only a specific run's bucket.
+    Use --campaign to remove only a specific campaign's bucket.
     """
     try:
         require_context_for_multi_cluster(kube_context)
@@ -802,7 +802,7 @@ def download_cleanup(run_id, kube_context):
         cluster_config = get_cluster_config(config_name)
         downloader = ResultDownloader(namespace=get_cluster_namespace(context_key), cluster_config=cluster_config,
                                       context=kube_context)
-        count = downloader.cleanup_s3_buckets(run_id=run_id)
+        count = downloader.cleanup_s3_buckets(campaign_id=campaign)
         click.echo(f"✓ Removed {count} bucket(s) from S3.")
 
     except Exception as e:
@@ -810,21 +810,21 @@ def download_cleanup(run_id, kube_context):
 
 
 @cluster.command(name='run-cleanup')
-@click.option('--run-id', '-i', default=None,
-              help='Clean only jobs for this run (e.g. run-2025-02-27-123456). Without this, cleans all scenario-runs jobs.')
+@click.option('--campaign', '-i', default=None,
+              help='Clean only jobs for this campaign (e.g. campaign-2025-02-27-123456). Without this, cleans all scenario-runs jobs.')
 @click.option('--context', '-x', 'kube_context', default=None,
               help='Kubernetes context to use (default: active context in kubeconfig)')
-def run_cleanup(run_id, kube_context):
+def run_cleanup(campaign, kube_context):
     """Clean up jobs and pods from a cluster run.
 
     Removes scenario execution jobs and their associated pods. By default
-    removes all runs. Use --run-id to clean only a specific run.
+    removes all runs. Use --campaign to clean only a specific run.
 
     Useful after running with --detach to clean up resources once jobs
     have completed.
 
     Usage: vast execution cluster run-cleanup
-    Usage: vast execution cluster run-cleanup --run-id run-2025-02-27-123456
+    Usage: vast execution cluster run-cleanup --campaign campaign-2025-02-27-123456
     """
     try:
         require_context_for_multi_cluster(kube_context)
@@ -837,23 +837,23 @@ def run_cleanup(run_id, kube_context):
             click.echo(f"✗ Error: {k8s_msg}", err=True)
             sys.exit(1)
 
-        if run_id:
+        if campaign:
             per_run = get_cluster_run_job_counts_per_run(namespace, context=kube_context)
-            label_safe = _label_safe_run_id(run_id)
+            label_safe = _label_safe_run_id(campaign)
             if label_safe not in per_run:
                 available = sorted(per_run.keys())
                 if available:
-                    click.echo(f"Run '{run_id}' not found in cluster.", err=True)
+                    click.echo(f"Campaign '{campaign}' not found in cluster.", err=True)
                     click.echo("Available run-ids:", err=True)
                     for rid in available:
                         click.echo(f"  - {rid}", err=True)
                 else:
                     click.echo("No scenario run jobs in cluster.", err=True)
                 sys.exit(1)
-            click.echo(f"Cleaning up jobs and pods for run '{run_id}'...")
+            click.echo(f"Cleaning up jobs and pods for campaign '{campaign}'...")
         else:
             click.echo("Cleaning up all scenario run jobs and pods...")
-        cleanup_cluster_run(namespace=namespace, run_id=run_id, context=kube_context)
+        cleanup_cluster_run(namespace=namespace, run_id=campaign, context=kube_context)
         click.echo("✓ Cleanup completed successfully!")
 
     except Exception as e:

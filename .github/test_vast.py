@@ -61,10 +61,10 @@ def check_results_dir_structure(results_dir):  # pylint: disable=too-many-return
     contents = list(output_path.iterdir())
     print(f"  Contents: {[c.name for c in contents]}")
     
-    # Check for run directories (run-*)
-    run_dirs = [d for d in contents if d.is_dir() and d.name.startswith('run-')]
+    # Check for run directories (campaign-*)
+    run_dirs = [d for d in contents if d.is_dir() and d.name.startswith('campaign-')]
     if not run_dirs:
-        print("✗ No run directories found (expected run-* directories)")
+        print("✗ No run directories found (expected campaign-* directories)")
         return False
     
     print(f"✓ Found {len(run_dirs)} run directory/directories")

@@ -58,13 +58,13 @@ def _short_job_name(run_id: str, scenario_key: str, run_number: int) -> str:
     """Create a short Kubernetes job name (max 63 chars) for run-id-config-test.
 
     Format: r<4chars>-<config8chars><hash4>-<test_number>
-    - run_id: "run-2026-02-27-141130" -> "r" + last 4 of timestamp = "r1130"
+    - run_id: "campaign-2026-02-27-141130" -> "r" + last 6 of timestamp = "r1130"
     - scenario_key: first 8 alphanumeric for readability, rest as 4-char hash for uniqueness
     - run_number: as-is (e.g. 0, 1, ...)
     Labels keep full run-id for identifying.
     """
-    # r + last 4 chars of run_id (typically the HHMM part of timestamp)
-    run_suffix = run_id.split("-")[-1][-4:] if "-" in run_id else run_id[-4:]
+    # r + last 6 chars of run_id (typically the HHMMSS part of timestamp)
+    run_suffix = run_id.split("-")[-1][-6:] if "-" in run_id else run_id[-6:]
     run_part = f"r{run_suffix}"
 
     # First 8 alphanumeric chars for readability, rest as hash for uniqueness

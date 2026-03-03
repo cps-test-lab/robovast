@@ -113,7 +113,7 @@ class ShareUploader:
         Returns:
             int: Number of runs successfully uploaded.
         """
-        available_runs, excluded_runs = self._downloader.list_available_runs()
+        available_campaigns, excluded_runs = self._downloader.list_available_campaigns()
 
         if excluded_runs:
             for rid, running, pending in excluded_runs:
@@ -124,7 +124,7 @@ class ShareUploader:
                     pending,
                 )
 
-        if not available_runs:
+        if not available_campaigns:
             if excluded_runs:
                 logger.info(
                     "No runs ready to upload. Wait for jobs to finish and try again."
@@ -135,12 +135,12 @@ class ShareUploader:
 
         logger.info(
             "Uploading %d run(s) to %s...",
-            len(available_runs),
+            len(available_campaigns),
             self.provider.SHARE_TYPE,
         )
 
         uploaded = 0
-        for run_id in available_runs:
+        for run_id in available_campaigns:
             success = self._process_run(run_id, force=force, verbose=verbose)
             if success:
                 if not keep_archive:
@@ -259,9 +259,9 @@ class ShareUploader:
             logger.debug("Upload exception for %s: %s", run_id, exc, exc_info=True)
             return False
 
-    def _delete_run_s3(self, run_id: str) -> None:
-        """Delete the S3 bucket for *run_id* after a successful upload."""
-        logger.debug("Deleting S3 bucket %s...", run_id)
+    def _delete_run_s3(self, campaign_id: str) -> None:
+        """Delete the S3 bucket for *campaign_id* after a successful upload."""
+        logger.debug("Deleting S3 bucket %s...", campaign_id)
         try:
             if self.cluster_config:
                 access_key, secret_key = self.cluster_config.get_s3_credentials()
@@ -273,14 +273,14 @@ class ShareUploader:
                 secret_key=secret_key,
                 context=self.context,
             ) as s3:
-                s3.delete_bucket(run_id)
-            logger.debug("Deleted S3 bucket %s", run_id)
+                s3.delete_bucket(campaign_id)
+            logger.debug("Deleted S3 bucket %s", campaign_id)
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning("Could not delete S3 bucket %s: %s", run_id, exc)
 
-    def _remove_remote_archive(self, run_id: str) -> None:
+    def _remove_remote_archive(self, campaign_id: str) -> None:
         """Remove the tar.gz from /data/ in the archiver container."""
-        archive_path = f"/data/{run_id}.tar.gz"
+        archive_path = f"/data/{campaign_id}.tar.gz"
         ctx_args = ["--context", self.context] if self.context else []
         try:
             subprocess.run(

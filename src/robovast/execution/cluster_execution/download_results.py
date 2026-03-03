@@ -101,12 +101,12 @@ class ResultDownloader:
                 self.port_forward_process.kill()
             self.port_forward_process = None
 
-    def cleanup_s3_buckets(self, run_id=None) -> int:
+    def cleanup_s3_buckets(self, campaign_id=None) -> int:
         """Remove run buckets from the cluster S3 (MinIO) without downloading.
 
         Args:
-            run_id: If provided, only the bucket with this exact name is removed.
-                    If ``None``, all ``run-*`` buckets are removed.
+            campaign_id: If provided, only the bucket with this exact name is removed.
+                    If ``None``, all ``campaign-*`` buckets are removed.
 
         Returns:
             int: Number of buckets successfully removed.
@@ -122,7 +122,7 @@ class ResultDownloader:
             secret_key=secret_key,
             context=self.context,
         ) as s3:
-            return s3.cleanup_run_buckets(run_id=run_id)
+            return s3.cleanup_run_buckets(campaign_id=campaign_id)
 
     def start_port_forward(self):
         """Start port-forwarding to the HTTP server sidecar"""
@@ -217,7 +217,7 @@ class ResultDownloader:
         Returns:
             int: Number of runs for which archives were created or already existed
         """
-        available_runs, excluded_runs = self.list_available_runs()
+        available_campaigns, excluded_runs = self.list_available_campaigns()
 
         if excluded_runs:
             for rid, running, pending in excluded_runs:
@@ -226,27 +226,27 @@ class ResultDownloader:
                     rid, running, pending,
                 )
 
-        if not available_runs:
+        if not available_campaigns:
             if excluded_runs:
                 logger.info("No runs ready. Wait for jobs to finish and try again.")
             else:
                 logger.info("No runs found.")
             return 0
 
-        logger.info(f"Compressing {len(available_runs)} runs on remote pod...")
+        logger.info(f"Compressing {len(available_campaigns)} runs on remote pod...")
         count = 0
-        for run_id in available_runs:
-            if self._create_remote_archive(run_id, force=force, verbose=verbose):
+        for campaign_id in available_campaigns:
+            if self._create_remote_archive(campaign_id, force=force, verbose=verbose):
                 count += 1
         return count
 
-    def _create_remote_archive(self, run_id, force=False, verbose=False):
+    def _create_remote_archive(self, campaign_id, force=False, verbose=False):
         """Create compressed archive on remote pod from S3 bucket.
 
         Returns:
             bool: True if archive exists or was created successfully
         """
-        archive_name = f"{run_id}.tar.gz"
+        archive_name = f"{campaign_id}.tar.gz"
         remote_archive_path = f"/data/{archive_name}"
         unfinished_flag_path = f"{remote_archive_path}_unfinished"
 
@@ -274,7 +274,7 @@ class ResultDownloader:
             ).returncode == 0
 
             if flag_exists:
-                logger.info(f"Run {run_id}: incomplete archive found (unfinished flag present), recreating...")
+                logger.info(f"Run {campaign_id}: incomplete archive found (unfinished flag present), recreating...")
                 for path in (remote_archive_path, unfinished_flag_path):
                     subprocess.run(
                         ["kubectl"] + ctx_args + [
@@ -286,9 +286,9 @@ class ResultDownloader:
                 archive_exists = False
             elif not force:
                 if verbose:
-                    logger.info(f"Run {run_id}: archive already exists at {remote_archive_path}, skipping")
+                    logger.info(f"Run {campaign_id}: archive already exists at {remote_archive_path}, skipping")
                 else:
-                    sys.stdout.write("\r" + CLEAR_LINE + f"{run_id}  skipped (archive exists)\n")
+                    sys.stdout.write("\r" + CLEAR_LINE + f"{campaign_id}  skipped (archive exists)\n")
                     sys.stdout.flush()
                 return True
             else:
@@ -304,9 +304,9 @@ class ResultDownloader:
 
         try:
             if not verbose:
-                sys.stdout.write("\r" + CLEAR_LINE + f"{run_id}  streaming S3 to tar.gz...")
+                sys.stdout.write("\r" + CLEAR_LINE + f"{campaign_id}  streaming S3 to tar.gz...")
                 sys.stdout.flush()
-            logger.debug(f"Streaming S3 bucket {run_id} to tar.gz via archiver container...")
+            logger.debug(f"Streaming S3 bucket {campaign_id} to tar.gz via archiver container...")
 
             # Mark archive creation as in progress
             subprocess.run(
@@ -325,7 +325,7 @@ class ResultDownloader:
                 "exec", "-i", "-n", self.namespace, "robovast",
                 "-c", "archiver",
                 "--",
-                "python", "-", run_id
+                "python", "-", campaign_id
             ]
             subprocess.run(
                 create_archive_cmd,
@@ -347,11 +347,11 @@ class ResultDownloader:
             if verbose:
                 logger.info(f"Created archive at {remote_archive_path}")
             else:
-                sys.stdout.write("\r" + CLEAR_LINE + f"{run_id}  compressed to {archive_name}\n")
+                sys.stdout.write("\r" + CLEAR_LINE + f"{campaign_id}  compressed to {archive_name}\n")
                 sys.stdout.flush()
             return True
         except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to create archive for run {run_id}: {e}")
+            logger.error(f"Failed to create archive for run {campaign_id}: {e}")
             return False
 
     def check_transfer_pod_exists(self):
@@ -373,14 +373,14 @@ class ResultDownloader:
             else:
                 raise
 
-    def list_available_runs(self):
+    def list_available_campaigns(self):
         """List all available run IDs by listing S3 buckets (run-*).
 
         Excludes runs that still have running or pending jobs.
 
         Returns:
             tuple: (available_run_ids, excluded_runs) where excluded_runs is a list of
-                   (run_id, running_count, pending_count) for runs not yet downloadable.
+                   (campaign_id, running_count, pending_count) for runs not yet downloadable.
         """
         try:
             if self.cluster_config:
@@ -437,7 +437,7 @@ class ResultDownloader:
         os.makedirs(output_directory, exist_ok=True)
 
         # Get available runs (excludes runs with running/pending jobs)
-        available_runs, excluded_runs = self.list_available_runs()
+        available_campaigns, excluded_runs = self.list_available_campaigns()
 
         if excluded_runs:
             for rid, running, pending in excluded_runs:
@@ -446,21 +446,21 @@ class ResultDownloader:
                     rid, running, pending,
                 )
 
-        if not available_runs:
+        if not available_campaigns:
             if excluded_runs:
                 logger.info("No runs ready to download. Wait for jobs to finish and try again.")
             else:
                 logger.info("No runs found to download.")
             return 0
 
-        logger.info(f"Downloading {len(available_runs)} run results to directory '{output_directory}'...")
+        logger.info(f"Downloading {len(available_campaigns)} run results to directory '{output_directory}'...")
 
         # Start port-forward for downloading
         self.start_port_forward()
 
         downloaded_count = 0
         try:
-            for current_run_id in available_runs:
+            for current_run_id in available_campaigns:
                 if self._download_run(output_directory, current_run_id, force, verbose, skip_removal,
                                      keep_archive):
                     downloaded_count += 1

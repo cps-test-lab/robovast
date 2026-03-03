@@ -201,8 +201,8 @@ kubectl wait --for=condition=ready pod/robovast --timeout=120s
 
 MinIO S3 API is available at `http://robovast:9000` (cluster-internal).
 MinIO console is available at port 9001.
-HTTP server (nginx) serves `/data` contents on port 9998 for result downloads.
-The archiver sidecar (robovast-archiver image: pigz, boto3, google-auth) streams S3 bucket contents to run-*.tar.gz in /data.
+        HTTP server (nginx) serves `/data` contents on port 9998 for result downloads.
+        The archiver sidecar (robovast-archiver image: pigz, boto3, google-auth) streams S3 bucket contents to campaign-*.tar.gz in /data.
 """
         with open(f"{output_dir}/README_gcp.md", "w") as f:
             f.write(readme_content)

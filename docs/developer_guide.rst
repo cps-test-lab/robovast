@@ -68,8 +68,8 @@ Next, it is important to verify that the output (e.g. ROS bag) is stored correct
 
     vast execution local run --config config1 ./test_out
 
-    # check that output is created in ./test_out/run-<timestamp>/<config-name>/<test_number>
-    ls -l ./test_out/run-*/config1/0/
+    # check that output is created in ./test_out/campaign-<timestamp>/<config-name>/<test_number>
+    ls -l ./test_out/campaign-*/config1/0/
 
 Once you are satisfied that the scenario and configuration work as expected, you can proceed to the next step.
 
@@ -104,7 +104,7 @@ A good practice is, to first run a single configuration to verify that everythin
 
     # 2. check results
     vast execution cluster download
-    # Results are organized as: <results-dir>/run-<timestamp>/<config-name>/<test_number>/
+    # Results are organized as: <results-dir>/campaign-<timestamp>/<config-name>/<test_number>/
     find ./results/
 
 For long-running tests, you can use detached mode to run jobs in the background:
@@ -117,7 +117,7 @@ For long-running tests, you can use detached mode to run jobs in the background:
     # Monitor job status (shows progress per run when multiple runs are active)
     vast execution cluster monitor
     
-    # Clean up after jobs complete (all runs, or use --run-id for a specific run)
+    # Clean up after jobs complete (all runs, or use --campaign for a specific campaign)
     vast execution cluster run-cleanup
 
 By default, a new run does not clean up previous runs, so you can run multiple
@@ -150,11 +150,11 @@ To develop the notebooks, it is recommended to use e.g. VSCode. For the RoboVAST
 .. code-block:: python
 
     # for single-test (specific test of a configuration)
-    DATA_DIR = '<path-to-your-results-directory>/run-<timestamp>/<config-name>/<test_number>'
+    DATA_DIR = '<path-to-your-results-directory>/campaign-<timestamp>/<config-name>/<test_number>'
     # for configuration (all configurations)
-    DATA_DIR = '<path-to-your-results-directory>/run-<timestamp>/<config-name>'
+    DATA_DIR = '<path-to-your-results-directory>/campaign-<timestamp>/<config-name>'
     # for complete run
-    DATA_DIR = '<path-to-your-results-directory>/run-<timestamp>'
+    DATA_DIR = '<path-to-your-results-directory>/campaign-<timestamp>'
 
 In case you are using ROS bags as output format, it is recommended to postprocess the results before analysis. This can be done with the postprocessing commands defined in the configuration file. RoboVAST provides several conversion scripts for common use-cases.
 
@@ -210,7 +210,7 @@ Add Postprocessing Command Plugin
 
 Postprocessing plugins are Python functions that process test result directories (e.g., convert rosbag data to CSV). They are registered as entry points and executed before analysis.
 
-**Return value:** A plugin must return ``(success: bool, message: str)``. It may optionally return a third value, a list of **provenance entries**, so that each produced file is recorded (e.g. which CSV was created from which rosbag). Each entry is a dict with keys: ``output`` (path relative to results_dir), ``sources`` (list of paths), ``plugin`` (plugin name), ``params`` (optional dict). If returned, these entries are merged and written into ``postprocessing.yaml`` in each test folder (``run-<id>/<config>/<test-number>/``).
+**Return value:** A plugin must return ``(success: bool, message: str)``. It may optionally return a third value, a list of **provenance entries**, so that each produced file is recorded (e.g. which CSV was created from which rosbag). Each entry is a dict with keys: ``output`` (path relative to results_dir), ``sources`` (list of paths), ``plugin`` (plugin name), ``params`` (optional dict). If returned, these entries are merged and written into ``postprocessing.yaml`` in each test folder (``campaign-<id>/<config>/<test-number>/``).
 
 **Provenance for container scripts:** Plugins that run scripts inside Docker (e.g. via ``docker_exec.sh``) cannot return data directly. The orchestrator passes a **provenance file** path to each plugin (optional kwarg ``provenance_file``). Container-invoking plugins must pass this to ``docker_exec.sh`` as ``--provenance-file HOST_PATH``; ``docker_exec.sh`` mounts the directory at ``/provenance`` in the container and the script receives ``--provenance-file /provenance/<basename>``. The script should write a JSON file at that path with format ``{"entries": [{"output": "...", "sources": [...], "plugin": "...", "params": {}}]}`` (paths relative to the results/input directory). Use the helper ``write_provenance_entry`` from ``rosbags_common`` (same directory as the scripts, so it works in the container) to append entries; the script gets the path from ``--provenance-file`` and uses its own plugin name when calling the helper.
 
@@ -229,7 +229,7 @@ Postprocessing plugins are Python functions that process test result directories
         """Convert custom data to CSV.
         
         Args:
-            results_dir: Path to the run-<id> directory to process
+            results_dir: Path to the campaign-<id> directory to process
             config_dir: Config file directory (for resolving relative paths)
             custom_param: Optional custom parameter
             provenance_file: Optional path for provenance JSON (for container scripts)

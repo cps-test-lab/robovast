@@ -130,7 +130,7 @@ def _get_cluster_info():
 
 
 def get_run_id():
-    return f"run-{datetime.datetime.now().strftime('%Y-%m-%d-%H%M%S')}"
+    return f"campaign-{datetime.datetime.now().strftime('%Y-%m-%d-%H%M%S')}"
 
 
 def get_execution_env_variables(run_num, config_name, additional_env=None):

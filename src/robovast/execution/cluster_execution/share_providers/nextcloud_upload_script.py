@@ -175,7 +175,7 @@ def upload(run_id: str, share_url: str) -> None:
 def main():
     if len(sys.argv) < 2:
         sys.stderr.write(
-            "Usage: python - <run_id>  (ROBOVAST_SHARE_URL must be set)\n"
+            "Usage: python - <campaign_id>  (ROBOVAST_SHARE_URL must be set)\n"
         )
         sys.exit(1)
 

@@ -37,7 +37,7 @@ def _iter_run_configs(results_dir: str) -> Iterator[tuple[str, str, Path, str | 
         return
 
     for run_item in sorted(root.iterdir()):
-        if not run_item.is_dir() or not run_item.name.startswith("run-"):
+        if not run_item.is_dir() or not run_item.name.startswith("campaign-"):
             continue
         if run_item.name == "_config":
             continue
@@ -71,7 +71,7 @@ def merge_results(results_dir: str, merged_run_dir: str) -> tuple[bool, str]:
     Original run-dirs are not modified.
 
     Args:
-        results_dir: Source directory containing run-* dirs.
+        results_dir: Source directory containing campaign-* dirs.
         merged_run_dir: Output directory for merged results.
 
     Returns:
@@ -109,10 +109,10 @@ def merge_results(results_dir: str, merged_run_dir: str) -> tuple[bool, str]:
         )
 
     # Compute a deterministic pseudo run-id from the sorted source run ids so the
-    # output mirrors the results/ layout: merged_run_dir/run-<pseudo id>/...
+    # output mirrors the results/ layout: merged_run_dir/campaign-<pseudo id>/...
     all_source_run_ids = sorted({run_id for sources in groups.values() for run_id, _, _ in sources})
     pseudo_id = hashlib.sha256("|".join(all_source_run_ids).encode()).hexdigest()[:8]
-    pseudo_run_dir = f"run-{pseudo_id}"
+    pseudo_run_dir = f"campaign-{pseudo_id}"
     merged_path = merged_base / pseudo_run_dir
 
     if merged_path.exists():

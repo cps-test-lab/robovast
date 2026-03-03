@@ -202,30 +202,30 @@ class ClusterS3Client:
             raise
 
     def list_run_buckets(self) -> list:
-        """List all buckets whose names start with 'run-'.
+        """List all buckets whose names start with 'campaign-'.
 
         Returns:
             list[str]: Sorted list of matching bucket names.
         """
         response = self._s3.list_buckets()
-        buckets = [b["Name"] for b in response.get("Buckets", []) if b["Name"].startswith("run-")]
+        buckets = [b["Name"] for b in response.get("Buckets", []) if b["Name"].startswith("campaign-")]
         return sorted(buckets)
 
-    def cleanup_run_buckets(self, run_id: Optional[str] = None) -> int:
+    def cleanup_run_buckets(self, campaign_id: Optional[str] = None) -> int:
         """Remove run buckets from S3 without downloading them.
 
         Args:
-            run_id: If provided, only the bucket with this exact name is removed.
-                    If None, all run buckets (run-*) are removed.
+            campaign_id: If provided, only the bucket with this exact name is removed.
+                    If None, all campaign buckets (campaign-*) are removed.
 
         Returns:
             int: Number of buckets successfully removed.
         """
         all_runs = self.list_run_buckets()
-        if run_id:
-            buckets_to_remove = [b for b in all_runs if b == run_id]
+        if campaign_id:
+            buckets_to_remove = [b for b in all_runs if b == campaign_id]
             if not buckets_to_remove:
-                logger.info(f"No bucket matching '{run_id}' found.")
+                logger.info(f"No bucket matching '{campaign_id}' found.")
                 return 0
         else:
             buckets_to_remove = all_runs
@@ -351,7 +351,7 @@ def upload_configs_to_s3(config_dir: str, bucket_name: str, cluster_config, name
 
     Args:
         config_dir: Local directory containing generated config files.
-        bucket_name: S3 bucket name (e.g. ``'run-20260220-123456'``).
+        bucket_name: S3 bucket name (e.g. ``'campaign-20260220-123456'``).
         cluster_config: BaseConfig instance providing S3 endpoint/credentials.
         namespace: Kubernetes namespace used for port-forwarding.
         context: Kubernetes context to use. None uses the active context.
