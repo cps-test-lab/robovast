@@ -54,6 +54,14 @@ def _label_safe_campaign(campaign: str) -> str:
     return "".join(c for c in s if c.isalnum() or c in "-.")[:63]
 
 
+def _label_safe_run_id(run_id: str) -> str:
+    """Backward-compatible wrapper for older code expecting _label_safe_run_id.
+
+    Internally delegates to :func:`_label_safe_campaign`.
+    """
+    return _label_safe_campaign(run_id)
+
+
 def _short_job_name(campaign: str, scenario_key: str, run_number: int) -> str:
     """Create a short Kubernetes job name (max 63 chars) for run-id-config-test.
 
@@ -126,7 +134,7 @@ def cleanup_cluster_run(namespace="default", campaign=None, context=None):
     cleanup_kueue_workloads(
         namespace=namespace,
         label_selector=label_selector,
-        campaign=campaign,
+        campaign_id=campaign,
         k8s_batch_client=k8s_batch_client,
     )
 
@@ -695,12 +703,12 @@ class JobRunner:
         logger.info("RUN STATISTICS")
         logger.info("=" * 80)
 
-        # Overall run duration
-        if self.run_start_time and self.run_end_time:
-            total_run_duration = (self.run_end_time - self.run_start_time).total_seconds()
+        # Overall campaign duration
+        if self.campaign_start_time and self.campaign_end_time:
+            total_run_duration = (self.campaign_end_time - self.campaign_start_time).total_seconds()
             logger.info(f"Total run duration: {self.format_duration(total_run_duration)}")
-            logger.info(f"Run started: {self.run_start_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
-            logger.info(f"Run ended: {self.run_end_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+            logger.info(f"Run started: {self.campaign_start_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+            logger.info(f"Run ended: {self.campaign_end_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
             logger.info("")
 
         # Job statistics
@@ -811,7 +819,7 @@ class JobRunner:
         logger.debug(f"Uploading task config files for {len(self.configs)} scenarios to S3...")
         self.upload_tasks_to_s3()
 
-        # Create all jobs for all runs before executing any
+        # Create all jobs for all campaigns before executing any
         all_jobs = []
         logger.info(f"Creating {len(self.configs)} config(s) with {self.num_runs} runs each (ID: {self.campaign})...")
         for run_number in range(self.num_runs):
@@ -840,7 +848,7 @@ class JobRunner:
             return
 
         # Track run start time
-        self.run_start_time = datetime.datetime.now(datetime.timezone.utc)
+        self.campaign_start_time = datetime.datetime.now(datetime.timezone.utc)
 
         # Wait for all jobs to complete
         try:
@@ -857,7 +865,7 @@ class JobRunner:
             logger.info("\nKeyboard interrupt received, cleaning up...")
 
         # Track run end time and collect statistics
-        self.run_end_time = datetime.datetime.now(datetime.timezone.utc)
+        self.campaign_end_time = datetime.datetime.now(datetime.timezone.utc)
         logger.info("Collecting job statistics...")
         self.collect_job_statistics(all_jobs)
 

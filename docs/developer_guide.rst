@@ -117,7 +117,7 @@ For long-running tests, you can use detached mode to run jobs in the background:
     # Monitor job status (shows progress per run when multiple runs are active)
     vast execution cluster monitor
     
-    # Clean up after jobs complete (all runs, or use --campaign for a specific campaign)
+    # Clean up after jobs complete (all campaigns, or use --campaign for a specific campaign)
     vast execution cluster run-cleanup
 
 By default, a new run does not clean up previous runs, so you can run multiple

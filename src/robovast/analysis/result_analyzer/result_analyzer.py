@@ -644,7 +644,7 @@ class TestResultsAnalyzer(QMainWindow):
             QTimer.singleShot(3000, self._reset_status_to_ready)
 
     def calculate_test_statistics(self, base_path):
-        """Calculate test statistics for a run directory using common test-folder discovery."""
+        """Calculate test statistics for a campaign directory using common test-folder discovery."""
         stats = {'passed': 0, 'failed': 0, 'unknown': 0, 'total': 0}
         base_path = Path(base_path)
         results_dir = base_path.parent

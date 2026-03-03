@@ -276,7 +276,7 @@ class ShareUploader:
                 s3.delete_bucket(campaign_id)
             logger.debug("Deleted S3 bucket %s", campaign_id)
         except Exception as exc:  # pylint: disable=broad-except
-            logger.warning("Could not delete S3 bucket %s: %s", campaign, exc)
+            logger.warning("Could not delete S3 bucket %s: %s", campaign_id, exc)
 
     def _remove_remote_archive(self, campaign_id: str) -> None:
         """Remove the tar.gz from /data/ in the archiver container."""

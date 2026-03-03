@@ -228,7 +228,7 @@ def install_completion():
 @click.option('--output', '-o', default=None,
               help='Directory where results will be extracted (uses project results dir if not specified)')
 @click.option('--force', '-f', is_flag=True,
-              help='Force extraction even if run directory already exists')
+              help='Force extraction even if campaign directory already exists')
 def import_results(archive, output, force):
     """Import results from a downloaded archive.
 
@@ -237,7 +237,7 @@ def import_results(archive, output, force):
     downloaded on a different machine or for re-importing previously downloaded results.
 
     The archive should be in the format ``run-<ID>.tar.gz`` and contain
-    a run directory with all test results.
+    a campaign directory with all test results.
 
     Requires project initialization with ``vast init`` first (unless ``--output`` is specified).
     """
@@ -289,14 +289,14 @@ def import_results(archive, output, force):
 
                 campaign = list(top_level_dirs)[0] if top_level_dirs else None
                 if campaign and not campaign.startswith('run-'):
-                    click.echo(f"Warning: Archive does not contain a standard run directory (expected 'run-*', found '{campaign}')")
+                    click.echo(f"Warning: Archive does not contain a standard campaign directory (expected 'run-*', found '{campaign}')")
 
             click.echo(f"Archive validation successful")
         except (tarfile.TarError, OSError) as e:
             click.echo(f"Error: Archive validation failed: {e}", err=True)
             sys.exit(1)
 
-        # Check if run directory already exists
+        # Check if campaign directory already exists
         if campaign:
             run_output_dir = os.path.join(output, campaign)
             if os.path.exists(run_output_dir):
@@ -305,7 +305,7 @@ def import_results(archive, output, force):
                     click.echo(f"Use --force to overwrite existing run", err=True)
                     sys.exit(1)
                 else:
-                    click.echo(f"Removing existing run directory...")
+                    click.echo(f"Removing existing campaign directory...")
                     shutil.rmtree(run_output_dir)
 
         # Extract the archive

@@ -63,16 +63,16 @@ def _iter_run_configs(results_dir: str) -> Iterator[tuple[str, str, Path, str | 
             yield campaign, config_name, config_item, config_identifier
 
 
-def merge_results(results_dir: str, merged_run_dir: str) -> tuple[bool, str]:
-    """Merge run-dirs with identical configs into merged_run_dir.
+def merge_results(results_dir: str, merged_campaign_dir: str) -> tuple[bool, str]:
+    """Merge run-dirs with identical configs into merged_campaign_dir.
 
     Groups run-dir/config-dir by config_identifier from config.yaml.
-    Test folders (0, 1, 2, ...) from all runs are renumbered and copied.
-    Original run-dirs are not modified.
+    Test folders (0, 1, 2, ...) from all campaigns are renumbered and copied.
+    Original campaigns are not modified.
 
     Args:
         results_dir: Source directory containing campaign-* dirs.
-        merged_run_dir: Output directory for merged results.
+        merged_campaign_dir: Output directory for merged results.
 
     Returns:
         Tuple (success, message).
@@ -100,20 +100,20 @@ def merge_results(results_dir: str, merged_run_dir: str) -> tuple[bool, str]:
         return False, "No config-dirs with config.yaml found to merge."
 
     # Build merged output - remove existing so runs are idempotent
-    merged_base = Path(merged_run_dir).resolve()
+    merged_base = Path(merged_campaign_dir).resolve()
     results_path = Path(results_dir).resolve()
     if merged_base == results_path:
         return False, (
-            f"merged_run_dir must not equal results_dir (would delete source): "
-            f"{merged_run_dir}"
+            f"merged_campaign_dir must not equal results_dir (would delete source): "
+            f"{merged_campaign_dir}"
         )
 
     # Compute a deterministic pseudo run-id from the sorted source run ids so the
-    # output mirrors the results/ layout: merged_run_dir/campaign-<pseudo id>/...
+    # output mirrors the results/ layout: merged_campaign_dir/campaign-<pseudo id>/...
     all_source_campaigns = sorted({campaign for sources in groups.values() for campaign, _, _ in sources})
     pseudo_id = hashlib.sha256("|".join(all_source_campaigns).encode()).hexdigest()[:8]
-    pseudo_run_dir = f"campaign-{pseudo_id}"
-    merged_path = merged_base / pseudo_run_dir
+    pseudo_campaign_dir = f"campaign-{pseudo_id}"
+    merged_path = merged_base / pseudo_campaign_dir
 
     if merged_path.exists():
         shutil.rmtree(merged_path)
@@ -184,4 +184,4 @@ def merge_results(results_dir: str, merged_run_dir: str) -> tuple[bool, str]:
             shutil.copytree(src_test_path, dst_test, dirs_exist_ok=True)
             total_tests += 1
 
-    return True, f"Merged {len(groups)} config(s), {total_tests} test(s) into {merged_run_dir}/{pseudo_run_dir}"
+    return True, f"Merged {len(groups)} config(s), {total_tests} test(s) into {merged_campaign_dir}/{pseudo_campaign_dir}"

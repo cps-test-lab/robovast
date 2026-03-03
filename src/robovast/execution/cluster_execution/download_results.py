@@ -482,7 +482,7 @@ class ResultDownloader:
             if verbose:
                 logger.info(f"Downloading {campaign}...")
 
-            # Check if run directory already exists and is complete
+            # Check if campaign directory already exists and is complete
             run_output_dir = os.path.join(output_directory, campaign)
             if not force and os.path.exists(run_output_dir) and os.listdir(run_output_dir):
                 if verbose:
@@ -731,7 +731,7 @@ class ResultDownloader:
 
             # Remove existing extraction directory if force mode or incomplete
             if force and os.path.exists(run_output_dir):
-                logger.debug(f"Removing existing run directory for clean extraction...")
+                logger.debug(f"Removing existing campaign directory for clean extraction...")
                 shutil.rmtree(run_output_dir)
 
             with tarfile.open(local_archive_path, 'r:gz') as tar:
