@@ -73,6 +73,70 @@ Next, it is important to verify that the output (e.g. ROS bag) is stored correct
 
 Once you are satisfied that the scenario and configuration work as expected, you can proceed to the next step.
 
+Interactive Development with VSCode DevContainer
+"""""""""""""""""""""""""""""""""""""""""""""""""
+
+As an alternative to ``prepare-run`` / ``run.sh``, you can open the exact same container environment as a **VSCode Dev Container**.
+This gives you an IDE with a terminal, Python/ROS2 IntelliSense, and the ability to edit test files live — all without any local ROS2 installation.
+
+.. code-block:: bash
+
+    vast execution local setup-devcontainer
+
+The command reads your ``.vast`` configuration, generates all required scenario files, and writes a ``.devcontainer/`` directory next to your ``.vast`` file:
+
+.. code-block:: text
+
+    .devcontainer/
+    ├── devcontainer.json      ← VSCode devcontainer configuration
+    ├── docker-compose.yml     ← container definition (image, mounts, user, secondaries)
+    └── config/                ← generated /config directory (mounted at /config in container)
+        ├── entrypoint.sh
+        ├── secondary_entrypoint.sh
+        ├── scenario.osc
+        ├── scenario.config
+        ├── configurations.yaml
+        └── restart_<name>.sh  ← one per secondary container (if any)
+
+Files listed in ``test_files_filter`` (e.g. maps, launch files, your system-under-test) are **not** copied — they are bind-mounted directly from the host so any edits you make in VSCode take effect immediately inside the container.
+
+**Secondary containers**
+
+If your ``.vast`` configuration defines ``execution.secondary_containers``, they are added as additional services in ``docker-compose.yml`` and start automatically alongside the devcontainer.
+Each secondary runs ``/config/secondary_entrypoint.sh`` (which launches ``scenario_execution_server_ros`` on a shared Unix socket), mirroring the production local-run setup.
+
+To restart a secondary from within the devcontainer terminal:
+
+.. code-block:: bash
+
+    /config/restart_nav.sh        # replace 'nav' with the actual container name
+
+The restart scripts call ``docker restart`` via the Docker socket, which is mounted read-only into the main container. The host user must be a member of the ``docker`` group for this to work.
+
+**Workflow:**
+
+1. Run ``vast execution local setup-devcontainer`` from your project directory.
+2. Open the project folder in VSCode.
+3. When prompted, click **Reopen in Container** (or use the command palette: *Dev Containers: Reopen in Container*).
+4. Every new terminal automatically sources the ROS2 environment (``/opt/ros/$ROS_DISTRO/setup.bash`` and ``/ws/install/setup.bash``).
+5. The workspace folder inside the container is ``/config``. From there you can, for example, run the scenario manually:
+
+   .. code-block:: bash
+
+       ros2 run scenario_execution_ros scenario_execution_ros \
+           -o /out /config/scenario.osc \
+           --scenario-parameter-file /config/scenario.config
+
+**Options:**
+
+- ``--config <name>`` — select a specific configuration (defaults to the first one).
+- ``--no-gui`` — omit X11/display mounts (useful for headless environments).
+- ``--force`` — overwrite an existing ``.devcontainer/`` directory.
+
+.. note::
+
+    Re-run ``vast execution local setup-devcontainer --force`` whenever you change the ``.vast`` configuration (e.g. add a new variation) to regenerate the ``config/`` files.
+
 4. Define Configurations
 ^^^^^^^^^^^^^^^^^^^^^^^^
 

@@ -418,7 +418,7 @@ class ResultDownloader:
             return [], []
 
     def download_results(self, output_directory, force=False, verbose=False, skip_removal=True,
-                        keep_archive=True):
+                        keep_archive=True, run_id=None):
         """
         Download all result files from transfer PVC using HTTP server port-forwarding
 
@@ -428,6 +428,7 @@ class ResultDownloader:
             verbose (bool): If True, emit more detailed logging
             skip_removal (bool): If True, do not remove remote archive or delete S3 bucket after download (default: True)
             keep_archive (bool): If True, keep the local .tar.gz file after extraction (default: True)
+            run_id (str): If provided, only download this specific run.
 
         Returns:
             int: Number of successfully downloaded runs
@@ -439,12 +440,30 @@ class ResultDownloader:
         # Get available runs (excludes runs with running/pending jobs)
         available_runs, excluded_runs = self.list_available_runs()
 
-        if excluded_runs:
+        if run_id is not None:
+            # Check if the requested run is still running/pending
             for rid, running, pending in excluded_runs:
-                logger.info(
-                    "Run %s not downloadable (jobs still running: %d, pending: %d)",
-                    rid, running, pending,
-                )
+                if rid == run_id:
+                    logger.error(
+                        "Run '%s' is not yet downloadable (jobs still running: %d, pending: %d).",
+                        run_id, running, pending,
+                    )
+                    return 0
+            if run_id not in available_runs:
+                all_known = sorted(available_runs + [r for r, _, _ in excluded_runs])
+                if all_known:
+                    logger.error("Run '%s' not found. Available runs: %s", run_id, ", ".join(all_known))
+                else:
+                    logger.error("Run '%s' not found. No runs available.", run_id)
+                return 0
+            available_runs = [run_id]
+        else:
+            if excluded_runs:
+                for rid, running, pending in excluded_runs:
+                    logger.info(
+                        "Run %s not downloadable (jobs still running: %d, pending: %d)",
+                        rid, running, pending,
+                    )
 
         if not available_runs:
             if excluded_runs:

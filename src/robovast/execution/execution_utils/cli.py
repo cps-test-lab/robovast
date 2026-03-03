@@ -47,6 +47,7 @@ from robovast.execution.cluster_execution.upload_to_share import \
 from ..cluster_execution.kubernetes import (check_kubernetes_access,
                                             check_pod_running,
                                             get_kubernetes_client)
+from .devcontainer import generate_devcontainer_config, prepare_devcontainer_config_dir
 from .execute_local import initialize_local_execution
 
 
@@ -185,6 +186,103 @@ def prepare_run(output_dir, config, runs, use_resource_allocation, log_tree):
         )
 
         click.echo(f"\nFor local execution, run: \n\n{os.path.join(output_dir, 'run.sh')}\n")
+
+    except Exception as e:
+        handle_cli_exception(e)
+
+
+@local.command()
+@click.option('--config', '-c', default=None,
+              help='Which test config to use for the devcontainer (default: first config)')
+@click.option('--no-gui', is_flag=True,
+              help='Omit X11/display mounts (use when running headless or on macOS/Windows)')
+@click.option('--force', is_flag=True,
+              help='Overwrite an existing .devcontainer/ directory')
+def setup_devcontainer(config, no_gui, force):
+    """Generate .devcontainer/ config for VSCode devcontainer support.
+
+    Creates ``.devcontainer/``, populates ``.devcontainer/config/`` with the
+    generated scenario configuration files (entrypoint, scenario.osc,
+    scenario.config, …), and adds direct host bind-mounts for the
+    ``test_files_filter`` files so edits in VSCode are immediately visible
+    inside the container.
+
+    The image is read from the project execution config so it always matches
+    ``vast execution local run``.
+
+    After running this command, open the project folder in VSCode and choose
+    "Reopen in Container" to start developing inside the robovast container.
+
+    Prerequisites:
+    - Project initialized with ``vast init``
+    - VSCode with the "Dev Containers" extension installed
+    """
+    try:
+        from robovast.common import load_config
+        project_config = get_project_config()
+        execution_parameters = load_config(project_config.config_path, "execution")
+        docker_image = execution_parameters.get("image", "ghcr.io/cps-test-lab/robovast:latest")
+        run_as_user = execution_parameters.get("run_as_user")
+        if run_as_user is None:
+            run_as_user = os.getuid()
+        uid = run_as_user
+        gid = run_as_user
+
+        devcontainer_dir = os.path.join(os.path.dirname(project_config.config_path), ".devcontainer")
+        if os.path.exists(devcontainer_dir) and not force:
+            click.echo(
+                f"Error: .devcontainer/ already exists at {devcontainer_dir}. "
+                "Use --force to overwrite.",
+                err=True,
+            )
+            sys.exit(1)
+
+        os.makedirs(devcontainer_dir, exist_ok=True)
+
+        config_dir = os.path.join(devcontainer_dir, "config")
+        vast_dir, test_files, config_files, secondary_containers = prepare_devcontainer_config_dir(
+            config_dir=config_dir,
+            project_config_path=project_config.config_path,
+            config_name=config,
+        )
+
+        devcontainer_json, docker_compose_yml, restart_scripts = generate_devcontainer_config(
+            docker_image=docker_image,
+            uid=uid,
+            gid=gid,
+            gui=not no_gui,
+            vast_dir=vast_dir,
+            test_files=test_files,
+            config_files=config_files,
+            secondary_containers=secondary_containers,
+        )
+
+        with open(os.path.join(devcontainer_dir, "devcontainer.json"), "w") as f:
+            f.write(devcontainer_json)
+        with open(os.path.join(devcontainer_dir, "docker-compose.yml"), "w") as f:
+            f.write(docker_compose_yml)
+
+        for sc_name, script_content in restart_scripts.items():
+            script_path = os.path.join(config_dir, f"restart_{sc_name}.sh")
+            with open(script_path, "w") as f:
+                f.write(script_content)
+            os.chmod(script_path, 0o755)
+
+        click.echo(f"Created {devcontainer_dir}/")
+        if test_files or config_files:
+            all_files = test_files + config_files
+            click.echo(f"  Mounted {len(all_files)} test file(s) directly from host:")
+            for f in all_files:
+                click.echo(f"    {f} → /config/{f}")
+        if secondary_containers:
+            click.echo(f"  Secondary containers ({len(secondary_containers)}):")
+            for sc in secondary_containers:
+                click.echo(f"    {sc['name']}  →  restart: /config/restart_{sc['name']}.sh")
+        click.echo("")
+        click.echo("Next steps:")
+        click.echo("  1. Open this project folder in VSCode")
+        click.echo('  2. Run "Dev Containers: Reopen in Container" from the command palette')
+        click.echo(f"  3. The container will use image: {docker_image}")
 
     except Exception as e:
         handle_cli_exception(e)
@@ -522,6 +620,8 @@ def monitor(interval, once, kube_context):
 @cluster.command()
 @click.option('--output', '-o', default=None,
               help='Directory where all runs will be downloaded (uses project results dir if not specified)')
+@click.option('--run-id', '-i', default=None,
+              help='Download only this specific run (e.g. run-2025-02-27-123456). Without this, downloads all available runs.')
 @click.option('--force', '-f', is_flag=True,
               help='Force re-download even if files already exist locally')
 @click.option('--verbose', '-v', is_flag=True,
@@ -536,7 +636,7 @@ def monitor(interval, once, kube_context):
               help='Remove the local .tar.gz file after extraction (default: keep it)')
 @click.option('--context', '-x', 'kube_context', default=None,
               help='Kubernetes context to use (default: active context in kubeconfig)')
-def download(output, force, verbose, skip_removal, port_forward_only, remote_compress_only,
+def download(output, run_id, force, verbose, skip_removal, port_forward_only, remote_compress_only,
              no_keep_archive, kube_context):
     """Download result files from the cluster S3 (MinIO) server.
 
@@ -597,7 +697,7 @@ def download(output, force, verbose, skip_removal, port_forward_only, remote_com
 
         count = downloader.download_results(
             output, force, verbose=verbose, skip_removal=skip_removal,
-            keep_archive=not no_keep_archive
+            keep_archive=not no_keep_archive, run_id=run_id
         )
         click.echo(f"✓ Download of {count} runs completed successfully!")
 
@@ -606,6 +706,8 @@ def download(output, force, verbose, skip_removal, port_forward_only, remote_com
 
 
 @cluster.command(name='upload-to-share')
+@click.option('--run-id', '-i', default=None,
+              help='Upload only this specific run (e.g. run-2025-02-27-123456). Without this, uploads all available runs.')
 @click.option('--force', '-f', is_flag=True,
               help='Force recreation of the remote tar.gz archive even if it already exists')
 @click.option('--verbose', '-v', is_flag=True,
@@ -616,7 +718,7 @@ def download(output, force, verbose, skip_removal, port_forward_only, remote_com
               help='Do not delete the S3 bucket after a successful upload')
 @click.option('--context', '-x', 'kube_context', default=None,
               help='Kubernetes context to use (default: active context in kubeconfig)')
-def download_to_share(force, verbose, keep_archive, skip_removal, kube_context):
+def download_to_share(run_id, force, verbose, keep_archive, skip_removal, kube_context):
     """Upload run archives from the cluster pod to a remote share service.
 
     Results are transferred entirely inside the archiver sidecar of the
@@ -707,6 +809,7 @@ def download_to_share(force, verbose, keep_archive, skip_removal, kube_context):
             verbose=verbose,
             keep_archive=keep_archive,
             skip_removal=skip_removal,
+            run_id=run_id,
         )
         click.echo(f"✓ Uploaded {count} run(s) to {share_type} successfully!")
 

@@ -84,6 +84,7 @@ class ShareUploader:
         verbose: bool = False,
         keep_archive: bool = False,
         skip_removal: bool = False,
+        run_id: str | None = None,
     ) -> int:
         """Create tar.gz archives on the pod then upload them to the share.
 
@@ -109,20 +110,38 @@ class ShareUploader:
                 after a successful upload.
             skip_removal: If ``True``, do not delete the S3 bucket after a
                 successful upload.
+            run_id: If provided, upload only this specific run.
 
         Returns:
             int: Number of runs successfully uploaded.
         """
         available_runs, excluded_runs = self._downloader.list_available_runs()
 
-        if excluded_runs:
+        if run_id is not None:
             for rid, running, pending in excluded_runs:
-                logger.info(
-                    "Run %s not ready (jobs still running: %d, pending: %d)",
-                    rid,
-                    running,
-                    pending,
-                )
+                if rid == run_id:
+                    logger.error(
+                        "Run '%s' is not yet uploadable (jobs still running: %d, pending: %d).",
+                        run_id, running, pending,
+                    )
+                    return 0
+            if run_id not in available_runs:
+                all_known = sorted(available_runs + [r for r, _, _ in excluded_runs])
+                if all_known:
+                    logger.error("Run '%s' not found. Available runs: %s", run_id, ", ".join(all_known))
+                else:
+                    logger.error("Run '%s' not found. No runs available.", run_id)
+                return 0
+            available_runs = [run_id]
+        else:
+            if excluded_runs:
+                for rid, running, pending in excluded_runs:
+                    logger.info(
+                        "Run %s not ready (jobs still running: %d, pending: %d)",
+                        rid,
+                        running,
+                        pending,
+                    )
 
         if not available_runs:
             if excluded_runs:
