@@ -157,7 +157,7 @@ def cleanup_kueue_workloads(
 ):
     """Delete Kueue Workload objects for scenario run jobs.
 
-    Workloads don't inherit job labels (jobgroup, run-id). They use
+    Workloads don't inherit job labels (jobgroup, campaign-id). They use
     kueue.x-k8s.io/queue-name=robovast. When campaign_id is given, only workloads
     owned by jobs of that run are deleted (matched via ownerReferences and job
     UIDs). Without campaign_id, all workloads in the robovast queue are deleted.
@@ -185,12 +185,12 @@ def cleanup_kueue_workloads(
                 job_list = k8s_batch_client.list_namespaced_job(
                     namespace=namespace, label_selector=job_uid_selector
                 )
-                run_job_uids = {job.metadata.uid for job in job_list.items}
+                campaign_job_uids = {job.metadata.uid for job in job_list.items}
             except client.rest.ApiException as e:
                 logger.warning(f"Could not list jobs for run-scoped workload cleanup: {e}")
-                run_job_uids = set()
+                campaign_job_uids = set()
 
-            if not run_job_uids:
+            if not campaign_job_uids:
                 logger.debug("No jobs found for campaign '%s', skipping workload cleanup", campaign_id)
                 return
 
@@ -198,7 +198,7 @@ def cleanup_kueue_workloads(
             # jobs of the target run.
             logger.debug(
                 "Deleting Kueue workloads owned by %d job(s) for campaign '%s'",
-                len(run_job_uids), campaign_id,
+                len(campaign_job_uids), campaign_id,
             )
             workloads = custom_api.list_namespaced_custom_object(
                 group=KUEUE_WORKLOAD_GROUP,
@@ -213,7 +213,7 @@ def cleanup_kueue_workloads(
                     ref["uid"]
                     for ref in (wl.get("metadata", {}).get("ownerReferences") or [])
                 }
-                if owner_uids & run_job_uids:
+                if owner_uids & campaign_job_uids:
                     wl_name = wl["metadata"]["name"]
                     try:
                         custom_api.delete_namespaced_custom_object(

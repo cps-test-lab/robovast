@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (QApplication, QGroupBox, QHBoxLayout, QLabel,
                                QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from robovast.common import load_config
-from robovast.common.results_utils import iter_test_folders
+from robovast.common.results_utils import iter_run_folders
 
 from .widgets.common import RunType
 from .widgets.jupyter_widget import DataAnalysisWidget, JupyterNotebookRunner
@@ -39,12 +39,12 @@ from .widgets.log_viewer_widget import LogViewerWidget
 from .widgets.worker_thread import LatestOnlyWorker
 
 
-class TestResultsAnalyzer(QMainWindow):
+class RunResultsAnalyzer(QMainWindow):
     def __init__(self, base_dir=None, config_file=None):
         super().__init__()
 
         # Initialize QSettings for local/system-specific settings (window state, etc.)
-        self.settings = QSettings("TestResultsAnalyzer", "Settings")
+        self.settings = QSettings("RunResultsAnalyzer", "Settings")
 
         # Initialize configuration for shared settings
         self.config_file = config_file
@@ -71,20 +71,20 @@ class TestResultsAnalyzer(QMainWindow):
                             continue
                         config_dir = os.path.dirname(config_file)
 
-                        single_val = values.get("single_test")
+                        single_val = values.get("single_run")
                         single_nb = os.path.join(config_dir, single_val) if single_val else None
 
                         config_val = values.get("config")
                         config_nb = os.path.join(config_dir, config_val) if config_val else None
 
-                        run_val = values.get("run")
-                        run_nb = os.path.join(config_dir, run_val) if run_val else None
+                        campaign_val = values.get("campaign")
+                        campaign_nb = os.path.join(config_dir, campaign_val) if campaign_val else None
 
                         workloads.append(
                             JupyterNotebookRunner(name,
-                                                  single_test_nb=single_nb,
+                                                  single_run_nb=single_nb,
                                                   config_nb=config_nb,
-                                                  run_nb=run_nb)
+                                                  campaign_nb=campaign_nb)
                         )
                     except Exception as e:
                         print(f"Error adding notebook workload for {name}: {e}")
@@ -106,7 +106,7 @@ class TestResultsAnalyzer(QMainWindow):
 
         self.base_dir = Path(base_dir)
 
-        self.setWindowTitle(f"Test Results Analyzer - {self.base_dir}")
+        self.setWindowTitle(f"Run Results Analyzer - {self.base_dir}")
 
         # Set window icon
         icon_path = Path(__file__).parent.parent.parent.parent.parent / "docs" / "images" / "icon.png"
@@ -173,21 +173,21 @@ class TestResultsAnalyzer(QMainWindow):
 
     def setup_tree_widget(self, parent):
         """Setup the tree widget"""
-        tree_group = QGroupBox("Test Results")
+        tree_group = QGroupBox("Run Results")
         tree_layout = QVBoxLayout(tree_group)
 
         # Add search bar for runs
         search_layout = QHBoxLayout()
-        search_label = QLabel("Search runs:")
+        search_label = QLabel("Search campaigns:")
         search_layout.addWidget(search_label)
-        self.run_search_input = QLineEdit()
-        self.run_search_input.setPlaceholderText("Type to filter runs...")
-        self.run_search_input.textChanged.connect(self.filter_tree_items)
-        search_layout.addWidget(self.run_search_input)
+        self.campaign_search_input = QLineEdit()
+        self.campaign_search_input.setPlaceholderText("Type to filter runs...")
+        self.campaign_search_input.textChanged.connect(self.filter_tree_items)
+        search_layout.addWidget(self.campaign_search_input)
         tree_layout.addLayout(search_layout)
 
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Test Results"])
+        self.tree.setHeaderLabels(["Run Results"])
         self.tree.itemSelectionChanged.connect(self.on_tree_selection_changed)
 
         # Enable context menu
@@ -199,7 +199,7 @@ class TestResultsAnalyzer(QMainWindow):
 
     def filter_tree_items(self):
         """Filter tree items based on search bar input"""
-        search_text = self.run_search_input.text().strip().lower()
+        search_text = self.campaign_search_input.text().strip().lower()
 
         def filter_item(item):
             # Search in both the visible text and the UserRole data
@@ -289,14 +289,14 @@ class TestResultsAnalyzer(QMainWindow):
                         continue
 
                     # Get the notebook path based on run type
-                    if run_type == RunType.SINGLE_TEST and "single_test" in values:
-                        notebook_path = os.path.join(os.path.dirname(self.config_file), values["single_test"])
+                    if run_type == RunType.RUN and "single_run" in values:
+                        notebook_path = os.path.join(os.path.dirname(self.config_file), values["single_run"])
                         break
                     elif run_type == RunType.CONFIG and "config" in values:
                         notebook_path = os.path.join(os.path.dirname(self.config_file), values["config"])
                         break
-                    elif run_type == RunType.RUN and "run" in values:
-                        notebook_path = os.path.join(os.path.dirname(self.config_file), values["run"])
+                    elif run_type == RunType.CAMPAIGN and "campaign" in values:
+                        notebook_path = os.path.join(os.path.dirname(self.config_file), values["campaign"])
                         break
 
                 if notebook_path:
@@ -320,7 +320,7 @@ class TestResultsAnalyzer(QMainWindow):
         """Refresh the tree widget by clearing and repopulating it"""
         if self.tree:
             # Clear the search filter first
-            self.run_search_input.clear()
+            self.campaign_search_input.clear()
 
             # Clear the tree
             self.tree.clear()
@@ -355,7 +355,7 @@ class TestResultsAnalyzer(QMainWindow):
             self.settings.sync()
 
     def get_theme_colors(self, status_type):
-        """Get theme-appropriate colors for test status"""
+        """Get theme-appropriate colors for run status"""
         # Check if we're in dark mode by looking at the window background
         palette = self.palette()
         bg_color = palette.color(QPalette.ColorRole.Window)
@@ -429,62 +429,62 @@ class TestResultsAnalyzer(QMainWindow):
         self.tree.expandAll()
 
     def populate_directory(self, parent_item, directory_path, max_depth=2, current_depth=0):
-        """Populate tree from common test-folder discovery (campaign-<id>/<config>/<test-number>)."""
+        """Populate tree from common run-folder discovery (campaign-<id>/<config>/<run-number>)."""
         try:
             base_dir = Path(directory_path)
-            # Build structure from shared iterator: campaign -> config_name -> [(test_number, folder_path)]
+            # Build structure from shared iterator: campaign -> config_name -> [(run_number, folder_path)]
             structure = {}
-            for campaign, config_name, test_number, folder_path in iter_test_folders(str(base_dir)):
+            for campaign, config_name, run_number, folder_path in iter_run_folders(str(base_dir)):
                 if campaign not in structure:
                     structure[campaign] = {}
                 if config_name not in structure[campaign]:
                     structure[campaign][config_name] = []
-                structure[campaign][config_name].append((test_number, folder_path))
+                structure[campaign][config_name].append((run_number, folder_path))
 
             for campaign in sorted(structure.keys()):
-                run_path = base_dir / campaign
-                run_item = QTreeWidgetItem(parent_item)
-                run_item.setData(0, Qt.UserRole, str(run_path))
-                stats = self.calculate_test_statistics(run_path)
+                campaign_path = base_dir / campaign
+                campaign_item = QTreeWidgetItem(parent_item)
+                campaign_item.setData(0, Qt.UserRole, str(campaign_path))
+                stats = self.calculate_run_statistics(campaign_path)
                 display_text = campaign
                 if stats['total'] > 0:
                     unknown_str = f" ?{stats['unknown']}" if stats['unknown'] > 0 else ""
                     display_text = f"{campaign} (✓{stats['passed']} ✗{stats['failed']}{unknown_str})"
-                run_item.setText(0, display_text)
+                campaign_item.setText(0, display_text)
 
                 if max_depth < 1:
                     continue
                 for config_name in sorted(structure[campaign].keys()):
-                    config_path = run_path / config_name
-                    config_item = QTreeWidgetItem(run_item)
+                    config_path = campaign_path / config_name
+                    config_item = QTreeWidgetItem(campaign_item)
                     config_item.setData(0, Qt.UserRole, str(config_path))
                     config_item.setText(0, config_name)
 
                     if max_depth < 2:
                         continue
-                    for test_number, folder_path in sorted(structure[campaign][config_name], key=lambda x: x[0]):
+                    for run_number, folder_path in sorted(structure[campaign][config_name], key=lambda x: x[0]):
                         tree_item = QTreeWidgetItem(config_item)
                         tree_item.setData(0, Qt.UserRole, str(folder_path))
-                        display_text = test_number
-                        if self.is_test_directory(folder_path):
-                            test_status, summary = self.get_test_status(folder_path)
+                        display_text = run_number
+                        if self.is_run_directory(folder_path):
+                            run_status, summary = self.get_run_status(folder_path)
                             passed_bg, passed_fg = self.get_theme_colors("passed")
                             failed_bg, failed_fg = self.get_theme_colors("failed")
                             unknown_bg, unknown_fg = self.get_theme_colors("unknown")
                             suffix = f" – {summary}" if summary else ""
-                            if test_status == "passed":
+                            if run_status == "passed":
                                 tree_item.setData(0, Qt.UserRole + 1, "passed")
-                                display_text = f"✓ {test_number}{suffix}"
+                                display_text = f"✓ {run_number}{suffix}"
                                 tree_item.setBackground(0, QBrush(QColor(passed_bg)))
                                 tree_item.setForeground(0, QBrush(QColor(passed_fg)))
-                            elif test_status == "failed":
+                            elif run_status == "failed":
                                 tree_item.setData(0, Qt.UserRole + 1, "failed")
-                                display_text = f"✗ {test_number}{suffix}"
+                                display_text = f"✗ {run_number}{suffix}"
                                 tree_item.setBackground(0, QBrush(QColor(failed_bg)))
                                 tree_item.setForeground(0, QBrush(QColor(failed_fg)))
                             else:
                                 tree_item.setData(0, Qt.UserRole + 1, "unknown")
-                                display_text = f"? {test_number}{suffix}"
+                                display_text = f"? {run_number}{suffix}"
                                 tree_item.setBackground(0, QBrush(QColor(unknown_bg)))
                                 tree_item.setForeground(0, QBrush(QColor(unknown_fg)))
                         tree_item.setText(0, display_text)
@@ -499,21 +499,21 @@ class TestResultsAnalyzer(QMainWindow):
     def get_run_type(self, data_path):
         """Determine analysis type based on directory structure"""
         try:
-            # Check for test.xml files in different locations to determine analysis type
+            # Check for run.xml files in different locations to determine analysis type
 
-            # 1. Check if test.xml exists directly in the path (single run)
-            if os.path.exists(data_path / "test.xml"):
-                return RunType.SINGLE_TEST
+            # 1. Check if run.xml exists directly in the path (single run)
+            if os.path.exists(data_path / "run.xml"):
+                return RunType.RUN
 
-            # 2. Check if test.xml exist in subfolders (folder run)
-            run_files = list(data_path.glob("*/test.xml"))
+            # 2. Check if run.xml exist in subfolders (folder run)
+            run_files = list(data_path.glob("*/run.xml"))
             if run_files:
                 return RunType.CONFIG
 
-            # 3. Check if test.xml files exist in subfolders of subfolders (whole run)
-            run_files = list(data_path.glob("*/*/test.xml"))
+            # 3. Check if run.xml files exist in subfolders of subfolders (whole run)
+            run_files = list(data_path.glob("*/*/run.xml"))
             if run_files:
-                return RunType.RUN
+                return RunType.CAMPAIGN
 
         except Exception:
             return None
@@ -554,11 +554,11 @@ class TestResultsAnalyzer(QMainWindow):
         run_type = self.get_run_type(directory_path)
 
         # Update local execution widget
-        self.local_execution_widget.setDisabled(run_type != RunType.SINGLE_TEST)
-        self.local_execution_widget.set_test_directory(directory_path)
+        self.local_execution_widget.setDisabled(run_type != RunType.RUN)
+        self.local_execution_widget.set_run_directory(directory_path)
 
         # Update log files
-        self.log_viewer.setDisabled(run_type != RunType.SINGLE_TEST)
+        self.log_viewer.setDisabled(run_type != RunType.RUN)
         logs_dir = directory_path / "logs"
         if logs_dir.exists():
             self.log_viewer.set_logs_directory(logs_dir)
@@ -643,38 +643,38 @@ class TestResultsAnalyzer(QMainWindow):
             # self.worker_progress_bar.setFormat(f"Error: {workload_name}")
             QTimer.singleShot(3000, self._reset_status_to_ready)
 
-    def calculate_test_statistics(self, base_path):
-        """Calculate test statistics for a campaign directory using common test-folder discovery."""
+    def calculate_run_statistics(self, base_path):
+        """Calculate run statistics for a campaign directory using common run-folder discovery."""
         stats = {'passed': 0, 'failed': 0, 'unknown': 0, 'total': 0}
         base_path = Path(base_path)
         results_dir = base_path.parent
         campaign = base_path.name
 
         try:
-            for rid, _config, _num, folder_path in iter_test_folders(str(results_dir)):
+            for rid, _config, _num, folder_path in iter_run_folders(str(results_dir)):
                 if rid != campaign:
                     continue
-                if self.is_test_directory(folder_path):
-                    test_status, _ = self.get_test_status(folder_path)
-                    stats[test_status] = stats.get(test_status, 0) + 1
+                if self.is_run_directory(folder_path):
+                    run_status, _ = self.get_run_status(folder_path)
+                    stats[run_status] = stats.get(run_status, 0) + 1
                     stats['total'] += 1
         except Exception as e:
-            print(f"Error calculating test statistics: {e}")
+            print(f"Error calculating run statistics: {e}")
 
         return stats
 
-    def get_test_status(self, directory_path):
-        """Get test status and optional short summary from test.xml.
+    def get_run_status(self, directory_path):
+        """Get run status and optional short summary from run.xml.
         Returns (status, summary) where status is 'passed', 'failed', or 'unknown',
         and summary is a short descriptive string or None.
         """
-        test_xml_path = directory_path / "test.xml"
+        run_xml_path = directory_path / "run.xml"
 
-        if not test_xml_path.exists():
+        if not run_xml_path.exists():
             return "unknown", None
 
         try:
-            tree = ET.parse(test_xml_path)
+            tree = ET.parse(run_xml_path)
             root = tree.getroot()
 
             testsuite = root if root.tag == 'testsuite' else root.find('testsuite')
@@ -691,12 +691,12 @@ class TestResultsAnalyzer(QMainWindow):
                 return status, summary
 
         except Exception as e:
-            print(f"Error parsing test.xml in {directory_path}: {e}")
+            print(f"Error parsing run.xml in {directory_path}: {e}")
 
         return "unknown", None
 
     def _get_failure_text(self, root):
-        """Get failure element text from parsed test.xml root."""
+        """Get failure element text from parsed run.xml root."""
         for testcase in root.iter('testcase'):
             failure = testcase.find('failure')
             if failure is not None:
@@ -724,9 +724,9 @@ class TestResultsAnalyzer(QMainWindow):
             return s if s else None
         return None
 
-    def is_test_directory(self, directory_path):
-        """Check if directory is a test directory"""
-        return (directory_path / "test.xml").exists()
+    def is_run_directory(self, directory_path):
+        """Check if directory is a run directory"""
+        return (directory_path / "run.xml").exists()
 
     @staticmethod
     def format_size(size_bytes):

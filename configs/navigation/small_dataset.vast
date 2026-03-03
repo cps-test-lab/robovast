@@ -15940,7 +15940,7 @@ execution:
     cpu: 9
   runs: 3
   scenario_file: scenario.osc
-  test_files_filter:
+  run_files_filter:
   - 'files/*'
   - 'small_dataset_maps/*.stl'
   - 'small_dataset_maps/**/maps/*'
@@ -15952,6 +15952,6 @@ analysis:
     - rosbags_bt_to_csv
   visualization:
   - Analysis:
-      single_test: analysis/analysis_single_test.ipynb
+      single_run: analysis/analysis_single_run.ipynb
       config: analysis/analysis_config.ipynb
-      run: analysis/analysis_run.ipynb
+      campaign: analysis/analysis_campaign.ipynb

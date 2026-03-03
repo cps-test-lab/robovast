@@ -133,7 +133,7 @@ class MinikubeClusterConfig(BaseConfig):
         readme_content = """# Minikube Cluster Setup Instructions
 
 Uses MinIO with ephemeral (emptyDir) storage. Data is lost when the pod restarts.
-Suitable for development and short-lived test runs.
+Suitable for development and short-lived runs.
 
 ## Setup Steps
 

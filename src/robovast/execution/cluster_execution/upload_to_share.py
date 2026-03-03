@@ -15,7 +15,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Upload run archives from the cluster pod to a remote share service.
+"""Upload campaign archives from the cluster pod to a remote share service.
 
 This module provides :class:`ShareUploader`, which:
 
@@ -45,7 +45,7 @@ CLEAR_LINE = "\033[2K"
 
 
 class ShareUploader:
-    """Upload run archives from the cluster pod to an external share service.
+    """Upload campaign archives from the cluster pod to an external share service.
 
     Args:
         namespace: Kubernetes namespace where the robovast pod lives.
@@ -78,7 +78,7 @@ class ShareUploader:
     # Public API
     # ------------------------------------------------------------------
 
-    def upload_runs(
+    def upload_campaigns(
         self,
         force: bool = False,
         verbose: bool = False,
@@ -134,19 +134,19 @@ class ShareUploader:
             return 0
 
         logger.info(
-            "Uploading %d run(s) to %s...",
+            "Uploading %d campaign(s) to %s...",
             len(available_campaigns),
             self.provider.SHARE_TYPE,
         )
 
         uploaded = 0
         for campaign in available_campaigns:
-            success = self._process_run(campaign, force=force, verbose=verbose)
+            success = self._process_campaign(campaign, force=force, verbose=verbose)
             if success:
                 if not keep_archive:
                     self._remove_remote_archive(campaign)
                 if not skip_removal:
-                    self._delete_run_s3(campaign)
+                    self._delete_campaign_s3(campaign)
                 uploaded += 1
 
         return uploaded
@@ -155,20 +155,20 @@ class ShareUploader:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _process_run(self, campaign: str, force: bool, verbose: bool) -> bool:
+    def _process_campaign(self, campaign: str, force: bool, verbose: bool) -> bool:
         """Ensure archive exists, then upload. Returns True on success."""
         # Step 1: create/check the tar.gz archive
         archive_ok = self._downloader._create_remote_archive(  # pylint: disable=protected-access
             campaign, force=force, verbose=verbose
         )
         if not archive_ok:
-            logger.error("Failed to create archive for run %s, skipping upload.", campaign)
+            logger.error("Failed to create archive for campaign %s, skipping upload.", campaign)
             return False
 
         # Step 2: upload via the provider's pod-side script
-        return self._upload_run(campaign, verbose=verbose)
+        return self._upload_campaign(campaign, verbose=verbose)
 
-    def _upload_run(self, campaign: str, verbose: bool) -> bool:
+    def _upload_campaign(self, campaign: str, verbose: bool) -> bool:
         """Execute the provider upload script inside the archiver container."""
         script_path = self.provider.get_upload_script_path()
         try:
@@ -201,7 +201,7 @@ class ShareUploader:
         )
 
         if verbose:
-            logger.info("Uploading run %s via %s...", campaign, self.provider.SHARE_TYPE)
+            logger.info("Uploading campaign %s via %s...", campaign, self.provider.SHARE_TYPE)
 
         try:
             proc = subprocess.Popen(
@@ -259,7 +259,7 @@ class ShareUploader:
             logger.debug("Upload exception for %s: %s", campaign, exc, exc_info=True)
             return False
 
-    def _delete_run_s3(self, campaign_id: str) -> None:
+    def _delete_campaign_s3(self, campaign_id: str) -> None:
         """Delete the S3 bucket for *campaign_id* after a successful upload."""
         logger.debug("Deleting S3 bucket %s...", campaign_id)
         try:

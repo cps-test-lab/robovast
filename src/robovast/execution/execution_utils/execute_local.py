@@ -22,7 +22,7 @@ import tempfile
 from robovast.common import (generate_execution_yaml_script,
                              get_execution_env_variables, load_config,
                              normalize_secondary_containers,
-                             prepare_run_configs)
+                             prepare_campaign_configs)
 from robovast.common.cli import get_project_config
 from robovast.common.config_generation import generate_scenario_variations
 
@@ -78,13 +78,13 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
     # Generate and filter configs
     logger.debug("Generating scenario variations")
     temp_dir = tempfile.TemporaryDirectory(prefix="robovast_execution_")
-    run_data, _ = generate_scenario_variations(
+    campaign_data, _ = generate_scenario_variations(
         variation_file=config_path,
         progress_update_callback=None,
         output_dir=temp_dir.name
     )
 
-    if not run_data["configs"]:
+    if not campaign_data["configs"]:
         logger.error("No configs found in vast-file")
         feedback_callback("Error: No configs found in vast-file.", file=sys.stderr)
         sys.exit(1)
@@ -92,7 +92,7 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
     # Filter to specific config if requested
     if config:
         found_config = None
-        for cfg in run_data["configs"]:
+        for cfg in campaign_data["configs"]:
             if cfg['name'] == config:
                 found_config = cfg
                 break
@@ -100,13 +100,13 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
         if not found_config:
             feedback_callback(f"Error: Config '{config}' not found in config.", file=sys.stderr)
             feedback_callback("Available configs:")
-            for cfg in run_data["configs"]:
+            for cfg in campaign_data["configs"]:
                 feedback_callback(f"  - {cfg['name']}")
             sys.exit(1)
 
-        run_data["configs"] = [found_config]
+        campaign_data["configs"] = [found_config]
 
-    logger.debug(f"Preparing {len(run_data['configs'])} configs from {config_path}...")
+    logger.debug(f"Preparing {len(campaign_data['configs'])} configs from {config_path}...")
     logger.debug(f"Output directory: {output_dir}")
 
     # Create temp directory for run() or use output_dir for prepare_run()
@@ -126,7 +126,7 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
 
     try:
         config_path_result = os.path.join(config_dir, "out_template")
-        prepare_run_configs(config_path_result, run_data)
+        prepare_campaign_configs(config_path_result, campaign_data)
         logger.debug(f"Config path: {config_path_result}")
     except Exception as e:  # pylint: disable=broad-except
         feedback_callback(f"Error preparing run configs: {e}", file=sys.stderr)
@@ -135,7 +135,7 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
     logger.debug(f"Configuration files prepared in: {config_dir}")
 
     # Check if run_as_user differs from local user and warn about potential permission issues
-    execution_params = run_data.get("execution", {})
+    execution_params = campaign_data.get("execution", {})
     run_as_user = execution_params.get("run_as_user", 1000)
     host_uid = os.getuid()
     if run_as_user != host_uid:
@@ -143,7 +143,7 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
                        f"This may cause permission issues with bind-mounted directories. "
                        f"Consider setting 'run_as_user: {host_uid}' in your .vast config for local testing.")
 
-    generate_compose_run_script(runs, run_data, config_path_result, pre_command, post_command,
+    generate_compose_run_script(runs, campaign_data, config_path_result, pre_command, post_command,
                                 docker_image, results_dir, os.path.join(config_dir, "run.sh"),
                                 skip_resource_allocation=skip_resource_allocation,
                                 log_tree=log_tree)
@@ -238,7 +238,7 @@ OPTIONS:
     --no-gui            Disable host GUI support
     --results-dir DIR   Override the results output directory
     --start-only        Start the robovast container with a shell, skipping the entrypoint script
-    --abort-on-failure  Stop execution after the first failed test config
+    --abort-on-failure  Stop execution after the first failed run config
     --log-tree, -t      Pass --log-tree to scenario execution
     -h, --help          Show this help message
 EOF
@@ -324,7 +324,7 @@ def _compose_resources_block(cpu, memory, indent="    "):
 
 def _build_compose_yaml(
     docker_image,
-    test_path,
+    run_path,
     script_dir_var,
     results_dir_var,
     config_name,
@@ -344,7 +344,7 @@ def _build_compose_yaml(
     skip_resource_allocation=True,
     scenario_execution_params='',
 ):
-    """Build the docker-compose YAML content for one test run as a shell heredoc string."""
+    """Build the docker-compose YAML content for one run as a shell heredoc string."""
 
     def quote(s):
         return s.replace('"', '\\"')
@@ -375,7 +375,7 @@ def _build_compose_yaml(
         lines.append("    ipc: shareable")
 
     lines.append("    volumes:")
-    lines.append(f'      - "{quote(test_path)}:/out"')
+    lines.append(f'      - "{quote(run_path)}:/out"')
     lines.append(f'      - "{quote(script_dir_var)}/out_template/entrypoint.sh:/config/entrypoint.sh:ro"')
     lines.append(f'      - "{quote(script_dir_var)}/out_template/collect_sysinfo.py:/config/collect_sysinfo.py:ro"')
     lines.extend(_config_volume_mounts())
@@ -430,7 +430,7 @@ def _build_compose_yaml(
         lines.append(f"    depends_on:")
         lines.append(f"      - robovast")
         lines.append("    volumes:")
-        lines.append(f'      - "{quote(test_path)}:/out"')
+        lines.append(f'      - "{quote(run_path)}:/out"')
         lines.append(f'      - "{quote(script_dir_var)}/out_template/secondary_entrypoint.sh:/config/secondary_entrypoint.sh:ro"')
         lines.append(f'      - "{quote(script_dir_var)}/out_template/collect_sysinfo.py:/config/collect_sysinfo.py:ro"')
         lines.extend(_config_volume_mounts())
@@ -476,14 +476,14 @@ def _build_compose_yaml(
     return "\n".join(lines)
 
 
-def generate_compose_run_script(runs, run_data, config_path_result, pre_command, post_command,
+def generate_compose_run_script(runs, campaign_data, config_path_result, pre_command, post_command,
                                 docker_image, results_dir, output_script_path,
                                 skip_resource_allocation=False, log_tree=False):
     """Generate a shell script to run Docker Compose stacks sequentially.
 
     Args:
         runs: Number of runs per config
-        run_data: Dictionary containing configs and test files
+        campaign_data: Dictionary containing configs and run files
         config_path_result: Path to the config results directory
         pre_command: Command to run before execution (optional)
         post_command: Command to run after execution (optional)
@@ -491,11 +491,11 @@ def generate_compose_run_script(runs, run_data, config_path_result, pre_command,
         results_dir: Directory where results are stored
         output_script_path: Path where the script should be written
     """
-    run_files = run_data.get("_test_files", [])
+    run_files = campaign_data.get("_run_files", [])
     execution_tasks = []
 
     for run_number in range(runs):
-        for config_entry in run_data["configs"]:
+        for config_entry in campaign_data["configs"]:
             execution_tasks.append({
                 'config_name': config_entry['name'],
                 'config_path': os.path.abspath(os.path.join(config_path_result, config_entry["name"])),
@@ -506,7 +506,7 @@ def generate_compose_run_script(runs, run_data, config_path_result, pre_command,
     if not execution_tasks:
         raise ValueError("At least one config configuration is required")
 
-    execution_params = run_data.get("execution", {})
+    execution_params = campaign_data.get("execution", {})
     run_as_user = execution_params.get("run_as_user")
     if run_as_user is None:
         run_as_user = os.getuid()
@@ -544,14 +544,14 @@ def generate_compose_run_script(runs, run_data, config_path_result, pre_command,
     script += f'cp -r "${{SCRIPT_DIR}}/out_template/"* "${{RESULTS_DIR}}/"\n'
     script += f'echo ""\n\n'
 
-    script += generate_execution_yaml_script(runs, execution_params=run_data.get("execution", {}))
+    script += generate_execution_yaml_script(runs, execution_params=campaign_data.get("execution", {}))
 
     for idx, task in enumerate(execution_tasks, 1):
         config_name = task['config_name']
         run_num = task['run_number']
         config_files = task['config_files']
 
-        test_path = os.path.join("${RESULTS_DIR}", config_name, str(run_num))
+        run_path = os.path.join("${RESULTS_DIR}", config_name, str(run_num))
         compose_file = f"/tmp/robovast_compose_{config_name}_{run_num}.yml"
 
         script += f'\necho ""\n'
@@ -559,8 +559,8 @@ def generate_compose_run_script(runs, run_data, config_path_result, pre_command,
         script += f'echo "{idx}/{len(execution_tasks)} Executing config {config_name}, run {run_num}"\n'
         script += f'echo "{"=" * 60}"\n'
         script += f'echo ""\n\n'
-        script += f'mkdir -p "{test_path}/logs"\n'
-        script += f'chmod -R 777 "{test_path}"\n'
+        script += f'mkdir -p "{run_path}/logs"\n'
+        script += f'chmod -R 777 "{run_path}"\n'
 
         # Set AVAILABLE_CPUS/MEM from configured resources
         script += f'AVAILABLE_CPUS="{main_cpu}"\n'
@@ -583,12 +583,12 @@ def generate_compose_run_script(runs, run_data, config_path_result, pre_command,
         script += '    ROBOVAST_STDIN_OPEN="false"\n'
         script += 'fi\n\n'
 
-        env_vars = get_execution_env_variables(run_num, config_name, run_data.get('execution', {}).get('env'))
+        env_vars = get_execution_env_variables(run_num, config_name, campaign_data.get('execution', {}).get('env'))
         scenario_execution_params = "-t" if log_tree else "${SCENARIO_EXECUTION_PARAMS}"
 
         compose_yaml = _build_compose_yaml(
             docker_image=docker_image,
-            test_path=test_path,
+            run_path=run_path,
             script_dir_var="${SCRIPT_DIR}",
             results_dir_var="${RESULTS_DIR}",
             config_name=config_name,

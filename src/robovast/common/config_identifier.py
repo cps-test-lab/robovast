@@ -44,18 +44,18 @@ def hash_file_content(file_path: str) -> str:
     return hashlib.sha256(content).hexdigest()[:12]
 
 
-def hash_test_files(vast_dir: str, test_file_paths: list[str]) -> str:
-    """Hash each test file's content (path + content), sorted by path.
+def hash_run_files(vast_dir: str, run_file_paths: list[str]) -> str:
+    """Hash each run file's content (path + content), sorted by path.
 
     Args:
         vast_dir: Base directory for resolving relative paths.
-        test_file_paths: List of relative paths to test files.
+        run_file_paths: List of relative paths to run files.
 
     Returns:
         12-char hex digest combining all file hashes.
     """
     hasher = hashlib.sha256()
-    for rel_path in sorted(test_file_paths):
+    for rel_path in sorted(run_file_paths):
         full_path = os.path.join(vast_dir, rel_path)
         if os.path.isfile(full_path):
             hasher.update(rel_path.encode())
@@ -192,7 +192,7 @@ def hash_config_referenced_files(vast_dir: str, canonical_config_yaml: str) -> s
 def compute_config_identifier(
     vast_dir: str,
     config_block: dict,
-    test_files_hash: str,
+    run_files_hash: str,
     scenario_file_hash: str,
     variation_type_names: list[str],
 ) -> tuple[str, dict[str, str]]:
@@ -201,7 +201,7 @@ def compute_config_identifier(
     Args:
         vast_dir: Directory containing the vast file.
         config_block: Configuration entry from vast (name, parameters, variations).
-        test_files_hash: Precomputed hash of test_files_filter files.
+        run_files_hash: Precomputed hash of run_files_filter files.
         scenario_file_hash: Precomputed hash of scenario file content.
         variation_type_names: List of variation type names used in this config.
 
@@ -217,7 +217,7 @@ def compute_config_identifier(
 
     sub_identifier = {
         "block": block_hash,
-        "test_files": test_files_hash,
+        "run_files": run_files_hash,
         "scenario_file": scenario_file_hash,
         "config_referenced_files": ref_files_hash,
         "variation_entrypoints": var_hash,
@@ -225,7 +225,7 @@ def compute_config_identifier(
 
     combined = (
         f"block={block_hash}"
-        f",test={test_files_hash}"
+        f",run={run_files_hash}"
         f",scenario={scenario_file_hash}"
         f",ref={ref_files_hash}"
         f",var={var_hash}"

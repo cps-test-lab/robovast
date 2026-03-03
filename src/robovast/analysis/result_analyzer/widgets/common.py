@@ -19,9 +19,9 @@ from enum import Enum
 
 
 class RunType(Enum):
-    SINGLE_TEST = 0
+    RUN = 0
     CONFIG = 1
-    RUN = 2
+    CAMPAIGN = 2
 
 
 def check_preferred_log_file(file_path):

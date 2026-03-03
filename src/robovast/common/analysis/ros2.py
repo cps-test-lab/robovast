@@ -68,25 +68,25 @@ def get_behavior_info(behavior_name: str, behavior_dataframe: pd.DataFrame):
     behavior_df = behavior_dataframe[behavior_dataframe['behavior_name'] == behavior_name].copy()
 
     if behavior_df.empty:
-        cols = ['behavior_name', 'id', 'duration', 'test', 'config']
+        cols = ['behavior_name', 'id', 'duration', 'run', 'config']
         return pd.DataFrame(columns=cols)
 
     results = []
 
-    # Group by behavior_id, test, and config to handle multiple instances and configs
-    group_cols = ['behavior_id', 'test', 'config']
+    # Group by behavior_id, run, and config to handle multiple instances and configs
+    group_cols = ['behavior_id', 'run', 'config']
 
     for group_keys, group in behavior_df.groupby(group_cols, observed=False):
         # Unpack group_keys depending on grouping columns
         if len(group_cols) == 1:
             behavior_id = group_keys
-            test = group['test'].iloc[0] if 'test' in behavior_df.columns else None
+            run = group['run'].iloc[0] if 'run' in behavior_df.columns else None
             config = group['config'].iloc[0] if 'config' in behavior_df.columns else None
         elif len(group_cols) == 2:
-            behavior_id, test = group_keys
+            behavior_id, run = group_keys
             config = group['config'].iloc[0] if 'config' in behavior_df.columns else None
         else:
-            behavior_id, test, config = group_keys
+            behavior_id, run, config = group_keys
 
         # Find first RUNNING timestamp
         start_rows = group[group['status_name'] == 'RUNNING'].sort_values('timestamp')
@@ -108,7 +108,7 @@ def get_behavior_info(behavior_name: str, behavior_dataframe: pd.DataFrame):
             'start_time': start_time,
             'end_time': end_time,
             'duration': end_time - start_time,
-            'test': test,
+            'run': run,
             'config': config
         }
 
@@ -119,7 +119,7 @@ def get_behavior_info(behavior_name: str, behavior_dataframe: pd.DataFrame):
 
 def calculate_speeds_from_poses(df_groundtruth):
     # Calculate linear and angular speeds from ground truth data
-    group_cols = ['test', 'config']
+    group_cols = ['run', 'config']
     min_dt = 1e-6
 
     result_dfs = []
@@ -129,7 +129,7 @@ def calculate_speeds_from_poses(df_groundtruth):
         if len(group) < 2:
             continue
 
-        df_gt_speeds = group[['test', 'config', 'position.x', 'position.y',
+        df_gt_speeds = group[['run', 'config', 'position.x', 'position.y',
                               'orientation.yaw', 'timestamp']].copy()
 
         # Calculate time differences (dt)
@@ -169,7 +169,7 @@ def calculate_speeds_from_poses(df_groundtruth):
 
     # Return empty dataframe with correct columns if no valid data
     if not result_dfs:
-        return pd.DataFrame(columns=['test', 'config', 'position.x', 'position.y',
+        return pd.DataFrame(columns=['run', 'config', 'position.x', 'position.y',
                                      'orientation.yaw', 'timestamp', 'linear_speed',
                                      'angular_speed', 'dt'])
 

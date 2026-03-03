@@ -6,7 +6,7 @@ metadata:
   namespace: {namespace}
   labels:
     jobgroup: scenario-runs
-    run-id: $RUN_ID
+    campaign-id: $CAMPAIGN_ID
   annotations:
     total-job-num: "$TOTAL_JOB_NUM"
 spec:
@@ -17,7 +17,7 @@ spec:
       name: scenario-runs
       labels:
         jobgroup: scenario-runs
-        run-id: $RUN_ID
+        campaign-id: $CAMPAIGN_ID
       annotations:
         job-name-full: $JOB_FULL_NAME
     spec:

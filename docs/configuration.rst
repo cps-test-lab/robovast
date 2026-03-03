@@ -46,12 +46,12 @@ Metadata Section
 
 **Required:** No
 
-The ``metadata`` section allows you to provide structured information about the test configuration. This section can contain arbitrary key-value pairs and nested structures. If present, the metadata will be included in the generated ``configurations.yaml`` file.
+The ``metadata`` section allows you to provide structured information about the run configuration. This section can contain arbitrary key-value pairs and nested structures. If present, the metadata will be included in the generated ``configurations.yaml`` file.
 
 .. code-block:: yaml
 
    metadata:
-     title: "Robot Navigation Test Results"
+     title: "Robot Navigation Run Results"
      description: "Autonomous navigation performance evaluation"
      creator: "Your Name"
      keywords: ["robotics", "navigation", "ROS2"]
@@ -65,7 +65,7 @@ All fields within ``metadata`` are optional and can be customized according to y
 Configuration Section
 ---------------------
 
-The ``configuration`` section defines test scenarios to be executed. It is a list where each entry represents a scenario with its parameters and variations.
+The ``configuration`` section defines run scenarios to be executed. It is a list where each entry represents a scenario with its parameters and variations.
 
 Scenario Definition
 ^^^^^^^^^^^^^^^^^^^
@@ -79,7 +79,7 @@ name
 
 **Required:** Yes
 
-A unique identifier for the scenario. This name will be used as the directory name for test results.
+A unique identifier for the scenario. This name will be used as the directory name for run results.
 
 .. code-block:: yaml
 
@@ -93,7 +93,7 @@ parameters
 
 **Required:** No
 
-Fixed parameter values that apply to all test runs of this scenario. Each list item should be a dictionary with a single parameter name-value pair.
+Fixed parameter values that apply to all runs of this scenario. Each list item should be a dictionary with a single parameter name-value pair.
 
 This is useful when you want to define a single configuration with specific values without variations.
 
@@ -116,7 +116,7 @@ variations
 
 **Required:** No
 
-Defines parameter variations to create multiple test configurations. Each variation uses a plugin-provided variation type. See :ref:`variation-points` for available variation types.
+Defines parameter variations to create multiple run configurations. Each variation uses a plugin-provided variation type. See :ref:`variation-points` for available variation types.
 
 Multiple variations are combined using Cartesian product to generate all possible parameter combinations.
 
@@ -137,7 +137,7 @@ Multiple variations are combined using Cartesian product to generate all possibl
          - 5.0
          - 10.0
 
-This example creates 3 × 2 = 6 test configurations.
+This example creates 3 × 2 = 6 run configurations.
 
 .. note::
 
@@ -156,7 +156,7 @@ image
 
 **Required:** Yes
 
-Docker container image to use for test execution. Can be a public image or a private registry image.
+Docker container image to use for execution. Can be a public image or a private registry image.
 
 .. code-block:: yaml
 
@@ -170,7 +170,7 @@ runs
 
 **Required:** Yes (unless specified in CLI)
 
-Number of times to execute each test configuration. Multiple runs allow for statistical analysis of results.
+Number of times to execute each run configuration. Multiple runs allow for statistical analysis of results.
 
 .. code-block:: yaml
 
@@ -186,7 +186,7 @@ timeout
 
 **Applies to:** Cluster execution (Kubernetes). For local execution, this value is currently not enforced.
 
-Maximum wall-clock time (in seconds) allowed for a single test run.
+Maximum wall-clock time (in seconds) allowed for a single run.
 
 - **Local (Docker Compose):** Currently not enforced; local runs will continue past this timeout and must be stopped manually.
 - **Cluster (Kubernetes):** Sets ``activeDeadlineSeconds`` on the Job spec; Kubernetes terminates the pod when the deadline expires.
@@ -196,7 +196,7 @@ If omitted (or ``null``), there is no time limit.
 .. code-block:: yaml
 
    execution:
-     timeout: 3600   # 1 hour per test run
+     timeout: 3600   # 1 hour per run
 
 scenario_file
 ^^^^^^^^^^^^^
@@ -233,7 +233,7 @@ pre_command
 
 **Required:** No
 
-Path to an executable script that will be sourced before each test run. The file is executed using ``source <pre_command>``, allowing environment variables to be set and made available to the scenario execution.
+Path to an executable script that will be sourced before each run. The file is executed using ``source <pre_command>``, allowing environment variables to be set and made available to the scenario execution.
 
 **Important constraints:**
 
@@ -245,7 +245,7 @@ Path to an executable script that will be sourced before each test run. The file
 
    execution:
      pre_command: /config/files/pre_command.sh
-     test_files_filter:
+     run_files_filter:
      - "**/files/*.sh"
 
 **Command execution context:**
@@ -253,11 +253,11 @@ Path to an executable script that will be sourced before each test run. The file
 - Runs before the scenario execution via ``source <pre_command>``
 - Can modify the container environment
 - Environment variables set by the script are available to the scenario
-- If the script fails (exits with non-zero), the test fails
+- If the script fails (exits with non-zero), the run fails
 
 .. note::
 
-   Custom scripts can be included in the container using ``test_files_filter`` (see below) to make them available at the specified path.
+   Custom scripts can be included in the container using ``run_files_filter`` (see below) to make them available at the specified path.
 
 post_command
 ^^^^^^^^^^^^
@@ -279,28 +279,28 @@ Path to an executable file that should be executed after the scenario completes.
 
    execution:
      post_command: /config/files/post_command.sh
-     test_files_filter:
+     run_files_filter:
      - "**/files/*.sh"
 
 The post command script is executed by the scenario execution framework after the scenario finishes, allowing for cleanup or post-processing tasks.
 
 .. note::
 
-   Custom scripts can be included in the container using ``test_files_filter`` (see below) to make them available at the specified path.
+   Custom scripts can be included in the container using ``run_files_filter`` (see below) to make them available at the specified path.
 
-test_files_filter
+run_files_filter
 ^^^^^^^^^^^^^^^^^
 
 **Type:** List of strings (glob patterns)
 
 **Required:** No
 
-List of glob patterns specifying which files from the scenario directory should be copied into the test container. This is useful for including test-specific files like scripts, models, or configuration files.
+List of glob patterns specifying which files from the scenario directory should be copied into the run container. This is useful for including run-specific files like scripts, models, or configuration files.
 
 .. code-block:: yaml
 
    execution:
-     test_files_filter:
+     run_files_filter:
      - "**/files/*.py"
      - "**/models/*.sdf"
      - "**/maps/*"
@@ -312,7 +312,7 @@ env
 
 **Required:** No
 
-Additional environment variables to set in the test container. Each list item should be a single key-value pair.
+Additional environment variables to set in the run container. Each list item should be a single key-value pair.
 
 .. code-block:: yaml
 
@@ -437,7 +437,7 @@ Parameters are validated against the scenario file (``.osc``); only parameters d
 Analysis Section
 ----------------
 
-The ``analysis`` section defines how test results should be analyzed.
+The ``analysis`` section defines how run results should be analyzed.
 
 postprocessing
 ^^^^^^^^^^^^^^
@@ -446,7 +446,7 @@ postprocessing
 
 **Required:** No
 
-Commands to run for postprocessing test results. These are executed before the analysis GUI is launched and typically convert raw data files into more analysis-friendly formats.
+Commands to run for postprocessing run results. These are executed before the analysis GUI is launched and typically convert raw data files into more analysis-friendly formats.
 
 **All postprocessing commands are plugins.** Each command is specified either as:
 - A simple string (for commands without parameters)
@@ -497,20 +497,20 @@ Defines analysis notebooks for visualization in the analysis GUI. Each entry cre
 
 Each dictionary can have a custom name and three reserved keys for different analysis scopes:
 
-- ``single_test``: Path to Jupyter notebook for analyzing a single test run
+- ``single_run``: Path to Jupyter notebook for analyzing a single run
 - ``config``: Path to Jupyter notebook for analyzing all runs of a configuration
-- ``run``: Path to Jupyter notebook for analyzing all tests in an execution run
+- ``campaign``: Path to Jupyter notebook for analyzing all runs in a campaign
 
 .. code-block:: yaml
 
    analysis:
      visualization:
      - Analysis:
-         single_test: analysis/analysis_single_test.ipynb
+         single_run: analysis/analysis_single_run.ipynb
          config: analysis/analysis_config.ipynb
-         run: analysis/analysis_run.ipynb
+         campaign: analysis/analysis_campaign.ipynb
      - Performance:
-         single_test: analysis/performance_single.ipynb
+         single_run: analysis/performance_single.ipynb
          config: analysis/performance_config.ipynb
 
 **Notebook requirements:**
@@ -521,7 +521,7 @@ Each notebook must include the following placeholder line:
 
    DATA_DIR = ''
 
-The RoboVAST GUI automatically replaces this with the path to the selected test directory when executing the notebook.
+The RoboVAST GUI automatically replaces this with the path to the selected run directory when executing the notebook.
 
 
 Complete Example
@@ -565,7 +565,7 @@ Here's a complete example showing all major configuration options:
      pre_command: /config/files/prepare_test.sh
      post_command: /config/files/post_command.sh
      run_as_user: 1000
-     test_files_filter:
+     run_files_filter:
      - "**/files/*"
      - "**/models/*.sdf"
      env:
@@ -579,6 +579,6 @@ Here's a complete example showing all major configuration options:
      - rosbags_to_webm
      visualization:
      - Analysis:
-         single_test: analysis/analysis_single_test.ipynb
+         single_run: analysis/analysis_single_run.ipynb
          config: analysis/analysis_config.ipynb
-         run: analysis/analysis_run.ipynb
+campaign: analysis/analysis_campaign.ipynb

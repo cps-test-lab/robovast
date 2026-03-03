@@ -14,45 +14,45 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Common utilities for results directory layout (campaign-<id>/<config>/<test-number>)."""
+"""Common utilities for results directory layout (campaign-<id>/<config>/<run-number>)."""
 from pathlib import Path
 from typing import Iterator, Tuple
 
 
-def iter_test_folders(results_dir: str) -> Iterator[Tuple[str, str, str, Path]]:
-    """Iterate over all test folders under a results directory.
+def iter_run_folders(results_dir: str) -> Iterator[Tuple[str, str, str, Path]]:
+    """Iterate over all run folders under a results directory.
 
-    Discovers the standard layout: results_dir/campaign-<id>/<config>/<test-number>/.
-    Under results_dir, only directories whose name starts with 'run-' are
-    considered; under each run, subdirs are config names; under each config,
-    subdirs whose names are numeric are test numbers.
+    Discovers the standard layout: results_dir/campaign-<id>/<config>/<run-number>/.
+    Under results_dir, only directories whose name starts with 'campaign-' are
+    considered; under each campaign, subdirs are config names; under each config,
+    subdirs whose names are numeric are run numbers.
 
     Args:
-        results_dir: Path to the project results directory (parent of run-* dirs).
+        results_dir: Path to the project results directory (parent of campaign-* dirs).
 
     Yields:
-        Tuples (campaign, config_name, test_number, folder_path) where folder_path
-        is the full path to campaign-<id>/<config>/<test-number>.
+        Tuples (campaign, config_name, run_number, folder_path) where folder_path
+        is the full path to campaign-<id>/<config>/<run-number>.
     """
     root = Path(results_dir)
     if not root.is_dir():
         return
 
-    for run_item in sorted(root.iterdir()):
-        if not run_item.is_dir() or not run_item.name.startswith("run-"):
+    for campaign_item in sorted(root.iterdir()):
+        if not campaign_item.is_dir() or not campaign_item.name.startswith("campaign-"):
             continue
-        if run_item.name == "_config":
+        if campaign_item.name == "_config":
             continue
-        campaign = run_item.name
+        campaign = campaign_item.name
 
-        for config_item in sorted(run_item.iterdir()):
+        for config_item in sorted(campaign_item.iterdir()):
             if not config_item.is_dir():
                 continue
             config_name = config_item.name
 
-            for test_item in sorted(config_item.iterdir()):
-                if not test_item.is_dir() or not test_item.name.isdigit():
+            for run_item in sorted(config_item.iterdir()):
+                if not run_item.is_dir() or not run_item.name.isdigit():
                     continue
-                test_number = test_item.name
-                folder_path = test_item
-                yield campaign, config_name, test_number, folder_path
+                run_number = run_item.name
+                folder_path = run_item
+                yield campaign, config_name, run_number, folder_path

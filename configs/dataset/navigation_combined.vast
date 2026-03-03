@@ -1870,13 +1870,13 @@ execution:
   resources:
     cpu: 6
   runs: 1
-  test_files_filter:
+  run_files_filter:
   - '**/files/*'
 analysis:
   preprocessing:
   - ../../tools/ros2_exec.sh rosbags_to_csv.py
   visualization:
   - Analysis:
-      single_test: analysis/analysis_single_test.ipynb
+      single_run: analysis/analysis_single_run.ipynb
       config: analysis/analysis_config.ipynb
-      run: analysis/analysis_run.ipynb
+      campaign: analysis/analysis_campaign.ipynb

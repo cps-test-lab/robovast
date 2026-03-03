@@ -153,7 +153,7 @@ class LocalExecutionWidget(QWidget):
     def __init__(self, config_file):
         super().__init__()
         self.config_file = config_file
-        self.current_test_dir = None
+        self.current_run_dir = None
         self.is_running = False
         self.execution_worker = None
         self.setup_ui()
@@ -233,19 +233,19 @@ class LocalExecutionWidget(QWidget):
         # Set minimum height for the widget
         self.setMinimumHeight(400)
 
-    def set_test_directory(self, directory_path):
-        """Set the current test directory and update UI"""
-        self.current_test_dir = Path(directory_path) if directory_path else None
-        self.update_test_info()
+    def set_run_directory(self, directory_path):
+        """Set the current run directory and update UI"""
+        self.current_run_dir = Path(directory_path) if directory_path else None
+        self.update_run_info()
 
-    def update_test_info(self):
-        """Update test information display"""
-        if not self.current_test_dir or not self.current_test_dir.exists():
+    def update_run_info(self):
+        """Update run information display"""
+        if not self.current_run_dir or not self.current_run_dir.exists():
             self.execute_btn.setEnabled(False)
             return
 
-        # Check if this is a valid test directory
-        scenario_file = self.current_test_dir / "test.xml"
+        # Check if this is a valid run directory
+        scenario_file = self.current_run_dir / "run.xml"
         if not scenario_file.exists():
             self.execute_btn.setEnabled(False)
             return
@@ -255,7 +255,7 @@ class LocalExecutionWidget(QWidget):
 
     def execute_command(self):
         """Execute the current command"""
-        if not self.current_test_dir or self.is_running:
+        if not self.current_run_dir or self.is_running:
             return
 
         self.is_running = True
@@ -266,14 +266,14 @@ class LocalExecutionWidget(QWidget):
         self.terminal_output.clear()
 
         try:
-            # Get the base directory by going up from the test directory
-            base_dir = self.current_test_dir.parent.parent.parent.parent  # Assuming test is in scenarios/Dataset/
+            # Get the base directory by going up from the run directory
+            base_dir = self.current_run_dir.parent.parent.parent.parent  # Assuming run is in scenarios/Dataset/
 
-            # Remove the last -<number> pattern from test_name for run_local.sh
-            test_name_cleaned = self.current_test_dir.parent.name
+            # Remove the last -<number> pattern from run_name for run_local.sh
+            run_name_cleaned = self.current_run_dir.parent.name
 
             # Start execution in worker thread
-            self.execution_worker = LocalExecutionWorker(self.config_file, test_name_cleaned, str(base_dir))
+            self.execution_worker = LocalExecutionWorker(self.config_file, run_name_cleaned, str(base_dir))
             self.execution_worker.output_received.connect(self.append_output)
             self.execution_worker.execution_finished.connect(self.on_execution_finished)
             self.execution_worker.start()

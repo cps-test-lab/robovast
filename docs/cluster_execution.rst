@@ -3,8 +3,8 @@
 Cluster Execution
 =================
 
-RoboVAST can execute test scenarios at scale on a **Kubernetes cluster**,
-running each test configuration as an independent Job and collecting results
+RoboVAST can execute run scenarios at scale on a **Kubernetes cluster**,
+running each run configuration as an independent Job and collecting results
 via a built-in MinIO S3 server.  This section covers everything from cluster
 setup and job queueing to multi-context workflows and cloud-provider-specific
 configuration.
@@ -18,7 +18,7 @@ internally:
 1. **Config upload** — All scenario configurations (entrypoints, scenario
    files, parameter files) are uploaded to a MinIO S3 bucket inside the
    cluster.
-2. **Job creation** — For each test configuration × run number, a Kubernetes
+2. **Job creation** — For each run configuration × run number, a Kubernetes
    ``Job`` is created from a manifest template.  Each job runs an ``initContainer``
    that pulls its config files from S3 and a main ``robovast`` container that
    executes the scenario.
@@ -504,7 +504,7 @@ the percentage, transferred size, and upload rate:
    campaign-2026-03-01-120000  [████████████░░░░░░░░]   60.0%  1.2 MiB/2.0 MiB  3.4 MiB/s
    campaign-2026-03-01-120000  uploaded (2.0 MiB)  ✓
 
-   ✓ Uploaded 3 run(s) to nextcloud successfully!
+   ✓ Uploaded 3 campaign(s) to nextcloud successfully!
 
 Adding a new share provider (plugin system)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
