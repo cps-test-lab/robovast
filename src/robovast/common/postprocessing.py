@@ -67,7 +67,7 @@ def execute_postprocessing_plugin(
         plugin_name: Name of the plugin
         plugin_func: The plugin function to call
         params: Dictionary of parameters for the plugin
-        results_dir: Path to the run-<id> directory
+        results_dir: Path to the campaign-<id> directory
         config_dir: Directory containing the configuration file
         provenance_file: Optional path for container plugins to write provenance JSON
 
@@ -159,7 +159,7 @@ def _write_provenance_yaml_per_folder(results_dir: str, entries: List[dict]) -> 
     def norm(s: str) -> str:
         return str(Path(s)) if os.sep != "/" else s
 
-    for _run_id, _config_name, _test_number, folder_path in iter_test_folders(results_dir):
+    for _campaign, _config_name, _test_number, folder_path in iter_test_folders(results_dir):
         folder_rel = norm(os.path.relpath(str(folder_path), results_dir))
         prefix = folder_rel + os.sep
         folder_entries = []

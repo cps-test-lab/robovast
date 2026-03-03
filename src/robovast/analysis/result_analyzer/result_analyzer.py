@@ -429,32 +429,32 @@ class TestResultsAnalyzer(QMainWindow):
         self.tree.expandAll()
 
     def populate_directory(self, parent_item, directory_path, max_depth=2, current_depth=0):
-        """Populate tree from common test-folder discovery (run-<id>/<config>/<test-number>)."""
+        """Populate tree from common test-folder discovery (campaign-<id>/<config>/<test-number>)."""
         try:
             base_dir = Path(directory_path)
-            # Build structure from shared iterator: run_id -> config_name -> [(test_number, folder_path)]
+            # Build structure from shared iterator: campaign -> config_name -> [(test_number, folder_path)]
             structure = {}
-            for run_id, config_name, test_number, folder_path in iter_test_folders(str(base_dir)):
-                if run_id not in structure:
-                    structure[run_id] = {}
-                if config_name not in structure[run_id]:
-                    structure[run_id][config_name] = []
-                structure[run_id][config_name].append((test_number, folder_path))
+            for campaign, config_name, test_number, folder_path in iter_test_folders(str(base_dir)):
+                if campaign not in structure:
+                    structure[campaign] = {}
+                if config_name not in structure[campaign]:
+                    structure[campaign][config_name] = []
+                structure[campaign][config_name].append((test_number, folder_path))
 
-            for run_id in sorted(structure.keys()):
-                run_path = base_dir / run_id
+            for campaign in sorted(structure.keys()):
+                run_path = base_dir / campaign
                 run_item = QTreeWidgetItem(parent_item)
                 run_item.setData(0, Qt.UserRole, str(run_path))
                 stats = self.calculate_test_statistics(run_path)
-                display_text = run_id
+                display_text = campaign
                 if stats['total'] > 0:
                     unknown_str = f" ?{stats['unknown']}" if stats['unknown'] > 0 else ""
-                    display_text = f"{run_id} (✓{stats['passed']} ✗{stats['failed']}{unknown_str})"
+                    display_text = f"{campaign} (✓{stats['passed']} ✗{stats['failed']}{unknown_str})"
                 run_item.setText(0, display_text)
 
                 if max_depth < 1:
                     continue
-                for config_name in sorted(structure[run_id].keys()):
+                for config_name in sorted(structure[campaign].keys()):
                     config_path = run_path / config_name
                     config_item = QTreeWidgetItem(run_item)
                     config_item.setData(0, Qt.UserRole, str(config_path))
@@ -462,7 +462,7 @@ class TestResultsAnalyzer(QMainWindow):
 
                     if max_depth < 2:
                         continue
-                    for test_number, folder_path in sorted(structure[run_id][config_name], key=lambda x: x[0]):
+                    for test_number, folder_path in sorted(structure[campaign][config_name], key=lambda x: x[0]):
                         tree_item = QTreeWidgetItem(config_item)
                         tree_item.setData(0, Qt.UserRole, str(folder_path))
                         display_text = test_number
@@ -644,15 +644,15 @@ class TestResultsAnalyzer(QMainWindow):
             QTimer.singleShot(3000, self._reset_status_to_ready)
 
     def calculate_test_statistics(self, base_path):
-        """Calculate test statistics for a run directory using common test-folder discovery."""
+        """Calculate test statistics for a campaign directory using common test-folder discovery."""
         stats = {'passed': 0, 'failed': 0, 'unknown': 0, 'total': 0}
         base_path = Path(base_path)
         results_dir = base_path.parent
-        run_id = base_path.name
+        campaign = base_path.name
 
         try:
             for rid, _config, _num, folder_path in iter_test_folders(str(results_dir)):
-                if rid != run_id:
+                if rid != campaign:
                     continue
                 if self.is_test_directory(folder_path):
                     test_status, _ = self.get_test_status(folder_path)

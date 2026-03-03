@@ -190,7 +190,7 @@ The resulting folder structure looks like this:
 .. code-block:: bash
 
     growth_sim_results/
-    ├── run-<timestamp>/             <-- Each cluster execution creates a new folder 
+    ├── campaign-<timestamp>/        <-- Each cluster execution creates a new folder 
     |   ├── _config/                 <-- Test files are stored here (as defined by test_files_filter in the .vast configuration)
     |   ├── scenario.osc             <-- The scenario used during this run
     |   ├── <config-name>            <-- Each configuration is stored within a separate folder (example: config42)

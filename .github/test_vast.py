@@ -61,16 +61,19 @@ def check_results_dir_structure(results_dir):  # pylint: disable=too-many-return
     contents = list(output_path.iterdir())
     print(f"  Contents: {[c.name for c in contents]}")
     
-    # Check for run directories (run-*)
-    run_dirs = [d for d in contents if d.is_dir() and d.name.startswith('run-')]
-    if not run_dirs:
-        print("✗ No run directories found (expected run-* directories)")
+    # Check for campaign directories (prefer campaign-*, but accept legacy run-*)
+    campaign_dirs = [
+        d for d in contents
+        if d.is_dir() and (d.name.startswith('campaign-') or d.name.startswith('run-'))
+    ]
+    if not campaign_dirs:
+        print("✗ No campaign or run directories found (expected campaign-* or run-* directories)")
         return False
     
-    print(f"✓ Found {len(run_dirs)} run directory/directories")
+    print(f"✓ Found {len(campaign_dirs)} campaign directory/directories")
     
-    # Check structure of first run directory
-    first_run = run_dirs[0]
+    # Check structure of first campaign directory
+    first_run = campaign_dirs[0]
     print(f"  Checking structure of {first_run.name}:")
     
     # Look for expected files/directories in run
@@ -80,7 +83,7 @@ def check_results_dir_structure(results_dir):  # pylint: disable=too-many-return
     # Check for scenario.osc file
     scenario_osc = [f for f in run_contents if f.name == 'scenario.osc']
     if not scenario_osc:
-        print("  ✗ scenario.osc file not found in run directory")
+        print("  ✗ scenario.osc file not found in campaign directory")
         return False
     
     print("  ✓ scenario.osc file exists")
@@ -88,7 +91,7 @@ def check_results_dir_structure(results_dir):  # pylint: disable=too-many-return
     # Check for execution.yaml file
     execution_yaml = [f for f in run_contents if f.name == 'execution.yaml']
     if not execution_yaml:
-        print("  ✗ execution.yaml file not found in run directory")
+        print("  ✗ execution.yaml file not found in campaign directory")
         return False
     
     print("  ✓ execution.yaml file exists")
@@ -96,7 +99,7 @@ def check_results_dir_structure(results_dir):  # pylint: disable=too-many-return
     # Check for config directories
     config_dirs = [d for d in run_contents if d.is_dir()]
     if not config_dirs:
-        print("  ✗ No config directories found in run")
+        print("  ✗ No config directories found in campaign")
         return False
     
     print(f"  ✓ Found {len(config_dirs)} config directory/directories")

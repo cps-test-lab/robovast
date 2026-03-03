@@ -33,7 +33,7 @@ from robovast.common.cluster_context import (get_active_kube_context, get_config
                                              require_context_for_multi_cluster)
 from robovast.execution.cluster_execution.cluster_execution import (
     JobRunner, cleanup_cluster_run, get_cluster_run_job_counts_per_run,
-    _label_safe_run_id)
+    _label_safe_campaign)
 from robovast.execution.cluster_execution.cluster_setup import (
     delete_server, get_cluster_config, get_cluster_namespace,
     load_cluster_config_name, setup_server)
@@ -286,7 +286,7 @@ def run(config, runs, follow, cleanup, log_tree, kube_context):  # pylint: disab
         job_runner.run(detached=not follow)
 
         if not follow:
-            click.echo(f"✓ Jobs created successfully (Run ID: {job_runner.run_id})")
+            click.echo(f"✓ Jobs created successfully (Campaign ID: {job_runner.campaign})")
             click.echo()
             click.echo("Jobs are now running in detached mode.")
             click.echo()
@@ -357,11 +357,11 @@ def monitor(interval, once, kube_context):
         multi = len(contexts_to_monitor) > 1
 
         # Per-context state (keyed by kube_context_name)
-        initial_total: dict[str, dict] = {}        # ctx -> {run_id: total}
-        max_ok: dict[str, dict] = {}               # ctx -> {run_id: max_ok}
-        max_fail: dict[str, dict] = {}             # ctx -> {run_id: max_fail}
+        initial_total: dict[str, dict] = {}        # ctx -> {campaign: total}
+        max_ok: dict[str, dict] = {}               # ctx -> {campaign: max_ok}
+        max_fail: dict[str, dict] = {}             # ctx -> {campaign: max_fail}
         last_per_run: dict[str, dict] = {}         # ctx -> last known per_run
-        run_first_finished: dict[str, dict] = {}   # ctx -> {run_id: (timestamp, finished_count)}
+        run_first_finished: dict[str, dict] = {}   # ctx -> {campaign: (timestamp, finished_count)}
         prev_line_count = [0]
 
         def _build_run_lines(label, ctx, per_run):
@@ -371,30 +371,30 @@ def monitor(interval, once, kube_context):
             ctx_fail = max_fail.setdefault(ctx, {})
             ctx_first = run_first_finished.setdefault(ctx, {})
 
-            all_run_ids = sorted(set(ctx_initial.keys()) | set(per_run.keys()))
+            all_campaigns = sorted(set(ctx_initial.keys()) | set(per_run.keys()))
             lines = []
             all_done = True
             indent = "  " if multi else ""
             now = time.time()
 
-            for run_id in all_run_ids:
-                c = per_run.get(run_id, {"completed": 0, "failed": 0, "running": 0, "pending": 0,
+            for campaign in all_campaigns:
+                c = per_run.get(campaign, {"completed": 0, "failed": 0, "running": 0, "pending": 0,
                                          "total_job_num": None})
                 current_total = c["completed"] + c["failed"] + c["running"] + c["pending"]
-                if run_id not in ctx_initial:
-                    ctx_initial[run_id] = current_total
+                if campaign not in ctx_initial:
+                    ctx_initial[campaign] = current_total
                 # Prefer annotation-based total so the monitor shows the full run size
                 # even while many jobs are still pending / not yet visible in the API.
                 annotated_total = c.get("total_job_num")
-                total = annotated_total if annotated_total else ctx_initial[run_id]
-                ctx_ok[run_id] = max(ctx_ok.get(run_id, 0), c["completed"])
-                ctx_fail[run_id] = max(ctx_fail.get(run_id, 0), c["failed"])
+                total = annotated_total if annotated_total else ctx_initial[campaign]
+                ctx_ok[campaign] = max(ctx_ok.get(campaign, 0), c["completed"])
+                ctx_fail[campaign] = max(ctx_fail.get(campaign, 0), c["failed"])
                 still_in_cluster = c["running"] + c["pending"]
                 finished = total - still_in_cluster if total > 0 else 0
                 if still_in_cluster > 0:
                     all_done = False
-                ok = ctx_ok[run_id]
-                fail = ctx_fail[run_id]
+                ok = ctx_ok[campaign]
+                fail = ctx_fail[campaign]
                 remainder = finished - ok - fail
                 if remainder > 0:
                     ok += remainder
@@ -404,14 +404,14 @@ def monitor(interval, once, kube_context):
                 pct_str = f"{pct:.1f}%".rjust(pct_width)
 
                 # Track first observed completion for this run (to compute rate/ETA)
-                if finished > 0 and run_id not in ctx_first:
-                    ctx_first[run_id] = (now, finished)
+                if finished > 0 and campaign not in ctx_first:
+                    ctx_first[campaign] = (now, finished)
 
                 # Compute rate (jobs/min) and ETA
                 rate_str = ""
                 eta_str = ""
-                if run_id in ctx_first and still_in_cluster > 0:
-                    first_ts, first_finished = ctx_first[run_id]
+                if campaign in ctx_first and still_in_cluster > 0:
+                    first_ts, first_finished = ctx_first[campaign]
                     elapsed = now - first_ts
                     jobs_since = finished - first_finished
                     if elapsed >= 10 and jobs_since > 0:
@@ -424,7 +424,7 @@ def monitor(interval, once, kube_context):
                             eta_str = f"  ETA ~{eta_dt.strftime('%H:%M')}"
 
                 lines.append(
-                    f"{indent}{run_id}  [{progress_bar}]  {pct_str}  "
+                    f"{indent}{campaign}  [{progress_bar}]  {pct_str}  "
                     f"{finished}/{total}  ({ok} ok, {fail} fail)  "
                     f"Running: {c['running']}  Pending: {c['pending']}"
                     f"{rate_str}{eta_str}"
@@ -521,7 +521,7 @@ def monitor(interval, once, kube_context):
 
 @cluster.command()
 @click.option('--output', '-o', default=None,
-              help='Directory where all runs will be downloaded (uses project results dir if not specified)')
+              help='Directory where all campaign data will be downloaded (uses project results dir if not specified)')
 @click.option('--force', '-f', is_flag=True,
               help='Force re-download even if files already exist locally')
 @click.option('--verbose', '-v', is_flag=True,
@@ -541,7 +541,7 @@ def download(output, force, verbose, skip_removal, port_forward_only, remote_com
     """Download result files from the cluster S3 (MinIO) server.
 
     Downloads all test run results from the MinIO S3 server embedded in the
-    robovast pod. Each run is stored in a separate S3 bucket (``run-*``) and
+    robovast pod. Each run is stored in a separate S3 bucket (``campaign-*``) and
     downloaded into a subdirectory of the output directory.
 
     By default a single progress bar line is shown for each run. Use
@@ -782,18 +782,18 @@ def setup(list_configs, namespace, options, force, kube_context, cluster_config)
 
 
 @cluster.command(name='download-cleanup')
-@click.option('--run-id', '-i', default=None,
-              help='Only remove this run\'s bucket (e.g. run-2025-02-27-123456). Without this, removes all run buckets.')
+@click.option('--campaign', '-i', default=None,
+              help='Only remove this campaign\'s bucket (e.g. campaign-2025-02-27-123456). Without this, removes all campaign buckets.')
 @click.option('--context', '-x', 'kube_context', default=None,
               help='Kubernetes context to use (default: active context in kubeconfig)')
-def download_cleanup(run_id, kube_context):
+def download_cleanup(campaign, kube_context):
     """Remove result buckets from cluster S3 without downloading.
 
-    Deletes run result buckets (``run-*``) from the MinIO S3 server in the cluster.
+    Deletes run result buckets (``campaign-*``) from the MinIO S3 server in the cluster.
     Does not download any data; use ``vast execution cluster download`` if you
     need the results first.
 
-    Use --run-id to remove only a specific run's bucket.
+    Use --campaign to remove only a specific campaign's bucket.
     """
     try:
         require_context_for_multi_cluster(kube_context)
@@ -802,7 +802,7 @@ def download_cleanup(run_id, kube_context):
         cluster_config = get_cluster_config(config_name)
         downloader = ResultDownloader(namespace=get_cluster_namespace(context_key), cluster_config=cluster_config,
                                       context=kube_context)
-        count = downloader.cleanup_s3_buckets(run_id=run_id)
+        count = downloader.cleanup_s3_buckets(campaign_id=campaign)
         click.echo(f"✓ Removed {count} bucket(s) from S3.")
 
     except Exception as e:
@@ -810,21 +810,21 @@ def download_cleanup(run_id, kube_context):
 
 
 @cluster.command(name='run-cleanup')
-@click.option('--run-id', '-i', default=None,
-              help='Clean only jobs for this run (e.g. run-2025-02-27-123456). Without this, cleans all scenario-runs jobs.')
+@click.option('--campaign', '-i', default=None,
+              help='Clean only jobs for this campaign (e.g. campaign-2025-02-27-123456). Without this, cleans all scenario-runs jobs.')
 @click.option('--context', '-x', 'kube_context', default=None,
               help='Kubernetes context to use (default: active context in kubeconfig)')
-def run_cleanup(run_id, kube_context):
+def run_cleanup(campaign, kube_context):
     """Clean up jobs and pods from a cluster run.
 
     Removes scenario execution jobs and their associated pods. By default
-    removes all runs. Use --run-id to clean only a specific run.
+    removes all campaigns. Use --campaign to clean only a specific run.
 
     Useful after running with --detach to clean up resources once jobs
     have completed.
 
     Usage: vast execution cluster run-cleanup
-    Usage: vast execution cluster run-cleanup --run-id run-2025-02-27-123456
+    Usage: vast execution cluster run-cleanup --campaign campaign-2025-02-27-123456
     """
     try:
         require_context_for_multi_cluster(kube_context)
@@ -837,23 +837,23 @@ def run_cleanup(run_id, kube_context):
             click.echo(f"✗ Error: {k8s_msg}", err=True)
             sys.exit(1)
 
-        if run_id:
+        if campaign:
             per_run = get_cluster_run_job_counts_per_run(namespace, context=kube_context)
-            label_safe = _label_safe_run_id(run_id)
+            label_safe = _label_safe_campaign(campaign)
             if label_safe not in per_run:
                 available = sorted(per_run.keys())
                 if available:
-                    click.echo(f"Run '{run_id}' not found in cluster.", err=True)
+                    click.echo(f"Campaign '{campaign}' not found in cluster.", err=True)
                     click.echo("Available run-ids:", err=True)
                     for rid in available:
                         click.echo(f"  - {rid}", err=True)
                 else:
                     click.echo("No scenario run jobs in cluster.", err=True)
                 sys.exit(1)
-            click.echo(f"Cleaning up jobs and pods for run '{run_id}'...")
+            click.echo(f"Cleaning up jobs and pods for campaign '{campaign}'...")
         else:
             click.echo("Cleaning up all scenario run jobs and pods...")
-        cleanup_cluster_run(namespace=namespace, run_id=run_id, context=kube_context)
+        cleanup_cluster_run(namespace=namespace, campaign=campaign, context=kube_context)
         click.echo("✓ Cleanup completed successfully!")
 
     except Exception as e:
@@ -984,7 +984,7 @@ def prepare_run(output, config, runs, cluster_config, options, log_tree, kube_co
             namespace=namespace, log_tree=log_tree,
             kube_context=kube_context)
 
-        click.echo(f"Preparing run configuration 'ID: {job_runner.run_id}', test configs: {
+        click.echo(f"Preparing run configuration 'ID: {job_runner.campaign}', test configs: {
                    len(job_runner.configs)}, runs per test config: {job_runner.num_runs}...")
 
         # Prepare config files
@@ -1033,7 +1033,7 @@ def prepare_run(output, config, runs, cluster_config, options, log_tree, kube_co
         prepare_kueue_setup(output, namespace=namespace, kube_context=kube_context)
 
         generate_upload_script(
-            output, job_runner.run_id, namespace, cluster_config,
+            output, job_runner.campaign, namespace, cluster_config,
         )
 
         click.echo(f"✓ Successfully prepared {job_count} job manifests in directory'{
@@ -1043,9 +1043,9 @@ def prepare_run(output, config, runs, cluster_config, options, log_tree, kube_co
         handle_cli_exception(e)
 
 
-def generate_upload_script(output_dir, run_id, namespace="default", cluster_config=None):
+def generate_upload_script(output_dir, campaign, namespace="default", cluster_config=None):
     """Generate a Python script to upload configuration files to S3."""
-    bucket_name = run_id.lower().replace("_", "-")
+    bucket_name = campaign.lower().replace("_", "-")
     access_key = "minioadmin"
     secret_key = "minioadmin"
     if cluster_config is not None:
@@ -1056,7 +1056,7 @@ def generate_upload_script(output_dir, run_id, namespace="default", cluster_conf
 Script to upload configuration files to the cluster S3 (MinIO) server.
 
 Generated by: vast execution cluster prepare-run
-Run ID: {run_id}
+Run ID: {campaign}
 Bucket: {bucket_name}
 Namespace: {namespace}
 """

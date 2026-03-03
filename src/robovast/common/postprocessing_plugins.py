@@ -21,7 +21,7 @@ by name in the configuration file.
 
 Each function is a Python implementation that executes commands using subprocess
 or host-side logic. All functions accept a results_dir parameter containing the
-path to the results directory (parent of run-* dirs) or run-<id> directory to
+path to the results directory (parent of run-* dirs) or campaign-<id> directory to
 process, along with a config_dir for resolving relative paths, and additional
 command-specific parameters.
 
@@ -55,7 +55,7 @@ def command(
     Use this for custom scripts or when a specific plugin doesn't exist.
 
     Args:
-        results_dir: Path to the run-<id> directory to process
+        results_dir: Path to the campaign-<id> directory to process
         config_dir: Directory containing the config file (for resolving relative paths)
         script: Script path to execute (relative or absolute)
         args: Optional list of command-line arguments to pass to the script
@@ -120,7 +120,7 @@ def rosbags_tf_to_csv(
     positions, and coordinate transformations over time.
 
     Args:
-        results_dir: Path to the run-<id> directory to process
+        results_dir: Path to the campaign-<id> directory to process
         config_dir: Directory containing the config file (for resolving relative paths)
         frames: Optional list of TF frame names to extract
 
@@ -179,7 +179,7 @@ def rosbags_bt_to_csv(
     task execution sequences, and behavior tree node activations.
 
     Args:
-        results_dir: Path to the run-<id> directory to process
+        results_dir: Path to the campaign-<id> directory to process
         config_dir: Directory containing the config file (for resolving relative paths)
 
     Returns:
@@ -233,7 +233,7 @@ def rosbags_action_to_csv(
     and <filename_prefix>_status.csv with flattened columns.
 
     Args:
-        results_dir: Path to the run-<id> directory to process
+        results_dir: Path to the campaign-<id> directory to process
         config_dir: Directory containing the config file (for resolving relative paths)
         action: Action name to extract (e.g. 'navigate_to_pose')
         filename_prefix: Output filename prefix (default: action_<action>).
@@ -298,7 +298,7 @@ def rosbags_to_csv(
     like costmaps and snapshots.
 
     Args:
-        results_dir: Path to the run-<id> directory to process
+        results_dir: Path to the campaign-<id> directory to process
         config_dir: Directory containing the config file (for resolving relative paths)
         skip_topics: Optional list of topic names to skip during conversion
 
@@ -358,7 +358,7 @@ def rosbags_to_webm(
     directly to FFmpeg without intermediate decoding for maximum performance.
 
     Args:
-        results_dir: Path to the run-<id> directory to process
+        results_dir: Path to the campaign-<id> directory to process
         config_dir: Directory containing the config file (for resolving relative paths)
         topic: CompressedImage topic name to convert (default: /camera/image_raw/compressed)
         fps: Fallback FPS when timestamps are unavailable (default: 30)
@@ -418,7 +418,7 @@ def compress(
     """Create a gzipped tarball for each run-* directory (runs on host).
 
     For each direct subdirectory of results_dir whose name starts with ``run-``,
-    creates a ``run-<id>.tar.gz`` in the output directory containing that run's
+    creates a ``campaign-<id>.tar.gz`` in the output directory containing that run's
     contents. Does not use Docker; runs entirely on the host using Python's
     tarfile module. Useful for archiving or transferring results.
 

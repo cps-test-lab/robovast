@@ -89,7 +89,7 @@ class ShareUploader:
 
         Steps for each available run:
 
-        1. Create the remote ``{run_id}.tar.gz`` archive in ``/data/`` (skip
+        1. Create the remote ``{campaign}.tar.gz`` archive in ``/data/`` (skip
            if it already exists and *force* is ``False``).
         2. Execute the provider's upload script inside the archiver container,
            streaming progress to the local terminal.
@@ -113,18 +113,18 @@ class ShareUploader:
         Returns:
             int: Number of runs successfully uploaded.
         """
-        available_runs, excluded_runs = self._downloader.list_available_runs()
+        available_campaigns, excluded_runs = self._downloader.list_available_campaigns()
 
         if excluded_runs:
             for rid, running, pending in excluded_runs:
                 logger.info(
-                    "Run %s not ready (jobs still running: %d, pending: %d)",
+                    "Campaign %s not ready (jobs still running: %d, pending: %d)",
                     rid,
                     running,
                     pending,
                 )
 
-        if not available_runs:
+        if not available_campaigns:
             if excluded_runs:
                 logger.info(
                     "No runs ready to upload. Wait for jobs to finish and try again."
@@ -135,18 +135,18 @@ class ShareUploader:
 
         logger.info(
             "Uploading %d run(s) to %s...",
-            len(available_runs),
+            len(available_campaigns),
             self.provider.SHARE_TYPE,
         )
 
         uploaded = 0
-        for run_id in available_runs:
-            success = self._process_run(run_id, force=force, verbose=verbose)
+        for campaign in available_campaigns:
+            success = self._process_run(campaign, force=force, verbose=verbose)
             if success:
                 if not keep_archive:
-                    self._remove_remote_archive(run_id)
+                    self._remove_remote_archive(campaign)
                 if not skip_removal:
-                    self._delete_run_s3(run_id)
+                    self._delete_run_s3(campaign)
                 uploaded += 1
 
         return uploaded
@@ -155,20 +155,20 @@ class ShareUploader:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _process_run(self, run_id: str, force: bool, verbose: bool) -> bool:
+    def _process_run(self, campaign: str, force: bool, verbose: bool) -> bool:
         """Ensure archive exists, then upload. Returns True on success."""
         # Step 1: create/check the tar.gz archive
         archive_ok = self._downloader._create_remote_archive(  # pylint: disable=protected-access
-            run_id, force=force, verbose=verbose
+            campaign, force=force, verbose=verbose
         )
         if not archive_ok:
-            logger.error("Failed to create archive for run %s, skipping upload.", run_id)
+            logger.error("Failed to create archive for run %s, skipping upload.", campaign)
             return False
 
         # Step 2: upload via the provider's pod-side script
-        return self._upload_run(run_id, verbose=verbose)
+        return self._upload_run(campaign, verbose=verbose)
 
-    def _upload_run(self, run_id: str, verbose: bool) -> bool:
+    def _upload_run(self, campaign: str, verbose: bool) -> bool:
         """Execute the provider upload script inside the archiver container."""
         script_path = self.provider.get_upload_script_path()
         try:
@@ -196,12 +196,12 @@ class ShareUploader:
                 "exec", "-i", "-n", self.namespace, "robovast",
                 "-c", "archiver",
                 "--",
-                "python", "-", run_id,
+                "python", "-", campaign,
             ]
         )
 
         if verbose:
-            logger.info("Uploading run %s via %s...", run_id, self.provider.SHARE_TYPE)
+            logger.info("Uploading run %s via %s...", campaign, self.provider.SHARE_TYPE)
 
         try:
             proc = subprocess.Popen(
@@ -244,7 +244,7 @@ class ShareUploader:
             if proc.returncode != 0:
                 sys.stdout.write(
                     "\r" + CLEAR_LINE +
-                    f"{run_id}  upload FAILED (exit code {proc.returncode})\n"
+                    f"{campaign}  upload FAILED (exit code {proc.returncode})\n"
                 )
                 sys.stdout.flush()
                 return False
@@ -253,15 +253,15 @@ class ShareUploader:
 
         except Exception as exc:  # pylint: disable=broad-except
             sys.stdout.write(
-                "\r" + CLEAR_LINE + f"{run_id}  upload FAILED: {exc}\n"
+                "\r" + CLEAR_LINE + f"{campaign}  upload FAILED: {exc}\n"
             )
             sys.stdout.flush()
-            logger.debug("Upload exception for %s: %s", run_id, exc, exc_info=True)
+            logger.debug("Upload exception for %s: %s", campaign, exc, exc_info=True)
             return False
 
-    def _delete_run_s3(self, run_id: str) -> None:
-        """Delete the S3 bucket for *run_id* after a successful upload."""
-        logger.debug("Deleting S3 bucket %s...", run_id)
+    def _delete_run_s3(self, campaign_id: str) -> None:
+        """Delete the S3 bucket for *campaign_id* after a successful upload."""
+        logger.debug("Deleting S3 bucket %s...", campaign_id)
         try:
             if self.cluster_config:
                 access_key, secret_key = self.cluster_config.get_s3_credentials()
@@ -273,14 +273,14 @@ class ShareUploader:
                 secret_key=secret_key,
                 context=self.context,
             ) as s3:
-                s3.delete_bucket(run_id)
-            logger.debug("Deleted S3 bucket %s", run_id)
+                s3.delete_bucket(campaign_id)
+            logger.debug("Deleted S3 bucket %s", campaign_id)
         except Exception as exc:  # pylint: disable=broad-except
-            logger.warning("Could not delete S3 bucket %s: %s", run_id, exc)
+            logger.warning("Could not delete S3 bucket %s: %s", campaign_id, exc)
 
-    def _remove_remote_archive(self, run_id: str) -> None:
+    def _remove_remote_archive(self, campaign_id: str) -> None:
         """Remove the tar.gz from /data/ in the archiver container."""
-        archive_path = f"/data/{run_id}.tar.gz"
+        archive_path = f"/data/{campaign_id}.tar.gz"
         ctx_args = ["--context", self.context] if self.context else []
         try:
             subprocess.run(

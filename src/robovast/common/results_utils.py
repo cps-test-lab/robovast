@@ -14,7 +14,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Common utilities for results directory layout (run-<id>/<config>/<test-number>)."""
+"""Common utilities for results directory layout (campaign-<id>/<config>/<test-number>)."""
 from pathlib import Path
 from typing import Iterator, Tuple
 
@@ -22,7 +22,7 @@ from typing import Iterator, Tuple
 def iter_test_folders(results_dir: str) -> Iterator[Tuple[str, str, str, Path]]:
     """Iterate over all test folders under a results directory.
 
-    Discovers the standard layout: results_dir/run-<id>/<config>/<test-number>/.
+    Discovers the standard layout: results_dir/campaign-<id>/<config>/<test-number>/.
     Under results_dir, only directories whose name starts with 'run-' are
     considered; under each run, subdirs are config names; under each config,
     subdirs whose names are numeric are test numbers.
@@ -31,8 +31,8 @@ def iter_test_folders(results_dir: str) -> Iterator[Tuple[str, str, str, Path]]:
         results_dir: Path to the project results directory (parent of run-* dirs).
 
     Yields:
-        Tuples (run_id, config_name, test_number, folder_path) where folder_path
-        is the full path to run-<id>/<config>/<test-number>.
+        Tuples (campaign, config_name, test_number, folder_path) where folder_path
+        is the full path to campaign-<id>/<config>/<test-number>.
     """
     root = Path(results_dir)
     if not root.is_dir():
@@ -43,7 +43,7 @@ def iter_test_folders(results_dir: str) -> Iterator[Tuple[str, str, str, Path]]:
             continue
         if run_item.name == "_config":
             continue
-        run_id = run_item.name
+        campaign = run_item.name
 
         for config_item in sorted(run_item.iterdir()):
             if not config_item.is_dir():
@@ -55,4 +55,4 @@ def iter_test_folders(results_dir: str) -> Iterator[Tuple[str, str, str, Path]]:
                     continue
                 test_number = test_item.name
                 folder_path = test_item
-                yield run_id, config_name, test_number, folder_path
+                yield campaign, config_name, test_number, folder_path

@@ -202,30 +202,30 @@ class ClusterS3Client:
             raise
 
     def list_run_buckets(self) -> list:
-        """List all buckets whose names start with 'run-'.
+        """List all buckets whose names start with 'campaign-'.
 
         Returns:
             list[str]: Sorted list of matching bucket names.
         """
         response = self._s3.list_buckets()
-        buckets = [b["Name"] for b in response.get("Buckets", []) if b["Name"].startswith("run-")]
+        buckets = [b["Name"] for b in response.get("Buckets", []) if b["Name"].startswith("campaign-")]
         return sorted(buckets)
 
-    def cleanup_run_buckets(self, run_id: Optional[str] = None) -> int:
+    def cleanup_run_buckets(self, campaign_id: Optional[str] = None) -> int:
         """Remove run buckets from S3 without downloading them.
 
         Args:
-            run_id: If provided, only the bucket with this exact name is removed.
-                    If None, all run buckets (run-*) are removed.
+            campaign_id: If provided, only the bucket with this exact name is removed.
+                    If None, all campaign buckets (campaign-*) are removed.
 
         Returns:
             int: Number of buckets successfully removed.
         """
         all_runs = self.list_run_buckets()
-        if run_id:
-            buckets_to_remove = [b for b in all_runs if b == run_id]
+        if campaign_id:
+            buckets_to_remove = [b for b in all_runs if b == campaign_id]
             if not buckets_to_remove:
-                logger.info(f"No bucket matching '{run_id}' found.")
+                logger.info(f"No bucket matching '{campaign_id}' found.")
                 return 0
         else:
             buckets_to_remove = all_runs
@@ -351,7 +351,7 @@ def upload_configs_to_s3(config_dir: str, bucket_name: str, cluster_config, name
 
     Args:
         config_dir: Local directory containing generated config files.
-        bucket_name: S3 bucket name (e.g. ``'run-20260220-123456'``).
+        bucket_name: S3 bucket name (e.g. ``'campaign-20260220-123456'``).
         cluster_config: BaseConfig instance providing S3 endpoint/credentials.
         namespace: Kubernetes namespace used for port-forwarding.
         context: Kubernetes context to use. None uses the active context.
@@ -371,15 +371,15 @@ def upload_configs_to_s3(config_dir: str, bucket_name: str, cluster_config, name
         sys.exit(1)
 
 
-def upload_run_configs(run_id: str, run_data: dict, num_runs: int, cluster_config, namespace: str = "default", context: str = None) -> None:
-    """Prepare run config files and upload them to an S3 bucket.
+def upload_run_configs(campaign_id: str, run_data: dict, num_runs: int, cluster_config, namespace: str = "default", context: str = None) -> None:
+    """Prepare campaign config files and upload them to an S3 bucket.
 
     Opens a **single** port-forward for both the existence check and the upload.
-    Raises :class:`RuntimeError` if the bucket derived from *run_id* already exists
+    Raises :class:`RuntimeError` if the bucket derived from *campaign_id* already exists
     rather than silently appending a numeric suffix.
 
     Args:
-        run_id: Run identifier (e.g. ``'run-2026-03-01-120000'``).
+        campaign_id: Campaign identifier (e.g. ``'campaign-2026-03-01-120000'``).
         run_data: Scenario variation data produced by ``generate_scenario_variations``.
         num_runs: Number of runs (used by ``create_execution_yaml``).
         cluster_config: BaseConfig instance providing S3 credentials and optional
@@ -388,7 +388,7 @@ def upload_run_configs(run_id: str, run_data: dict, num_runs: int, cluster_confi
         context: Kubernetes context to use. None uses the active context.
 
     Raises:
-        RuntimeError: If an S3 bucket for *run_id* already exists.
+        RuntimeError: If an S3 bucket for *campaign_id* already exists.
     """
     # Inline imports to avoid circular dependencies at module load time.
     from robovast.common import create_execution_yaml, prepare_run_configs  # pylint: disable=import-outside-toplevel
@@ -396,12 +396,12 @@ def upload_run_configs(run_id: str, run_data: dict, num_runs: int, cluster_confi
     access_key, secret_key = cluster_config.get_s3_credentials()
 
     with ClusterS3Client(namespace=namespace, access_key=access_key, secret_key=secret_key, context=context) as s3:
-        bucket_name = run_id.lower().replace("_", "-")
+        bucket_name = campaign_id.lower().replace("_", "-")
         if s3.bucket_exists(bucket_name):
             raise RuntimeError(
                 f"S3 bucket '{bucket_name}' already exists. "
-                f"A run with ID '{run_id}' is already in progress or was not cleaned up. "
-                f"Clean up the existing run first or wait until the next second."
+                f"A campaign with ID '{campaign_id}' is already in progress or was not cleaned up. "
+                f"Clean up the existing campaign first or wait until the next second."
             )
 
         # Prepare config files and upload inside the same port-forward session.

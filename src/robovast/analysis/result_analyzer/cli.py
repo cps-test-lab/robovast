@@ -146,15 +146,15 @@ def result_analyzer_cmd(results_dir, force, skip_postprocessing):
 
 
 @analysis.command(name='merge-results')
-@click.argument('merged_run_dir', type=click.Path())
+@click.argument('merged_campaign_dir', type=click.Path())
 @click.option('--results-dir', '-r', default=None,
               help='Source directory containing run-\\* dirs (uses project results dir if not specified)')
-def merge_results_cmd(merged_run_dir, results_dir):
-    """Merge run-dirs with identical configs into one merged_run_dir.
+def merge_results_cmd(merged_campaign_dir, results_dir):
+    """Merge campaign-dirs with identical configs into one merged_campaign_dir.
 
-    Groups run-dir/config-dir by config_identifier from config.yaml.
-    Test folders (0, 1, 2, ...) from all runs are renumbered and copied.
-    Original run-dirs are not modified.
+    Groups campaign-dir/config-dir by config_identifier from config.yaml.
+    Test folders (0, 1, 2, ...) from all campaigns are renumbered and copied.
+    Original campaign-dirs are not modified.
 
     Requires project initialization with ``vast init`` first (unless ``--results-dir`` is specified).
     """
@@ -164,9 +164,9 @@ def merge_results_cmd(merged_run_dir, results_dir):
         project_config = get_project_config()
         source_dir = project_config.results_dir
 
-    click.echo(f"Merging from {source_dir} into {merged_run_dir}...")
+    click.echo(f"Merging from {source_dir} into {merged_campaign_dir}...")
     try:
-        success, message = merge_results(source_dir, merged_run_dir)
+        success, message = merge_results(source_dir, merged_campaign_dir)
         if success:
             click.echo(f"✓ {message}")
         else:

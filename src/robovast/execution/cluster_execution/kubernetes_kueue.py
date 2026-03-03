@@ -152,23 +152,23 @@ def set_cluster_queue_stop_policy(stop_policy, kube_context=None):
 def cleanup_kueue_workloads(
     namespace="default",
     label_selector=None,
-    run_id=None,
+    campaign_id=None,
     k8s_batch_client=None,
 ):
     """Delete Kueue Workload objects for scenario run jobs.
 
     Workloads don't inherit job labels (jobgroup, run-id). They use
-    kueue.x-k8s.io/queue-name=robovast. When run_id is given, only workloads
+    kueue.x-k8s.io/queue-name=robovast. When campaign_id is given, only workloads
     owned by jobs of that run are deleted (matched via ownerReferences and job
-    UIDs). Without run_id, all workloads in the robovast queue are deleted.
+    UIDs). Without campaign_id, all workloads in the robovast queue are deleted.
     If Kueue is not installed (Workload CRD missing), logs and returns without
     failing.
 
     Args:
         namespace: Kubernetes namespace
-        label_selector: Label selector used to list jobs for run_id scoping
-        run_id: If given, only delete workloads for this run's jobs
-        k8s_batch_client: BatchV1Api client; required when run_id is given
+        label_selector: Label selector used to list jobs for campaign_id scoping
+        campaign_id: If given, only delete workloads for this campaign's jobs
+        k8s_batch_client: BatchV1Api client; required when campaign_id is given
     """
     try:
         custom_api = client.CustomObjectsApi()
@@ -177,7 +177,7 @@ def cleanup_kueue_workloads(
         )
         queue_selector = "kueue.x-k8s.io/queue-name=robovast"
 
-        if run_id is not None and k8s_batch_client is not None:
+        if campaign_id is not None and k8s_batch_client is not None:
             # Collect UIDs of jobs belonging to this run so we only delete
             # the workloads that are owned by those jobs.
             job_uid_selector = label_selector or f"jobgroup=scenario-runs"
@@ -191,14 +191,14 @@ def cleanup_kueue_workloads(
                 run_job_uids = set()
 
             if not run_job_uids:
-                logger.debug("No jobs found for run '%s', skipping workload cleanup", run_id)
+                logger.debug("No jobs found for campaign '%s', skipping workload cleanup", campaign_id)
                 return
 
             # List all workloads in the queue and delete only those owned by
             # jobs of the target run.
             logger.debug(
-                "Deleting Kueue workloads owned by %d job(s) for run '%s'",
-                len(run_job_uids), run_id,
+                "Deleting Kueue workloads owned by %d job(s) for campaign '%s'",
+                len(run_job_uids), campaign_id,
             )
             workloads = custom_api.list_namespaced_custom_object(
                 group=KUEUE_WORKLOAD_GROUP,
@@ -231,11 +231,11 @@ def cleanup_kueue_workloads(
                         else:
                             logger.warning(f"Could not delete workload '{wl_name}': {e}")
             logger.info(
-                "Successfully deleted %d scenario-runs Kueue workload(s) for run '%s'",
-                deleted, run_id,
+                "Successfully deleted %d scenario-runs Kueue workload(s) for campaign '%s'",
+                deleted, campaign_id,
             )
         else:
-            # No run_id scoping: delete all robovast queue workloads at once
+            # No campaign_id scoping: delete all robovast queue workloads at once
             logger.debug(f"Deleting all Kueue workloads with selector '{queue_selector}'")
             custom_api.delete_collection_namespaced_custom_object(
                 group=KUEUE_WORKLOAD_GROUP,

@@ -126,7 +126,7 @@ Clean up only the job objects (without touching the result storage):
 .. code-block:: bash
 
    vast execution cluster run-cleanup
-   vast execution cluster run-cleanup --run-id run-2025-06-01-120000
+   vast execution cluster run-cleanup --campaign campaign-2025-06-01-120000
 
 Remove result archives from S3 without downloading:
 
@@ -425,9 +425,9 @@ machine.
 How it works
 ^^^^^^^^^^^^
 
-For each available run the command:
+For each available campaign the command:
 
-1. Creates a compressed ``{run_id}.tar.gz`` archive in ``/data/`` on the pod
+1. Creates a compressed ``{campaign_id}.tar.gz`` archive in ``/data/`` on the pod
    (reuses the same mechanism as ``cluster download``).  If the archive
    already exists it is reused.
 2. Executes the share-provider upload script inside the archiver container,
@@ -501,8 +501,8 @@ the percentage, transferred size, and upload rate:
 
 .. code-block:: text
 
-   run-2026-03-01-120000  [████████████░░░░░░░░]   60.0%  1.2 MiB/2.0 MiB  3.4 MiB/s
-   run-2026-03-01-120000  uploaded (2.0 MiB)  ✓
+   campaign-2026-03-01-120000  [████████████░░░░░░░░]   60.0%  1.2 MiB/2.0 MiB  3.4 MiB/s
+   campaign-2026-03-01-120000  uploaded (2.0 MiB)  ✓
 
    ✓ Uploaded 3 run(s) to nextcloud successfully!
 
@@ -546,7 +546,7 @@ Share providers are discovered as **entry-point plugins** under the
    runs inside the ``robovast-archiver`` image (``python:3.12-alpine`` +
    ``pigz``, ``boto3``, ``google-auth``, ``google-api-python-client``).  It
    receives the run ID as ``sys.argv[1]`` and finds the archive at
-   ``/data/{run_id}.tar.gz``.  Env vars from ``build_pod_env()`` are
+   ``/data/{campaign}.tar.gz``.  Env vars from ``build_pod_env()`` are
    available via ``os.environ``.
 
 3. **Register the provider** in your package's ``pyproject.toml``:
