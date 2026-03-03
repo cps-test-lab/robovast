@@ -67,7 +67,7 @@ def execute_postprocessing_plugin(
         plugin_name: Name of the plugin
         plugin_func: The plugin function to call
         params: Dictionary of parameters for the plugin
-        results_dir: Path to the run-<id> directory
+        results_dir: Path to the campaign-<id> directory
         config_dir: Directory containing the configuration file
         provenance_file: Optional path for container plugins to write provenance JSON
 

@@ -429,7 +429,7 @@ class TestResultsAnalyzer(QMainWindow):
         self.tree.expandAll()
 
     def populate_directory(self, parent_item, directory_path, max_depth=2, current_depth=0):
-        """Populate tree from common test-folder discovery (run-<id>/<config>/<test-number>)."""
+        """Populate tree from common test-folder discovery (campaign-<id>/<config>/<test-number>)."""
         try:
             base_dir = Path(directory_path)
             # Build structure from shared iterator: campaign -> config_name -> [(test_number, folder_path)]

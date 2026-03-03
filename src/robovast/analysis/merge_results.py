@@ -14,7 +14,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Merge run-dirs with identical configs into one merged output."""
+"""Merge campaign-dirs with identical configs into one merged output."""
 
 import hashlib
 import logging
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 def _iter_run_configs(results_dir: str) -> Iterator[tuple[str, str, Path, str | None]]:
-    """Iterate over run-dirs and config-dirs, yielding (campaign, config_name, config_path, config_identifier).
+    """Iterate over campaign-dirs and config-dirs, yielding (campaign, config_name, config_path, config_identifier).
 
     Skips config-dirs without config.yaml (yields config_identifier=None).
     """
@@ -64,9 +64,9 @@ def _iter_run_configs(results_dir: str) -> Iterator[tuple[str, str, Path, str | 
 
 
 def merge_results(results_dir: str, merged_campaign_dir: str) -> tuple[bool, str]:
-    """Merge run-dirs with identical configs into merged_campaign_dir.
+    """Merge campaign-dirs with identical configs into merged_campaign_dir.
 
-    Groups run-dir/config-dir by config_identifier from config.yaml.
+    Groups campaign-dir/config-dir by config_identifier from config.yaml.
     Test folders (0, 1, 2, ...) from all campaigns are renumbered and copied.
     Original campaigns are not modified.
 

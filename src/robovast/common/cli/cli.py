@@ -236,7 +236,7 @@ def import_results(archive, output, force):
     to the results directory. This is useful for importing results that were
     downloaded on a different machine or for re-importing previously downloaded results.
 
-    The archive should be in the format ``run-<ID>.tar.gz`` and contain
+    The archive should be in the format ``campaign-<ID>.tar.gz`` and contain
     a campaign directory with all test results.
 
     Requires project initialization with ``vast init`` first (unless ``--output`` is specified).
@@ -277,7 +277,7 @@ def import_results(archive, output, force):
                     click.echo("Error: Archive is empty", err=True)
                     sys.exit(1)
 
-                # Extract run ID from archive contents (should be run-<ID>)
+                # Extract run ID from archive contents (should be campaign-<ID>)
                 top_level_dirs = set()
                 for member in members:
                     parts = member.split('/')

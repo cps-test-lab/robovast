@@ -75,7 +75,7 @@ def main():
                     for obj in page.get("Contents", []):
                         key = obj["Key"]
                         size = obj["Size"]
-                        # Use bucket name (run-<id>) as top-level folder in the archive
+                        # Use bucket name (campaign-<id>) as top-level folder in the archive
                         tar_name = f"{bucket_name}/{key}"
                         tarinfo = tarfile.TarInfo(name=tar_name)
                         tarinfo.size = size
