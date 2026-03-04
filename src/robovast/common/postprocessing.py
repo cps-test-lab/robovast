@@ -163,9 +163,15 @@ def find_campaign_vast_file(results_dir: str) -> tuple[Optional[str], Optional[s
             continue
         config_dir = campaign_item / "_config"
         if config_dir.is_dir():
-            for f in sorted(config_dir.iterdir()):
-                if f.is_file() and f.suffix == ".vast":
-                    return str(f), str(config_dir)
+            vast_files = [f for f in sorted(config_dir.iterdir()) if f.is_file() and f.suffix == ".vast"]
+            if len(vast_files) > 1:
+                names = ", ".join(f.name for f in vast_files)
+                raise ValueError(
+                    f"Multiple .vast files found in {config_dir}: {names}. "
+                    "Expected exactly one."
+                )
+            if vast_files:
+                return str(vast_files[0]), str(config_dir)
     return None, None
 
 
@@ -327,16 +333,24 @@ def compute_dir_hash(dir_path: str, exclude_set: Optional[set] = None) -> str:
     return hashlib.md5(hash_string.encode()).hexdigest()
 
 
-def run_postprocessing(results_dir: str, output_callback=None, force: bool = False):  # pylint: disable=too-many-return-statements
+def run_postprocessing(  # pylint: disable=too-many-return-statements
+        results_dir: str,
+        output_callback=None,
+        force: bool = False,
+        vast_file: Optional[str] = None,
+):
     """Run postprocessing commands on run results.
 
     The postprocessing configuration is read from the ``.vast`` file found in
-    the most recent ``campaign-<id>/_config/`` directory under *results_dir*.
+    the most recent ``campaign-<id>/_config/`` directory under *results_dir*,
+    unless *vast_file* is provided explicitly.
 
     Args:
         results_dir: Directory containing run results (parent of campaign-* dirs)
         output_callback: Optional callback function for output messages (takes message string)
         force: If True, bypass caching and force postprocessing even if results are unchanged
+        vast_file: Optional explicit path to a ``.vast`` file.  When given, the
+            campaign copy is ignored entirely.
 
     Returns:
         Tuple of (success: bool, message: str)
@@ -352,15 +366,22 @@ def run_postprocessing(results_dir: str, output_callback=None, force: bool = Fal
     if not os.path.exists(results_dir):
         return False, f"Results directory does not exist: {results_dir}"
 
-    # Discover the .vast config file from the most recent campaign
-    vast_path, config_dir = find_campaign_vast_file(results_dir)
-    if vast_path is None:
-        return False, (
-            f"No .vast file found in any campaign-*/_config/ directory under: {results_dir}\n"
-            "Ensure at least one execution campaign has been completed."
-        )
-
-    output(f"Using config from: {vast_path}")
+    if vast_file is not None:
+        # Explicit override: validate the supplied path and skip campaign discovery
+        if not os.path.isfile(vast_file):
+            return False, f"Override .vast file does not exist: {vast_file}"
+        vast_path = os.path.abspath(vast_file)
+        config_dir = os.path.dirname(vast_path)
+        output(f"Using override config: {vast_path}")
+    else:
+        # Discover the .vast config file from the most recent campaign
+        vast_path, config_dir = find_campaign_vast_file(results_dir)
+        if vast_path is None:
+            return False, (
+                f"No .vast file found in any campaign-*/_config/ directory under: {results_dir}\n"
+                "Ensure at least one execution campaign has been completed."
+            )
+        output(f"Using config from: {vast_path}")
 
     # Get postprocessing commands
     commands = get_postprocessing_commands(vast_path)

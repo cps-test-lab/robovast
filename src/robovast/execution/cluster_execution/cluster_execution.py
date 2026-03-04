@@ -516,7 +516,7 @@ class JobRunner:
         spec['initContainers'] = [
             {
                 'name': 's3-init',
-                'image': 'ghcr.io/cps-test-lab/robovast-sidecar:pr-73@sha256:6f54b2d89033c4160922ae4fc94797413f5b6596ca0d33f43bab1deb906b4bc6',
+                'image': 'ghcr.io/cps-test-lab/robovast-sidecar:latest',
                 'command': ['sh', '-c', init_cmd],
                 'env': init_env,
                 'volumeMounts': [

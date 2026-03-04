@@ -22,6 +22,7 @@ import sys
 import click
 
 from robovast.common.cli import get_project_config, handle_cli_exception
+from robovast.common.cli.project_config import ProjectConfig
 from robovast.common.postprocessing import load_postprocessing_plugins
 
 from ...common import run_postprocessing
@@ -41,7 +42,10 @@ def analysis():
               help='Directory containing run results (uses project results dir if not specified)')
 @click.option('--force', '-f', is_flag=True,
               help='Force postprocessing even if results directory is unchanged (bypasses caching)')
-def postprocess_cmd(results_dir, force):
+@click.option('--override', '-o', default=None, metavar='VAST_FILE',
+              help='Override the .vast file used for postprocessing instead of the one '
+                   'found in campaign-<id>/_config/')
+def postprocess_cmd(results_dir, force, override):
     """Run postprocessing commands on run results.
 
     Executes postprocessing commands defined in the .vast file found in the
@@ -49,15 +53,26 @@ def postprocess_cmd(results_dir, force):
     Postprocessing is skipped if the result-directory is unchanged,
     unless --force is specified.
 
+    Use --override to supply a .vast file explicitly instead of the campaign copy.
+
     Requires project initialization with ``vast init`` first (unless ``--results-dir`` is specified).
     """
-    # Resolve results_dir from project config when not explicitly provided
+    # Resolve results_dir from project config when not explicitly provided.
+    # postprocess never uses config_path from the project file (it always reads
+    # the .vast from campaign-<id>/_config/ or --override), so only results_dir
+    # is needed and config_path validation is intentionally skipped.
     if results_dir is None:
-        project_config = get_project_config()
-        results_dir = project_config.results_dir
+        raw_config = ProjectConfig.load()
+        if not raw_config or not raw_config.results_dir:
+            raise click.ClickException(
+                "Project not initialized. Run 'vast init <config-file>' first."
+            )
+        results_dir = raw_config.results_dir
 
     click.echo("Starting postprocessing...")
     click.echo(f"Results directory: {results_dir}")
+    if override:
+        click.echo(f"Override .vast file: {override}")
     if force:
         click.echo("Force mode enabled: bypassing cache")
     click.echo("-" * 60)
@@ -66,7 +81,8 @@ def postprocess_cmd(results_dir, force):
     success, message = run_postprocessing(
         results_dir=results_dir,
         output_callback=click.echo,
-        force=force
+        force=force,
+        vast_file=override,
     )
 
     click.echo("\n" + "=" * 60)
@@ -82,26 +98,40 @@ def postprocess_cmd(results_dir, force):
               help='Force postprocessing even if results directory is unchanged (bypasses caching)')
 @click.option('--skip-postprocessing', is_flag=True,
               help='Skip postprocessing before launching the GUI')
-def result_analyzer_cmd(results_dir, force, skip_postprocessing):
+@click.option('--override', '-o', default=None, metavar='VAST_FILE',
+              help='Override the .vast file used for postprocessing instead of the one '
+                   'found in campaign-<id>/_config/')
+def result_analyzer_cmd(results_dir, force, skip_postprocessing, override):
     """Launch the graphical run results analyzer.
 
     Opens a GUI application for interactive exploration and
     visualization of run results. Automatically runs postprocessing
     before launching the GUI.
 
+    Use --override to supply a .vast file explicitly instead of the campaign copy.
+
     Requires project initialization with ``vast init`` first (unless ``--results-dir`` is specified).
     """
-    # Resolve results_dir from project config when not explicitly provided
+    # Resolve results_dir from project config when not explicitly provided.
+    # gui/postprocess never uses config_path from the project file, so only
+    # results_dir is needed and config_path validation is intentionally skipped.
     if results_dir is None:
-        project_config = get_project_config()
-        results_dir = project_config.results_dir
+        raw_config = ProjectConfig.load()
+        if not raw_config or not raw_config.results_dir:
+            raise click.ClickException(
+                "Project not initialized. Run 'vast init <config-file>' first."
+            )
+        results_dir = raw_config.results_dir
 
     # Run postprocessing before launching GUI (unless skipped)
     if not skip_postprocessing:
+        if override:
+            click.echo(f"Override .vast file: {override}")
         success, message = run_postprocessing(
             results_dir=results_dir,
             output_callback=click.echo,
-            force=force
+            force=force,
+            vast_file=override,
         )
 
         if not success:
@@ -130,7 +160,7 @@ def result_analyzer_cmd(results_dir, force, skip_postprocessing):
     app.setStyle('Fusion')
 
     try:
-        window = RunResultsAnalyzer(base_dir=results_dir)
+        window = RunResultsAnalyzer(base_dir=results_dir, override_vast=override)
         window.show()
         exit_code = app.exec_()
         window.deleteLater()

@@ -274,7 +274,6 @@ class ClusterS3Client:
                     extra_args["Metadata"] = {"executable": "yes"}
                 self._s3.upload_file(local_path, bucket_name, s3_key,
                                      ExtraArgs=extra_args if extra_args else None)
-                print(f"bucket_name, s3_key: {bucket_name}, {s3_key}")
                 uploaded += 1
 
         logger.debug(f"Uploaded {uploaded} file(s) to s3://{bucket_name}/{s3_prefix}")

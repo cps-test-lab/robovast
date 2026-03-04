@@ -158,6 +158,10 @@ class LocalExecutionWidget(QWidget):
         self.execution_worker = None
         self.setup_ui()
 
+    def update_config_file(self, config_file):
+        """Update the config file used for local execution (e.g., when a different campaign is selected)."""
+        self.config_file = config_file
+
     def setup_ui(self):
         """Setup the local execution UI"""
         layout = QVBoxLayout(self)
@@ -245,7 +249,7 @@ class LocalExecutionWidget(QWidget):
             return
 
         # Check if this is a valid run directory
-        scenario_file = self.current_run_dir / "run.xml"
+        scenario_file = self.current_run_dir / "test.xml"
         if not scenario_file.exists():
             self.execute_btn.setEnabled(False)
             return
