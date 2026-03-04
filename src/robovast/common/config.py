@@ -127,7 +127,7 @@ class ExecutionConfig(BaseModel):
     env: Optional[list[dict[str, str]]] = None
     runs: int
     scenario_file: Optional[str] = None
-    run_files_filter: Optional[list[str]] = None
+    run_files: Optional[list[str]] = None
     timeout: Optional[int] = None  # Maximum execution time in seconds per run
 
     @field_validator('env')
@@ -139,7 +139,7 @@ class ExecutionConfig(BaseModel):
 
         # Reserved keys that are set automatically during execution
         reserved_keys = {
-            'RUN_ID', 'ROS_LOG_DIR',
+            'CAMPAIGN_ID', 'ROS_LOG_DIR',
             'PRE_COMMAND', 'POST_COMMAND',
         }
 

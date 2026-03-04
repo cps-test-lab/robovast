@@ -80,21 +80,25 @@ def check_results_dir_structure(results_dir):  # pylint: disable=too-many-return
     run_contents = list(first_run.iterdir())
     print(f"    Contents: {[c.name for c in run_contents]}")
 
-    # Check for scenario.osc file
-    scenario_osc = [f for f in run_contents if f.name == 'scenario.osc']
-    if not scenario_osc:
-        print("  ✗ scenario.osc file not found in campaign directory")
+    # Check for scenario.osc file in _config/
+    config_dir_check = first_run / '_config'
+    if config_dir_check.exists():
+        scenario_osc = config_dir_check / 'scenario.osc'
+        if not scenario_osc.exists():
+            print("  ✗ scenario.osc file not found in _config/ directory")
+            return False
+        print("  ✓ scenario.osc file exists in _config/")
+    else:
+        print("  ✗ _config directory not found in campaign directory")
         return False
     
-    print("  ✓ scenario.osc file exists")
-    
-    # Check for execution.yaml file
-    execution_yaml = [f for f in run_contents if f.name == 'execution.yaml']
-    if not execution_yaml:
-        print("  ✗ execution.yaml file not found in campaign directory")
+    # Check for execution.yaml file in _execution/
+    execution_dir = first_run / '_execution'
+    if not execution_dir.exists() or not (execution_dir / 'execution.yaml').exists():
+        print("  ✗ execution.yaml file not found in _execution/ directory")
         return False
-    
-    print("  ✓ execution.yaml file exists")
+
+    print("  ✓ execution.yaml file exists in _execution/")
     
     # Check for config directories
     config_dirs = [d for d in run_contents if d.is_dir()]

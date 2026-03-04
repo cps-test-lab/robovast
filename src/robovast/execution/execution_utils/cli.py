@@ -599,7 +599,7 @@ def download(output, force, verbose, skip_removal, port_forward_only, remote_com
             output, force, verbose=verbose, skip_removal=skip_removal,
             keep_archive=not no_keep_archive
         )
-        click.echo(f"✓ Download of {count} runs completed successfully!")
+        click.echo(f"✓ Download of {count} campaign(s) completed successfully!")
 
     except Exception as e:
         handle_cli_exception(e)
@@ -1010,7 +1010,7 @@ def prepare_run(output, config, runs, cluster_config, options, log_tree, kube_co
             for cfg in job_runner.configs:
                 config_name = cfg.get("name")
                 # Use the centralized function to create the job manifest
-                job_manifest = job_runner.create_job_manifest_for_scenario(config_name, run_number)
+                job_manifest = job_runner.create_job_manifest_for_configuration(config_name, run_number)
 
                 # Save individual job manifest
                 job_name = job_manifest['metadata']['name']

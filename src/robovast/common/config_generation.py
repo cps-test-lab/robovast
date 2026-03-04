@@ -36,22 +36,25 @@ def progress_update(msg):
 def execute_variation(base_dir, configs, variation_class, parameters, general_parameters, progress_update_callback, scenario_file, output_dir=None):
     logger.debug(f"Executing variation: {variation_class.__name__}")
     variation = variation_class(base_dir, parameters, general_parameters, progress_update_callback, scenario_file, output_dir)
+
+    # Collect input files for campaign self-containment
+    input_files = variation.get_input_files()
+
     try:
         configs = variation.variation(copy.deepcopy(configs))
     except Exception as e:
         logger.error(f"Variation failed. {variation_class.__name__}: {e}")
         progress_update_callback(f"Variation failed. {variation_class.__name__}: {e}")
-        return []
+        return [], []
 
     # Check if configs is None and return empty list
     if configs is None:
         logger.warning(f"Variation failed. {variation_class.__name__}: No configs returned")
         progress_update_callback(f"Variation failed. {variation_class.__name__}: No configs returned")
-        return []
+        return [], []
 
     logger.debug(f"Variation {variation_class.__name__} completed successfully")
-    # progress_update(f"Current configs {configs}")
-    return configs
+    return configs, input_files
 
 
 def collect_filtered_files(filter_pattern, rel_path):
@@ -227,7 +230,38 @@ def _get_variation_classes(scenario_config):
     return variation_classes
 
 
-def generate_scenario_variations(variation_file, progress_update_callback=None, variation_classes=None, output_dir=None, run_files_filter=None):
+def _validate_relative_path(path, description="path"):
+    """Validate that a path is relative and does not escape its base directory."""
+    if os.path.isabs(path):
+        raise ValueError(f"{description} must be relative, got absolute path: {path}")
+    normalized = os.path.normpath(path)
+    if normalized.startswith('..'):
+        raise ValueError(f"{description} must not escape the base directory: {path}")
+
+
+def _collect_analysis_input_files(parameters):
+    """Collect file paths referenced in the analysis.visualization section."""
+    analysis_files = []
+    analysis = parameters.get('analysis')
+    if not analysis:
+        return analysis_files
+    if isinstance(analysis, dict):
+        visualizations = analysis.get('visualization') or []
+    elif hasattr(analysis, 'visualization'):
+        visualizations = analysis.visualization or []
+    else:
+        return analysis_files
+    for viz_entry in visualizations:
+        if isinstance(viz_entry, dict):
+            for _plugin_name, plugin_config in viz_entry.items():
+                if isinstance(plugin_config, dict):
+                    for _key, path in plugin_config.items():
+                        if isinstance(path, str) and (path.endswith('.ipynb') or path.endswith('.py')):
+                            analysis_files.append(path)
+    return analysis_files
+
+
+def generate_scenario_variations(variation_file, progress_update_callback=None, variation_classes=None, output_dir=None):
     if not progress_update_callback:
         progress_update_callback = logger.debug
     progress_update_callback("Start generating configs.")
@@ -238,18 +272,24 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     configurations = parameters.get('configuration', [])
 
     run_files = []
-    # Get run_files_filter from config
-    run_files_filter = parameters.get("execution", {}).get("run_files_filter", [])
-    if run_files_filter:
-        additional_run_files = collect_filtered_files(run_files_filter, os.path.dirname(variation_file))
-        progress_update_callback(f"Loaded {len(run_files_filter)} filter patterns (found {len(additional_run_files)} files).")
+    # Get run_files patterns from config
+    run_files_patterns = parameters.get("execution", {}).get("run_files", [])
+    if run_files_patterns:
+        additional_run_files = collect_filtered_files(run_files_patterns, os.path.dirname(variation_file))
+        progress_update_callback(f"Loaded {len(run_files_patterns)} run_files patterns (found {len(additional_run_files)} files).")
         run_files.extend(additional_run_files)
 
     configs = []
     variation_gui_classes = {}
+    campaign_input_files = []
 
     # Get scenario_file from execution section
     execution_scenario_file_name = parameters.get('execution', {}).get('scenario_file')
+
+    # Validate scenario_file path
+    if execution_scenario_file_name:
+        _validate_relative_path(execution_scenario_file_name, "execution.scenario_file")
+
     scenario_file = os.path.join(os.path.dirname(variation_file), execution_scenario_file_name) if execution_scenario_file_name else None
 
     if output_dir is None:
@@ -263,6 +303,12 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         raise ValueError("No scenario_file specified in execution section of the variation file. Please add 'scenario_file' to the execution section.")
     scenario_param_dict = get_scenario_parameters(scenario_file)
     existing_scenario_parameters = next(iter(scenario_param_dict.values())) if scenario_param_dict else []
+
+    # Collect analysis notebook files
+    analysis_files = _collect_analysis_input_files(parameters)
+    for af in analysis_files:
+        _validate_relative_path(af, "analysis file")
+    campaign_input_files.extend(analysis_files)
 
     for config in configurations:
         if variation_classes is None:
@@ -313,8 +359,14 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                     if variation_gui_class is None:
                         raise ValueError(f"Variation class {variation_class.__name__} has GUI_RENDERER_CLASS defined but no GUI_CLASS.")
                     variation_gui_classes[variation_gui_class].append(variation_gui_renderer_class)
-            result = execute_variation(os.path.dirname(variation_file), current_configs, variation_class,
+            result, var_input_files = execute_variation(os.path.dirname(variation_file), current_configs, variation_class,
                                        variation_parameters, general_parameters, progress_update_callback, scenario_file, output_dir)
+
+            # Validate and collect variation input files
+            for vf in var_input_files:
+                _validate_relative_path(vf, f"variation {variation_class.__name__} input file")
+            campaign_input_files.extend(var_input_files)
+
             if result is None or len(result) == 0:
                 # If a variation step fails or produces no results, stop the pipeline
                 progress_update_callback(f"Variation pipeline stopped at {variation_class.__name__} - no configs to process")
@@ -352,6 +404,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         "scenario_file": scenario_file,
         "configs": configs,
         "_run_files": run_files,
+        "_input_files": campaign_input_files,
         "execution": execution_params,
         "created_at": datetime.now().isoformat()
     }

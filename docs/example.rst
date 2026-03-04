@@ -118,7 +118,7 @@ The ``execution`` section of the ``.vast`` configuration specifies all necessary
 
 The ``scenario_file`` parameter specifies which OpenSCENARIO 2 file to execute (``scenario.osc``).
 In this example, we configure 20 runs for each config to ensure statistically meaningful results.
-In this basic example we hand in the system-under-test ``growth_sim.py`` directly by specifying the pattern ``**/files/*.py`` in the ``run_files_filter``. In larger setups, it might be required to use a custom container image.
+In this basic example we hand in the system-under-test ``growth_sim.py`` directly by specifying the pattern ``**/files/*.py`` in the ``run_files``. In larger setups, it might be required to use a custom container image.
 
 Check Generated Configurations
 """"""""""""""""""""""""""""""
@@ -191,7 +191,7 @@ The resulting folder structure looks like this:
 
     growth_sim_results/
     ├── campaign-<timestamp>/        <-- Each cluster execution creates a new folder 
-    |   ├── _config/                 <-- Test files are stored here (as defined by run_files_filter in the .vast configuration)
+    |   ├── _config/                 <-- Test files are stored here (as defined by run_files in the .vast configuration)
     |   ├── scenario.osc             <-- The scenario used during this run
     |   ├── <config-name>            <-- Each configuration is stored within a separate folder (example: config42)
     |   |   ├── scenario.config      <-- The parameter set used within this configuration (e.g. growth_rate: 0.07, initial_population: 123)

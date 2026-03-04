@@ -201,7 +201,7 @@ def compute_config_identifier(
     Args:
         vast_dir: Directory containing the vast file.
         config_block: Configuration entry from vast (name, parameters, variations).
-        run_files_hash: Precomputed hash of run_files_filter files.
+        run_files_hash: Precomputed hash of run_files files.
         scenario_file_hash: Precomputed hash of scenario file content.
         variation_type_names: List of variation type names used in this config.
 

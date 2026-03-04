@@ -410,7 +410,7 @@ def upload_campaign_configs(campaign_id: str, campaign_data: dict, num_runs: int
             prepare_campaign_configs(out_dir, campaign_data, cluster=True)
 
             # Inject instance-type detection command into entrypoint.sh when supported.
-            entrypoint_path = os.path.join(out_dir, "entrypoint.sh")
+            entrypoint_path = os.path.join(out_dir, "_transient", "entrypoint.sh")
             try:
                 instance_type_cmd = None
                 if hasattr(cluster_config, "get_instance_type_command"):
@@ -426,7 +426,7 @@ def upload_campaign_configs(campaign_id: str, campaign_data: dict, num_runs: int
             except Exception as exc:  # pragma: no cover – best-effort, non-fatal
                 logger.warning(f"Could not inject instance type command into entrypoint.sh: {exc}")
 
-            create_execution_yaml(num_runs, out_dir, execution_params=campaign_data.get("execution", {}))
+            create_execution_yaml(num_runs, out_dir, execution_params=campaign_data.get("execution", {}), context=context)
 
             logger.info(f"Uploading config files to S3 bucket '{bucket_name}'...")
             s3.create_bucket(bucket_name)

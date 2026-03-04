@@ -20,8 +20,8 @@ import sys
 import tempfile
 
 from robovast.common import (generate_execution_yaml_script,
-                             get_execution_env_variables, load_config,
-                             normalize_secondary_containers,
+                             get_campaign, get_execution_env_variables,
+                             load_config, normalize_secondary_containers,
                              prepare_campaign_configs)
 from robovast.common.cli import get_project_config
 from robovast.common.config_generation import generate_scenario_variations
@@ -158,7 +158,7 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
 DOCKER_IMAGE="ghcr.io/cps-test-lab/robovast:latest"
 USE_GUI=true
 START_ONLY=false
-RUN_ID="run-$(date +%Y-%m-%d-%H%M%S)"
+RUN_ID="campaign-$(date +%Y-%m-%d-%H%M%S)"
 RESULTS_DIR=
 
 # Variables to track cleanup and interrupt state
@@ -325,7 +325,6 @@ def _compose_resources_block(cpu, memory, indent="    "):
 def _build_compose_yaml(
     docker_image,
     run_path,
-    script_dir_var,
     results_dir_var,
     config_name,
     run_num,
@@ -353,8 +352,8 @@ def _build_compose_yaml(
 
     def _config_volume_mounts():
         """Yield volume mount lines shared by main and secondary containers."""
-        yield f'      - "{quote(results_dir_var)}/scenario.osc:/config/scenario.osc:ro"'
-        yield f'      - "{quote(results_dir_var)}/{config_name}/scenario.config:/config/scenario.config:ro"'
+        yield f'      - "{quote(results_dir_var)}/_config/scenario.osc:/config/scenario.osc:ro"'
+        yield f'      - "{quote(results_dir_var)}/{config_name}/_config/scenario.config:/config/scenario.config:ro"'
         for run_file in run_files:
             yield f'      - "{quote(results_dir_var)}/_config/{run_file}:/config/{run_file}:ro"'
         for config_file in config_files:
@@ -376,8 +375,8 @@ def _build_compose_yaml(
 
     lines.append("    volumes:")
     lines.append(f'      - "{quote(run_path)}:/out"')
-    lines.append(f'      - "{quote(script_dir_var)}/out_template/entrypoint.sh:/config/entrypoint.sh:ro"')
-    lines.append(f'      - "{quote(script_dir_var)}/out_template/collect_sysinfo.py:/config/collect_sysinfo.py:ro"')
+    lines.append(f'      - "{quote(results_dir_var)}/_transient/entrypoint.sh:/config/entrypoint.sh:ro"')
+    lines.append(f'      - "{quote(results_dir_var)}/_transient/collect_sysinfo.py:/config/collect_sysinfo.py:ro"')
     lines.extend(_config_volume_mounts())
     if use_gui_block:
         lines.append("      - /tmp/.X11-unix:/tmp/.X11-unix:rw")
@@ -431,8 +430,8 @@ def _build_compose_yaml(
         lines.append(f"      - robovast")
         lines.append("    volumes:")
         lines.append(f'      - "{quote(run_path)}:/out"')
-        lines.append(f'      - "{quote(script_dir_var)}/out_template/secondary_entrypoint.sh:/config/secondary_entrypoint.sh:ro"')
-        lines.append(f'      - "{quote(script_dir_var)}/out_template/collect_sysinfo.py:/config/collect_sysinfo.py:ro"')
+        lines.append(f'      - "{quote(results_dir_var)}/_transient/secondary_entrypoint.sh:/config/secondary_entrypoint.sh:ro"')
+        lines.append(f'      - "{quote(results_dir_var)}/_transient/collect_sysinfo.py:/config/collect_sysinfo.py:ro"')
         lines.extend(_config_volume_mounts())
         if use_gui_block:
             lines.append("      - /tmp/.X11-unix:/tmp/.X11-unix:rw")
@@ -589,7 +588,6 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
         compose_yaml = _build_compose_yaml(
             docker_image=docker_image,
             run_path=run_path,
-            script_dir_var="${SCRIPT_DIR}",
             results_dir_var="${RESULTS_DIR}",
             config_name=config_name,
             run_num=run_num,
@@ -610,7 +608,7 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
         )
 
         script += f'CURRENT_COMPOSE_FILE="{compose_file}"\n'
-        script += 'export DOCKER_IMAGE RESULTS_DIR SCRIPT_DIR AVAILABLE_CPUS AVAILABLE_MEM LIBGL_ALWAYS_SOFTWARE ROBOVAST_COMMAND SECONDARY_COMMAND ROBOVAST_TTY ROBOVAST_STDIN_OPEN SCENARIO_EXECUTION_PARAMS\n'
+        script += 'export DOCKER_IMAGE RESULTS_DIR AVAILABLE_CPUS AVAILABLE_MEM LIBGL_ALWAYS_SOFTWARE ROBOVAST_COMMAND SECONDARY_COMMAND ROBOVAST_TTY ROBOVAST_STDIN_OPEN SCENARIO_EXECUTION_PARAMS\n'
         script += f'cat > "{compose_file}" << \'COMPOSE_EOF\'\n'
         script += compose_yaml + '\n'
         script += 'COMPOSE_EOF\n\n'
