@@ -315,7 +315,7 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
 
         file_cache = FileCache(base_path, "floorplan_generation", [floorplan_file])
         files_for_hash = [floorplan_file_path]
-        strings_for_hash = ["v2"]  # v2: cache now includes intermediate json-ld files
+        strings_for_hash = []
         cached_file = file_cache.get_cached_file(files_for_hash, binary=False,
                                                  content=False, strings_for_hash=strings_for_hash)
 
