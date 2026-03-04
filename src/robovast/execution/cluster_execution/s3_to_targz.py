@@ -79,8 +79,12 @@ def main():
                         tar_name = f"{bucket_name}/{key}"
                         tarinfo = tarfile.TarInfo(name=tar_name)
                         tarinfo.size = size
-                        body = s3.get_object(Bucket=bucket_name, Key=key)["Body"]
-                        tar.addfile(tarinfo, body)
+                        response = s3.get_object(Bucket=bucket_name, Key=key)
+                        if response.get("Metadata", {}).get("executable") == "yes":
+                            tarinfo.mode = 0o755
+                        else:
+                            tarinfo.mode = 0o644
+                        tar.addfile(tarinfo, response["Body"])
         finally:
             pigz.stdin.close()
             pigz.wait()

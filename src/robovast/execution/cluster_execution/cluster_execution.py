@@ -491,14 +491,19 @@ class JobRunner:
             {'name': 'tmp', 'emptyDir': {}},
         ]
 
-        # Build the initContainer that downloads all needed files from S3 into /config/
-        # After downloading, chmod +x all scripts so the containers can execute them.
+        # Build the initContainer that downloads all needed files from S3 into /config/.
+        # After mirroring, restore the executable bit on any file whose S3 object carries
+        # the x-amz-meta-executable=yes metadata header (set during upload).
         init_cmd = (
             f"mc alias set myminio \"$S3_ENDPOINT\" \"$S3_ACCESS_KEY\" \"$S3_SECRET_KEY\" && "
             f"mc mirror myminio/$S3_BUCKET/_config/ /config/ && "
             f"mc mirror myminio/$S3_BUCKET/_transient/ /config/ && "
-            f"mc mirror myminio/$S3_BUCKET/{config_name}/_config/ /config/ || true && "
-            f"chmod +x /config/*.sh /config/*.py 2>/dev/null; true"
+            f"(mc mirror myminio/$S3_BUCKET/{config_name}/_config/ /config/ 2>/dev/null || true); "
+            f"for s3pfx in _config _transient {config_name}/_config; do "
+            f"mc find myminio/$S3_BUCKET/$s3pfx/ 2>/dev/null | while IFS= read -r obj; do "
+            f"mc stat --json \"$obj\" 2>/dev/null | grep -qi 'executable.*yes' && "
+            f"chmod +x \"/config/${{obj#myminio/$S3_BUCKET/$s3pfx/}}\" 2>/dev/null || true; "
+            f"done; done; true"
         )
 
         init_env = [
@@ -511,7 +516,7 @@ class JobRunner:
         spec['initContainers'] = [
             {
                 'name': 's3-init',
-                'image': 'minio/mc:latest',
+                'image': 'ghcr.io/cps-test-lab/robovast-sidecar:pr-73@sha256:6f54b2d89033c4160922ae4fc94797413f5b6596ca0d33f43bab1deb906b4bc6',
                 'command': ['sh', '-c', init_cmd],
                 'env': init_env,
                 'volumeMounts': [
