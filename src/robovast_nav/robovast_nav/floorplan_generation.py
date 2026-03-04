@@ -15,6 +15,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -229,6 +230,19 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
                     progress_update_callback(error_msg)
                     raise ValueError(f"Generate step failed: {error_msg}") from e
 
+            # Copy intermediate files (FPM configs and JSON-LD) into artifacts for caching
+            for fpm_file in fpm_files:
+                config_name = os.path.splitext(fpm_file)[0]
+                fpm_src = os.path.join(temp_variation_output_path, fpm_file)
+                fpm_dst = os.path.join(artifacts_path, config_name, "fpm")
+                os.makedirs(fpm_dst, exist_ok=True)
+                shutil.copy2(fpm_src, os.path.join(fpm_dst, fpm_file))
+
+                jsonld_src = os.path.join(temp_base, variation, "json-ld", config_name)
+                jsonld_dst = os.path.join(artifacts_path, config_name, "json-ld")
+                if os.path.isdir(jsonld_src):
+                    shutil.copytree(jsonld_src, jsonld_dst, dirs_exist_ok=True)
+
             cache_target_file_name = file_cache.get_cache_filename()
             progress_update_callback(f"\nCreating tar archive {cache_target_file_name}...")
             with tarfile.open(cache_target_file_name, "w:gz") as tar:
@@ -374,6 +388,11 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
                     error_msg += f"\nStderr: {e.stderr}"
                 progress_update_callback(error_msg)
                 raise ValueError(f"Generate step failed: {error_msg}") from e
+
+            # Copy intermediate JSON-LD files into artifacts for caching
+            jsonld_dst = os.path.join(artifacts_path, floorplan_basename, "json-ld")
+            if os.path.isdir(temp_transform_path):
+                shutil.copytree(temp_transform_path, jsonld_dst, dirs_exist_ok=True)
 
             # Create tar archive for caching
             cache_target_file_name = file_cache.get_cache_filename()

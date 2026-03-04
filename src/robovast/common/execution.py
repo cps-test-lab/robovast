@@ -20,6 +20,9 @@ import json
 import logging
 import os
 import shutil
+import subprocess
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as pkg_version
 from importlib.resources import files
 from pprint import pformat
 
@@ -28,6 +31,46 @@ import yaml
 from .common import convert_dataclasses_to_dict, get_scenario_parameters
 from .config_identifier import (compute_config_identifier, hash_file_content,
                                 hash_run_files)
+
+
+def get_app_version() -> str:
+    """Return a short version string for the robovast package.
+
+    Resolution order:
+    1. Git short SHA (works for local editable installs).
+       If the working tree has uncommitted changes, ``+dirty`` is appended.
+    2. Installed package metadata (works for PyPI installs).
+    3. ``"unknown"`` as a last-resort fallback.
+    """
+    module_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # 1. Try Git
+    try:
+        sha = subprocess.check_output(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            stderr=subprocess.STDOUT,
+            cwd=module_dir,
+            text=True,
+        ).strip()
+        # Detect uncommitted changes
+        dirty = subprocess.check_output(
+            ['git', 'status', '--porcelain'],
+            stderr=subprocess.STDOUT,
+            cwd=module_dir,
+            text=True,
+        ).strip()
+        return f"{sha}+dirty" if dirty else sha
+    except Exception:
+        pass
+
+    # 2. Fall back to installed package metadata
+    try:
+        return pkg_version('robovast')
+    except PackageNotFoundError:
+        pass
+
+    # 3. Final fallback
+    return 'unknown'
 
 logger = logging.getLogger(__name__)
 
@@ -286,8 +329,9 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
 
     vast_file_path = os.path.dirname(campaign_data["vast"])
 
-    # Prepare campaign_data for configurations.yaml (strip internal keys used for identifier)
+    # Prepare campaign_data for configurations.yaml (strip internal keys)
     campaign_data_for_dump = copy.deepcopy(campaign_data)
+    campaign_data_for_dump.pop("_transient_files", None)
     for c in campaign_data_for_dump.get("configs", []):
         c.pop("_config_block", None)
         c.pop("_variation_type_names", None)
@@ -338,6 +382,15 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
             continue
         os.makedirs(os.path.dirname(dst_path), exist_ok=True)
         shutil.copy2(src_path, dst_path)
+
+    # Copy transient (intermediate) files into _transient/
+    for rel_path, abs_path in campaign_data.get("_transient_files", []):
+        if not os.path.exists(abs_path):
+            logger.warning(f"Transient file not found, skipping: {abs_path}")
+            continue
+        dst_path = os.path.join(campaign_transient_dir, rel_path)
+        os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+        shutil.copy2(abs_path, dst_path)
 
     # get scenario name
     original_scenario_path = os.path.join(vast_file_path, campaign_data.get("scenario_file"))
@@ -436,6 +489,7 @@ def generate_execution_yaml_script(runs, execution_params=None, output_dir_var="
     script += f'mkdir -p "{output_dir_var}/_execution"\n'
     script += f'cat > "{output_dir_var}/_execution/execution.yaml" << EOF\n'
     script += 'execution_time: ${EXECUTION_TIME}\n'
+    script += f'robovast_version: {get_app_version()}\n'
     script += f'runs: {runs}\n'
     script += f'execution_type: local\n'
     script += f'image: {execution_params.get("image")}\n'
@@ -482,6 +536,7 @@ def create_execution_yaml(runs, output_dir, execution_params=None, context=None)
 
     execution_data = {
         'execution_time': execution_time,
+        'robovast_version': get_app_version(),
         'runs': runs,
         'execution_type': 'cluster',
         'image': execution_params.get('image')
