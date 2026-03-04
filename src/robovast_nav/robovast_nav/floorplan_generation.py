@@ -104,7 +104,7 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
 
         file_cache = FileCache(base_path, "floorplan_variation", [variation_file, num_variations, seed_value])
         files_for_hash = [variation_file_path]  # TODO: add fpm
-        strings_for_hash = [str(num_variations), str(seed_value), "v2"]  # v2: cache now includes intermediate json-ld/fpm files
+        strings_for_hash = [str(num_variations), str(seed_value)]
         cached_file = file_cache.get_cached_file(files_for_hash, binary=False,
                                                  content=False, strings_for_hash=strings_for_hash)
 
