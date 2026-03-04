@@ -19,7 +19,7 @@ execution:
     cpu: 6
   runs: 5
   scenario_file: scenario.osc
-  run_files_filter:
+  run_files:
   - "files/*"
 analysis:
   postprocessing:

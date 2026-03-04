@@ -26,11 +26,8 @@ from pprint import pformat
 import yaml
 
 from .common import convert_dataclasses_to_dict, get_scenario_parameters
-from .config_identifier import (
-    compute_config_identifier,
-    hash_file_content,
-    hash_run_files,
-)
+from .config_identifier import (compute_config_identifier, hash_file_content,
+                                hash_run_files)
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +52,11 @@ def _check_static_cpu_manager(k8s_client, node_name):
         return "none"
 
 
-def _get_cluster_info():
+def _get_cluster_info(context=None):
     """Collect basic cluster information for cluster executions.
+
+    Args:
+        context: Kubernetes context name to use. ``None`` uses the active context.
 
     Returns a dictionary with node_count, node_labels, cpu_manager_policy and
     cluster_config (loaded from the .robovast_cluster_config flag file) when
@@ -95,7 +95,7 @@ def _get_cluster_info():
         try:
             k8s_config.load_incluster_config()
         except k8s_config.ConfigException:
-            k8s_config.load_kube_config()
+            k8s_config.load_kube_config(context=context)
 
         v1 = k8s_client_lib.CoreV1Api()
         node_list = v1.list_node()
@@ -145,9 +145,9 @@ def get_execution_env_variables(run_num, config_name, additional_env=None):
     Returns:
         Dictionary of environment variables
     """
-    run_id = f"{config_name}-{run_num}"
+    campaign_id = get_campaign()
     env_vars = {
-        'RUN_ID': run_id,
+        'CAMPAIGN_ID': campaign_id,
         'ROS_LOG_DIR': '/out/logs',
     }
 
@@ -211,7 +211,7 @@ COMBINED_EOF
 
 
 def _apply_local_parameter_overrides(config, parameter_overrides, valid_param_names,
-                                      scenario_name, scenario_path):
+                                     scenario_name, scenario_path):
     """Apply local parameter overrides to config, validating against scenario parameters.
 
     Args:
@@ -247,6 +247,12 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
     logger.debug(f"Campaign Configs: {pformat(campaign_data)}")
     os.makedirs(out_dir, exist_ok=True)
 
+    campaign_config_dir = os.path.join(out_dir, "_config")
+    os.makedirs(campaign_config_dir, exist_ok=True)
+
+    campaign_transient_dir = os.path.join(out_dir, "_transient")
+    os.makedirs(campaign_transient_dir, exist_ok=True)
+
     # Inject the run-mode-specific post-run block into the shared entrypoint template
     entrypoint_src = str(files('robovast.execution.data').joinpath('entrypoint.sh'))
     with open(entrypoint_src, 'r', encoding='utf-8') as f:
@@ -255,27 +261,23 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
     entrypoint_content = entrypoint_content.replace('# @@INIT_BLOCK@@', init_block)
     post_run_block = _CLUSTER_POST_RUN_BLOCK if cluster else _LOCAL_POST_RUN_BLOCK
     entrypoint_content = entrypoint_content.replace('    # @@POST_RUN_BLOCK@@', post_run_block)
-    entrypoint_dst = os.path.join(out_dir, "entrypoint.sh")
+    entrypoint_dst = os.path.join(campaign_transient_dir, "entrypoint.sh")
     with open(entrypoint_dst, 'w', encoding='utf-8') as f:
         f.write(entrypoint_content)
 
-    # Copy secondary_entrypoint.sh so secondary containers can use it (with init block replacement)
+    # Copy secondary_entrypoint.sh into _transient/ (with init block replacement)
     secondary_entrypoint_src = str(files('robovast.execution.data').joinpath('secondary_entrypoint.sh'))
     with open(secondary_entrypoint_src, 'r', encoding='utf-8') as f:
         secondary_entrypoint_content = f.read()
     secondary_entrypoint_content = secondary_entrypoint_content.replace('# @@INIT_BLOCK@@', init_block)
-    secondary_entrypoint_dst = os.path.join(out_dir, "secondary_entrypoint.sh")
+    secondary_entrypoint_dst = os.path.join(campaign_transient_dir, "secondary_entrypoint.sh")
     with open(secondary_entrypoint_dst, 'w', encoding='utf-8') as f:
         f.write(secondary_entrypoint_content)
 
-    # Copy collect_sysinfo.py to the out directory so it can be mounted
-    # into the container alongside entrypoint.sh for both local and cluster runs.
+    # Copy collect_sysinfo.py into _transient/
     collect_sysinfo_src = str(files('robovast.execution.data').joinpath('collect_sysinfo.py'))
-    collect_sysinfo_dst = os.path.join(out_dir, "collect_sysinfo.py")
+    collect_sysinfo_dst = os.path.join(campaign_transient_dir, "collect_sysinfo.py")
     shutil.copy2(collect_sysinfo_src, collect_sysinfo_dst)
-
-    campaign_config_dir = os.path.join(out_dir, "_config")
-    os.makedirs(campaign_config_dir, exist_ok=True)
 
     vast_file_path = os.path.dirname(campaign_data["vast"])
 
@@ -285,8 +287,8 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
         c.pop("_config_block", None)
         c.pop("_variation_type_names", None)
 
-    # Save scenario variations as YAML in _config subdirectory
-    scenario_variations_path = os.path.join(campaign_config_dir, "configurations.yaml")
+    # Save scenario variations as YAML in _transient subdirectory
+    scenario_variations_path = os.path.join(campaign_transient_dir, "configurations.yaml")
     with open(scenario_variations_path, 'w') as f:
         yaml.dump(convert_dataclasses_to_dict(campaign_data_for_dump), f, default_flow_style=False, sort_keys=False)
     logger.debug(f"Saved configurations to {scenario_variations_path}")
@@ -304,13 +306,31 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
         else ""
     )
 
-    # Copy scenario_file
-    shutil.copy2(scenario_file_path_for_hash, out_dir)
+    # Copy scenario_file into _config/
+    scenario_rel = os.path.basename(campaign_data["scenario_file"])
+    scenario_config_dst = os.path.join(campaign_config_dir, scenario_rel)
+    os.makedirs(os.path.dirname(scenario_config_dst), exist_ok=True)
+    shutil.copy2(scenario_file_path_for_hash, scenario_config_dst)
+
+    # Copy the .vast file into _config/
+    vast_src = campaign_data["vast"]
+    vast_dst = os.path.join(campaign_config_dir, os.path.basename(vast_src))
+    shutil.copy2(vast_src, vast_dst)
 
     # Copy run files
     for config_file in campaign_data.get("_run_files", []):
         src_path = os.path.join(vast_file_path, config_file)
         dst_path = os.path.join(campaign_config_dir, config_file)
+        os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+        shutil.copy2(src_path, dst_path)
+
+    # Copy variation input files and analysis notebooks into _config/
+    for input_file in campaign_data.get("_input_files", []):
+        src_path = os.path.join(vast_file_path, input_file)
+        dst_path = os.path.join(campaign_config_dir, input_file)
+        if not os.path.exists(src_path):
+            logger.warning(f"Input file not found, skipping: {src_path}")
+            continue
         os.makedirs(os.path.dirname(dst_path), exist_ok=True)
         shutil.copy2(src_path, dst_path)
 
@@ -355,8 +375,8 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
             scenario_file_hash,
             variation_type_names,
         )
-        config_yaml_path = os.path.join(out_dir, config_data.get("name"), "config.yaml")
-        os.makedirs(os.path.dirname(config_yaml_path), exist_ok=True)
+        config_yaml_path = os.path.join(run_config_dir, "config.yaml")
+        os.makedirs(run_config_dir, exist_ok=True)
         with open(config_yaml_path, "w") as f:
             yaml.dump(
                 {"config_identifier": config_identifier, "sub_identifier": sub_identifier},
@@ -386,8 +406,8 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
                         scenario_name, original_scenario_path
                     )
                 wrapped_config_data = {scenario_name: config_dict}
-                dst_path = os.path.join(out_dir, config_data.get("name"), 'scenario.config')
-                os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+                dst_path = os.path.join(run_config_dir, 'scenario.config')
+                os.makedirs(run_config_dir, exist_ok=True)
                 with open(dst_path, 'w') as f:
                     yaml.dump(wrapped_config_data, f, default_flow_style=False, sort_keys=False)
 
@@ -408,7 +428,8 @@ def generate_execution_yaml_script(runs, execution_params=None, output_dir_var="
 
     script = f'echo "Creating execution.yaml..."\n'
     script += f'EXECUTION_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")\n'
-    script += f'cat > "{output_dir_var}/execution.yaml" << EOF\n'
+    script += f'mkdir -p "{output_dir_var}/_execution"\n'
+    script += f'cat > "{output_dir_var}/_execution/execution.yaml" << EOF\n'
     script += 'execution_time: ${EXECUTION_TIME}\n'
     script += f'runs: {runs}\n'
     script += f'execution_type: local\n'
@@ -437,18 +458,21 @@ def generate_execution_yaml_script(runs, execution_params=None, output_dir_var="
     return script
 
 
-def create_execution_yaml(runs, output_dir, execution_params=None):
+def create_execution_yaml(runs, output_dir, execution_params=None, context=None):
     """Create execution.yaml file with ISO formatted timestamp.
 
     Args:
         runs: Number of runs to include in execution.yaml
         output_dir: Directory where execution.yaml will be created
         execution_params: Dictionary containing execution parameters (run_as_user, env, etc.)
+        context: Kubernetes context name to use. ``None`` uses the active context.
     """
     if execution_params is None:
         execution_params = {}
 
-    execution_yaml_path = os.path.join(output_dir, "execution.yaml")
+    execution_dir = os.path.join(output_dir, "_execution")
+    os.makedirs(execution_dir, exist_ok=True)
+    execution_yaml_path = os.path.join(execution_dir, "execution.yaml")
     execution_time = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     execution_data = {
@@ -475,7 +499,7 @@ def create_execution_yaml(runs, output_dir, execution_params=None):
             execution_data['env'] = env_dict
 
     # Attach cluster information (node count, labels, and cluster config)
-    cluster_info = _get_cluster_info()
+    cluster_info = _get_cluster_info(context=context)
     if cluster_info is not None:
         execution_data['cluster_info'] = cluster_info
 

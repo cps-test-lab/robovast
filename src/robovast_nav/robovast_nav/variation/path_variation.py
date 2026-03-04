@@ -67,7 +67,7 @@ class PathVariationGuiRenderer(VariationGuiRenderer):
         # Check both possible parameter names
         goal_poses = config.get('config', {}).get('goal_poses', None)
         goal_pose = config.get('config', {}).get('goal_pose', None)
-        
+
         if goal_pose is not None:
             # Single pose parameter
             goal_poses_list = [goal_pose]
@@ -88,14 +88,14 @@ class PathVariationGuiRenderer(VariationGuiRenderer):
             # Extract x and y coordinates from Pose objects
             x_coords = [pose.position.x for pose in goal_poses_list]
             y_coords = [pose.position.y for pose in goal_poses_list]
-            
+
             self.gui_object.map_visualizer.ax.scatter(x_coords, y_coords,
                                                       s=10,  # marker size
                                                       c='blue',
                                                       alpha=0.9,
                                                       label=label,
                                                       zorder=10)
-                
+
         # Visualize raster points if available
         raster_points = config.get('_raster_points', None)
         if raster_points:
@@ -108,7 +108,7 @@ class PathVariationGuiRenderer(VariationGuiRenderer):
                                                       alpha=0.3,
                                                       label='Raster Points',
                                                       zorder=2)
-        
+
         # Final canvas draw to update display
         self.gui_object.canvas.draw()
 
@@ -123,7 +123,7 @@ class PathVariationRandom(NavVariation):
     def variation(self, in_configs):
         self.progress_update("Running Path Variation...")
         results = []
-        
+
         for config in in_configs:
             # Detect if we should output single pose or multiple poses based on parameter name
             # Use the configuration reference to determine target parameter
@@ -131,14 +131,15 @@ class PathVariationRandom(NavVariation):
             if isinstance(self.parameters.goal_poses, str):
                 ref_name = self.parameters.goal_poses.lstrip('@')
                 goal_param_name = ref_name
-            
+
             single_pose_mode = goal_param_name == 'goal_pose'
-            
+
             # Set default num_goal_poses if not specified
             if self.parameters.num_goal_poses is None:
-                self.parameters.num_goal_poses = 1 
-                
-            self.progress_update(f"Detected target parameter '{goal_param_name}' - generating {self.parameters.num_goal_poses} goal pose(s)")
+                self.parameters.num_goal_poses = 1
+
+            self.progress_update(f"Detected target parameter '{
+                                 goal_param_name}' - generating {self.parameters.num_goal_poses} goal pose(s)")
 
             # calculate all start/goal poses for configuration
             for path_index in range(self.parameters.num_paths):
@@ -226,13 +227,13 @@ class PathVariationRandom(NavVariation):
             # Generate multiple goal poses sequentially within target radii
             self.progress_update(f"  Generating {self.parameters.num_goal_poses} goal poses sequentially")
             target_distance_per_segment = self.parameters.path_length / self.parameters.num_goal_poses
-            
+
             goal_poses_list = []
             previous_pose = start_pose
-            
+
             for goal_idx in range(self.parameters.num_goal_poses):
                 self.progress_update(f"    Generating goal pose {goal_idx + 1}/{self.parameters.num_goal_poses}")
-                
+
                 # Generate next goal pose within the target radius from previous pose
                 next_goal_poses = waypoint_generator.generate_waypoints(
                     num_waypoints=1,
@@ -241,20 +242,21 @@ class PathVariationRandom(NavVariation):
                     max_distance=target_distance_per_segment,
                     initial_start_pose=previous_pose
                 )
-                
+
                 if not next_goal_poses:
                     self.progress_update(f"    Failed to generate goal pose {goal_idx + 1}")
                     break
-                    
+
                 next_goal_pose = next_goal_poses[0]
                 goal_poses_list.append(next_goal_pose)
                 previous_pose = next_goal_pose
-                
+
             if len(goal_poses_list) < self.parameters.num_goal_poses:
-                self.progress_update(f"   not enough valid goal poses found (got {len(goal_poses_list)}, needed {self.parameters.num_goal_poses})")
+                self.progress_update(f"   not enough valid goal poses found (got {
+                                     len(goal_poses_list)}, needed {self.parameters.num_goal_poses})")
                 attempt += 1
                 continue
-            
+
             waypoints.extend(goal_poses_list)
 
             self.progress_update(f"  Generated waypoints: {waypoints}")
@@ -298,7 +300,7 @@ class PathVariationRandom(NavVariation):
                 yaw=float(start_pose.orientation.yaw)
             )
         )
-        
+
         # Convert numpy types to native Python types for goal poses
         goal_poses = []
         for goal_pose in goal_poses_list:
@@ -397,7 +399,7 @@ class PathVariationRasterized(NavVariation):
             if self.parameters.num_goal_poses == 1:
                 # Original behavior: all points to all other points
                 results.extend(self._generate_single_goal_configs(
-                    config, start_poses, raster_points, 
+                    config, start_poses, raster_points,
                     map_file_path
                 ))
             else:
@@ -409,13 +411,13 @@ class PathVariationRasterized(NavVariation):
 
         return results
 
-    def _generate_single_goal_configs(self, config, start_poses, raster_points, 
-                                    map_file_path):
+    def _generate_single_goal_configs(self, config, start_poses, raster_points,
+                                      map_file_path):
         """Original behavior: generate paths from each start pose to all reachable raster points."""
         results = []
         path_index = 0
         path_generator = PathGenerator(map_file_path)
-        
+
         for start_idx, start_pose in enumerate(start_poses):
             for goal_idx, (goal_x, goal_y) in enumerate(raster_points):
                 # Skip if start and goal are the same raster point
@@ -454,7 +456,7 @@ class PathVariationRasterized(NavVariation):
                         else:
                             formatted_goal_poses = [goal_pose]
                             target_param = 'goal_poses'
-                        
+
                         new_config = self.update_config(config, {
                             'start_pose': start_pose,
                             target_param: formatted_goal_poses},
@@ -474,48 +476,48 @@ class PathVariationRasterized(NavVariation):
                     self.progress_update(f"  No path found from {start_pose} to {goal_pose}")
 
                 path_index += 1
-        
+
         return results
 
     def _generate_multi_goal_configs(self, config, start_poses, raster_points,
-                                   map_file_path):
+                                     map_file_path):
         """New behavior: generate multiple goal poses using search radius algorithm."""
         results = []
         path_generator = PathGenerator(map_file_path)
-        
+
         for start_idx, start_pose in enumerate(start_poses):
             self.progress_update(f"Generating multi-goal path for start pose {start_idx}")
-            
+
             # Calculate optimal search radius and bonus distance
             search_radius, bonus_distance = self._calculate_search_parameters()
-            
+
             # Generate goal poses iteratively
             goal_poses_list = []
             current_pose = start_pose
             waypoints = [start_pose]
-            
+
             for goal_idx in range(self.parameters.num_goal_poses):
                 is_final_goal = goal_idx == self.parameters.num_goal_poses - 1
                 search_dist = search_radius + bonus_distance if is_final_goal else search_radius
-                
+
                 # Find next goal pose within search distance
                 next_goal = self._find_goal_within_distance(
                     current_pose, raster_points, search_dist, goal_poses_list
                 )
-                
+
                 if next_goal is None:
                     self.progress_update(f"  No valid goal pose found within distance {search_dist:.2f}m for goal {goal_idx + 1}")
                     break
-                    
+
                 goal_poses_list.append(next_goal)
                 waypoints.append(next_goal)
                 current_pose = next_goal
-            
+
             # Only proceed if we found all required goal poses
             if len(goal_poses_list) == self.parameters.num_goal_poses:
                 # Generate path through all waypoints
                 path = path_generator.generate_path(waypoints, [])
-                
+
                 if path:
                     # Calculate path length
                     path_length = self._calculate_path_length(path)
@@ -532,7 +534,7 @@ class PathVariationRasterized(NavVariation):
                         else:
                             formatted_goal_poses = goal_poses_list
                             target_param = 'goal_poses'
-                        
+
                         new_config = self.update_config(config, {
                             'start_pose': start_pose,
                             target_param: formatted_goal_poses},
@@ -553,7 +555,7 @@ class PathVariationRasterized(NavVariation):
                     self.progress_update(f"  No path found through waypoints")
             else:
                 self.progress_update(f"  Could not find all {self.parameters.num_goal_poses} goal poses")
-        
+
         return results
 
     def _calculate_search_parameters(self):
@@ -561,19 +563,19 @@ class PathVariationRasterized(NavVariation):
         # Calculate with tolerances
         max_path_length = self.parameters.path_length + self.parameters.path_length_tolerance
         min_path_length = self.parameters.path_length - self.parameters.path_length_tolerance
-        
+
         max_required_points = max_path_length / self.parameters.raster_size
         min_required_points = min_path_length / self.parameters.raster_size
-        
+
         total_points = self.parameters.num_goal_poses + 1  # +1 for start pose
-        
+
         # Calculate search radius and bonus for both cases
         max_search_radius = int(max_required_points // total_points)
         max_bonus = max_required_points % total_points
-        
+
         min_search_radius = int(min_required_points // total_points)
         min_bonus = min_required_points % total_points
-        
+
         # Choose the one with smaller bonus distance
         if max_bonus <= min_bonus:
             search_radius = max_search_radius * self.parameters.raster_size
@@ -581,7 +583,7 @@ class PathVariationRasterized(NavVariation):
         else:
             search_radius = min_search_radius * self.parameters.raster_size
             bonus_distance = min_bonus * self.parameters.raster_size
-        
+
         self.progress_update(f"  Search radius: {search_radius:.2f}m, bonus distance: {bonus_distance:.2f}m")
         return search_radius, bonus_distance
 
@@ -592,7 +594,7 @@ class PathVariationRasterized(NavVariation):
             if abs(current_pose.position.x - x) < self.parameters.raster_size / 2 and \
                abs(current_pose.position.y - y) < self.parameters.raster_size / 2:
                 continue
-            
+
             # Skip if this point is already used as a goal
             point_used = False
             for existing_goal in existing_goals:
@@ -602,7 +604,7 @@ class PathVariationRasterized(NavVariation):
                     break
             if point_used:
                 continue
-            
+
             # Check if within distance
             distance = math.sqrt((current_pose.position.x - x)**2 + (current_pose.position.y - y)**2)
             if distance <= max_distance:
@@ -610,7 +612,7 @@ class PathVariationRasterized(NavVariation):
                     position=Position(x=x, y=y),
                     orientation=Orientation(yaw=0.0)
                 )
-        
+
         return None
 
     def _generate_raster_points(self, waypoint_generator):

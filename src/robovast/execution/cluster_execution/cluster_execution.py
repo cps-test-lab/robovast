@@ -29,17 +29,16 @@ import yaml
 from kubernetes import client
 from kubernetes import config as kube_config
 
-from robovast.common import (get_execution_env_variables, get_campaign,
+from robovast.common import (get_campaign, get_execution_env_variables,
                              load_config, normalize_secondary_containers)
 from robovast.common.cluster_context import resolve_resources
 from robovast.common.config_generation import generate_scenario_variations
 from robovast.execution.cluster_execution.kubernetes import check_pod_running
-from robovast.execution.cluster_execution.s3_client import upload_campaign_configs
+from robovast.execution.cluster_execution.s3_client import \
+    upload_campaign_configs
 
-from .kubernetes_kueue import (
-    cleanup_kueue_workloads,
-    set_cluster_queue_stop_policy,
-)
+from .kubernetes_kueue import (cleanup_kueue_workloads,
+                               set_cluster_queue_stop_policy)
 from .manifests import JOB_TEMPLATE
 
 logger = logging.getLogger(__name__)
@@ -54,12 +53,12 @@ def _label_safe_campaign(campaign: str) -> str:
     return "".join(c for c in s if c.isalnum() or c in "-.")[:63]
 
 
-def _short_job_name(campaign: str, scenario_key: str, run_number: int) -> str:
+def _short_job_name(campaign: str, config_name: str, run_number: int) -> str:
     """Create a short Kubernetes job name (max 63 chars) for campaign-id-config-run.
 
     Format: r<4chars>-<config8chars><hash4>-<run_number>
     - campaign: "campaign-2026-02-27-141130" -> "r" + last 6 of timestamp = "r1130"
-    - scenario_key: first 8 alphanumeric for readability, rest as 4-char hash for uniqueness
+    - config_name: first 8 alphanumeric for readability, rest as 4-char hash for uniqueness
     - run_number: as-is (e.g. 0, 1, ...)
     Labels keep full campaign-id for identifying.
     """
@@ -68,19 +67,19 @@ def _short_job_name(campaign: str, scenario_key: str, run_number: int) -> str:
     run_part = f"r{run_suffix}"
 
     # First 8 alphanumeric chars for readability, rest as hash for uniqueness
-    config_alpha = re.sub(r"[^a-zA-Z0-9]", "", scenario_key)[:8]
-    config_hash = hashlib.md5(scenario_key.encode()).hexdigest()[:4]
+    config_alpha = re.sub(r"[^a-zA-Z0-9]", "", config_name)[:8]
+    config_hash = hashlib.md5(config_name.encode()).hexdigest()[:4]
     config_part = f"{config_alpha}{config_hash}" if config_alpha else config_hash
 
     return f"{run_part}-{config_part}-{run_number}"
 
 
-def _full_job_name(campaign: str, scenario_key: str, run_number: int) -> str:
-    """Full descriptive job name for pod annotation (campaign-scenario_key-run_number).
+def _full_job_name(campaign: str, config_name: str, run_number: int) -> str:
+    """Full descriptive job name for pod annotation (campaign-config_name-run_number).
 
     No length limit; stored in annotations, not in resource names or labels.
     """
-    safe_config = scenario_key.replace("/", "-").replace("_", "-")
+    safe_config = config_name.replace("/", "-").replace("_", "-")
     return f"{campaign}-{safe_config}-{run_number}"
 
 
@@ -291,7 +290,7 @@ def get_cluster_job_counts_per_campaign(namespace="default", context=None):
 
         if campaign not in per_run:
             per_run[campaign] = {"completed": 0, "failed": 0, "running": 0, "pending": 0,
-                                "total_job_num": None}
+                                 "total_job_num": None}
 
         # Read total-job-num annotation from the first job that has it
         if per_run[campaign]["total_job_num"] is None and job.metadata.annotations:
@@ -445,12 +444,12 @@ class JobRunner:
             elem = elem.replace(tmpl, str(idx))
         return elem
 
-    def create_job_manifest_for_scenario(self, scenario_key: str, run_number: int) -> dict:
-        """Create a complete job manifest for a specific scenario and run number.
+    def create_job_manifest_for_configuration(self, config_name: str, run_number: int) -> dict:
+        """Create a complete job manifest for a specific configuration and run number.
 
         Args:
-            scenario_key: The scenario identifier
-            run_number: The run number for this scenario
+            config_name: The configuration identifier
+            run_number: The run number for this configuration
 
         Returns:
             A complete Kubernetes job manifest dictionary
@@ -462,13 +461,13 @@ class JobRunner:
         label_safe_campaign = _label_safe_campaign(self.campaign)
         self.replace_template(job_manifest, "$CAMPAIGN_ID", label_safe_campaign)
         self.replace_template(job_manifest, "$JOB_NAME",
-                              _short_job_name(self.campaign, scenario_key, run_number))
+                              _short_job_name(self.campaign, config_name, run_number))
         self.replace_template(job_manifest, "$JOB_FULL_NAME",
-                              _full_job_name(self.campaign, scenario_key, run_number))
+                              _full_job_name(self.campaign, config_name, run_number))
         self.replace_template(job_manifest, "$ITEM",
-                              f"{scenario_key.replace('/', '-').replace('_', '-')}-{run_number}")
-        self.replace_template(job_manifest, "$RUN_ID",
-                              f"{scenario_key}-{run_number}")
+                              f"{config_name.replace('/', '-').replace('_', '-')}-{run_number}")
+        self.replace_template(job_manifest, "$CAMPAIGN_ID",
+                              f"{config_name}-{run_number}")
 
         # Stamp total job count so the cluster monitor can always show the run total
         total_jobs = len(self.configs) * self.num_runs
@@ -478,7 +477,7 @@ class JobRunner:
         s3_endpoint = self.cluster_config.get_s3_endpoint()
         s3_access_key, s3_secret_key = self.cluster_config.get_s3_credentials()
         bucket_name = self._bucket_name_for_campaign(self.campaign)
-        s3_prefix = f"{scenario_key}/{run_number}"
+        s3_prefix = f"{config_name}/{run_number}"
 
         spec = job_manifest['spec']['template']['spec']
 
@@ -496,13 +495,9 @@ class JobRunner:
         # After downloading, chmod +x all scripts so the containers can execute them.
         init_cmd = (
             f"mc alias set myminio \"$S3_ENDPOINT\" \"$S3_ACCESS_KEY\" \"$S3_SECRET_KEY\" && "
-            f"mc cp myminio/$S3_BUCKET/entrypoint.sh /config/ && "
-            f"mc cp myminio/$S3_BUCKET/secondary_entrypoint.sh /config/ && "
-            f"mc cp myminio/$S3_BUCKET/collect_sysinfo.py /config/ && "
-            f"mc cp myminio/$S3_BUCKET/scenario.osc /config/ && "
-            f"mc mirror myminio/$S3_BUCKET/_config/ /config/ || true && "
-            f"mc mirror myminio/$S3_BUCKET/{scenario_key}/_config/ /config/ || true && "
-            f"mc cp myminio/$S3_BUCKET/{scenario_key}/scenario.config /config/ || true && "
+            f"mc mirror myminio/$S3_BUCKET/_config/ /config/ && "
+            f"mc mirror myminio/$S3_BUCKET/_transient/ /config/ && "
+            f"mc mirror myminio/$S3_BUCKET/{config_name}/_config/ /config/ || true && "
             f"chmod +x /config/*.sh /config/*.py 2>/dev/null; true"
         )
 
@@ -539,7 +534,7 @@ class JobRunner:
             if 'env' not in containers[0]:
                 containers[0]['env'] = []
 
-            env_vars = get_execution_env_variables(run_number, scenario_key)
+            env_vars = get_execution_env_variables(run_number, config_name)
             for name, val in env_vars.items():
                 containers[0]['env'].append({
                     'name': str(name),
@@ -819,7 +814,7 @@ class JobRunner:
 
             for config in self.configs:
                 config_name = config.get("name")
-                job_manifest = self.create_job_manifest_for_scenario(config_name, run_number)
+                job_manifest = self.create_job_manifest_for_configuration(config_name, run_number)
                 job_name = job_manifest['metadata']['name']
                 all_jobs.append(job_name)
                 with warnings.catch_warnings(record=True) as caught:

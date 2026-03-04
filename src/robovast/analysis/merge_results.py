@@ -36,14 +36,14 @@ def _iter_campaign_configs(results_dir: str) -> Iterator[tuple[str, str, Path, s
     if not root.is_dir():
         return
 
-    for campaign_item in sorted(root.iterdir()):
-        if not campaign_item.is_dir() or not campaign_item.name.startswith("campaign-"):
+    for run_item in sorted(root.iterdir()):
+        if not run_item.is_dir() or not run_item.name.startswith("campaign-"):
             continue
-        if campaign_item.name == "_config":
+        if run_item.name == "_config":
             continue
-        campaign = campaign_item.name
+        campaign = run_item.name
 
-        for config_item in sorted(campaign_item.iterdir()):
+        for config_item in sorted(run_item.iterdir()):
             if not config_item.is_dir():
                 continue
             config_name = config_item.name
@@ -123,23 +123,27 @@ def merge_results(results_dir: str, merged_campaign_dir: str) -> tuple[bool, str
     first_campaign, first_config_path, _ = next(iter(groups.values()))[0]
     first_campaign_path = Path(results_dir) / first_campaign
 
-    # Copy run-level files from first run
+    # Copy run-level files from first run (files live in _config/, _transient/, _execution/ subdirs)
     run_level_files = [
-        "scenario.osc",
-        "execution.yaml",
-        "entrypoint.sh",
-        "secondary_entrypoint.sh",
-        "collect_sysinfo.py",
+        ("_config", "scenario.osc"),
+        ("_execution", "execution.yaml"),
+        ("_transient", "entrypoint.sh"),
+        ("_transient", "secondary_entrypoint.sh"),
+        ("_transient", "collect_sysinfo.py"),
     ]
-    for fname in run_level_files:
-        src = first_campaign_path / fname
+    for subdir, fname in run_level_files:
+        src = first_campaign_path / subdir / fname
         if src.exists():
-            shutil.copy2(src, merged_path / fname)
+            dst_dir = merged_path / subdir
+            dst_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst_dir / fname)
 
-    # Copy vast file (stored alongside scenario.osc in run dir)
-    for f in first_campaign_path.iterdir():
+    # Copy vast file (stored in _config/)
+    for f in (first_campaign_path / "_config").iterdir():
         if f.suffix == ".vast":
-            shutil.copy2(f, merged_path / f.name)
+            dst_dir = merged_path / "_config"
+            dst_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(f, dst_dir / f.name)
             break
 
     # Copy run-level _config from first run

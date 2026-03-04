@@ -245,7 +245,7 @@ Path to an executable script that will be sourced before each run. The file is e
 
    execution:
      pre_command: /config/files/pre_command.sh
-     run_files_filter:
+     run_files:
      - "**/files/*.sh"
 
 **Command execution context:**
@@ -257,7 +257,7 @@ Path to an executable script that will be sourced before each run. The file is e
 
 .. note::
 
-   Custom scripts can be included in the container using ``run_files_filter`` (see below) to make them available at the specified path.
+   Custom scripts can be included in the container using ``run_files`` (see below) to make them available at the specified path.
 
 post_command
 ^^^^^^^^^^^^
@@ -279,17 +279,17 @@ Path to an executable file that should be executed after the scenario completes.
 
    execution:
      post_command: /config/files/post_command.sh
-     run_files_filter:
+     run_files:
      - "**/files/*.sh"
 
 The post command script is executed by the scenario execution framework after the scenario finishes, allowing for cleanup or post-processing tasks.
 
 .. note::
 
-   Custom scripts can be included in the container using ``run_files_filter`` (see below) to make them available at the specified path.
+   Custom scripts can be included in the container using ``run_files`` (see below) to make them available at the specified path.
 
-run_files_filter
-^^^^^^^^^^^^^^^^^
+run_files
+^^^^^^^^^
 
 **Type:** List of strings (glob patterns)
 
@@ -300,7 +300,7 @@ List of glob patterns specifying which files from the scenario directory should 
 .. code-block:: yaml
 
    execution:
-     run_files_filter:
+     run_files:
      - "**/files/*.py"
      - "**/models/*.sdf"
      - "**/maps/*"
@@ -565,7 +565,7 @@ Here's a complete example showing all major configuration options:
      pre_command: /config/files/prepare_test.sh
      post_command: /config/files/post_command.sh
      run_as_user: 1000
-     run_files_filter:
+     run_files:
      - "**/files/*"
      - "**/models/*.sdf"
      env:

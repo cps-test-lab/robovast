@@ -9,6 +9,7 @@ import tempfile
 import traceback
 from pathlib import Path
 
+
 def run_command(cmd, cwd=None, check=True):
     """Run a command, stream its output, and return the exit code.
 
@@ -76,28 +77,32 @@ def check_results_dir_structure(results_dir):  # pylint: disable=too-many-return
     first_run = campaign_dirs[0]
     print(f"  Checking structure of {first_run.name}:")
     
-    # Look for expected files/directories in run
-    run_contents = list(first_run.iterdir())
-    print(f"    Contents: {[c.name for c in run_contents]}")
+    # Look for expected files/directories in campaign directory
+    campaign_contents = list(first_run.iterdir())
+    print(f"    Contents: {[c.name for c in campaign_contents]}")
 
-    # Check for scenario.osc file
-    scenario_osc = [f for f in run_contents if f.name == 'scenario.osc']
-    if not scenario_osc:
-        print("  ✗ scenario.osc file not found in campaign directory")
+    # Check for scenario.osc file in _config/
+    config_dir_check = first_run / '_config'
+    if config_dir_check.exists():
+        scenario_osc = config_dir_check / 'scenario.osc'
+        if not scenario_osc.exists():
+            print("  ✗ scenario.osc file not found in _config/ directory")
+            return False
+        print("  ✓ scenario.osc file exists in _config/")
+    else:
+        print("  ✗ _config directory not found in campaign directory")
         return False
     
-    print("  ✓ scenario.osc file exists")
-    
-    # Check for execution.yaml file
-    execution_yaml = [f for f in run_contents if f.name == 'execution.yaml']
-    if not execution_yaml:
-        print("  ✗ execution.yaml file not found in campaign directory")
+    # Check for execution.yaml file in _execution/
+    execution_dir = first_run / '_execution'
+    if not execution_dir.exists() or not (execution_dir / 'execution.yaml').exists():
+        print("  ✗ execution.yaml file not found in _execution/ directory")
         return False
-    
-    print("  ✓ execution.yaml file exists")
+
+    print("  ✓ execution.yaml file exists in _execution/")
     
     # Check for config directories
-    config_dirs = [d for d in run_contents if d.is_dir()]
+    config_dirs = [d for d in campaign_contents if d.is_dir()]
     if not config_dirs:
         print("  ✗ No config directories found in campaign")
         return False
@@ -107,32 +112,42 @@ def check_results_dir_structure(results_dir):  # pylint: disable=too-many-return
     # Check for _config directory
     config_dir = [d for d in config_dirs if d.is_dir() and d.name == '_config']
     if not config_dir:
-        print("  ✗ _config directory not found in run")
+        print("  ✗ _config directory not found in campaign")
         return False
     
     print("  ✓ _config directory exists")
     
-    # Check for configurations.yaml in _config
-    config_dir_path = config_dir[0]
-    config_dir_contents = list(config_dir_path.iterdir())
-    configurations_yaml = [f for f in config_dir_contents if f.name == 'configurations.yaml']
-    if not configurations_yaml:
-        print("  ✗ configurations.yaml file not found in _config directory")
-        return False
-    
-    print("  ✓ configurations.yaml file exists in _config directory")
-    
     # Check structure of first scenario directory (exclude _config; it has its own layout)
-    scenario_dirs = [d for d in config_dirs if d.name != '_config']
+    scenario_dirs = [d for d in config_dirs if d.name not in ('_config', '_transient', '_execution')]
     if not scenario_dirs:
         print("  ✗ No scenario directory found in run")
         return False
     first_scenario = scenario_dirs[0]
     config_contents = list(first_scenario.iterdir())
-    print(f"    {first_scenario.name} contents: {[c.name for c in config_contents]}")
+    
+
+    transient_dir = [d for d in config_dirs if d.name == '_transient']
+    if not transient_dir:
+        print("  ✗ _transient directory not found in run")
+        return False
+    
+    print("  ✓ _transient directory exists")
+    
+    # Check for configurations.yaml in _transient directory
+    transient_dir_path = transient_dir[0]
+    transient_dir_contents = list(transient_dir_path.iterdir())
+    configurations_yaml = [f for f in transient_dir_contents if f.name == 'configurations.yaml']
+    if not configurations_yaml:
+        print("  ✗ configurations.yaml file not found in _transient directory")
+        return False
+    
+    print("  ✓ configurations.yaml file exists in _transient directory")
+
+    run_dirs = [d for d in config_contents if d.name not in ('_config')]
+    print(f"    {first_scenario.name} contents: {[c.name for c in run_dirs]}")
     
     # Check that only numeric directories exist (and require test.xml in each)
-    for item in config_contents:
+    for item in run_dirs:
         if item.is_dir():
             name = item.name
             if not name.isdigit():

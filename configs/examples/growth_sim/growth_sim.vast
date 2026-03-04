@@ -27,7 +27,7 @@ execution:
   env:
   - ENABLE_X11: "false"
   scenario_file: scenario.osc
-  run_files_filter:
+  run_files:
   - "files/*.py"
   - "files/*.sh"
   pre_command: /config/files/pre_command.sh

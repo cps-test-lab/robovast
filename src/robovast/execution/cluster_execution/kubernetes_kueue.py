@@ -18,9 +18,10 @@
 """Kueue installation, queue setup, and workload cleanup for cluster execution."""
 
 import logging
+import os
 import subprocess
 import tempfile
-import os
+import time
 
 from kubernetes import client, config
 from kubernetes.utils.quantity import parse_quantity
@@ -407,6 +408,43 @@ def get_cluster_allocatable_resources(kube_context=None):
         return DEFAULT_CPU_QUOTA, DEFAULT_MEMORY_QUOTA
 
 
+# CRDs that must be established before we can create queue resources
+_KUEUE_CRDS = [
+    "clusterqueues.kueue.x-k8s.io",
+    "resourceflavors.kueue.x-k8s.io",
+    "localqueues.kueue.x-k8s.io",
+]
+
+
+def _wait_for_kueue_crds(ctx_kubectl, timeout=120):
+    """Wait until all critical Kueue CRDs are established (and not terminating).
+
+    After ``helm uninstall`` the CRDs enter a Terminating state; after a fresh
+    ``helm install`` they are re-created.  ``kubectl wait --for=condition=established``
+    blocks until the CRD is fully ready, which covers both cases.
+
+    Args:
+        ctx_kubectl: list of kubectl context flags, e.g. ``["--context", "my-ctx"]``.
+        timeout: seconds to wait per CRD.
+    """
+    for crd in _KUEUE_CRDS:
+        result = subprocess.run(
+            ["kubectl"] + ctx_kubectl + [
+                "wait",
+                "--for=condition=established",
+                f"crd/{crd}",
+                f"--timeout={timeout}s",
+            ],
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            logger.debug(
+                "kubectl wait for CRD '%s' returned non-zero (may not exist yet): %s",
+                crd, result.stderr,
+            )
+
+
 def _run_helm(args, check=True):
     """Run helm command. Returns (success, stderr)."""
     cmd = ["helm"] + args
@@ -492,16 +530,8 @@ def install_kueue_helm(kube_context=None):
         finally:
             os.unlink(values_path)
         # Wait for CRDs after upgrade (upgrade may update CRDs)
-        subprocess.run(
-            ["kubectl"] + ctx_kubectl + [
-                "wait",
-                "--for=condition=established",
-                "crd/resourceflavors.kueue.x-k8s.io",
-                "--timeout=60s",
-            ],
-            capture_output=True,
-            check=False,
-        )
+        # Wait for ALL critical Kueue CRDs after upgrade too.
+        _wait_for_kueue_crds(ctx_kubectl, timeout=60)
         return
 
     logger.info("Installing Kueue via Helm in namespace %s...", KUEUE_NAMESPACE)
@@ -525,17 +555,10 @@ def install_kueue_helm(kube_context=None):
     finally:
         os.unlink(values_path)
     logger.info("Kueue installed successfully. Waiting for controller and CRDs...")
-    # Wait for ResourceFlavor CRD to be established (CRDs install before controller)
-    subprocess.run(
-        ["kubectl"] + ctx_kubectl + [
-            "wait",
-            "--for=condition=established",
-            "crd/resourceflavors.kueue.x-k8s.io",
-            "--timeout=120s",
-        ],
-        capture_output=True,
-        check=False,
-    )
+    # Wait for ALL critical Kueue CRDs to be established.
+    # This also covers the case where a previous uninstall left CRDs in a
+    # Terminating state – kubectl wait blocks until they are fully re-created.
+    _wait_for_kueue_crds(ctx_kubectl, timeout=120)
     # Wait for deployment to be ready
     subprocess.run(
         ["kubectl"] + ctx_kubectl + [
@@ -590,7 +613,36 @@ def apply_kueue_queues(namespace="default", kube_context=None):
         cpu_quota=cpu_quota,
         memory_quota=memory_quota,
     ).strip()
-    _run_kubectl_apply(yaml_content, kube_context=kube_context)
+
+    # Retry to handle the race where a CRD from a previous uninstall is still
+    # in Terminating state when we try to create resources.  Each attempt
+    # re-waits for the CRDs to be fully established before applying.
+    ctx_kubectl = ["--context", kube_context] if kube_context else []
+    max_attempts = 6
+    retry_delay = 10  # seconds between retries
+    for attempt in range(1, max_attempts + 1):
+        result = subprocess.run(
+            ["kubectl"] + ctx_kubectl + ["apply", "-f", "-"],
+            input=yaml_content,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        if result.returncode == 0:
+            break
+        stderr = result.stderr or result.stdout or ""
+        if "custom resource definition is terminating" in stderr and attempt < max_attempts:
+            logger.warning(
+                "Kueue CRD still terminating; waiting %ds before retry (attempt %d/%d)...",
+                retry_delay, attempt, max_attempts,
+            )
+            _wait_for_kueue_crds(ctx_kubectl, timeout=retry_delay * max_attempts)
+            time.sleep(retry_delay)
+        else:
+            logger.warning("kubectl apply failed: %s", stderr)
+            raise RuntimeError(f"kubectl apply failed: {stderr}")
+
     logger.info(
         "Kueue queues configured: LocalQueue '%s' in namespace '%s'",
         KUEUE_QUEUE_NAME,

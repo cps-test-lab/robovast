@@ -15940,7 +15940,7 @@ execution:
     cpu: 9
   runs: 3
   scenario_file: scenario.osc
-  run_files_filter:
+  run_files:
   - 'files/*'
   - 'small_dataset_maps/*.stl'
   - 'small_dataset_maps/**/maps/*'

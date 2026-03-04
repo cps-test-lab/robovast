@@ -1870,7 +1870,7 @@ execution:
   resources:
     cpu: 6
   runs: 1
-  run_files_filter:
+  run_files:
   - '**/files/*'
 analysis:
   preprocessing:

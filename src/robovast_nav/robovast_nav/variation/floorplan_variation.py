@@ -106,6 +106,9 @@ class FloorplanGeneration(NavVariation):
 
     CONFIG_CLASS = FloorplanGenerationConfig
 
+    def get_input_files(self):
+        return list(self.parameters.floorplans)
+
     def variation(self, in_configs):
         """Generate artifacts for each floorplan and create configurations.
 
@@ -167,6 +170,9 @@ class FloorplanVariation(NavVariation):
 
     CONFIG_CLASS = FloorplanVariationConfig
     # GUI_CLASS = FloorplanVariationGui
+
+    def get_input_files(self):
+        return list(self.parameters.variation_files)
 
     def variation(self, in_configs):
         self.progress_update("Running Floorplan Variation...")

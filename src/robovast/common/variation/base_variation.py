@@ -96,6 +96,18 @@ class Variation():
         """Return file paths that affect variation output. Override when using CACHE_ID."""
         return []
 
+    def get_input_files(self):
+        """Return relative file paths (relative to base_path) required as input.
+
+        Override in subclasses to report files that this variation consumes from
+        the source directory. These files will be copied into the campaign
+        ``_config/`` directory to make the campaign self-contained.
+
+        Returns:
+            list[str]: Relative file paths (relative to ``self.base_path``).
+        """
+        return []
+
     def progress_update(self, msg):
         self.progress_update_callback(f"{self.__class__.__name__}: {msg}")
 

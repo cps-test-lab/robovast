@@ -418,7 +418,7 @@ class ResultDownloader:
             return [], []
 
     def download_results(self, output_directory, force=False, verbose=False, skip_removal=True,
-                        keep_archive=True):
+                         keep_archive=True):
         """
         Download all result files from transfer PVC using HTTP server port-forwarding
 
@@ -462,7 +462,7 @@ class ResultDownloader:
         try:
             for current_campaign in available_campaigns:
                 if self._download_campaign(output_directory, current_campaign, force, verbose, skip_removal,
-                                     keep_archive):
+                                           keep_archive):
                     downloaded_count += 1
         finally:
             # Clean up port-forward
@@ -471,7 +471,7 @@ class ResultDownloader:
         return downloaded_count
 
     def _download_campaign(self, output_directory, campaign, force=False, verbose=False, skip_removal=True,
-                     keep_archive=True):
+                           keep_archive=True):
         """
         Download a specific run via HTTP.
 
