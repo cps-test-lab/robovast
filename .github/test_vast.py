@@ -143,7 +143,7 @@ def check_results_dir_structure(results_dir):  # pylint: disable=too-many-return
     
     print("  ✓ configurations.yaml file exists in _transient directory")
 
-    run_dirs = [d for d in config_dirs if d.name not in ('_config')]
+    run_dirs = [d for d in config_contents if d.name not in ('_config')]
     print(f"    {first_scenario.name} contents: {[c.name for c in run_dirs]}")
     
     # Check that only numeric directories exist (and require test.xml in each)
