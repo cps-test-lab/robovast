@@ -56,3 +56,6 @@ entrypoints
 stdin
 Nextcloud
 Subclasses
+hardcoded
+schema
+schemas
