@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
-from .common import (for_each_run, get_scenario_parameter,
-                     read_output_csv, read_output_files, read_output_yaml_list)
+from .common import (for_each_run, get_scenario_parameter, read_output_csv,
+                     read_output_files, read_output_yaml_list)
 from .ros2 import (calculate_speeds_from_poses, get_behavior_info,
                    print_bag_topics)
 

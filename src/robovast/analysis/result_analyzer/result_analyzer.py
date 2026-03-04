@@ -232,7 +232,7 @@ class RunResultsAnalyzer(QMainWindow):
         # Rebuild analysis tabs.
         # Fixed tabs ("Logs", "Local Execution") are always at the end;
         # analysis tabs are inserted before them at positions 0..N-1.
-        for name, widget in list(self.analysis_tabs.items()):
+        for _, widget in list(self.analysis_tabs.items()):
             idx = self.details_tabs.indexOf(widget)
             if idx >= 0:
                 self.details_tabs.removeTab(idx)

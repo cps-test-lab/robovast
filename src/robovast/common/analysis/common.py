@@ -33,7 +33,7 @@ def get_scenario_parameter(data_dir: str, parameter_name: str):
     Returns:
         The value of the specified parameter, or None if not found.
     """
-    config_path = Path(data_dir) / "_config", "scenario.config"
+    config_path = Path(data_dir) / "_config" / "scenario.config"
     if not config_path.exists():
         raise FileNotFoundError(f"scenario.config not found in {data_dir}")
 
