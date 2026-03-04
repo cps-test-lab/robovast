@@ -269,7 +269,11 @@ class ClusterS3Client:
                 # Always use forward slashes in S3 keys
                 s3_key = s3_key.replace(os.sep, "/")
                 logger.debug(f"Uploading {local_path} -> s3://{bucket_name}/{s3_key}")
-                self._s3.upload_file(local_path, bucket_name, s3_key)
+                extra_args = {}
+                if os.access(local_path, os.X_OK):
+                    extra_args["Metadata"] = {"executable": "yes"}
+                self._s3.upload_file(local_path, bucket_name, s3_key,
+                                     ExtraArgs=extra_args if extra_args else None)
                 uploaded += 1
 
         logger.debug(f"Uploaded {uploaded} file(s) to s3://{bucket_name}/{s3_prefix}")
@@ -334,6 +338,13 @@ class ClusterS3Client:
                 self._s3.download_file(bucket_name, key, local_path)
                 downloaded += 1
                 progress_callback(downloaded, total, size_bytes)
+
+            # Restore executable bit if the file was uploaded with executable metadata
+            head = self._s3.head_object(Bucket=bucket_name, Key=key)
+            if head.get("Metadata", {}).get("executable") == "yes":
+                current_mode = os.stat(local_path).st_mode
+                os.chmod(local_path, current_mode | 0o111)
+                logger.debug(f"Restored executable bit: {local_path}")
 
         logger.debug(f"Downloaded {downloaded} file(s) from s3://{bucket_name}")
         return downloaded

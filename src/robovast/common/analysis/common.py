@@ -33,7 +33,7 @@ def get_scenario_parameter(data_dir: str, parameter_name: str):
     Returns:
         The value of the specified parameter, or None if not found.
     """
-    config_path = Path(data_dir) / "scenario.config"
+    config_path = Path(data_dir) / "_config" / "scenario.config"
     if not config_path.exists():
         raise FileNotFoundError(f"scenario.config not found in {data_dir}")
 
@@ -60,7 +60,7 @@ def read_output_files(data_dir: str, reader_func: Callable[[Path], pd.DataFrame]
         pd.DataFrame: Combined DataFrame containing all run data, with additional columns for run, config, and scenario parameters.
 
     Raises:
-        ValueError: If data_dir does not exist, no run.xml files are found, or no valid run data could be read.
+        ValueError: If data_dir does not exist, no test.xml files are found, or no valid run data could be read.
     """
     data_path = Path(data_dir)
 
@@ -69,11 +69,11 @@ def read_output_files(data_dir: str, reader_func: Callable[[Path], pd.DataFrame]
 
     all_dataframes = []
 
-    # Find all run.xml files in subdirectories
-    run_xml_files = list(data_path.rglob("run.xml"))
+    # Find all test.xml files in subdirectories
+    run_xml_files = list(data_path.rglob("test.xml"))
 
     if not run_xml_files:
-        raise ValueError(f"No run.xml files found in subdirectories of {data_dir}")
+        raise ValueError(f"No test.xml files found in subdirectories of {data_dir}")
 
     if debug:
         print(f"Found {len(run_xml_files)} run directories")
@@ -91,7 +91,7 @@ def read_output_files(data_dir: str, reader_func: Callable[[Path], pd.DataFrame]
                 df = reader_func(run_dir)
             else:
                 df = pd.DataFrame()
-            scenario_config_path = run_dir.parent / "scenario.config"
+            scenario_config_path = run_dir.parent / "_config" / "scenario.config"
             config_parameters = {}
             try:
                 with open(scenario_config_path, 'r') as f:
@@ -224,18 +224,18 @@ def for_each_run(data_dir: str, func: Callable[[Path], None], debug=False) -> No
         debug (bool, optional): If True, prints debug information. Defaults to False.
 
     Raises:
-        ValueError: If data_dir does not exist or no run.xml files are found.
+        ValueError: If data_dir does not exist or no test.xml files are found.
     """
     data_path = Path(data_dir)
 
     if not data_path.exists():
         raise ValueError(f"Data directory does not exist: {data_dir}")
 
-    # Find all run.xml files in subdirectories
-    run_xml_files = list(data_path.rglob("run.xml"))
+    # Find all test.xml files in subdirectories
+    run_xml_files = list(data_path.rglob("test.xml"))
 
     if not run_xml_files:
-        raise ValueError(f"No run.xml files found in subdirectories of {data_dir}")
+        raise ValueError(f"No test.xml files found in subdirectories of {data_dir}")
 
     if debug:
         print(f"Found {len(run_xml_files)} run directories")

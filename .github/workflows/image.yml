@@ -64,7 +64,7 @@ jobs:
           build-args: |
             ROS_DISTRO=jazzy
 
-  build-and-push-archiver:
+  build-and-push-sidecar:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -81,11 +81,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata (tags, labels) for archiver
+      - name: Extract metadata (tags, labels) for sidecar image
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-archiver
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-sidecar
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -97,12 +97,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push archiver image
+      - name: Build and push sidecar image
         uses: docker/build-push-action@v6
         with:
           platforms: linux/amd64,linux/arm64
-          context: ./container/archiver
-          file: ./container/archiver/Dockerfile
+          context: ./container/sidecar
+          file: ./container/sidecar/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

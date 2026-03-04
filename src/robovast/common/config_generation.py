@@ -239,18 +239,21 @@ def _validate_relative_path(path, description="path"):
         raise ValueError(f"{description} must not escape the base directory: {path}")
 
 
-def _collect_analysis_input_files(parameters):
-    """Collect file paths referenced in the analysis.visualization section."""
+def _collect_analysis_input_files(parameters, base_dir=None):
+    """Collect file paths referenced in the analysis.visualization and analysis.postprocessing sections."""
     analysis_files = []
     analysis = parameters.get('analysis')
     if not analysis:
         return analysis_files
     if isinstance(analysis, dict):
         visualizations = analysis.get('visualization') or []
+        postprocessing = analysis.get('postprocessing') or []
     elif hasattr(analysis, 'visualization'):
         visualizations = analysis.visualization or []
+        postprocessing = analysis.postprocessing or []
     else:
         return analysis_files
+
     for viz_entry in visualizations:
         if isinstance(viz_entry, dict):
             for _plugin_name, plugin_config in viz_entry.items():
@@ -258,6 +261,22 @@ def _collect_analysis_input_files(parameters):
                     for _key, path in plugin_config.items():
                         if isinstance(path, str) and (path.endswith('.ipynb') or path.endswith('.py')):
                             analysis_files.append(path)
+
+    # Collect any postprocessing plugin parameter value that refers to an existing file
+    for pp_entry in postprocessing:
+        if not isinstance(pp_entry, dict):
+            continue
+        for _plugin_name, plugin_params in pp_entry.items():
+            if not isinstance(plugin_params, dict):
+                continue
+            for _key, value in plugin_params.items():
+                if not isinstance(value, str) or os.path.isabs(value):
+                    continue
+                # Only collect if the path actually resolves to an existing file
+                candidate = os.path.join(base_dir, value) if base_dir else value
+                if os.path.isfile(candidate):
+                    analysis_files.append(value)
+
     return analysis_files
 
 
@@ -305,7 +324,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     existing_scenario_parameters = next(iter(scenario_param_dict.values())) if scenario_param_dict else []
 
     # Collect analysis notebook files
-    analysis_files = _collect_analysis_input_files(parameters)
+    analysis_files = _collect_analysis_input_files(parameters, base_dir=os.path.dirname(variation_file))
     for af in analysis_files:
         _validate_relative_path(af, "analysis file")
     campaign_input_files.extend(analysis_files)

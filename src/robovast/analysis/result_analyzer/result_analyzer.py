@@ -18,7 +18,6 @@
 import math
 import os
 import subprocess
-import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -40,55 +39,40 @@ from .widgets.worker_thread import LatestOnlyWorker
 
 
 class RunResultsAnalyzer(QMainWindow):
-    def __init__(self, base_dir=None, config_file=None):
+    def __init__(self, base_dir=None, override_vast=None):
         super().__init__()
 
         # Initialize QSettings for local/system-specific settings (window state, etc.)
         self.settings = QSettings("RunResultsAnalyzer", "Settings")
 
-        # Initialize configuration for shared settings
-        self.config_file = config_file
-        self.parameters = load_config(config_file, "analysis", allow_missing=True)
+        # Resolve override_vast to an absolute path once so it can be compared/logged consistently
+        self._override_vast = str(Path(override_vast).resolve()) if override_vast else None
+
+        # Discover notebooks from every campaign under base_dir.
+        # self.campaign_notebooks maps campaign_name -> {"workloads": [...], "config_file": str|None}
+        self.campaign_notebooks = {}
+        self._current_campaign = None  # name of the campaign currently shown in the UI
+
+        if base_dir:
+            self.campaign_notebooks = self._discover_all_campaign_notebooks(base_dir)
+
+        # Pick the most recent campaign (lexicographically last) as the initial default
+        sorted_campaigns = sorted(self.campaign_notebooks.keys(), reverse=True)
+        initial_campaign = sorted_campaigns[0] if sorted_campaigns else None
+        self._current_campaign = initial_campaign
+        initial_data = self.campaign_notebooks.get(initial_campaign, {})
+        workloads = initial_data.get("workloads", [])
+        self.config_file = initial_data.get("config_file", None)
 
         # Initialize variables to None first
         self.local_execution_widget = None
-        # self.data_analysis_widget = None
         self.tree = None
-        # self.overview_text = None
         self.log_viewer = None
         self.details_tabs = None
         self.analysis_tabs = {}
 
         # Worker thread setup
         self.worker_thread = QThread()
-
-        workloads = []
-        if "visualization" in self.parameters:
-            for view in self.parameters["visualization"]:
-                for name, values in view.items():
-                    try:
-                        if not isinstance(values, dict):
-                            continue
-                        config_dir = os.path.dirname(config_file)
-
-                        run_val = values.get("run")
-                        run_nb = os.path.join(config_dir, run_val) if run_val else None
-
-                        config_val = values.get("config")
-                        config_nb = os.path.join(config_dir, config_val) if config_val else None
-
-                        campaign_val = values.get("campaign")
-                        campaign_nb = os.path.join(config_dir, campaign_val) if campaign_val else None
-
-                        workloads.append(
-                            JupyterNotebookRunner(name,
-                                                  run_nb=run_nb,
-                                                  config_nb=config_nb,
-                                                  campaign_nb=campaign_nb)
-                        )
-                    except Exception as e:
-                        print(f"Error adding notebook workload for {name}: {e}")
-                        sys.exit(1)
 
         self.worker = LatestOnlyWorker(workloads)
         self.worker.moveToThread(self.worker_thread)
@@ -118,6 +102,158 @@ class RunResultsAnalyzer(QMainWindow):
         self.setup_ui()
         self.load_window_state()
         self.populate_tree()
+
+    # ------------------------------------------------------------------
+    # Campaign notebook discovery
+    # ------------------------------------------------------------------
+
+    def _discover_all_campaign_notebooks(self, base_dir):
+        """Scan all campaigns under *base_dir* and return per-campaign notebook info.
+
+        When ``self._override_vast`` is set the override file (and its parent
+        directory) is used for *every* campaign instead of each campaign's own
+        ``_config/*.vast``.
+
+        Returns:
+            dict: ``{campaign_name: {"workloads": [...], "config_file": str|None}}``
+        """
+        root = Path(base_dir)
+        result = {}
+
+        # When an override is given, load it once and reuse for all campaigns.
+        override_parameters = None
+        override_config_dir = None
+        if self._override_vast:
+            override_vast_path = Path(self._override_vast)
+            override_config_dir = str(override_vast_path.parent)
+            try:
+                override_parameters = load_config(
+                    str(override_vast_path), "analysis", allow_missing=True
+                )
+                print(f"Using override .vast for notebook discovery: {self._override_vast}")
+            except Exception as e:
+                print(f"Warning: could not load override config from {self._override_vast}: {e}")
+
+        for campaign_item in sorted(root.iterdir()):
+            if not campaign_item.is_dir() or not campaign_item.name.startswith("campaign-"):
+                continue
+
+            if self._override_vast and override_parameters is not None:
+                # Use the override file for this campaign
+                parameters = override_parameters
+                cd = override_config_dir
+                vast_path_str = self._override_vast
+            else:
+                # Normal path: look for a .vast file inside campaign-<id>/_config/
+                config_dir = campaign_item / "_config"
+                if not config_dir.is_dir():
+                    continue
+                vast_files = [
+                    f for f in sorted(config_dir.iterdir())
+                    if f.is_file() and f.suffix == ".vast"
+                ]
+                if not vast_files:
+                    continue
+                if len(vast_files) > 1:
+                    names = ", ".join(f.name for f in vast_files)
+                    print(f"Warning: multiple .vast files in {config_dir}: {names}. "
+                          f"Using {vast_files[0].name}.")
+                vast_path_str = str(vast_files[0])
+                cd = str(config_dir)
+                try:
+                    parameters = load_config(vast_path_str, "analysis", allow_missing=True)
+                except Exception as e:
+                    print(f"Warning: could not load config from {vast_path_str}: {e}")
+                    continue
+
+            workloads = []
+            if "visualization" in parameters:
+                for view in parameters["visualization"]:
+                    for name, values in view.items():
+                        try:
+                            if not isinstance(values, dict):
+                                continue
+                            run_val = values.get("run")
+                            run_nb = os.path.join(cd, run_val) if run_val else None
+                            config_val = values.get("config")
+                            config_nb = os.path.join(cd, config_val) if config_val else None
+                            campaign_val = values.get("campaign")
+                            campaign_nb = os.path.join(cd, campaign_val) if campaign_val else None
+                            workloads.append(
+                                JupyterNotebookRunner(
+                                    name,
+                                    run_nb=run_nb,
+                                    config_nb=config_nb,
+                                    campaign_nb=campaign_nb,
+                                )
+                            )
+                        except Exception as e:
+                            print(f"Warning: could not add notebook workload '{name}' "
+                                  f"for {campaign_item.name}: {e}")
+
+            result[campaign_item.name] = {
+                "workloads": workloads,
+                "config_file": vast_path_str,
+            }
+            print(f"Discovered campaign {campaign_item.name}: {len(workloads)} workload(s)")
+
+        return result
+
+    def _get_campaign_for_path(self, path):
+        """Return the ``campaign-<id>`` folder name that contains *path*, or ``None``."""
+        try:
+            rel = Path(path).relative_to(self.base_dir)
+            first = rel.parts[0] if rel.parts else None
+            if first and first.startswith("campaign-"):
+                return first
+        except Exception:
+            pass
+        return None
+
+    def _update_analysis_tabs_for_campaign(self, campaign_name):
+        """Swap analysis tabs and worker workloads to match *campaign_name*.
+
+        Must be called from the UI thread.  The worker's in-progress work is
+        cancelled before the workload list is replaced.
+        """
+        if campaign_name == self._current_campaign:
+            return
+
+        campaign_data = self.campaign_notebooks.get(campaign_name, {})
+        new_workloads = campaign_data.get("workloads", [])
+        new_config_file = campaign_data.get("config_file", None)
+
+        print(f"Switching campaign: {self._current_campaign} -> {campaign_name} "
+              f"({len(new_workloads)} workload(s))")
+
+        # Cancel in-progress work and install new workloads in the worker
+        self.worker.set_workloads(new_workloads)
+
+        # Rebuild analysis tabs.
+        # Fixed tabs ("Logs", "Local Execution") are always at the end;
+        # analysis tabs are inserted before them at positions 0..N-1.
+        for _, widget in list(self.analysis_tabs.items()):
+            idx = self.details_tabs.indexOf(widget)
+            if idx >= 0:
+                self.details_tabs.removeTab(idx)
+            try:
+                widget.setParent(None)
+                widget.deleteLater()
+            except Exception:
+                pass
+        self.analysis_tabs.clear()
+
+        for i, workload in enumerate(new_workloads):
+            analysis_tab = DataAnalysisWidget()
+            self.analysis_tabs[workload.name] = analysis_tab
+            self.details_tabs.insertTab(i, analysis_tab, workload.name)
+
+        # Update the config file used by the local execution widget
+        self.config_file = new_config_file
+        if self.local_execution_widget and hasattr(self.local_execution_widget, "update_config_file"):
+            self.local_execution_widget.update_config_file(new_config_file)
+
+        self._current_campaign = campaign_name
 
     def setup_ui(self):
         """Setup the main UI"""
@@ -280,27 +416,19 @@ class RunResultsAnalyzer(QMainWindow):
             QTimer.singleShot(2000, lambda: self.status_label.setText("Ready"))
             return
 
-        # Find the appropriate notebook based on run type from configuration
+        # Find the appropriate notebook from the current campaign's workloads
         notebook_path = None
-        if "visualization" in self.parameters:
-            for view in self.parameters["visualization"]:
-                for _, values in view.items():
-                    if not isinstance(values, dict):
-                        continue
-
-                    # Get the notebook path based on run type
-                    if run_type == RunType.RUN and "run" in values:
-                        notebook_path = os.path.join(os.path.dirname(self.config_file), values["run"])
-                        break
-                    elif run_type == RunType.CONFIG and "config" in values:
-                        notebook_path = os.path.join(os.path.dirname(self.config_file), values["config"])
-                        break
-                    elif run_type == RunType.CAMPAIGN and "campaign" in values:
-                        notebook_path = os.path.join(os.path.dirname(self.config_file), values["campaign"])
-                        break
-
-                if notebook_path:
-                    break
+        campaign_data = self.campaign_notebooks.get(self._current_campaign, {})
+        for workload in campaign_data.get("workloads", []):
+            if run_type == RunType.RUN and workload.run_nb:
+                notebook_path = workload.run_nb
+                break
+            elif run_type == RunType.CONFIG and workload.config_nb:
+                notebook_path = workload.config_nb
+                break
+            elif run_type == RunType.CAMPAIGN and workload.campaign_nb:
+                notebook_path = workload.campaign_nb
+                break
 
         if notebook_path and Path(notebook_path).exists():
             try:
@@ -387,16 +515,12 @@ class RunResultsAnalyzer(QMainWindow):
         self.details_tabs = QTabWidget()
         details_layout.addWidget(self.details_tabs)
 
-        if "visualization" in self.parameters:
-            for view in self.parameters["visualization"]:
-                for name, _ in view.items():
-                    try:
-                        analysis_tab = DataAnalysisWidget()
-                        self.analysis_tabs[name] = analysis_tab
-                        self.details_tabs.addTab(analysis_tab, name)
-                    except Exception as e:
-                        print(f"Error adding notebook workload for {name}: {e}")
-                        sys.exit(1)
+        # Create analysis tabs from the initial campaign's workloads
+        initial_data = self.campaign_notebooks.get(self._current_campaign, {})
+        for workload in initial_data.get("workloads", []):
+            analysis_tab = DataAnalysisWidget()
+            self.analysis_tabs[workload.name] = analysis_tab
+            self.details_tabs.addTab(analysis_tab, workload.name)
 
         # Log content tab
         self.log_viewer = LogViewerWidget()
@@ -499,19 +623,19 @@ class RunResultsAnalyzer(QMainWindow):
     def get_run_type(self, data_path):
         """Determine analysis type based on directory structure"""
         try:
-            # Check for run.xml files in different locations to determine analysis type
+            # Check for test.xml files in different locations to determine analysis type
 
-            # 1. Check if run.xml exists directly in the path (single run)
-            if os.path.exists(data_path / "run.xml"):
+            # 1. Check if test.xml exists directly in the path (single run)
+            if os.path.exists(data_path / "test.xml"):
                 return RunType.RUN
 
-            # 2. Check if run.xml exist in subfolders (folder run)
-            run_files = list(data_path.glob("*/run.xml"))
+            # 2. Check if test.xml exist in subfolders (config level)
+            run_files = list(data_path.glob("*/test.xml"))
             if run_files:
                 return RunType.CONFIG
 
-            # 3. Check if run.xml files exist in subfolders of subfolders (whole run)
-            run_files = list(data_path.glob("*/*/run.xml"))
+            # 3. Check if test.xml files exist in subfolders of subfolders (campaign level)
+            run_files = list(data_path.glob("*/*/test.xml"))
             if run_files:
                 return RunType.CAMPAIGN
 
@@ -542,6 +666,11 @@ class RunResultsAnalyzer(QMainWindow):
         self.status_label.setText("Starting analysis...")
         # self.worker_progress_bar.setFormat("Initializing...")
         self.worker_progress_bar.setRange(0, 0)  # Indeterminate
+
+        # If the selected item belongs to a different campaign, update tabs & workloads
+        campaign_name = self._get_campaign_for_path(directory_path)
+        if campaign_name and campaign_name != self._current_campaign:
+            self._update_analysis_tabs_for_campaign(campaign_name)
 
         # self.data_analysis_widget.clear_output()
         for _, widget in self.analysis_tabs.items():
@@ -664,11 +793,11 @@ class RunResultsAnalyzer(QMainWindow):
         return stats
 
     def get_run_status(self, directory_path):
-        """Get run status and optional short summary from run.xml.
+        """Get run status and optional short summary from test.xml.
         Returns (status, summary) where status is 'passed', 'failed', or 'unknown',
         and summary is a short descriptive string or None.
         """
-        run_xml_path = directory_path / "run.xml"
+        run_xml_path = directory_path / "test.xml"
 
         if not run_xml_path.exists():
             return "unknown", None
@@ -691,12 +820,12 @@ class RunResultsAnalyzer(QMainWindow):
                 return status, summary
 
         except Exception as e:
-            print(f"Error parsing run.xml in {directory_path}: {e}")
+            print(f"Error parsing test.xml in {directory_path}: {e}")
 
         return "unknown", None
 
     def _get_failure_text(self, root):
-        """Get failure element text from parsed run.xml root."""
+        """Get failure element text from parsed test.xml root."""
         for testcase in root.iter('testcase'):
             failure = testcase.find('failure')
             if failure is not None:
@@ -726,7 +855,7 @@ class RunResultsAnalyzer(QMainWindow):
 
     def is_run_directory(self, directory_path):
         """Check if directory is a run directory"""
-        return (directory_path / "run.xml").exists()
+        return (directory_path / "test.xml").exists()
 
     @staticmethod
     def format_size(size_bytes):

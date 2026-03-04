@@ -49,7 +49,8 @@ The dataset serves as a comprehensive validation tool for navigation stacks such
    setup
    how_to_run
    configuration
-   cluster_execution
    example
    variation
+   cluster_execution
+   analysis
    developer_guide

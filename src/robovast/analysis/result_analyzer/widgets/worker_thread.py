@@ -212,6 +212,28 @@ class LatestOnlyWorker(QObject):
             except queue.Empty:
                 break
 
+    def set_workloads(self, workloads):
+        """Replace the current workloads, cancelling any in-progress work.
+
+        Safe to call from the UI thread while the worker loop is running.
+        The GIL guarantees that the list assignment is atomic enough for
+        our cancel-then-replace pattern.
+        """
+        # Cancel everything that is running under the old workloads
+        for workload in self._workloads:
+            if workload:
+                workload.cancel()
+
+        # Clear any pending tasks so the next add_task starts fresh
+        while not self.task_queue.empty():
+            try:
+                self.task_queue.get_nowait()
+            except Exception:
+                break
+
+        self._workloads = list(workloads)
+        print(f"Workloads replaced: {[w.name for w in self._workloads]}")
+
     def cancel_current_task(self):
         """Cancel only the current task set (but keep worker running)"""
         print(f"Cancelling current task: {self._current_task_id}")
