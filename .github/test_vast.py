@@ -120,11 +120,10 @@ def check_results_dir_structure(results_dir):  # pylint: disable=too-many-return
     # Check structure of first scenario directory (exclude _config; it has its own layout)
     scenario_dirs = [d for d in config_dirs if d.name not in ('_config', '_transient', '_execution')]
     if not scenario_dirs:
-        print("  ✗ No config directory found in run")
+        print("  ✗ No scenario directory found in run")
         return False
     first_scenario = scenario_dirs[0]
     config_contents = list(first_scenario.iterdir())
-    print(f"    {first_scenario.name} contents: {[c.name for c in config_contents]}")
     
 
     transient_dir = [d for d in config_dirs if d.name == '_transient']
@@ -144,8 +143,11 @@ def check_results_dir_structure(results_dir):  # pylint: disable=too-many-return
     
     print("  ✓ configurations.yaml file exists in _transient directory")
 
+    run_dirs = [d for d in config_dirs if d.name not in ('_config')]
+    print(f"    {first_scenario.name} contents: {[c.name for c in run_dirs]}")
+    
     # Check that only numeric directories exist (and require test.xml in each)
-    for item in config_contents:
+    for item in run_dirs:
         if item.is_dir():
             name = item.name
             if not name.isdigit():
