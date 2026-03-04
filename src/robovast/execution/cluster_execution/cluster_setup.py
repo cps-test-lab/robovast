@@ -26,7 +26,8 @@ import yaml
 
 from robovast.common.cli.project_config import ProjectConfig
 
-from .kubernetes_kueue import apply_kueue_queues, install_kueue_helm, uninstall_kueue_helm
+from .kubernetes_kueue import (apply_kueue_queues, install_kueue_helm,
+                               uninstall_kueue_helm)
 
 logger = logging.getLogger(__name__)
 
@@ -307,7 +308,8 @@ def delete_server(config_name=None, **cluster_kwargs_override):
     namespace = cluster_kwargs.get("namespace", "default")
     kube_context = cluster_kwargs.pop("kube_context", None)
     try:
-        from .cluster_execution import cleanup_cluster_campaign  # pylint: disable=import-outside-toplevel,cyclic-import
+        from .cluster_execution import \
+            cleanup_cluster_campaign  # pylint: disable=import-outside-toplevel,cyclic-import
         cleanup_cluster_campaign(namespace=namespace, context=kube_context)
     except Exception as e:
         logger.warning(f"Failed to clean up scenario run jobs during cluster cleanup: {e}")

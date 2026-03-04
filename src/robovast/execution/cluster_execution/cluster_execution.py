@@ -29,17 +29,16 @@ import yaml
 from kubernetes import client
 from kubernetes import config as kube_config
 
-from robovast.common import (get_execution_env_variables, get_campaign,
+from robovast.common import (get_campaign, get_execution_env_variables,
                              load_config, normalize_secondary_containers)
 from robovast.common.cluster_context import resolve_resources
 from robovast.common.config_generation import generate_scenario_variations
 from robovast.execution.cluster_execution.kubernetes import check_pod_running
-from robovast.execution.cluster_execution.s3_client import upload_campaign_configs
+from robovast.execution.cluster_execution.s3_client import \
+    upload_campaign_configs
 
-from .kubernetes_kueue import (
-    cleanup_kueue_workloads,
-    set_cluster_queue_stop_policy,
-)
+from .kubernetes_kueue import (cleanup_kueue_workloads,
+                               set_cluster_queue_stop_policy)
 from .manifests import JOB_TEMPLATE
 
 logger = logging.getLogger(__name__)
@@ -291,7 +290,7 @@ def get_cluster_job_counts_per_campaign(namespace="default", context=None):
 
         if campaign not in per_run:
             per_run[campaign] = {"completed": 0, "failed": 0, "running": 0, "pending": 0,
-                                "total_job_num": None}
+                                 "total_job_num": None}
 
         # Read total-job-num annotation from the first job that has it
         if per_run[campaign]["total_job_num"] is None and job.metadata.annotations:

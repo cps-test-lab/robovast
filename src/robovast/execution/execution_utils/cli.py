@@ -29,11 +29,12 @@ from dotenv import load_dotenv
 
 from robovast.common import prepare_campaign_configs
 from robovast.common.cli import get_project_config, handle_cli_exception
-from robovast.common.cluster_context import (get_active_kube_context, get_config_context_names,
+from robovast.common.cluster_context import (get_active_kube_context,
+                                             get_config_context_names,
                                              require_context_for_multi_cluster)
 from robovast.execution.cluster_execution.cluster_execution import (
-    JobRunner, cleanup_cluster_campaign, get_cluster_job_counts_per_campaign,
-    _label_safe_campaign)
+    JobRunner, _label_safe_campaign, cleanup_cluster_campaign,
+    get_cluster_job_counts_per_campaign)
 from robovast.execution.cluster_execution.cluster_setup import (
     delete_server, get_cluster_config, get_cluster_namespace,
     load_cluster_config_name, setup_server)
@@ -41,8 +42,7 @@ from robovast.execution.cluster_execution.download_results import \
     ResultDownloader
 from robovast.execution.cluster_execution.share_providers import \
     load_share_provider_plugins
-from robovast.execution.cluster_execution.upload_to_share import \
-    ShareUploader
+from robovast.execution.cluster_execution.upload_to_share import ShareUploader
 
 from ..cluster_execution.kubernetes import (check_kubernetes_access,
                                             check_pod_running,
@@ -335,7 +335,8 @@ def monitor(interval, once, kube_context):
         if not kube_context:
             # Use contexts referenced in the .vast config file
             try:
-                from robovast.common.cli.project_config import ProjectConfig  # pylint: disable=import-outside-toplevel
+                from robovast.common.cli.project_config import \
+                    ProjectConfig  # pylint: disable=import-outside-toplevel
                 pc = ProjectConfig.load()
                 config_path = pc.config_path if pc else None
             except Exception:
@@ -379,7 +380,7 @@ def monitor(interval, once, kube_context):
 
             for campaign in all_campaigns:
                 c = per_run.get(campaign, {"completed": 0, "failed": 0, "running": 0, "pending": 0,
-                                         "total_job_num": None})
+                                           "total_job_num": None})
                 current_total = c["completed"] + c["failed"] + c["running"] + c["pending"]
                 if campaign not in ctx_initial:
                     ctx_initial[campaign] = current_total
@@ -649,7 +650,8 @@ def download_to_share(force, verbose, keep_archive, skip_removal, kube_context):
     #   1. Next to the .vast config file (dirname of config_path)
     #   2. Next to the .vast_project file (project_dir)
     # Falls back to the default cwd-upward search when no project is found.
-    from robovast.common.cli.project_config import ProjectConfig  # pylint: disable=import-outside-toplevel
+    from robovast.common.cli.project_config import \
+        ProjectConfig  # pylint: disable=import-outside-toplevel
     _project_file = ProjectConfig.find_project_file()
     if _project_file:
         _project_dir = os.path.dirname(os.path.abspath(_project_file))
@@ -1027,9 +1029,8 @@ def prepare_run(output, config, runs, cluster_config, options, log_tree, kube_co
             yaml.dump_all(all_jobs, f, default_flow_style=False)
 
         cluster_config.prepare_setup_cluster(output, **cluster_kwargs)
-        from robovast.execution.cluster_execution.kubernetes_kueue import (  # pylint: disable=import-outside-toplevel
-            prepare_kueue_setup,
-        )
+        from robovast.execution.cluster_execution.kubernetes_kueue import \
+            prepare_kueue_setup  # pylint: disable=import-outside-toplevel
         prepare_kueue_setup(output, namespace=namespace, kube_context=kube_context)
 
         generate_upload_script(

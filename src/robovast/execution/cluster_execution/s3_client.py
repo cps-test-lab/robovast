@@ -18,9 +18,9 @@
 import logging
 import os
 import signal
-import sys
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 from typing import Optional
@@ -391,7 +391,8 @@ def upload_campaign_configs(campaign_id: str, campaign_data: dict, num_runs: int
         RuntimeError: If an S3 bucket for *campaign_id* already exists.
     """
     # Inline imports to avoid circular dependencies at module load time.
-    from robovast.common import create_execution_yaml, prepare_campaign_configs  # pylint: disable=import-outside-toplevel
+    from robovast.common import (  # pylint: disable=import-outside-toplevel
+        create_execution_yaml, prepare_campaign_configs)
 
     access_key, secret_key = cluster_config.get_s3_credentials()
 

@@ -14,20 +14,21 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import os
 from typing import Optional
 
 import numpy as np
-import os
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from robovast.common import convert_dataclasses_to_dict
 from robovast.common.variation import VariationGuiRenderer
 
 from ..gui.navigation_gui import NavigationGui
+from ..object_shapes import (get_object_type_from_model_path,
+                             get_obstacle_dimensions)
 from ..obstacle_placer import ObstaclePlacer
-from .nav_base_variation import NavVariation
 from ..path_generator import PathGenerator
-from ..object_shapes import get_obstacle_dimensions, get_object_type_from_model_path
+from .nav_base_variation import NavVariation
 
 
 class ObstacleConfig(BaseModel):
@@ -69,16 +70,16 @@ class ObstacleVariationGuiRenderer(VariationGuiRenderer):
             # Get model path and determine shape
             model_path = obstacle.get('model', '')
             object_type = get_object_type_from_model_path(model_path)
-            
+
             if object_type == 'cylinder':
                 shape = 'circle'
             else:
                 shape = 'box'
-            
+
             # Parse xacro_arguments to get actual dimensions
             xacro_args_str = obstacle.get('xacro_arguments', '')
             dimensions = get_obstacle_dimensions(xacro_args_str)
-            
+
             # Prepare draw_args based on object type
             if object_type == 'cylinder':
                 # For cylinder, use diameter
@@ -90,7 +91,7 @@ class ObstacleVariationGuiRenderer(VariationGuiRenderer):
                     'width': dimensions.get('width', 0.5),
                     'length': dimensions.get('length', 0.5)
                 }
-            
+
             pose = obstacle['spawn_pose']
             x = pose['position']['x']
             y = pose['position']['y']
@@ -130,11 +131,11 @@ class ObstacleVariation(NavVariation):
         start_pose = config['config'].get('start_pose')
         goal_poses = config['config'].get('goal_poses', [])
         goal_pose = config['config'].get('goal_pose')
-        
+
         # Handle both legacy goal_pose (singular) and current goal_poses (plural, from PathVariationRandom)
         if goal_pose and not goal_poses:
             goal_poses = [goal_pose]
-        
+
         if not start_pose or not goal_poses:
             raise ValueError(
                 f"start_pose and goal_pose(s) are required for path-dependent obstacle placement. "
@@ -189,7 +190,7 @@ class ObstacleVariation(NavVariation):
                     if len(placed_obstacles) == obstacle_config.amount:
                         # Test with all obstacles so far (existing + new ones)
                         test_obstacles = obstacle_objects + placed_obstacles
-                        
+
                         # Validate navigation with the combined obstacle set
                         self.progress_update(f"Validating navigation on map {map_file_path} with {len(test_obstacles)} total obstacles")
                         if os.path.exists(map_file_path):
@@ -224,7 +225,8 @@ class ObstacleVariation(NavVariation):
                             raise FileNotFoundError(f"Map file not found: {map_file_path}")
                     else:
                         self.progress_update(
-                            f"Attempt {attempt}/{max_attempts}: only placed {len(placed_obstacles)}/{obstacle_config.amount} obstacles, retrying..."
+                            f"Attempt {attempt}/{max_attempts}: only placed {len(placed_obstacles)
+                                                                             }/{obstacle_config.amount} obstacles, retrying..."
                         )
 
                 # If we couldn't find a navigable configuration after all attempts
@@ -232,7 +234,8 @@ class ObstacleVariation(NavVariation):
                     self.progress_update(
                         f"Warning: Could not place {obstacle_config.amount} obstacles for config while maintaining navigation"
                     )
-                    raise ValueError(f"Could not place {obstacle_config.amount} obstacles while maintaining navigation after {max_attempts} attempts")
+                    raise ValueError(f"Could not place {obstacle_config.amount} obstacles while maintaining navigation after {
+                                     max_attempts} attempts")
 
         # Always create variation with parameter, even if obstacle_objects is empty
         # This ensures consistent naming and parameters in scenario.config

@@ -18,9 +18,9 @@
 """Kueue installation, queue setup, and workload cleanup for cluster execution."""
 
 import logging
+import os
 import subprocess
 import tempfile
-import os
 import time
 
 from kubernetes import client, config

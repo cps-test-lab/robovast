@@ -289,7 +289,8 @@ def import_results(archive, output, force):
 
                 campaign = list(top_level_dirs)[0] if top_level_dirs else None
                 if campaign and not campaign.startswith('campaign-'):
-                    click.echo(f"Warning: Archive does not contain a standard campaign directory (expected 'campaign-*', found '{campaign}')")
+                    click.echo(
+                        f"Warning: Archive does not contain a standard campaign directory (expected 'campaign-*', found '{campaign}')")
 
             click.echo(f"Archive validation successful")
         except (tarfile.TarError, OSError) as e:

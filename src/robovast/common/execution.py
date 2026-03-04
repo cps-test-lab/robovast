@@ -26,11 +26,8 @@ from pprint import pformat
 import yaml
 
 from .common import convert_dataclasses_to_dict, get_scenario_parameters
-from .config_identifier import (
-    compute_config_identifier,
-    hash_file_content,
-    hash_run_files,
-)
+from .config_identifier import (compute_config_identifier, hash_file_content,
+                                hash_run_files)
 
 logger = logging.getLogger(__name__)
 
@@ -214,7 +211,7 @@ COMBINED_EOF
 
 
 def _apply_local_parameter_overrides(config, parameter_overrides, valid_param_names,
-                                      scenario_name, scenario_path):
+                                     scenario_name, scenario_path):
     """Apply local parameter overrides to config, validating against scenario parameters.
 
     Args:

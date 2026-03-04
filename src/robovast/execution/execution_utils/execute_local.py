@@ -20,14 +20,13 @@ import sys
 import tempfile
 
 from robovast.common import (generate_execution_yaml_script,
-                             get_campaign, get_execution_env_variables,
-                             load_config, normalize_secondary_containers,
+                             get_execution_env_variables, load_config,
+                             normalize_secondary_containers,
                              prepare_campaign_configs)
 from robovast.common.cli import get_project_config
 from robovast.common.config_generation import generate_scenario_variations
 
 logger = logging.getLogger(__name__)
-
 
 
 def initialize_local_execution(config, output_dir, runs, feedback_callback=logging.debug,

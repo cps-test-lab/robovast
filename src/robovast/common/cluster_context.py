@@ -54,7 +54,8 @@ def get_active_kube_context() -> Optional[str]:
     determined (e.g. kubeconfig is absent).
     """
     try:
-        from kubernetes import config as kube_config  # pylint: disable=import-outside-toplevel
+        from kubernetes import \
+            config as kube_config  # pylint: disable=import-outside-toplevel
         _, active = kube_config.list_kube_config_contexts()
         return active["name"] if active else None
     except Exception as exc:
@@ -70,7 +71,8 @@ def list_all_contexts() -> list[tuple[str, str]]:
         Returns an empty list when no kubeconfig is available.
     """
     try:
-        from kubernetes import config as kube_config  # pylint: disable=import-outside-toplevel
+        from kubernetes import \
+            config as kube_config  # pylint: disable=import-outside-toplevel
         contexts, _ = kube_config.list_kube_config_contexts()
         return sorted((c["name"], c["name"]) for c in (contexts or []))
     except Exception as exc:
@@ -149,7 +151,8 @@ def require_context_for_multi_cluster(kube_context: Optional[str]) -> None:
         return
 
     try:
-        from robovast.common.cli.project_config import ProjectConfig  # pylint: disable=import-outside-toplevel  # local import – avoid cycles
+        from robovast.common.cli.project_config import \
+            ProjectConfig  # pylint: disable=import-outside-toplevel  # local import – avoid cycles
         pc = ProjectConfig.load()
         config_path = pc.config_path if pc else None
     except Exception:

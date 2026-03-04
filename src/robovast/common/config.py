@@ -17,7 +17,8 @@
 import logging
 from typing import Any, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
+from pydantic import (BaseModel, ConfigDict, ValidationError, field_validator,
+                      model_validator)
 
 logger = logging.getLogger(__name__)
 

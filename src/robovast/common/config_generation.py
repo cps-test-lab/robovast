@@ -360,7 +360,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                         raise ValueError(f"Variation class {variation_class.__name__} has GUI_RENDERER_CLASS defined but no GUI_CLASS.")
                     variation_gui_classes[variation_gui_class].append(variation_gui_renderer_class)
             result, var_input_files = execute_variation(os.path.dirname(variation_file), current_configs, variation_class,
-                                       variation_parameters, general_parameters, progress_update_callback, scenario_file, output_dir)
+                                                        variation_parameters, general_parameters, progress_update_callback, scenario_file, output_dir)
 
             # Validate and collect variation input files
             for vf in var_input_files:

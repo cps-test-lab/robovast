@@ -213,6 +213,7 @@ def read_output_yaml_list(
         items = [_flatten_item_for_merge(item, "", 0, merge_level) for item in items]
     return pd.DataFrame(items)
 
+
 def for_each_run(data_dir: str, func: Callable[[Path], None], debug=False) -> None:
     """
     Applies a given function to each run directory within data_dir.

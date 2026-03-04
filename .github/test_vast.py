@@ -9,6 +9,7 @@ import tempfile
 import traceback
 from pathlib import Path
 
+
 def run_command(cmd, cwd=None, check=True):
     """Run a command, stream its output, and return the exit code.
 
