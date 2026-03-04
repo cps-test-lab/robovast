@@ -118,7 +118,7 @@ def check_results_dir_structure(results_dir):  # pylint: disable=too-many-return
     print("  ✓ _config directory exists")
     
     # Check structure of first scenario directory (exclude _config; it has its own layout)
-    scenario_dirs = [d for d in config_dirs if d.name != '_config' and d.name != '_transient']
+    scenario_dirs = [d for d in config_dirs if d.name not in ('_config', '_transient', '_execution')]
     if not scenario_dirs:
         print("  ✗ No config directory found in run")
         return False
