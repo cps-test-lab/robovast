@@ -117,16 +117,6 @@ def check_results_dir_structure(results_dir):  # pylint: disable=too-many-return
     
     print("  ✓ _config directory exists")
     
-    # Check for configurations.yaml in _config
-    config_dir_path = config_dir[0]
-    config_dir_contents = list(config_dir_path.iterdir())
-    configurations_yaml = [f for f in config_dir_contents if f.name == 'configurations.yaml']
-    if not configurations_yaml:
-        print("  ✗ configurations.yaml file not found in _config directory")
-        return False
-    
-    print("  ✓ configurations.yaml file exists in _config directory")
-    
     # Check structure of first scenario directory (exclude _config; it has its own layout)
     scenario_dirs = [d for d in config_dirs if d.name != '_config']
     if not scenario_dirs:
@@ -136,6 +126,24 @@ def check_results_dir_structure(results_dir):  # pylint: disable=too-many-return
     config_contents = list(first_scenario.iterdir())
     print(f"    {first_scenario.name} contents: {[c.name for c in config_contents]}")
     
+
+    transient_dir = [d for d in config_dirs if d.name != '_transient']
+    if not transient_dir:
+        print("  ✗ _transient_dir directory not found in run")
+        return False
+    
+    print("  ✓ _transient_dir directory exists")
+    
+    # Check for configurations.yaml in _transient_dir
+    transient_dir_path = transient_dir[0]
+    transient_dir_contents = list(transient_dir_path.iterdir())
+    configurations_yaml = [f for f in transient_dir_contents if f.name == 'configurations.yaml']
+    if not configurations_yaml:
+        print("  ✗ configurations.yaml file not found in _transient_dir directory")
+        return False
+    
+    print("  ✓ configurations.yaml file exists in _transient_dir directory")
+
     # Check that only numeric directories exist (and require test.xml in each)
     for item in config_contents:
         if item.is_dir():
