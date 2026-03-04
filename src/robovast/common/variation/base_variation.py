@@ -108,6 +108,22 @@ class Variation():
         """
         return []
 
+    def get_transient_files(self):
+        """Return intermediate files generated during variation processing.
+
+        Override in subclasses to report files created as intermediate artifacts
+        during the variation step (e.g. JSON-LD files from floorplan generation).
+        These files will be copied into the campaign ``_transient/`` directory
+        for debugging and reproducibility.
+
+        Must be called after :meth:`variation` has been executed.
+
+        Returns:
+            list[tuple[str, str]]: List of ``(relative_path, absolute_path)`` tuples.
+                ``relative_path`` is the destination inside ``_transient/``.
+        """
+        return []
+
     def progress_update(self, msg):
         self.progress_update_callback(f"{self.__class__.__name__}: {msg}")
 

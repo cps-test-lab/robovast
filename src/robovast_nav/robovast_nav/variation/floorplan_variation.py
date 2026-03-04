@@ -14,12 +14,35 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import os
+
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from ..floorplan_generation import (_create_config_for_floorplan,
                                     generate_floorplan_artifacts,
                                     generate_floorplan_variations)
 from .nav_base_variation import NavVariation
+
+
+def _collect_transient_files(output_dir):
+    """Collect intermediate files (json-ld, fpm) from the floorplan output directory.
+
+    Returns:
+        list[tuple[str, str]]: (relative_path, absolute_path) tuples for _transient/.
+    """
+    transient_files = []
+    if not output_dir or not os.path.isdir(output_dir):
+        return transient_files
+    for dirpath, _dirnames, filenames in os.walk(output_dir):
+        # Only include files from json-ld/ and fpm/ subdirectories
+        rel_dir = os.path.relpath(dirpath, output_dir)
+        parts = rel_dir.replace(os.sep, '/').split('/')
+        if len(parts) >= 2 and parts[1] in ('json-ld', 'fpm'):
+            for filename in filenames:
+                abs_path = os.path.join(dirpath, filename)
+                rel_path = os.path.relpath(abs_path, output_dir)
+                transient_files.append((rel_path, abs_path))
+    return transient_files
 
 
 class FloorplanVariationConfig(BaseModel):
@@ -109,6 +132,9 @@ class FloorplanGeneration(NavVariation):
     def get_input_files(self):
         return list(self.parameters.floorplans)
 
+    def get_transient_files(self):
+        return _collect_transient_files(self.output_dir)
+
     def variation(self, in_configs):
         """Generate artifacts for each floorplan and create configurations.
 
@@ -173,6 +199,9 @@ class FloorplanVariation(NavVariation):
 
     def get_input_files(self):
         return list(self.parameters.variation_files)
+
+    def get_transient_files(self):
+        return _collect_transient_files(self.output_dir)
 
     def variation(self, in_configs):
         self.progress_update("Running Floorplan Variation...")

@@ -286,8 +286,9 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
 
     vast_file_path = os.path.dirname(campaign_data["vast"])
 
-    # Prepare campaign_data for configurations.yaml (strip internal keys used for identifier)
+    # Prepare campaign_data for configurations.yaml (strip internal keys)
     campaign_data_for_dump = copy.deepcopy(campaign_data)
+    campaign_data_for_dump.pop("_transient_files", None)
     for c in campaign_data_for_dump.get("configs", []):
         c.pop("_config_block", None)
         c.pop("_variation_type_names", None)
@@ -338,6 +339,15 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
             continue
         os.makedirs(os.path.dirname(dst_path), exist_ok=True)
         shutil.copy2(src_path, dst_path)
+
+    # Copy transient (intermediate) files into _transient/
+    for rel_path, abs_path in campaign_data.get("_transient_files", []):
+        if not os.path.exists(abs_path):
+            logger.warning(f"Transient file not found, skipping: {abs_path}")
+            continue
+        dst_path = os.path.join(campaign_transient_dir, rel_path)
+        os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+        shutil.copy2(abs_path, dst_path)
 
     # get scenario name
     original_scenario_path = os.path.join(vast_file_path, campaign_data.get("scenario_file"))
