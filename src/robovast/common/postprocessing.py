@@ -138,8 +138,39 @@ def validate_postprocessing_command(command: str | dict, plugins: Dict[str, call
     return True, ""
 
 
+def find_campaign_vast_file(results_dir: str) -> tuple[Optional[str], Optional[str]]:
+    """Find the .vast file from the most recent campaign in results_dir.
+
+    Searches ``results_dir/campaign-<id>/_config/*.vast`` and returns the
+    path from the last (most recent, lexicographically) campaign that has a
+    ``.vast`` file.
+
+    Args:
+        results_dir: Path to the project results directory (parent of campaign-* dirs).
+
+    Returns:
+        Tuple ``(vast_file_path, config_dir)`` where *config_dir* is the
+        ``_config/`` directory containing the ``.vast`` file, or
+        ``(None, None)`` if no campaign with a ``.vast`` file is found.
+    """
+    root = Path(results_dir)
+    if not root.is_dir():
+        return None, None
+
+    # Reverse-sorted so the most recent campaign comes first
+    for campaign_item in sorted(root.iterdir(), reverse=True):
+        if not campaign_item.is_dir() or not campaign_item.name.startswith("campaign-"):
+            continue
+        config_dir = campaign_item / "_config"
+        if config_dir.is_dir():
+            for f in sorted(config_dir.iterdir()):
+                if f.is_file() and f.suffix == ".vast":
+                    return str(f), str(config_dir)
+    return None, None
+
+
 def get_postprocessing_commands(config_path: str) -> List[dict]:
-    """Get postprocessing commands from configuration file.
+    """Get postprocessing commands from a .vast configuration file.
 
     Args:
         config_path: Path to .vast configuration file
@@ -203,24 +234,21 @@ def _write_provenance_yaml_per_folder(results_dir: str, entries: List[dict]) -> 
                 pass  # skip if we cannot write
 
 
-def get_project_cache_dir(config_path: str) -> str:
-    """Return the project-level .cache directory (next to the .vast file)."""
-    project_dir = os.path.dirname(os.path.abspath(config_path))
-    cache_dir = os.path.join(project_dir, ".cache")
+def get_project_cache_dir(results_dir: str) -> str:
+    """Return the .cache directory inside results_dir."""
+    cache_dir = os.path.join(os.path.abspath(results_dir), ".cache")
     os.makedirs(cache_dir, exist_ok=True)
     return cache_dir
 
 
-def _get_postprocessing_cache_paths(config_path: str, results_dir: str) -> tuple[str, str, str]:
+def _get_postprocessing_cache_paths(results_dir: str) -> tuple[str, str, str]:
     """Return (cache_dir, hash_file, outputs_file) for postprocessing.
 
-    Both the hash file and the outputs listing are stored in the project-level
-    .cache directory and keyed by the absolute results_dir path.
+    All cache files are stored inside ``results_dir/.cache/``.
     """
-    cache_dir = get_project_cache_dir(config_path)
-    results_slug = hashlib.md5(os.path.abspath(results_dir).encode()).hexdigest()
-    hash_file = os.path.join(cache_dir, f"postprocessing_{results_slug}.hash")
-    outputs_file = os.path.join(cache_dir, f"postprocessing_{results_slug}.outputs")
+    cache_dir = get_project_cache_dir(results_dir)
+    hash_file = os.path.join(cache_dir, "postprocessing.hash")
+    outputs_file = os.path.join(cache_dir, "postprocessing.outputs")
     return cache_dir, hash_file, outputs_file
 
 
@@ -299,12 +327,14 @@ def compute_dir_hash(dir_path: str, exclude_set: Optional[set] = None) -> str:
     return hashlib.md5(hash_string.encode()).hexdigest()
 
 
-def run_postprocessing(config_path: str, results_dir: str, output_callback=None, force: bool = False):  # pylint: disable=too-many-return-statements
+def run_postprocessing(results_dir: str, output_callback=None, force: bool = False):  # pylint: disable=too-many-return-statements
     """Run postprocessing commands on run results.
 
+    The postprocessing configuration is read from the ``.vast`` file found in
+    the most recent ``campaign-<id>/_config/`` directory under *results_dir*.
+
     Args:
-        config_path: Path to .vast configuration file
-        results_dir: Directory containing run results
+        results_dir: Directory containing run results (parent of campaign-* dirs)
         output_callback: Optional callback function for output messages (takes message string)
         force: If True, bypass caching and force postprocessing even if results are unchanged
 
@@ -322,14 +352,24 @@ def run_postprocessing(config_path: str, results_dir: str, output_callback=None,
     if not os.path.exists(results_dir):
         return False, f"Results directory does not exist: {results_dir}"
 
+    # Discover the .vast config file from the most recent campaign
+    vast_path, config_dir = find_campaign_vast_file(results_dir)
+    if vast_path is None:
+        return False, (
+            f"No .vast file found in any campaign-*/_config/ directory under: {results_dir}\n"
+            "Ensure at least one execution campaign has been completed."
+        )
+
+    output(f"Using config from: {vast_path}")
+
     # Get postprocessing commands
-    commands = get_postprocessing_commands(config_path)
+    commands = get_postprocessing_commands(vast_path)
 
     if not commands:
         return True, "No postprocessing commands defined."
 
-    # Determine cache locations (project-level .cache next to the .vast file)
-    cache_dir, hash_file, outputs_file = _get_postprocessing_cache_paths(config_path, results_dir)
+    # Determine cache locations inside results_dir/.cache/
+    cache_dir, hash_file, outputs_file = _get_postprocessing_cache_paths(results_dir)
 
     # Load list of postprocessing outputs (to be excluded from hashing)
     exclude_set = _load_postprocessing_outputs_exclude_set(outputs_file)
@@ -367,9 +407,6 @@ def run_postprocessing(config_path: str, results_dir: str, output_callback=None,
         is_valid, error_msg = validate_postprocessing_command(command, plugins)
         if not is_valid:
             return False, error_msg
-
-    # Get config directory for resolving relative paths
-    config_dir = os.path.dirname(os.path.abspath(config_path))
 
     results_dir_abs = os.path.abspath(results_dir)
     all_provenance_entries: List[dict] = []

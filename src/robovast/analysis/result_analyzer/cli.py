@@ -44,18 +44,17 @@ def analysis():
 def postprocess_cmd(results_dir, force):
     """Run postprocessing commands on run results.
 
-    Executes postprocessing commands defined in the configuration file's
-    analysis.postprocessing section. Postprocessing is skipped if the result-directory is unchanged,
+    Executes postprocessing commands defined in the .vast file found in the
+    most recent ``campaign-<id>/_config/`` directory of the results directory.
+    Postprocessing is skipped if the result-directory is unchanged,
     unless --force is specified.
 
     Requires project initialization with ``vast init`` first (unless ``--results-dir`` is specified).
     """
-    # Get project configuration
-    project_config = get_project_config()
-    config_path = project_config.config_path
-
-    # Use provided results_dir or fall back to project results dir
-    results_dir = results_dir if results_dir is not None else project_config.results_dir
+    # Resolve results_dir from project config when not explicitly provided
+    if results_dir is None:
+        project_config = get_project_config()
+        results_dir = project_config.results_dir
 
     click.echo("Starting postprocessing...")
     click.echo(f"Results directory: {results_dir}")
@@ -65,7 +64,6 @@ def postprocess_cmd(results_dir, force):
 
     # Run postprocessing
     success, message = run_postprocessing(
-        config_path=config_path,
         results_dir=results_dir,
         output_callback=click.echo,
         force=force
@@ -93,17 +91,14 @@ def result_analyzer_cmd(results_dir, force, skip_postprocessing):
 
     Requires project initialization with ``vast init`` first (unless ``--results-dir`` is specified).
     """
-    # Get project configuration
-    project_config = get_project_config()
-    config = project_config.config_path
-
-    # Use provided results_dir or fall back to project results dir
-    results_dir = results_dir if results_dir is not None else project_config.results_dir
+    # Resolve results_dir from project config when not explicitly provided
+    if results_dir is None:
+        project_config = get_project_config()
+        results_dir = project_config.results_dir
 
     # Run postprocessing before launching GUI (unless skipped)
     if not skip_postprocessing:
         success, message = run_postprocessing(
-            config_path=config,
             results_dir=results_dir,
             output_callback=click.echo,
             force=force
@@ -135,7 +130,7 @@ def result_analyzer_cmd(results_dir, force, skip_postprocessing):
     app.setStyle('Fusion')
 
     try:
-        window = RunResultsAnalyzer(base_dir=results_dir, config_file=config)
+        window = RunResultsAnalyzer(base_dir=results_dir)
         window.show()
         exit_code = app.exec_()
         window.deleteLater()

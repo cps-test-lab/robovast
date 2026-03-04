@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (QApplication, QGroupBox, QHBoxLayout, QLabel,
                                QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from robovast.common import load_config
+from robovast.common.postprocessing import find_campaign_vast_file
 from robovast.common.results_utils import iter_run_folders
 
 from .widgets.common import RunType
@@ -40,15 +41,17 @@ from .widgets.worker_thread import LatestOnlyWorker
 
 
 class RunResultsAnalyzer(QMainWindow):
-    def __init__(self, base_dir=None, config_file=None):
+    def __init__(self, base_dir=None):
         super().__init__()
 
         # Initialize QSettings for local/system-specific settings (window state, etc.)
         self.settings = QSettings("RunResultsAnalyzer", "Settings")
 
-        # Initialize configuration for shared settings
-        self.config_file = config_file
-        self.parameters = load_config(config_file, "analysis", allow_missing=True)
+        # Discover the .vast config file from the most recent campaign under base_dir
+        vast_path, discovered_config_dir = find_campaign_vast_file(str(base_dir)) if base_dir else (None, None)
+        self.config_file = vast_path
+        self.config_dir = discovered_config_dir or (os.path.dirname(vast_path) if vast_path else None)
+        self.parameters = load_config(vast_path, "analysis", allow_missing=True) if vast_path else {}
 
         # Initialize variables to None first
         self.local_execution_widget = None
@@ -69,7 +72,7 @@ class RunResultsAnalyzer(QMainWindow):
                     try:
                         if not isinstance(values, dict):
                             continue
-                        config_dir = os.path.dirname(config_file)
+                        config_dir = self.config_dir or ""
 
                         run_val = values.get("run")
                         run_nb = os.path.join(config_dir, run_val) if run_val else None
@@ -289,14 +292,15 @@ class RunResultsAnalyzer(QMainWindow):
                         continue
 
                     # Get the notebook path based on run type
+                    config_dir = self.config_dir or ""
                     if run_type == RunType.RUN and "run" in values:
-                        notebook_path = os.path.join(os.path.dirname(self.config_file), values["run"])
+                        notebook_path = os.path.join(config_dir, values["run"])
                         break
                     elif run_type == RunType.CONFIG and "config" in values:
-                        notebook_path = os.path.join(os.path.dirname(self.config_file), values["config"])
+                        notebook_path = os.path.join(config_dir, values["config"])
                         break
                     elif run_type == RunType.CAMPAIGN and "campaign" in values:
-                        notebook_path = os.path.join(os.path.dirname(self.config_file), values["campaign"])
+                        notebook_path = os.path.join(config_dir, values["campaign"])
                         break
 
                 if notebook_path:
