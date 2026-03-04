@@ -201,7 +201,7 @@ class ClusterS3Client:
                 return False
             raise
 
-    def list_run_buckets(self) -> list:
+    def list_campaign_buckets(self) -> list:
         """List all buckets whose names start with 'campaign-'.
 
         Returns:
@@ -211,8 +211,8 @@ class ClusterS3Client:
         buckets = [b["Name"] for b in response.get("Buckets", []) if b["Name"].startswith("campaign-")]
         return sorted(buckets)
 
-    def cleanup_run_buckets(self, campaign_id: Optional[str] = None) -> int:
-        """Remove run buckets from S3 without downloading them.
+    def cleanup_campaign_buckets(self, campaign_id: Optional[str] = None) -> int:
+        """Remove campaign buckets from S3 without downloading them.
 
         Args:
             campaign_id: If provided, only the bucket with this exact name is removed.
@@ -221,7 +221,7 @@ class ClusterS3Client:
         Returns:
             int: Number of buckets successfully removed.
         """
-        all_runs = self.list_run_buckets()
+        all_runs = self.list_campaign_buckets()
         if campaign_id:
             buckets_to_remove = [b for b in all_runs if b == campaign_id]
             if not buckets_to_remove:
@@ -231,7 +231,7 @@ class ClusterS3Client:
             buckets_to_remove = all_runs
 
         if not buckets_to_remove:
-            logger.info("No run buckets found to remove.")
+            logger.info("No campaign buckets found to remove.")
             return 0
 
         removed_count = 0
@@ -371,7 +371,7 @@ def upload_configs_to_s3(config_dir: str, bucket_name: str, cluster_config, name
         sys.exit(1)
 
 
-def upload_run_configs(campaign_id: str, run_data: dict, num_runs: int, cluster_config, namespace: str = "default", context: str = None) -> None:
+def upload_campaign_configs(campaign_id: str, campaign_data: dict, num_runs: int, cluster_config, namespace: str = "default", context: str = None) -> None:
     """Prepare campaign config files and upload them to an S3 bucket.
 
     Opens a **single** port-forward for both the existence check and the upload.
@@ -380,7 +380,7 @@ def upload_run_configs(campaign_id: str, run_data: dict, num_runs: int, cluster_
 
     Args:
         campaign_id: Campaign identifier (e.g. ``'campaign-2026-03-01-120000'``).
-        run_data: Scenario variation data produced by ``generate_scenario_variations``.
+        campaign_data: Scenario variation data produced by ``generate_scenario_variations``.
         num_runs: Number of runs (used by ``create_execution_yaml``).
         cluster_config: BaseConfig instance providing S3 credentials and optional
                         ``get_instance_type_command()``.
@@ -391,7 +391,7 @@ def upload_run_configs(campaign_id: str, run_data: dict, num_runs: int, cluster_
         RuntimeError: If an S3 bucket for *campaign_id* already exists.
     """
     # Inline imports to avoid circular dependencies at module load time.
-    from robovast.common import create_execution_yaml, prepare_run_configs  # pylint: disable=import-outside-toplevel
+    from robovast.common import create_execution_yaml, prepare_campaign_configs  # pylint: disable=import-outside-toplevel
 
     access_key, secret_key = cluster_config.get_s3_credentials()
 
@@ -407,7 +407,7 @@ def upload_run_configs(campaign_id: str, run_data: dict, num_runs: int, cluster_
         # Prepare config files and upload inside the same port-forward session.
         with tempfile.TemporaryDirectory() as temp_dir:
             out_dir = os.path.join(temp_dir, "out_template")
-            prepare_run_configs(out_dir, run_data, cluster=True)
+            prepare_campaign_configs(out_dir, campaign_data, cluster=True)
 
             # Inject instance-type detection command into entrypoint.sh when supported.
             entrypoint_path = os.path.join(out_dir, "entrypoint.sh")
@@ -426,7 +426,7 @@ def upload_run_configs(campaign_id: str, run_data: dict, num_runs: int, cluster_
             except Exception as exc:  # pragma: no cover – best-effort, non-fatal
                 logger.warning(f"Could not inject instance type command into entrypoint.sh: {exc}")
 
-            create_execution_yaml(num_runs, out_dir, execution_params=run_data.get("execution", {}))
+            create_execution_yaml(num_runs, out_dir, execution_params=campaign_data.get("execution", {}))
 
             logger.info(f"Uploading config files to S3 bucket '{bucket_name}'...")
             s3.create_bucket(bucket_name)

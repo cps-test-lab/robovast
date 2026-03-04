@@ -29,7 +29,7 @@ from .common import convert_dataclasses_to_dict, get_scenario_parameters
 from .config_identifier import (
     compute_config_identifier,
     hash_file_content,
-    hash_test_files,
+    hash_run_files,
 )
 
 logger = logging.getLogger(__name__)
@@ -145,9 +145,9 @@ def get_execution_env_variables(run_num, config_name, additional_env=None):
     Returns:
         Dictionary of environment variables
     """
-    test_id = f"{config_name}-{run_num}"
+    run_id = f"{config_name}-{run_num}"
     env_vars = {
-        'TEST_ID': test_id,
+        'RUN_ID': run_id,
         'ROS_LOG_DIR': '/out/logs',
     }
 
@@ -242,9 +242,9 @@ def _apply_local_parameter_overrides(config, parameter_overrides, valid_param_na
     config.update(merged)
 
 
-def prepare_run_configs(out_dir, run_data, cluster=False):
+def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
     # Create the output directory structure
-    logger.debug(f"Run Configs: {pformat(run_data)}")
+    logger.debug(f"Campaign Configs: {pformat(campaign_data)}")
     os.makedirs(out_dir, exist_ok=True)
 
     # Inject the run-mode-specific post-run block into the shared entrypoint template
@@ -274,29 +274,29 @@ def prepare_run_configs(out_dir, run_data, cluster=False):
     collect_sysinfo_dst = os.path.join(out_dir, "collect_sysinfo.py")
     shutil.copy2(collect_sysinfo_src, collect_sysinfo_dst)
 
-    run_config_dir = os.path.join(out_dir, "_config")
-    os.makedirs(run_config_dir, exist_ok=True)
+    campaign_config_dir = os.path.join(out_dir, "_config")
+    os.makedirs(campaign_config_dir, exist_ok=True)
 
-    vast_file_path = os.path.dirname(run_data["vast"])
+    vast_file_path = os.path.dirname(campaign_data["vast"])
 
-    # Prepare run_data for configurations.yaml (strip internal keys used for identifier)
-    run_data_for_dump = copy.deepcopy(run_data)
-    for c in run_data_for_dump.get("configs", []):
+    # Prepare campaign_data for configurations.yaml (strip internal keys used for identifier)
+    campaign_data_for_dump = copy.deepcopy(campaign_data)
+    for c in campaign_data_for_dump.get("configs", []):
         c.pop("_config_block", None)
         c.pop("_variation_type_names", None)
 
     # Save scenario variations as YAML in _config subdirectory
-    scenario_variations_path = os.path.join(run_config_dir, "configurations.yaml")
+    scenario_variations_path = os.path.join(campaign_config_dir, "configurations.yaml")
     with open(scenario_variations_path, 'w') as f:
-        yaml.dump(convert_dataclasses_to_dict(run_data_for_dump), f, default_flow_style=False, sort_keys=False)
+        yaml.dump(convert_dataclasses_to_dict(campaign_data_for_dump), f, default_flow_style=False, sort_keys=False)
     logger.debug(f"Saved configurations to {scenario_variations_path}")
 
     # Compute hashes once per run (reused for all configs)
-    test_files_hash = hash_test_files(vast_file_path, run_data.get("_test_files", []))
+    run_files_hash = hash_run_files(vast_file_path, campaign_data.get("_run_files", []))
     scenario_file_path_for_hash = (
-        run_data["scenario_file"]
-        if os.path.isabs(run_data["scenario_file"])
-        else os.path.join(vast_file_path, run_data["scenario_file"])
+        campaign_data["scenario_file"]
+        if os.path.isabs(campaign_data["scenario_file"])
+        else os.path.join(vast_file_path, campaign_data["scenario_file"])
     )
     scenario_file_hash = (
         hash_file_content(scenario_file_path_for_hash)
@@ -307,15 +307,15 @@ def prepare_run_configs(out_dir, run_data, cluster=False):
     # Copy scenario_file
     shutil.copy2(scenario_file_path_for_hash, out_dir)
 
-    # Copy test files
-    for config_file in run_data.get("_test_files", []):
+    # Copy run files
+    for config_file in campaign_data.get("_run_files", []):
         src_path = os.path.join(vast_file_path, config_file)
-        dst_path = os.path.join(run_config_dir, config_file)
+        dst_path = os.path.join(campaign_config_dir, config_file)
         os.makedirs(os.path.dirname(dst_path), exist_ok=True)
         shutil.copy2(src_path, dst_path)
 
     # get scenario name
-    original_scenario_path = os.path.join(vast_file_path, run_data.get("scenario_file"))
+    original_scenario_path = os.path.join(vast_file_path, campaign_data.get("scenario_file"))
     try:
         scenario_params = get_scenario_parameters(original_scenario_path)
         scenario_name = next(iter(scenario_params.keys()))
@@ -335,15 +335,15 @@ def prepare_run_configs(out_dir, run_data, cluster=False):
     # Get local parameter overrides (only applied when not running on cluster)
     parameter_overrides = []
     if not cluster:
-        local_config = run_data.get("execution", {}).get("local")
+        local_config = campaign_data.get("execution", {}).get("local")
         if local_config is not None:
             if hasattr(local_config, 'parameter_overrides'):
                 parameter_overrides = local_config.parameter_overrides or []
             elif isinstance(local_config, dict):
                 parameter_overrides = local_config.get("parameter_overrides") or []
 
-    for config_data in run_data["configs"]:
-        test_config_dir = os.path.join(out_dir, config_data.get("name"), "_config")
+    for config_data in campaign_data["configs"]:
+        run_config_dir = os.path.join(out_dir, config_data.get("name"), "_config")
 
         # Compute and write config identifier for merge-results
         config_block = config_data.get("_config_block", {})
@@ -351,7 +351,7 @@ def prepare_run_configs(out_dir, run_data, cluster=False):
         config_identifier, sub_identifier = compute_config_identifier(
             vast_file_path,
             config_block,
-            test_files_hash,
+            run_files_hash,
             scenario_file_hash,
             variation_type_names,
         )
@@ -371,7 +371,7 @@ def prepare_run_configs(out_dir, run_data, cluster=False):
                 if not os.path.exists(config_path):
                     raise FileNotFoundError(f"Config file {config_path} does not exist.")
                 src_path = config_path
-                dst_path = os.path.join(test_config_dir, config_rel_path)
+                dst_path = os.path.join(run_config_dir, config_rel_path)
                 os.makedirs(os.path.dirname(dst_path), exist_ok=True)
                 shutil.copy2(src_path, dst_path)
 

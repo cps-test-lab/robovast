@@ -21,7 +21,7 @@ by name in the configuration file.
 
 Each function is a Python implementation that executes commands using subprocess
 or host-side logic. All functions accept a results_dir parameter containing the
-path to the results directory (parent of run-* dirs) or campaign-<id> directory to
+path to the results directory (parent of campaign-* dirs) or campaign-<id> directory to
 process, along with a config_dir for resolving relative paths, and additional
 command-specific parameters.
 
@@ -415,10 +415,10 @@ def compress(
     overwrite: bool = True,
     provenance_file: Optional[str] = None,
 ) -> Tuple[bool, str]:
-    """Create a gzipped tarball for each run-* directory (runs on host).
+    """Create a gzipped tarball for each campaign-* directory (runs on host).
 
-    For each direct subdirectory of results_dir whose name starts with ``run-``,
-    creates a ``campaign-<id>.tar.gz`` in the output directory containing that run's
+    For each direct subdirectory of results_dir whose name starts with ``campaign-``,
+    creates a ``campaign-<id>.tar.gz`` in the output directory containing that campaign's
     contents. Does not use Docker; runs entirely on the host using Python's
     tarfile module. Useful for archiving or transferring results.
 
@@ -427,7 +427,7 @@ def compress(
     .vast file (config_dir).
 
     Args:
-        results_dir: Path to the results directory (parent of run-* dirs).
+        results_dir: Path to the results directory (parent of campaign-* dirs).
         config_dir: Directory containing the .vast config file; relative output_dir
             is resolved from here.
         output_dir: Where to write tarballs. If not set, defaults to config_dir.
@@ -477,28 +477,28 @@ def compress(
         return False, f"Results directory does not exist: {results_dir}"
 
     created = []
-    for run_item in sorted(root.iterdir()):
-        if not run_item.is_dir() or not run_item.name.startswith("run-"):
+    for campaign_item in sorted(root.iterdir()):
+        if not campaign_item.is_dir() or not campaign_item.name.startswith("campaign-"):
             continue
-        if run_item.name == "_config":
+        if campaign_item.name == "_config":
             continue
 
-        tarball_path = Path(out_dir) / f"{run_item.name}.tar.gz"
+        tarball_path = Path(out_dir) / f"{campaign_item.name}.tar.gz"
         if not overwrite and tarball_path.exists():
             continue
         try:
             os.makedirs(out_dir, exist_ok=True)
             with tarfile.open(tarball_path, "w:gz") as tf:
-                for entry in run_item.rglob("*"):
+                for entry in campaign_item.rglob("*"):
                     if not entry.is_file():
                         continue
-                    if any(part in exclude for part in entry.relative_to(run_item).parts):
+                    if any(part in exclude for part in entry.relative_to(campaign_item).parts):
                         continue
-                    tf.add(entry, arcname=run_item.name + "/" + str(entry.relative_to(run_item)))
+                    tf.add(entry, arcname=campaign_item.name + "/" + str(entry.relative_to(campaign_item)))
             created.append(tarball_path.name)
         except OSError as e:
             return False, f"Failed to create {tarball_path}: {e}"
 
     if not created:
-        return True, "No run-* directories found or all tarballs already exist (use overwrite: true to recreate)"
+        return True, "No campaign-* directories found or all tarballs already exist (use overwrite: true to recreate)"
     return True, f"Created tarballs: {', '.join(created)}"

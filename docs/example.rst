@@ -58,8 +58,8 @@ Before running any tests, you must initialize the RoboVAST project configuration
 
 This command sets up the required configuration files and prepares your project for further steps.
 
-Test Description
-----------------
+Run Description
+---------------
 
 In this example, we test a simple logistic growth simulator defined in :repo_link:`configs/examples/growth_sim/files/growth_sim.py`.
 We will do parameter sweeps for ``initial_population`` and ``growth_rate``.
@@ -85,7 +85,7 @@ The ``settings`` are split into three main sections: ``configuration``, ``execut
 Configuration
 ^^^^^^^^^^^^^
 
-The ``configuration`` section defines the test scenarios to be executed. Each scenario specifies:
+The ``configuration`` section defines the run scenarios to be executed. Each scenario specifies:
 
 - ``name``: A unique identifier for the scenario
 - ``parameters``: (Optional) Fixed parameters that apply to all configurations of this scenario
@@ -118,7 +118,7 @@ The ``execution`` section of the ``.vast`` configuration specifies all necessary
 
 The ``scenario_file`` parameter specifies which OpenSCENARIO 2 file to execute (``scenario.osc``).
 In this example, we configure 20 runs for each config to ensure statistically meaningful results.
-In this basic example we hand in the system-under-test ``growth_sim.py`` directly by specifying the pattern ``**/files/*.py`` in the ``test_files_filter``. In larger setups, it might be required to use a custom container image.
+In this basic example we hand in the system-under-test ``growth_sim.py`` directly by specifying the pattern ``**/files/*.py`` in the ``run_files_filter``. In larger setups, it might be required to use a custom container image.
 
 Check Generated Configurations
 """"""""""""""""""""""""""""""
@@ -191,16 +191,16 @@ The resulting folder structure looks like this:
 
     growth_sim_results/
     ├── campaign-<timestamp>/        <-- Each cluster execution creates a new folder 
-    |   ├── _config/                 <-- Test files are stored here (as defined by test_files_filter in the .vast configuration)
+    |   ├── _config/                 <-- Test files are stored here (as defined by run_files_filter in the .vast configuration)
     |   ├── scenario.osc             <-- The scenario used during this run
     |   ├── <config-name>            <-- Each configuration is stored within a separate folder (example: config42)
     |   |   ├── scenario.config      <-- The parameter set used within this configuration (e.g. growth_rate: 0.07, initial_population: 123)
     |   |   ├── _config/             <-- Generated config-specific files are stored here (e.g. generated maps)
-    |   |   ├── <test_number>         <-- Each run of a configuration is stored in a separate folder. It contains all input- and output-files of a single test run
+    |   |   ├── <run_number>         <-- Each run of a configuration is stored in a separate folder. It contains all input- and output-files of a single run
     |   |   |   ├── logs             <-- Logs folder (e.g. for ROS_LOG_DIR)
     |   |   |   |   ├── system.log   <-- The complete system log
-    |   |   |   ├── test.xml         <-- Scenario result, in junitxml format
-    |   |   |   ├── <test-specifics> <-- Any test-specific files, stored during the test run within /out (e.g. rosbag)
+    |   |   |   ├── run.xml         <-- Scenario result, in junitxml format
+    |   |   |   ├── <test-specifics> <-- Any test-specific files, stored during the run within /out (e.g. rosbag)
 
 
 Analysis
@@ -236,11 +236,11 @@ The visualization can be customized by adapting the ``analysis.visualization`` s
 
 Although this example includes only one entry in the analysis list, you can add more. Each additional entry will appear as a separate tab in the GUI.
 
-There are three reserved keys for analysis: ``single_test``, ``config``, and ``run``. These allow you to specify Jupyter notebooks for different scopes:
+There are three reserved keys for analysis: ``run``, ``config``, and ``campaign``. These allow you to specify Jupyter notebooks for different scopes:
 
-- **single_test**: analyzes an individual test run.
-- **config**: analyzes all test runs for a specific configuration/parameter set.
-- **run**: analyzes all tests within a run, covering all configurations and parameter sets.
+- **run**: analyzes an individual run.
+- **config**: analyzes all runs for a specific configuration/parameter set.
+- **campaign**: analyzes all tests within a campaign, covering all configurations and parameter sets.
 
 You are free to implement the notebooks as needed. The only requirement is that each notebook includes the following line:
 

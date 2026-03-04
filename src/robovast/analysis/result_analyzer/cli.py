@@ -30,7 +30,7 @@ from ..merge_results import merge_results
 
 @click.group()
 def analysis():
-    """Analyze test results and generate reports.
+    """Analyze run results and generate reports.
 
     Tools for visualizing and analyzing scenario execution results.
     """
@@ -38,11 +38,11 @@ def analysis():
 
 @analysis.command(name='postprocess')
 @click.option('--results-dir', '-r', default=None,
-              help='Directory containing test results (uses project results dir if not specified)')
+              help='Directory containing run results (uses project results dir if not specified)')
 @click.option('--force', '-f', is_flag=True,
               help='Force postprocessing even if results directory is unchanged (bypasses caching)')
 def postprocess_cmd(results_dir, force):
-    """Run postprocessing commands on test results.
+    """Run postprocessing commands on run results.
 
     Executes postprocessing commands defined in the configuration file's
     analysis.postprocessing section. Postprocessing is skipped if the result-directory is unchanged,
@@ -79,16 +79,16 @@ def postprocess_cmd(results_dir, force):
 
 @analysis.command(name='gui')
 @click.option('--results-dir', '-r', default=None,
-              help='Directory containing test results (uses project results dir if not specified)')
+              help='Directory containing run results (uses project results dir if not specified)')
 @click.option('--force', '-f', is_flag=True,
               help='Force postprocessing even if results directory is unchanged (bypasses caching)')
 @click.option('--skip-postprocessing', is_flag=True,
               help='Skip postprocessing before launching the GUI')
 def result_analyzer_cmd(results_dir, force, skip_postprocessing):
-    """Launch the graphical test results analyzer.
+    """Launch the graphical run results analyzer.
 
     Opens a GUI application for interactive exploration and
-    visualization of test results. Automatically runs postprocessing
+    visualization of run results. Automatically runs postprocessing
     before launching the GUI.
 
     Requires project initialization with ``vast init`` first (unless ``--results-dir`` is specified).
@@ -122,7 +122,7 @@ def result_analyzer_cmd(results_dir, force, skip_postprocessing):
             QApplication  # pylint: disable=import-outside-toplevel
 
         from .result_analyzer import \
-            TestResultsAnalyzer  # pylint: disable=import-outside-toplevel
+            RunResultsAnalyzer  # pylint: disable=import-outside-toplevel
     except ImportError as e:
         click.echo(
             f"Error: Required dependencies not available: {e}\n"
@@ -135,7 +135,7 @@ def result_analyzer_cmd(results_dir, force, skip_postprocessing):
     app.setStyle('Fusion')
 
     try:
-        window = TestResultsAnalyzer(base_dir=results_dir, config_file=config)
+        window = RunResultsAnalyzer(base_dir=results_dir, config_file=config)
         window.show()
         exit_code = app.exec_()
         window.deleteLater()
@@ -153,7 +153,7 @@ def merge_results_cmd(merged_campaign_dir, results_dir):
     """Merge campaign-dirs with identical configs into one merged_campaign_dir.
 
     Groups campaign-dir/config-dir by config_identifier from config.yaml.
-    Test folders (0, 1, 2, ...) from all campaigns are renumbered and copied.
+    Run folders (0, 1, 2, ...) from all campaigns are renumbered and copied.
     Original campaign-dirs are not modified.
 
     Requires project initialization with ``vast init`` first (unless ``--results-dir`` is specified).

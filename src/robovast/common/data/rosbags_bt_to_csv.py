@@ -132,7 +132,7 @@ def main():
         "--csv-filename",
         type=str,
         default="behaviors.csv",
-        help="Output CSV file name (default: <test-dir>/behaviors.csv)"
+        help="Output CSV file name (default: <run-dir>/behaviors.csv)"
     )
     parser.add_argument(
         "--provenance-file",

@@ -15,7 +15,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""CLI plugin for test definition."""
+"""CLI plugin for run definition."""
 
 import os
 import sys
@@ -27,13 +27,13 @@ import yaml
 
 from robovast.common import (convert_dataclasses_to_dict, filter_configs,
                              generate_scenario_variations,
-                             get_scenario_parameters, prepare_run_configs)
+                             get_scenario_parameters, prepare_campaign_configs)
 from robovast.common.cli import get_project_config, handle_cli_exception
 
 
 @click.group()
 def configuration():
-    """Manage test configuration.
+    """Manage run configuration.
     """
 
 
@@ -80,12 +80,12 @@ def list_cmd(debug):
     config = project_config.config_path
 
     try:
-        run_data, _ = generate_scenario_variations(
+        campaign_data, _ = generate_scenario_variations(
             variation_file=config,
             progress_update_callback=None,
             output_dir=None
         )
-        configs_data = run_data["configs"]
+        configs_data = campaign_data["configs"]
         configs = convert_dataclasses_to_dict(configs_data)
         if configs:
             # Filter out internal values unless --debug is enabled
@@ -110,7 +110,7 @@ def list_cmd(debug):
 @configuration.command()
 @click.argument('output-dir', type=click.Path())
 def generate(output_dir):
-    """Generate test configurations and output files.
+    """Generate run configurations and output files.
 
     Creates all configurations and associated files in the
     configured results directory.
@@ -126,16 +126,16 @@ def generate(output_dir):
     try:
         os.makedirs(output_dir, exist_ok=True)
 
-        run_data, _ = generate_scenario_variations(
+        campaign_data, _ = generate_scenario_variations(
             variation_file=config,
             progress_update_callback=None,
             output_dir=output_dir
         )
-        configs = run_data["configs"]
+        configs = campaign_data["configs"]
 
         if configs:
             config_path_result = os.path.join(output_dir, "out_template")
-            prepare_run_configs(config_path_result, run_data)
+            prepare_campaign_configs(config_path_result, campaign_data)
             click.echo(f"✓ Successfully generated {len(configs)} scenario configurations in directory '{output_dir}'.")
         else:
             click.echo("✗ Failed to generate scenario configurations", err=True)
@@ -200,12 +200,12 @@ def variation_points():
 
     with tempfile.TemporaryDirectory(prefix="robovast_list_configs_") as temp_dir:
         try:
-            run_data, _ = generate_scenario_variations(
+            campaign_data, _ = generate_scenario_variations(
                 variation_file=config,
                 progress_update_callback=None,
                 output_dir=temp_dir
             )
-            configs = run_data["configs"]
+            configs = campaign_data["configs"]
         except Exception as e:
             handle_cli_exception(e)
 

@@ -28,7 +28,7 @@ import time
 import requests
 from kubernetes import client, config
 
-from .cluster_execution import get_cluster_run_job_counts_per_run
+from .cluster_execution import get_cluster_job_counts_per_campaign
 from .s3_client import ClusterS3Client
 
 logger = logging.getLogger(__name__)
@@ -102,7 +102,7 @@ class ResultDownloader:
             self.port_forward_process = None
 
     def cleanup_s3_buckets(self, campaign_id=None) -> int:
-        """Remove run buckets from the cluster S3 (MinIO) without downloading.
+        """Remove campaign buckets from the cluster S3 (MinIO) without downloading.
 
         Args:
             campaign_id: If provided, only the bucket with this exact name is removed.
@@ -122,7 +122,7 @@ class ResultDownloader:
             secret_key=secret_key,
             context=self.context,
         ) as s3:
-            return s3.cleanup_run_buckets(campaign_id=campaign_id)
+            return s3.cleanup_campaign_buckets(campaign_id=campaign_id)
 
     def start_port_forward(self):
         """Start port-forwarding to the HTTP server sidecar"""
@@ -374,7 +374,7 @@ class ResultDownloader:
                 raise
 
     def list_available_campaigns(self):
-        """List all available run IDs by listing S3 buckets (run-*).
+        """List all available campaign IDs by listing S3 buckets (run-*).
 
         Excludes runs that still have running or pending jobs.
 
@@ -394,10 +394,10 @@ class ResultDownloader:
                 secret_key=secret_key,
                 context=self.context,
             ) as s3:
-                all_campaigns = s3.list_run_buckets()
+                all_campaigns = s3.list_campaign_buckets()
 
             # Exclude runs with running or pending jobs
-            job_counts = get_cluster_run_job_counts_per_run(namespace=self.namespace, context=self.context)
+            job_counts = get_cluster_job_counts_per_campaign(namespace=self.namespace, context=self.context)
             available = []
             excluded = []
             for rid in all_campaigns:
@@ -442,7 +442,7 @@ class ResultDownloader:
         if excluded_runs:
             for rid, running, pending in excluded_runs:
                 logger.info(
-                    "Run %s not downloadable (jobs still running: %d, pending: %d)",
+                    "Campaign %s not downloadable (jobs still running: %d, pending: %d)",
                     rid, running, pending,
                 )
 
@@ -453,7 +453,7 @@ class ResultDownloader:
                 logger.info("No runs found to download.")
             return 0
 
-        logger.info(f"Downloading {len(available_campaigns)} run results to directory '{output_directory}'...")
+        logger.info(f"Downloading {len(available_campaigns)} campaign results to directory '{output_directory}'...")
 
         # Start port-forward for downloading
         self.start_port_forward()
@@ -461,7 +461,7 @@ class ResultDownloader:
         downloaded_count = 0
         try:
             for current_campaign in available_campaigns:
-                if self._download_run(output_directory, current_campaign, force, verbose, skip_removal,
+                if self._download_campaign(output_directory, current_campaign, force, verbose, skip_removal,
                                      keep_archive):
                     downloaded_count += 1
         finally:
@@ -470,7 +470,7 @@ class ResultDownloader:
 
         return downloaded_count
 
-    def _download_run(self, output_directory, campaign, force=False, verbose=False, skip_removal=True,
+    def _download_campaign(self, output_directory, campaign, force=False, verbose=False, skip_removal=True,
                      keep_archive=True):
         """
         Download a specific run via HTTP.
@@ -483,8 +483,8 @@ class ResultDownloader:
                 logger.info(f"Downloading {campaign}...")
 
             # Check if campaign directory already exists and is complete
-            run_output_dir = os.path.join(output_directory, campaign)
-            if not force and os.path.exists(run_output_dir) and os.listdir(run_output_dir):
+            campaign_output_dir = os.path.join(output_directory, campaign)
+            if not force and os.path.exists(campaign_output_dir) and os.listdir(campaign_output_dir):
                 if verbose:
                     logger.info(f"Run {campaign} already exists and appears complete, skipping...")
                     logger.info(f"Use --force to re-download existing runs")
@@ -730,9 +730,9 @@ class ResultDownloader:
             logger.debug(f"Extracting archive...")
 
             # Remove existing extraction directory if force mode or incomplete
-            if force and os.path.exists(run_output_dir):
+            if force and os.path.exists(campaign_output_dir):
                 logger.debug(f"Removing existing campaign directory for clean extraction...")
-                shutil.rmtree(run_output_dir)
+                shutil.rmtree(campaign_output_dir)
 
             with tarfile.open(local_archive_path, 'r:gz') as tar:
                 members = tar.getmembers()

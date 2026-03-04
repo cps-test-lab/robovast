@@ -237,7 +237,7 @@ def import_results(archive, output, force):
     downloaded on a different machine or for re-importing previously downloaded results.
 
     The archive should be in the format ``campaign-<ID>.tar.gz`` and contain
-    a campaign directory with all test results.
+    a campaign directory with all run results.
 
     Requires project initialization with ``vast init`` first (unless ``--output`` is specified).
     """
@@ -288,8 +288,8 @@ def import_results(archive, output, force):
                     click.echo(f"Warning: Archive contains multiple top-level directories: {top_level_dirs}")
 
                 campaign = list(top_level_dirs)[0] if top_level_dirs else None
-                if campaign and not campaign.startswith('run-'):
-                    click.echo(f"Warning: Archive does not contain a standard campaign directory (expected 'run-*', found '{campaign}')")
+                if campaign and not campaign.startswith('campaign-'):
+                    click.echo(f"Warning: Archive does not contain a standard campaign directory (expected 'campaign-*', found '{campaign}')")
 
             click.echo(f"Archive validation successful")
         except (tarfile.TarError, OSError) as e:
@@ -298,15 +298,15 @@ def import_results(archive, output, force):
 
         # Check if campaign directory already exists
         if campaign:
-            run_output_dir = os.path.join(output, campaign)
-            if os.path.exists(run_output_dir):
+            campaign_output_dir = os.path.join(output, campaign)
+            if os.path.exists(campaign_output_dir):
                 if not force:
-                    click.echo(f"Error: Run directory already exists: {run_output_dir}", err=True)
+                    click.echo(f"Error: Campaign directory already exists: {campaign_output_dir}", err=True)
                     click.echo(f"Use --force to overwrite existing run", err=True)
                     sys.exit(1)
                 else:
                     click.echo(f"Removing existing campaign directory...")
-                    shutil.rmtree(run_output_dir)
+                    shutil.rmtree(campaign_output_dir)
 
         # Extract the archive
         logger.debug(f"Extracting archive...")

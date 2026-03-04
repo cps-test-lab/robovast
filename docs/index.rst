@@ -4,7 +4,7 @@ RoboVAST
 
 *Variation Automation and Scalable Testing for Robotic Systems*
 
-**RoboVAST** is an open-source framework for automated, large-scale integration testing of robotic software in simulated environments. Built upon proven foundations including the Floorplan-DSL for parameterizable indoor environment generation, scenario-execution for single test execution, and Kubernetes for orchestration, RoboVAST enables developers to systematically validate their systems across thousands of varied test scenarios.
+**RoboVAST** is an open-source framework for automated, large-scale integration testing of robotic software in simulated environments. Built upon proven foundations including the Floorplan-DSL for parameterizable indoor environment generation, scenario-execution for single run execution, and Kubernetes for orchestration, RoboVAST enables developers to systematically validate their systems across thousands of varied run scenarios.
 
 **Mobile robot navigation serves as our primary use case**, focusing on indoor environments where robots must navigate with varying layouts, tasks, obstacles, navigation parameters and environmental conditions. This foundational application demonstrates RoboVAST's core capabilities while providing immediate value to the mobile robotics community.
 
@@ -20,17 +20,17 @@ Framework Architecture
 Variation
 ---------
 
-RoboVAST combines multiple variation dimensions to generate comprehensive test suites. Environment generation uses the Floorplan-DSL to describe and generate diverse 3D indoor environments with parametric variation of room dimensions and connectivity. For systematic variation, it combines parameters specific to the use case, such as start/end poses, obstacle configurations, and sensor noise for mobile robot navigation. The modular architecture supports extensible addition of new variation dimensions based on specific application requirements.
+RoboVAST combines multiple variation dimensions to generate comprehensive run suites. Environment generation uses the Floorplan-DSL to describe and generate diverse 3D indoor environments with parametric variation of room dimensions and connectivity. For systematic variation, it combines parameters specific to the use case, such as start/end poses, obstacle configurations, and sensor noise for mobile robot navigation. The modular architecture supports extensible addition of new variation dimensions based on specific application requirements.
 
 Execution
 ---------
 
-RoboVAST orchestrates test execution by creating Kubernetes jobs that run individual robot simulations using scenario-execution, including screen capturing and ROS bag data collection. The platform handles parallel deployment across available cluster nodes along with required input and output data management. This architecture enables execution of multiple tests in parallel depending on cluster size, significantly reducing validation time while ensuring reproducible execution across distributed computational environments.
+RoboVAST orchestrates run execution by creating Kubernetes jobs that run individual robot simulations using scenario-execution, including screen capturing and ROS bag data collection. The platform handles parallel deployment across available cluster nodes along with required input and output data management. This architecture enables execution of multiple runs in parallel depending on cluster size, significantly reducing validation time while ensuring reproducible execution across distributed computational environments.
 
 Analysis
 --------
 
-To support basic analysis of test results, the framework provides tools with automated playback, trajectory visualization, and log analysis of each run. These tools offer fundamental analysis capabilities including performance metric extraction, failure detection, and visual inspection of robot behavior.
+To support basic analysis of run results, the framework provides tools with automated playback, trajectory visualization, and log analysis of each run. These tools offer fundamental analysis capabilities including performance metric extraction, failure detection, and visual inspection of robot behavior.
 
 For use case-specific analysis requirements, users can implement custom analysis workflows. The framework includes examples for further analysis workflows, enabling users to perform domain-specific evaluation using their preferred analysis tools and methodologies.
 

@@ -34,7 +34,7 @@ from robovast.common import (get_execution_env_variables, get_campaign,
 from robovast.common.cluster_context import resolve_resources
 from robovast.common.config_generation import generate_scenario_variations
 from robovast.execution.cluster_execution.kubernetes import check_pod_running
-from robovast.execution.cluster_execution.s3_client import upload_run_configs
+from robovast.execution.cluster_execution.s3_client import upload_campaign_configs
 
 from .kubernetes_kueue import (
     cleanup_kueue_workloads,
@@ -55,13 +55,13 @@ def _label_safe_campaign(campaign: str) -> str:
 
 
 def _short_job_name(campaign: str, scenario_key: str, run_number: int) -> str:
-    """Create a short Kubernetes job name (max 63 chars) for run-id-config-test.
+    """Create a short Kubernetes job name (max 63 chars) for campaign-id-config-run.
 
-    Format: r<4chars>-<config8chars><hash4>-<test_number>
+    Format: r<4chars>-<config8chars><hash4>-<run_number>
     - campaign: "campaign-2026-02-27-141130" -> "r" + last 6 of timestamp = "r1130"
     - scenario_key: first 8 alphanumeric for readability, rest as 4-char hash for uniqueness
     - run_number: as-is (e.g. 0, 1, ...)
-    Labels keep full run-id for identifying.
+    Labels keep full campaign-id for identifying.
     """
     # r + last 6 chars of campaign (typically the HHMMSS part of timestamp)
     run_suffix = campaign.split("-")[-1][-6:] if "-" in campaign else campaign[-6:]
@@ -84,7 +84,7 @@ def _full_job_name(campaign: str, scenario_key: str, run_number: int) -> str:
     return f"{campaign}-{safe_config}-{run_number}"
 
 
-def cleanup_cluster_run(namespace="default", campaign=None, context=None):
+def cleanup_cluster_campaign(namespace="default", campaign=None, context=None):
     """Clean up scenario run jobs, pods, and Kueue workloads from the cluster.
 
     Cleanup order is designed to avoid confusing Kueue's quota tracking:
@@ -98,7 +98,7 @@ def cleanup_cluster_run(namespace="default", campaign=None, context=None):
     8. Resume the ClusterQueue (stopPolicy -> None) so new runs can be admitted.
 
     If campaign is given, removes only resources for that run (label
-    ``jobgroup=scenario-runs,run-id=<campaign>``). Otherwise removes all
+    ``jobgroup=scenario-runs,campaign-id=<campaign>``). Otherwise removes all
     resources with label ``jobgroup=scenario-runs``.
 
     Args:
@@ -113,7 +113,7 @@ def cleanup_cluster_run(namespace="default", campaign=None, context=None):
     label_selector = "jobgroup=scenario-runs"
     if campaign is not None:
         label_safe = _label_safe_campaign(campaign)
-        label_selector = f"jobgroup=scenario-runs,run-id={label_safe}"
+        label_selector = f"jobgroup=scenario-runs,campaign-id={label_safe}"
 
     # Step 1: Stop the ClusterQueue so Kueue does not admit new jobs during cleanup.
     logger.info("Setting ClusterQueue stopPolicy to HoldAndDrain before cleanup")
@@ -208,7 +208,7 @@ def cleanup_cluster_run(namespace="default", campaign=None, context=None):
     set_cluster_queue_stop_policy(None, kube_context=context)
 
 
-def get_cluster_run_job_counts(namespace="default", context=None):
+def get_cluster_campaign_job_counts(namespace="default", context=None):
     """Get aggregate status counts for scenario run jobs.
 
     Counts all Kubernetes jobs in the given namespace with the label
@@ -260,10 +260,10 @@ def get_cluster_run_job_counts(namespace="default", context=None):
     return counts
 
 
-def get_cluster_run_job_counts_per_run(namespace="default", context=None):
+def get_cluster_job_counts_per_campaign(namespace="default", context=None):
     """Get status counts per campaign for scenario run jobs.
 
-    Returns a dict mapping campaign (or "<legacy>" for jobs without run-id label)
+    Returns a dict mapping campaign (or "<legacy>" for jobs without campaign-id label)
     to counts dict with keys completed, failed, running, pending.
 
     Args:
@@ -286,8 +286,8 @@ def get_cluster_run_job_counts_per_run(namespace="default", context=None):
 
     for job in job_list.items:
         campaign = "<legacy>"
-        if job.metadata.labels and "run-id" in job.metadata.labels:
-            campaign = job.metadata.labels["run-id"]
+        if job.metadata.labels and "campaign-id" in job.metadata.labels:
+            campaign = job.metadata.labels["campaign-id"]
 
         if campaign not in per_run:
             per_run[campaign] = {"completed": 0, "failed": 0, "running": 0, "pending": 0,
@@ -357,16 +357,16 @@ class JobRunner:
 
         # Generate configs with filtered files first, so we have access to execution params
         self.config_output_file_dir = tempfile.TemporaryDirectory(prefix="robovast_execution_")
-        self.run_data, _ = generate_scenario_variations(
+        self.campaign_data, _ = generate_scenario_variations(
             config_path,
             None,
             variation_classes=None,
             output_dir=self.config_output_file_dir.name,
         )
-        self.configs = self.run_data["configs"]
+        self.configs = self.campaign_data["configs"]
 
-        # Get execution parameters from run_data
-        execution_params = self.run_data.get("execution", {})
+        # Get execution parameters from campaign_data
+        execution_params = self.campaign_data.get("execution", {})
         self.run_as_user = execution_params.get("run_as_user", 1000)
 
         # Create manifest with env vars from config
@@ -398,7 +398,7 @@ class JobRunner:
                 for v in self.configs:
                     logger.info(f"   - {v.get('name', '<unnamed>')}")
                 raise ValueError(f"Config '{single_config}' not found (see available configs above)")
-            self.run_data["configs"] = [found_config]
+            self.campaign_data["configs"] = [found_config]
             self.configs = [found_config]
 
         # Initialize k8s clients to None - will be initialized lazily when needed
@@ -460,14 +460,14 @@ class JobRunner:
 
         # Replace template variables
         label_safe_campaign = _label_safe_campaign(self.campaign)
-        self.replace_template(job_manifest, "$RUN_ID", label_safe_campaign)
+        self.replace_template(job_manifest, "$CAMPAIGN_ID", label_safe_campaign)
         self.replace_template(job_manifest, "$JOB_NAME",
                               _short_job_name(self.campaign, scenario_key, run_number))
         self.replace_template(job_manifest, "$JOB_FULL_NAME",
                               _full_job_name(self.campaign, scenario_key, run_number))
         self.replace_template(job_manifest, "$ITEM",
                               f"{scenario_key.replace('/', '-').replace('_', '-')}-{run_number}")
-        self.replace_template(job_manifest, "$TEST_ID",
+        self.replace_template(job_manifest, "$RUN_ID",
                               f"{scenario_key}-{run_number}")
 
         # Stamp total job count so the cluster monitor can always show the run total
@@ -477,7 +477,7 @@ class JobRunner:
         # S3 connection details from cluster config
         s3_endpoint = self.cluster_config.get_s3_endpoint()
         s3_access_key, s3_secret_key = self.cluster_config.get_s3_credentials()
-        bucket_name = self._bucket_name_for_run(self.campaign)
+        bucket_name = self._bucket_name_for_campaign(self.campaign)
         s3_prefix = f"{scenario_key}/{run_number}"
 
         spec = job_manifest['spec']['template']['spec']
@@ -606,7 +606,7 @@ class JobRunner:
         return job_manifest
 
     @staticmethod
-    def _bucket_name_for_run(campaign: str) -> str:
+    def _bucket_name_for_campaign(campaign: str) -> str:
         """Convert a campaign into a valid S3 bucket name.
 
         Bucket names must be lowercase, 3-63 chars, no underscores.
@@ -684,7 +684,7 @@ class JobRunner:
             except Exception as e:
                 logger.warning(f"Could not collect statistics for job {job_name}: {e}")
 
-    def print_run_statistics(self):
+    def print_campaign_statistics(self):
         """Print comprehensive statistics about the run"""
         if not self.job_statistics:
             logger.info("No job statistics available")
@@ -774,11 +774,11 @@ class JobRunner:
             return f"{hours}h {minutes}m {secs:.1f}s"
 
     def cleanup_jobs(self, campaign=None):
-        """Delete jobs. If campaign is given, only delete jobs with that run-id label."""
+        """Delete jobs. If campaign is given, only delete jobs with that campaign-id label."""
         label_selector = "jobgroup=scenario-runs"
         if campaign is not None:
             label_safe = _label_safe_campaign(campaign)
-            label_selector = f"jobgroup=scenario-runs,run-id={label_safe}"
+            label_selector = f"jobgroup=scenario-runs,campaign-id={label_safe}"
         try:
             logger.debug(f"Deleting jobs with label selector '{label_selector}'")
             self.k8s_batch_client.delete_collection_namespaced_job(
@@ -809,7 +809,7 @@ class JobRunner:
 
         # upload all config files to S3 bucket
         logger.debug(f"Uploading task config files for {len(self.configs)} scenarios to S3...")
-        self.upload_tasks_to_s3()
+        self.upload_campaigns_to_s3()
 
         # Create all jobs for all campaigns before executing any
         all_jobs = []
@@ -867,16 +867,16 @@ class JobRunner:
         logger.info("Cleaned up jobs.")
 
         # Print comprehensive statistics
-        self.print_run_statistics()
+        self.print_campaign_statistics()
 
         logger.debug(f"MinIO S3 pod is left running for reuse")
 
     def cleanup_pods(self, campaign=None):
-        """Delete pods. If campaign is given, only delete pods with that run-id label."""
+        """Delete pods. If campaign is given, only delete pods with that campaign-id label."""
         label_selector = "jobgroup=scenario-runs"
         if campaign is not None:
             label_safe = _label_safe_campaign(campaign)
-            label_selector = f"jobgroup=scenario-runs,run-id={label_safe}"
+            label_selector = f"jobgroup=scenario-runs,campaign-id={label_safe}"
         try:
             logger.debug(f"Deleting pods with label selector '{label_selector}'")
             self.k8s_client.delete_collection_namespaced_pod(
@@ -890,15 +890,15 @@ class JobRunner:
         except client.rest.ApiException as e:
             logger.error(f"Error deleting pods with label selector: {e}")
 
-    def upload_tasks_to_s3(self):
+    def upload_campaigns_to_s3(self):
         """Prepare and upload run config files to S3.
 
-        Delegates to :func:`~robovast.execution.cluster_execution.s3_client.upload_run_configs`
+        Delegates to :func:`~robovast.execution.cluster_execution.s3_client.upload_campaign_configs`
         which performs the existence check and upload in a single port-forward session.
         Raises :class:`RuntimeError` if the bucket already exists.
         """
-        upload_run_configs(
-            self.campaign, self.run_data, self.num_runs, self.cluster_config, self.namespace,
+        upload_campaign_configs(
+            self.campaign, self.campaign_data, self.num_runs, self.cluster_config, self.namespace,
             context=self.kube_context
         )
 

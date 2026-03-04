@@ -40,7 +40,7 @@ class BaseConfig(object):
         raise NotImplementedError("cleanup_cluster method must be implemented by subclasses.")
 
     def prepare_setup_cluster(self, output_dir, **kwargs):
-        """Prepare the cluster for the test run.
+        """Prepare the cluster for the run.
 
         Args:
             output_dir (str): Directory where setup files will be written

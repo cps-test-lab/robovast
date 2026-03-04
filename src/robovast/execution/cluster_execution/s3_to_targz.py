@@ -22,8 +22,8 @@ lists all objects in the given bucket, streams them into a gzipped tarball
 using pigz (parallel gzip) for multi-core compression, and writes to
 /data/{bucket_name}.tar.gz.
 
-Usage: python - run-xxx  (script from stdin, bucket name from argv)
-  or:  python s3_to_targz.py run-xxx
+Usage: python - campaign-xxx  (script from stdin, bucket name from argv)
+  or:  python s3_to_targz.py campaign-xxx
 
 Environment variables (optional):
   S3_ENDPOINT: default http://localhost:9000

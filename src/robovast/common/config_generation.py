@@ -227,7 +227,7 @@ def _get_variation_classes(scenario_config):
     return variation_classes
 
 
-def generate_scenario_variations(variation_file, progress_update_callback=None, variation_classes=None, output_dir=None, test_files_filter=None):
+def generate_scenario_variations(variation_file, progress_update_callback=None, variation_classes=None, output_dir=None, run_files_filter=None):
     if not progress_update_callback:
         progress_update_callback = logger.debug
     progress_update_callback("Start generating configs.")
@@ -237,13 +237,13 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     # Get scenario file from configuration section
     configurations = parameters.get('configuration', [])
 
-    test_files = []
-    # Get test_files_filter from config
-    test_files_filter = parameters.get("execution", {}).get("test_files_filter", [])
-    if test_files_filter:
-        additional_test_files = collect_filtered_files(test_files_filter, os.path.dirname(variation_file))
-        progress_update_callback(f"Loaded {len(test_files_filter)} filter patterns (found {len(additional_test_files)} files).")
-        test_files.extend(additional_test_files)
+    run_files = []
+    # Get run_files_filter from config
+    run_files_filter = parameters.get("execution", {}).get("run_files_filter", [])
+    if run_files_filter:
+        additional_run_files = collect_filtered_files(run_files_filter, os.path.dirname(variation_file))
+        progress_update_callback(f"Loaded {len(run_files_filter)} filter patterns (found {len(additional_run_files)} files).")
+        run_files.extend(additional_run_files)
 
     configs = []
     variation_gui_classes = {}
@@ -324,7 +324,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                 logger.debug(f"Variation result after {variation_class.__name__}: \n{pformat(result)}")
             current_configs = result
 
-        # Add metadata for config identifier (used by prepare_run_configs)
+        # Add metadata for config identifier (used by prepare_campaign_configs)
         variation_type_names = [
             list(item.keys())[0] for item in (config.get("variations") or [])
             if isinstance(item, dict)
@@ -351,7 +351,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         "vast": variation_file,
         "scenario_file": scenario_file,
         "configs": configs,
-        "_test_files": test_files,
+        "_run_files": run_files,
         "execution": execution_params,
         "created_at": datetime.now().isoformat()
     }

@@ -25,7 +25,7 @@ __all__ = ["NextcloudShareProvider"]
 
 
 class NextcloudShareProvider(BaseShareProvider):
-    """Upload run archives to a public Nextcloud share (WebDAV).
+    """Upload campaign archives to a public Nextcloud share (WebDAV).
 
     The share must be a public link that allows file uploads without a
     password.  In the Nextcloud web UI, create a share with "Allow upload

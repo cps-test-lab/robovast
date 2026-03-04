@@ -27,12 +27,12 @@ import click
 import yaml
 from dotenv import load_dotenv
 
-from robovast.common import prepare_run_configs
+from robovast.common import prepare_campaign_configs
 from robovast.common.cli import get_project_config, handle_cli_exception
 from robovast.common.cluster_context import (get_active_kube_context, get_config_context_names,
                                              require_context_for_multi_cluster)
 from robovast.execution.cluster_execution.cluster_execution import (
-    JobRunner, cleanup_cluster_run, get_cluster_run_job_counts_per_run,
+    JobRunner, cleanup_cluster_campaign, get_cluster_job_counts_per_campaign,
     _label_safe_campaign)
 from robovast.execution.cluster_execution.cluster_setup import (
     delete_server, get_cluster_config, get_cluster_namespace,
@@ -63,7 +63,7 @@ def execution():
 def local():
     """Execute scenarios locally using Docker.
 
-    Run test configurations in Docker containers with bind mounts
+    Run run configurations in Docker containers with bind mounts
     for configuration and output data.
 
     Requires project initialization with ``vast init`` first.
@@ -86,7 +86,7 @@ def local():
 @click.option('--image', '-i', default='ghcr.io/cps-test-lab/robovast:latest',
               help='Use a custom Docker image')
 @click.option('--abort-on-failure', is_flag=True,
-              help='Stop execution after the first failed test config (default: continue)')
+              help='Stop execution after the first failed run config (default: continue)')
 @click.option('--use-resource-allocation', is_flag=True,
               help='Add CPU/memory reservations to docker compose run (default: skip for local)')
 @click.option('--log-tree', '-t', is_flag=True,
@@ -217,7 +217,7 @@ def cluster():
 def run(config, runs, follow, cleanup, log_tree, kube_context):  # pylint: disable=function-redefined,redefined-outer-name
     """Execute scenarios on a Kubernetes cluster.
 
-    Deploys all test configurations (or a specific one) as Kubernetes jobs
+    Deploys all run configurations (or a specific one) as Kubernetes jobs
     for distributed parallel execution.
 
     By default, exits immediately after creating jobs.
@@ -450,7 +450,7 @@ def monitor(interval, once, kube_context):
                     for lg in _suppressed_loggers:
                         lg.setLevel(logging.CRITICAL)
                     try:
-                        per_run = get_cluster_run_job_counts_per_run(namespace, context=ctx)
+                        per_run = get_cluster_job_counts_per_campaign(namespace, context=ctx)
                     finally:
                         for lg, lvl in zip(_suppressed_loggers, _prev_levels):
                             lg.setLevel(lvl)
@@ -540,7 +540,7 @@ def download(output, force, verbose, skip_removal, port_forward_only, remote_com
              no_keep_archive, kube_context):
     """Download result files from the cluster S3 (MinIO) server.
 
-    Downloads all test run results from the MinIO S3 server embedded in the
+    Downloads all campaign results from the MinIO S3 server embedded in the
     robovast pod. Each run is stored in a separate S3 bucket (``campaign-*``) and
     downloaded into a subdirectory of the output directory.
 
@@ -617,7 +617,7 @@ def download(output, force, verbose, skip_removal, port_forward_only, remote_com
 @click.option('--context', '-x', 'kube_context', default=None,
               help='Kubernetes context to use (default: active context in kubeconfig)')
 def download_to_share(force, verbose, keep_archive, skip_removal, kube_context):
-    """Upload run archives from the cluster pod to a remote share service.
+    """Upload campaign archives from the cluster pod to a remote share service.
 
     Results are transferred entirely inside the archiver sidecar of the
     robovast pod — no data is downloaded to the local machine.
@@ -702,13 +702,13 @@ def download_to_share(force, verbose, keep_archive, skip_removal, kube_context):
             context=kube_context,
             provider=provider,
         )
-        count = uploader.upload_runs(
+        count = uploader.upload_campaigns(
             force=force,
             verbose=verbose,
             keep_archive=keep_archive,
             skip_removal=skip_removal,
         )
-        click.echo(f"✓ Uploaded {count} run(s) to {share_type} successfully!")
+        click.echo(f"✓ Uploaded {count} campaign(s) to {share_type} successfully!")
 
     except click.UsageError:
         raise
@@ -838,13 +838,13 @@ def run_cleanup(campaign, kube_context):
             sys.exit(1)
 
         if campaign:
-            per_run = get_cluster_run_job_counts_per_run(namespace, context=kube_context)
+            per_run = get_cluster_job_counts_per_campaign(namespace, context=kube_context)
             label_safe = _label_safe_campaign(campaign)
             if label_safe not in per_run:
                 available = sorted(per_run.keys())
                 if available:
                     click.echo(f"Campaign '{campaign}' not found in cluster.", err=True)
-                    click.echo("Available run-ids:", err=True)
+                    click.echo("Available campaign-ids:", err=True)
                     for rid in available:
                         click.echo(f"  - {rid}", err=True)
                 else:
@@ -853,7 +853,7 @@ def run_cleanup(campaign, kube_context):
             click.echo(f"Cleaning up jobs and pods for campaign '{campaign}'...")
         else:
             click.echo("Cleaning up all scenario run jobs and pods...")
-        cleanup_cluster_run(namespace=namespace, campaign=campaign, context=kube_context)
+        cleanup_cluster_campaign(namespace=namespace, campaign=campaign, context=kube_context)
         click.echo("✓ Cleanup completed successfully!")
 
     except Exception as e:
@@ -929,7 +929,7 @@ def prepare_run(output, config, runs, cluster_config, options, log_tree, kube_co
     - config/ directory with all scenario configurations
     - jobs/ directory with individual job manifest YAML files
     - ``all-jobs.yaml`` file with all jobs combined
-    - ``upload_configs.py`` script to upload test configurations to the cluster
+    - ``upload_configs.py`` script to upload run configurations to the cluster
     - README.md with general execution instructions
     - Cluster-specific setup files (manifests, templates, README)
 
@@ -984,16 +984,16 @@ def prepare_run(output, config, runs, cluster_config, options, log_tree, kube_co
             namespace=namespace, log_tree=log_tree,
             kube_context=kube_context)
 
-        click.echo(f"Preparing run configuration 'ID: {job_runner.campaign}', test configs: {
-                   len(job_runner.configs)}, runs per test config: {job_runner.num_runs}...")
+        click.echo(f"Preparing run configuration 'ID: {job_runner.campaign}', run configs: {
+                   len(job_runner.configs)}, runs per run config: {job_runner.num_runs}...")
 
         # Prepare config files
         logging.debug("Preparing configuration files...")
 
         out_dir = os.path.join(output, "out_template")
-        prepare_run_configs(
+        prepare_campaign_configs(
             out_dir,
-            job_runner.run_data,
+            job_runner.campaign_data,
             cluster=True
         )
 

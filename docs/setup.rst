@@ -54,7 +54,7 @@ Dependencies
 Kubernetes
 ^^^^^^^^^^
 
-Local execution is possible, but RoboVAST's full capabilities—parallel, cluster-based test execution—require Kubernetes.
+Local execution is possible, but RoboVAST's full capabilities—parallel, cluster-based run execution—require Kubernetes.
 
 Either follow some Kubernetes Distribution Setup Instructions to set up your own cluster, e.g.
 
@@ -97,7 +97,7 @@ Follow the instructions here: `minikube Installation Guide <https://minikube.sig
 
 .. note::
 
-   By default, minikube does not encapsulate network communication by default. Communication between ROS2 nodes across tests might happen. Therefore ensure, that only a single test is executed at a time.
+   By default, minikube does not encapsulate network communication by default. Communication between ROS2 nodes across tests might happen. Therefore ensure, that only a single run is executed at a time.
 
 After setup, the following command should show the cluster information:
 
@@ -111,7 +111,7 @@ For debugging and monitoring, we recommend installing `k9s <https://k9scli.io/>`
 Docker
 ^^^^^^
 
-RoboVAST uses Docker containers, e.g. for local test execution.
+RoboVAST uses Docker containers, e.g. for local run execution.
 
 Follow the instructions here: `Docker Installation Guide <https://docs.docker.com/engine/install/>`_ or this short summary:
 

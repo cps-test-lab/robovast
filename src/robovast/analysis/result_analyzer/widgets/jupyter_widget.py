@@ -331,12 +331,12 @@ def format_notebook_error_html(error_str: str) -> str:
 class JupyterNotebookRunner(CancellableWorkload):
     """Thread for executing notebooks without blocking the UI"""
 
-    def __init__(self, name, single_test_nb, config_nb, run_nb):
+    def __init__(self, name, run_nb, config_nb, campaign_nb):
         super().__init__(name)
         self.notebook_content = None
-        self.single_test_nb = single_test_nb
-        self.config_nb = config_nb
         self.run_nb = run_nb
+        self.config_nb = config_nb
+        self.campaign_nb = campaign_nb
 
     def set_notebook(self, notebook_content: str):
         """Set the notebook content to execute"""
@@ -380,12 +380,12 @@ class JupyterNotebookRunner(CancellableWorkload):
         return notebook
 
     def _get_external_notebook_path(self, run_type) -> str:
-        if run_type == RunType.SINGLE_TEST:
-            return self.single_test_nb
+        if run_type == RunType.RUN:
+            return self.run_nb
         elif run_type == RunType.CONFIG:
             return self.config_nb
-        elif run_type == RunType.RUN:
-            return self.run_nb
+        elif run_type == RunType.CAMPAIGN:
+            return self.campaign_nb
         return None
 
     def _load_external_notebook(self, run_type) -> str:
@@ -418,12 +418,12 @@ class JupyterNotebookRunner(CancellableWorkload):
 
     def get_cache_file_name(self, run_type):
         """Determine CSV files and analysis type based on directory structure"""
-        if run_type == RunType.SINGLE_TEST:
-            return "overview_single_test.html"
+        if run_type == RunType.RUN:
+            return "overview_run.html"
         elif run_type == RunType.CONFIG:
             return "overview_config.html"
-        elif run_type == RunType.RUN:
-            return "overview_run.html"
+        elif run_type == RunType.CAMPAIGN:
+            return "overview_campaign.html"
         raise ValueError("Unknown run-type")
 
     def get_hash_files(self, run_type):

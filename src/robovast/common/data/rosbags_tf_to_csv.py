@@ -167,7 +167,7 @@ def main():
         "--csv-filename",
         type=str,
         default="poses.csv",
-        help="Output CSV file name (default: <test-dir>/poses.csv)"
+        help="Output CSV file name (default: <run-dir>/poses.csv)"
     )
     parser.add_argument(
         "input",

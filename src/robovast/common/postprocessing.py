@@ -27,7 +27,7 @@ from typing import Dict, List, Optional, Tuple
 import yaml
 
 from .common import load_config
-from .results_utils import iter_test_folders
+from .results_utils import iter_run_folders
 
 
 def load_postprocessing_plugins() -> Dict[str, callable]:
@@ -152,14 +152,14 @@ def get_postprocessing_commands(config_path: str) -> List[dict]:
 
 
 def _write_provenance_yaml_per_folder(results_dir: str, entries: List[dict]) -> None:
-    """Write postprocessing.yaml in each test folder with entries whose output is under that folder."""
+    """Write postprocessing.yaml in each run folder with entries whose output is under that folder."""
     results_path = Path(results_dir)
     # Normalize paths to forward slashes for consistent prefix match
 
     def norm(s: str) -> str:
         return str(Path(s)) if os.sep != "/" else s
 
-    for _campaign, _config_name, _test_number, folder_path in iter_test_folders(results_dir):
+    for _campaign, _config_name, _run_number, folder_path in iter_run_folders(results_dir):
         folder_rel = norm(os.path.relpath(str(folder_path), results_dir))
         prefix = folder_rel + os.sep
         folder_entries = []
@@ -300,11 +300,11 @@ def compute_dir_hash(dir_path: str, exclude_set: Optional[set] = None) -> str:
 
 
 def run_postprocessing(config_path: str, results_dir: str, output_callback=None, force: bool = False):  # pylint: disable=too-many-return-statements
-    """Run postprocessing commands on test results.
+    """Run postprocessing commands on run results.
 
     Args:
         config_path: Path to .vast configuration file
-        results_dir: Directory containing test results
+        results_dir: Directory containing run results
         output_callback: Optional callback function for output messages (takes message string)
         force: If True, bypass caching and force postprocessing even if results are unchanged
 
@@ -447,7 +447,7 @@ def run_postprocessing(config_path: str, results_dir: str, output_callback=None,
         except Exception as e:
             output(f"Warning: Could not write cache files: {e}")
 
-        # Write postprocessing.yaml in each test folder
+        # Write postprocessing.yaml in each run folder
         _write_provenance_yaml_per_folder(results_dir_abs, all_provenance_entries)
 
         return True, "Postprocessing completed successfully!"
