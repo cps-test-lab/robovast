@@ -334,7 +334,6 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
     campaign_data_for_dump.pop("_transient_files", None)
     for c in campaign_data_for_dump.get("configs", []):
         c.pop("_config_block", None)
-        c.pop("_variation_type_names", None)
 
     # Save scenario variations as YAML in _transient subdirectory
     scenario_variations_path = os.path.join(campaign_transient_dir, "configurations.yaml")
@@ -425,7 +424,9 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
 
         # Compute and write config identifier for merge-results
         config_block = config_data.get("_config_block", {})
-        variation_type_names = config_data.get("_variation_type_names", [])
+        variation_type_names = [
+            v["name"] for v in config_data.get("_variation_data", [])
+        ]
         config_identifier, sub_identifier = compute_config_identifier(
             vast_file_path,
             config_block,

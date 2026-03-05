@@ -16,7 +16,6 @@
 
 import logging
 import os
-from pathlib import Path
 from typing import Optional
 
 import yaml
@@ -40,54 +39,6 @@ if hasattr(_NoDatetimeLoader, 'yaml_implicit_resolvers'):
 
 
 class NavVariation(Variation):
-
-    @classmethod
-    def collect_config_metadata(cls, config_entry: dict, config_dir: Path, campaign_dir: Path) -> dict:
-        """Load map and mesh YAML metadata from config files.
-
-        Scans the configuration parameters for values that reference files
-        in the ``_config/`` directory.  When a matching YAML file is found
-        (either the value itself ends with ``.yaml`` or a ``.yaml`` sidecar
-        exists), its contents are added to the metadata under the same key
-        as the configuration parameter (e.g. ``map_file``, ``mesh_file``).
-        """
-        extra: dict = {}
-        config_params = config_entry.get("config", {})
-        if not isinstance(config_params, dict):
-            return extra
-
-        config_name = config_entry.get("name", "")
-        config_files = config_entry.get("config_files", [])
-
-        for key, value in config_params.items():
-            if not isinstance(value, str):
-                continue
-
-            # Check if this parameter value matches a known config file
-            candidate = os.path.join(config_name, "_config", value)
-            if candidate not in config_files:
-                continue
-
-            # Try to find a YAML file to load
-            yaml_path = None
-            full_path = campaign_dir / candidate
-            if value.endswith(".yaml") and full_path.exists():
-                yaml_path = full_path
-            else:
-                sidecar = str(full_path) + ".yaml"
-                if os.path.exists(sidecar):
-                    yaml_path = Path(sidecar)
-
-            if yaml_path is not None:
-                try:
-                    with open(yaml_path, "r", encoding="utf-8") as f:
-                        extra[key] = yaml.load(f, Loader=_NoDatetimeLoader)
-                except Exception as e:
-                    logger.warning(
-                        "Failed to load metadata YAML %s: %s", yaml_path, e
-                    )
-
-        return extra
 
     def get_map_file(self, map_file_parameter, config) -> Optional[str]:
         """Determine the map file path to use for this config.

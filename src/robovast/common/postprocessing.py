@@ -27,7 +27,8 @@ from typing import Dict, List, Optional, Tuple
 import yaml
 
 from .common import load_config
-from .results_utils import iter_run_folders
+from .metadata import generate_campaign_metadata
+from .results_utils import find_campaign_vast_file, iter_run_folders
 
 
 def load_postprocessing_plugins() -> Dict[str, callable]:
@@ -136,43 +137,6 @@ def validate_postprocessing_command(command: str | dict, plugins: Dict[str, call
         )
 
     return True, ""
-
-
-def find_campaign_vast_file(results_dir: str) -> tuple[Optional[str], Optional[str]]:
-    """Find the .vast file from the most recent campaign in results_dir.
-
-    Searches ``results_dir/campaign-<id>/_config/*.vast`` and returns the
-    path from the last (most recent, lexicographically) campaign that has a
-    ``.vast`` file.
-
-    Args:
-        results_dir: Path to the project results directory (parent of campaign-* dirs).
-
-    Returns:
-        Tuple ``(vast_file_path, config_dir)`` where *config_dir* is the
-        ``_config/`` directory containing the ``.vast`` file, or
-        ``(None, None)`` if no campaign with a ``.vast`` file is found.
-    """
-    root = Path(results_dir)
-    if not root.is_dir():
-        return None, None
-
-    # Reverse-sorted so the most recent campaign comes first
-    for campaign_item in sorted(root.iterdir(), reverse=True):
-        if not campaign_item.is_dir() or not campaign_item.name.startswith("campaign-"):
-            continue
-        config_dir = campaign_item / "_config"
-        if config_dir.is_dir():
-            vast_files = [f for f in sorted(config_dir.iterdir()) if f.is_file() and f.suffix == ".vast"]
-            if len(vast_files) > 1:
-                names = ", ".join(f.name for f in vast_files)
-                raise ValueError(
-                    f"Multiple .vast files found in {config_dir}: {names}. "
-                    "Expected exactly one."
-                )
-            if vast_files:
-                return str(vast_files[0]), str(config_dir)
-    return None, None
 
 
 def get_postprocessing_commands(config_path: str) -> List[dict]:
@@ -513,7 +477,6 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         _write_provenance_yaml_per_folder(results_dir_abs, all_provenance_entries)
 
         # Generate metadata.yaml in each campaign directory
-        from .metadata import generate_campaign_metadata
         meta_success, meta_msg = generate_campaign_metadata(
             results_dir, vast_file=vast_file, output_callback=output_callback,
         )

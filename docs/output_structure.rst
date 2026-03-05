@@ -81,7 +81,9 @@ Contains:
 
 ``configurations.yaml`` contains the fully resolved parameter values for every
 configuration variant, including internal computed fields like navigation path waypoints
-(``_path``), raster points (``_raster_points``), and resolved file paths.
+(``_path``), raster points (``_raster_points``), resolved file paths, and
+``_variation_data`` (list of applied variation plugins with name, start time, and
+duration).
 
 Configuration Directory
 -----------------------
@@ -178,11 +180,14 @@ The file is produced by a three-phase pipeline:
    run files, and the scenario file reference.
 
 2. **Variation-plugin metadata** — each variation plugin used during
-   configuration generation can contribute additional metadata via the
-   ``collect_config_metadata`` and ``collect_run_metadata`` classmethods
-   on the ``Variation`` base class.  For example, the navigation
-   ``FloorplanGeneration`` variation adds map and mesh metadata loaded
-   from YAML files in ``_config/``.
+   configuration generation can contribute additional metadata by overriding
+   the ``collect_config_metadata`` and ``collect_run_metadata`` classmethods
+   defined on the ``Variation`` base class.  For example,
+   ``FloorplanGeneration`` overrides ``collect_config_metadata`` to load map
+   and mesh YAML metadata from ``_config/``.  The ``variations`` field in
+   each configuration entry lists all variation plugins that were applied,
+   together with their execution timing (``name``, ``started_at`` as ISO
+   timestamp, ``duration`` in seconds).
 
 3. **User-defined metadata processors** — custom plugins registered under
    the ``robovast.metadata_processing`` entry-point group and configured
@@ -199,6 +204,13 @@ Example structure of ``metadata.yaml``:
          initial_population: 100
        config_files: []
        created_at: '2026-03-04T16:15:03.212496'
+       variations:
+         - name: FloorplanGeneration
+           started_at: '2026-03-04T16:14:55.123456+00:00'
+           duration: 3.217
+         - name: PathVariationRandom
+           started_at: '2026-03-04T16:14:58.340789+00:00'
+           duration: 1.842
        test_results:
          - dir: config-1/0
            success: 'true'
@@ -261,12 +273,14 @@ Register the plugin in your package's ``pyproject.toml``:
 Variation Plugin Metadata Hooks
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Variation plugins can contribute metadata by overriding two classmethods
-on the ``Variation`` base class:
+The ``Variation`` base class defines two overridable classmethods that
+return an empty dict by default.  Subclasses implement them to attach
+domain-specific metadata:
 
 .. code-block:: python
 
    from pathlib import Path
+   import yaml
    from robovast.common.variation import Variation
 
    class MyVariation(Variation):
@@ -274,7 +288,11 @@ on the ``Variation`` base class:
        @classmethod
        def collect_config_metadata(cls, config_entry, config_dir: Path,
                                     campaign_dir: Path) -> dict:
-           """Return extra fields to merge into the config metadata entry."""
+           """Load extra metadata from a YAML sidecar in _config/."""
+           data_file = config_dir / "_config" / "my_data.yaml"
+           if data_file.exists():
+               with open(data_file) as f:
+                   return {"my_data": yaml.safe_load(f)}
            return {}
 
        @classmethod

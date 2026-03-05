@@ -20,7 +20,8 @@ import logging
 import os
 import re
 import tempfile
-from datetime import datetime
+import time
+from datetime import datetime, timezone
 from importlib.metadata import entry_points
 from pprint import pformat
 
@@ -382,8 +383,11 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                     if variation_gui_class is None:
                         raise ValueError(f"Variation class {variation_class.__name__} has GUI_RENDERER_CLASS defined but no GUI_CLASS.")
                     variation_gui_classes[variation_gui_class].append(variation_gui_renderer_class)
+            started_at = datetime.now(timezone.utc).isoformat()
+            t0 = time.monotonic()
             result, var_input_files, var_transient_files = execute_variation(os.path.dirname(variation_file), current_configs, variation_class,
                                                                              variation_parameters, general_parameters, progress_update_callback, scenario_file, output_dir)
+            duration = round(time.monotonic() - t0, 3)
 
             # Validate and collect variation input files
             for vf in var_input_files:
@@ -400,16 +404,22 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                 break
             else:
                 logger.debug(f"Variation result after {variation_class.__name__}: \n{pformat(result)}")
+
+            # Record variation execution data on each resulting config
+            variation_entry = {
+                "name": variation_class.__name__,
+                "started_at": started_at,
+                "duration": duration,
+            }
+            for c in result:
+                if "_variation_data" not in c:
+                    c["_variation_data"] = []
+                c["_variation_data"].append(variation_entry)
+
             current_configs = result
 
-        # Add metadata for config identifier (used by prepare_campaign_configs)
-        variation_type_names = [
-            list(item.keys())[0] for item in (config.get("variations") or [])
-            if isinstance(item, dict)
-        ]
         for c in current_configs:
             c["_config_block"] = config
-            c["_variation_type_names"] = variation_type_names
 
         configs.extend(current_configs)
 

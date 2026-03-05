@@ -44,6 +44,7 @@ from .campaign_data import (
     read_test_result,
 )
 from .common import load_config
+from .results_utils import find_campaign_vast_file
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +84,7 @@ class MetadataProcessor(ABC):
         Returns:
             The (possibly modified) metadata dictionary.
         """
-        ...
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -140,22 +141,16 @@ class MetadataGenerator:
                 config_files_list.append(config_file_name)
             config_entry["config_files"] = config_files_list
 
-            # Resolve file:///config URLs
-            if "config" in config_entry and isinstance(config_entry["config"], dict):
-                _replace_file_urls(config_entry["config"])
-
-            # Resolve config-file references inside the "config" block
-            if "config" in config_entry and isinstance(config_entry["config"], dict):
-                _resolve_file_strings(
-                    config_entry["config"], os.path.join(config_name, "_config"), config_files_list
-                )
-
             # Timestamp
             config_entry["created_at"] = data.get("created_at")
 
-        # Strip internal fields (keys starting with "_")
+        # Strip internal fields (keys starting with "_"), preserving
+        # _variation_data for the metadata hooks phase.
         for config_entry in metadata["configurations"]:
-            keys_to_remove = [k for k in config_entry if k.startswith("_")]
+            keys_to_remove = [
+                k for k in config_entry
+                if k.startswith("_") and k != "_variation_data"
+            ]
             for k in keys_to_remove:
                 config_entry.pop(k)
 
@@ -220,10 +215,10 @@ class MetadataGenerator:
                 # sysinfo
                 try:
                     entry["sysinfo"] = read_sysinfo(run_dir)
-                except FileNotFoundError:
+                except FileNotFoundError as exc:
                     raise FileNotFoundError(
                         f"sysinfo.yaml not found in {run_dir}"
-                    )
+                    ) from exc
 
                 # postprocessing.yaml
                 pp_path = run_dir / "postprocessing.yaml"
@@ -304,8 +299,30 @@ def generate_campaign_metadata(
             generator = MetadataGenerator(campaign_dir)
             metadata = generator.generate_metadata()
 
+            output_path = campaign_dir / "tmp.yaml"
+            with open(output_path, "w", encoding="utf-8") as f:
+                yaml.dump(
+                    metadata, f,
+                    default_flow_style=False,
+                    sort_keys=False,
+                    allow_unicode=True,
+                )
+
             # Phase 2: Variation plugin metadata hooks
             _apply_variation_metadata(metadata, campaign_dir, variation_classes)
+
+            # Resolve config-file references inside each "config" block now that
+            # variation hooks have had a chance to run first.
+            for config_entry in metadata.get("configurations", []):
+                config_name = config_entry.get("name", "")
+                if "config" in config_entry and isinstance(config_entry["config"], dict):
+                    _replace_file_urls(config_entry["config"])
+
+                    _resolve_file_strings(
+                        config_entry["config"],
+                        os.path.join(config_name, "_config"),
+                        config_entry.get("config_files", []),
+                    )
 
             # Phase 3: User-defined metadata processors
             _apply_user_metadata_processors(
@@ -432,7 +449,6 @@ def _get_metadata_processing_commands(
         vast_path = vast_file
     else:
         # Discover from most recent campaign
-        from .postprocessing import find_campaign_vast_file
         vast_path, _config_dir = find_campaign_vast_file(results_dir)
 
     if vast_path is None:
@@ -452,12 +468,12 @@ def _apply_variation_metadata(
         config_name = config_entry.get("name", "")
         config_dir = campaign_dir / config_name
 
-        # Determine which variation types were used for this config
-        variation_type_names = config_entry.get("_variation_type_names", [])
-        # Remove internal field after reading
-        config_entry.pop("_variation_type_names", None)
+        # Read and consume _variation_data, expose as public "variations"
+        variation_data = config_entry.pop("_variation_data", [])
+        config_entry["variations"] = variation_data
 
-        for vtype_name in variation_type_names:
+        for vdata in variation_data:
+            vtype_name = vdata["name"]
             cls = variation_classes.get(vtype_name)
             if cls is None:
                 continue
