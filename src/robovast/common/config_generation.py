@@ -415,10 +415,10 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                 "duration": duration,
             }
             for c in result:
-                if "_variation_data" not in c:
-                    c["_variation_data"] = []
+                if "_variations" not in c:
+                    c["_variations"] = []
                 entry = dict(variation_entry)
-                c["_variation_data"].append(entry)
+                c["_variations"].append(entry)
 
             current_configs = result
 

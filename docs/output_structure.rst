@@ -82,7 +82,7 @@ Contains:
 ``configurations.yaml`` contains the fully resolved parameter values for every
 configuration variant, including internal computed fields like navigation path waypoints
 (``_path``), raster points (``_raster_points``), resolved file paths, and
-``_variation_data`` (list of applied variation plugins with name, start time, and
+``_variations`` (list of applied variation plugins with name, start time, and
 duration).
 
 Configuration Directory

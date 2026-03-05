@@ -425,7 +425,7 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
         # Compute and write config identifier for merge-results
         config_block = config_data.get("_config_block", {})
         variation_type_names = [
-            v["name"] for v in config_data.get("_variation_data", [])
+            v["name"] for v in config_data.get("_variations", [])
         ]
         config_identifier, sub_identifier = compute_config_identifier(
             vast_file_path,

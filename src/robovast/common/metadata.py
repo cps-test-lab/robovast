@@ -145,11 +145,11 @@ class MetadataGenerator:
             config_entry["created_at"] = data.get("created_at")
 
         # Strip internal fields (keys starting with "_"), preserving
-        # _variation_data for the metadata hooks phase.
+        # _variations for the metadata hooks phase.
         for config_entry in metadata["configurations"]:
             keys_to_remove = [
                 k for k in config_entry
-                if k.startswith("_") and k != "_variation_data"
+                if k.startswith("_") and k != "_variations"
             ]
             for k in keys_to_remove:
                 config_entry.pop(k)
@@ -468,8 +468,8 @@ def _apply_variation_metadata(
         config_name = config_entry.get("name", "")
         config_dir = campaign_dir / config_name
 
-        # Read and consume _variation_data, expose as public "variations"
-        variation_data = config_entry.pop("_variation_data", [])
+        # Read and consume _variations, expose as public "variations"
+        variation_data = config_entry.pop("_variations", [])
         config_entry["variations"] = variation_data
 
         for vdata in variation_data:
