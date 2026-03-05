@@ -160,7 +160,7 @@ class ExecutionConfig(BaseModel):
         return v
 
 
-class DataConfig(BaseModel):
+class ResultsConfig(BaseModel):
     postprocessing: Optional[list[str | dict[str, Any]]] = None
     metadata_processing: Optional[list[str | dict[str, Any]]] = None
 
@@ -176,7 +176,7 @@ class ConfigV1(BaseModel):
     general: Optional[GeneralConfig] = None
     configuration: Optional[list[ConfigurationConfig]] = None
     execution: ExecutionConfig
-    data: Optional[DataConfig] = None
+    results_processing: Optional[ResultsConfig] = None
     evaluation: Optional[EvaluationConfig] = None
 
 

@@ -30,15 +30,15 @@ from ..merge_results import merge_results
 
 
 @click.group()
-def data():
-    """Manage run result data.
+def results():
+    """Manage run results.
 
     Tools for postprocessing scenario execution results,
     including data conversion, merging, and metadata generation.
     """
 
 
-@data.command(name='postprocess')
+@results.command(name='postprocess')
 @click.option('--results-dir', '-r', default=None,
               help='Directory containing run results (uses project results dir if not specified)')
 @click.option('--force', '-f', is_flag=True,
@@ -92,7 +92,7 @@ def postprocess_cmd(results_dir, force, override):
         sys.exit(1)
 
 
-@data.command(name='merge-results')
+@results.command(name='merge-results')
 @click.argument('merged_campaign_dir', type=click.Path())
 @click.option('--results-dir', '-r', default=None,
               help='Source directory containing run-\\* dirs (uses project results dir if not specified)')
@@ -123,11 +123,11 @@ def merge_results_cmd(merged_campaign_dir, results_dir):
         handle_cli_exception(e)
 
 
-@data.command(name='postprocess-commands')
+@results.command(name='postprocess-commands')
 def list_postprocessing_commands():
     """List all available postprocessing command plugins.
 
-    Shows plugin names that can be used in the data.postprocessing section
+    Shows plugin names that can be used in the ``results_processing.postprocessing`` section
     of the configuration file, along with their descriptions and parameters.
     """
     plugins = load_postprocessing_plugins()
@@ -158,7 +158,7 @@ def list_postprocessing_commands():
 
     click.echo("\n" + "=" * 70)
     click.echo("\nUsage in configuration file:")
-    click.echo("\n  data:")
+    click.echo("\n  results_processing:")
     click.echo("    postprocessing:")
     click.echo("    - rosbags_tf_to_csv:")
     click.echo("        frames: [base_link, map]")

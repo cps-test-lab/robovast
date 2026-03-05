@@ -39,7 +39,7 @@ Do not set any configuration, as this will be done in the next step.
 
 .. code-block:: bash
 
-    vast execution local prepare-run --config config1 ./test_run
+    vast exec local prepare-run --config config1 ./test_run
 
 Afterwards you can verify the scenario, the RoboVAST-configuration and the docker image.
 
@@ -66,7 +66,7 @@ Next, it is important to verify that the output (e.g. ROS bag) is stored correct
 
 .. code-block:: bash
 
-    vast execution local run --config config1 ./test_out
+    vast exec local run --config config1 ./test_out
 
     # check that output is created in ./test_out/campaign-<timestamp>/<config-name>/<run_number>
     ls -l ./test_out/campaign-*/config1/0/
@@ -84,10 +84,10 @@ A good procedure is to add configurations one-by-one and analyze the result.
     # 1. add configuration in config file
 
     # 2. list created configurations
-    vast configuration list
+    vast config list
 
     # 3. try local execution with one of the created configurations
-    vast execution local run --config <config-name> --runs 1 ./test_out
+    vast exec local run --config <config-name> --runs 1 ./test_out
 
 5. Execute in Cluster
 ^^^^^^^^^^^^^^^^^^^^^
@@ -100,10 +100,10 @@ A good practice is, to first run a single configuration to verify that everythin
 .. code-block:: bash
 
     # 1. run single configuration in cluster, once
-    vast execution cluster run --config config1 --runs 1
+    vast exec cluster run --config config1 --runs 1
 
     # 2. check results
-    vast execution cluster download
+    vast exec cluster download
     # Results are organized as: <results-dir>/campaign-<timestamp>/<config-name>/<run_number>/
     find ./results/
 
@@ -112,17 +112,17 @@ For long-running tests, you can use detached mode to run jobs in the background:
 .. code-block:: bash
 
     # Run in detached mode (command exits after creating jobs)
-    vast execution cluster run --detach
+    vast exec cluster run --detach
     
     # Monitor job status (shows progress per run when multiple runs are active)
-    vast execution cluster monitor
+    vast exec cluster monitor
     
     # Clean up after jobs complete (all campaigns, or use --campaign for a specific campaign)
-    vast execution cluster run-cleanup
+    vast exec cluster run-cleanup
 
 By default, a new run does not clean up previous runs, so you can run multiple
 runs in parallel. Use ``--cleanup`` to remove previous runs before starting
-(e.g. ``vast execution cluster run --cleanup``).
+(e.g. ``vast exec cluster run --cleanup``).
 
 Running local container images in minikube
 """""""""""""""""""""""""""""""""""""""""""
@@ -164,9 +164,9 @@ Afterwards you can start the GUI:
 
 .. code-block:: bash
 
-    vast data postprocess
+    vast results postprocess
     # or, to force postprocessing even if results are unchanged:
-    vast data postprocess --force
+    vast results postprocess --force
     vast evaluation gui
 
 
@@ -282,6 +282,6 @@ To test your cluster configuration, you can use:
 
 .. code-block:: bash
 
-    vast execution cluster prepare-setup --cluster-config YourClusterConfig ./setup_output
+    vast exec cluster prepare-setup --cluster-config YourClusterConfig ./setup_output
 
 The output directory will contain all necessary files and instructions to manually execute the setup steps for your cluster configuration and execution.

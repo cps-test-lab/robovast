@@ -1,86 +1,24 @@
-.. _analysis:
+.. _evaluation:
 
-Data & Evaluation
-==================
+Evaluation
+==========
 
-RoboVAST provides two tightly integrated workflows: **CLI-driven postprocessing** (``vast data``) and an
-**interactive GUI** (``vast evaluation``) based on Jupyter notebooks.  This page covers the full pipeline,
-the ``--override`` option for using a local ``.vast`` file, and the *self-contained* notebook
-pattern that lets you develop and run notebooks directly in VS Code or JupyterLab without the GUI.
-
-Overview
---------
-
-The typical workflow is:
-
-.. code-block:: bash
-
-   # 1. (optional) Convert raw output (e.g. ROS bags) to CSV
-   vast data postprocess
-
-   # 2. Open the interactive GUI to run Jupyter notebooks on the results
-   vast evaluation gui
-
-Both commands read the ``.vast`` configuration from the most recent
-``campaign-<id>/_config/`` directory inside your results folder.  Use
-``--override`` to supply a different ``.vast`` file (see below).
-
-.. note::
-
-   A short alias is available: ``vast eval`` for ``vast evaluation``.
+RoboVAST provides an interactive GUI (``vast eval``) based on Jupyter notebooks
+for exploration and visualization of scenario execution results.
 
 
-.. _analysis-postprocessing:
-
-Postprocessing
---------------
-
-Postprocessing transforms raw run output (e.g. ROS bags, custom binary files) into
-analysis-friendly formats (e.g. CSV).  Commands are defined in the
-``data.postprocessing`` section of the ``.vast`` file and executed by plugins
-(see :ref:`extending-postprocessing` for how to write your own).
-
-.. code-block:: bash
-
-   vast data postprocess [OPTIONS]
-
-**Options**
-
-.. option:: -r, --results-dir PATH
-
-   Directory containing the run results (parent of ``campaign-*`` folders).
-   When omitted the value configured with ``vast init`` is used.
-
-.. option:: -f, --force
-
-   Bypass the postprocessing cache and re-run all commands even if the
-   results directory has not changed since the last postprocessing run.
-
-.. option:: -o, --override VAST_FILE
-
-   Use the given ``.vast`` file instead of the one stored in
-   ``campaign-<id>/_config/``.  See :ref:`analysis-override` for details.
-
-Postprocessing is **cached** by a hash of the results directory.  When the
-directory is unchanged the step is skipped automatically.  Use ``--force`` (or
-``-f``) to bypass the cache, for example after updating a postprocessing script:
-
-.. code-block:: bash
-
-   vast data postprocess --force
-
-
-.. _analysis-gui:
+.. _evaluation-gui:
 
 GUI
 ---
 
 .. code-block:: bash
 
-   vast evaluation gui [OPTIONS]
+   vast eval gui [OPTIONS]
 
-The GUI automatically runs postprocessing before launching, unless
-``--skip-postprocessing`` is specified.
+Opens a GUI application for interactive exploration and visualization of run results.
+Automatically runs postprocessing before launching, unless ``--skip-postprocessing``
+is specified.
 
 **Options**
 
@@ -100,16 +38,16 @@ The GUI automatically runs postprocessing before launching, unless
 .. option:: -o, --override VAST_FILE
 
    Use the given ``.vast`` file for both postprocessing and notebook
-   discovery instead of the campaign copy.  See :ref:`analysis-override`.
+   discovery instead of the campaign copy.  See :ref:`evaluation-override`.
 
 
-.. _analysis-override:
+.. _evaluation-override:
 
 Using ``--override`` to Supply a Local ``.vast`` File
 ------------------------------------------------------
 
-By default ``vast data postprocess`` and ``vast evaluation gui`` read the
-``.vast`` configuration from the **campaign snapshot** stored in
+By default ``vast eval gui`` reads the ``.vast`` configuration from the
+**campaign snapshot** stored in
 ``<results-dir>/campaign-<id>/_config/<name>.vast``.  This snapshot is copied
 at execution time and may be out of date.
 
@@ -118,11 +56,8 @@ for example your current working copy:
 
 .. code-block:: bash
 
-   # Postprocessing -- use a local/updated .vast file
-   vast data postprocess --override my_project.vast
-
-   # GUI -- use a local/updated .vast file (also passed to postprocessing)
-   vast evaluation gui --override my_project.vast
+   # Use a local/updated .vast file
+   vast eval gui --override my_project.vast
 
 **When to use ``--override``**
 
@@ -131,8 +66,6 @@ for example your current working copy:
   re-running the scenario.
 - The results were produced in a different directory and the campaign snapshot
   points to stale paths.
-- You want to apply updated postprocessing scripts to existing results without
-  triggering a new execution campaign.
 - During notebook development: point to your working ``.vast`` so the GUI
   always uses the latest notebook paths.
 
@@ -144,7 +77,7 @@ for example your current working copy:
    resolve relative notebook paths defined under ``evaluation.visualization``.
 
 
-.. _analysis-notebooks:
+.. _evaluation-notebooks:
 
 Writing Evaluation Notebooks
 -----------------------------
@@ -179,7 +112,7 @@ for the currently selected item.  The output is cached so subsequent views
 are instant.
 
 
-.. _analysis-self-contained:
+.. _evaluation-self-contained:
 
 Self-Contained Evaluation Notebooks
 -------------------------------------

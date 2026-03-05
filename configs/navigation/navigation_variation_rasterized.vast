@@ -40,7 +40,7 @@ execution:
   scenario_file: scenario.osc
   run_files:
   - "**/files/*"
-data:
+results_processing:
   postprocessing:
     - rosbags_to_csv
     - rosbags_tf_to_csv:

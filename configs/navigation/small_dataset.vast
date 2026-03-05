@@ -15944,7 +15944,7 @@ execution:
   - 'files/*'
   - 'small_dataset_maps/*.stl'
   - 'small_dataset_maps/**/maps/*'
-data:
+results_processing:
   postprocessing:
     - rosbags_to_csv
     - rosbags_tf_to_csv:

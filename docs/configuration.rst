@@ -434,10 +434,10 @@ Parameters are validated against the scenario file (``.osc``); only parameters d
    Parameter values must match the types expected by the scenario. If the scenario defines a parameter as a string (e.g. ``headless: string = "False"``), use quoted values.
 
 
-Data Section
-------------
+Results Processing Section
+--------------------------
 
-The ``data`` section defines how run results should be processed after execution.
+The ``results_processing`` section defines how run results should be processed after execution.
 
 postprocessing
 ^^^^^^^^^^^^^^
@@ -454,7 +454,7 @@ Commands to run for postprocessing run results. These are executed before the ev
 
 .. code-block:: yaml
 
-   data:
+   results_processing:
      postprocessing:
        - rosbags_tf_to_csv:
            frames: [base_link, turtlebot4_base_link_gt]
@@ -472,7 +472,7 @@ To list all available plugins and their descriptions:
 
 .. code-block:: bash
 
-   vast data postprocess-commands
+   vast results postprocess-commands
 
 **Built-in Postprocessing Plugins:**
 
@@ -497,7 +497,7 @@ Defines metadata processing plugins that run after generic metadata generation.
 
 .. code-block:: yaml
 
-   data:
+   results_processing:
      metadata_processing:
        - my_plugin
        - my_plugin:
@@ -593,7 +593,7 @@ Here's a complete example showing all major configuration options:
      - "**/models/*.sdf"
      env:
      - RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
-   data:
+   results_processing:
      postprocessing:
      - rosbags_tf_to_csv:
         frames: [base_link]

@@ -133,7 +133,7 @@ def validate_postprocessing_command(command: str | dict, plugins: Dict[str, call
         return False, (
             f"Unknown postprocessing plugin: '{plugin_name}'. "
             f"Available plugins: {available if available else 'none'}. "
-            f"Use 'vast data postprocess-commands' to list all plugins."
+            f"Use 'vast results postprocess-commands' to list all plugins."
         )
 
     return True, ""
@@ -148,7 +148,7 @@ def get_postprocessing_commands(config_path: str) -> List[dict]:
     Returns:
         List of postprocessing commands (dicts) or empty list if none defined
     """
-    data_config = load_config(config_path, subsection="data", allow_missing=True)
+    data_config = load_config(config_path, subsection="results_processing", allow_missing=True)
     if data_config is None:
         return []
     else:
