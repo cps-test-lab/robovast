@@ -418,6 +418,10 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                 if "_variations" not in c:
                     c["_variations"] = []
                 entry = dict(variation_entry)
+                # Let variation plugins add extra fields to the _variations entry
+                extras = c.pop("_variation_entry_extras", None)
+                if extras and isinstance(extras, dict):
+                    entry.update(extras)
                 c["_variations"].append(entry)
 
             current_configs = result

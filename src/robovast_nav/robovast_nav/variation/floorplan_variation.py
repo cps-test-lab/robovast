@@ -166,6 +166,18 @@ class FloorplanGeneration(NavVariation):
         config_name = config_entry.get("name", "")
         config_files = config_entry.get("config_files", [])
 
+        # Retrieve derived_from_files recorded in the _variations entry for this class
+        # and prefix each path with <config-name>/_transient/ to make it campaign-relative.
+        derived_from_files = []
+        for v in config_entry.get("variations", []):
+            if v.get("name") == cls.__name__:
+                derived_from_files = [
+                    f"{config_name}/_transient/{rel}"
+                    for rel in v.get("derived_from_files", [])
+                ]
+                v.pop("derived_from_files", None)
+                break
+
         for key, value in config_params.items():
             if not isinstance(value, str):
                 continue
@@ -183,22 +195,23 @@ class FloorplanGeneration(NavVariation):
             else:
                 continue
 
-            # Normalize invalid paths in derived_from
-            def normalize_paths(data):
+            # Overwrite derived_from with the recorded transient file paths
+            def overwrite_derived_from(data, files):
                 if isinstance(data, dict):
-                    if 'derived_from' in data and isinstance(data['derived_from'], list):
-                        data['derived_from'] = [p.replace('../../models', '_transient') for p in data['derived_from']]
+                    if 'derived_from' in data:
+                        data['derived_from'] = files
                     for v in data.values():
-                        normalize_paths(v)
+                        overwrite_derived_from(v, files)
                 elif isinstance(data, list):
                     for item in data:
-                        normalize_paths(item)
+                        overwrite_derived_from(item, files)
 
             if yaml_path.exists():
                 try:
                     with open(yaml_path, "r", encoding="utf-8") as f:
                         loaded_data = yaml.load(f, Loader=_NoDatetimeLoader)
-                        normalize_paths(loaded_data)
+                        if derived_from_files:
+                            overwrite_derived_from(loaded_data, derived_from_files)
                         extra[key] = loaded_data
                 except Exception as e:
                     logger.warning(
@@ -264,6 +277,9 @@ class FloorplanGeneration(NavVariation):
                 )
                 if transient:
                     new_config.setdefault('_config_transient_files', []).extend(transient)
+                    # Also expose the relative paths in the _variations entry via extras
+                    derived_from_files = [rel for rel, _abs in transient]
+                    new_config['_variation_entry_extras'] = {'derived_from_files': derived_from_files}
                 results.append(new_config)
 
         return results
