@@ -27,12 +27,15 @@ Execution
 
 RoboVAST orchestrates run execution by creating Kubernetes jobs that run individual robot simulations using scenario-execution, including screen capturing and ROS bag data collection. The platform handles parallel deployment across available cluster nodes along with required input and output data management. This architecture enables execution of multiple runs in parallel depending on cluster size, significantly reducing validation time while ensuring reproducible execution across distributed computational environments.
 
-Data & Evaluation
------------------
+Result Processing
+------------------
 
-To support data processing and evaluation of run results, the framework provides tools with automated postprocessing, trajectory visualization, and log analysis of each run. These tools offer fundamental capabilities including performance metric extraction, failure detection, and visual inspection of robot behavior.
+To support processing of campaign results, the framework provides tools with automated postprocessing, trajectory visualization, and log analysis of each campaign. These tools enable fundamental data extraction and organization for downstream analysis.
 
-For use case-specific evaluation requirements, users can implement custom evaluation workflows. The framework includes examples for further evaluation workflows, enabling users to perform domain-specific evaluation using their preferred analysis tools and methodologies.
+Evaluation
+----------
+
+For evaluation of results, users can implement custom evaluation workflows tailored to their specific requirements. The framework includes examples for common evaluation patterns, enabling domain-specific evaluation using preferred analysis tools and methodologies.
 
 Mobile Robot Reference Dataset
 ==============================
