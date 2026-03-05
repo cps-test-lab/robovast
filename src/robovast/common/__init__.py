@@ -10,7 +10,6 @@ from .execution import (create_execution_yaml, generate_execution_yaml_script,
                         get_campaign, get_execution_env_variables,
                         prepare_campaign_configs)
 from .file_cache import FileCache
-from .postprocessing import run_postprocessing
 
 __all__ = [
     'FileCache',
