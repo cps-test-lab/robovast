@@ -66,3 +66,4 @@ classmethods
 overridable
 yaml
 callables
+basename
