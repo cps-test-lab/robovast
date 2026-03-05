@@ -295,7 +295,7 @@ Publication packages or distributes the results directory using plugins defined
 in the ``results_processing.publication`` section of the ``.vast`` file.  Unlike
 postprocessing (which operates per campaign run folder), publication plugins
 receive the full results directory as input and are intended for tasks like
-creating zip archives for upload or handoff.
+creating zip archives for upload or hand-off.
 
 .. code-block:: bash
 
