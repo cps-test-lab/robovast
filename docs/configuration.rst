@@ -498,7 +498,7 @@ postprocessing.  Each entry is either a plugin name (string) or a dictionary wit
 the plugin name as key and plugin-specific parameters as value.
 
 Publication plugins are executed by ``vast results publish`` and operate on the
-full results directory (parent of ``campaign-*`` dirs).
+full results directory (parent of ``campaign-*`` directories).
 
 .. code-block:: yaml
 
@@ -533,7 +533,7 @@ full results directory (parent of ``campaign-*`` dirs).
     of ``include_filter``.
   - ``destination``: Directory where zip files are written.  Relative paths are
     resolved from the results directory.  Defaults to the results directory itself.
-  - ``overwrite``: Controls behaviour when the output zip file already exists.
+  - ``overwrite``: Controls behavior when the output zip file already exists.
     ``true`` always overwrites silently; ``false`` always skips silently.
     Omit (or leave unset) to be prompted interactively — the default answer is
     *yes* (overwrite).  Passing ``--force`` / ``-f`` on the CLI is equivalent

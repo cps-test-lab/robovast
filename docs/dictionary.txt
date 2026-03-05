@@ -65,3 +65,4 @@ sysinfo
 classmethods
 overridable
 yaml
+callables
