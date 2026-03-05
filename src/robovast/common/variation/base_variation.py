@@ -108,13 +108,12 @@ class Variation():
         """
         return []
 
-    def get_transient_files(self):
-        """Return intermediate files generated during variation processing.
+    def get_campaign_transient_files(self):
+        """Return intermediate files to be placed in the campaign-level ``_transient/`` directory.
 
         Override in subclasses to report files created as intermediate artifacts
-        during the variation step (e.g. JSON-LD files from floorplan generation).
-        These files will be copied into the campaign ``_transient/`` directory
-        for debugging and reproducibility.
+        during the variation step that are campaign-wide (not specific to a single
+        config).  These files will be copied into ``campaign-<id>/_transient/``.
 
         Must be called after :meth:`variation` has been executed.
 
@@ -159,6 +158,26 @@ class Variation():
 
         new_config['name'] = f"{parent_name}-{local_index}"
         return new_config
+
+    @classmethod
+    def collect_config_metadata(cls, config_entry: dict, config_dir, campaign_dir) -> dict:
+        """Return additional metadata fields for a configuration entry.
+
+        Called during metadata generation for each configuration that used
+        this variation.  Override in subclasses to attach domain-specific
+        metadata (e.g. map or mesh information).
+
+        Args:
+            config_entry: The configuration dict from ``configurations.yaml``.
+            config_dir: :class:`~pathlib.Path` to
+                ``<campaign>/<config-name>/``.
+            campaign_dir: :class:`~pathlib.Path` to ``campaign-<id>/``.
+
+        Returns:
+            Dictionary of fields to merge into the configuration's metadata
+            entry, or an empty dict.
+        """
+        return {}
 
     def check_scenario_parameter_reference(self, reference_name):
         """Check if a scenario parameter reference exists."""

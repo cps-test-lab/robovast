@@ -185,22 +185,7 @@ The output of an execution is stored within the cluster-internal server and can 
 
    vast execution cluster download
 
-The resulting folder structure looks like this:
-
-.. code-block:: bash
-
-    growth_sim_results/
-    ├── campaign-<timestamp>/        <-- Each cluster execution creates a new folder 
-    |   ├── _config/                 <-- Test files are stored here (as defined by run_files in the .vast configuration)
-    |   ├── scenario.osc             <-- The scenario used during this run
-    |   ├── <config-name>            <-- Each configuration is stored within a separate folder (example: config42)
-    |   |   ├── scenario.config      <-- The parameter set used within this configuration (e.g. growth_rate: 0.07, initial_population: 123)
-    |   |   ├── _config/             <-- Generated config-specific files are stored here (e.g. generated maps)
-    |   |   ├── <run_number>         <-- Each run of a configuration is stored in a separate folder. It contains all input- and output-files of a single run
-    |   |   |   ├── logs             <-- Logs folder (e.g. for ROS_LOG_DIR)
-    |   |   |   |   ├── system.log   <-- The complete system log
-    |   |   |   ├── run.xml         <-- Scenario result, in junitxml format
-    |   |   |   ├── <test-specifics> <-- Any test-specific files, stored during the run within /out (e.g. rosbag)
+See :ref:`output-structure` for a complete description of all files.
 
 
 Analysis

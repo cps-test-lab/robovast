@@ -20,7 +20,8 @@ import logging
 import os
 import re
 import tempfile
-from datetime import datetime
+import time
+from datetime import datetime, timezone
 from importlib.metadata import entry_points
 from pprint import pformat
 
@@ -45,19 +46,20 @@ def execute_variation(base_dir, configs, variation_class, parameters, general_pa
     except Exception as e:
         logger.error(f"Variation failed. {variation_class.__name__}: {e}")
         progress_update_callback(f"Variation failed. {variation_class.__name__}: {e}")
-        return [], [], []
+        return [], [], [], []
 
     # Check if configs is None and return empty list
     if configs is None:
         logger.warning(f"Variation failed. {variation_class.__name__}: No configs returned")
         progress_update_callback(f"Variation failed. {variation_class.__name__}: No configs returned")
-        return [], [], []
+        return [], [], [], []
 
     # Collect transient (intermediate) files after variation has run
-    transient_files = variation.get_transient_files()
+    campaign_transient_files = variation.get_campaign_transient_files()
+    config_transient_files = []
 
     logger.debug(f"Variation {variation_class.__name__} completed successfully")
-    return configs, input_files, transient_files
+    return configs, input_files, campaign_transient_files, config_transient_files
 
 
 def collect_filtered_files(filter_pattern, rel_path):
@@ -305,6 +307,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     variation_gui_classes = {}
     campaign_input_files = []
     campaign_transient_files = []
+    config_transient_files = []
 
     # Get scenario_file from execution section
     execution_scenario_file_name = parameters.get('execution', {}).get('scenario_file')
@@ -382,8 +385,11 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                     if variation_gui_class is None:
                         raise ValueError(f"Variation class {variation_class.__name__} has GUI_RENDERER_CLASS defined but no GUI_CLASS.")
                     variation_gui_classes[variation_gui_class].append(variation_gui_renderer_class)
-            result, var_input_files, var_transient_files = execute_variation(os.path.dirname(variation_file), current_configs, variation_class,
-                                                                             variation_parameters, general_parameters, progress_update_callback, scenario_file, output_dir)
+            started_at = datetime.now(timezone.utc).isoformat()
+            t0 = time.monotonic()
+            result, var_input_files, var_campaign_transient, var_config_transient = execute_variation(os.path.dirname(variation_file), current_configs, variation_class,
+                                                                                                      variation_parameters, general_parameters, progress_update_callback, scenario_file, output_dir)
+            duration = round(time.monotonic() - t0, 3)
 
             # Validate and collect variation input files
             for vf in var_input_files:
@@ -391,7 +397,8 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
             campaign_input_files.extend(var_input_files)
 
             # Collect transient files from this variation step
-            campaign_transient_files.extend(var_transient_files)
+            campaign_transient_files.extend(var_campaign_transient)
+            config_transient_files.extend(var_config_transient)
 
             if result is None or len(result) == 0:
                 # If a variation step fails or produces no results, stop the pipeline
@@ -400,16 +407,27 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                 break
             else:
                 logger.debug(f"Variation result after {variation_class.__name__}: \n{pformat(result)}")
+
+            # Record variation execution data on each resulting config
+            variation_entry = {
+                "name": variation_class.__name__,
+                "started_at": started_at,
+                "duration": duration,
+            }
+            for c in result:
+                if "_variations" not in c:
+                    c["_variations"] = []
+                entry = dict(variation_entry)
+                # Let variation plugins add extra fields to the _variations entry
+                extras = c.pop("_variation_entry_extras", None)
+                if extras and isinstance(extras, dict):
+                    entry.update(extras)
+                c["_variations"].append(entry)
+
             current_configs = result
 
-        # Add metadata for config identifier (used by prepare_campaign_configs)
-        variation_type_names = [
-            list(item.keys())[0] for item in (config.get("variations") or [])
-            if isinstance(item, dict)
-        ]
         for c in current_configs:
             c["_config_block"] = config
-            c["_variation_type_names"] = variation_type_names
 
         configs.extend(current_configs)
 

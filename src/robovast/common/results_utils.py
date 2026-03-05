@@ -16,7 +16,7 @@
 
 """Common utilities for results directory layout (campaign-<id>/<config>/<run-number>)."""
 from pathlib import Path
-from typing import Iterator, Tuple
+from typing import Iterator, Optional, Tuple
 
 
 def iter_run_folders(results_dir: str) -> Iterator[Tuple[str, str, str, Path]]:
@@ -56,3 +56,40 @@ def iter_run_folders(results_dir: str) -> Iterator[Tuple[str, str, str, Path]]:
                 run_number = run_item.name
                 folder_path = run_item
                 yield campaign, config_name, run_number, folder_path
+
+
+def find_campaign_vast_file(results_dir: str) -> tuple[Optional[str], Optional[str]]:
+    """Find the .vast file from the most recent campaign in results_dir.
+
+    Searches ``results_dir/campaign-<id>/_config/*.vast`` and returns the
+    path from the last (most recent, lexicographically) campaign that has a
+    ``.vast`` file.
+
+    Args:
+        results_dir: Path to the project results directory (parent of campaign-* dirs).
+
+    Returns:
+        Tuple ``(vast_file_path, config_dir)`` where *config_dir* is the
+        ``_config/`` directory containing the ``.vast`` file, or
+        ``(None, None)`` if no campaign with a ``.vast`` file is found.
+    """
+    root = Path(results_dir)
+    if not root.is_dir():
+        return None, None
+
+    # Reverse-sorted so the most recent campaign comes first
+    for campaign_item in sorted(root.iterdir(), reverse=True):
+        if not campaign_item.is_dir() or not campaign_item.name.startswith("campaign-"):
+            continue
+        config_dir = campaign_item / "_config"
+        if config_dir.is_dir():
+            vast_files = [f for f in sorted(config_dir.iterdir()) if f.is_file() and f.suffix == ".vast"]
+            if len(vast_files) > 1:
+                names = ", ".join(f.name for f in vast_files)
+                raise ValueError(
+                    f"Multiple .vast files found in {config_dir}: {names}. "
+                    "Expected exactly one."
+                )
+            if vast_files:
+                return str(vast_files[0]), str(config_dir)
+    return None, None

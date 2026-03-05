@@ -14,11 +14,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
 import os
 from typing import Optional
 
 from robovast.common import is_scenario_parameter
 from robovast.common.variation import Variation
+
+logger = logging.getLogger(__name__)
 
 
 class NavVariation(Variation):

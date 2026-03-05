@@ -107,6 +107,40 @@ def list_cmd(debug):
         handle_cli_exception(e)
 
 
+@configuration.command(name='info')
+def info():
+    """Show overview of configuration.
+
+    Displays the number of configurations and runs that would be generated
+    from the current project configuration.
+    """
+    # Get project configuration
+    project_config = get_project_config()
+    config = project_config.config_path
+
+    try:
+        campaign_data, _ = generate_scenario_variations(
+            variation_file=config,
+            progress_update_callback=None,
+            output_dir=None
+        )
+        configs = campaign_data["configs"]
+        runs_per_config = campaign_data.get("execution", {}).get("runs", 1)
+        total_runs = len(configs) * runs_per_config
+
+        click.echo("Configuration Overview")
+        click.echo("======================")
+        click.echo(f"Configurations: {len(configs)}")
+        click.echo(f"Runs per configuration: {runs_per_config}")
+        click.echo(f"Total runs: {total_runs}")
+        click.echo(f"Scenario file: {campaign_data.get('scenario_file', 'N/A')}")
+        click.echo(f"VAST file: {campaign_data.get('vast', 'N/A')}")
+        if "metadata" in campaign_data:
+            click.echo(f"Metadata: {campaign_data['metadata']}")
+    except Exception as e:
+        handle_cli_exception(e)
+
+
 @configuration.command()
 @click.argument('output-dir', type=click.Path())
 def generate(output_dir):

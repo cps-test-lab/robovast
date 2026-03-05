@@ -72,6 +72,7 @@ def get_app_version() -> str:
     # 3. Final fallback
     return 'unknown'
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -334,7 +335,6 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
     campaign_data_for_dump.pop("_transient_files", None)
     for c in campaign_data_for_dump.get("configs", []):
         c.pop("_config_block", None)
-        c.pop("_variation_type_names", None)
 
     # Save scenario variations as YAML in _transient subdirectory
     scenario_variations_path = os.path.join(campaign_transient_dir, "configurations.yaml")
@@ -383,7 +383,7 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
         os.makedirs(os.path.dirname(dst_path), exist_ok=True)
         shutil.copy2(src_path, dst_path)
 
-    # Copy transient (intermediate) files into _transient/
+    # Copy campaign-level transient files into _transient/
     for rel_path, abs_path in campaign_data.get("_transient_files", []):
         if not os.path.exists(abs_path):
             logger.warning(f"Transient file not found, skipping: {abs_path}")
@@ -425,7 +425,9 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
 
         # Compute and write config identifier for merge-results
         config_block = config_data.get("_config_block", {})
-        variation_type_names = config_data.get("_variation_type_names", [])
+        variation_type_names = [
+            v["name"] for v in config_data.get("_variations", [])
+        ]
         config_identifier, sub_identifier = compute_config_identifier(
             vast_file_path,
             config_block,
@@ -452,6 +454,16 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
                 dst_path = os.path.join(run_config_dir, config_rel_path)
                 os.makedirs(os.path.dirname(dst_path), exist_ok=True)
                 shutil.copy2(src_path, dst_path)
+
+        # Copy config-level transient files into <config>/_transient/
+        config_name = config_data.get("name", "")
+        for rel_path, abs_path in config_data.get("_config_transient_files", []):
+            if not os.path.exists(abs_path):
+                logger.warning(f"Config transient file not found, skipping: {abs_path}")
+                continue
+            dst_path = os.path.join(out_dir, config_name, "_transient", rel_path)
+            os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+            shutil.copy2(abs_path, dst_path)
 
         # Create config file if needed
         if "config" in config_data:
