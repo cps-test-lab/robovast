@@ -94,7 +94,7 @@ def postprocess_cmd(results_dir, force, override):
 @results.command(name='merge-campaigns')
 @click.argument('merged_campaign_dir', type=click.Path())
 @click.option('--results-dir', '-r', default=None,
-              help='Source directory containing run-\\* dirs (uses project results dir if not specified)')
+              help='Source directory containing run-\\* directories (uses project results directory if not specified)')
 def merge_results_cmd(merged_campaign_dir, results_dir):
     """Merge campaign directories with identical configs into one merged_campaign_dir.
 
