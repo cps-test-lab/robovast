@@ -185,7 +185,7 @@ The output of an execution is stored within the cluster-internal server and can 
 
    vast exec cluster download
 
-See :ref:`output-structure` for a complete description of all files.
+See :ref:`results-processing` for a complete description of all files.
 
 
 Analysis
