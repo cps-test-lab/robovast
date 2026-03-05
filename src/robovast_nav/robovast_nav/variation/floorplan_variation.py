@@ -328,7 +328,7 @@ class FloorplanVariation(NavVariation):
 
         results = []
         floorplan_idx = 0
-        for variation_file_idx, variation_file in enumerate(self.parameters.variation_files):
+        for _, variation_file in enumerate(self.parameters.variation_files):
             for _ in range(self.parameters.num_variations):
                 floorplan_name = floorplan_names[floorplan_idx]
                 transient = _collect_floorplan_transient_files(self.output_dir, floorplan_name)
