@@ -358,10 +358,10 @@ Merging Results
 
    vast results merge-results MERGED_CAMPAIGN_DIR [OPTIONS]
 
-Merges campaign-dirs with identical configs into one ``merged_campaign_dir``.
-Groups ``campaign-dir/config-dir`` by ``config_identifier`` from ``config.yaml``.
+Merges campaign-directories with identical configs into one ``merged_campaign_dir``.
+Groups ``campaign-directory/config-directory`` by ``config_identifier`` from ``config.yaml``.
 Run folders (0, 1, 2, …) from all campaigns are renumbered and copied.
-Original campaign-dirs are not modified.
+Original campaign-directories are not modified.
 
 **Arguments**
 
