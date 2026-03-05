@@ -372,7 +372,7 @@ Original campaign-directories are not modified.
 
 .. option:: -r, --results-dir PATH
 
-   Source directory containing ``run-*`` dirs.  When omitted the value
+   Source directory containing ``campaign-*`` Directory.  When omitted the value
    configured with ``vast init`` is used.
 
 
