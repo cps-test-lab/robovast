@@ -53,4 +53,5 @@ The dataset serves as a comprehensive validation tool for navigation stacks such
    variation
    cluster_execution
    analysis
+   output_structure
    developer_guide

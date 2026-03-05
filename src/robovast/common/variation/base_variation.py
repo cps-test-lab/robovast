@@ -160,6 +160,45 @@ class Variation():
         new_config['name'] = f"{parent_name}-{local_index}"
         return new_config
 
+    @classmethod
+    def collect_config_metadata(cls, config_entry: dict, config_dir, campaign_dir) -> dict:
+        """Return additional metadata fields for a configuration entry.
+
+        Called during metadata generation for each configuration that used
+        this variation.  Override in subclasses to attach domain-specific
+        metadata (e.g. map or mesh information).
+
+        Args:
+            config_entry: The configuration dict from ``configurations.yaml``.
+            config_dir: :class:`~pathlib.Path` to
+                ``<campaign>/<config-name>/``.
+            campaign_dir: :class:`~pathlib.Path` to ``campaign-<id>/``.
+
+        Returns:
+            Dictionary of fields to merge into the configuration's metadata
+            entry, or an empty dict.
+        """
+        return {}
+
+    @classmethod
+    def collect_run_metadata(cls, config_entry: dict, run_dir, campaign_dir) -> dict:
+        """Return additional metadata fields for a single run.
+
+        Called during metadata generation for every run directory of a
+        configuration that used this variation.
+
+        Args:
+            config_entry: The configuration dict from ``configurations.yaml``.
+            run_dir: :class:`~pathlib.Path` to the run directory
+                (e.g. ``<campaign>/<config-name>/0/``).
+            campaign_dir: :class:`~pathlib.Path` to ``campaign-<id>/``.
+
+        Returns:
+            Dictionary of fields to merge into the run's metadata entry,
+            or an empty dict.
+        """
+        return {}
+
     def check_scenario_parameter_reference(self, reference_name):
         """Check if a scenario parameter reference exists."""
         parameters = get_scenario_parameters(self.scenario_file)

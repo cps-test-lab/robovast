@@ -508,5 +508,28 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         # Write postprocessing.yaml in each run folder
         _write_provenance_yaml_per_folder(results_dir_abs, all_provenance_entries)
 
+        # Generate metadata.yaml in each campaign directory
+        from .metadata import generate_campaign_metadata
+        meta_success, meta_msg = generate_campaign_metadata(
+            results_dir, vast_file=vast_file, output_callback=output_callback,
+        )
+        if not meta_success:
+            output(f"Warning: Metadata generation failed: {meta_msg}")
+
+        # Add metadata.yaml to exclude set for future hash computations
+        for campaign_item in Path(results_dir_abs).iterdir():
+            if campaign_item.is_dir() and campaign_item.name.startswith("campaign-"):
+                meta_file = campaign_item / "metadata.yaml"
+                if meta_file.exists():
+                    rel = str(meta_file.relative_to(Path(results_dir_abs)))
+                    output_paths.add(rel)
+        # Re-write outputs file with metadata.yaml included
+        try:
+            with open(outputs_file, "w", encoding="utf-8") as f:
+                for p in sorted(output_paths):
+                    f.write(p + "\n")
+        except OSError:
+            pass
+
         return True, "Postprocessing completed successfully!"
     return False, "Postprocessing failed!"

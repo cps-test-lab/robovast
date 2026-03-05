@@ -75,6 +75,8 @@ rosbags_to_webm = "robovast.common.postprocessing_plugins:rosbags_to_webm"
 rosbags_action_to_csv = "robovast.common.postprocessing_plugins:rosbags_action_to_csv"
 compress = "robovast.common.postprocessing_plugins:compress"
 
+[tool.poetry.plugins."robovast.metadata_processing"]
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
