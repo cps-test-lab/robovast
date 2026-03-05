@@ -19,13 +19,18 @@
 This module provides built-in postprocessing commands that can be referenced
 by name in the configuration file.
 
-Each function is a Python implementation that executes commands using subprocess
-or host-side logic. All functions accept a results_dir parameter containing the
+Plugins can be plain callables **or** instances of a class that inherits from
+:class:`BasePostprocessingPlugin`.  The class-based form adds
+:meth:`~BasePostprocessingPlugin.get_files_to_copy`, which tells the config
+preparation step which additional files (e.g. helper scripts) must be copied
+into the ``_config/`` directory so that they are available at execution time.
+
+Each callable accepts a results_dir parameter containing the
 path to the results directory (parent of campaign-* dirs) or campaign-<id> directory to
 process, along with a config_dir for resolving relative paths, and additional
 command-specific parameters.
 
-Each function returns a tuple of (success: bool, message: str).
+Each callable returns a tuple of (success: bool, message: str).
 
 Configuration format:
     postprocessing:
@@ -42,69 +47,156 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 
-def command(
-    results_dir: str,
-    config_dir: str,
-    script: str,
-    args: Optional[List[str]] = None,
-    provenance_file: Optional[str] = None,
-) -> Tuple[bool, str]:
+class BasePostprocessingPlugin:
+    """Base class for class-based postprocessing plugins.
+
+    Subclasses must implement :meth:`__call__` with the standard plugin
+    signature.  Override :meth:`get_files_to_copy` to declare additional files
+    that should be copied into the campaign ``_config/`` directory before
+    execution (e.g. helper scripts referenced by the plugin).
+    """
+
+    def __call__(
+        self,
+        results_dir: str,
+        config_dir: str,
+        **kwargs,
+    ) -> Tuple[bool, str]:
+        """Execute the postprocessing plugin.
+
+        Args:
+            results_dir: Path to the campaign-<id> directory to process.
+            config_dir: Directory containing the .vast config file (used to
+                resolve relative paths).
+            **kwargs: Plugin-specific keyword arguments from the config.
+
+        Returns:
+            Tuple of (success, message).
+        """
+        raise NotImplementedError("Subclasses must implement __call__.")
+
+    def get_files_to_copy(self, config_dir: str, params: dict) -> List[str]:
+        """Return file paths (relative to *config_dir*) that must be copied.
+
+        Override this method to declare additional files that the plugin needs
+        at execution time.  The returned paths are relative to *config_dir* and
+        will be copied into the campaign ``_config/`` directory so that they
+        are available as ``_config/<path>`` inside the execution container.
+
+        Args:
+            config_dir: Absolute path to the directory containing the .vast
+                config file.
+            params: The plugin parameters dict from the .vast config, i.e. the
+                same keyword arguments that will be passed to :meth:`__call__`.
+
+        Returns:
+            List of relative file paths (relative to *config_dir*) to copy.
+        """
+        return []
+
+
+class CommandPlugin(BasePostprocessingPlugin):
     """Execute an arbitrary command or script.
 
     Generic plugin that allows execution of any command or script path.
     Use this for custom scripts or when a specific plugin doesn't exist.
 
-    Args:
-        results_dir: Path to the campaign-<id> directory to process
-        config_dir: Directory containing the config file (for resolving relative paths)
-        script: Script path to execute (relative or absolute)
-        args: Optional list of command-line arguments to pass to the script
-        provenance_file: Optional path for provenance JSON (passed to script if it supports it)
-
-    Returns:
-        Tuple of (success, message)
+    The script (when given as a relative path) is automatically copied into
+    the campaign ``_config/`` directory so that it is available to the
+    execution container without manual setup.
 
     Example usage in .vast config:
+
+    .. code-block:: yaml
+
         postprocessing:
+          - command:
+              script: postprocess.sh
           - command:
               script: ../../../tools/docker_exec.sh
               args: [custom_script.py, --arg, value]
           - command:
               script: /absolute/path/to/script.sh
     """
-    # Resolve script path if not absolute
-    script_path = script
-    if not os.path.isabs(script_path) and config_dir:
-        script_path = os.path.join(config_dir, script_path)
 
-    if not os.path.exists(script_path):
-        return False, f"Script not found: {script_path}"
+    def get_files_to_copy(self, config_dir: str, params: dict) -> List[str]:
+        """Return the script path if it is a relative path that exists.
 
-    # Build full command (optionally pass provenance to docker_exec and script)
-    full_command = [script_path]
-    if provenance_file:
-        full_command.extend(["--provenance-file", provenance_file])
-    if args:
-        full_command.extend(args)
-    full_command.append(results_dir)
+        Args:
+            config_dir: Directory containing the .vast config file.
+            params: Plugin parameters, expected to contain ``script``.
 
-    try:
-        result = subprocess.run(
-            full_command,
-            cwd=results_dir,
-            check=False,
-            capture_output=True,
-            text=True,
-            env={**os.environ, 'PYTHONUNBUFFERED': '1'}
-        )
+        Returns:
+            List with the relative script path when it resolves to an
+            existing file; empty list otherwise.
+        """
+        script = params.get('script')
+        if not script or os.path.isabs(script):
+            return []
+        candidate = os.path.join(config_dir, script)
+        if os.path.isfile(candidate):
+            return [script]
+        return []
 
-        if result.returncode != 0:
-            return False, f"Command failed with exit code {result.returncode}\n{result.stderr}"
+    def __call__(
+        self,
+        results_dir: str,
+        config_dir: str,
+        script: str,
+        args: Optional[List[str]] = None,
+        provenance_file: Optional[str] = None,
+    ) -> Tuple[bool, str]:
+        """Execute the configured script.
 
-        return True, "Command executed successfully"
+        Args:
+            results_dir: Path to the campaign-<id> directory to process
+            config_dir: Directory containing the config file (for resolving relative paths)
+            script: Script path to execute (relative or absolute)
+            args: Optional list of command-line arguments to pass to the script
+            provenance_file: Optional path for provenance JSON (passed to script if it supports it)
 
-    except Exception as e:
-        return False, f"Error executing command: {e}"
+        Returns:
+            Tuple of (success, message)
+        """
+        # Resolve script path if not absolute
+        script_path = script
+        if not os.path.isabs(script_path) and config_dir:
+            script_path = os.path.join(config_dir, script_path)
+
+        if not os.path.exists(script_path):
+            return False, f"Script not found: {script_path}"
+
+        # Build full command (optionally pass provenance to docker_exec and script)
+        full_command = [script_path]
+        if provenance_file:
+            full_command.extend(["--provenance-file", provenance_file])
+        if args:
+            full_command.extend(args)
+        full_command.append(results_dir)
+
+        try:
+            result = subprocess.run(
+                full_command,
+                cwd=results_dir,
+                check=False,
+                capture_output=True,
+                text=True,
+                env={**os.environ, 'PYTHONUNBUFFERED': '1'}
+            )
+
+            if result.returncode != 0:
+                return False, f"Command failed with exit code {result.returncode}\n{result.stderr}"
+
+            return True, "Command executed successfully"
+
+        except Exception as e:
+            return False, f"Error executing command: {e}"
+
+
+# Keep the module-level name so that the entry-point registration
+# ``command = "robovast.common.postprocessing_plugins:command"`` continues to
+# work without any change to pyproject.toml.
+command = CommandPlugin
 
 
 def rosbags_tf_to_csv(

@@ -257,8 +257,9 @@ def _collect_analysis_input_files(parameters, base_dir=None):
     else:
         visualizations = []
 
-    # Collect postprocessing files from results section
-    data = parameters.get('results')
+    # Collect postprocessing files from results_processing section.
+    # The top-level config key is ``results_processing`` (not ``results``).
+    data = parameters.get('results_processing') or parameters.get('results')
     if isinstance(data, dict):
         postprocessing = data.get('postprocessing') or []
     elif data is not None and hasattr(data, 'postprocessing'):
@@ -288,6 +289,29 @@ def _collect_analysis_input_files(parameters, base_dir=None):
                 candidate = os.path.join(base_dir, value) if base_dir else value
                 if os.path.isfile(candidate):
                     analysis_files.append(value)
+
+    # Collect files declared by class-based postprocessing plugins via
+    # get_files_to_copy().  This is how e.g. the ``command`` plugin ensures
+    # that the referenced script ends up in _config/ so it is available at
+    # execution time.
+    if base_dir and postprocessing:
+        # Lazy import to avoid circular dependency at module load time.
+        from .postprocessing import load_postprocessing_plugins  # pylint: disable=import-outside-toplevel
+        plugins = load_postprocessing_plugins()
+        for pp_entry in postprocessing:
+            if isinstance(pp_entry, str):
+                plugin_name, params = pp_entry, {}
+            elif isinstance(pp_entry, dict) and len(pp_entry) == 1:
+                plugin_name, params = next(iter(pp_entry.items()))
+                if not isinstance(params, dict):
+                    params = {}
+            else:
+                continue
+            plugin_obj = plugins.get(plugin_name)
+            if plugin_obj is not None and hasattr(plugin_obj, 'get_files_to_copy'):
+                for f in plugin_obj.get_files_to_copy(base_dir, params):
+                    if f not in analysis_files:
+                        analysis_files.append(f)
 
     return analysis_files
 

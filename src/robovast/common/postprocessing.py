@@ -16,6 +16,7 @@
 
 """Postprocessing functionality for run result data."""
 import hashlib
+import inspect
 import json
 import os
 import tempfile
@@ -34,17 +35,30 @@ from .results_utils import find_campaign_vast_file, iter_run_folders
 def load_postprocessing_plugins() -> Dict[str, callable]:
     """Load postprocessing command plugins from entry points.
 
+    Plugins may be plain callables (functions) or classes that inherit from
+    :class:`~robovast.common.postprocessing_plugins.BasePostprocessingPlugin`.
+    Class-based plugins are automatically instantiated so that callers always
+    receive a ready-to-use callable.  Class instances additionally expose
+    :meth:`~robovast.common.postprocessing_plugins.BasePostprocessingPlugin.get_files_to_copy`
+    which is used during config preparation to copy required files into
+    ``_config/``.
+
     Returns:
-        Dictionary mapping plugin names to their callable functions
+        Dictionary mapping plugin names to their callable objects (functions
+        or class instances).
     """
     plugins = {}
     try:
         eps = entry_points(group='robovast.postprocessing_commands')
         for ep in eps:
             try:
-                # Load the entry point - should return a callable
-                plugin_func = ep.load()
-                plugins[ep.name] = plugin_func
+                # Load the entry point - may be a callable or a class
+                plugin_obj = ep.load()
+                # Instantiate class-based plugins so callers get a consistent
+                # callable interface and can also access get_files_to_copy.
+                if inspect.isclass(plugin_obj):
+                    plugin_obj = plugin_obj()
+                plugins[ep.name] = plugin_obj
             except Exception as e:
                 # Log and continue if a plugin fails to load
                 print(f"Warning: Failed to load postprocessing plugin '{ep.name}': {e}")
