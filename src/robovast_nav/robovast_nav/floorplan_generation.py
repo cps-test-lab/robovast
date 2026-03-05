@@ -23,6 +23,17 @@ from importlib.resources import files
 
 from robovast.common import FileCache
 
+def _list_jsonld_files(output_dir, floorplan_name):
+    """Return sorted list of relative paths of JSON-LD files for a floorplan (relative to output_dir)."""
+    jsonld_dir = os.path.join(output_dir, floorplan_name, 'json-ld')
+    if not os.path.isdir(jsonld_dir):
+        return []
+    result = []
+    for dirpath, _dirnames, filenames in os.walk(jsonld_dir):
+        for filename in filenames:
+            abs_path = os.path.join(dirpath, filename)
+            result.append(os.path.relpath(abs_path, output_dir))
+    return sorted(result)
 
 def _create_config_for_floorplan(
     floorplan_name,

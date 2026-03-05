@@ -382,12 +382,21 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
         os.makedirs(os.path.dirname(dst_path), exist_ok=True)
         shutil.copy2(src_path, dst_path)
 
-    # Copy transient (intermediate) files into _transient/
+    # Copy campaign-level transient files into _transient/
     for rel_path, abs_path in campaign_data.get("_transient_files", []):
         if not os.path.exists(abs_path):
             logger.warning(f"Transient file not found, skipping: {abs_path}")
             continue
         dst_path = os.path.join(campaign_transient_dir, rel_path)
+        os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+        shutil.copy2(abs_path, dst_path)
+
+    # Copy config-level transient files into <config>/_transient/
+    for config_name, rel_path, abs_path in campaign_data.get("_config_transient_files", []):
+        if not os.path.exists(abs_path):
+            logger.warning(f"Config transient file not found, skipping: {abs_path}")
+            continue
+        dst_path = os.path.join(out_dir, config_name, "_transient", rel_path)
         os.makedirs(os.path.dirname(dst_path), exist_ok=True)
         shutil.copy2(abs_path, dst_path)
 

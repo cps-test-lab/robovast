@@ -46,19 +46,20 @@ def execute_variation(base_dir, configs, variation_class, parameters, general_pa
     except Exception as e:
         logger.error(f"Variation failed. {variation_class.__name__}: {e}")
         progress_update_callback(f"Variation failed. {variation_class.__name__}: {e}")
-        return [], [], []
+        return [], [], [], []
 
     # Check if configs is None and return empty list
     if configs is None:
         logger.warning(f"Variation failed. {variation_class.__name__}: No configs returned")
         progress_update_callback(f"Variation failed. {variation_class.__name__}: No configs returned")
-        return [], [], []
+        return [], [], [], []
 
     # Collect transient (intermediate) files after variation has run
-    transient_files = variation.get_transient_files()
+    campaign_transient_files = variation.get_campaign_transient_files()
+    config_transient_files = variation.get_config_transient_files()
 
     logger.debug(f"Variation {variation_class.__name__} completed successfully")
-    return configs, input_files, transient_files
+    return configs, input_files, campaign_transient_files, config_transient_files
 
 
 def collect_filtered_files(filter_pattern, rel_path):
@@ -306,6 +307,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     variation_gui_classes = {}
     campaign_input_files = []
     campaign_transient_files = []
+    config_transient_files = []
 
     # Get scenario_file from execution section
     execution_scenario_file_name = parameters.get('execution', {}).get('scenario_file')
@@ -385,8 +387,8 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                     variation_gui_classes[variation_gui_class].append(variation_gui_renderer_class)
             started_at = datetime.now(timezone.utc).isoformat()
             t0 = time.monotonic()
-            result, var_input_files, var_transient_files = execute_variation(os.path.dirname(variation_file), current_configs, variation_class,
-                                                                             variation_parameters, general_parameters, progress_update_callback, scenario_file, output_dir)
+            result, var_input_files, var_campaign_transient, var_config_transient = execute_variation(os.path.dirname(variation_file), current_configs, variation_class,
+                                                                                                      variation_parameters, general_parameters, progress_update_callback, scenario_file, output_dir)
             duration = round(time.monotonic() - t0, 3)
 
             # Validate and collect variation input files
@@ -395,7 +397,8 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
             campaign_input_files.extend(var_input_files)
 
             # Collect transient files from this variation step
-            campaign_transient_files.extend(var_transient_files)
+            campaign_transient_files.extend(var_campaign_transient)
+            config_transient_files.extend(var_config_transient)
 
             if result is None or len(result) == 0:
                 # If a variation step fails or produces no results, stop the pipeline
@@ -414,7 +417,8 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
             for c in result:
                 if "_variation_data" not in c:
                     c["_variation_data"] = []
-                c["_variation_data"].append(variation_entry)
+                entry = dict(variation_entry)
+                c["_variation_data"].append(entry)
 
             current_configs = result
 
@@ -442,6 +446,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         "_run_files": run_files,
         "_input_files": campaign_input_files,
         "_transient_files": campaign_transient_files,
+        "_config_transient_files": config_transient_files,
         "execution": execution_params,
         "created_at": datetime.now().isoformat()
     }

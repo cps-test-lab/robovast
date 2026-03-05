@@ -18,24 +18,10 @@ import logging
 import os
 from typing import Optional
 
-import yaml
-
 from robovast.common import is_scenario_parameter
 from robovast.common.variation import Variation
 
 logger = logging.getLogger(__name__)
-
-
-# Custom YAML loader that keeps timestamps as strings
-class _NoDatetimeLoader(yaml.SafeLoader):
-    pass
-
-
-if hasattr(_NoDatetimeLoader, 'yaml_implicit_resolvers'):
-    _NoDatetimeLoader.yaml_implicit_resolvers = {
-        k: [r for r in v if r[0] != 'tag:yaml.org,2002:timestamp']
-        for k, v in _NoDatetimeLoader.yaml_implicit_resolvers.items()
-    }
 
 
 class NavVariation(Variation):
