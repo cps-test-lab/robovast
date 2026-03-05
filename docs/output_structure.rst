@@ -76,14 +76,13 @@ Contains:
    ├── configurations.yaml                   # Fully resolved configuration parameters
    ├── entrypoint.sh                         # Generated container entrypoint script
    ├── secondary_entrypoint.sh               # Generated secondary container entrypoint script
-   ├── collect_sysinfo.py                    # System info collection script
-   └── <env-name>/json-ld/                   # Intermediate data created during creation of configurations (e.g. semantic environment data)
+   └── collect_sysinfo.py                    # System info collection script
 
 ``configurations.yaml`` contains the fully resolved parameter values for every
 configuration variant, including internal computed fields like navigation path waypoints
 (``_path``), raster points (``_raster_points``), resolved file paths, and
-``_variations`` (list of applied variation plugins with name, start time, and
-duration).
+``_variations`` (list of applied variation plugins with name, start time, duration,
+and any plugin-specific fields).
 
 Configuration Directory
 -----------------------
@@ -102,6 +101,7 @@ Each configuration variant gets its own directory:
    │   └── 3d-mesh/                          # [navigation only]
    │       ├── <name>.stl                    # 3D environment mesh
    │       └── <name>.stl.yaml               # Mesh metadata
+   ├── _transient/                           # Per-config intermediate files 
    └── <run-number>/                         # 0, 1, 2, ... (one per run)
 
 ``scenario.config`` contains the actual scenario parameter values used for this
@@ -303,5 +303,7 @@ domain-specific metadata:
 
 ``collect_config_metadata`` is called once per configuration that used the
 variation.  ``collect_run_metadata`` is called once per run directory.
-Both return a dictionary that is merged into the respective metadata entry.
+Both return a dictionary that is merged into the respective metadata entry.  
 
+For example, the ``FloorplanGeneration`` variation uses
+``collect_config_metadata`` to load map and mesh metadata from the generated
