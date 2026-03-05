@@ -38,8 +38,8 @@ To run the example, execute the following commands in the base folder of the Rob
    # cleanup pods in cluster
    vast execution cluster cleanup
 
-   # analyze the results
-   vast analysis gui
+   # evaluate the results
+   vast evaluation gui
 
 Introduction
 ------------
@@ -193,31 +193,31 @@ Analysis
 As result analysis is tailored to each test, users are expected to implement their own analysis routines.
 
 There are two steps invoked to analyze results.
-First, the results can optionally be postprocessed to simplify later analysis. The user might specify postprocessing commands in ``analysis.postprocessing`` section of the ``.vast`` configuration. Common scripts including converting ROS bags to CSV files or extracting poses from tf-data are available to improve usability.
+First, the results can optionally be postprocessed to simplify later evaluation. The user might specify postprocessing commands in the ``data.postprocessing`` section of the ``.vast`` configuration. Common scripts including converting ROS bags to CSV files or extracting poses from tf-data are available to improve usability.
 
 .. code-block:: bash
 
-   vast analysis postprocess
+   vast data postprocess
 
 Postprocessing is cached based on the results directory hash. If the results directory is unchanged since the last postprocessing, the postprocessing is skipped automatically. To force postprocessing even if the results are unchanged (e.g., after updating postprocessing scripts), use the ``--force`` or ``-f`` flag:
 
 .. code-block:: bash
 
-   vast analysis postprocess --force
+   vast data postprocess --force
 
-After postprocessing, the actual analysis can be performed.
+After postprocessing, the actual evaluation can be performed.
 To simplify this process, RoboVAST provides a GUI tool, which enables users to execute Jupyter notebooks directly from a graphical interface.
 
 .. code-block:: bash
 
-   vast analysis gui
+   vast evaluation gui
 
-The visualization can be customized by adapting the ``analysis.visualization`` section of the ``.vast`` configuration file.
+The visualization can be customized by adapting the ``evaluation.visualization`` section of the ``.vast`` configuration file.
 
 .. literalinclude:: ../configs/examples/growth_sim/growth_sim.vast
    :language: yaml
    :lines: 32-36
-   :caption: Analysis section of RoboVAST Configuration File
+   :caption: Evaluation section of RoboVAST Configuration File
 
 Although this example includes only one entry in the analysis list, you can add more. Each additional entry will appear as a separate tab in the GUI.
 

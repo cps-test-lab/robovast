@@ -1,29 +1,33 @@
 .. _analysis:
 
-Analysis
-========
+Data & Evaluation
+==================
 
-RoboVAST provides two tightly integrated analysis workflows: **CLI-driven postprocessing** and an
-**interactive GUI** based on Jupyter notebooks.  This page covers the full analysis pipeline,
+RoboVAST provides two tightly integrated workflows: **CLI-driven postprocessing** (``vast data``) and an
+**interactive GUI** (``vast evaluation``) based on Jupyter notebooks.  This page covers the full pipeline,
 the ``--override`` option for using a local ``.vast`` file, and the *self-contained* notebook
 pattern that lets you develop and run notebooks directly in VS Code or JupyterLab without the GUI.
 
 Overview
 --------
 
-The typical analysis workflow is:
+The typical workflow is:
 
 .. code-block:: bash
 
    # 1. (optional) Convert raw output (e.g. ROS bags) to CSV
-   vast analysis postprocess
+   vast data postprocess
 
    # 2. Open the interactive GUI to run Jupyter notebooks on the results
-   vast analysis gui
+   vast evaluation gui
 
 Both commands read the ``.vast`` configuration from the most recent
 ``campaign-<id>/_config/`` directory inside your results folder.  Use
 ``--override`` to supply a different ``.vast`` file (see below).
+
+.. note::
+
+   A short alias is available: ``vast eval`` for ``vast evaluation``.
 
 
 .. _analysis-postprocessing:
@@ -33,12 +37,12 @@ Postprocessing
 
 Postprocessing transforms raw run output (e.g. ROS bags, custom binary files) into
 analysis-friendly formats (e.g. CSV).  Commands are defined in the
-``analysis.postprocessing`` section of the ``.vast`` file and executed by plugins
+``data.postprocessing`` section of the ``.vast`` file and executed by plugins
 (see :ref:`extending-postprocessing` for how to write your own).
 
 .. code-block:: bash
 
-   vast analysis postprocess [OPTIONS]
+   vast data postprocess [OPTIONS]
 
 **Options**
 
@@ -63,7 +67,7 @@ directory is unchanged the step is skipped automatically.  Use ``--force`` (or
 
 .. code-block:: bash
 
-   vast analysis postprocess --force
+   vast data postprocess --force
 
 
 .. _analysis-gui:
@@ -73,7 +77,7 @@ GUI
 
 .. code-block:: bash
 
-   vast analysis gui [OPTIONS]
+   vast evaluation gui [OPTIONS]
 
 The GUI automatically runs postprocessing before launching, unless
 ``--skip-postprocessing`` is specified.
@@ -104,7 +108,7 @@ The GUI automatically runs postprocessing before launching, unless
 Using ``--override`` to Supply a Local ``.vast`` File
 ------------------------------------------------------
 
-By default ``vast analysis postprocess`` and ``vast analysis gui`` read the
+By default ``vast data postprocess`` and ``vast evaluation gui`` read the
 ``.vast`` configuration from the **campaign snapshot** stored in
 ``<results-dir>/campaign-<id>/_config/<name>.vast``.  This snapshot is copied
 at execution time and may be out of date.
@@ -114,15 +118,15 @@ for example your current working copy:
 
 .. code-block:: bash
 
-   # Postprocessing – use a local/updated .vast file
-   vast analysis postprocess --override my_project.vast
+   # Postprocessing -- use a local/updated .vast file
+   vast data postprocess --override my_project.vast
 
-   # GUI – use a local/updated .vast file (also passed to postprocessing)
-   vast analysis gui --override my_project.vast
+   # GUI -- use a local/updated .vast file (also passed to postprocessing)
+   vast evaluation gui --override my_project.vast
 
 **When to use ``--override``**
 
-- You have updated the ``analysis.visualization`` section (e.g. new notebooks,
+- You have updated the ``evaluation.visualization`` section (e.g. new notebooks,
   changed paths) and want the GUI to pick up the changes immediately without
   re-running the scenario.
 - The results were produced in a different directory and the campaign snapshot
@@ -137,20 +141,20 @@ for example your current working copy:
    When ``--override`` is supplied, the same ``.vast`` file is used for
    **every** ``campaign-*`` folder found under the results directory.  The
    config directory of the override file (its parent folder) is used to
-   resolve relative notebook paths defined under ``analysis.visualization``.
+   resolve relative notebook paths defined under ``evaluation.visualization``.
 
 
 .. _analysis-notebooks:
 
-Writing Analysis Notebooks
---------------------------
+Writing Evaluation Notebooks
+-----------------------------
 
 Notebooks are plain Jupyter ``.ipynb`` files referenced from the
-``analysis.visualization`` section of the ``.vast`` file:
+``evaluation.visualization`` section of the ``.vast`` file:
 
 .. code-block:: yaml
 
-   analysis:
+   evaluation:
      visualization:
        - MyAnalysis:
            run: analysis/analysis_run.ipynb
@@ -159,11 +163,11 @@ Notebooks are plain Jupyter ``.ipynb`` files referenced from the
 
 There are three reserved scopes:
 
-- **run** – executed once per individual run directory
+- **run** -- executed once per individual run directory
   (``campaign-<id>/<config>/<run-number>/``).
-- **config** – executed once per configuration directory
+- **config** -- executed once per configuration directory
   (``campaign-<id>/<config>/``).
-- **campaign** – executed once per campaign directory
+- **campaign** -- executed once per campaign directory
   (``campaign-<id>/``).
 
 The **only hard requirement** is that every notebook contains the line::
@@ -177,8 +181,8 @@ are instant.
 
 .. _analysis-self-contained:
 
-Self-Contained Analysis Notebooks
-----------------------------------
+Self-Contained Evaluation Notebooks
+-------------------------------------
 
 The *self-contained* pattern extends the basic requirement above: the
 notebook is written so it can be opened and executed **directly in VS Code
@@ -218,7 +222,7 @@ Recommended first-cell pattern
        df = read_output_files(DATA_DIR, lambda d: read_output_csv(d, "poses.csv"))
    except Exception as e:
        print(f"Error reading data: {e}")
-       raise SystemExit("No data found – check DATA_DIR.")
+       raise SystemExit("No data found -- check DATA_DIR.")
 
 Handling missing columns defensively
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -248,14 +252,14 @@ Use paths appropriate to the *scope* of the notebook:
      - Example ``DATA_DIR``
      - Available columns
    * - ``run``
-     - ``…/campaign-<id>/<config>/<run-number>/``
-     - ``frame``, ``timestamp``, …
+     - ``/campaign-<id>/<config>/<run-number>/``
+     - ``frame``, ``timestamp``, ...
    * - ``config``
-     - ``…/campaign-<id>/<config>/``
-     - ``run``, ``frame``, ``timestamp``, …
+     - ``/campaign-<id>/<config>/``
+     - ``run``, ``frame``, ``timestamp``, ...
    * - ``campaign``
-     - ``…/campaign-<id>/``
-     - ``run``, ``config``, ``test``, ``frame``, …
+     - ``/campaign-<id>/``
+     - ``run``, ``config``, ``test``, ``frame``, ...
 
 .. note::
 
@@ -271,7 +275,7 @@ Benefits of the self-contained pattern
 
 - **Interactive development**: run all cells with ``Run All`` in VS Code
   without launching the GUI.
-- **No context switching**: tweak a visualization, re-run, inspect – all in
+- **No context switching**: tweak a visualization, re-run, inspect -- all in
   one editor window.
 - **GUI-compatible**: the notebook works unchanged in the GUI; the hardcoded
   path is simply overwritten at runtime.
@@ -286,7 +290,7 @@ Typical development workflow
 3. Set ``DATA_DIR`` to the actual campaign/config/run directory.
 4. Develop and iterate with **Run All** (or cell-by-cell).
 5. Once satisfied, commit the notebook.  The GUI will use it via the
-   ``analysis.visualization`` section of the ``.vast`` file; ``DATA_DIR``
+   ``evaluation.visualization`` section of the ``.vast`` file; ``DATA_DIR``
    will be replaced automatically.
 6. To share the notebook with colleagues working on the same dataset, leave
-   the real ``DATA_DIR`` value in place – they only need to update the path.
+   the real ``DATA_DIR`` value in place -- they only need to update the path.

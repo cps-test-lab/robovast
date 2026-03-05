@@ -15944,12 +15944,13 @@ execution:
   - 'files/*'
   - 'small_dataset_maps/*.stl'
   - 'small_dataset_maps/**/maps/*'
-analysis:
+data:
   postprocessing:
     - rosbags_to_csv
     - rosbags_tf_to_csv:
         frames: [base_link, turtlebot4_base_link_gt]
     - rosbags_bt_to_csv
+evaluation:
   visualization:
   - Analysis:
       run: analysis/analysis_run.ipynb

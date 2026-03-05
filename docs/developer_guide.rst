@@ -164,10 +164,10 @@ Afterwards you can start the GUI:
 
 .. code-block:: bash
 
-    vast analysis postprocess
-    # or, to force postprocessing even if results are unchanged:  
-    vast analysis postprocess --force
-    vast analysis gui
+    vast data postprocess
+    # or, to force postprocessing even if results are unchanged:
+    vast data postprocess --force
+    vast evaluation gui
 
 
 Extending RoboVAST

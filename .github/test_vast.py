@@ -240,22 +240,22 @@ def test_vast_workflow(vast_file_path, config=None):  # pylint: disable=too-many
             
             print("✓ Output structure is valid")
             
-            # Step 3: vast analysis postprocess
-            print("\n--- Step 3: vast analysis postprocess ---")
-                        
+            # Step 3: vast data postprocess
+            print("\n--- Step 3: vast data postprocess ---")
+
             cmd_postprocess = [
                 'poetry', 'run', '--directory', str(repo_root),
-                'vast', 'analysis', 'postprocess'
+                'vast', 'data', 'postprocess'
             ]
-            
+
             # Execute in the repo root where .robovast_project exists
             result = run_command(cmd_postprocess, cwd=temp_output)
-            
+
             if result != 0:
-                print("✗ vast analysis postprocess failed")
+                print("\u2717 vast data postprocess failed")
                 return False
-            
-            print("✓ vast analysis postprocess executed successfully")
+
+            print("\u2713 vast data postprocess executed successfully")
             
             print("✓ Postprocessing completed successfully")
             

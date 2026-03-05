@@ -160,12 +160,12 @@ class ExecutionConfig(BaseModel):
         return v
 
 
-class VisualizationConfig(BaseModel):
-    pass
-
-
-class AnalysisConfig(BaseModel):
+class DataConfig(BaseModel):
     postprocessing: Optional[list[str | dict[str, Any]]] = None
+    metadata_processing: Optional[list[str | dict[str, Any]]] = None
+
+
+class EvaluationConfig(BaseModel):
     visualization: Optional[list[dict[str, Any]]] = None
 
 
@@ -176,7 +176,8 @@ class ConfigV1(BaseModel):
     general: Optional[GeneralConfig] = None
     configuration: Optional[list[ConfigurationConfig]] = None
     execution: ExecutionConfig
-    analysis: Optional[AnalysisConfig] = None
+    data: Optional[DataConfig] = None
+    evaluation: Optional[EvaluationConfig] = None
 
 
 def validate_config(config: dict):

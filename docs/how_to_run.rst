@@ -12,9 +12,14 @@ How to run
    :nested: full
    :commands: local, cluster
 
-.. click:: robovast.analysis.result_analyzer.cli:analysis
-   :prog: vast analysis
+.. click:: robovast.analysis.result_analyzer.cli:data
+   :prog: vast data
    :nested: full
-   :commands: postprocess, gui
+   :commands: postprocess, merge-results, postprocess-commands
+
+.. click:: robovast.analysis.result_analyzer.cli:evaluation
+   :prog: vast evaluation
+   :nested: full
+   :commands: gui
 
 
