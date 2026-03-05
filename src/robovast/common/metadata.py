@@ -486,7 +486,6 @@ def _apply_variation_metadata(
                     )
 
 
-
 def _apply_user_metadata_processors(
     metadata: dict,
     campaign_dir: Path,

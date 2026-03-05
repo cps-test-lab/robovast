@@ -14,10 +14,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Config identifier computation for merge-results.
+"""Config identifier computation for merge-campaigns.
 
 Hashes inputs that affect config generation to produce a unique identifier.
-Identifiers are stored in config.yaml per config-dir for merge-results grouping.
+Identifiers are stored in config.yaml per config-directory for merge-campaigns grouping.
 """
 
 import hashlib

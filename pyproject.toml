@@ -50,7 +50,7 @@ vast = "robovast.common.cli.cli:main"
 [tool.poetry.plugins."robovast.cli_plugins"]
 configuration = "robovast.configuration.configuration_utils.cli:configuration"
 execution = "robovast.execution.execution_utils.cli:execution"
-results = "robovast.analysis.result_analyzer.cli:results"
+results = "robovast.results_processing.cli:results"
 evaluation = "robovast.analysis.result_analyzer.cli:evaluation"
 
 [tool.poetry.plugins."robovast.cluster_configs"]
@@ -68,13 +68,13 @@ nextcloud = "robovast.execution.cluster_execution.share_providers.nextcloud:Next
 "ParameterVariationDistributionGaussian" = "robovast.common.variation.parameter_variation:ParameterVariationDistributionGaussian"
 
 [tool.poetry.plugins."robovast.postprocessing_commands"]
-command = "robovast.common.postprocessing_plugins:command"
-rosbags_tf_to_csv = "robovast.common.postprocessing_plugins:rosbags_tf_to_csv"
-rosbags_bt_to_csv = "robovast.common.postprocessing_plugins:rosbags_bt_to_csv"
-rosbags_to_csv = "robovast.common.postprocessing_plugins:rosbags_to_csv"
-rosbags_to_webm = "robovast.common.postprocessing_plugins:rosbags_to_webm"
-rosbags_action_to_csv = "robovast.common.postprocessing_plugins:rosbags_action_to_csv"
-compress = "robovast.common.postprocessing_plugins:compress"
+command = "robovast.results_processing.postprocessing_plugins:Command"
+rosbags_tf_to_csv = "robovast.results_processing.postprocessing_plugins:RosbagsTfToCsv"
+rosbags_bt_to_csv = "robovast.results_processing.postprocessing_plugins:RosbagsBtToCsv"
+rosbags_to_csv = "robovast.results_processing.postprocessing_plugins:RosbagsToCsv"
+rosbags_to_webm = "robovast.results_processing.postprocessing_plugins:RosbagsToWebm"
+rosbags_action_to_csv = "robovast.results_processing.postprocessing_plugins:RosbagsActionToCsv"
+compress = "robovast.results_processing.postprocessing_plugins:Compress"
 
 [tool.poetry.plugins."robovast.metadata_processing"]
 

@@ -423,7 +423,7 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
     for config_data in campaign_data["configs"]:
         run_config_dir = os.path.join(out_dir, config_data.get("name"), "_config")
 
-        # Compute and write config identifier for merge-results
+        # Compute and write config identifier for merge-campaigns
         config_block = config_data.get("_config_block", {})
         variation_type_names = [
             v["name"] for v in config_data.get("_variations", [])

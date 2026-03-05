@@ -16,6 +16,7 @@
 
 """Postprocessing functionality for run result data."""
 import hashlib
+import inspect
 import json
 import os
 import tempfile
@@ -26,25 +27,41 @@ from typing import Dict, List, Optional, Tuple
 
 import yaml
 
-from .common import load_config
-from .metadata import generate_campaign_metadata
-from .results_utils import find_campaign_vast_file, iter_run_folders
+from robovast.common.common import load_config
+from robovast.common.metadata import generate_campaign_metadata
+from robovast.common.results_utils import (find_campaign_vast_file,
+                                           iter_run_folders)
 
 
 def load_postprocessing_plugins() -> Dict[str, callable]:
     """Load postprocessing command plugins from entry points.
 
+    All plugins must be classes that inherit from
+    :class:`~robovast.results_processing.postprocessing_plugins.BasePostprocessingPlugin`.
+    Class-based plugins are automatically instantiated so that callers always
+    receive a ready-to-use callable.  Class instances additionally expose
+    :meth:`~robovast.results_processing.postprocessing_plugins.BasePostprocessingPlugin.get_files_to_copy`
+    which is used during config preparation to copy required files into
+    ``_config/``.
+
     Returns:
-        Dictionary mapping plugin names to their callable functions
+        Dictionary mapping plugin names to their callable objects (class instances).
     """
     plugins = {}
     try:
         eps = entry_points(group='robovast.postprocessing_commands')
         for ep in eps:
             try:
-                # Load the entry point - should return a callable
-                plugin_func = ep.load()
-                plugins[ep.name] = plugin_func
+                # Load the entry point - must be a class
+                plugin_obj = ep.load()
+                if not inspect.isclass(plugin_obj):
+                    print(f"Warning: Postprocessing plugin '{ep.name}' is not a class and will be skipped. "
+                          f"All plugins must be classes inheriting from BasePostprocessingPlugin.")
+                    continue
+                # Instantiate class-based plugins so callers get a consistent
+                # callable interface and can also access get_files_to_copy.
+                plugin_obj = plugin_obj()
+                plugins[ep.name] = plugin_obj
             except Exception as e:
                 # Log and continue if a plugin fails to load
                 print(f"Warning: Failed to load postprocessing plugin '{ep.name}': {e}")
