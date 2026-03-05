@@ -185,7 +185,14 @@ def get_postprocessing_commands(config_path: str) -> List[dict]:
         List of postprocessing commands (dicts) or empty list if none defined
     """
     analysis_config = load_config(config_path, subsection="analysis", allow_missing=True)
-    return analysis_config.get("postprocessing", [])
+    if analysis_config is None:
+        return []
+    else:
+        postprocessing_cmds = analysis_config.get("postprocessing", [])
+        if postprocessing_cmds is None:
+            return []
+        else:
+            return postprocessing_cmds
 
 
 def _write_provenance_yaml_per_folder(results_dir: str, entries: List[dict]) -> None:
@@ -385,9 +392,6 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
 
     # Get postprocessing commands
     commands = get_postprocessing_commands(vast_path)
-
-    if not commands:
-        return True, "No postprocessing commands defined."
 
     # Determine cache locations inside results_dir/.cache/
     cache_dir, hash_file, outputs_file = _get_postprocessing_cache_paths(results_dir)

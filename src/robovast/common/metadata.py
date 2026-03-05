@@ -144,6 +144,12 @@ class MetadataGenerator:
             if "config" in config_entry and isinstance(config_entry["config"], dict):
                 _replace_file_urls(config_entry["config"])
 
+            # Resolve config-file references inside the "config" block
+            if "config" in config_entry and isinstance(config_entry["config"], dict):
+                _resolve_file_strings(
+                    config_entry["config"], os.path.join(config_name, "_config"), config_files_list
+                )
+
             # Timestamp
             config_entry["created_at"] = data.get("created_at")
 
@@ -337,6 +343,54 @@ def _replace_file_urls(obj):
     elif isinstance(obj, str):
         return obj.replace("file:///config", "_config")
     return obj
+
+
+def _resolve_file_strings(
+    obj: Any,
+    real_path: str,
+    config_files: list,
+) -> list:
+    """Recursively find string values that reference a known config file.
+
+    For each string value in *obj* (dict or list, searched recursively), if
+    the value matches an entry in *config_files* when prefixed with
+    ``<config_name>/_config/``, the string is replaced in-place with that
+    full relative path and the ``(key, path)`` pair is appended to the
+    returned list.
+
+    Args:
+        obj: Dict or list to search (modified in-place).
+        config_name: Name of the configuration (e.g. ``"config-1"``).
+        config_files: List of known relative config-file paths under the
+            campaign directory (e.g. ``["config-1/_config/params.yaml"]``).
+
+    Returns:
+        List of ``(key_or_index, resolved_path)`` tuples for every string
+        that was resolved to a config file.
+    """
+    found: list = []
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if isinstance(value, str):
+                if real_path is not None:
+                    candidate = os.path.join(real_path, value)
+                else:
+                    candidate = value
+                if candidate in config_files:
+                    obj[key] = candidate
+                    found.append((key, candidate))
+            else:
+                found.extend(_resolve_file_strings(value, real_path, config_files))
+    elif isinstance(obj, list):
+        for i, item in enumerate(obj):
+            if isinstance(item, str):
+                candidate = os.path.join(real_path, item)
+                if candidate in config_files:
+                    obj[i] = candidate
+                    found.append((i, candidate))
+            else:
+                found.extend(_resolve_file_strings(item, real_path, config_files))
+    return found
 
 
 def _load_variation_classes() -> Dict[str, type]:

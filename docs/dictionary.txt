@@ -59,3 +59,7 @@ Subclasses
 hardcoded
 schema
 schemas
+ROS
+JUnit
+sysinfo
+classmethods
