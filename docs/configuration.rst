@@ -486,6 +486,78 @@ To list all available plugins and their descriptions:
 
 See :ref:`extending-postprocessing` for how to add custom postprocessing plugins.
 
+publication
+^^^^^^^^^^^
+
+**Type:** List of strings or dictionaries (plugin commands)
+
+**Required:** No
+
+Defines publication plugins that package or distribute the results directory after
+postprocessing.  Each entry is either a plugin name (string) or a dictionary with
+the plugin name as key and plugin-specific parameters as value.
+
+Publication plugins are executed by ``vast results publish`` and operate on the
+full results directory (parent of ``campaign-*`` directories).
+
+.. code-block:: yaml
+
+   results_processing:
+     publication:
+       - zip:
+           include_filter:
+           - "*.csv"
+           - "/_config/*"
+           exclude_filter:
+           - "*.pyc"
+           destination: archives/
+
+**Built-in Publication Plugins:**
+
+- ``zip``: Create a zip archive for every ``campaign-*`` directory under the
+  results directory.  Optional parameters:
+
+  - ``filename``: Template for the zip filename.  Supports ``{key}``
+    placeholders resolved from the ``.vast`` file's ``metadata:`` section and
+    the built-in ``{timestamp}`` placeholder (extracted from the campaign
+    directory name, e.g. ``campaign-2026-03-05-121530`` → ``2026-03-05-121530``).
+    Example: ``my_dataset_{robot_id}_{timestamp}.zip``.
+    If omitted, the default name ``<campaign-dir-name>.zip`` is used.
+    A descriptive error listing all available placeholders is raised when an
+    unknown placeholder is referenced.
+  - ``include_filter``: List of glob patterns.  Only matching files are included.
+    Patterns starting with ``/`` are anchored to the campaign root; patterns without
+    ``/`` match on the basename only; other patterns are matched against the full
+    relative path.  If omitted, all files are candidates.
+  - ``exclude_filter``: List of glob patterns.  Matching files are excluded regardless
+    of ``include_filter``.
+  - ``destination``: Directory where zip files are written.  Relative paths are
+    resolved from the results directory.  Defaults to the results directory itself.
+  - ``overwrite``: Controls behavior when the output zip file already exists.
+    ``true`` always overwrites silently; ``false`` always skips silently.
+    Omit (or leave unset) to be prompted interactively — the default answer is
+    *yes* (overwrite).  Passing ``--force`` / ``-f`` on the CLI is equivalent
+    to setting ``overwrite: true`` for every plugin.
+
+Multiple ``zip`` entries may be defined to produce different archives from the
+same campaign:
+
+.. code-block:: yaml
+
+   results_processing:
+     publication:
+       - zip:
+           filename: my_dataset_{robot_id}_{timestamp}.zip
+           include_filter: ["*.csv"]
+           destination: csv-archives/
+           overwrite: false    # skip if archive already exists
+       - zip:
+           filename: my_dataset_{robot_id}_{timestamp}_videos.zip
+           include_filter: ["*.webm"]
+           destination: video-archives/
+
+See :ref:`extending-publication` for how to add custom publication plugins.
+
 metadata_processing
 ^^^^^^^^^^^^^^^^^^^^
 

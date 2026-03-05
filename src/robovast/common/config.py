@@ -163,6 +163,7 @@ class ExecutionConfig(BaseModel):
 class ResultsConfig(BaseModel):
     postprocessing: Optional[list[str | dict[str, Any]]] = None
     metadata_processing: Optional[list[str | dict[str, Any]]] = None
+    publication: Optional[list[str | dict[str, Any]]] = None
 
 
 class EvaluationConfig(BaseModel):

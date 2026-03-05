@@ -203,6 +203,79 @@ Example plugin registration:
     variation = "variation_utils.cli:variation"
 
 
+.. _extending-metadata-processing:
+
+Add Metadata Processing Plugin
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Metadata processing plugins run after the generic and variation-plugin metadata
+phases and can modify the ``metadata.yaml`` produced for each campaign.  They are
+configured in the ``.vast`` file under ``results_processing.metadata_processing``:
+
+.. code-block:: yaml
+
+   results_processing:
+     metadata_processing:
+       - my_metadata_plugin
+       - my_metadata_plugin:
+           param1: value1
+           param2: value2
+
+Each plugin must subclass ``robovast.common.metadata.MetadataProcessor`` and
+implement the ``process_metadata`` method:
+
+.. code-block:: python
+
+   from pathlib import Path
+   from robovast.common.metadata import MetadataProcessor
+
+   class MyMetadataPlugin(MetadataProcessor):
+
+       def process_metadata(self, metadata: dict, campaign_dir: Path) -> dict:
+           # Modify metadata as needed
+           metadata["custom_field"] = "custom_value"
+           return metadata
+
+Register the plugin in your package's ``pyproject.toml``:
+
+.. code-block:: toml
+
+   [tool.poetry.plugins."robovast.metadata_processing"]
+   my_metadata_plugin = "my_package.metadata:MyMetadataPlugin"
+
+
+.. _extending-variation-metadata:
+
+Add Variation Plugin Metadata Hook
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The ``Variation`` base class defines an overridable classmethod that returns an
+empty dict by default.  Subclasses implement it to attach domain-specific metadata
+to each configuration entry in ``metadata.yaml``:
+
+.. code-block:: python
+
+   from pathlib import Path
+   import yaml
+   from robovast.common.variation import Variation
+
+   class MyVariation(Variation):
+
+       @classmethod
+       def collect_config_metadata(cls, config_entry, config_dir: Path,
+                                    campaign_dir: Path) -> dict:
+           """Load extra metadata from a YAML sidecar in _config/."""
+           data_file = config_dir / "_config" / "my_data.yaml"
+           if data_file.exists():
+               with open(data_file) as f:
+                   return {"my_data": yaml.safe_load(f)}
+           return {}
+
+``collect_config_metadata`` is called once per configuration that used the
+variation and returns a dictionary that is merged into the configuration's
+metadata entry.
+
+
 .. _extending-postprocessing:
 
 Add Postprocessing Command Plugin
@@ -266,6 +339,66 @@ Postprocessing plugins are Python functions that process run result directories 
       postprocessing:
         - my_postprocessing_command:
             custom_param: value
+
+.. _extending-publication:
+
+Add Publication Plugin
+^^^^^^^^^^^^^^^^^^^^^^
+
+Publication plugins package or distribute the results directory after
+postprocessing.  They are plain callables (functions or class instances) that
+operate on the full results directory.
+
+**Return value:** A plugin must return ``(success: bool, message: str)``.
+
+**Creating a Publication Plugin:**
+
+.. code-block:: python
+
+    from typing import Optional, Tuple
+
+    def my_publication_plugin(
+        results_dir: str,
+        config_dir: str,
+        destination: Optional[str] = None,
+    ) -> Tuple[bool, str]:
+        """Upload results to a remote storage location.
+
+        Args:
+            results_dir: Path to the results directory (parent of campaign-* dirs).
+            config_dir: Directory containing the .vast config file; relative
+                paths should be resolved from here.
+            destination: Remote destination URL or path.
+
+        Returns:
+            Tuple of (success, message).
+        """
+        import subprocess
+        dest = destination or "s3://my-bucket/results/"
+
+        result = subprocess.run(
+            ["aws", "s3", "sync", results_dir, dest],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            return False, f"Upload failed: {result.stderr}"
+        return True, f"Uploaded results to {dest}"
+
+**Register in pyproject.toml:**
+
+.. code-block:: toml
+
+    [tool.poetry.plugins."robovast.publication_plugins"]
+    my_publication_plugin = "your_package.publication_plugins:my_publication_plugin"
+
+**Usage in .vast config:**
+
+.. code-block:: yaml
+
+    results_processing:
+      publication:
+        - my_publication_plugin:
+            destination: s3://my-bucket/results/
 
 Add Cluster Config Plugin
 ^^^^^^^^^^^^^^^^^^^^^^^^^

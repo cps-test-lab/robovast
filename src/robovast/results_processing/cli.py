@@ -21,12 +21,14 @@ import sys
 
 import click
 
-from robovast.analysis.merge_results import merge_results
+from robovast.evaluation.merge_results import merge_results
 from robovast.common.cli import get_project_config, handle_cli_exception
 from robovast.common.cli.project_config import ProjectConfig
 from robovast.results_processing import run_postprocessing
 from robovast.results_processing.postprocessing import \
     load_postprocessing_plugins
+from robovast.results_processing.publication import \
+    run_publication, load_publication_plugins
 
 
 @click.group()
@@ -90,6 +92,75 @@ def postprocess_cmd(results_dir, force, override):
     if not success:
         click.echo(f"\u2717 {message}", err=True)
         sys.exit(1)
+
+
+@results.command(name='publish')
+@click.option('--results-dir', '-r', default=None,
+              help='Directory containing run results (uses project results dir if not specified)')
+@click.option('--override', '-o', default=None, metavar='VAST_FILE',
+              help='Override the .vast file used for publication instead of the one '
+                   'found in campaign-<id>/_config/')
+@click.option('--force', '-f', is_flag=True,
+              help='Overwrite existing output files without prompting.')
+@click.option('--skip-postprocessing', is_flag=True,
+              help='Skip postprocessing and only run publication plugins.')
+def publish_cmd(results_dir, override, force, skip_postprocessing):
+    """Publish run results using configured publication plugins.
+
+    Executes postprocessing plugins (unless ``--skip-postprocessing`` is used)
+    followed by publication plugins defined in the .vast file found in the
+    most recent ``campaign-<id>/_config/`` directory of the results directory.
+    Publication plugins handle packaging and distribution of results.
+
+    Use --override to supply a .vast file explicitly instead of the campaign copy.
+    Use --force to overwrite existing output files without prompting.
+    Use --skip-postprocessing to only run publication without postprocessing.
+
+    Requires project initialization with ``vast init`` first (unless ``--results-dir`` is specified).
+    """
+    # Resolve results_dir from project config when not explicitly provided.
+    if results_dir is None:
+        raw_config = ProjectConfig.load()
+        if not raw_config or not raw_config.results_dir:
+            raise click.ClickException(
+                "Project not initialized. Run 'vast init <config-file>' first."
+            )
+        results_dir = raw_config.results_dir
+
+    click.echo("Starting publication...")
+    click.echo(f"Results directory: {results_dir}")
+    if override:
+        click.echo(f"Override .vast file: {override}")
+    click.echo("-" * 60)
+
+    # Run postprocessing first (unless skipped)
+    if not skip_postprocessing:
+        click.echo("Running postprocessing...")
+        pp_success, pp_message = run_postprocessing(
+            results_dir=results_dir,
+            output_callback=click.echo,
+            vast_file=override,
+        )
+        click.echo()
+        if not pp_success:
+            click.echo("\n" + "=" * 60)
+            click.echo(f"✗ Postprocessing failed: {pp_message}")
+            click.echo("=" * 60)
+            sys.exit(1)
+
+    # Run publication
+    success, message = run_publication(
+        results_dir=results_dir,
+        output_callback=click.echo,
+        vast_file=override,
+        force=force,
+    )
+
+    click.echo("\n" + "=" * 60)
+    if not success:
+        click.echo(f"\u2717 {message}", err=True)
+        sys.exit(1)
+    click.echo(f"\u2713 {message}")
 
 
 @results.command(name='merge-campaigns')
@@ -168,3 +239,48 @@ def list_postprocessing_commands():
     click.echo("        args: [--arg, value]")
     click.echo("\nCommands without parameters can be simple strings.")
     click.echo("Commands with parameters use plugin name as key with parameters as dict.")
+
+
+@results.command(name='publish-commands')
+def list_publication_plugins():
+    """List all available publication plugins.
+
+    Shows plugin names that can be used in the ``results_processing.publication`` section
+    of the configuration file, along with their descriptions and parameters.
+    """
+    plugins = load_publication_plugins()
+
+    if not plugins:
+        click.echo("No publication plugins available.")
+        click.echo("\nPublication plugins can be registered as plugins.")
+        click.echo("See documentation for how to add custom publication plugins.")
+        return
+
+    click.echo("Available publication plugins:")
+    click.echo("=" * 70)
+
+    # Sort by plugin name for consistent output
+    for plugin_name in sorted(plugins.keys()):
+        click.echo(f"\n{plugin_name}")
+
+        # Try to get the function's docstring
+        try:
+            func = plugins[plugin_name]
+            if func.__doc__:
+                # Clean up docstring and display first line
+                doc_lines = [line.strip() for line in func.__doc__.strip().split('\n') if line.strip()]
+                if doc_lines:
+                    click.echo(f"  Description: {doc_lines[0]}")
+        except Exception:
+            pass
+
+    click.echo("\n" + "=" * 70)
+    click.echo("\nUsage in configuration file:")
+    click.echo("\n  results_processing:")
+    click.echo("    publication:")
+    click.echo("    - zip:")
+    click.echo("        destination: archives/")
+    click.echo("        exclude_filter:")
+    click.echo("        - '*.pyc'")
+    click.echo("\nPlugins without parameters can be simple strings.")
+    click.echo("Plugins with parameters use plugin name as key with parameters as dict.")
