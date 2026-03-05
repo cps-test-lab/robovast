@@ -242,8 +242,7 @@ def generate_campaign_metadata(
 
     Pipeline phases:
       1. Generic structural metadata (``MetadataGenerator``)
-      2. Variation-plugin metadata hooks (``collect_config_metadata`` /
-         ``collect_run_metadata``)
+      2. Variation-plugin metadata hooks (``collect_config_metadata``)
       3. User-defined ``MetadataProcessor`` plugins
 
     Writes ``metadata.yaml`` into each campaign directory.
@@ -486,19 +485,6 @@ def _apply_variation_metadata(
                         vtype_name, config_name, e,
                     )
 
-            # Run-level metadata
-            if hasattr(cls, "collect_run_metadata"):
-                for test_result in config_entry.get("test_results", []):
-                    run_dir = campaign_dir / test_result.get("dir", "")
-                    try:
-                        extra = cls.collect_run_metadata(config_entry, run_dir, campaign_dir)
-                        if extra and isinstance(extra, dict):
-                            test_result.update(extra)
-                    except Exception as e:
-                        logger.warning(
-                            "Variation '%s' collect_run_metadata failed for '%s': %s",
-                            vtype_name, test_result.get("dir", ""), e,
-                        )
 
 
 def _apply_user_metadata_processors(

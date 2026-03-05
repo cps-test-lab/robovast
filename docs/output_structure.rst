@@ -181,7 +181,7 @@ The file is produced by a three-phase pipeline:
 
 2. **Variation-plugin metadata** — each variation plugin used during
    configuration generation can contribute additional metadata by overriding
-   the ``collect_config_metadata`` and ``collect_run_metadata`` classmethods
+   the ``collect_config_metadata`` classmethod
    defined on the ``Variation`` base class.  For example,
    ``FloorplanGeneration`` overrides ``collect_config_metadata`` to load map
    and mesh YAML metadata from ``_config/``.  The ``variations`` field in
@@ -295,15 +295,8 @@ domain-specific metadata:
                    return {"my_data": yaml.safe_load(f)}
            return {}
 
-       @classmethod
-       def collect_run_metadata(cls, config_entry, run_dir: Path,
-                                 campaign_dir: Path) -> dict:
-           """Return extra fields to merge into a run's test_results entry."""
-           return {}
-
 ``collect_config_metadata`` is called once per configuration that used the
-variation.  ``collect_run_metadata`` is called once per run directory.
-Both return a dictionary that is merged into the respective metadata entry.  
+variation and returns a dictionary that is merged into the configuration's metadata entry.
 
 For example, the ``FloorplanGeneration`` variation uses
 ``collect_config_metadata`` to load map and mesh metadata from the generated
