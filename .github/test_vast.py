@@ -213,9 +213,9 @@ def test_vast_workflow(vast_file_path, config=None):  # pylint: disable=too-many
             
             print("✓ .robovast_project file exists - environment is properly initialized")
         
-            # Step 2: vast execution local run
+            # Step 2: vast exec local run
             # Use a temporary directory for output
-            print("\n--- Step 2: vast execution local run ---")
+            print("\n--- Step 2: vast exec local run ---")
             
             cmd_exec = [
                 'poetry', 'run', '--directory', str(repo_root),
@@ -229,10 +229,10 @@ def test_vast_workflow(vast_file_path, config=None):  # pylint: disable=too-many
             result = run_command(cmd_exec, cwd=repo_root)
             
             if result != 0:
-                print("✗ vast execution local run failed")
+                print("✗ vast exec local run failed")
                 return False
             
-            print("✓ vast execution local run executed successfully")
+            print("✓ vast exec local run executed successfully")
             
             # Check output structure
             if not check_results_dir_structure(os.path.join(repo_root, "results")):
@@ -240,22 +240,22 @@ def test_vast_workflow(vast_file_path, config=None):  # pylint: disable=too-many
             
             print("✓ Output structure is valid")
             
-            # Step 3: vast analysis postprocess
-            print("\n--- Step 3: vast analysis postprocess ---")
-                        
+            # Step 3: vast results postprocess
+            print("\n--- Step 3: vast results postprocess ---")
+
             cmd_postprocess = [
                 'poetry', 'run', '--directory', str(repo_root),
-                'vast', 'analysis', 'postprocess'
+                'vast', 'results', 'postprocess'
             ]
-            
+
             # Execute in the repo root where .robovast_project exists
             result = run_command(cmd_postprocess, cwd=temp_output)
-            
+
             if result != 0:
-                print("✗ vast analysis postprocess failed")
+                print("\u2717 vast results postprocess failed")
                 return False
-            
-            print("✓ vast analysis postprocess executed successfully")
+
+            print("\u2713 vast results postprocess executed successfully")
             
             print("✓ Postprocessing completed successfully")
             
@@ -284,7 +284,7 @@ def main():
         '-c', '--config',
         type=str,
         default=None,
-        help='Configuration to run (will be passed as -c <config> to vast execution)'
+        help='Configuration to run (will be passed as -c <config> to vast exec)'
     )
     
     args = parser.parse_args()

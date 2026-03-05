@@ -434,10 +434,10 @@ Parameters are validated against the scenario file (``.osc``); only parameters d
    Parameter values must match the types expected by the scenario. If the scenario defines a parameter as a string (e.g. ``headless: string = "False"``), use quoted values.
 
 
-Analysis Section
-----------------
+Results Processing Section
+--------------------------
 
-The ``analysis`` section defines how run results should be analyzed.
+The ``results_processing`` section defines how run results should be processed after execution.
 
 postprocessing
 ^^^^^^^^^^^^^^
@@ -446,7 +446,7 @@ postprocessing
 
 **Required:** No
 
-Commands to run for postprocessing run results. These are executed before the analysis GUI is launched and typically convert raw data files into more analysis-friendly formats.
+Commands to run for postprocessing run results. These are executed before the evaluation GUI is launched and typically convert raw data files into more analysis-friendly formats.
 
 **All postprocessing commands are plugins.** Each command is specified either as:
 - A simple string (for commands without parameters)
@@ -454,7 +454,7 @@ Commands to run for postprocessing run results. These are executed before the an
 
 .. code-block:: yaml
 
-   analysis:
+   results_processing:
      postprocessing:
        - rosbags_tf_to_csv:
            frames: [base_link, turtlebot4_base_link_gt]
@@ -472,7 +472,7 @@ To list all available plugins and their descriptions:
 
 .. code-block:: bash
 
-   vast analysis postprocess-commands
+   vast results postprocess-commands
 
 **Built-in Postprocessing Plugins:**
 
@@ -486,6 +486,29 @@ To list all available plugins and their descriptions:
 
 See :ref:`extending-postprocessing` for how to add custom postprocessing plugins.
 
+metadata_processing
+^^^^^^^^^^^^^^^^^^^^
+
+**Type:** List of strings or dictionaries (plugin commands)
+
+**Required:** No
+
+Defines metadata processing plugins that run after generic metadata generation.
+
+.. code-block:: yaml
+
+   results_processing:
+     metadata_processing:
+       - my_plugin
+       - my_plugin:
+           param1: value1
+
+
+Evaluation Section
+------------------
+
+The ``evaluation`` section defines how run results should be visualized and evaluated.
+
 visualization
 ^^^^^^^^^^^^^
 
@@ -493,9 +516,9 @@ visualization
 
 **Required:** No
 
-Defines analysis notebooks for visualization in the analysis GUI. Each entry creates a tab in the GUI.
+Defines evaluation notebooks for visualization in the evaluation GUI. Each entry creates a tab in the GUI.
 
-Each dictionary can have a custom name and three reserved keys for different analysis scopes:
+Each dictionary can have a custom name and three reserved keys for different evaluation scopes:
 
 - ``run``: Path to Jupyter notebook for analyzing a single run
 - ``config``: Path to Jupyter notebook for analyzing all runs of a configuration
@@ -503,7 +526,7 @@ Each dictionary can have a custom name and three reserved keys for different ana
 
 .. code-block:: yaml
 
-   analysis:
+   evaluation:
      visualization:
      - Analysis:
          run: analysis/analysis_run.ipynb
@@ -570,13 +593,14 @@ Here's a complete example showing all major configuration options:
      - "**/models/*.sdf"
      env:
      - RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
-   analysis:
+   results_processing:
      postprocessing:
      - rosbags_tf_to_csv:
         frames: [base_link]
      - rosbags_bt_to_csv
      - rosbags_to_csv
      - rosbags_to_webm
+   evaluation:
      visualization:
      - Analysis:
          run: analysis/analysis_run.ipynb

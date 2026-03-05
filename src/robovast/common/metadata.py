@@ -56,7 +56,7 @@ class MetadataProcessor(ABC):
     Implementations are discovered via the ``robovast.metadata_processing``
     entry-point group and configured in the ``.vast`` file::
 
-        analysis:
+        results_processing:
           metadata_processing:
             - my_plugin
             - my_plugin:
@@ -439,7 +439,7 @@ def _get_metadata_processing_commands(
     results_dir: str,
     vast_file: Optional[str],
 ) -> List:
-    """Read ``analysis.metadata_processing`` from the vast file."""
+    """Read ````results_processing.metadata_processing```` from the vast file."""
     if vast_file is not None:
         vast_path = vast_file
     else:
@@ -449,8 +449,8 @@ def _get_metadata_processing_commands(
     if vast_path is None:
         return []
 
-    analysis_config = load_config(vast_path, subsection="analysis", allow_missing=True)
-    return analysis_config.get("metadata_processing", [])
+    data_config = load_config(vast_path, subsection="results_processing", allow_missing=True)
+    return data_config.get("metadata_processing", [])
 
 
 def _apply_variation_metadata(

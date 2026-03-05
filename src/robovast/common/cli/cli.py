@@ -325,6 +325,12 @@ def import_results(archive, output, force):
 
 def load_plugins():
     """Dynamically load all VAST CLI plugins from entry points."""
+    # Map of long plugin names to their short aliases
+    aliases = {
+        'configuration': 'config',
+        'execution': 'exec',
+        'evaluation': 'eval',
+    }
     try:
         eps = entry_points(group='robovast.cli_plugins')
 
@@ -335,9 +341,9 @@ def load_plugins():
                 # Add it as a subcommand to the main CLI
                 cli.add_command(plugin_group, name=ep.name)
 
-                # Add alias for configuration -> config
-                if ep.name == 'configuration':
-                    cli.add_command(plugin_group, name='config')
+                # Add short alias if defined
+                if ep.name in aliases:
+                    cli.add_command(plugin_group, name=aliases[ep.name])
             except Exception as e:
                 click.echo(f"Warning: Failed to load plugin '{ep.name}': {e}", err=True)
     except Exception as e:

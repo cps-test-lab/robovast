@@ -16,30 +16,30 @@ To run the example, execute the following commands in the base folder of the Rob
    vast init configs/examples/growth_sim/growth_sim.vast
 
    # show the configurations that will be executed
-   vast configuration list
+   vast config list
 
    # setup pods in cluster (kubernetes required)
-   vast execution cluster setup minikube
+   vast exec cluster setup minikube
     
    # execute the tests in the cluster
-   vast execution cluster run
+   vast exec cluster run
    
    # OR: execute in detached mode (exit immediately, cleanup manually)
-   # vast execution cluster run --detach
-   # vast execution cluster monitor  # shows progress per run
-   # vast execution cluster run-cleanup  # run this after jobs complete
+   # vast exec cluster run --detach
+   # vast exec cluster monitor  # shows progress per run
+   # vast exec cluster run-cleanup  # run this after jobs complete
    
    # Multiple runs can run in parallel by default. Use --cleanup to remove
    # previous runs before starting.
     
    # download results from the cluster
-   vast execution cluster download
+   vast exec cluster download
 
    # cleanup pods in cluster
-   vast execution cluster cleanup
+   vast exec cluster cleanup
 
-   # analyze the results
-   vast analysis gui
+   # evaluate the results
+   vast eval gui
 
 Introduction
 ------------
@@ -127,7 +127,7 @@ Before starting the execution in the cluster, it is recommended to first check t
 
 .. code-block:: bash
 
-   vast configuration list
+   vast config list
 
 
 Check Result of a Single Execution
@@ -139,7 +139,7 @@ The command runs the container using the ``docker`` command and the same paramet
 
 .. code-block:: bash
 
-   vast execution local run --config config1 output_config1
+   vast exec local run --config config1 output_config1
 
 
 Cluster Execution
@@ -149,7 +149,7 @@ To execute all tests in the cluster, run:
 
 .. code-block:: bash
 
-   vast execution cluster run
+   vast exec cluster run
 
 By default, this command waits for all jobs to complete and displays statistics.
 
@@ -159,7 +159,7 @@ For long-running tests, you can use the ``--detach`` (or ``-d``) flag to exit im
 
 .. code-block:: bash
 
-   vast execution cluster run --detach
+   vast exec cluster run --detach
 
 When running in detached mode:
 
@@ -172,7 +172,7 @@ To clean up after a detached run:
 
 .. code-block:: bash
 
-   vast execution cluster run-cleanup
+   vast exec cluster run-cleanup
 
 This removes all scenario execution jobs and their associated pods from the cluster.
 
@@ -183,9 +183,9 @@ The output of an execution is stored within the cluster-internal server and can 
 
 .. code-block:: bash
 
-   vast execution cluster download
+   vast exec cluster download
 
-See :ref:`output-structure` for a complete description of all files.
+See :ref:`results-processing` for a complete description of all files.
 
 
 Analysis
@@ -193,31 +193,31 @@ Analysis
 As result analysis is tailored to each test, users are expected to implement their own analysis routines.
 
 There are two steps invoked to analyze results.
-First, the results can optionally be postprocessed to simplify later analysis. The user might specify postprocessing commands in ``analysis.postprocessing`` section of the ``.vast`` configuration. Common scripts including converting ROS bags to CSV files or extracting poses from tf-data are available to improve usability.
+First, the results can optionally be postprocessed to simplify later evaluation. The user might specify postprocessing commands in the ``results_processing.postprocessing`` section of the ``.vast`` configuration. Common scripts including converting ROS bags to CSV files or extracting poses from tf-data are available to improve usability.
 
 .. code-block:: bash
 
-   vast analysis postprocess
+   vast results postprocess
 
 Postprocessing is cached based on the results directory hash. If the results directory is unchanged since the last postprocessing, the postprocessing is skipped automatically. To force postprocessing even if the results are unchanged (e.g., after updating postprocessing scripts), use the ``--force`` or ``-f`` flag:
 
 .. code-block:: bash
 
-   vast analysis postprocess --force
+   vast results postprocess --force
 
-After postprocessing, the actual analysis can be performed.
+After postprocessing, the actual evaluation can be performed.
 To simplify this process, RoboVAST provides a GUI tool, which enables users to execute Jupyter notebooks directly from a graphical interface.
 
 .. code-block:: bash
 
-   vast analysis gui
+   vast eval gui
 
-The visualization can be customized by adapting the ``analysis.visualization`` section of the ``.vast`` configuration file.
+The visualization can be customized by adapting the ``evaluation.visualization`` section of the ``.vast`` configuration file.
 
 .. literalinclude:: ../configs/examples/growth_sim/growth_sim.vast
    :language: yaml
    :lines: 32-36
-   :caption: Analysis section of RoboVAST Configuration File
+   :caption: Evaluation section of RoboVAST Configuration File
 
 Although this example includes only one entry in the analysis list, you can add more. Each additional entry will appear as a separate tab in the GUI.
 

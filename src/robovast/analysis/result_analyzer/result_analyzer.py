@@ -128,7 +128,7 @@ class RunResultsAnalyzer(QMainWindow):
             override_config_dir = str(override_vast_path.parent)
             try:
                 override_parameters = load_config(
-                    str(override_vast_path), "analysis", allow_missing=True
+                    str(override_vast_path), "evaluation", allow_missing=True
                 )
                 print(f"Using override .vast for notebook discovery: {self._override_vast}")
             except Exception as e:
@@ -161,7 +161,7 @@ class RunResultsAnalyzer(QMainWindow):
                 vast_path_str = str(vast_files[0])
                 cd = str(config_dir)
                 try:
-                    parameters = load_config(vast_path_str, "analysis", allow_missing=True)
+                    parameters = load_config(vast_path_str, "evaluation", allow_missing=True)
                 except Exception as e:
                     print(f"Warning: could not load config from {vast_path_str}: {e}")
                     continue

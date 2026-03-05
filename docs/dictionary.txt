@@ -64,3 +64,4 @@ JUnit
 sysinfo
 classmethods
 overridable
+yaml

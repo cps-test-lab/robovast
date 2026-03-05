@@ -1872,9 +1872,9 @@ execution:
   runs: 1
   run_files:
   - '**/files/*'
-analysis:
   preprocessing:
   - ../../tools/ros2_exec.sh rosbags_to_csv.py
+evaluation:
   visualization:
   - Analysis:
       run: analysis/analysis_run.ipynb

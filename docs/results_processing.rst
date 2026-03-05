@@ -1,16 +1,23 @@
-.. _output-structure:
+.. _results-processing:
+
+Results Processing
+==================
+
+Every RoboVAST execution produces a results directory with a well-defined layout.
+This page documents the output structure and how to postprocess and merge results
+using the ``vast results`` command group.
+
+
+.. _results-output-structure:
 
 Output Structure
-================
-
-Every RoboVAST execution produces a results directory with a well-defined
-layout.  This page documents the complete structure.
+----------------
 
 The results directory path is configured during ``vast init`` and stored in
 the ``.robovast_project`` file.
 
 Top-Level Layout
-----------------
+^^^^^^^^^^^^^^^^
 
 .. code-block:: text
 
@@ -24,13 +31,13 @@ Top-Level Layout
        └── <config-name-2>/
 
 Campaign-Level Directories
---------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 ``_config/`` — Configuration Snapshot
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+""""""""""""""""""""""""""""""""""""""
 
-A copy of all input files used during execution. This folder can also be used, to trigger another
-execution with the same configuration by running 
+A copy of all input files used during execution. This folder can also be used to trigger another
+execution with the same configuration by running:
 
 .. code-block:: text
 
@@ -51,7 +58,7 @@ The structure inside is domain-specific, but typically includes:
    └── <run-files defined within vast-config> # e.g. launch files, models, scripts, parameters
 
 ``_execution/`` — Execution Metadata
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+"""""""""""""""""""""""""""""""""""""
 
 .. code-block:: text
 
@@ -68,7 +75,7 @@ Contains:
 - ``cluster_info``: Node count, labels, CPU manager policies (cluster only)
 
 ``_transient/`` — Intermediate Data
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+"""""""""""""""""""""""""""""""""""""
 
 .. code-block:: text
 
@@ -85,7 +92,7 @@ configuration variant, including internal computed fields like navigation path w
 and any plugin-specific fields).
 
 Configuration Directory
------------------------
+^^^^^^^^^^^^^^^^^^^^^^^
 
 Each configuration variant gets its own directory:
 
@@ -101,7 +108,7 @@ Each configuration variant gets its own directory:
    │   └── 3d-mesh/                          # [navigation only]
    │       ├── <name>.stl                    # 3D environment mesh
    │       └── <name>.stl.yaml               # Mesh metadata
-   ├── _transient/                           # Per-config intermediate files 
+   ├── _transient/                           # Per-config intermediate files
    └── <run-number>/                         # 0, 1, 2, ... (one per run)
 
 ``scenario.config`` contains the actual scenario parameter values used for this
@@ -114,7 +121,7 @@ configuration, wrapped in a single key matching the scenario name:
      initial_population: 50
 
 Run Directory
--------------
+^^^^^^^^^^^^^
 
 Each run directory contains all output from a single execution:
 
@@ -134,7 +141,7 @@ Each run directory contains all output from a single execution:
    └── <test-specific files>                 # Domain-specific output (e.g. out.csv)
 
 ``test.xml`` — JUnit Test Result
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+"""""""""""""""""""""""""""""""""
 
 Standard JUnit XML format with scenario execution results:
 
@@ -149,7 +156,7 @@ Standard JUnit XML format with scenario execution results:
    </testsuite>
 
 ``resource_usage_*.csv`` — Resource Usage
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+""""""""""""""""""""""""""""""""""""""""""
 
 Per-container CSV files with columns: ``timestamp``, ``pid``, ``name``,
 ``cpu_usage``, ``mem_usage``.  One file per container (e.g.
@@ -158,11 +165,14 @@ Per-container CSV files with columns: ``timestamp``, ``pid``, ``name``,
 are configured.
 
 ``rosbag2/`` — ROS Bag Data
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+"""""""""""""""""""""""""""""
 
 Standard ROS 2 bag format (MCAP storage).  The ``metadata.yaml`` file
 lists all recorded topics with message types and counts.  Only present
 in ROS-based campaigns.
+
+
+.. _results-metadata:
 
 ``metadata.yaml`` — Campaign Metadata
 --------------------------------------
@@ -237,11 +247,11 @@ Metadata Processing Plugins
 
 User-defined metadata processing plugins can modify the metadata
 dictionary after the generic and variation-plugin phases.  They are
-configured in the ``.vast`` file under ``analysis.metadata_processing``:
+configured in the ``.vast`` file under ``results_processing.metadata_processing``:
 
 .. code-block:: yaml
 
-   analysis:
+   results_processing:
      metadata_processing:
        - my_metadata_plugin
        - my_metadata_plugin:
@@ -271,7 +281,7 @@ Register the plugin in your package's ``pyproject.toml``:
    my_metadata_plugin = "my_package.metadata:MyMetadataPlugin"
 
 Variation Plugin Metadata Hooks
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The ``Variation`` base class defines two overridable classmethods that
 return an empty dict by default.  Subclasses implement them to attach
@@ -298,5 +308,118 @@ domain-specific metadata:
 ``collect_config_metadata`` is called once per configuration that used the
 variation and returns a dictionary that is merged into the configuration's metadata entry.
 
-For example, the ``FloorplanGeneration`` variation uses
-``collect_config_metadata`` to load map and mesh metadata from the generated
+
+.. _results-postprocessing:
+
+Postprocessing
+--------------
+
+Postprocessing transforms raw run output (e.g. ROS bags, custom binary files) into
+analysis-friendly formats (e.g. CSV).  Commands are defined in the
+``results_processing.postprocessing`` section of the ``.vast`` file and executed by plugins
+(see :ref:`extending-postprocessing` for how to write your own).
+
+.. code-block:: bash
+
+   vast results postprocess [OPTIONS]
+
+**Options**
+
+.. option:: -r, --results-dir PATH
+
+   Directory containing the run results (parent of ``campaign-*`` folders).
+   When omitted the value configured with ``vast init`` is used.
+
+.. option:: -f, --force
+
+   Bypass the postprocessing cache and re-run all commands even if the
+   results directory has not changed since the last postprocessing run.
+
+.. option:: -o, --override VAST_FILE
+
+   Use the given ``.vast`` file instead of the one stored in
+   ``campaign-<id>/_config/``.  See :ref:`results-override` for details.
+
+Postprocessing is **cached** by a hash of the results directory.  When the
+directory is unchanged the step is skipped automatically.  Use ``--force`` (or
+``-f``) to bypass the cache, for example after updating a postprocessing script:
+
+.. code-block:: bash
+
+   vast results postprocess --force
+
+
+.. _results-merge:
+
+Merging Results
+---------------
+
+.. code-block:: bash
+
+   vast results merge-results MERGED_CAMPAIGN_DIR [OPTIONS]
+
+Merges campaign-directories with identical configs into one ``merged_campaign_dir``.
+Groups ``campaign-directory/config-directory`` by ``config_identifier`` from ``config.yaml``.
+Run folders (0, 1, 2, …) from all campaigns are renumbered and copied.
+Original campaign-directories are not modified.
+
+**Arguments**
+
+``MERGED_CAMPAIGN_DIR``
+   Target directory where the merged campaign will be written.
+
+**Options**
+
+.. option:: -r, --results-dir PATH
+
+   Source directory containing ``campaign-*`` Directory.  When omitted the value
+   configured with ``vast init`` is used.
+
+
+.. _results-postprocess-commands:
+
+Listing Postprocessing Plugins
+-------------------------------
+
+.. code-block:: bash
+
+   vast results postprocess-commands
+
+Lists all available postprocessing command plugins, their descriptions, and
+parameters.  Useful for discovering which commands can be used in the
+``results_processing.postprocessing`` section of the ``.vast`` file.
+
+
+.. _results-override:
+
+Using ``--override`` to Supply a Local ``.vast`` File
+------------------------------------------------------
+
+By default ``vast results postprocess`` reads the ``.vast`` configuration from the
+**campaign snapshot** stored in
+``<results-dir>/campaign-<id>/_config/<name>.vast``.  This snapshot is copied
+at execution time and may be out of date.
+
+``--override`` (short form ``-o``) lets you point to any ``.vast`` file on disk,
+for example your current working copy:
+
+.. code-block:: bash
+
+   # Use a local/updated .vast file
+   vast results postprocess --override my_project.vast
+
+**When to use ``--override``**
+
+- You want to apply updated postprocessing scripts to existing results without
+  triggering a new execution campaign.
+- The results were produced in a different directory and the campaign snapshot
+  points to stale paths.
+- You want to bypass the snapshot and always use the latest ``.vast`` during
+  iterative postprocessing development.
+
+.. note::
+
+   When ``--override`` is supplied, the same ``.vast`` file is used for
+   **every** ``campaign-*`` folder found under the results directory.  The
+   config directory of the override file (its parent folder) is used to
+   resolve relative paths.

@@ -245,19 +245,26 @@ def _validate_relative_path(path, description="path"):
 
 
 def _collect_analysis_input_files(parameters, base_dir=None):
-    """Collect file paths referenced in the analysis.visualization and analysis.postprocessing sections."""
+    """Collect file paths referenced in evaluation.visualization and results.postprocessing sections."""
     analysis_files = []
-    analysis = parameters.get('analysis')
-    if not analysis:
-        return analysis_files
-    if isinstance(analysis, dict):
-        visualizations = analysis.get('visualization') or []
-        postprocessing = analysis.get('postprocessing') or []
-    elif hasattr(analysis, 'visualization'):
-        visualizations = analysis.visualization or []
-        postprocessing = analysis.postprocessing or []
+
+    # Collect visualization files from evaluation section
+    evaluation = parameters.get('evaluation')
+    if isinstance(evaluation, dict):
+        visualizations = evaluation.get('visualization') or []
+    elif evaluation is not None and hasattr(evaluation, 'visualization'):
+        visualizations = evaluation.visualization or []
     else:
-        return analysis_files
+        visualizations = []
+
+    # Collect postprocessing files from results section
+    data = parameters.get('results')
+    if isinstance(data, dict):
+        postprocessing = data.get('postprocessing') or []
+    elif data is not None and hasattr(data, 'postprocessing'):
+        postprocessing = data.postprocessing or []
+    else:
+        postprocessing = []
 
     for viz_entry in visualizations:
         if isinstance(viz_entry, dict):

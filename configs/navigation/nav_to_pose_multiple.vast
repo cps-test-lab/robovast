@@ -61,12 +61,13 @@ execution:
   scenario_file: scenario.osc
   run_files:
   - "**/files/*"
-analysis:
+results_processing:
   postprocessing:
     - rosbags_to_csv
     - rosbags_tf_to_csv:
         frames: [base_link, turtlebot4_base_link_gt]
     - rosbags_bt_to_csv
+evaluation:
   visualization:
   - Analysis:
       run: analysis/analysis_run.ipynb
