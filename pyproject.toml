@@ -50,7 +50,7 @@ vast = "robovast.common.cli.cli:main"
 [tool.poetry.plugins."robovast.cli_plugins"]
 configuration = "robovast.configuration.configuration_utils.cli:configuration"
 execution = "robovast.execution.execution_utils.cli:execution"
-results = "robovast.analysis.result_analyzer.cli:results"
+results = "robovast.results_processing.cli:results"
 evaluation = "robovast.analysis.result_analyzer.cli:evaluation"
 
 [tool.poetry.plugins."robovast.cluster_configs"]
