@@ -91,16 +91,16 @@ def postprocess_cmd(results_dir, force, override):
         sys.exit(1)
 
 
-@results.command(name='merge-results')
+@results.command(name='merge-campaigns')
 @click.argument('merged_campaign_dir', type=click.Path())
 @click.option('--results-dir', '-r', default=None,
               help='Source directory containing run-\\* dirs (uses project results dir if not specified)')
 def merge_results_cmd(merged_campaign_dir, results_dir):
-    """Merge campaign-dirs with identical configs into one merged_campaign_dir.
+    """Merge campaign directories with identical configs into one merged_campaign_dir.
 
-    Groups campaign-dir/config-dir by config_identifier from config.yaml.
+    Groups campaign-directory/config-directory by config_identifier from config.yaml.
     Run folders (0, 1, 2, ...) from all campaigns are renumbered and copied.
-    Original campaign-dirs are not modified.
+    Original campaign directories are not modified.
 
     Requires project initialization with ``vast init`` first (unless ``--results-dir`` is specified).
     """

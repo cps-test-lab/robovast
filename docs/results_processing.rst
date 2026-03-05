@@ -356,7 +356,7 @@ Merging Results
 
 .. code-block:: bash
 
-   vast results merge-results MERGED_CAMPAIGN_DIR [OPTIONS]
+   vast results merge-campaigns MERGED_CAMPAIGN_DIR [OPTIONS]
 
 Merges campaign-directories with identical configs into one ``merged_campaign_dir``.
 Groups ``campaign-directory/config-directory`` by ``config_identifier`` from ``config.yaml``.
