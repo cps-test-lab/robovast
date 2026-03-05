@@ -294,15 +294,6 @@ def generate_campaign_metadata(
             generator = MetadataGenerator(campaign_dir)
             metadata = generator.generate_metadata()
 
-            output_path = campaign_dir / "tmp.yaml"
-            with open(output_path, "w", encoding="utf-8") as f:
-                yaml.dump(
-                    metadata, f,
-                    default_flow_style=False,
-                    sort_keys=False,
-                    allow_unicode=True,
-                )
-
             # Phase 2: Variation plugin metadata hooks
             _apply_variation_metadata(metadata, campaign_dir, variation_classes)
 

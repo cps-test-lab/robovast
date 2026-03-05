@@ -265,8 +265,9 @@ class FloorplanGeneration(NavVariation):
         mesh_file_parameter_name = self.parameters.name[1]
 
         results = []
-        for floorplan_name in floorplan_names:
+        for floorplan_idx, floorplan_name in enumerate(floorplan_names):
             transient = _collect_floorplan_transient_files(self.output_dir, floorplan_name)
+            fpm_file = self.parameters.floorplans[floorplan_idx]
             for config in in_configs:
                 new_config = _create_config_for_floorplan(
                     floorplan_name,
@@ -276,11 +277,18 @@ class FloorplanGeneration(NavVariation):
                     mesh_file_parameter_name,
                     self.update_config
                 )
-                if transient:
-                    new_config.setdefault('_config_transient_files', []).extend(transient)
-                    # Also expose the relative paths in the _variations entry via extras
-                    derived_from_files = [rel for rel, _abs in transient]
-                    new_config['_variation_entry_extras'] = {'derived_from_files': derived_from_files}
+                if not transient:
+                    raise FileNotFoundError(
+                        f"No generated artifacts found for floorplan '{floorplan_name}' in expected location. "
+                    )
+                
+                new_config.setdefault('_config_transient_files', []).extend(transient)
+                # Also expose the relative paths in the _variations entry via extras
+                derived_from_files = [rel for rel, _abs in transient]
+                new_config['_variation_entry_extras'] = {
+                    'derived_from_files': derived_from_files,
+                    'fpm_file': f'_config/{fpm_file}'
+                }
                 results.append(new_config)
 
         return results
@@ -318,16 +326,34 @@ class FloorplanVariation(NavVariation):
         map_file_parameter_name = self.parameters.name[0]
         mesh_file_parameter_name = self.parameters.name[1]
 
-        for floorplan_name in floorplan_names:
-            transient = _collect_floorplan_transient_files(self.output_dir, floorplan_name)
-            for config in in_configs:
-                new_config = _create_config_for_floorplan(
-                    floorplan_name,
-                    self.output_dir,
-                    config,
-                    map_file_parameter_name,
-                    mesh_file_parameter_name,
-                    self.update_config
-                )
-                if transient:
-                    new_config.setdefault('_config_transient_files', []).extend(transient)
+        results = []
+        floorplan_idx = 0
+        for variation_file_idx, variation_file in enumerate(self.parameters.variation_files):
+            for _ in range(self.parameters.num_variations):
+                floorplan_name = floorplan_names[floorplan_idx]
+                transient = _collect_floorplan_transient_files(self.output_dir, floorplan_name)
+                for config in in_configs:
+                    new_config = _create_config_for_floorplan(
+                        floorplan_name,
+                        self.output_dir,
+                        config,
+                        map_file_parameter_name,
+                        mesh_file_parameter_name,
+                        self.update_config
+                    )
+                    if transient:
+                        new_config.setdefault('_config_transient_files', []).extend(transient)
+                        # Also expose the relative paths in the _variations entry via extras
+                        derived_from_files = [rel for rel, _abs in transient]
+                        new_config['_variation_entry_extras'] = {
+                            'derived_from_files': derived_from_files,
+                            'variation_file': f'_config/{variation_file}'
+                        }
+                    else:
+                        new_config['_variation_entry_extras'] = {
+                            'variation_file': f'_config/{variation_file}'
+                        }
+                    results.append(new_config)
+                floorplan_idx += 1
+
+        return results

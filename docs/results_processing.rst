@@ -242,71 +242,8 @@ Example structure of ``metadata.yaml``:
      execution_type: cluster
      image: ghcr.io/example:latest
 
-Metadata Processing Plugins
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-User-defined metadata processing plugins can modify the metadata
-dictionary after the generic and variation-plugin phases.  They are
-configured in the ``.vast`` file under ``results_processing.metadata_processing``:
-
-.. code-block:: yaml
-
-   results_processing:
-     metadata_processing:
-       - my_metadata_plugin
-       - my_metadata_plugin:
-           param1: value1
-           param2: value2
-
-Each plugin must subclass ``robovast.common.metadata.MetadataProcessor``
-and implement the ``process_metadata`` method:
-
-.. code-block:: python
-
-   from pathlib import Path
-   from robovast.common.metadata import MetadataProcessor
-
-   class MyMetadataPlugin(MetadataProcessor):
-
-       def process_metadata(self, metadata: dict, campaign_dir: Path) -> dict:
-           # Modify metadata as needed
-           metadata["custom_field"] = "custom_value"
-           return metadata
-
-Register the plugin in your package's ``pyproject.toml``:
-
-.. code-block:: toml
-
-   [tool.poetry.plugins."robovast.metadata_processing"]
-   my_metadata_plugin = "my_package.metadata:MyMetadataPlugin"
-
-Variation Plugin Metadata Hooks
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-The ``Variation`` base class defines two overridable classmethods that
-return an empty dict by default.  Subclasses implement them to attach
-domain-specific metadata:
-
-.. code-block:: python
-
-   from pathlib import Path
-   import yaml
-   from robovast.common.variation import Variation
-
-   class MyVariation(Variation):
-
-       @classmethod
-       def collect_config_metadata(cls, config_entry, config_dir: Path,
-                                    campaign_dir: Path) -> dict:
-           """Load extra metadata from a YAML sidecar in _config/."""
-           data_file = config_dir / "_config" / "my_data.yaml"
-           if data_file.exists():
-               with open(data_file) as f:
-                   return {"my_data": yaml.safe_load(f)}
-           return {}
-
-``collect_config_metadata`` is called once per configuration that used the
-variation and returns a dictionary that is merged into the configuration's metadata entry.
+See :ref:`extending-metadata-processing` and :ref:`extending-variation-metadata`
+for how to add custom metadata processing plugins and variation metadata hooks.
 
 
 .. _results-postprocessing:
@@ -347,6 +284,68 @@ directory is unchanged the step is skipped automatically.  Use ``--force`` (or
 .. code-block:: bash
 
    vast results postprocess --force
+
+
+.. _results-publish:
+
+Publishing Results
+------------------
+
+Publication packages or distributes the results directory using plugins defined
+in the ``results_processing.publication`` section of the ``.vast`` file.  Unlike
+postprocessing (which operates per campaign run folder), publication plugins
+receive the full results directory as input and are intended for tasks like
+creating zip archives for upload or handoff.
+
+.. code-block:: bash
+
+   vast results publish [OPTIONS]
+
+**Options**
+
+.. option:: -r, --results-dir PATH
+
+   Directory containing the run results (parent of ``campaign-*`` folders).
+   When omitted the value configured with ``vast init`` is used.
+
+.. option:: -o, --override VAST_FILE
+
+   Use the given ``.vast`` file instead of the one stored in
+   ``campaign-<id>/_config/``.
+
+.. option:: -f, --force
+
+   Overwrite existing output files (e.g. zip archives) without prompting.
+   Equivalent to setting ``overwrite: true`` on every publication plugin.
+   Without this flag, plugins that find an existing output file will ask the
+   user interactively (default answer: yes / overwrite).
+
+**Example:**
+
+.. code-block:: bash
+
+   # Publish using the project-configured results directory
+   vast results publish
+
+   # Publish and overwrite any existing archives without prompting
+   vast results publish --force
+
+   # Publish a specific results directory with an override config
+   vast results publish --results-dir /path/to/results --override my_project.vast
+
+
+.. _results-publication-plugins:
+
+Listing Publication Plugins
+---------------------------
+
+.. code-block:: bash
+
+   vast results publish-commands
+
+Lists all available publication plugins, their descriptions, and parameters.
+Useful for discovering which plugins can be used in the
+``results_processing.publication`` section of the ``.vast`` file.
 
 
 .. _results-merge:

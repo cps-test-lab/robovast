@@ -219,7 +219,7 @@ def test_vast_workflow(vast_file_path, config=None):  # pylint: disable=too-many
             
             cmd_exec = [
                 'poetry', 'run', '--directory', str(repo_root),
-                'vast', 'execution', 'local', 'run', "-r", "1"
+                'vast', 'exec', 'local', 'run', "-r", "1"
             ]
             
             # Add config option if provided

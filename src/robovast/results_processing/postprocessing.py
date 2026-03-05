@@ -29,8 +29,7 @@ import yaml
 
 from robovast.common.common import load_config
 from robovast.common.metadata import generate_campaign_metadata
-from robovast.common.results_utils import (find_campaign_vast_file,
-                                           iter_run_folders)
+from robovast.common.results_utils import find_campaign_vast_file
 
 
 def load_postprocessing_plugins() -> Dict[str, callable]:
@@ -176,56 +175,59 @@ def get_postprocessing_commands(config_path: str) -> List[dict]:
             return postprocessing_cmds
 
 
-def _write_provenance_yaml_per_folder(results_dir: str, entries: List[dict]) -> None:
-    """Write postprocessing.yaml in each run folder with entries whose output is under that folder."""
-    results_path = Path(results_dir)
-    # Normalize paths to forward slashes for consistent prefix match
+def _write_provenance_yaml_campaign(
+    campaign_dir: str,
+    entries: List[dict],
+) -> None:
+    """Write postprocessing.yaml under campaign-<id>/_transient/ with all provenance entries.
 
-    def norm(s: str) -> str:
-        return str(Path(s)) if os.sep != "/" else s
+    Args:
+        campaign_dir: Path to the campaign-<id> directory.
+        entries: List of provenance entry dicts.
+    """
+    transient_dir = Path(campaign_dir) / "_transient"
+    try:
+        transient_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+    yaml_path = transient_dir / "postprocessing.yaml"
 
-    for _campaign, _config_name, _run_number, folder_path in iter_run_folders(results_dir):
-        folder_rel = norm(os.path.relpath(str(folder_path), results_dir))
-        prefix = folder_rel + os.sep
-        folder_entries = []
-        for ent in entries:
-            out = ent.get("output") or ""
-            out_norm = norm(out)
-            if not (out_norm == folder_rel or out_norm.startswith(prefix)):
-                continue
-            # Output and sources are relative to results_dir; rewrite to be relative to folder
-            try:
-                out_full = results_path / out_norm
-                out_rel = str(out_full.relative_to(folder_path))
-            except (ValueError, TypeError):
-                out_rel = out
-            sources = ent.get("sources") or []
-            sources_rel = []
-            for src in sources:
-                try:
-                    src_full = results_path / norm(src)
-                    sources_rel.append(str(src_full.relative_to(folder_path)))
-                except (ValueError, TypeError):
-                    sources_rel.append(src)
-            folder_entries.append({
-                "output": out_rel,
-                "sources": sources_rel,
-                "plugin": ent.get("plugin", ""),
-                "params": ent.get("params") or {},
-            })
-        if folder_entries:
-            yaml_path = folder_path / "postprocessing.yaml"
-            try:
-                with open(yaml_path, "w", encoding="utf-8") as f:
-                    yaml.dump(
-                        {"generated_by": "robovast", "entries": folder_entries},
-                        f,
-                        default_flow_style=False,
-                        sort_keys=False,
-                        allow_unicode=True,
-                    )
-            except OSError:
-                pass  # skip if we cannot write
+    # Paths in entries are relative to results_dir (parent of campaign_dir).
+    # Rewrite them to be relative to transient_dir so the yaml is self-contained.
+    results_dir_path = Path(campaign_dir).parent
+
+    def _rel_to_transient(p: str) -> str:
+        if not p:
+            return p
+        try:
+            return str(Path(os.path.relpath(results_dir_path / p, transient_dir)))
+        except (ValueError, TypeError):
+            return p
+
+    relative_entries = []
+    for ent in entries:
+        relative_entries.append({
+            "output": _rel_to_transient(ent.get("output") or ""),
+            "sources": [_rel_to_transient(s) for s in (ent.get("sources") or [])],
+            "plugin": ent.get("plugin", ""),
+            "params": ent.get("params") or {},
+        })
+
+    data: dict = {
+        "generated_by": "robovast",
+        "entries": relative_entries,
+    }
+    try:
+        with open(yaml_path, "w", encoding="utf-8") as f:
+            yaml.dump(
+                data,
+                f,
+                default_flow_style=False,
+                sort_keys=False,
+                allow_unicode=True,
+            )
+    except OSError:
+        pass  # skip if we cannot write
 
 
 def get_project_cache_dir(results_dir: str) -> str:
@@ -371,6 +373,9 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
             )
         output(f"Using config from: {vast_path}")
 
+    # campaign_dir is the parent of config_dir (e.g. campaign-<id>/_config/ -> campaign-<id>/)
+    campaign_dir = str(Path(config_dir).parent)
+
     # Get postprocessing commands
     commands = get_postprocessing_commands(vast_path)
 
@@ -490,8 +495,8 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         except Exception as e:
             output(f"Warning: Could not write cache files: {e}")
 
-        # Write postprocessing.yaml in each run folder
-        _write_provenance_yaml_per_folder(results_dir_abs, all_provenance_entries)
+        # Write postprocessing.yaml in campaign/_transient/
+        _write_provenance_yaml_campaign(campaign_dir, all_provenance_entries)
 
         # Generate metadata.yaml in each campaign directory
         meta_success, meta_msg = generate_campaign_metadata(
@@ -516,4 +521,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
             pass
 
         return True, "Postprocessing completed successfully!"
+
+    # On failure: write postprocessing.yaml with any provenance entries collected so far
+    _write_provenance_yaml_campaign(campaign_dir, all_provenance_entries)
     return False, "Postprocessing failed!"

@@ -210,7 +210,7 @@ class RosbagsTfToCsv(BasePostprocessingPlugin):
     def __call__(
         self,
         results_dir: str,
-        _config_dir: str,
+        config_dir: str,
         frames: Optional[List[str]] = None,
         provenance_file: Optional[str] = None,
     ) -> Tuple[bool, str]:
@@ -317,7 +317,7 @@ class RosbagsBtToCsv(BasePostprocessingPlugin):
             return False, f"Error executing rosbags_bt_to_csv: {e}"
 
 
-class RosbagActionToCsv(BasePostprocessingPlugin):
+class RosbagsActionToCsv(BasePostprocessingPlugin):
     """Extract ROS2 action feedback and status from rosbags to CSV format.
 
     Reads /<action>/_action/feedback and /<action>/_action/status topics from
@@ -454,7 +454,7 @@ class RosbagsToCsv(BasePostprocessingPlugin):
             return False, f"Error executing rosbags_to_csv: {e}"
 
 
-class RosbagToWebm(BasePostprocessingPlugin):
+class RosbagsToWebm(BasePostprocessingPlugin):
     """Convert a CompressedImage topic from rosbags to WebM video files.
 
     Extracts compressed image frames from a ROS bag file and encodes them

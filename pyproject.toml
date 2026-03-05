@@ -51,7 +51,7 @@ vast = "robovast.common.cli.cli:main"
 configuration = "robovast.configuration.configuration_utils.cli:configuration"
 execution = "robovast.execution.execution_utils.cli:execution"
 results = "robovast.results_processing.cli:results"
-evaluation = "robovast.analysis.result_analyzer.cli:evaluation"
+evaluation = "robovast.evaluation.result_analyzer.cli:evaluation"
 
 [tool.poetry.plugins."robovast.cluster_configs"]
 minikube = "robovast.execution.cluster_config.minikube:MinikubeClusterConfig"
@@ -74,7 +74,9 @@ rosbags_bt_to_csv = "robovast.results_processing.postprocessing_plugins:RosbagsB
 rosbags_to_csv = "robovast.results_processing.postprocessing_plugins:RosbagsToCsv"
 rosbags_to_webm = "robovast.results_processing.postprocessing_plugins:RosbagsToWebm"
 rosbags_action_to_csv = "robovast.results_processing.postprocessing_plugins:RosbagsActionToCsv"
-compress = "robovast.results_processing.postprocessing_plugins:Compress"
+
+[tool.poetry.plugins."robovast.publication_plugins"]
+zip = "robovast.results_processing.publication_plugins.zip:Zip"
 
 [tool.poetry.plugins."robovast.metadata_processing"]
 
