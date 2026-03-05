@@ -95,7 +95,7 @@ class BasePostprocessingPlugin:
         return []
 
 
-class CommandPlugin(BasePostprocessingPlugin):
+class Command(BasePostprocessingPlugin):
     """Execute an arbitrary command or script.
 
     Generic plugin that allows execution of any command or script path.
