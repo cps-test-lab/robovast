@@ -72,6 +72,7 @@ def get_app_version() -> str:
     # 3. Final fallback
     return 'unknown'
 
+
 logger = logging.getLogger(__name__)
 
 

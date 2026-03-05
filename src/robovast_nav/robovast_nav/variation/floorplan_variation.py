@@ -178,8 +178,8 @@ class FloorplanGeneration(NavVariation):
                 v.pop("derived_from_files", None)
                 break
 
-
         # Overwrite derived_from with the recorded transient file paths
+
         def overwrite_derived_from(data, files):
             if isinstance(data, dict):
                 if 'derived_from' in data:

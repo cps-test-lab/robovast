@@ -38,11 +38,8 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-from .campaign_data import (
-    read_execution_metadata,
-    read_sysinfo,
-    read_test_result,
-)
+from .campaign_data import (read_execution_metadata, read_sysinfo,
+                            read_test_result)
 from .common import load_config
 from .results_utils import find_campaign_vast_file
 
@@ -84,7 +81,6 @@ class MetadataProcessor(ABC):
         Returns:
             The (possibly modified) metadata dictionary.
         """
-        pass
 
 
 # ---------------------------------------------------------------------------
