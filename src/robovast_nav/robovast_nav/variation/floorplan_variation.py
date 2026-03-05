@@ -178,6 +178,18 @@ class FloorplanGeneration(NavVariation):
                 v.pop("derived_from_files", None)
                 break
 
+
+        # Overwrite derived_from with the recorded transient file paths
+        def overwrite_derived_from(data, files):
+            if isinstance(data, dict):
+                if 'derived_from' in data:
+                    data['derived_from'] = files
+                for v in data.values():
+                    overwrite_derived_from(v, files)
+            elif isinstance(data, list):
+                for item in data:
+                    overwrite_derived_from(item, files)
+
         for key, value in config_params.items():
             if not isinstance(value, str):
                 continue
@@ -194,17 +206,6 @@ class FloorplanGeneration(NavVariation):
                 yaml_path = campaign_dir / (candidate + ".yaml")
             else:
                 continue
-
-            # Overwrite derived_from with the recorded transient file paths
-            def overwrite_derived_from(data, files):
-                if isinstance(data, dict):
-                    if 'derived_from' in data:
-                        data['derived_from'] = files
-                    for v in data.values():
-                        overwrite_derived_from(v, files)
-                elif isinstance(data, list):
-                    for item in data:
-                        overwrite_derived_from(item, files)
 
             if yaml_path.exists():
                 try:
@@ -317,7 +318,6 @@ class FloorplanVariation(NavVariation):
         map_file_parameter_name = self.parameters.name[0]
         mesh_file_parameter_name = self.parameters.name[1]
 
-        results = []
         for floorplan_name in floorplan_names:
             transient = _collect_floorplan_transient_files(self.output_dir, floorplan_name)
             for config in in_configs:
