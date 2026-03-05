@@ -56,7 +56,7 @@ def execute_variation(base_dir, configs, variation_class, parameters, general_pa
 
     # Collect transient (intermediate) files after variation has run
     campaign_transient_files = variation.get_campaign_transient_files()
-    config_transient_files = variation.get_config_transient_files()
+    config_transient_files = []
 
     logger.debug(f"Variation {variation_class.__name__} completed successfully")
     return configs, input_files, campaign_transient_files, config_transient_files
@@ -446,7 +446,6 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         "_run_files": run_files,
         "_input_files": campaign_input_files,
         "_transient_files": campaign_transient_files,
-        "_config_transient_files": config_transient_files,
         "execution": execution_params,
         "created_at": datetime.now().isoformat()
     }

@@ -123,22 +123,6 @@ class Variation():
         """
         return []
 
-    def get_config_transient_files(self):
-        """Return intermediate files to be placed under each config's ``_transient/`` directory.
-
-        Override in subclasses to report files created as intermediate artifacts
-        that are specific to individual configurations.  These files will be
-        copied into ``campaign-<id>/<config-name>/_transient/``.
-
-        Must be called after :meth:`variation` has been executed.
-
-        Returns:
-            list[tuple[str, str, str]]: List of ``(config_name, relative_path, absolute_path)``
-                tuples.  ``relative_path`` is the destination inside
-                ``<config-name>/_transient/``.
-        """
-        return []
-
     def progress_update(self, msg):
         self.progress_update_callback(f"{self.__class__.__name__}: {msg}")
 

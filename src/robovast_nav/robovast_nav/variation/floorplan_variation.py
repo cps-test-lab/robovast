@@ -41,19 +41,6 @@ if hasattr(_NoDatetimeLoader, 'yaml_implicit_resolvers'):
     }
 
 
-def _list_jsonld_files(output_dir, floorplan_name):
-    """Return sorted list of relative paths of JSON-LD files for a floorplan (relative to output_dir)."""
-    jsonld_dir = os.path.join(output_dir, floorplan_name, 'json-ld')
-    if not os.path.isdir(jsonld_dir):
-        return []
-    result = []
-    for dirpath, _dirnames, filenames in os.walk(jsonld_dir):
-        for filename in filenames:
-            abs_path = os.path.join(dirpath, filename)
-            result.append(os.path.relpath(abs_path, output_dir))
-    return sorted(result)
-
-
 def _collect_floorplan_transient_files(output_dir, floorplan_name):
     """Collect intermediate files (json-ld, fpm) for a specific floorplan.
 
@@ -223,9 +210,6 @@ class FloorplanGeneration(NavVariation):
     def get_input_files(self):
         return list(self.parameters.floorplans)
 
-    def get_config_transient_files(self):
-        return self._config_transient_files
-
     def variation(self, in_configs):
         """Generate artifacts for each floorplan and create configurations.
 
@@ -243,7 +227,6 @@ class FloorplanGeneration(NavVariation):
             FileNotFoundError: If floorplan files or generated artifacts are not found.
         """
         self.progress_update("Running Floorplan Generation...")
-        self._config_transient_files = []
 
         # If no input configs, create initial empty config
         if not in_configs or len(in_configs) == 0:
@@ -269,7 +252,6 @@ class FloorplanGeneration(NavVariation):
 
         results = []
         for floorplan_name in floorplan_names:
-            jsonld_files = _list_jsonld_files(self.output_dir, floorplan_name)
             transient = _collect_floorplan_transient_files(self.output_dir, floorplan_name)
             for config in in_configs:
                 new_config = _create_config_for_floorplan(
@@ -280,10 +262,8 @@ class FloorplanGeneration(NavVariation):
                     mesh_file_parameter_name,
                     self.update_config
                 )
-                if jsonld_files:
-                    new_config['_jsonld_files'] = jsonld_files
-                for rel_path, abs_path in transient:
-                    self._config_transient_files.append((new_config['name'], rel_path, abs_path))
+                if transient:
+                    new_config.setdefault('_config_transient_files', []).extend(transient)
                 results.append(new_config)
 
         return results
@@ -298,12 +278,8 @@ class FloorplanVariation(NavVariation):
     def get_input_files(self):
         return list(self.parameters.variation_files)
 
-    def get_config_transient_files(self):
-        return self._config_transient_files
-
     def variation(self, in_configs):
         self.progress_update("Running Floorplan Variation...")
-        self._config_transient_files = []
 
         # If no input configs, create initial empty config
         if not in_configs or len(in_configs) == 0:
@@ -327,7 +303,6 @@ class FloorplanVariation(NavVariation):
 
         results = []
         for floorplan_name in floorplan_names:
-            jsonld_files = _list_jsonld_files(self.output_dir, floorplan_name)
             transient = _collect_floorplan_transient_files(self.output_dir, floorplan_name)
             for config in in_configs:
                 new_config = _create_config_for_floorplan(
@@ -338,10 +313,5 @@ class FloorplanVariation(NavVariation):
                     mesh_file_parameter_name,
                     self.update_config
                 )
-                if jsonld_files:
-                    new_config['_jsonld_files'] = jsonld_files
-                for rel_path, abs_path in transient:
-                    self._config_transient_files.append((new_config['name'], rel_path, abs_path))
-                results.append(new_config)
-
-        return results
+                if transient:
+                    new_config.setdefault('_config_transient_files', []).extend(transient)
