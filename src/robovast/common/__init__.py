@@ -24,7 +24,6 @@ __all__ = [
     'filter_configs',
     'get_scenario_parameters',
     'is_scenario_parameter',
-    'run_postprocessing',
     'get_campaign',
     'generate_execution_yaml_script',
     'create_execution_yaml',

@@ -193,13 +193,7 @@ class CommandPlugin(BasePostprocessingPlugin):
             return False, f"Error executing command: {e}"
 
 
-# Keep the module-level name so that the entry-point registration
-# ``command = "robovast.results_processing.postprocessing_plugins:command"`` continues to
-# work without any change to pyproject.toml.
-command = CommandPlugin
-
-
-class RosbagsTfToCsvPlugin(BasePostprocessingPlugin):
+class RosbagsTfToCsv(BasePostprocessingPlugin):
     """Convert ROS TF (transform) data from rosbags to CSV format.
 
     Extracts transformation data from ROS bag files and converts it to CSV
@@ -265,11 +259,7 @@ class RosbagsTfToCsvPlugin(BasePostprocessingPlugin):
             return False, f"Error executing rosbags_tf_to_csv: {e}"
 
 
-# Module-level alias for entry point
-rosbags_tf_to_csv = RosbagsTfToCsvPlugin
-
-
-class RosbagsBtToCsvPlugin(BasePostprocessingPlugin):
+class RosbagsBtToCsv(BasePostprocessingPlugin):
     """Convert ROS behavior tree data from rosbags to CSV format.
 
     Extracts behavior tree execution logs from ROS bag files and converts
@@ -327,11 +317,7 @@ class RosbagsBtToCsvPlugin(BasePostprocessingPlugin):
             return False, f"Error executing rosbags_bt_to_csv: {e}"
 
 
-# Module-level alias for entry point
-rosbags_bt_to_csv = RosbagsBtToCsvPlugin
-
-
-class RosbagActionToCsvPlugin(BasePostprocessingPlugin):
+class RosbagActionToCsv(BasePostprocessingPlugin):
     """Extract ROS2 action feedback and status from rosbags to CSV format.
 
     Reads /<action>/_action/feedback and /<action>/_action/status topics from
@@ -402,11 +388,7 @@ class RosbagActionToCsvPlugin(BasePostprocessingPlugin):
             return False, f"Error executing rosbags_action_to_csv: {e}"
 
 
-# Module-level alias for entry point
-rosbags_action_to_csv = RosbagActionToCsvPlugin
-
-
-class RosbagsToCsvPlugin(BasePostprocessingPlugin):
+class RosbagsToCsv(BasePostprocessingPlugin):
     """Convert all ROS messages from rosbags to CSV format.
 
     Extracts all message data from ROS bag files and converts each topic
@@ -472,11 +454,7 @@ class RosbagsToCsvPlugin(BasePostprocessingPlugin):
             return False, f"Error executing rosbags_to_csv: {e}"
 
 
-# Module-level alias for entry point
-rosbags_to_csv = RosbagsToCsvPlugin
-
-
-class RosbagToWebmPlugin(BasePostprocessingPlugin):
+class RosbagToWebm(BasePostprocessingPlugin):
     """Convert a CompressedImage topic from rosbags to WebM video files.
 
     Extracts compressed image frames from a ROS bag file and encodes them
@@ -545,11 +523,7 @@ class RosbagToWebmPlugin(BasePostprocessingPlugin):
             return False, f"Error executing rosbags_to_webm: {e}"
 
 
-# Module-level alias for entry point
-rosbags_to_webm = RosbagToWebmPlugin
-
-
-class CompressPlugin(BasePostprocessingPlugin):
+class Compress(BasePostprocessingPlugin):
     """Create a gzipped tarball for each campaign-* directory (runs on host).
 
     For each direct subdirectory of results_dir whose name starts with ``campaign-``,
@@ -650,6 +624,3 @@ class CompressPlugin(BasePostprocessingPlugin):
             return True, "No campaign-* directories found or all tarballs already exist (use overwrite: true to recreate)"
         return True, f"Created tarballs: {', '.join(created)}"
 
-
-# Module-level alias for entry point
-compress = CompressPlugin
