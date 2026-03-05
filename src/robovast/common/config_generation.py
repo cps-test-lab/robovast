@@ -296,7 +296,8 @@ def _collect_analysis_input_files(parameters, base_dir=None):
     # execution time.
     if base_dir and postprocessing:
         # Lazy import to avoid circular dependency at module load time.
-        from robovast.results_processing.postprocessing import load_postprocessing_plugins  # pylint: disable=import-outside-toplevel
+        from robovast.results_processing.postprocessing import \
+            load_postprocessing_plugins  # pylint: disable=import-outside-toplevel
         plugins = load_postprocessing_plugins()
         for pp_entry in postprocessing:
             if isinstance(pp_entry, str):

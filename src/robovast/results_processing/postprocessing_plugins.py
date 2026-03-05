@@ -623,4 +623,3 @@ class Compress(BasePostprocessingPlugin):
         if not created:
             return True, "No campaign-* directories found or all tarballs already exist (use overwrite: true to recreate)"
         return True, f"Created tarballs: {', '.join(created)}"
-

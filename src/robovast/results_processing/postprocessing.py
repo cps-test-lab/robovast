@@ -29,7 +29,8 @@ import yaml
 
 from robovast.common.common import load_config
 from robovast.common.metadata import generate_campaign_metadata
-from robovast.common.results_utils import find_campaign_vast_file, iter_run_folders
+from robovast.common.results_utils import (find_campaign_vast_file,
+                                           iter_run_folders)
 
 
 def load_postprocessing_plugins() -> Dict[str, callable]:
