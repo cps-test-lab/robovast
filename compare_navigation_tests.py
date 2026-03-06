@@ -9,6 +9,7 @@ distribution fitting, and compares test types using nonparametric methods.
 import argparse
 import csv
 import os
+import re
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -1922,6 +1923,328 @@ def resolve_variant_path(variant_identifier: str, input_dir: str) -> Optional[Pa
     return None
 
 
+def discover_variant_directories(parent_dir: str) -> List[Path]:
+    """Discover variant directories containing numbered run subdirectories."""
+    parent_path = Path(parent_dir)
+    if not parent_path.is_dir():
+        return []
+
+    variant_paths: List[Path] = []
+    for subdir in sorted(parent_path.iterdir()):
+        if not subdir.is_dir():
+            continue
+        run_dirs = [d for d in subdir.iterdir() if d.is_dir() and d.name.isdigit()]
+        if run_dirs:
+            variant_paths.append(subdir)
+
+    return variant_paths
+
+
+def parse_variant_base_and_version(variant_name: str) -> Tuple[str, Tuple[int, ...]]:
+    """Split variant name into base and numeric version suffix if present."""
+    match = re.match(r'^(?P<base>.+?)-(?P<suffix>\d+(?:-\d+)*)$', variant_name)
+    if not match:
+        return variant_name, ()
+
+    base_name = match.group('base')
+    version_tokens = tuple(int(token) for token in match.group('suffix').split('-'))
+    return base_name, version_tokens
+
+
+def variant_sort_key(variant_path: Path) -> Tuple[int, Tuple[int, ...], str]:
+    """Sort variants by parsed numeric version when available, then by name."""
+    _, version_tokens = parse_variant_base_and_version(variant_path.name)
+    has_version = 0 if len(version_tokens) > 0 else 1
+    return has_version, version_tokens, variant_path.name
+
+
+def group_variants_by_base(parent_dir: str) -> Dict[str, List[Path]]:
+    """Group discovered variants by their base name (without trailing numeric suffix)."""
+    grouped: Dict[str, List[Path]] = {}
+    for variant_path in discover_variant_directories(parent_dir):
+        base_name, _ = parse_variant_base_and_version(variant_path.name)
+        grouped.setdefault(base_name, []).append(variant_path)
+
+    for base_name in grouped:
+        grouped[base_name] = sorted(grouped[base_name], key=variant_sort_key)
+
+    return grouped
+
+
+def extract_metric_array_for_combined_variants(
+    variant_paths: List[Path],
+    metric: str,
+    successful_only: bool = False,
+) -> Optional[np.ndarray]:
+    """Extract and combine metric data from multiple variant instances across directories."""
+    all_values = []
+    for variant_path in variant_paths:
+        metric_data = extract_metric_array_for_variant(
+            str(variant_path),
+            metric,
+            successful_only=successful_only,
+        )
+        if metric_data is not None and len(metric_data) > 0:
+            all_values.extend(metric_data)
+    
+    if not all_values:
+        return None
+    
+    combined = np.array(all_values, dtype=float)
+    # Debug: print how many instances were combined and total data points
+    if len(variant_paths) > 1:
+        print(f"    [{metric}] Combined {len(variant_paths)} instances = {len(all_values)} total data points", file=sys.stderr)
+    
+    return combined
+
+
+def group_variants_by_name_across_dirs(input_dirs: List[str]) -> Dict[str, List[Path]]:
+    """Discover variants across all directories and group by exact variant name."""
+    grouped: Dict[str, List[Path]] = {}
+    
+    for input_dir in input_dirs:
+        variant_paths = discover_variant_directories(input_dir)
+        for variant_path in variant_paths:
+            variant_name = variant_path.name
+            grouped.setdefault(variant_name, []).append(variant_path)
+    
+    return grouped
+
+
+def run_standard_compare_for_multi_dir(
+    input_dirs: List[str],
+    metrics: List[str],
+    output_dir: str,
+    successful_only: bool = False,
+    no_display: bool = False,
+    no_histograms: bool = False,
+    save_command: bool = True,
+) -> bool:
+    """
+    Run standard comparison combining variant instances from multiple input directories.
+    
+    For each base variant type, creates a subdirectory under output_dir,
+    combines runs from matching variants across all input directories,
+    and runs standard comparison with first variant in each group as source.
+    """
+    # Group by exact variant name across all directories
+    grouped_by_name = group_variants_by_name_across_dirs(input_dirs)
+    
+    print(f"Debug: Found {len(grouped_by_name)} unique variant names across {len(input_dirs)} input directories", file=sys.stderr)
+    for var_name in sorted(grouped_by_name.keys())[:3]:
+        instances = len(grouped_by_name[var_name])
+        print(f"  {var_name}: {instances} instances", file=sys.stderr)
+    if len(grouped_by_name) > 3:
+        print(f"  ... and {len(grouped_by_name) - 3} more", file=sys.stderr)
+    
+    # Group combined variants by base name
+    grouped_by_base: Dict[str, Dict[str, List[Path]]] = {}
+    for variant_name, variant_instances in grouped_by_name.items():
+        base_name, _ = parse_variant_base_and_version(variant_name)
+        grouped_by_base.setdefault(base_name, {})[variant_name] = variant_instances
+    
+    any_metric_processed = False
+    
+    for base_name in sorted(grouped_by_base.keys()):
+        variants_in_base = grouped_by_base[base_name]
+        
+        if len(variants_in_base) < 2:
+            print(f"Warning: Base '{base_name}' has < 2 variants (skipped)", file=sys.stderr)
+            continue
+        
+        # Create per-base output directory
+        group_output_dir = os.path.join(output_dir, base_name)
+        os.makedirs(group_output_dir, exist_ok=True)
+        
+        print(f"\nBase '{base_name}': {len(variants_in_base)} variants, output='{group_output_dir}'")
+        
+        # Sort variant names for consistent ordering
+        sorted_variant_names = sorted(
+            variants_in_base.keys(),
+            key=lambda vn: parse_variant_base_and_version(vn)[1]
+        )
+        
+        for metric in metrics:
+            metric_label = get_metric_label(metric)
+            variant_results = []
+            
+            for variant_idx, variant_name in enumerate(sorted_variant_names):
+                variant_instances = variants_in_base[variant_name]
+                is_source = (variant_idx == 0)
+                
+                # Extract and combine metric data from all instances of this variant
+                combined_data = extract_metric_array_for_combined_variants(
+                    variant_instances,
+                    metric,
+                    successful_only=successful_only,
+                )
+                
+                if combined_data is None or len(combined_data) == 0:
+                    print(
+                        f"Warning: {variant_name} has no {metric} data (skipped for this metric)",
+                        file=sys.stderr,
+                    )
+                    continue
+                
+                _, analysis = analyze_distribution_fit(combined_data)
+                variant_results.append({
+                    'name': variant_name,
+                    'path': str(variant_instances[0]),
+                    'is_source': is_source,
+                    'data': combined_data,
+                    'analysis': analysis,
+                })
+            
+            source_results = [r for r in variant_results if r['is_source']]
+            dependent_results = [r for r in variant_results if not r['is_source']]
+            
+            if len(source_results) != 1:
+                print(
+                    f"Warning: {base_name} has no source variant with {metric} data (skipped)",
+                    file=sys.stderr,
+                )
+                continue
+            
+            if len(dependent_results) == 0:
+                print(
+                    f"Warning: {base_name} has no dependent variants with {metric} data (skipped)",
+                    file=sys.stderr,
+                )
+                continue
+            
+            source_result = source_results[0]
+            
+            if not no_display:
+                for result in variant_results:
+                    print_distribution_analysis(result['name'], result['analysis'], metric_label)
+            
+            summary_text = print_standard_compare_summary(
+                metric_label,
+                source_result,
+                dependent_results,
+                all_results=variant_results
+            )
+            
+            show_histograms = not no_histograms
+            plot_path = plot_standard_comparison_metric(
+                metric,
+                metric_label,
+                variant_results,
+                group_output_dir,
+                show_histogram=show_histograms
+            )
+            summary_csv = save_standard_compare_summary_csv(metric, source_result, dependent_results, group_output_dir)
+            summary_txt = save_standard_compare_summary_txt(metric, metric_label, summary_text, group_output_dir)
+            
+            print(f"  Multi-directory comparison plot ({metric}): {plot_path}")
+            print(f"  Multi-directory comparison summary ({metric}): {summary_csv}")
+            print(f"  Multi-directory comparison summary text ({metric}): {summary_txt}")
+            any_metric_processed = True
+    
+    if save_command and any_metric_processed:
+        command_file = save_command_to_file(output_dir)
+        print(f"\nCommand saved to: {command_file}")
+    
+    return any_metric_processed
+
+
+def run_standard_compare_for_variants(
+    source_path: Path,
+    dependent_paths: List[Path],
+    metrics: List[str],
+    output_dir: str,
+    successful_only: bool = False,
+    no_display: bool = False,
+    no_histograms: bool = False,
+    save_command: bool = True,
+) -> bool:
+    """Run standard comparison for source vs dependents and save outputs."""
+    all_variants = [(source_path.name, source_path, True)] + [
+        (dep_path.name, dep_path, False) for dep_path in dependent_paths
+    ]
+
+    any_metric_processed = False
+
+    for metric in metrics:
+        metric_label = get_metric_label(metric)
+        variant_results = []
+
+        for variant_name, variant_path, is_source in all_variants:
+            metric_data = extract_metric_array_for_variant(
+                str(variant_path),
+                metric,
+                successful_only=successful_only,
+            )
+
+            if metric_data is None or len(metric_data) == 0:
+                print(
+                    f"Warning: No valid {metric} data for variant '{variant_name}' (skipped for this metric)",
+                    file=sys.stderr,
+                )
+                continue
+
+            _, analysis = analyze_distribution_fit(metric_data)
+            variant_results.append({
+                'name': variant_name,
+                'path': str(variant_path),
+                'is_source': is_source,
+                'data': metric_data,
+                'analysis': analysis,
+            })
+
+        source_results = [result for result in variant_results if result['is_source']]
+        dependent_results = [result for result in variant_results if not result['is_source']]
+
+        if len(source_results) != 1:
+            print(
+                f"Warning: Source variant missing valid {metric} data; skipping metric",
+                file=sys.stderr,
+            )
+            continue
+
+        if len(dependent_results) == 0:
+            print(
+                f"Warning: No dependent variants with valid {metric} data; skipping metric",
+                file=sys.stderr,
+            )
+            continue
+
+        source_result = source_results[0]
+
+        if not no_display:
+            for result in variant_results:
+                print_distribution_analysis(result['name'], result['analysis'], metric_label)
+
+        summary_text = print_standard_compare_summary(
+            metric_label,
+            source_result,
+            dependent_results,
+            all_results=variant_results,
+        )
+
+        show_histograms = not no_histograms
+        plot_path = plot_standard_comparison_metric(
+            metric,
+            metric_label,
+            variant_results,
+            output_dir,
+            show_histogram=show_histograms,
+        )
+        summary_csv = save_standard_compare_summary_csv(metric, source_result, dependent_results, output_dir)
+        summary_txt = save_standard_compare_summary_txt(metric, metric_label, summary_text, output_dir)
+
+        print(f"Standard comparison plot ({metric}): {plot_path}")
+        print(f"Standard comparison summary ({metric}): {summary_csv}")
+        print(f"Standard comparison summary text ({metric}): {summary_txt}")
+        any_metric_processed = True
+
+    if save_command and any_metric_processed:
+        command_file = save_command_to_file(output_dir)
+        print(f"Command saved to: {command_file}")
+
+    return any_metric_processed
+
+
 def get_metric_label(metric: str) -> str:
     """Get plot/print label for metric key."""
     metric_labels = {
@@ -2246,18 +2569,11 @@ def plot_standard_comparison_metric(metric: str, metric_label: str, variant_resu
         params = fit_info.get('parameters')
         if best_fit in dist_map and params is not None:
             try:
-                # Handle discrete distributions (use pmf with integer x-values)
-                if best_fit == 'poisson':
-                    x_vals_plot = np.arange(int(x_min), int(x_max) + 1)
-                    y_vals = dist_map[best_fit].pmf(x_vals_plot, *params)
-                else:
-                    x_vals_plot = x_vals
-                    y_vals = dist_map[best_fit].pdf(x_vals_plot, *params)
-                
+                y_vals = dist_map[best_fit].pdf(x_vals, *params)
                 finite_mask = np.isfinite(y_vals)
                 if np.any(finite_mask):
                     y_vals_clean = y_vals[finite_mask]
-                    x_vals_clean = x_vals_plot[finite_mask]
+                    x_vals_clean = x_vals[finite_mask]
                     peak_y_vals.append(float(np.max(y_vals_clean)))
                     ax.plot(x_vals_clean, y_vals_clean, color=color, linewidth=2.0, label=label)
                 else:
@@ -2416,6 +2732,15 @@ Examples:
     # Use -i as the parent directory that contains variant folders
     python3 compare_navigation_tests.py --standard-compare variant_1 variant_2 variant_3 -i /path/to/variants -o outputs -m time distance
 
+    # Auto-grouped standard comparison for all variant types in a run directory
+    # Automatically runs all metrics: time, distance, localization error mean, localization error variance
+    python3 compare_navigation_tests.py --standard-compare-all /path/to/run_dir -o outputs --no-histograms
+
+    # Multi-directory standard comparison: combine variants from multiple run directories
+    # Merges mt-add-1-1-1 from run-2026-1 and run-2026-2 (combining 25+25=50 runs for higher confidence)
+    # Automatically runs all metrics on combined variants
+    python3 compare_navigation_tests.py --standard-compare-multi-dir /path/to/run-2026-1 /path/to/run-2026-2 -o outputs --no-histograms
+
   # Analyze pose variance correlation within a single test type
   # Shows how variation in start/goal poses affects distance variance
   python3 compare_navigation_tests.py --pose-variance /path/to/test_type_geometric_1 -o outputs
@@ -2444,6 +2769,15 @@ Examples:
     parser.add_argument('--standard-compare', nargs='+',
                        help='Standard comparison mode: first variant is source, remaining variants are dependents. '
                             'Use -i as parent directory containing variant folders, and -o for outputs')
+    parser.add_argument('--standard-compare-all',
+                       help='Automatically group variants in a directory by base name and run standard comparison '
+                           'for each group. First variant in each sorted group is source. Automatically runs all '
+                           'metrics (time, distance, loc_error_mean, loc_error_var).')
+    parser.add_argument('--standard-compare-multi-dir', nargs='+',
+                       help='Combine variants with same name from multiple directories and run standard comparison. '
+                            'Takes 2+ directory paths. Variants are grouped by base name; matching variants from all '
+                            'directories are merged (combining runs for higher confidence). First variant in each group '
+                            'is source. Automatically runs all metrics (time, distance, loc_error_mean, loc_error_var).')
     parser.add_argument('--sum-method', choices=['pairwise', 'convolution', 'monte_carlo', 'bootstrap'],
                        default='pairwise',
                        help='Method for summing distributions. pairwise: by index (smaller variance); '
@@ -2489,6 +2823,8 @@ Examples:
         and not args.compare
         and not args.sum
         and not args.standard_compare
+        and not args.standard_compare_all
+        and not args.standard_compare_multi_dir
         and not args.pose_variance
         and not args.pose_dist_variance
         and not args.pose_diff_vs_source
@@ -2509,10 +2845,10 @@ Examples:
         sys.exit(1)
 
     # Set input directory to output directory if not specified (for backward compatibility)
-    if args.input_dir is None:
+    if args.input_dir is None and not args.standard_compare_all and not args.standard_compare_multi_dir:
         args.input_dir = args.output_dir
     
-    if not os.path.isdir(args.input_dir):
+    if args.input_dir is not None and not os.path.isdir(args.input_dir):
         print(f"Error: Input directory does not exist: {args.input_dir}", file=sys.stderr)
         sys.exit(1)
     
@@ -2523,17 +2859,7 @@ Examples:
             print(f"Error: --auto-variants path is not a valid directory: {args.auto_variants}", file=sys.stderr)
             sys.exit(1)
         
-        # Find all subdirectories that contain run folders (0, 1, 2, etc.)
-        # These are candidate variants
-        variant_paths = []
-        for subdir in sorted(parent_dir.iterdir()):
-            if not subdir.is_dir():
-                continue
-            
-            # Check if this looks like a variant directory by looking for run subdirectories
-            run_dirs = [d for d in subdir.iterdir() if d.is_dir() and d.name.isdigit()]
-            if run_dirs:
-                variant_paths.append(str(subdir))
+        variant_paths = [str(path) for path in discover_variant_directories(str(parent_dir))]
         
         if not variant_paths:
             print(f"Warning: No variant directories found in {args.auto_variants}", file=sys.stderr)
@@ -2784,6 +3110,88 @@ Examples:
                 command_file = save_command_to_file(args.output_dir)
                 print(f"Command saved to: {command_file}")
 
+    # Multi-directory standard comparison: combine variants from multiple run directories
+    if args.standard_compare_multi_dir:
+        if len(args.standard_compare_multi_dir) < 2:
+            print(
+                "Error: --standard-compare-multi-dir requires at least 2 directories",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        
+        # Validate all directories exist
+        for dir_path in args.standard_compare_multi_dir:
+            if not os.path.isdir(dir_path):
+                print(f"Error: Directory does not exist: {dir_path}", file=sys.stderr)
+                sys.exit(1)
+        
+        all_metrics = ['time', 'distance', 'loc_error_mean', 'loc_error_var']
+        
+        print(
+            f"Running multi-directory standard comparison on {len(args.standard_compare_multi_dir)} directories"
+        )
+        
+        run_standard_compare_for_multi_dir(
+            input_dirs=args.standard_compare_multi_dir,
+            metrics=all_metrics,
+            output_dir=args.output_dir,
+            successful_only=args.successful_only,
+            no_display=args.no_display,
+            no_histograms=args.no_histograms,
+            save_command=True,
+        )
+
+    # Standard comparison for all grouped variant types in a directory
+    if args.standard_compare_all:
+        grouped_variants = group_variants_by_base(args.standard_compare_all)
+
+        if len(grouped_variants) == 0:
+            print(
+                f"Error: No variant directories found in '{args.standard_compare_all}'",
+                file=sys.stderr,
+            )
+        else:
+            all_metrics = ['time', 'distance', 'loc_error_mean', 'loc_error_var']
+            if args.metrics != ['time', 'distance']:
+                print(
+                    "Info: --standard-compare-all ignores --metrics and always runs all metrics: "
+                    "time, distance, loc_error_mean, loc_error_var"
+                )
+
+            print(
+                f"Running grouped standard comparison on {len(grouped_variants)} variant group(s) in "
+                f"'{args.standard_compare_all}'"
+            )
+
+            for base_name in sorted(grouped_variants.keys()):
+                variant_paths = grouped_variants[base_name]
+                if len(variant_paths) < 2:
+                    print(
+                        f"Warning: Group '{base_name}' has fewer than 2 variants (skipped)",
+                        file=sys.stderr,
+                    )
+                    continue
+
+                source_path = variant_paths[0]
+                dependent_paths = variant_paths[1:]
+                group_output_dir = os.path.join(args.output_dir, base_name)
+
+                print(
+                    f"\nGroup '{base_name}': source='{source_path.name}', "
+                    f"dependents={len(dependent_paths)}, output='{group_output_dir}'"
+                )
+
+                run_standard_compare_for_variants(
+                    source_path=source_path,
+                    dependent_paths=dependent_paths,
+                    metrics=all_metrics,
+                    output_dir=group_output_dir,
+                    successful_only=args.successful_only,
+                    no_display=args.no_display,
+                    no_histograms=args.no_histograms,
+                    save_command=True,
+                )
+
     # Standard comparison: source variant vs dependent variants
     if args.standard_compare:
         if len(args.standard_compare) < 2:
@@ -2824,75 +3232,16 @@ Examples:
                         f"dependents={len(dependent_variants)}, metrics={args.metrics}"
                     )
 
-                    all_variants = [(source_path.name, source_path, True)] + [
-                        (dep_path.name, dep_path, False) for _, dep_path in dependent_variants
-                    ]
-
-                    for metric in args.metrics:
-                        metric_label = get_metric_label(metric)
-                        variant_results = []
-
-                        for variant_name, variant_path, is_source in all_variants:
-                            metric_data = extract_metric_array_for_variant(
-                                str(variant_path),
-                                metric,
-                                successful_only=args.successful_only,
-                            )
-
-                            if metric_data is None or len(metric_data) == 0:
-                                print(
-                                    f"Warning: No valid {metric} data for variant '{variant_name}' (skipped for this metric)",
-                                    file=sys.stderr,
-                                )
-                                continue
-
-                            _, analysis = analyze_distribution_fit(metric_data)
-                            variant_results.append({
-                                'name': variant_name,
-                                'path': str(variant_path),
-                                'is_source': is_source,
-                                'data': metric_data,
-                                'analysis': analysis,
-                            })
-
-                        source_results = [result for result in variant_results if result['is_source']]
-                        dependent_results = [result for result in variant_results if not result['is_source']]
-
-                        if len(source_results) != 1:
-                            print(
-                                f"Warning: Source variant missing valid {metric} data; skipping metric",
-                                file=sys.stderr,
-                            )
-                            continue
-
-                        if len(dependent_results) == 0:
-                            print(
-                                f"Warning: No dependent variants with valid {metric} data; skipping metric",
-                                file=sys.stderr,
-                            )
-                            continue
-
-                        source_result = source_results[0]
-
-                        if not args.no_display:
-                            for result in variant_results:
-                                print_distribution_analysis(result['name'], result['analysis'], metric_label)
-                            summary_text = print_standard_compare_summary(metric_label, source_result, dependent_results, all_results=variant_results)
-                        else:
-                            summary_text = print_standard_compare_summary(metric_label, source_result, dependent_results, all_results=variant_results)
-
-                        show_histograms = not args.no_histograms
-                        plot_path = plot_standard_comparison_metric(metric, metric_label, variant_results, args.output_dir, show_histogram=show_histograms)
-                        summary_csv = save_standard_compare_summary_csv(metric, source_result, dependent_results, args.output_dir)
-                        summary_txt = save_standard_compare_summary_txt(metric, metric_label, summary_text, args.output_dir)
-
-                        print(f"Standard comparison plot ({metric}): {plot_path}")
-                        print(f"Standard comparison summary ({metric}): {summary_csv}")
-                        print(f"Standard comparison summary text ({metric}): {summary_txt}")
-                    
-                    # Save command to file (once after all metrics are processed)
-                    command_file = save_command_to_file(args.output_dir)
-                    print(f"Command saved to: {command_file}")
+                    run_standard_compare_for_variants(
+                        source_path=source_path,
+                        dependent_paths=[dep_path for _, dep_path in dependent_variants],
+                        metrics=args.metrics,
+                        output_dir=args.output_dir,
+                        successful_only=args.successful_only,
+                        no_display=args.no_display,
+                        no_histograms=args.no_histograms,
+                        save_command=True,
+                    )
     
     # Analyze pose variance correlation if requested
     if args.pose_variance:
