@@ -18,22 +18,40 @@
 import re
 
 from PySide6.QtGui import QColor, QFont, QPalette, QTextCharFormat, QTextCursor
-from PySide6.QtWidgets import (QHBoxLayout, QPushButton, QTextEdit,
+from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPushButton, QTextEdit,
                                QVBoxLayout, QWidget)
 
 
-class TerminalOutputWidget(QTextEdit):
-    """Widget for displaying terminal output with syntax highlighting"""
+class TerminalOutputWidget(QWidget):
+    """Widget for displaying terminal output with syntax highlighting and paging.
+
+    Lines are stored in memory and rendered PAGE_SIZE lines at a time so that
+    opening very large log files does not block the UI.
+    """
+
+    PAGE_SIZE = 500  # lines per page
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._all_lines: list[str] = []
+        self._current_page = 0
         self.setup_ui()
+
+    # ------------------------------------------------------------------
+    # UI setup
+    # ------------------------------------------------------------------
 
     def setup_ui(self):
         """Setup the terminal output widget UI"""
-        self.setReadOnly(True)
-        self.setFont(QFont("Courier", 9))
-        self.setStyleSheet("""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+
+        # Text area
+        self._text_edit = QTextEdit()
+        self._text_edit.setReadOnly(True)
+        self._text_edit.setFont(QFont("Courier", 9))
+        self._text_edit.setStyleSheet("""
             QTextEdit {
                 background-color: #1e1e1e;
                 color: #f8f8f2;
@@ -42,43 +60,123 @@ class TerminalOutputWidget(QTextEdit):
                 padding: 8px;
             }
         """)
+        layout.addWidget(self._text_edit)
 
-    def append_output(self, text):
-        """Append text to terminal output with syntax highlighting"""
-        # Move cursor to end
-        cursor = self.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        self.setTextCursor(cursor)
+        # Paging controls
+        paging_layout = QHBoxLayout()
+        paging_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Remove ROS logging prefix from each line
-        cleaned_text = self.clean_ros_logging(text)
+        self._first_btn = QPushButton("|<")
+        self._prev_btn = QPushButton("< Prev")
+        self._next_btn = QPushButton("Next >")
+        self._last_btn = QPushButton(">|")
+        self._page_label = QLabel()
 
-        # Apply syntax highlighting and insert text
-        self.apply_syntax_highlighting(cleaned_text)
+        for btn in (self._first_btn, self._prev_btn, self._next_btn, self._last_btn):
+            btn.setFixedWidth(70)
 
-        # Auto-scroll to bottom
-        cursor = self.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        self.setTextCursor(cursor)
+        self._first_btn.clicked.connect(self._goto_first_page)
+        self._prev_btn.clicked.connect(self._goto_prev_page)
+        self._next_btn.clicked.connect(self._goto_next_page)
+        self._last_btn.clicked.connect(self._goto_last_page)
+
+        paging_layout.addStretch()
+        paging_layout.addWidget(self._first_btn)
+        paging_layout.addWidget(self._prev_btn)
+        paging_layout.addWidget(self._page_label)
+        paging_layout.addWidget(self._next_btn)
+        paging_layout.addWidget(self._last_btn)
+        paging_layout.addStretch()
+        layout.addLayout(paging_layout)
+
+        self._update_paging_controls()
+
+    # ------------------------------------------------------------------
+    # Paging helpers
+    # ------------------------------------------------------------------
+
+    def _total_pages(self) -> int:
+        if not self._all_lines:
+            return 0
+        return (len(self._all_lines) + self.PAGE_SIZE - 1) // self.PAGE_SIZE
+
+    def _update_paging_controls(self):
+        total = self._total_pages()
+        show = total > 1
+        for w in (self._first_btn, self._prev_btn, self._page_label,
+                  self._next_btn, self._last_btn):
+            w.setVisible(show)
+
+        if show:
+            self._page_label.setText(
+                f"Page {self._current_page + 1} / {total}  "
+                f"(lines {self._current_page * self.PAGE_SIZE + 1}–"
+                f"{min((self._current_page + 1) * self.PAGE_SIZE, len(self._all_lines))}"
+                f" of {len(self._all_lines)})"
+            )
+            self._first_btn.setEnabled(self._current_page > 0)
+            self._prev_btn.setEnabled(self._current_page > 0)
+            self._next_btn.setEnabled(self._current_page < total - 1)
+            self._last_btn.setEnabled(self._current_page < total - 1)
+
+    def _goto_first_page(self):
+        self._current_page = 0
+        self._render_page()
+
+    def _goto_prev_page(self):
+        if self._current_page > 0:
+            self._current_page -= 1
+            self._render_page()
+
+    def _goto_next_page(self):
+        if self._current_page < self._total_pages() - 1:
+            self._current_page += 1
+            self._render_page()
+
+    def _goto_last_page(self):
+        self._current_page = max(0, self._total_pages() - 1)
+        self._render_page()
+
+    def _render_page(self):
+        """Render the current page of lines into the text edit."""
+        self._text_edit.clear()
+        start = self._current_page * self.PAGE_SIZE
+        end = min(start + self.PAGE_SIZE, len(self._all_lines))
+
+        for line in self._all_lines[start:end]:
+            if line.strip():
+                self._append_line_to_edit(line.rstrip())
+            else:
+                cursor = self._text_edit.textCursor()
+                cursor.movePosition(QTextCursor.End)
+                self._text_edit.setTextCursor(cursor)
+                self._text_edit.insertPlainText('\n')
+
+        # Scroll to top of the newly rendered page
+        self._text_edit.verticalScrollBar().setValue(0)
+        self._update_paging_controls()
+
+    # ------------------------------------------------------------------
+    # Syntax highlighting (operates on self._text_edit)
+    # ------------------------------------------------------------------
 
     def clean_ros_logging(self, text):
         """Remove ROS logging prefixes from text"""
-        # Pattern to match ROS logging prefix like "[INFO] [1751195363.907544966] [scenario_execution_ros]: "
         ros_prefix_pattern = r'^\[(?:INFO|WARN|ERROR|DEBUG|FATAL)\]\s*\[\d+\.\d+\]\s*\[[^\]]+\]:\s*'
-
-        # Process each line separately to remove the prefix
         lines = text.split('\n')
-        cleaned_lines = []
-        for line in lines:
-            cleaned_line = re.sub(ros_prefix_pattern, '', line)
-            cleaned_lines.append(cleaned_line)
+        return '\n'.join(re.sub(ros_prefix_pattern, '', line) for line in lines)
 
-        # Rejoin the lines
-        return '\n'.join(cleaned_lines)
+    def _append_line_to_edit(self, text):
+        """Append one line to the text edit with syntax highlighting."""
+        cursor = self._text_edit.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        self._text_edit.setTextCursor(cursor)
 
-    def apply_syntax_highlighting(self, text):
-        """Apply syntax highlighting to text based on content patterns"""
-        # Define patterns for highlighting
+        cleaned = self.clean_ros_logging(text)
+        self._apply_syntax_highlighting(cleaned)
+
+    def _apply_syntax_highlighting(self, text):
+        """Apply syntax highlighting to a single line of text."""
         error_patterns = [
             r'\b(error|ERROR|Error|failed|FAILED|Failed|exception|EXCEPTION|Exception)\b',
             r'\b(fatal|FATAL|Fatal|critical|CRITICAL|Critical)\b',
@@ -96,86 +194,94 @@ class TerminalOutputWidget(QTextEdit):
             r'\b(info|INFO|Info|debug|DEBUG|Debug|trace|TRACE|Trace)\b'
         ]
 
-        # Check if the text contains different patterns
-        has_error = any(re.search(pattern, text, re.IGNORECASE) for pattern in error_patterns)
-        has_warning = any(re.search(pattern, text, re.IGNORECASE) for pattern in warning_patterns)
-        has_success = any(re.search(pattern, text, re.IGNORECASE) for pattern in success_patterns)
-        has_info = any(re.search(pattern, text, re.IGNORECASE) for pattern in info_patterns)
+        palette = self._text_edit.palette()
 
-        if has_error:
-            # Insert with red color for errors
-            self.setTextColor(self.palette().color(QPalette.Text))
+        if any(re.search(p, text, re.IGNORECASE) for p in error_patterns):
+            self._text_edit.setTextColor(palette.color(QPalette.Text))
             html_text = text
-            for pattern in error_patterns:
-                html_text = re.sub(pattern, r'<span style="color: #ff6b6b; font-weight: bold;">\1</span>', html_text, flags=re.IGNORECASE)
-            self.insertHtml(html_text + '<br>')
-        elif has_warning:
-            # Insert with yellow color for warnings
-            self.setTextColor(self.palette().color(QPalette.Text))
+            for p in error_patterns:
+                html_text = re.sub(p, r'<span style="color: #ff6b6b; font-weight: bold;">\1</span>',
+                                   html_text, flags=re.IGNORECASE)
+            self._text_edit.insertHtml(html_text + '<br>')
+        elif any(re.search(p, text, re.IGNORECASE) for p in warning_patterns):
+            self._text_edit.setTextColor(palette.color(QPalette.Text))
             html_text = text
-            for pattern in warning_patterns:
-                html_text = re.sub(pattern, r'<span style="color: #ffd93d; font-weight: bold;">\1</span>', html_text, flags=re.IGNORECASE)
-            self.insertHtml(html_text + '<br>')
-        elif has_success:
-            # Insert with green color for success
-            self.setTextColor(self.palette().color(QPalette.Text))
+            for p in warning_patterns:
+                html_text = re.sub(p, r'<span style="color: #ffd93d; font-weight: bold;">\1</span>',
+                                   html_text, flags=re.IGNORECASE)
+            self._text_edit.insertHtml(html_text + '<br>')
+        elif any(re.search(p, text, re.IGNORECASE) for p in success_patterns):
+            self._text_edit.setTextColor(palette.color(QPalette.Text))
             html_text = text
-            for pattern in success_patterns:
-                html_text = re.sub(pattern, r'<span style="color: #50fa7b; font-weight: bold;">\1</span>', html_text, flags=re.IGNORECASE)
-            self.insertHtml(html_text + '<br>')
-        elif has_info:
-            # Insert with blue color for info
-            self.setTextColor(self.palette().color(QPalette.Text))
+            for p in success_patterns:
+                html_text = re.sub(p, r'<span style="color: #50fa7b; font-weight: bold;">\1</span>',
+                                   html_text, flags=re.IGNORECASE)
+            self._text_edit.insertHtml(html_text + '<br>')
+        elif any(re.search(p, text, re.IGNORECASE) for p in info_patterns):
+            self._text_edit.setTextColor(palette.color(QPalette.Text))
             html_text = text
-            for pattern in info_patterns:
-                html_text = re.sub(pattern, r'<span style="color: #8be9fd; font-weight: bold;">\1</span>', html_text, flags=re.IGNORECASE)
-            self.insertHtml(html_text + '<br>')
+            for p in info_patterns:
+                html_text = re.sub(p, r'<span style="color: #8be9fd; font-weight: bold;">\1</span>',
+                                   html_text, flags=re.IGNORECASE)
+            self._text_edit.insertHtml(html_text + '<br>')
         else:
-            # Insert normal text
-            self.setTextColor(self.palette().color(QPalette.Text))
-            self.insertPlainText(text + '\n')
+            self._text_edit.setTextColor(palette.color(QPalette.Text))
+            self._text_edit.insertPlainText(text + '\n')
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def append_output(self, text):
+        """Append text (may be multi-line) with syntax highlighting."""
+        new_lines = text.split('\n')
+        was_on_last = self._current_page == max(0, self._total_pages() - 1)
+        self._all_lines.extend(new_lines)
+
+        if was_on_last or self._total_pages() == 1:
+            # Stay on the last page so the user sees new output
+            self._current_page = max(0, self._total_pages() - 1)
+            self._render_page()
+        else:
+            self._update_paging_controls()
 
     def set_content(self, content):
-        """Set the entire content of the terminal output"""
-        self.clear()
-
-        # Split content into lines and apply highlighting to each line
-        lines = content.split('\n')
-        for line in lines:
-            if line.strip():  # Only process non-empty lines
-                self.append_output(line.rstrip())
+        """Set the entire content; only renders the first page immediately."""
+        self._all_lines = content.split('\n')
+        self._current_page = 0
+        self._render_page()
 
     def append_plain_text(self, text):
-        """Append plain text without highlighting"""
-        cursor = self.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        self.setTextCursor(cursor)
+        """Append plain text without syntax highlighting."""
+        new_lines = text.split('\n')
+        was_on_last = self._current_page == max(0, self._total_pages() - 1)
+        self._all_lines.extend(new_lines)
 
-        self.setTextColor(self.palette().color(self.palette().text))
-        self.insertPlainText(text + '\n')
+        if was_on_last or self._total_pages() == 1:
+            self._current_page = max(0, self._total_pages() - 1)
+            self._render_page()
+        else:
+            self._update_paging_controls()
 
-        # Auto-scroll to bottom
-        cursor = self.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        self.setTextCursor(cursor)
+    def clear(self):
+        """Clear all content."""
+        self._all_lines = []
+        self._current_page = 0
+        self._text_edit.clear()
+        self._update_paging_controls()
 
     def highlight_search_term(self, search_term):
-        """Highlight all occurrences of a search term"""
+        """Highlight all occurrences of a search term on the current page."""
         if not search_term:
             return
 
-        # Get the document
-        document = self.document()
-
-        # Create a cursor for searching
+        document = self._text_edit.document()
         cursor = QTextCursor(document)
 
-        # Format for highlighting
         highlight_format = QTextCharFormat()
         highlight_format.setBackground(QColor("yellow"))
         highlight_format.setForeground(QColor("black"))
 
-        # Find and highlight all occurrences
         while True:
             cursor = document.find(search_term, cursor)
             if cursor.isNull():
@@ -183,13 +289,21 @@ class TerminalOutputWidget(QTextEdit):
             cursor.mergeCharFormat(highlight_format)
 
     def clear_highlighting(self):
-        """Clear all text highlighting"""
-        cursor = QTextCursor(self.document())
+        """Clear all text highlighting on the current page."""
+        cursor = QTextCursor(self._text_edit.document())
         cursor.select(QTextCursor.Document)
 
         text_format = QTextCharFormat()
         text_format.setBackground(QColor("transparent"))
         cursor.mergeCharFormat(text_format)
+
+    # ------------------------------------------------------------------
+    # Legacy / compatibility: expose the old apply_syntax_highlighting name
+    # ------------------------------------------------------------------
+
+    def apply_syntax_highlighting(self, text):
+        """Alias kept for backwards compatibility."""
+        self._apply_syntax_highlighting(text)
 
 
 class TerminalOutputWidgetWithControls(QWidget):

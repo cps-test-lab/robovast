@@ -16,8 +16,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional, Union
 
 import pandas as pd
 import yaml
@@ -68,6 +69,7 @@ def read_output_files(data_dir: str, reader_func: Callable[[Path], pd.DataFrame]
         raise ValueError(f"Data directory does not exist: {data_dir}")
 
     all_dataframes = []
+    skipped_warnings = []
 
     # Find all test.xml files in subdirectories
     run_xml_files = list(data_path.rglob("test.xml"))
@@ -101,7 +103,8 @@ def read_output_files(data_dir: str, reader_func: Callable[[Path], pd.DataFrame]
                     if isinstance(config_content, dict) and len(config_content) == 1:
                         config_parameters = next(iter(config_content.values()))
             except Exception as e:
-                print(f"Could not read scenario.config: {e}\n")
+                if debug:
+                    print(f"Could not read scenario.config: {e}\n")
 
             df['run'] = str(run_name)
             df['config'] = str(os.path.basename(run_dir.parent))
@@ -115,10 +118,14 @@ def read_output_files(data_dir: str, reader_func: Callable[[Path], pd.DataFrame]
             all_dataframes.append(df)
 
         except Exception as e:
-            print(f"Warning: Could not read data from {run_dir}: {e}")
+            skipped_warnings.append(f"{run_dir}: {e}")
             continue
 
-    if not all_dataframes:
+    if skipped_warnings and debug:
+        print(f"Warning: Could not read data from {len(skipped_warnings)} run(s): " +
+              "; ".join(skipped_warnings))
+
+    if debug and not all_dataframes:
         raise ValueError(f"No valid run data could be read from {data_dir}")
 
     # Combine all dataframes
@@ -212,6 +219,101 @@ def read_output_yaml_list(
     if merge_level > 0:
         items = [_flatten_item_for_merge(item, "", 0, merge_level) for item in items]
     return pd.DataFrame(items)
+
+
+def _get_failure_text(root) -> str:
+    """Get failure element text from a parsed test.xml root element."""
+    for testcase in root.iter('testcase'):
+        failure = testcase.find('failure')
+        if failure is not None:
+            return failure.text or failure.get('message', '') or ''
+    return ''
+
+
+def _extract_failure_summary(failure_text: str) -> Optional[str]:
+    """Extract a short summary from a failure message.
+
+    Algorithm: last '[✕] -- ' -> text after on that line;
+    else last '[✓] -- ' -> text after on that line;
+    if single-line message and no marker found -> take it completely.
+    """
+    if not failure_text:
+        return None
+    for marker in ("[✕] -- ", "[✓] -- "):
+        idx = failure_text.rfind(marker)
+        if idx >= 0:
+            start = idx + len(marker)
+            end = failure_text.find("\n", start)
+            rest = failure_text[start:end] if end >= 0 else failure_text[start:]
+            s = rest.strip()
+            return s if s else None
+    if "\n" not in failure_text:
+        s = failure_text.strip()
+        return s if s else None
+    return None
+
+
+def get_run_status(run_dir: Union[str, Path]) -> tuple:
+    """Get the pass/fail status of a single run from its test.xml file.
+
+    Args:
+        run_dir: Path to the run directory (must contain a ``test.xml`` file).
+
+    Returns:
+        A ``(status, summary)`` tuple where *status* is ``'passed'``,
+        ``'failed'``, or ``'unknown'``, and *summary* is a short descriptive
+        string taken from the failure message (or ``None`` when not applicable).
+    """
+    run_xml_path = Path(run_dir) / "test.xml"
+    if not run_xml_path.exists():
+        return "unknown", None
+    try:
+        tree = ET.parse(run_xml_path)
+        root = tree.getroot()
+        testsuite = root if root.tag == 'testsuite' else root.find('testsuite')
+        if testsuite is not None:
+            errors = int(testsuite.get('errors', 0))
+            failures = int(testsuite.get('failures', 0))
+            status = "passed" if (errors == 0 and failures == 0) else "failed"
+            summary = None
+            if status == "failed":
+                summary = _extract_failure_summary(_get_failure_text(root))
+            return status, summary
+    except Exception:
+        pass
+    return "unknown", None
+
+
+def read_run_statuses(data_dir: str) -> pd.DataFrame:
+    """Read pass/fail status for every run in *data_dir*.
+
+    Iterates the same ``test.xml``-based run directories used by
+    :func:`read_output_files` and returns a tidy DataFrame.
+
+    Args:
+        data_dir: Path to the results directory (campaign root or config root).
+
+    Returns:
+        DataFrame with columns ``run``, ``config``, ``status``
+        (``'passed'`` | ``'failed'`` | ``'unknown'``), and ``summary``
+        (short failure description or ``None``).
+    """
+    data_path = Path(data_dir)
+    if not data_path.exists():
+        raise ValueError(f"Data directory does not exist: {data_dir}")
+
+    rows = []
+    for run_xml in sorted(data_path.rglob("test.xml")):
+        run_dir = run_xml.parent
+        status, summary = get_run_status(run_dir)
+        rows.append({
+            'run': run_dir.name,
+            'config': os.path.basename(run_dir.parent),
+            'status': status,
+            'summary': summary,
+        })
+
+    return pd.DataFrame(rows)
 
 
 def for_each_run(data_dir: str, func: Callable[[Path], None], debug=False) -> None:

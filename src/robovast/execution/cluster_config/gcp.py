@@ -28,7 +28,7 @@ apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: robovast-storage
-provisioner: kubernetes.io/gce-pd
+provisioner: pd.csi.storage.gke.io
 parameters:
   type: {disk_type}
 reclaimPolicy: Delete

@@ -363,6 +363,7 @@ def monitor(interval, once, kube_context):
         max_fail: dict[str, dict] = {}             # ctx -> {campaign: max_fail}
         last_per_run: dict[str, dict] = {}         # ctx -> last known per_run
         run_first_finished: dict[str, dict] = {}   # ctx -> {campaign: (timestamp, finished_count)}
+        all_jobs_seen: dict[str, dict] = {}        # ctx -> {campaign: bool} — True once all jobs visible
         prev_line_count = [0]
 
         def _build_run_lines(label, ctx, per_run):
@@ -371,6 +372,7 @@ def monitor(interval, once, kube_context):
             ctx_ok = max_ok.setdefault(ctx, {})
             ctx_fail = max_fail.setdefault(ctx, {})
             ctx_first = run_first_finished.setdefault(ctx, {})
+            ctx_all_seen = all_jobs_seen.setdefault(ctx, {})
 
             all_campaigns = sorted(set(ctx_initial.keys()) | set(per_run.keys()))
             lines = []
@@ -391,7 +393,17 @@ def monitor(interval, once, kube_context):
                 ctx_ok[campaign] = max(ctx_ok.get(campaign, 0), c["completed"])
                 ctx_fail[campaign] = max(ctx_fail.get(campaign, 0), c["failed"])
                 still_in_cluster = c["running"] + c["pending"]
-                finished = total - still_in_cluster if total > 0 else 0
+                # Once all jobs have been seen in the cluster at least once, it's safe
+                # to infer finished count from total - still_in_cluster (which handles
+                # TTL-deleted Job objects). Before that point, jobs are still being
+                # submitted and still_in_cluster underestimates, causing finished to be
+                # wildly overestimated and ok to appear inflated.
+                if current_total >= total:
+                    ctx_all_seen[campaign] = True
+                if ctx_all_seen.get(campaign):
+                    finished = total - still_in_cluster if total > 0 else 0
+                else:
+                    finished = c["completed"] + c["failed"]
                 if still_in_cluster > 0:
                     all_done = False
                 ok = ctx_ok[campaign]

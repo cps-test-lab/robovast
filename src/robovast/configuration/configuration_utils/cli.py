@@ -143,7 +143,9 @@ def info():
 
 @configuration.command()
 @click.argument('output-dir', type=click.Path())
-def generate(output_dir):
+@click.option('--keep-transient', is_flag=True, default=False,
+              help='Keep and display temporary folders used during generation (e.g. by FloorplanGeneration).')
+def generate(output_dir, keep_transient):
     """Generate run configurations and output files.
 
     Creates all configurations and associated files in the
@@ -171,12 +173,50 @@ def generate(output_dir):
             config_path_result = os.path.join(output_dir, "out_template")
             prepare_campaign_configs(config_path_result, campaign_data)
             click.echo(f"✓ Successfully generated {len(configs)} scenario configurations in directory '{output_dir}'.")
+
+            if keep_transient:
+                _print_transient_locations(campaign_data)
         else:
             click.echo("✗ Failed to generate scenario configurations", err=True)
             sys.exit(1)
 
     except Exception as e:
+        if keep_transient:
+            _print_transient_dirs_from_output(output_dir)
         handle_cli_exception(e)
+
+
+def _print_transient_locations(campaign_data):
+    """Print all transient directories produced during config generation."""
+    transient_dirs = set()
+
+    for config in campaign_data.get("configs", []):
+        for _rel, abs_path in config.get("_config_transient_files", []):
+            transient_dirs.add(os.path.dirname(abs_path))
+
+    for _rel, abs_path in campaign_data.get("_transient_files", []):
+        transient_dirs.add(os.path.dirname(abs_path))
+
+    if transient_dirs:
+        click.echo("\nTransient directories (--keep-transient):")
+        for d in sorted(transient_dirs):
+            click.echo(f"  {d}")
+    else:
+        click.echo("\nNo transient directories were produced.")
+
+
+def _print_transient_dirs_from_output(output_dir):
+    """Scan output_dir for transient working directories left by variations."""
+    if not os.path.isdir(output_dir):
+        return
+    transient_dirs = []
+    for entry in sorted(os.scandir(output_dir), key=lambda e: e.name):
+        if entry.is_dir() and entry.name != "out_template":
+            transient_dirs.append(entry.path)
+    if transient_dirs:
+        click.echo("\nTransient directories (--keep-transient):", err=True)
+        for d in transient_dirs:
+            click.echo(f"  {d}", err=True)
 
 
 @configuration.command(name='variation-types')

@@ -45,7 +45,7 @@ def _create_config_for_floorplan(
     Returns:
         Updated configuration dictionary
     """
-    base_name = os.path.basename(floorplan_name).split('_')[0]
+    base_name = os.path.basename(floorplan_name)
     map_file_path = os.path.join(output_dir, floorplan_name, 'maps', base_name + '.yaml')
     mesh_file_path = os.path.join(output_dir, floorplan_name, '3d-mesh', base_name + '.stl')
     mesh_file_metadata_path = os.path.join(output_dir, floorplan_name, '3d-mesh', base_name + '.stl.yaml')
