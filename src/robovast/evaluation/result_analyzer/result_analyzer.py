@@ -18,7 +18,6 @@
 import math
 import os
 import subprocess
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, QThread, QTimer, Slot
@@ -29,6 +28,7 @@ from PySide6.QtWidgets import (QApplication, QGroupBox, QHBoxLayout, QLabel,
                                QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from robovast.common import load_config
+from robovast.common.analysis import get_run_status
 from robovast.common.results_utils import iter_run_folders
 
 from .widgets.common import RunType
@@ -90,7 +90,7 @@ class RunResultsAnalyzer(QMainWindow):
 
         self.base_dir = Path(base_dir)
 
-        self.setWindowTitle(f"Run Results Analyzer - {self.base_dir}")
+        self.setWindowTitle(f"RoboVAST Results Analyzer - {self.base_dir}")
 
         # Set window icon
         icon_path = Path(__file__).parent.parent.parent.parent.parent / "docs" / "images" / "icon.png"
@@ -132,7 +132,7 @@ class RunResultsAnalyzer(QMainWindow):
                 )
                 print(f"Using override .vast for notebook discovery: {self._override_vast}")
             except Exception as e:
-                print(f"Warning: could not load override config from {self._override_vast}: {e}")
+                raise RuntimeError(f"Could not load override config from {self._override_vast}: {e}") from e
 
         for campaign_item in sorted(root.iterdir()):
             if not campaign_item.is_dir() or not campaign_item.name.startswith("campaign-"):
@@ -591,7 +591,7 @@ class RunResultsAnalyzer(QMainWindow):
                         tree_item.setData(0, Qt.UserRole, str(folder_path))
                         display_text = run_number
                         if self.is_run_directory(folder_path):
-                            run_status, summary = self.get_run_status(folder_path)
+                            run_status, summary = get_run_status(folder_path)
                             passed_bg, passed_fg = self.get_theme_colors("passed")
                             failed_bg, failed_fg = self.get_theme_colors("failed")
                             unknown_bg, unknown_fg = self.get_theme_colors("unknown")
@@ -784,74 +784,13 @@ class RunResultsAnalyzer(QMainWindow):
                 if rid != campaign:
                     continue
                 if self.is_run_directory(folder_path):
-                    run_status, _ = self.get_run_status(folder_path)
+                    run_status, _ = get_run_status(folder_path)
                     stats[run_status] = stats.get(run_status, 0) + 1
                     stats['total'] += 1
         except Exception as e:
             print(f"Error calculating run statistics: {e}")
 
         return stats
-
-    def get_run_status(self, directory_path):
-        """Get run status and optional short summary from test.xml.
-        Returns (status, summary) where status is 'passed', 'failed', or 'unknown',
-        and summary is a short descriptive string or None.
-        """
-        run_xml_path = directory_path / "test.xml"
-
-        if not run_xml_path.exists():
-            return "unknown", None
-
-        try:
-            tree = ET.parse(run_xml_path)
-            root = tree.getroot()
-
-            testsuite = root if root.tag == 'testsuite' else root.find('testsuite')
-            if testsuite is not None:
-                errors = int(testsuite.get('errors', 0))
-                failures = int(testsuite.get('failures', 0))
-                status = "passed" if (errors == 0 and failures == 0) else "failed"
-
-                summary = None
-                if status == "failed":
-                    failure_text = self._get_failure_text(root)
-                    summary = self._extract_failure_summary(failure_text)
-
-                return status, summary
-
-        except Exception as e:
-            print(f"Error parsing test.xml in {directory_path}: {e}")
-
-        return "unknown", None
-
-    def _get_failure_text(self, root):
-        """Get failure element text from parsed test.xml root."""
-        for testcase in root.iter('testcase'):
-            failure = testcase.find('failure')
-            if failure is not None:
-                return failure.text or failure.get('message', '') or ''
-        return ''
-
-    def _extract_failure_summary(self, failure_text):
-        """Extract short summary from failure message text.
-        Algorithm: last '[✕] -- ' -> text after on that line;
-        else last '[✓] -- ' -> text after on that line;
-        if single-line message and no marker found -> take it completely.
-        """
-        if not failure_text:
-            return None
-        for marker in ("[✕] -- ", "[✓] -- "):
-            idx = failure_text.rfind(marker)
-            if idx >= 0:
-                start = idx + len(marker)
-                end = failure_text.find("\n", start)
-                rest = failure_text[start:end] if end >= 0 else failure_text[start:]
-                s = rest.strip()
-                return s if s else None
-        if "\n" not in failure_text:
-            s = failure_text.strip()
-            return s if s else None
-        return None
 
     def is_run_directory(self, directory_path):
         """Check if directory is a run directory"""

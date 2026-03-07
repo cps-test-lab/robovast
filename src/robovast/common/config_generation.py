@@ -44,15 +44,17 @@ def execute_variation(base_dir, configs, variation_class, parameters, general_pa
     try:
         configs = variation.variation(copy.deepcopy(configs))
     except Exception as e:
-        logger.error(f"Variation failed. {variation_class.__name__}: {e}")
-        progress_update_callback(f"Variation failed. {variation_class.__name__}: {e}")
-        return [], [], [], []
+        msg = f"Variation failed. {variation_class.__name__}: {e}"
+        logger.error(msg)
+        progress_update_callback(msg)
+        raise RuntimeError(msg) from e
 
     # Check if configs is None and return empty list
     if configs is None:
-        logger.warning(f"Variation failed. {variation_class.__name__}: No configs returned")
-        progress_update_callback(f"Variation failed. {variation_class.__name__}: No configs returned")
-        return [], [], [], []
+        msg = f"Variation failed. {variation_class.__name__}: No configs returned"
+        logger.warning(msg)
+        progress_update_callback(msg)
+        raise RuntimeError(msg)
 
     # Collect transient (intermediate) files after variation has run
     campaign_transient_files = variation.get_campaign_transient_files()

@@ -23,7 +23,8 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from ..floorplan_generation import (_create_config_for_floorplan,
                                     generate_floorplan_artifacts,
-                                    generate_floorplan_variations)
+                                    generate_floorplan_variations,
+                                    get_scenery_builder_version)
 from .nav_base_variation import NavVariation
 
 logger = logging.getLogger(__name__)
@@ -242,6 +243,8 @@ class FloorplanGeneration(NavVariation):
         """
         self.progress_update("Running Floorplan Generation...")
 
+        scenery_builder_image = get_scenery_builder_version()
+
         # If no input configs, create initial empty config
         if not in_configs or len(in_configs) == 0:
             in_configs = [{'config': {}, '_config_files': []}]
@@ -281,14 +284,17 @@ class FloorplanGeneration(NavVariation):
                     raise FileNotFoundError(
                         f"No generated artifacts found for floorplan '{floorplan_name}' in expected location. "
                     )
-                
+
                 new_config.setdefault('_config_transient_files', []).extend(transient)
                 # Also expose the relative paths in the _variations entry via extras
                 derived_from_files = [rel for rel, _abs in transient]
-                new_config['_variation_entry_extras'] = {
+                extras = {
                     'derived_from_files': derived_from_files,
                     'fpm_file': f'_config/{fpm_file}'
                 }
+                if scenery_builder_image:
+                    extras['scenery_builder_image'] = scenery_builder_image
+                new_config['_variation_entry_extras'] = extras
                 results.append(new_config)
 
         return results
@@ -305,6 +311,8 @@ class FloorplanVariation(NavVariation):
 
     def variation(self, in_configs):
         self.progress_update("Running Floorplan Variation...")
+
+        scenery_builder_image = get_scenery_builder_version()
 
         # If no input configs, create initial empty config
         if not in_configs or len(in_configs) == 0:
@@ -345,14 +353,17 @@ class FloorplanVariation(NavVariation):
                         new_config.setdefault('_config_transient_files', []).extend(transient)
                         # Also expose the relative paths in the _variations entry via extras
                         derived_from_files = [rel for rel, _abs in transient]
-                        new_config['_variation_entry_extras'] = {
+                        extras = {
                             'derived_from_files': derived_from_files,
                             'variation_file': f'_config/{variation_file}'
                         }
                     else:
-                        new_config['_variation_entry_extras'] = {
+                        extras = {
                             'variation_file': f'_config/{variation_file}'
                         }
+                    if scenery_builder_image:
+                        extras['scenery_builder_image'] = scenery_builder_image
+                    new_config['_variation_entry_extras'] = extras
                     results.append(new_config)
                 floorplan_idx += 1
 

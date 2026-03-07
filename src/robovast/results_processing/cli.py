@@ -21,14 +21,14 @@ import sys
 
 import click
 
-from robovast.evaluation.merge_results import merge_results
 from robovast.common.cli import get_project_config, handle_cli_exception
 from robovast.common.cli.project_config import ProjectConfig
+from robovast.evaluation.merge_results import merge_results
 from robovast.results_processing import run_postprocessing
 from robovast.results_processing.postprocessing import \
     load_postprocessing_plugins
-from robovast.results_processing.publication import \
-    run_publication, load_publication_plugins
+from robovast.results_processing.publication import (load_publication_plugins,
+                                                     run_publication)
 
 
 @click.group()

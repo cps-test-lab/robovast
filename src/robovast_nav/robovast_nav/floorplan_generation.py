@@ -24,6 +24,31 @@ from importlib.resources import files
 from robovast.common import FileCache
 
 
+def get_scenery_builder_version():
+    """Return the docker image digest/ID of the scenery_builder image.
+
+    Calls ``scenery_builder.sh -v`` which runs ``docker inspect`` on the image
+    and prints its first RepoDigest (falling back to the image ID).
+
+    Returns:
+        The version string stripped of whitespace, or ``None`` if the version
+        cannot be determined (e.g. docker is unavailable or the image has not
+        been pulled yet).
+    """
+    script_path = str(files('robovast_nav.data').joinpath('scenery_builder.sh'))
+    if not os.path.exists(script_path):
+        return None
+    try:
+        result = subprocess.run(
+            [script_path, '-v'],
+            capture_output=True, text=True, check=True
+        )
+        version = result.stdout.strip()
+        return version if version else None
+    except subprocess.CalledProcessError:
+        return None
+
+
 def _create_config_for_floorplan(
     floorplan_name,
     output_dir,
@@ -45,7 +70,7 @@ def _create_config_for_floorplan(
     Returns:
         Updated configuration dictionary
     """
-    base_name = os.path.basename(floorplan_name).split('_')[0]
+    base_name = os.path.basename(floorplan_name)
     map_file_path = os.path.join(output_dir, floorplan_name, 'maps', base_name + '.yaml')
     mesh_file_path = os.path.join(output_dir, floorplan_name, '3d-mesh', base_name + '.stl')
     mesh_file_metadata_path = os.path.join(output_dir, floorplan_name, '3d-mesh', base_name + '.stl.yaml')

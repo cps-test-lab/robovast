@@ -122,13 +122,6 @@ class LogViewerWidget(QWidget):
             with open(log_file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
 
-            # Limit content for performance
-            max_lines = 10000
-            lines = content.split('\n')
-            if len(lines) > max_lines:
-                content = '\n'.join(lines[:max_lines])
-                content += f"\n\n... [File truncated - showing first {max_lines} lines of {len(lines)} total] ..."
-
             self.log_display.set_content(content)
             self.log_loaded.emit(str(log_file_path))
 

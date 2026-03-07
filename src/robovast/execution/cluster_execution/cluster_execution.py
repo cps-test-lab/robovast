@@ -579,14 +579,19 @@ class JobRunner:
         for sc in self.secondary_containers:
             sc_name = sc['name']
             sc_resources = resolve_resources(sc['resources'], self.kube_context)
+            secondary_env = [
+                {'name': 'CONTAINER_NAME', 'value': sc_name},
+                {'name': 'ROS_LOG_DIR', 'value': '/out/logs'},
+            ]
+            for env_var in self.env:
+                if isinstance(env_var, dict):
+                    for key, value in env_var.items():
+                        secondary_env.append({'name': key, 'value': str(value)})
             secondary_spec = {
                 'name': sc_name,
                 'image': job_manifest['spec']['template']['spec']['containers'][0]['image'],
                 'command': ['/bin/bash', '/config/secondary_entrypoint.sh'],
-                'env': [
-                    {'name': 'CONTAINER_NAME', 'value': sc_name},
-                    {'name': 'ROS_LOG_DIR', 'value': '/out/logs'},
-                ],
+                'env': secondary_env,
                 'resources': {
                     'requests': {},
                     'limits': {},
@@ -928,6 +933,7 @@ class JobRunner:
 
         # Normalize secondary_containers: may be Pydantic models, normalized dicts, or raw YAML dicts
         self.secondary_containers = normalize_secondary_containers(secondary_containers)
+        self.env = env or []
 
         logger.debug(f"Using run_as_user={run_as_user} for job containers")
 

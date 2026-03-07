@@ -33,6 +33,56 @@ from .s3_client import ClusterS3Client
 
 logger = logging.getLogger(__name__)
 
+
+def _filter_campaigns(campaign_ids, available_campaigns, excluded_runs):
+    """Filter available_campaigns and excluded_runs to the requested campaign_ids.
+
+    Args:
+        campaign_ids: iterable of campaign ID strings to filter to.
+
+    Returns:
+        (filtered_available, filtered_excluded), or (None, None) if any
+        requested campaign was not found at all (after logging an error).
+    """
+    requested = list(campaign_ids)
+    available_set = set(available_campaigns)
+    excluded_map = {rid: (running, pending) for rid, running, pending in excluded_runs}
+
+    filtered_available = []
+    filtered_excluded = []
+    not_found = []
+
+    for cid in requested:
+        if cid in available_set:
+            filtered_available.append(cid)
+        elif cid in excluded_map:
+            running, pending = excluded_map[cid]
+            logger.info(
+                "Campaign %s is not ready yet (jobs still running: %d, pending: %d).",
+                cid, running, pending,
+            )
+            filtered_excluded.append((cid, running, pending))
+        else:
+            not_found.append(cid)
+
+    if not_found:
+        all_known = sorted(available_set) + sorted(excluded_map)
+        if all_known:
+            logger.error(
+                "Campaign(s) not found: %s\nAvailable campaigns:\n  %s",
+                ", ".join(not_found),
+                "\n  ".join(all_known),
+            )
+        else:
+            logger.error(
+                "Campaign(s) not found: %s. No campaigns available.",
+                ", ".join(not_found),
+            )
+        return None, None
+
+    return filtered_available, filtered_excluded
+
+
 # Progress bar constants (match cluster monitor style)
 BAR_WIDTH = 20
 CLEAR_LINE = "\033[2K"
@@ -203,7 +253,7 @@ class ResultDownloader:
         finally:
             self.cleanup()
 
-    def remote_compress_only(self, force=False, verbose=False):
+    def remote_compress_only(self, force=False, verbose=False, campaign_ids=None):
         """Create compressed archives on the remote pod for all available runs.
 
         Streams S3 bucket contents to tar.gz on the pod. Does not start
@@ -213,11 +263,19 @@ class ResultDownloader:
         Args:
             force (bool): Overwrite existing remote archives
             verbose (bool): Print detailed progress
+            campaign_ids (list | None): If provided, only process these campaigns.
 
         Returns:
             int: Number of runs for which archives were created or already existed
         """
         available_campaigns, excluded_runs = self.list_available_campaigns()
+
+        if campaign_ids is not None:
+            available_campaigns, excluded_runs = _filter_campaigns(
+                campaign_ids, available_campaigns, excluded_runs
+            )
+            if available_campaigns is None:
+                return 0
 
         if excluded_runs:
             for rid, running, pending in excluded_runs:
@@ -235,8 +293,8 @@ class ResultDownloader:
 
         logger.info(f"Compressing {len(available_campaigns)} campaigns on remote pod...")
         count = 0
-        for campaign_id in available_campaigns:
-            if self._create_remote_archive(campaign_id, force=force, verbose=verbose):
+        for cid in available_campaigns:
+            if self._create_remote_archive(cid, force=force, verbose=verbose):
                 count += 1
         return count
 
@@ -418,7 +476,7 @@ class ResultDownloader:
             return [], []
 
     def download_results(self, output_directory, force=False, verbose=False, skip_removal=True,
-                         keep_archive=True):
+                         keep_archive=True, campaign_ids=None):
         """
         Download all result files from transfer PVC using HTTP server port-forwarding
 
@@ -428,6 +486,7 @@ class ResultDownloader:
             verbose (bool): If True, emit more detailed logging
             skip_removal (bool): If True, do not remove remote archive or delete S3 bucket after download (default: True)
             keep_archive (bool): If True, keep the local .tar.gz file after extraction (default: True)
+            campaign_ids (list | None): If provided, only download these campaigns.
 
         Returns:
             int: Number of successfully downloaded runs
@@ -438,6 +497,13 @@ class ResultDownloader:
 
         # Get available runs (excludes runs with running/pending jobs)
         available_campaigns, excluded_runs = self.list_available_campaigns()
+
+        if campaign_ids is not None:
+            available_campaigns, excluded_runs = _filter_campaigns(
+                campaign_ids, available_campaigns, excluded_runs
+            )
+            if available_campaigns is None:
+                return 0
 
         if excluded_runs:
             for rid, running, pending in excluded_runs:
