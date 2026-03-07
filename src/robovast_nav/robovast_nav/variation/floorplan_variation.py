@@ -284,7 +284,7 @@ class FloorplanGeneration(NavVariation):
                     raise FileNotFoundError(
                         f"No generated artifacts found for floorplan '{floorplan_name}' in expected location. "
                     )
-                
+
                 new_config.setdefault('_config_transient_files', []).extend(transient)
                 # Also expose the relative paths in the _variations entry via extras
                 derived_from_files = [rel for rel, _abs in transient]

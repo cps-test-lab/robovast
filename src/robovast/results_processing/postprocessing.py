@@ -175,7 +175,7 @@ def get_postprocessing_commands(config_path: str) -> List[dict]:
             return postprocessing_cmds
 
 
-def _write_postprocessing_provenance_yaml_campaign(
+def _write_postprocessing_provenance_yaml(
     campaign_dir: str,
     entries: List[dict],
 ) -> None:
@@ -497,7 +497,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
             output(f"Warning: Could not write cache files: {e}")
 
     # Write postprocessing.yaml in campaign/_transient/
-    _write_postprocessing_provenance_yaml_campaign(campaign_dir, all_provenance_entries)
+    _write_postprocessing_provenance_yaml(campaign_dir, all_provenance_entries)
 
     # Generate metadata.yaml in each campaign directory
     meta_success, meta_msg = generate_campaign_metadata(

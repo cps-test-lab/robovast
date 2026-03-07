@@ -47,7 +47,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
-from robovast.results_processing.publication_plugins.base import BasePublicationPlugin
+from robovast.results_processing.publication_plugins.base import \
+    BasePublicationPlugin
 
 
 def _file_matches_pattern(rel_path: str, pattern: str) -> bool:
