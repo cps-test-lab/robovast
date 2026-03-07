@@ -38,10 +38,10 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-from .campaign_data import (read_execution_metadata, read_sysinfo,
+from robovast.common.campaign_data import (read_execution_metadata, read_sysinfo,
                             read_test_result)
-from .common import load_config
-from .results_utils import find_campaign_vast_file
+from robovast.common.common import load_config
+from robovast.common.results_utils import find_campaign_vast_file
 
 logger = logging.getLogger(__name__)
 
@@ -325,6 +325,19 @@ def generate_campaign_metadata(
                     allow_unicode=True,
                 )
             output(f"Wrote {output_path}")
+
+            # Generate PROV-O provenance graph (metadata.prov.json)
+            try:
+                from .fair_metadata import generate_prov_metadata  # noqa: PLC0415
+                prov_success, prov_msg = generate_prov_metadata(
+                    campaign_dir, metadata
+                )
+                if prov_success:
+                    output(prov_msg)
+                else:
+                    logger.warning("PROV metadata: %s", prov_msg)
+            except Exception as prov_exc:  # noqa: BLE001
+                logger.warning("PROV metadata generation failed: %s", prov_exc)
 
     except Exception as e:
         return False, f"Metadata generation failed: {e}"
