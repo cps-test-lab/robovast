@@ -473,6 +473,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
             output(f"✓ {message}")
 
     # Store the hash, list of postprocessing outputs, and write postprocessing.yaml
+    output_paths = set()
     if success:
         try:
             os.makedirs(cache_dir, exist_ok=True)
