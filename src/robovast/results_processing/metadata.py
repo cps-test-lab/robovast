@@ -42,6 +42,7 @@ from robovast.common.campaign_data import (read_execution_metadata, read_sysinfo
                             read_test_result)
 from robovast.common.common import load_config
 from robovast.common.results_utils import find_campaign_vast_file
+from robovast.common.variation.loader import load_variation_classes
 
 logger = logging.getLogger(__name__)
 
@@ -276,7 +277,7 @@ def generate_campaign_metadata(
         return False, f"No campaign directories found in {results_dir}"
 
     # Load variation classes (for metadata hooks)
-    variation_classes = _load_variation_classes()
+    variation_classes = load_variation_classes()
 
     # Load metadata processing plugins
     metadata_plugins = _load_metadata_plugins()
@@ -408,20 +409,6 @@ def _resolve_file_strings(
                 found.extend(_resolve_file_strings(item, real_path, config_files))
     return found
 
-
-def _load_variation_classes() -> Dict[str, type]:
-    """Load variation classes from the ``robovast.variation_types`` entry-point group."""
-    classes = {}
-    try:
-        eps = entry_points(group="robovast.variation_types")
-        for ep in eps:
-            try:
-                classes[ep.name] = ep.load()
-            except Exception as e:
-                logger.warning("Failed to load variation class '%s': %s", ep.name, e)
-    except Exception:
-        pass
-    return classes
 
 
 def _load_metadata_plugins() -> Dict[str, type]:

@@ -1,4 +1,5 @@
-from .base_variation import Variation
+from .base_variation import ProvContribution, Variation
+from .loader import load_variation_classes
 from .parameter_variation import (ParameterVariationDistributionGaussian,
                                   ParameterVariationDistributionUniform,
                                   ParameterVariationList)
@@ -18,9 +19,11 @@ def __getattr__(name):
 
 
 __all__ = [
+    'ProvContribution',
     'Variation',
     'VariationGui',  # pylint: disable=undefined-all-variable
     'VariationGuiRenderer',  # pylint: disable=undefined-all-variable
+    'load_variation_classes',
     'ParameterVariationList',
     'ParameterVariationDistributionUniform',
     'ParameterVariationDistributionGaussian',

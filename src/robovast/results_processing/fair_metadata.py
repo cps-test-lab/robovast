@@ -22,6 +22,11 @@ runs automatically after ``metadata.yaml`` is written during
 ``generate_campaign_metadata``; it does **not** depend on any postprocessing
 plugin configuration.
 
+Domain-specific provenance nodes (e.g. map entities for navigation campaigns)
+are contributed by variation plugins via the
+:meth:`~robovast.common.variation.base_variation.Variation.collect_prov_metadata`
+hook.
+
 Requires: ``rdflib`` and ``pyld``.
 """
 
@@ -29,7 +34,7 @@ import logging
 import os
 import subprocess
 from pathlib import Path
-from typing import Tuple
+from typing import List, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -38,33 +43,21 @@ from rdflib import Namespace, PROV, DCTERMS
 from rdflib.tools.rdf2dot import rdf2dot
 from pyld import jsonld
 
+from robovast.common.variation.loader import load_variation_classes
+
 # ---------------------------------------------------------------------------
-# Namespace constants
+# Namespace constants (domain-agnostic)
 # ---------------------------------------------------------------------------
 
-DATASET_IRI = "https://purl.org/robovast/datasets/2026-03-07-robovast-navigation/"
+_DEFAULT_DATASET_IRI = "https://purl.org/robovast/datasets/default/"
 
 SCENARIOS = Namespace("https://secorolab.github.io/metamodels/scenarios/osc/")
 ROBOVAST = Namespace("https://purl.org/robovast/metamodels/")
-MAP_METADATA = Namespace("https://purl.org/secorolab/metamodels/environment#")
-DATASET = Namespace(DATASET_IRI)
 
 # JSON-LD context helpers
 _ID = "@id"
 _CONTEXT = "@context"
 _TYPE = "@type"
-
-_IRI_CONTEXT = {
-    _CONTEXT: {
-        "agn": "https://secorolab.github.io/metamodels/agent#",
-        "smm": "https://secorolab.github.io/metamodels/scenarios#",
-        "env": "https://secorolab.github.io/metamodels/environment#",
-        "xsd": "http://www.w3.org/2001/XMLSchema#",
-        "prov": "http://www.w3.org/ns/prov#",
-        "dct": "http://purl.org/dc/terms/",
-        "dataset": DATASET_IRI,
-    }
-}
 
 _BASE_CONTEXT = {
     _CONTEXT: [
@@ -83,9 +76,55 @@ def load_graph(file_path: str) -> "rdflib.Graph":
     g.parse(file_path, format="json-ld")
     g.bind("robovast", ROBOVAST)
     g.bind("scenarios", SCENARIOS)
-    g.bind("env", MAP_METADATA)
-    g.bind("dataset", DATASET)
     return g
+
+
+def _build_iri_context(dataset_iri: str) -> dict:
+    """Build the JSON-LD IRI context with the given dataset IRI."""
+    return {
+        _CONTEXT: {
+            "agn": "https://secorolab.github.io/metamodels/agent#",
+            "smm": "https://secorolab.github.io/metamodels/scenarios#",
+            "env": "https://secorolab.github.io/metamodels/environment#",
+            "xsd": "http://www.w3.org/2001/XMLSchema#",
+            "prov": "http://www.w3.org/ns/prov#",
+            "dct": "http://purl.org/dc/terms/",
+            "dataset": dataset_iri,
+        }
+    }
+
+
+def _build_agents(
+    agents_config: List[dict],
+    run_files: list,
+    campaign_ns: Namespace,
+) -> Tuple[list, list]:
+    """Build PROV Agent nodes from the agents configuration.
+
+    Returns:
+        Tuple of (agent_nodes, location_nodes) to append to the graph.
+    """
+    location_iris = [campaign_ns[rf] for rf in run_files]
+    location_nodes = [
+        {_ID: loc, _TYPE: PROV["Location"]}
+        for loc in location_iris
+    ]
+
+    agent_nodes = []
+    for agent_cfg in agents_config:
+        agent_cfg = dict(agent_cfg)
+        name = agent_cfg.pop("name", "agent")
+        agent_node = {
+            _ID: campaign_ns[name],
+            _TYPE: PROV["Agent"],
+            "atLocation": location_iris,
+        }
+        # Remaining keys become properties on the agent node
+        for k, v in agent_cfg.items():
+            agent_node[ROBOVAST[k]] = v
+        agent_nodes.append(agent_node)
+
+    return agent_nodes, location_nodes
 
 
 def generate_prov_metadata(
@@ -97,8 +136,17 @@ def generate_prov_metadata(
     Reads the already-computed *metadata* dict (the same data that was just
     written to ``metadata.yaml``) and produces:
 
-    * ``<campaign_dir>/metadata.prov.json``  — compact JSON-LD provenance graph
-    * ``<campaign_dir>/metadata.pdf``        — visualisation (requires Graphviz ``dot``)
+    * ``<campaign_dir>/metadata.prov.json``  -- compact JSON-LD provenance graph
+    * ``<campaign_dir>/metadata.pdf``        -- visualisation (requires Graphviz ``dot``)
+
+    Campaign-level configuration is read from ``metadata["metadata"]``:
+
+    * ``dataset_iri`` -- base IRI for the dataset namespace
+    * ``agents``      -- list of ``{name, type, ...}`` dicts for PROV Agent nodes
+                         (optional; omit for campaigns with no robot/agent)
+
+    Domain-specific provenance nodes are contributed by variation plugins
+    via :meth:`Variation.collect_prov_metadata`.
 
     Args:
         campaign_dir: Path to the ``campaign-<id>`` directory.
@@ -110,13 +158,25 @@ def generate_prov_metadata(
     import json  # noqa: PLC0415
 
     campaign_dir = Path(campaign_dir)
-    # The relative path segment used as key in DATASET namespace (e.g. "results/campaign-0/")
-    campaign = str(campaign_dir) + "/"
+    campaign = campaign_dir.name + "/"
 
-    CAMPAIGN = Namespace(f"{DATASET_IRI}{campaign}")
+    # --- Read campaign-level configuration from metadata ---
+    md_section = dict(metadata.get("metadata", {}))
+    dataset_iri = md_section.pop("dataset_iri", _DEFAULT_DATASET_IRI)
+    if not dataset_iri.endswith("/"):
+        dataset_iri += "/"
+    agents_config = md_section.pop("agents", [])
+
+    DATASET = Namespace(dataset_iri)
+    CAMPAIGN = Namespace(f"{dataset_iri}{campaign}")
+    iri_context = _build_iri_context(dataset_iri)
+
+    # Load variation plugin classes for PROV hooks
+    variation_classes = load_variation_classes()
 
     graph = []
 
+    # --- Software agents ---
     graph.append({
         _ID: "https://purl.org/robovast/",
         _TYPE: PROV["SoftwareAgent"],
@@ -128,6 +188,7 @@ def generate_prov_metadata(
         DCTERMS["hasVersion"]: metadata["execution"].get("scenery_builder_version")
     })
 
+    # --- Campaign activity and entity ---
     campaign_activity = {
         _ID: DATASET[campaign + "execution/"],
         _TYPE: [PROV["Activity"], ROBOVAST[metadata["execution"]["execution_type"].capitalize()]],
@@ -144,19 +205,13 @@ def generate_prov_metadata(
     }
     graph.append(campaign_entity)
 
-    robot_files = [CAMPAIGN[l] for l in metadata["run_files"]]
+    # --- Agent nodes (robots, manipulators, etc.) ---
+    agent_nodes, location_nodes = _build_agents(
+        agents_config, metadata.get("run_files", []), CAMPAIGN,
+    )
+    graph.extend(location_nodes)
 
-    agent = dict(metadata.get("metadata", {}))
-    agent[_ID] = CAMPAIGN["turtlebot4"]  # TODO: make configurable
-    agent[_TYPE] = PROV["Agent"]
-    agent["atLocation"] = robot_files
-
-    for robot_file in robot_files:
-        graph.append({
-            _ID: robot_file,
-            _TYPE: PROV["Location"],
-        })
-
+    # --- Scenario and config generation ---
     abstract_scenario = {
         _ID: CAMPAIGN["_config/scenario.osc"],
         _TYPE: [PROV["Entity"], SCENARIOS["AbstractScenario"]],
@@ -178,92 +233,63 @@ def generate_prov_metadata(
     }
     graph.append(gen_activity)
 
+    # --- Per-configuration ---
     all_configs = {c["name"]: c for c in metadata["configurations"]}
 
-    config_dir_path = campaign_dir
-    configs = sorted(
+    config_dirs = sorted(
         str(p) + "/"
-        for p in config_dir_path.iterdir()
+        for p in campaign_dir.iterdir()
         if p.is_dir() and not p.name.startswith("_")
     )
 
-    for config_path in configs[:1]:  # TODO: remove [:1] when ready for all configs
-        CONFIG = Namespace(f"{DATASET_IRI}{config_path}")
-        config = os.path.split(os.path.split(config_path)[0])[-1]
+    for config_path in config_dirs:
+        CONFIG = Namespace(f"{dataset_iri}{config_path}")
+        config_name = os.path.split(os.path.split(config_path)[0])[-1]
 
-        config_md = all_configs.get(config)
+        config_md = all_configs.get(config_name)
         if config_md is None:
             continue
 
-        n = {
+        # Concrete scenario node
+        scenario_node = {
             _ID: CAMPAIGN[config_path],
             _TYPE: [PROV["Entity"], SCENARIOS["ConcreteScenario"]],
             "wasGeneratedBy": gen_activity[_ID],
         }
-        variations = config_md.get("variations", [])
-        if variations:
-            n["references"] = CAMPAIGN[variations[0].get("fpm_file", "")]
 
-        if isinstance(config_md.get("config", {}).get("goal_pose"), dict):
-            n[ROBOVAST["goals"]] = 1
-        else:
-            goal_pose = config_md.get("config", {}).get("goal_pose", [])
-            n[ROBOVAST["goals"]] = len(goal_pose) if goal_pose else 0
-        n[ROBOVAST["obstacles"]] = len(
-            config_md.get("config", {}).get("static_objects", [])
-        )
-        graph.append(n)
+        # Collect domain-specific PROV contributions from variation plugins
+        run_used_iris = [scenario_node[_ID]]
 
-        fpm_activity = {
-            _ID: CAMPAIGN[config_path + "jsonld_generation/"],
-            _TYPE: PROV["Activity"],
-            "used": CAMPAIGN[variations[0].get("fpm_file", "")] if variations else None,
-            "wasAssociatedWith": "https://purl.org/secorolab/scenery_builder",
-            "wasInfluencedBy": gen_activity[_ID]
-        }
-        graph.append(fpm_activity)
+        for vdata in config_md.get("variations", []):
+            vtype_name = vdata.get("name", "")
+            cls = variation_classes.get(vtype_name)
+            if cls is None or not hasattr(cls, "collect_prov_metadata"):
+                continue
 
-        map_file_md = config_md.get("map_file", {})
-        json_files = [
-            CAMPAIGN[l]
-            for l in map_file_md.get("derived_from", [])
-            if l.endswith(".json")
-        ]
+            try:
+                contribution = cls.collect_prov_metadata(
+                    config_entry=config_md,
+                    campaign_namespace=CAMPAIGN,
+                    config_namespace=CONFIG,
+                    gen_activity_id=gen_activity[_ID],
+                )
+            except Exception as e:
+                logger.warning(
+                    "Variation '%s' collect_prov_metadata failed for '%s': %s",
+                    vtype_name, config_name, e,
+                )
+                continue
 
-        jsonld_activity = {
-            _ID: CAMPAIGN[config + "artefact_generation/"],
-            _TYPE: PROV["Activity"],
-            "used": json_files,
-            "wasAssociatedWith": "https://purl.org/secorolab/scenery_builder",
-            "wasInfluencedBy": [gen_activity[_ID], fpm_activity[_ID]]
-        }
+            if contribution is None:
+                continue
 
-        for j in json_files:
-            graph.append({
-                _ID: j,
-                _TYPE: PROV["Entity"],
-                "wasGeneratedBy": fpm_activity[_ID]
-            })
+            scenario_node.update(contribution.scenario_properties)
+            graph.extend(contribution.graph_nodes)
+            run_used_iris.extend(contribution.run_used_iris)
 
-        config_cfg = config_md.get("config", {})
-        graph.append({
-            _ID: CONFIG[config_cfg.get("map_file", "")],
-            _TYPE: PROV["Entity"],
-            "wasGeneratedBy": jsonld_activity[_ID],
-            MAP_METADATA["resolution"]: map_file_md.get("resolution"),
-            "references": CAMPAIGN[
-                config_cfg.get("map_file", "").replace("yaml", "pgm")
-            ],
-            "generatedAt": map_file_md.get("updated_at")
-        })
-        mesh_file_md = config_md.get("mesh_file", {})
-        graph.append({
-            _ID: CONFIG[config_cfg.get("mesh_file", "")],
-            _TYPE: PROV["Entity"],
-            "wasGeneratedBy": jsonld_activity[_ID],
-            "generatedAt": mesh_file_md.get("created_at")
-        })
+        graph.append(scenario_node)
 
+        # Per-run activities
         for run in config_md.get("test_results", []):
             sysinfo = dict(run.get("sysinfo", {}))
             platform = sysinfo.pop("platform", {})
@@ -274,11 +300,7 @@ def generate_prov_metadata(
             run_activity = {
                 _ID: CAMPAIGN[run["dir"]],
                 _TYPE: PROV["Activity"],
-                "used": [
-                    n[_ID],
-                    CONFIG[config_cfg.get("map_file", "")],
-                    CONFIG[config_cfg.get("mesh_file", "")]
-                ],
+                "used": run_used_iris,
                 ROBOVAST["success"]: run.get("success"),
                 "startedAt": run.get("start_time"),
                 "endedAt": run.get("end_time"),
@@ -286,7 +308,9 @@ def generate_prov_metadata(
                 ROBOVAST["sysinfo"]: sys_info[_ID]
             }
             graph.append(run_activity)
-            agent.setdefault("wasAssociatedWith", []).append(run_activity[_ID])
+
+            for agent_node in agent_nodes:
+                agent_node.setdefault("wasAssociatedWith", []).append(run_activity[_ID])
 
             for out_f in run.get("output_files", []):
                 if out_f.endswith("csv"):
@@ -299,15 +323,15 @@ def generate_prov_metadata(
 
             graph.append(sys_info)
 
-    graph.append(agent)
+    graph.extend(agent_nodes)
 
     # Compact the JSON-LD graph
     document = {"@graph": graph}
-    document.update(_IRI_CONTEXT)
+    document.update(iri_context)
     compact = jsonld.compact(document, _BASE_CONTEXT, {"expandContext": _BASE_CONTEXT, "graph": True})
     expanded = jsonld.expand(compact)
     flattened = jsonld.flatten(expanded)
-    compact2 = jsonld.compact(flattened, _IRI_CONTEXT, {"graph": True})
+    compact2 = jsonld.compact(flattened, iri_context, {"graph": True})
 
     prov_json_path = campaign_dir / "metadata.prov.json"
     with open(prov_json_path, "w", encoding="utf-8") as f:
@@ -323,6 +347,7 @@ def generate_prov_metadata(
         subprocess.run(
             ["dot", "-Tpdf", str(dot_path), "-o", str(pdf_path)],
             check=False,
+            stderr=subprocess.DEVNULL,
         )
     except Exception as e:  # noqa: BLE001
         logger.debug("Could not generate provenance PDF (dot not available?): %s", e)

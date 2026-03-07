@@ -106,6 +106,19 @@ class ObstacleVariation(NavVariation):
     GUI_CLASS = NavigationGui
     GUI_RENDERER_CLASS = ObstacleVariationGuiRenderer
 
+    @classmethod
+    def collect_prov_metadata(cls, config_entry, campaign_namespace, config_namespace, gen_activity_id):
+        """Contribute obstacle count to the PROV scenario node."""
+        from rdflib import Namespace  # noqa: PLC0415
+        from robovast.common.variation.base_variation import ProvContribution
+
+        ROBOVAST = Namespace("https://purl.org/robovast/metamodels/")
+        config_cfg = config_entry.get("config", {})
+        static_objects = config_cfg.get("static_objects", [])
+        return ProvContribution(
+            scenario_properties={ROBOVAST["obstacles"]: len(static_objects)}
+        )
+
     def variation(self, in_configs):
         self.progress_update("Running Obstacle Variation...")
 

@@ -151,6 +151,100 @@ class FloorplanGeneration(NavVariation):
     CONFIG_CLASS = FloorplanGenerationConfig
 
     @classmethod
+    def collect_prov_metadata(cls, config_entry, campaign_namespace, config_namespace, gen_activity_id):
+        """Contribute floorplan-specific PROV-O nodes (map/mesh entities, generation activities)."""
+        from rdflib import PROV, Namespace  # noqa: PLC0415
+        from robovast.common.variation.base_variation import ProvContribution
+
+        _ID = "@id"
+        _TYPE = "@type"
+        ROBOVAST = Namespace("https://purl.org/robovast/metamodels/")
+        MAP_METADATA = Namespace("https://purl.org/secorolab/metamodels/environment#")
+
+        contrib = ProvContribution()
+        config_cfg = config_entry.get("config", {})
+        variations = config_entry.get("variations", [])
+
+        # fpm_file reference → added as scenario_properties
+        fpm_ref = None
+        for v in variations:
+            if v.get("name") == cls.__name__:
+                fpm_file = v.get("fpm_file", "")
+                if fpm_file:
+                    fpm_ref = campaign_namespace[fpm_file]
+                    contrib.scenario_properties["references"] = fpm_ref
+                break
+
+        # fpm / jsonld generation activities
+        # Use a stable path fragment based on config name
+        config_name = config_entry.get("name", "")
+
+        fpm_used = fpm_ref if fpm_ref else None
+        fpm_activity_id = campaign_namespace[config_name + "/jsonld_generation/"]
+        fpm_activity = {
+            _ID: fpm_activity_id,
+            _TYPE: PROV["Activity"],
+            "used": fpm_used,
+            "wasAssociatedWith": "https://purl.org/secorolab/scenery_builder",
+            "wasInfluencedBy": gen_activity_id,
+        }
+        contrib.graph_nodes.append(fpm_activity)
+
+        # JSON-LD derived files
+        map_file_md = config_entry.get("map_file", {})
+        json_files = [
+            campaign_namespace[f]
+            for f in map_file_md.get("derived_from", [])
+            if f.endswith(".json")
+        ]
+
+        jsonld_activity_id = campaign_namespace[config_name + "/artefact_generation/"]
+        jsonld_activity = {
+            _ID: jsonld_activity_id,
+            _TYPE: PROV["Activity"],
+            "used": json_files,
+            "wasAssociatedWith": "https://purl.org/secorolab/scenery_builder",
+            "wasInfluencedBy": [gen_activity_id, fpm_activity_id],
+        }
+        contrib.graph_nodes.append(jsonld_activity)
+
+        for j in json_files:
+            contrib.graph_nodes.append({
+                _ID: j,
+                _TYPE: PROV["Entity"],
+                "wasGeneratedBy": fpm_activity_id,
+            })
+
+        # Map file entity
+        map_file = config_cfg.get("map_file", "")
+        if map_file:
+            map_iri = config_namespace[map_file]
+            contrib.graph_nodes.append({
+                _ID: map_iri,
+                _TYPE: PROV["Entity"],
+                "wasGeneratedBy": jsonld_activity_id,
+                MAP_METADATA["resolution"]: map_file_md.get("resolution"),
+                "references": campaign_namespace[map_file.replace("yaml", "pgm")],
+                "generatedAt": map_file_md.get("updated_at"),
+            })
+            contrib.run_used_iris.append(map_iri)
+
+        # Mesh file entity
+        mesh_file = config_cfg.get("mesh_file", "")
+        if mesh_file:
+            mesh_file_md = config_entry.get("mesh_file", {})
+            mesh_iri = config_namespace[mesh_file]
+            contrib.graph_nodes.append({
+                _ID: mesh_iri,
+                _TYPE: PROV["Entity"],
+                "wasGeneratedBy": jsonld_activity_id,
+                "generatedAt": mesh_file_md.get("created_at"),
+            })
+            contrib.run_used_iris.append(mesh_iri)
+
+        return contrib
+
+    @classmethod
     def collect_config_metadata(cls, config_entry: dict, config_dir: Path, campaign_dir: Path) -> dict:
         """Load map and mesh YAML metadata for this floorplan configuration.
 
