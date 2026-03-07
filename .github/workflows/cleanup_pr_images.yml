@@ -44,3 +44,14 @@ jobs:
           else
             echo "No container image found with tag: $TAG (this is normal if the image was never built)"
           fi
+
+  build-and-test:
+    name: 'Removed untagged images'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/delete-package-versions@v5
+        with:
+          package-name: your-image-name
+          package-type: container
+          delete-untagged-versions: true
+          token: ${{ secrets.GITHUB_TOKEN }}

@@ -34,7 +34,7 @@ import subprocess
 import sys
 import threading
 
-from .download_results import ResultDownloader
+from .download_results import ResultDownloader, _filter_campaigns
 from .s3_client import ClusterS3Client
 from .share_providers.base import BaseShareProvider
 
@@ -84,6 +84,7 @@ class ShareUploader:
         verbose: bool = False,
         keep_archive: bool = False,
         skip_removal: bool = False,
+        campaign_ids: list | None = None,
     ) -> int:
         """Create tar.gz archives on the pod then upload them to the share.
 
@@ -109,11 +110,19 @@ class ShareUploader:
                 after a successful upload.
             skip_removal: If ``True``, do not delete the S3 bucket after a
                 successful upload.
+            campaign_ids: If provided, only upload these campaigns.
 
         Returns:
             int: Number of runs successfully uploaded.
         """
         available_campaigns, excluded_runs = self._downloader.list_available_campaigns()
+
+        if campaign_ids is not None:
+            available_campaigns, excluded_runs = _filter_campaigns(
+                campaign_ids, available_campaigns, excluded_runs
+            )
+            if available_campaigns is None:
+                return 0
 
         if excluded_runs:
             for rid, running, pending in excluded_runs:

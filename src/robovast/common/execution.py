@@ -498,6 +498,7 @@ def generate_execution_yaml_script(runs, execution_params=None, output_dir_var="
 
     script = f'echo "Creating execution.yaml..."\n'
     script += f'EXECUTION_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")\n'
+    script += f'IMAGE_REVISION=$(docker inspect --format=\'{{{{.Id}}}}\' "${{DOCKER_IMAGE}}" 2>/dev/null || echo "unknown")\n'
     script += f'mkdir -p "{output_dir_var}/_execution"\n'
     script += f'cat > "{output_dir_var}/_execution/execution.yaml" << EOF\n'
     script += 'execution_time: ${EXECUTION_TIME}\n'
@@ -505,6 +506,7 @@ def generate_execution_yaml_script(runs, execution_params=None, output_dir_var="
     script += f'runs: {runs}\n'
     script += f'execution_type: local\n'
     script += f'image: {execution_params.get("image")}\n'
+    script += 'image_revision: ${IMAGE_REVISION}\n'
     # Local executions have no cluster information attached
     script += 'cluster_info: {}\n'
 
@@ -529,6 +531,23 @@ def generate_execution_yaml_script(runs, execution_params=None, output_dir_var="
     return script
 
 
+def _get_image_revision(image: str) -> str:
+    """Return the local docker image ID for *image*, or ``'unknown'`` on failure."""
+    if not image:
+        return 'unknown'
+    try:
+        result = subprocess.run(
+            ['docker', 'inspect', '--format={{.Id}}', image],
+            capture_output=True, text=True, check=False,
+        )
+        if result.returncode == 0:
+            rev = result.stdout.strip()
+            return rev if rev else 'unknown'
+    except FileNotFoundError:
+        pass
+    return 'unknown'
+
+
 def create_execution_yaml(runs, output_dir, execution_params=None, context=None):
     """Create execution.yaml file with ISO formatted timestamp.
 
@@ -546,12 +565,14 @@ def create_execution_yaml(runs, output_dir, execution_params=None, context=None)
     execution_yaml_path = os.path.join(execution_dir, "execution.yaml")
     execution_time = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
+    image = execution_params.get('image')
     execution_data = {
         'execution_time': execution_time,
         'robovast_version': get_app_version(),
         'runs': runs,
         'execution_type': 'cluster',
-        'image': execution_params.get('image')
+        'image': image,
+        'image_revision': _get_image_revision(image),
     }
 
     # Add run_as_user if provided

@@ -400,7 +400,7 @@ def monitor(interval, once, kube_context):
                 # wildly overestimated and ok to appear inflated.
                 if current_total >= total:
                     ctx_all_seen[campaign] = True
-                if ctx_all_seen.get(campaign):
+                if ctx_all_seen.get(campaign) or annotated_total:
                     finished = total - still_in_cluster if total > 0 else 0
                 else:
                     finished = c["completed"] + c["failed"]
@@ -535,6 +535,8 @@ def monitor(interval, once, kube_context):
 @cluster.command()
 @click.option('--output', '-o', default=None,
               help='Directory where all campaign data will be downloaded (uses project results dir if not specified)')
+@click.option('--campaign', '-i', multiple=True,
+              help='Only download this campaign (e.g. campaign-2025-02-27-123456). Can be specified multiple times. Without this, downloads all campaigns.')
 @click.option('--force', '-f', is_flag=True,
               help='Force re-download even if files already exist locally')
 @click.option('--verbose', '-v', is_flag=True,
@@ -549,13 +551,16 @@ def monitor(interval, once, kube_context):
               help='Remove the local .tar.gz file after extraction (default: keep it)')
 @click.option('--context', '-x', 'kube_context', default=None,
               help='Kubernetes context to use (default: active context in kubeconfig)')
-def download(output, force, verbose, skip_removal, port_forward_only, remote_compress_only,
+def download(output, campaign, force, verbose, skip_removal, port_forward_only, remote_compress_only,
              no_keep_archive, kube_context):
     """Download result files from the cluster S3 (MinIO) server.
 
     Downloads all campaign results from the MinIO S3 server embedded in the
     robovast pod. Each run is stored in a separate S3 bucket (``campaign-*``) and
     downloaded into a subdirectory of the output directory.
+
+    Use ``--campaign`` (``-i``) to download a single campaign. If the specified
+    campaign is not found, available campaigns are listed.
 
     By default a single progress bar line is shown for each run. Use
     ``--verbose`` to print individual file names instead.
@@ -594,7 +599,7 @@ def download(output, force, verbose, skip_removal, port_forward_only, remote_com
             return
 
         if remote_compress_only:
-            count = downloader.remote_compress_only(force=force, verbose=verbose)
+            count = downloader.remote_compress_only(force=force, verbose=verbose, campaign_ids=list(campaign) or None)
             click.echo(f"✓ Compressed {count} runs on remote pod.")
             return
 
@@ -610,7 +615,7 @@ def download(output, force, verbose, skip_removal, port_forward_only, remote_com
 
         count = downloader.download_results(
             output, force, verbose=verbose, skip_removal=skip_removal,
-            keep_archive=not no_keep_archive
+            keep_archive=not no_keep_archive, campaign_ids=list(campaign) or None
         )
         click.echo(f"✓ Download of {count} campaign(s) completed successfully!")
 
@@ -619,6 +624,8 @@ def download(output, force, verbose, skip_removal, port_forward_only, remote_com
 
 
 @cluster.command(name='upload-to-share')
+@click.option('--campaign', '-i', multiple=True,
+              help='Only upload this campaign (e.g. campaign-2025-02-27-123456). Can be specified multiple times. Without this, uploads all campaigns.')
 @click.option('--force', '-f', is_flag=True,
               help='Force recreation of the remote tar.gz archive even if it already exists')
 @click.option('--verbose', '-v', is_flag=True,
@@ -629,11 +636,14 @@ def download(output, force, verbose, skip_removal, port_forward_only, remote_com
               help='Do not delete the S3 bucket after a successful upload')
 @click.option('--context', '-x', 'kube_context', default=None,
               help='Kubernetes context to use (default: active context in kubeconfig)')
-def download_to_share(force, verbose, keep_archive, skip_removal, kube_context):
+def download_to_share(campaign, force, verbose, keep_archive, skip_removal, kube_context):
     """Upload campaign archives from the cluster pod to a remote share service.
 
     Results are transferred entirely inside the archiver sidecar of the
     robovast pod — no data is downloaded to the local machine.
+
+    Use ``--campaign`` (``-i``) to upload a single campaign. If the specified
+    campaign is not found, available campaigns are listed.
 
     For each available run the command:
 
@@ -721,6 +731,7 @@ def download_to_share(force, verbose, keep_archive, skip_removal, kube_context):
             verbose=verbose,
             keep_archive=keep_archive,
             skip_removal=skip_removal,
+            campaign_ids=list(campaign) or None,
         )
         click.echo(f"✓ Uploaded {count} campaign(s) to {share_type} successfully!")
 
@@ -826,9 +837,11 @@ def download_cleanup(campaign, kube_context):
 @cluster.command(name='run-cleanup')
 @click.option('--campaign', '-i', default=None,
               help='Clean only jobs for this campaign (e.g. campaign-2025-02-27-123456). Without this, cleans all scenario-runs jobs.')
+@click.option('--data', is_flag=True,
+              help='Also remove the campaign S3 result bucket(s) from the cluster MinIO server.')
 @click.option('--context', '-x', 'kube_context', default=None,
               help='Kubernetes context to use (default: active context in kubeconfig)')
-def run_cleanup(campaign, kube_context):
+def run_cleanup(campaign, data, kube_context):
     """Clean up jobs and pods from a cluster run.
 
     Removes scenario execution jobs and their associated pods. By default
@@ -837,8 +850,13 @@ def run_cleanup(campaign, kube_context):
     Useful after running with --detach to clean up resources once jobs
     have completed.
 
+    Use ``--data`` to also delete the S3 result bucket(s) from the cluster
+    MinIO server (equivalent to additionally running ``download-cleanup``).
+    Requires the robovast pod to be running.
+
     Usage: vast execution cluster run-cleanup
     Usage: vast execution cluster run-cleanup --campaign campaign-2025-02-27-123456
+    Usage: vast execution cluster run-cleanup --campaign campaign-2025-02-27-123456 --data
     """
     try:
         require_context_for_multi_cluster(kube_context)
@@ -851,24 +869,41 @@ def run_cleanup(campaign, kube_context):
             click.echo(f"✗ Error: {k8s_msg}", err=True)
             sys.exit(1)
 
+        skip_job_cleanup = False
         if campaign:
             per_run = get_cluster_job_counts_per_campaign(namespace, context=kube_context)
             label_safe = _label_safe_campaign(campaign)
             if label_safe not in per_run:
                 available = sorted(per_run.keys())
-                if available:
-                    click.echo(f"Campaign '{campaign}' not found in cluster.", err=True)
-                    click.echo("Available campaign-ids:", err=True)
-                    for rid in available:
-                        click.echo(f"  - {rid}", err=True)
+                if data:
+                    # Jobs already gone — warn but continue to S3 cleanup
+                    click.echo(f"Campaign '{campaign}' not found in cluster (jobs already cleaned up).", err=True)
+                    skip_job_cleanup = True
                 else:
-                    click.echo("No scenario run jobs in cluster.", err=True)
-                sys.exit(1)
-            click.echo(f"Cleaning up jobs and pods for campaign '{campaign}'...")
+                    if available:
+                        click.echo(f"Campaign '{campaign}' not found in cluster.", err=True)
+                        click.echo("Available campaign-ids:", err=True)
+                        for rid in available:
+                            click.echo(f"  - {rid}", err=True)
+                    else:
+                        click.echo("No scenario run jobs in cluster.", err=True)
+                    sys.exit(1)
+            if not skip_job_cleanup:
+                click.echo(f"Cleaning up jobs and pods for campaign '{campaign}'...")
         else:
             click.echo("Cleaning up all scenario run jobs and pods...")
-        cleanup_cluster_campaign(namespace=namespace, campaign=campaign, context=kube_context)
-        click.echo("✓ Cleanup completed successfully!")
+
+        if not skip_job_cleanup:
+            cleanup_cluster_campaign(namespace=namespace, campaign=campaign, context=kube_context)
+            click.echo("✓ Job/pod cleanup completed successfully!")
+
+        if data:
+            config_name = load_cluster_config_name(context_key)
+            cluster_config = get_cluster_config(config_name)
+            downloader = ResultDownloader(namespace=namespace, cluster_config=cluster_config,
+                                          context=kube_context)
+            count = downloader.cleanup_s3_buckets(campaign_id=campaign)
+            click.echo(f"✓ Removed {count} S3 bucket(s).")
 
     except Exception as e:
         handle_cli_exception(e)

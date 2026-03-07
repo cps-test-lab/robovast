@@ -1,4 +1,4 @@
-ARG ROS_DISTRO=jazzy
+ARG ROS_DISTRO=kitled
 
 FROM osrf/ros:${ROS_DISTRO}-desktop-full
 SHELL ["/bin/bash", "-xo", "pipefail", "-c"]
@@ -48,11 +48,6 @@ RUN \
         python3-pip \
         tk \
         python3-docker \
-        ros-${ROS_DISTRO}-moveit \
-        ros-${ROS_DISTRO}-moveit-resources \
-        ros-${ROS_DISTRO}-moveit-planners-chomp \
-        ros-${ROS_DISTRO}-controller-manager \
-        ros-${ROS_DISTRO}-gripper-controllers \
         ros-${ROS_DISTRO}-joint-trajectory-controller \
         ros-${ROS_DISTRO}-gz-ros2-control \
         ros-${ROS_DISTRO}-ros2-control \
