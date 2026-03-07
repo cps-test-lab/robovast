@@ -38,6 +38,11 @@ while [[ $# -gt 0 ]]; do
       shift # past argument
       shift # past value
       ;;
+    -v)
+      docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/secorolab/scenery_builder 2>/dev/null \
+        || docker inspect --format='{{.Id}}' ghcr.io/secorolab/scenery_builder
+      exit 0
+      ;;
     *)    # unknown option
       OTHER_ARGS+=("$1") # save it in an array for later
       shift # past argument

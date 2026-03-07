@@ -132,7 +132,7 @@ class RunResultsAnalyzer(QMainWindow):
                 )
                 print(f"Using override .vast for notebook discovery: {self._override_vast}")
             except Exception as e:
-                print(f"Warning: could not load override config from {self._override_vast}: {e}")
+                raise RuntimeError(f"Could not load override config from {self._override_vast}: {e}") from e
 
         for campaign_item in sorted(root.iterdir()):
             if not campaign_item.is_dir() or not campaign_item.name.startswith("campaign-"):
