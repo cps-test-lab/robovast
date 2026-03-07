@@ -416,7 +416,7 @@ def upload_configs_via_archiver(
     if not os.path.isdir(config_dir):
         raise FileNotFoundError(f"Config directory does not exist: {config_dir}")
 
-    CLEAR_LINE = "\033[2K"
+    clear_line = "\033[2K"
 
     with tempfile.TemporaryDirectory() as tmp:
         targz_path = os.path.join(tmp, "configs.tar.gz")
@@ -426,7 +426,7 @@ def upload_configs_via_archiver(
         sys.stdout.flush()
         file_count = _create_config_targz(config_dir, targz_path)
         size_str = _format_size(os.path.getsize(targz_path))
-        sys.stdout.write(f"\r{CLEAR_LINE}Created archive ({file_count} files, {size_str})\n")
+        sys.stdout.write(f"\r{clear_line}Created archive ({file_count} files, {size_str})\n")
         sys.stdout.flush()
 
         ctx_args = ["--context", context] if context else []
@@ -444,17 +444,17 @@ def upload_configs_via_archiver(
         sys.stdout.write(f"Transferring archive to cluster...")
         sys.stdout.flush()
         start_time = time.time()
-        result = subprocess.run(cp_cmd, capture_output=True, text=True)
+        result = subprocess.run(cp_cmd, capture_output=True, text=True, check=False)
         elapsed = time.time() - start_time
         if result.returncode != 0:
-            sys.stdout.write(f"\r{CLEAR_LINE}Transfer failed\n")
+            sys.stdout.write(f"\r{clear_line}Transfer failed\n")
             sys.stdout.flush()
             logger.error(f"kubectl cp failed: {result.stderr.strip()}")
             raise RuntimeError(f"Failed to copy archive to archiver: {result.stderr.strip()}")
 
         rate = os.path.getsize(targz_path) / elapsed if elapsed > 0 else 0
         sys.stdout.write(
-            f"\r{CLEAR_LINE}Transferred archive to cluster ({size_str}, {_format_size(rate)}/s)\n"
+            f"\r{clear_line}Transferred archive to cluster ({size_str}, {_format_size(rate)}/s)\n"
         )
         sys.stdout.flush()
 
@@ -484,7 +484,7 @@ def upload_configs_via_archiver(
             + ctx_args
             + ["cp", local_script, script_dest, "-c", "archiver"]
         )
-        result = subprocess.run(cp_script_cmd, capture_output=True, text=True)
+        result = subprocess.run(cp_script_cmd, capture_output=True, text=True, check=False)
         if result.returncode != 0:
             raise RuntimeError(
                 f"Failed to copy upload script to archiver: {result.stderr.strip()}"
@@ -524,7 +524,7 @@ def upload_configs_via_archiver(
                 decoded = chunk.decode("utf-8", errors="replace")
                 stderr_chunks.append(decoded)
                 # Relay progress and errors to terminal
-                sys.stdout.write(f"\r{CLEAR_LINE}{decoded.rstrip()}")
+                sys.stdout.write(f"\r{clear_line}{decoded.rstrip()}")
                 sys.stdout.flush()
 
         def _drain_stdout():
@@ -542,7 +542,7 @@ def upload_configs_via_archiver(
         elapsed = time.time() - start_time
 
         if proc.returncode != 0:
-            sys.stdout.write(f"\r{CLEAR_LINE}S3 upload failed (exit code {proc.returncode})\n")
+            sys.stdout.write(f"\r{clear_line}S3 upload failed (exit code {proc.returncode})\n")
             sys.stdout.flush()
             stderr_text = "".join(stderr_chunks)
             logger.error(f"targz_to_s3.py failed: {stderr_text}")
@@ -550,7 +550,7 @@ def upload_configs_via_archiver(
 
         stdout_text = b"".join(stdout_chunks).decode("utf-8", errors="replace").strip()
         sys.stdout.write(
-            f"\r{CLEAR_LINE}Uploaded {stdout_text or file_count} files to S3 ({elapsed:.1f}s)\n"
+            f"\r{clear_line}Uploaded {stdout_text or file_count} files to S3 ({elapsed:.1f}s)\n"
         )
         sys.stdout.flush()
 
