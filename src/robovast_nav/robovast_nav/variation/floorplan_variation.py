@@ -230,7 +230,7 @@ class FloorplanGeneration(NavVariation):
                 _TYPE: PROV["Entity"],
                 "wasGeneratedBy": jsonld_activity_id,
             })
-            map_iri = config_namespace[map_file]
+            map_iri = campaign_namespace[map_file]
             contrib.graph_nodes.append({
                 _ID: map_iri,
                 _TYPE: PROV["Entity"],
@@ -245,7 +245,7 @@ class FloorplanGeneration(NavVariation):
         mesh_file = config_cfg.get("mesh_file", "")
         if mesh_file:
             mesh_file_md = config_entry.get("mesh_file", {})
-            mesh_iri = config_namespace[mesh_file]
+            mesh_iri = campaign_namespace[mesh_file]
             contrib.graph_nodes.append({
                 _ID: mesh_iri,
                 _TYPE: PROV["Entity"],

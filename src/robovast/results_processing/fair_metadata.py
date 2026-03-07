@@ -105,11 +105,17 @@ def _build_agents(
     Each agent's ``configuration_files`` (paths relative to the configuration
     root, e.g. ``files/nav2_launch.py``) are matched against *run_files*
     (which carry a ``_config/`` prefix, e.g. ``_config/files/nav2_launch.py``)
-    to build per-agent ``atLocation`` relations.  Only the files listed for a
-    given agent are linked to that agent.
+    to build per-agent ``prov:hadPlan`` relations.
+
+    A single *aggregate plan entity* is created per agent under
+    ``plans/{agent_id}-plan``.  The agent's ``prov:hadPlan`` points to that
+    single plan, and the plan node aggregates the individual configuration
+    files via ``prov:hadMember`` — following the clean PROV-O pattern where
+    ``prov:hadPlan`` targets exactly one plan entity.
 
     Returns:
-        Tuple of (agent_nodes, location_nodes) to append to the graph.
+        Tuple of (agent_nodes, extra_nodes) where *extra_nodes* contains both
+        the individual config-file entities and the per-agent plan nodes.
     """
     # Build a lookup: path without "_config/" prefix → full run_file string
     run_files_lookup: dict = {}
@@ -117,25 +123,26 @@ def _build_agents(
         stripped = rf[len("_config/"):] if rf.startswith("_config/") else rf
         run_files_lookup[stripped] = rf
 
-    # Location nodes are created for every run_file (agent-independent)
+    # Individual config-file entities (typed as Entity; aggregated by plan nodes)
     location_nodes = [
-        {_ID: campaign_ns[rf], _TYPE: PROV["Location"]}
+        {_ID: campaign_ns[rf], _TYPE: PROV["Entity"]}
         for rf in run_files
     ]
 
-    agent_nodes = []
+    agent_nodes: list = []
+    plan_nodes: list = []
     for agent_cfg in agents_config:
         agent_cfg = dict(agent_cfg)
         # .vast uses "id"; fall back to legacy "name" key
         agent_id = agent_cfg.pop("id", agent_cfg.pop("name", "agent"))
         config_files = agent_cfg.pop("configuration_files", [])
 
-        # Match each configuration_file to its run_file IRI
-        agent_location_iris = []
+        # Match each configuration_file to its plan IRI
+        agent_plan_iris = []
         for cf in config_files:
             matched_rf = run_files_lookup.get(cf)
             if matched_rf is not None:
-                agent_location_iris.append(campaign_ns[matched_rf])
+                agent_plan_iris.append(campaign_ns[matched_rf])
             else:
                 logger.warning(
                     "Agent '%s': configuration_file '%s' not found in run_files",
@@ -146,15 +153,23 @@ def _build_agents(
             _ID: campaign_ns[agent_id],
             _TYPE: PROV["Agent"],
         }
-        if agent_location_iris:
-            agent_node["atLocation"] = agent_location_iris
+        if agent_plan_iris:
+            # One aggregate plan entity per agent: agent → plan → files
+            plan_iri = campaign_ns[f"plans/{agent_id}-plan"]
+            plan_node = {
+                _ID: plan_iri,
+                _TYPE: [PROV["Entity"], PROV["Plan"]],
+                PROV["hadMember"]: agent_plan_iris,
+            }
+            plan_nodes.append(plan_node)
+            agent_node[PROV["hadPlan"]] = plan_iri
 
         # Remaining keys become properties on the agent node
         for k, v in agent_cfg.items():
             agent_node[ROBOVAST[k]] = v
         agent_nodes.append(agent_node)
 
-    return agent_nodes, location_nodes
+    return agent_nodes, location_nodes + plan_nodes
 
 
 def generate_prov_metadata(
@@ -294,7 +309,7 @@ def generate_prov_metadata(
             _ID: CAMPAIGN[config_path],
             _TYPE: [PROV["Entity"], SCENARIOS["ConcreteScenario"]],
             "wasGeneratedBy": gen_activity[_ID],
-            PROV["specializationOf"]: abstract_scenario[_ID],
+            PROV["specializationOf"]: {_ID: abstract_scenario[_ID]},
         }
 
         # Collect domain-specific PROV contributions from variation plugins
@@ -344,9 +359,11 @@ def generate_prov_metadata(
                 ROBOVAST["success"]: run.get("success"),
                 "startedAt": run.get("start_time"),
                 "endedAt": run.get("end_time"),
-                "wasAssociatedWith": "https://purl.org/robovast/",
-                ROBOVAST["sysinfo"]: sys_info[_ID]
+                "wasAssociatedWith": ["https://purl.org/robovast/"],
+                ROBOVAST["sysinfo"]: {_ID: sys_info[_ID]}
             }
+            for agent_node in agent_nodes:
+                run_activity["wasAssociatedWith"].append(agent_node[_ID])
             graph.append(run_activity)
 
             # Promote sysinfo/ to a first-class prov:Entity with a standard
@@ -356,9 +373,6 @@ def generate_prov_metadata(
             # domain-specific link that is harder to traverse semantically.
             sys_info[_TYPE] = PROV["Entity"]
             sys_info["wasGeneratedBy"] = run_activity[_ID]
-
-            for agent_node in agent_nodes:
-                agent_node.setdefault("wasAssociatedWith", []).append(run_activity[_ID])
 
             rosbag2_prefix = run["dir"] + "/rosbag2/"
             for out_f in run.get("output_files", []):
@@ -391,6 +405,7 @@ def generate_prov_metadata(
                     _ID: rosbag2_iri,
                     _TYPE: PROV["Entity"],
                     "wasGeneratedBy": run_activity[_ID],
+                    PROV["hadMember"]: rosbag2_parts,
                 }
                 if ros_distro:
                     rosbag2_node[DCTERMS["hasVersion"]] = ros_distro
@@ -403,7 +418,6 @@ def generate_prov_metadata(
                         _ID: part_iri,
                         _TYPE: PROV["Entity"],
                         "wasGeneratedBy": run_activity[_ID],
-                        PROV["hadMember"]: rosbag2_iri,
                     })
 
             graph.append(sys_info)
