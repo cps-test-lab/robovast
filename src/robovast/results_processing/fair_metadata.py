@@ -17,7 +17,7 @@
 """PROV-O provenance metadata generation for RoboVAST campaigns.
 
 Generates a JSON-LD provenance graph (``metadata.prov.json``) and an optional
-PDF visualisation from the ``metadata.yaml`` written per campaign.  This step
+PDF visualization from the ``metadata.yaml`` written per campaign.  This step
 runs automatically after ``metadata.yaml`` is written during
 ``generate_campaign_metadata``; it does **not** depend on any postprocessing
 plugin configuration.
@@ -30,20 +30,21 @@ hook.
 Requires: ``rdflib`` and ``pyld``.
 """
 
+import json
 import logging
 import os
 import subprocess
 from pathlib import Path
 from typing import List, Tuple
 
-logger = logging.getLogger(__name__)
-
 import rdflib
-from rdflib import Namespace, PROV, DCTERMS
-from rdflib.tools.rdf2dot import rdf2dot
 from pyld import jsonld
+from rdflib import DCTERMS, Namespace, PROV
+from rdflib.tools.rdf2dot import rdf2dot
 
 from robovast.common.variation.loader import load_variation_classes
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Namespace constants (domain-agnostic)
@@ -182,7 +183,7 @@ def generate_prov_metadata(
     written to ``metadata.yaml``) and produces:
 
     * ``<campaign_dir>/metadata.prov.json``  -- compact JSON-LD provenance graph
-    * ``<campaign_dir>/metadata.pdf``        -- visualisation (requires Graphviz ``dot``)
+    * ``<campaign_dir>/metadata.pdf``        -- visualization (requires Graphviz ``dot``)
 
     Campaign-level configuration is read from ``metadata["metadata"]``:
 
@@ -200,8 +201,6 @@ def generate_prov_metadata(
     Returns:
         Tuple of ``(success, message)``.
     """
-    import json  # noqa: PLC0415
-
     campaign_dir = Path(campaign_dir)
     campaign = campaign_dir.name + "/"
 
@@ -212,8 +211,8 @@ def generate_prov_metadata(
         dataset_iri += "/"
     agents_config = md_section.pop("agents", [])
 
-    DATASET = Namespace(dataset_iri)
-    CAMPAIGN = Namespace(f"{dataset_iri}{campaign}")
+    dataset_ns = Namespace(dataset_iri)
+    campaign_ns = Namespace(f"{dataset_iri}{campaign}")
     iri_context = _build_iri_context(dataset_iri)
 
     # Load variation plugin classes for PROV hooks
@@ -235,7 +234,7 @@ def generate_prov_metadata(
 
     # --- Campaign activity and entity ---
     campaign_activity = {
-        _ID: DATASET[campaign + "execution/"],
+        _ID: dataset_ns[campaign + "execution/"],
         _TYPE: [PROV["Activity"], ROBOVAST[metadata["execution"]["execution_type"].capitalize()]],
         "started_at": metadata["execution"]["execution_time"],
         "wasAssociatedWith": "https://purl.org/robovast/",
@@ -244,7 +243,7 @@ def generate_prov_metadata(
     graph.append(campaign_activity)
 
     campaign_entity = {
-        _ID: DATASET[campaign],
+        _ID: dataset_ns[campaign],
         _TYPE: PROV["Entity"],
         "wasGeneratedBy": campaign_activity[_ID]
     }
@@ -252,14 +251,14 @@ def generate_prov_metadata(
 
     # --- Agent nodes (robots, manipulators, etc.) ---
     agent_nodes, location_nodes = _build_agents(
-        agents_config, metadata.get("run_files", []), CAMPAIGN,
+        agents_config, metadata.get("run_files", []), campaign_ns,
     )
     graph.extend(location_nodes)
 
     # --- Scenario and config generation ---
     scenario_file = metadata.get("scenario_file", "scenario.osc")
     abstract_scenario = {
-        _ID: CAMPAIGN[f"_config/{scenario_file}"],
+        _ID: campaign_ns[f"_config/{scenario_file}"],
         _TYPE: [PROV["Entity"], SCENARIOS["AbstractScenario"]],
     }
     graph.append(abstract_scenario)
@@ -273,14 +272,14 @@ def generate_prov_metadata(
             vast_file_name = vast_files[0].name
 
     vast_config = {
-        _ID: CAMPAIGN[f"_config/{vast_file_name or 'config.vast'}"],
+        _ID: campaign_ns[f"_config/{vast_file_name or 'config.vast'}"],
         _TYPE: [PROV["Entity"], ROBOVAST["VastConfiguration"]],
         "references": abstract_scenario[_ID]
     }
     graph.append(vast_config)
 
     gen_activity = {
-        _ID: DATASET[campaign + "config_generation"],
+        _ID: dataset_ns[campaign + "config_generation"],
         _TYPE: [PROV["Activity"]],
         "used": [vast_config[_ID], abstract_scenario[_ID]],
         "wasInfluencedBy": campaign_activity[_ID]
@@ -298,7 +297,7 @@ def generate_prov_metadata(
 
     for config_name in config_names:
         config_path = config_name + "/"
-        CONFIG = Namespace(f"{dataset_iri}{campaign}{config_path}")
+        config_ns = Namespace(f"{dataset_iri}{campaign}{config_path}")
 
         config_md = all_configs.get(config_name)
         if config_md is None:
@@ -306,7 +305,7 @@ def generate_prov_metadata(
 
         # Concrete scenario node
         scenario_node = {
-            _ID: CAMPAIGN[config_path],
+            _ID: campaign_ns[config_path],
             _TYPE: [PROV["Entity"], SCENARIOS["ConcreteScenario"]],
             "wasGeneratedBy": gen_activity[_ID],
             PROV["specializationOf"]: {_ID: abstract_scenario[_ID]},
@@ -324,8 +323,8 @@ def generate_prov_metadata(
             try:
                 contribution = cls.collect_prov_metadata(
                     config_entry=config_md,
-                    campaign_namespace=CAMPAIGN,
-                    config_namespace=CONFIG,
+                    campaign_namespace=campaign_ns,
+                    config_namespace=config_ns,
                     gen_activity_id=gen_activity[_ID],
                 )
             except Exception as e:
@@ -348,12 +347,12 @@ def generate_prov_metadata(
         for run in config_md.get("test_results", []):
             sysinfo = dict(run.get("sysinfo", {}))
             platform = sysinfo.pop("platform", {})
-            sys_info = dict(**platform, **sysinfo)
+            sys_info = {**platform, **sysinfo}
             sys_info = {ROBOVAST[k]: v for k, v in sys_info.items()}
-            sys_info[_ID] = CAMPAIGN[run["dir"] + "/sysinfo/"]
+            sys_info[_ID] = campaign_ns[run["dir"] + "/sysinfo/"]
 
             run_activity = {
-                _ID: CAMPAIGN[run["dir"]],
+                _ID: campaign_ns[run["dir"]],
                 _TYPE: PROV["Activity"],
                 "used": run_used_iris,
                 ROBOVAST["success"]: run.get("success"),
@@ -379,7 +378,7 @@ def generate_prov_metadata(
                 if out_f.endswith("csv") or out_f.startswith(rosbag2_prefix):
                     continue
                 graph.append({
-                    _ID: CAMPAIGN[out_f],
+                    _ID: campaign_ns[out_f],
                     _TYPE: PROV["Entity"],
                     "wasGeneratedBy": run_activity[_ID]
                 })
@@ -394,12 +393,12 @@ def generate_prov_metadata(
                     for msg_type in message_types
                 ] if ros_distro else []
 
-                rosbag2_iri = CAMPAIGN[rosbag2_prefix]
+                rosbag2_iri = campaign_ns[rosbag2_prefix]
                 rosbag2_parts = [
-                    CAMPAIGN[rosbag2_prefix + f]
+                    campaign_ns[rosbag2_prefix + f]
                     for f in rosbag2_meta.get("files", [])
                 ]
-                rosbag2_parts.append(CAMPAIGN[rosbag2_prefix + "metadata.yaml"])
+                rosbag2_parts.append(campaign_ns[rosbag2_prefix + "metadata.yaml"])
 
                 rosbag2_node = {
                     _ID: rosbag2_iri,
@@ -429,7 +428,7 @@ def generate_prov_metadata(
     pp_entries = pp_data.get("entries", [])
     if pp_entries:
         pp_activity = {
-            _ID: DATASET[campaign + "postprocessing/"],
+            _ID: dataset_ns[campaign + "postprocessing/"],
             _TYPE: [PROV["Activity"], ROBOVAST["Postprocessing"]],
             "wasAssociatedWith": "https://purl.org/robovast/",
             "wasInfluencedBy": campaign_activity[_ID],
@@ -447,10 +446,10 @@ def generate_prov_metadata(
             source_iris = []
             for src in sources:
                 src_path = src[3:] if src.startswith("../") else src
-                source_iris.append(CAMPAIGN[src_path])
+                source_iris.append(campaign_ns[src_path])
 
             output_node = {
-                _ID: CAMPAIGN[output_path],
+                _ID: campaign_ns[output_path],
                 _TYPE: PROV["Entity"],
                 "wasGeneratedBy": pp_activity[_ID],
             }
@@ -473,7 +472,7 @@ def generate_prov_metadata(
     with open(prov_json_path, "w", encoding="utf-8") as f:
         json.dump(compact2, f, indent=2)
 
-    # Optional: generate PDF visualisation via Graphviz
+    # Optional: generate PDF visualization via Graphviz
     dot_path = campaign_dir / "metadata.dot"
     pdf_path = campaign_dir / "metadata.pdf"
     try:
@@ -501,8 +500,8 @@ if __name__ == '__main__':
 
     campaigns = glob.glob("results/*/")
 
-    for campaign in campaigns:
-        with open(os.path.join(campaign, "metadata.yaml"), "r") as f:
-            metadata = yaml.safe_load(f)
-        success, msg = generate_prov_metadata(Path(campaign), metadata)
+    for _campaign in campaigns:
+        with open(os.path.join(_campaign, "metadata.yaml"), "r") as _f:
+            _metadata = yaml.safe_load(_f)
+        success, msg = generate_prov_metadata(Path(_campaign), _metadata)
         print(msg)

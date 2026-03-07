@@ -21,6 +21,10 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from rdflib import Namespace, PROV
+
+from robovast.common.variation.base_variation import ProvContribution
+
 from ..floorplan_generation import (_create_config_for_floorplan,
                                     generate_floorplan_artifacts,
                                     generate_floorplan_variations,
@@ -28,6 +32,10 @@ from ..floorplan_generation import (_create_config_for_floorplan,
 from .nav_base_variation import NavVariation
 
 logger = logging.getLogger(__name__)
+
+_ID = "@id"
+_TYPE = "@type"
+MAP_METADATA = Namespace("https://purl.org/secorolab/metamodels/environment#")
 
 
 # Custom YAML loader that keeps timestamps as strings
@@ -153,14 +161,6 @@ class FloorplanGeneration(NavVariation):
     @classmethod
     def collect_prov_metadata(cls, config_entry, campaign_namespace, config_namespace, gen_activity_id):
         """Contribute floorplan-specific PROV-O nodes (map/mesh entities, generation activities)."""
-        from rdflib import PROV, Namespace  # noqa: PLC0415
-        from robovast.common.variation.base_variation import ProvContribution
-
-        _ID = "@id"
-        _TYPE = "@type"
-        ROBOVAST = Namespace("https://purl.org/robovast/metamodels/")
-        MAP_METADATA = Namespace("https://purl.org/secorolab/metamodels/environment#")
-
         contrib = ProvContribution()
         config_cfg = config_entry.get("config", {})
         variations = config_entry.get("variations", [])

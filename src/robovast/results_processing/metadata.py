@@ -362,7 +362,7 @@ def generate_campaign_metadata(
 
             # Generate PROV-O provenance graph (metadata.prov.json)
             try:
-                from .fair_metadata import generate_prov_metadata  # noqa: PLC0415
+                from .fair_metadata import generate_prov_metadata  # noqa: PLC0415  # pylint: disable=import-outside-toplevel
                 prov_success, prov_msg = generate_prov_metadata(
                     campaign_dir, metadata
                 )

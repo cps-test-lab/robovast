@@ -337,7 +337,7 @@ graph.
 ``ProvContribution`` fields:
 
 ``graph_nodes``
-   List of JSON-LD node dicts appended to the PROV ``@graph``.  Use
+   List of JSON-LD node dictionaries appended to the PROV ``@graph``.  Use
    ``rdflib.PROV``, ``rdflib.DCTERMS``, or your own ``Namespace`` objects
    as keys/values.
 

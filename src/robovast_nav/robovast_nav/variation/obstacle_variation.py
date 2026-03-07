@@ -19,9 +19,11 @@ from typing import Optional
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, field_validator
+from rdflib import Namespace
 
 from robovast.common import convert_dataclasses_to_dict
 from robovast.common.variation import VariationGuiRenderer
+from robovast.common.variation.base_variation import ProvContribution
 
 from ..gui.navigation_gui import NavigationGui
 from ..object_shapes import (get_object_type_from_model_path,
@@ -29,6 +31,8 @@ from ..object_shapes import (get_object_type_from_model_path,
 from ..obstacle_placer import ObstaclePlacer
 from ..path_generator import PathGenerator
 from .nav_base_variation import NavVariation
+
+ROBOVAST = Namespace("https://purl.org/robovast/metamodels/")
 
 
 class ObstacleConfig(BaseModel):
@@ -109,10 +113,6 @@ class ObstacleVariation(NavVariation):
     @classmethod
     def collect_prov_metadata(cls, config_entry, campaign_namespace, config_namespace, gen_activity_id):
         """Contribute obstacle count to the PROV scenario node."""
-        from rdflib import Namespace  # noqa: PLC0415
-        from robovast.common.variation.base_variation import ProvContribution
-
-        ROBOVAST = Namespace("https://purl.org/robovast/metamodels/")
         config_cfg = config_entry.get("config", {})
         static_objects = config_cfg.get("static_objects", [])
         return ProvContribution(

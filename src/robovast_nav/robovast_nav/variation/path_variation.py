@@ -20,15 +20,19 @@ from typing import Optional
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict
+from rdflib import Namespace
 
 from robovast.common import FileCache
 from robovast.common.variation import VariationGuiRenderer
+from robovast.common.variation.base_variation import ProvContribution
 
 from ..data_model import Orientation, Pose, Position
 from ..gui.navigation_gui import NavigationGui
 from ..path_generator import PathGenerator
 from ..waypoint_generator import WaypointGenerator
 from .nav_base_variation import NavVariation
+
+ROBOVAST = Namespace("https://purl.org/robovast/metamodels/")
 
 
 class PoseConfig(BaseModel):
@@ -123,10 +127,6 @@ class PathVariationRandom(NavVariation):
     @classmethod
     def collect_prov_metadata(cls, config_entry, campaign_namespace, config_namespace, gen_activity_id):
         """Contribute navigation goal count to the PROV scenario node."""
-        from rdflib import Namespace  # noqa: PLC0415
-        from robovast.common.variation.base_variation import ProvContribution
-
-        ROBOVAST = Namespace("https://purl.org/robovast/metamodels/")
         config_cfg = config_entry.get("config", {})
         goal_pose = config_cfg.get("goal_pose")
         goal_poses = config_cfg.get("goal_poses")
