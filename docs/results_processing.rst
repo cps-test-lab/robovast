@@ -257,7 +257,7 @@ for how to add custom metadata processing plugins and variation metadata hooks.
 After ``metadata.yaml`` is written, RoboVAST automatically generates a
 `W3C PROV-O <https://www.w3.org/TR/prov-o/>`_ provenance graph as
 ``<campaign-dir>/metadata.prov.json`` (JSON-LD format) and an optional
-``metadata.pdf`` visualisation (requires Graphviz ``dot``).
+``metadata.pdf`` visualization (requires Graphviz ``dot``).
 
 The graph captures the full execution lineage of the campaign as a
 cyber-physical system test:
