@@ -61,7 +61,7 @@ _TYPE = "@type"
 
 _BASE_CONTEXT = {
     _CONTEXT: [
-        "https://secorolab.github.io/metamodels/prov.json"
+        "https://secorolab.github.io/metamodels/metadata.json"
     ]
 }
 
