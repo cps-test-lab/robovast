@@ -51,7 +51,7 @@ jobs:
     steps:
       - uses: actions/delete-package-versions@v5
         with:
-          package-name: your-image-name
+          package-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-sidecar
           package-type: container
-          delete-untagged-versions: true
+          delete-only-untagged-versions: true
           token: ${{ secrets.GITHUB_TOKEN }}

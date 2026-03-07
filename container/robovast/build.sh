@@ -1,8 +1,8 @@
 #!/bin/bash -e
 # Allow setting project from command line parameter
 BASEDIR=$(dirname "$0")
-ROS_DISTRO="kilted"
-PROJECT="localhost:5000"
+ROS_DISTRO="jazzy"
+PROJECT=""
 
 # Parse command line arguments for project
 while [[ $# -gt 0 ]]; do

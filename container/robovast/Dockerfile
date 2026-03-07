@@ -1,4 +1,4 @@
-ARG ROS_DISTRO=kitled
+ARG ROS_DISTRO=jazzy
 
 FROM osrf/ros:${ROS_DISTRO}-desktop-full
 SHELL ["/bin/bash", "-xo", "pipefail", "-c"]
@@ -51,7 +51,6 @@ RUN \
         ros-${ROS_DISTRO}-joint-trajectory-controller \
         ros-${ROS_DISTRO}-gz-ros2-control \
         ros-${ROS_DISTRO}-ros2-control \
-        ros-${ROS_DISTRO}-moveit-msgs \
         ros-${ROS_DISTRO}-py-trees-ros \
         ros-${ROS_DISTRO}-py-trees-ros-interfaces \
         ros-${ROS_DISTRO}-nav2-bringup \
