@@ -20,15 +20,19 @@ from typing import Optional
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict
+from rdflib import Namespace
 
 from robovast.common import FileCache
 from robovast.common.variation import VariationGuiRenderer
+from robovast.common.variation.base_variation import ProvContribution
 
 from ..data_model import Orientation, Pose, Position
 from ..gui.navigation_gui import NavigationGui
 from ..path_generator import PathGenerator
 from ..waypoint_generator import WaypointGenerator
 from .nav_base_variation import NavVariation
+
+ROBOVAST = Namespace("https://purl.org/robovast/metamodels/")
 
 
 class PoseConfig(BaseModel):
@@ -119,6 +123,22 @@ class PathVariationRandom(NavVariation):
     CONFIG_CLASS = PathVariationRandomConfig
     GUI_CLASS = NavigationGui
     GUI_RENDERER_CLASS = PathVariationGuiRenderer
+
+    @classmethod
+    def collect_prov_metadata(cls, config_entry, campaign_namespace, config_namespace, gen_activity_id):
+        """Contribute navigation goal count to the PROV scenario node."""
+        config_cfg = config_entry.get("config", {})
+        goal_pose = config_cfg.get("goal_pose")
+        goal_poses = config_cfg.get("goal_poses")
+
+        if goal_pose is not None:
+            count = 1 if isinstance(goal_pose, dict) else (len(goal_pose) if goal_pose else 0)
+        elif goal_poses is not None:
+            count = len(goal_poses) if goal_poses else 0
+        else:
+            return None
+
+        return ProvContribution(scenario_properties={ROBOVAST["goals"]: count})
 
     def variation(self, in_configs):
         self.progress_update("Running Path Variation...")

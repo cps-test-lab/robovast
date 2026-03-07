@@ -242,8 +242,68 @@ Example structure of ``metadata.yaml``:
      execution_type: cluster
      image: ghcr.io/example:latest
 
+The ``metadata:`` block of the ``.vast`` file is passed through verbatim into
+``metadata.yaml`` and is used to configure PROV-O generation (see below).
+
 See :ref:`extending-metadata-processing` and :ref:`extending-variation-metadata`
 for how to add custom metadata processing plugins and variation metadata hooks.
+
+
+.. _results-prov-metadata:
+
+``metadata.prov.json`` — PROV-O Provenance Graph
+-------------------------------------------------
+
+After ``metadata.yaml`` is written, RoboVAST automatically generates a
+`W3C PROV-O <https://www.w3.org/TR/prov-o/>`_ provenance graph as
+``<campaign-dir>/metadata.prov.json`` (JSON-LD format) and an optional
+``metadata.pdf`` visualization (requires Graphviz ``dot``).
+
+The graph captures the full execution lineage of the campaign as a
+cyber-physical system test:
+
+- **Software agents** — RoboVAST and Scenery Builder with version info
+- **Campaign activity** — execution type, start time, number of runs
+- **Scenario entities** — abstract (``.osc``) and concrete per-configuration scenarios
+- **Config-generation activity** — links the ``.vast`` file to the generated configs
+- **Per-run activities** — success/failure, timing, sysinfo, output files
+- **Domain-specific nodes** — contributed by variation plugins (e.g. map/mesh
+  entities for navigation, goal counts, obstacle counts); see
+  :ref:`extending-prov-metadata`
+
+**Configuring the provenance graph**
+
+The ``metadata:`` section of the ``.vast`` file controls campaign-level
+provenance properties:
+
+.. code-block:: yaml
+
+   metadata:
+     dataset_iri: https://purl.org/robovast/datasets/my-dataset/
+     # Optional: list of CPS agents (robots, manipulators, etc.) involved
+     # in the campaign.  Omit entirely for agent-free campaigns.
+     agents:
+       - name: turtlebot4
+         type: robot
+       - name: ur5
+         type: manipulator
+
+``dataset_iri``
+   Base IRI for the dataset namespace used in the provenance graph.
+   All campaign, config, and run IRIs are constructed relative to this
+   prefix.  Defaults to ``https://purl.org/robovast/datasets/default/``.
+
+``agents``
+   List of `PROV Agent <https://www.w3.org/TR/prov-o/#Agent>`_ nodes
+   representing the physical systems under test (robots, manipulators,
+   sensors, etc.).  Each entry must have a ``name`` (used as the IRI
+   fragment) and may carry arbitrary additional properties.  If omitted,
+   no agent nodes are added to the graph — suitable for software-only or
+   simulation-only campaigns.
+
+Domain-specific provenance nodes (e.g. navigation map/mesh entities) are
+contributed automatically by variation plugins that implement
+``collect_prov_metadata``; no manual configuration is required.
 
 
 .. _results-postprocessing:

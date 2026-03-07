@@ -38,10 +38,11 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-from .campaign_data import (read_execution_metadata, read_sysinfo,
+from robovast.common.campaign_data import (read_execution_metadata, read_sysinfo,
                             read_test_result)
-from .common import load_config
-from .results_utils import find_campaign_vast_file
+from robovast.common.common import load_config
+from robovast.common.results_utils import find_campaign_vast_file
+from robovast.common.variation.loader import load_variation_classes
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +154,14 @@ class MetadataGenerator:
         # --- execution metadata ----------------------------------------
         metadata["execution"] = read_execution_metadata(self.campaign_dir)
 
+        # --- campaign-level postprocessing provenance ------------------
+        pp_yaml_path = self.campaign_dir / "_transient" / "postprocessing.yaml"
+        if pp_yaml_path.exists():
+            with open(pp_yaml_path, "r", encoding="utf-8") as f:
+                metadata["postprocessing"] = yaml.safe_load(f) or {}
+        else:
+            metadata["postprocessing"] = {}
+
         # --- test results per config -----------------------------------
         expected_runs = metadata["execution"].get("runs")
         for config_entry in metadata["configurations"]:
@@ -224,6 +233,31 @@ class MetadataGenerator:
                 else:
                     entry["postprocessing"] = {}
 
+                # rosbag2 metadata
+                rosbag2_meta_path = run_dir / "rosbag2" / "metadata.yaml"
+                if rosbag2_meta_path.exists():
+                    try:
+                        with open(rosbag2_meta_path, "r", encoding="utf-8") as f:
+                            bag_meta = yaml.safe_load(f) or {}
+                        bag_info = bag_meta.get("rosbag2_bagfile_information", {})
+                        ros_distro = bag_info.get("ros_distro", "")
+                        message_types = sorted({
+                            t["topic_metadata"]["type"]
+                            for t in bag_info.get("topics_with_message_count", [])
+                            if "topic_metadata" in t and "type" in t["topic_metadata"]
+                        })
+                        mcap_files = bag_info.get("relative_file_paths", [])
+                        entry["rosbag2"] = {
+                            "ros_distro": ros_distro,
+                            "message_types": message_types,
+                            "files": mcap_files,
+                        }
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to read rosbag2 metadata %s: %s",
+                            rosbag2_meta_path, e,
+                        )
+
                 config_entry["test_results"].append(entry)
 
         return metadata
@@ -276,7 +310,7 @@ def generate_campaign_metadata(
         return False, f"No campaign directories found in {results_dir}"
 
     # Load variation classes (for metadata hooks)
-    variation_classes = _load_variation_classes()
+    variation_classes = load_variation_classes()
 
     # Load metadata processing plugins
     metadata_plugins = _load_metadata_plugins()
@@ -325,6 +359,19 @@ def generate_campaign_metadata(
                     allow_unicode=True,
                 )
             output(f"Wrote {output_path}")
+
+            # Generate PROV-O provenance graph (metadata.prov.json)
+            try:
+                from .fair_metadata import generate_prov_metadata  # noqa: PLC0415  # pylint: disable=import-outside-toplevel
+                prov_success, prov_msg = generate_prov_metadata(
+                    campaign_dir, metadata
+                )
+                if prov_success:
+                    output(prov_msg)
+                else:
+                    logger.warning("PROV metadata: %s", prov_msg)
+            except Exception as prov_exc:  # noqa: BLE001
+                logger.warning("PROV metadata generation failed: %s", prov_exc)
 
     except Exception as e:
         return False, f"Metadata generation failed: {e}"
@@ -395,20 +442,6 @@ def _resolve_file_strings(
                 found.extend(_resolve_file_strings(item, real_path, config_files))
     return found
 
-
-def _load_variation_classes() -> Dict[str, type]:
-    """Load variation classes from the ``robovast.variation_types`` entry-point group."""
-    classes = {}
-    try:
-        eps = entry_points(group="robovast.variation_types")
-        for ep in eps:
-            try:
-                classes[ep.name] = ep.load()
-            except Exception as e:
-                logger.warning("Failed to load variation class '%s': %s", ep.name, e)
-    except Exception:
-        pass
-    return classes
 
 
 def _load_metadata_plugins() -> Dict[str, type]:

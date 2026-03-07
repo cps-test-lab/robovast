@@ -21,6 +21,10 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from rdflib import Namespace, PROV
+
+from robovast.common.variation.base_variation import ProvContribution
+
 from ..floorplan_generation import (_create_config_for_floorplan,
                                     generate_floorplan_artifacts,
                                     generate_floorplan_variations,
@@ -28,6 +32,10 @@ from ..floorplan_generation import (_create_config_for_floorplan,
 from .nav_base_variation import NavVariation
 
 logger = logging.getLogger(__name__)
+
+_ID = "@id"
+_TYPE = "@type"
+MAP_METADATA = Namespace("https://purl.org/secorolab/metamodels/environment#")
 
 
 # Custom YAML loader that keeps timestamps as strings
@@ -149,6 +157,104 @@ class FloorplanGeneration(NavVariation):
     """
 
     CONFIG_CLASS = FloorplanGenerationConfig
+
+    @classmethod
+    def collect_prov_metadata(cls, config_entry, campaign_namespace, config_namespace, gen_activity_id):
+        """Contribute floorplan-specific PROV-O nodes (map/mesh entities, generation activities)."""
+        contrib = ProvContribution()
+        config_cfg = config_entry.get("config", {})
+        variations = config_entry.get("variations", [])
+
+        # fpm_file reference → added as scenario_properties
+        fpm_ref = None
+        for v in variations:
+            if v.get("name") == cls.__name__:
+                fpm_file = v.get("fpm_file", "")
+                if fpm_file:
+                    fpm_ref = campaign_namespace[fpm_file]
+                    contrib.scenario_properties["references"] = fpm_ref
+                break
+
+        # fpm / jsonld generation activities
+        # Use a stable path fragment based on config name
+        config_name = config_entry.get("name", "")
+
+        fpm_used = fpm_ref if fpm_ref else None
+        fpm_activity_id = campaign_namespace[config_name + "/jsonld_generation/"]
+        fpm_activity = {
+            _ID: fpm_activity_id,
+            _TYPE: PROV["Activity"],
+            "used": fpm_used,
+            "wasAssociatedWith": "https://purl.org/secorolab/scenery_builder/",
+            "wasInfluencedBy": gen_activity_id,
+        }
+        contrib.graph_nodes.append(fpm_activity)
+
+        if fpm_ref:
+            contrib.graph_nodes.append({
+                _ID: fpm_ref,
+                _TYPE: PROV["Entity"],
+            })
+
+        # JSON-LD derived files
+        map_file_md = config_entry.get("map_file", {})
+        json_files = [
+            campaign_namespace[f]
+            for f in map_file_md.get("derived_from", [])
+            if f.endswith(".json")
+        ]
+
+        jsonld_activity_id = campaign_namespace[config_name + "/artefact_generation/"]
+        jsonld_activity = {
+            _ID: jsonld_activity_id,
+            _TYPE: PROV["Activity"],
+            "used": json_files,
+            "wasAssociatedWith": "https://purl.org/secorolab/scenery_builder/",
+            "wasInfluencedBy": [gen_activity_id, fpm_activity_id],
+        }
+        contrib.graph_nodes.append(jsonld_activity)
+
+        for j in json_files:
+            contrib.graph_nodes.append({
+                _ID: j,
+                _TYPE: PROV["Entity"],
+                "wasGeneratedBy": fpm_activity_id,
+            })
+
+        # Map file entity
+        map_file = config_cfg.get("map_file", "")
+        if map_file:
+            pgm_iri = campaign_namespace[map_file.replace("yaml", "pgm")]
+            contrib.graph_nodes.append({
+                _ID: pgm_iri,
+                _TYPE: PROV["Entity"],
+                "wasGeneratedBy": jsonld_activity_id,
+            })
+            map_iri = campaign_namespace[map_file]
+            contrib.graph_nodes.append({
+                _ID: map_iri,
+                _TYPE: PROV["Entity"],
+                "wasGeneratedBy": jsonld_activity_id,
+                MAP_METADATA["resolution"]: map_file_md.get("resolution"),
+                "references": pgm_iri,
+                "generatedAt": map_file_md.get("updated_at"),
+            })
+            contrib.run_used_iris.append(map_iri)
+
+        # Mesh file entity
+        mesh_file = config_cfg.get("mesh_file", "")
+        if mesh_file:
+            mesh_file_md = config_entry.get("mesh_file", {})
+            mesh_iri = campaign_namespace[mesh_file]
+            contrib.graph_nodes.append({
+                _ID: mesh_iri,
+                _TYPE: PROV["Entity"],
+                "wasGeneratedBy": jsonld_activity_id,
+                "generatedAt": mesh_file_md.get("created_at"),
+            })
+            contrib.run_used_iris.append(mesh_iri)
+
+        return contrib
 
     @classmethod
     def collect_config_metadata(cls, config_entry: dict, config_dir: Path, campaign_dir: Path) -> dict:

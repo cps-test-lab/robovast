@@ -28,7 +28,7 @@ from typing import Dict, List, Optional, Tuple
 import yaml
 
 from robovast.common.common import load_config
-from robovast.common.metadata import generate_campaign_metadata
+from robovast.results_processing.metadata import generate_campaign_metadata
 from robovast.common.results_utils import find_campaign_vast_file
 
 

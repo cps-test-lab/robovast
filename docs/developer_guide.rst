@@ -276,6 +276,90 @@ variation and returns a dictionary that is merged into the configuration's
 metadata entry.
 
 
+.. _extending-prov-metadata:
+
+Add PROV-O Provenance Hook to a Variation Plugin
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Variation plugins can contribute domain-specific nodes to the campaign's
+PROV-O provenance graph by overriding ``collect_prov_metadata`` on the
+``Variation`` base class.  The default implementation returns ``None``
+(no contribution).
+
+This hook is the right place for provenance that is tightly coupled to a
+specific variation — for example, a floorplan generation variation knows
+which map and mesh files it produced and can declare their lineage in the
+graph.
+
+**Return type:** ``ProvContribution`` (or ``None`` to contribute nothing):
+
+.. code-block:: python
+
+   from robovast.common.variation import Variation, ProvContribution
+
+   class MyVariation(Variation):
+
+       @classmethod
+       def collect_prov_metadata(
+           cls,
+           config_entry: dict,
+           campaign_namespace,   # rdflib.Namespace for the campaign
+           config_namespace,     # rdflib.Namespace for this config
+           gen_activity_id: str, # IRI of the config-generation activity
+       ):
+           """Contribute domain-specific PROV-O nodes."""
+           from rdflib import PROV, Namespace
+
+           _ID, _TYPE = "@id", "@type"
+           MY_NS = Namespace("https://example.org/metamodels/")
+
+           config_cfg = config_entry.get("config", {})
+           my_file = config_cfg.get("my_output_file", "")
+           if not my_file:
+               return None
+
+           file_iri = config_namespace[my_file]
+
+           return ProvContribution(
+               # Extra graph nodes (entities, activities) appended to @graph
+               graph_nodes=[{
+                   _ID: file_iri,
+                   _TYPE: PROV["Entity"],
+                   "wasGeneratedBy": gen_activity_id,
+                   MY_NS["someProperty"]: "value",
+               }],
+               # Properties merged onto the concrete scenario node
+               scenario_properties={MY_NS["outputCount"]: 1},
+               # IRIs that each run activity should declare as "used"
+               run_used_iris=[file_iri],
+           )
+
+``ProvContribution`` fields:
+
+``graph_nodes``
+   List of JSON-LD node dictionaries appended to the PROV ``@graph``.  Use
+   ``rdflib.PROV``, ``rdflib.DCTERMS``, or your own ``Namespace`` objects
+   as keys/values.
+
+``scenario_properties``
+   Dict merged onto the *concrete scenario* entity node for this
+   configuration.  Useful for adding counts or classification properties
+   (e.g. number of goals, number of obstacles).
+
+``run_used_iris``
+   List of IRIs that every run activity in this configuration will
+   declare as ``prov:used``.  Typically the IRIs of entities generated
+   by this variation that are consumed at runtime (e.g. a map file, a
+   mesh file).
+
+.. note::
+
+   ``collect_prov_metadata`` receives ``rdflib.Namespace`` objects
+   (``campaign_namespace``, ``config_namespace``) so you can construct
+   campaign-relative IRIs with ``campaign_namespace["some/path"]``.
+   ``rdflib`` is a required dependency of the core ``robovast`` package.
+
+
 .. _extending-postprocessing:
 
 Add Postprocessing Command Plugin

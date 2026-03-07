@@ -16,6 +16,8 @@
 
 import copy
 import logging
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
 
 from ..common import get_scenario_parameters
 from ..config import get_validated_config
@@ -63,6 +65,27 @@ def _to_cache_jsonable(value):
     if hasattr(value, "model_dump") and callable(getattr(value, "model_dump")):
         return _to_cache_jsonable(value.model_dump())
     return str(value)
+
+
+@dataclass
+class ProvContribution:
+    """Domain-specific PROV-O graph contributions from a variation plugin.
+
+    Returned by :meth:`Variation.collect_prov_metadata` to inject
+    domain-specific provenance nodes into the campaign's PROV-O graph.
+
+    Attributes:
+        graph_nodes: Extra PROV graph node dicts (entities, activities)
+            to append to the ``@graph`` list.
+        scenario_properties: Properties to merge onto the concrete
+            scenario entity node for this configuration.
+        run_used_iris: IRIs of entities that each run activity should
+            declare as ``used``.
+    """
+
+    graph_nodes: List[Dict[str, Any]] = field(default_factory=list)
+    scenario_properties: Dict[str, Any] = field(default_factory=dict)
+    run_used_iris: List[str] = field(default_factory=list)
 
 
 class Variation():
@@ -178,6 +201,32 @@ class Variation():
             entry, or an empty dict.
         """
         return {}
+
+    @classmethod
+    def collect_prov_metadata(
+        cls,
+        config_entry: dict,
+        campaign_namespace,
+        config_namespace,
+        gen_activity_id: str,
+    ) -> Optional["ProvContribution"]:
+        """Return domain-specific PROV-O graph contributions.
+
+        Called during PROV-O generation for each configuration that used
+        this variation.  Override in subclasses to contribute
+        domain-specific provenance nodes (e.g. map entities, generation
+        activities).
+
+        Args:
+            config_entry: The configuration metadata dict.
+            campaign_namespace: :class:`rdflib.Namespace` for the campaign.
+            config_namespace: :class:`rdflib.Namespace` for this config.
+            gen_activity_id: IRI of the config-generation activity.
+
+        Returns:
+            A :class:`ProvContribution`, or ``None`` to contribute nothing.
+        """
+        return None
 
     def check_scenario_parameter_reference(self, reference_name):
         """Check if a scenario parameter reference exists."""
