@@ -185,10 +185,16 @@ class FloorplanGeneration(NavVariation):
             _ID: fpm_activity_id,
             _TYPE: PROV["Activity"],
             "used": fpm_used,
-            "wasAssociatedWith": "https://purl.org/secorolab/scenery_builder",
+            "wasAssociatedWith": "https://purl.org/secorolab/scenery_builder/",
             "wasInfluencedBy": gen_activity_id,
         }
         contrib.graph_nodes.append(fpm_activity)
+
+        if fpm_ref:
+            contrib.graph_nodes.append({
+                _ID: fpm_ref,
+                _TYPE: PROV["Entity"],
+            })
 
         # JSON-LD derived files
         map_file_md = config_entry.get("map_file", {})
@@ -203,7 +209,7 @@ class FloorplanGeneration(NavVariation):
             _ID: jsonld_activity_id,
             _TYPE: PROV["Activity"],
             "used": json_files,
-            "wasAssociatedWith": "https://purl.org/secorolab/scenery_builder",
+            "wasAssociatedWith": "https://purl.org/secorolab/scenery_builder/",
             "wasInfluencedBy": [gen_activity_id, fpm_activity_id],
         }
         contrib.graph_nodes.append(jsonld_activity)
@@ -218,13 +224,19 @@ class FloorplanGeneration(NavVariation):
         # Map file entity
         map_file = config_cfg.get("map_file", "")
         if map_file:
+            pgm_iri = campaign_namespace[map_file.replace("yaml", "pgm")]
+            contrib.graph_nodes.append({
+                _ID: pgm_iri,
+                _TYPE: PROV["Entity"],
+                "wasGeneratedBy": jsonld_activity_id,
+            })
             map_iri = config_namespace[map_file]
             contrib.graph_nodes.append({
                 _ID: map_iri,
                 _TYPE: PROV["Entity"],
                 "wasGeneratedBy": jsonld_activity_id,
                 MAP_METADATA["resolution"]: map_file_md.get("resolution"),
-                "references": campaign_namespace[map_file.replace("yaml", "pgm")],
+                "references": pgm_iri,
                 "generatedAt": map_file_md.get("updated_at"),
             })
             contrib.run_used_iris.append(map_iri)

@@ -61,6 +61,7 @@ _TYPE = "@type"
 
 _BASE_CONTEXT = {
     _CONTEXT: [
+        "https://secorolab.github.io/metamodels/prov.json",
         "https://secorolab.github.io/metamodels/metadata.json"
     ]
 }
@@ -101,24 +102,53 @@ def _build_agents(
 ) -> Tuple[list, list]:
     """Build PROV Agent nodes from the agents configuration.
 
+    Each agent's ``configuration_files`` (paths relative to the configuration
+    root, e.g. ``files/nav2_launch.py``) are matched against *run_files*
+    (which carry a ``_config/`` prefix, e.g. ``_config/files/nav2_launch.py``)
+    to build per-agent ``atLocation`` relations.  Only the files listed for a
+    given agent are linked to that agent.
+
     Returns:
         Tuple of (agent_nodes, location_nodes) to append to the graph.
     """
-    location_iris = [campaign_ns[rf] for rf in run_files]
+    # Build a lookup: path without "_config/" prefix → full run_file string
+    run_files_lookup: dict = {}
+    for rf in run_files:
+        stripped = rf[len("_config/"):] if rf.startswith("_config/") else rf
+        run_files_lookup[stripped] = rf
+
+    # Location nodes are created for every run_file (agent-independent)
     location_nodes = [
-        {_ID: loc, _TYPE: PROV["Location"]}
-        for loc in location_iris
+        {_ID: campaign_ns[rf], _TYPE: PROV["Location"]}
+        for rf in run_files
     ]
 
     agent_nodes = []
     for agent_cfg in agents_config:
         agent_cfg = dict(agent_cfg)
-        name = agent_cfg.pop("name", "agent")
-        agent_node = {
-            _ID: campaign_ns[name],
+        # .vast uses "id"; fall back to legacy "name" key
+        agent_id = agent_cfg.pop("id", agent_cfg.pop("name", "agent"))
+        config_files = agent_cfg.pop("configuration_files", [])
+
+        # Match each configuration_file to its run_file IRI
+        agent_location_iris = []
+        for cf in config_files:
+            matched_rf = run_files_lookup.get(cf)
+            if matched_rf is not None:
+                agent_location_iris.append(campaign_ns[matched_rf])
+            else:
+                logger.warning(
+                    "Agent '%s': configuration_file '%s' not found in run_files",
+                    agent_id, cf,
+                )
+
+        agent_node: dict = {
+            _ID: campaign_ns[agent_id],
             _TYPE: PROV["Agent"],
-            "atLocation": location_iris,
         }
+        if agent_location_iris:
+            agent_node["atLocation"] = agent_location_iris
+
         # Remaining keys become properties on the agent node
         for k, v in agent_cfg.items():
             agent_node[ROBOVAST[k]] = v
@@ -318,6 +348,14 @@ def generate_prov_metadata(
                 ROBOVAST["sysinfo"]: sys_info[_ID]
             }
             graph.append(run_activity)
+
+            # Promote sysinfo/ to a first-class prov:Entity with a standard
+            # prov:wasGeneratedBy edge pointing to the run activity.  The
+            # ROBOVAST["sysinfo"] property on the run activity is kept for
+            # backwards compatibility but on its own it is only an indirect,
+            # domain-specific link that is harder to traverse semantically.
+            sys_info[_TYPE] = PROV["Entity"]
+            sys_info["wasGeneratedBy"] = run_activity[_ID]
 
             for agent_node in agent_nodes:
                 agent_node.setdefault("wasAssociatedWith", []).append(run_activity[_ID])
