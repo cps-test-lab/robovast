@@ -364,7 +364,7 @@ def generate_campaign_metadata(
             try:
                 from .fair_metadata import generate_prov_metadata  # noqa: PLC0415  # pylint: disable=import-outside-toplevel
                 prov_success, prov_msg = generate_prov_metadata(
-                    campaign_dir, metadata
+                    campaign_dir, metadata, generate_visualization=False
                 )
                 if prov_success:
                     output(prov_msg)

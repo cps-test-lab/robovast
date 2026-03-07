@@ -176,6 +176,7 @@ def _build_agents(
 def generate_prov_metadata(
     campaign_dir: Path,
     metadata: dict,
+    generate_visualization: bool = True,
 ) -> Tuple[bool, str]:
     """Generate a PROV-O provenance graph from campaign metadata.
 
@@ -183,7 +184,9 @@ def generate_prov_metadata(
     written to ``metadata.yaml``) and produces:
 
     * ``<campaign_dir>/metadata.prov.json``  -- compact JSON-LD provenance graph
-    * ``<campaign_dir>/metadata.pdf``        -- visualization (requires Graphviz ``dot``)
+    * ``<campaign_dir>/metadata.dot``        -- Graphviz DOT file (if *generate_visualization*)
+    * ``<campaign_dir>/metadata.pdf``        -- visualization (if *generate_visualization*,
+                                               requires Graphviz ``dot``)
 
     Campaign-level configuration is read from ``metadata["metadata"]``:
 
@@ -197,6 +200,9 @@ def generate_prov_metadata(
     Args:
         campaign_dir: Path to the ``campaign-<id>`` directory.
         metadata:     The metadata dict that was written to ``metadata.yaml``.
+        generate_visualization: When ``True`` (default), also write
+            ``metadata.dot`` and render ``metadata.pdf`` via Graphviz.
+            Set to ``False`` to skip DOT/PDF generation.
 
     Returns:
         Tuple of ``(success, message)``.
@@ -472,20 +478,21 @@ def generate_prov_metadata(
     with open(prov_json_path, "w", encoding="utf-8") as f:
         json.dump(compact2, f, indent=2)
 
-    # Optional: generate PDF visualization via Graphviz
+    # Optional: generate DOT/PDF visualization via Graphviz
     dot_path = campaign_dir / "metadata.dot"
     pdf_path = campaign_dir / "metadata.pdf"
-    try:
-        g = load_graph(str(prov_json_path))
-        with open(dot_path, "w+", encoding="utf-8") as dotfile:
-            rdf2dot(g, dotfile)
-        subprocess.run(
-            ["dot", "-Tpdf", str(dot_path), "-o", str(pdf_path)],
-            check=False,
-            stderr=subprocess.DEVNULL,
-        )
-    except Exception as e:  # noqa: BLE001
-        logger.debug("Could not generate provenance PDF (dot not available?): %s", e)
+    if generate_visualization:
+        try:
+            g = load_graph(str(prov_json_path))
+            with open(dot_path, "w+", encoding="utf-8") as dotfile:
+                rdf2dot(g, dotfile)
+            subprocess.run(
+                ["dot", "-Tpdf", str(dot_path), "-o", str(pdf_path)],
+                check=False,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Could not generate provenance PDF (dot not available?): %s", e)
 
     return True, f"PROV metadata written to {prov_json_path}"
 

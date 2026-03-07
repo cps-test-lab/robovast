@@ -18,13 +18,16 @@
 """CLI for results processing and management."""
 
 import sys
+from pathlib import Path
 
 import click
+import yaml
 
 from robovast.common.cli import get_project_config, handle_cli_exception
 from robovast.common.cli.project_config import ProjectConfig
 from robovast.evaluation.merge_results import merge_results
 from robovast.results_processing import run_postprocessing
+from robovast.results_processing.fair_metadata import generate_prov_metadata
 from robovast.results_processing.postprocessing import \
     load_postprocessing_plugins
 from robovast.results_processing.publication import (load_publication_plugins,
@@ -192,6 +195,78 @@ def merge_results_cmd(merged_campaign_dir, results_dir):
             sys.exit(1)
     except Exception as e:
         handle_cli_exception(e)
+
+
+@results.command(name='generate-metadata')
+@click.option('--results-dir', '-r', default=None,
+              help='Directory containing run results (uses project results dir if not specified)')
+@click.option('--dot-pdf', is_flag=True, default=False,
+              help='Also generate Graphviz DOT and PDF visualizations of the FAIR metadata graph.')
+def generate_metadata_cmd(results_dir, dot_pdf):
+    """Generate FAIR/PROV-O provenance metadata for all campaigns.
+
+    Reads the ``metadata.yaml`` from each ``campaign-<id>`` directory and
+    (re-)generates the compact JSON-LD provenance graph
+    ``metadata.prov.json``.  Optionally also writes ``metadata.dot`` and
+    renders ``metadata.pdf`` via Graphviz (requires ``dot`` on PATH).
+
+    Requires project initialization with ``vast init`` first (unless
+    ``--results-dir`` is specified).
+    """
+    if results_dir is None:
+        raw_config = ProjectConfig.load()
+        if not raw_config or not raw_config.results_dir:
+            raise click.ClickException(
+                "Project not initialized. Run 'vast init <config-file>' first."
+            )
+        results_dir = raw_config.results_dir
+
+    results_path = Path(results_dir)
+    if not results_path.is_dir():
+        raise click.ClickException(f"Results directory does not exist: {results_dir}")
+
+    campaign_dirs = sorted(
+        d for d in results_path.iterdir()
+        if d.is_dir() and d.name.startswith("campaign-")
+    )
+    if not campaign_dirs:
+        raise click.ClickException(f"No campaign directories found in {results_dir}")
+
+    click.echo("Generating FAIR/PROV-O metadata...")
+    click.echo(f"Results directory: {results_dir}")
+    if dot_pdf:
+        click.echo("DOT/PDF visualization: enabled")
+    click.echo("-" * 60)
+
+    errors = []
+    for campaign_dir in campaign_dirs:
+        metadata_yaml = campaign_dir / "metadata.yaml"
+        if not metadata_yaml.is_file():
+            click.echo(f"  Skipping {campaign_dir.name}: metadata.yaml not found")
+            continue
+
+        with open(metadata_yaml, "r", encoding="utf-8") as f:
+            metadata = yaml.safe_load(f)
+
+        click.echo(f"  Processing {campaign_dir.name}...")
+        try:
+            success, message = generate_prov_metadata(
+                campaign_dir, metadata, generate_visualization=dot_pdf
+            )
+            if success:
+                click.echo(f"  ✓ {message}")
+            else:
+                click.echo(f"  ✗ {message}", err=True)
+                errors.append(campaign_dir.name)
+        except Exception as e:  # pylint: disable=broad-except
+            click.echo(f"  ✗ {campaign_dir.name}: {e}", err=True)
+            errors.append(campaign_dir.name)
+
+    click.echo("\n" + "=" * 60)
+    if errors:
+        click.echo(f"✗ Metadata generation failed for: {', '.join(errors)}", err=True)
+        sys.exit(1)
+    click.echo(f"✓ FAIR metadata generated for {len(campaign_dirs)} campaign(s)")
 
 
 @results.command(name='postprocess-commands')
