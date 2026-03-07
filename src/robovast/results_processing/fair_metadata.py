@@ -322,14 +322,51 @@ def generate_prov_metadata(
             for agent_node in agent_nodes:
                 agent_node.setdefault("wasAssociatedWith", []).append(run_activity[_ID])
 
+            rosbag2_prefix = run["dir"] + "/rosbag2/"
             for out_f in run.get("output_files", []):
-                if out_f.endswith("csv"):
+                if out_f.endswith("csv") or out_f.startswith(rosbag2_prefix):
                     continue
                 graph.append({
                     _ID: CAMPAIGN[out_f],
                     _TYPE: PROV["Entity"],
                     "wasGeneratedBy": run_activity[_ID]
                 })
+
+            # Rosbag2 entity (combines mcap files and metadata.yaml)
+            rosbag2_meta = run.get("rosbag2")
+            if rosbag2_meta:
+                ros_distro = rosbag2_meta.get("ros_distro", "")
+                message_types = rosbag2_meta.get("message_types", [])
+                ros_msg_iris = [
+                    f"https://docs.ros.org/en/{ros_distro}/p/{msg_type}"
+                    for msg_type in message_types
+                ] if ros_distro else []
+
+                rosbag2_iri = CAMPAIGN[rosbag2_prefix]
+                rosbag2_parts = [
+                    CAMPAIGN[rosbag2_prefix + f]
+                    for f in rosbag2_meta.get("files", [])
+                ]
+                rosbag2_parts.append(CAMPAIGN[rosbag2_prefix + "metadata.yaml"])
+
+                rosbag2_node = {
+                    _ID: rosbag2_iri,
+                    _TYPE: PROV["Entity"],
+                    "wasGeneratedBy": run_activity[_ID],
+                }
+                if ros_distro:
+                    rosbag2_node[DCTERMS["hasVersion"]] = ros_distro
+                if ros_msg_iris:
+                    rosbag2_node[ROBOVAST["ros/messages"]] = ros_msg_iris
+                graph.append(rosbag2_node)
+
+                for part_iri in rosbag2_parts:
+                    graph.append({
+                        _ID: part_iri,
+                        _TYPE: PROV["Entity"],
+                        "wasGeneratedBy": run_activity[_ID],
+                        PROV["hadMember"]: rosbag2_iri,
+                    })
 
             graph.append(sys_info)
 

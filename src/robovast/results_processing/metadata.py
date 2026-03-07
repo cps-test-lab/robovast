@@ -233,6 +233,31 @@ class MetadataGenerator:
                 else:
                     entry["postprocessing"] = {}
 
+                # rosbag2 metadata
+                rosbag2_meta_path = run_dir / "rosbag2" / "metadata.yaml"
+                if rosbag2_meta_path.exists():
+                    try:
+                        with open(rosbag2_meta_path, "r", encoding="utf-8") as f:
+                            bag_meta = yaml.safe_load(f) or {}
+                        bag_info = bag_meta.get("rosbag2_bagfile_information", {})
+                        ros_distro = bag_info.get("ros_distro", "")
+                        message_types = sorted({
+                            t["topic_metadata"]["type"]
+                            for t in bag_info.get("topics_with_message_count", [])
+                            if "topic_metadata" in t and "type" in t["topic_metadata"]
+                        })
+                        mcap_files = bag_info.get("relative_file_paths", [])
+                        entry["rosbag2"] = {
+                            "ros_distro": ros_distro,
+                            "message_types": message_types,
+                            "files": mcap_files,
+                        }
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to read rosbag2 metadata %s: %s",
+                            rosbag2_meta_path, e,
+                        )
+
                 config_entry["test_results"].append(entry)
 
         return metadata
