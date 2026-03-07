@@ -154,6 +154,14 @@ class MetadataGenerator:
         # --- execution metadata ----------------------------------------
         metadata["execution"] = read_execution_metadata(self.campaign_dir)
 
+        # --- campaign-level postprocessing provenance ------------------
+        pp_yaml_path = self.campaign_dir / "_transient" / "postprocessing.yaml"
+        if pp_yaml_path.exists():
+            with open(pp_yaml_path, "r", encoding="utf-8") as f:
+                metadata["postprocessing"] = yaml.safe_load(f) or {}
+        else:
+            metadata["postprocessing"] = {}
+
         # --- test results per config -----------------------------------
         expected_runs = metadata["execution"].get("runs")
         for config_entry in metadata["configurations"]:

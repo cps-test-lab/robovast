@@ -335,6 +335,43 @@ def generate_prov_metadata(
 
     graph.extend(agent_nodes)
 
+    # --- Postprocessing provenance ---
+    pp_data = metadata.get("postprocessing", {})
+    pp_entries = pp_data.get("entries", [])
+    if pp_entries:
+        pp_activity = {
+            _ID: DATASET[campaign + "postprocessing/"],
+            _TYPE: [PROV["Activity"], ROBOVAST["Postprocessing"]],
+            "wasAssociatedWith": "https://purl.org/robovast/",
+            "wasInfluencedBy": campaign_activity[_ID],
+        }
+        graph.append(pp_activity)
+
+        for pp_entry in pp_entries:
+            output_path = pp_entry.get("output", "")
+            # Paths in postprocessing.yaml are relative to _transient/,
+            # strip leading "../" to get campaign-relative paths.
+            if output_path.startswith("../"):
+                output_path = output_path[3:]
+
+            sources = pp_entry.get("sources", [])
+            source_iris = []
+            for src in sources:
+                src_path = src[3:] if src.startswith("../") else src
+                source_iris.append(CAMPAIGN[src_path])
+
+            output_node = {
+                _ID: CAMPAIGN[output_path],
+                _TYPE: PROV["Entity"],
+                "wasGeneratedBy": pp_activity[_ID],
+            }
+            if source_iris:
+                output_node["wasDerivedFrom"] = source_iris
+            plugin_name = pp_entry.get("plugin")
+            if plugin_name:
+                output_node[ROBOVAST["plugin"]] = plugin_name
+            graph.append(output_node)
+
     # Compact the JSON-LD graph
     document = {"@graph": graph}
     document.update(iri_context)
