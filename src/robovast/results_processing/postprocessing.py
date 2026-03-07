@@ -175,7 +175,7 @@ def get_postprocessing_commands(config_path: str) -> List[dict]:
             return postprocessing_cmds
 
 
-def _write_provenance_yaml_campaign(
+def _write_postprocessing_provenance_yaml_campaign(
     campaign_dir: str,
     entries: List[dict],
 ) -> None:
@@ -472,7 +472,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
                 continue
             output(f"✓ {message}")
 
-    # Store the hash, list of postprocessing outputs, and write postprocessing.yaml if succeeded
+    # Store the hash, list of postprocessing outputs, and write postprocessing.yaml
     if success:
         try:
             os.makedirs(cache_dir, exist_ok=True)
@@ -495,33 +495,31 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         except Exception as e:
             output(f"Warning: Could not write cache files: {e}")
 
-        # Write postprocessing.yaml in campaign/_transient/
-        _write_provenance_yaml_campaign(campaign_dir, all_provenance_entries)
+    # Write postprocessing.yaml in campaign/_transient/
+    _write_postprocessing_provenance_yaml_campaign(campaign_dir, all_provenance_entries)
 
-        # Generate metadata.yaml in each campaign directory
-        meta_success, meta_msg = generate_campaign_metadata(
-            results_dir, vast_file=vast_file, output_callback=output_callback,
-        )
-        if not meta_success:
-            output(f"Warning: Metadata generation failed: {meta_msg}")
+    # Generate metadata.yaml in each campaign directory
+    meta_success, meta_msg = generate_campaign_metadata(
+        results_dir, vast_file=vast_file, output_callback=output_callback,
+    )
+    if not meta_success:
+        output(f"Warning: Metadata generation failed: {meta_msg}")
 
-        # Add metadata.yaml to exclude set for future hash computations
-        for campaign_item in Path(results_dir_abs).iterdir():
-            if campaign_item.is_dir() and campaign_item.name.startswith("campaign-"):
-                meta_file = campaign_item / "metadata.yaml"
-                if meta_file.exists():
-                    rel = str(meta_file.relative_to(Path(results_dir_abs)))
-                    output_paths.add(rel)
-        # Re-write outputs file with metadata.yaml included
-        try:
-            with open(outputs_file, "w", encoding="utf-8") as f:
-                for p in sorted(output_paths):
-                    f.write(p + "\n")
-        except OSError:
-            pass
+    # Add metadata.yaml to exclude set for future hash computations
+    for campaign_item in Path(results_dir_abs).iterdir():
+        if campaign_item.is_dir() and campaign_item.name.startswith("campaign-"):
+            meta_file = campaign_item / "metadata.yaml"
+            if meta_file.exists():
+                rel = str(meta_file.relative_to(Path(results_dir_abs)))
+                output_paths.add(rel)
+    # Re-write outputs file with metadata.yaml included
+    try:
+        with open(outputs_file, "w", encoding="utf-8") as f:
+            for p in sorted(output_paths):
+                f.write(p + "\n")
+    except OSError:
+        pass
 
+    if success:
         return True, "Postprocessing completed successfully!"
-
-    # On failure: write postprocessing.yaml with any provenance entries collected so far
-    _write_provenance_yaml_campaign(campaign_dir, all_provenance_entries)
     return False, "Postprocessing failed!"

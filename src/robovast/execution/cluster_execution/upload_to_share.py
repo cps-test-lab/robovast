@@ -157,6 +157,9 @@ class ShareUploader:
                 if not skip_removal:
                     self._delete_campaign_s3(campaign)
                 uploaded += 1
+            else:
+                logger.error("Stopping after failed upload of %s.", campaign)
+                break
 
         return uploaded
 
