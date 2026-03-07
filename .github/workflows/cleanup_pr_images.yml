@@ -51,7 +51,7 @@ jobs:
     steps:
       - uses: actions/delete-package-versions@v5
         with:
-          package-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-sidecar
+          package-name: cps-test-lab/robovast-archiver
           package-type: container
           delete-only-untagged-versions: true
           token: ${{ secrets.GITHUB_TOKEN }}
