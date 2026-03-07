@@ -18,7 +18,8 @@
 import html as _html
 import re
 
-from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor  # noqa: F401
+from PySide6.QtGui import (QColor, QFont, QTextCharFormat,  # noqa: F401
+                           QTextCursor)
 from PySide6.QtWidgets import (QHBoxLayout, QPushButton, QTextEdit,
                                QVBoxLayout, QWidget)
 
@@ -102,8 +103,8 @@ class TerminalOutputWidget(QWidget):
     def _on_scroll(self, value):
         if self._loading:
             return
-        bar = self._text_edit.verticalScrollBar()
-        if value >= bar.maximum() - 50:
+        progressbar = self._text_edit.verticalScrollBar()
+        if value >= progressbar.maximum() - 50:
             self._render_more()
 
     def _render_more(self):

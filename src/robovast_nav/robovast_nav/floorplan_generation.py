@@ -24,6 +24,31 @@ from importlib.resources import files
 from robovast.common import FileCache
 
 
+def get_scenery_builder_version():
+    """Return the docker image digest/ID of the scenery_builder image.
+
+    Calls ``scenery_builder.sh -v`` which runs ``docker inspect`` on the image
+    and prints its first RepoDigest (falling back to the image ID).
+
+    Returns:
+        The version string stripped of whitespace, or ``None`` if the version
+        cannot be determined (e.g. docker is unavailable or the image has not
+        been pulled yet).
+    """
+    script_path = str(files('robovast_nav.data').joinpath('scenery_builder.sh'))
+    if not os.path.exists(script_path):
+        return None
+    try:
+        result = subprocess.run(
+            [script_path, '-v'],
+            capture_output=True, text=True, check=True
+        )
+        version = result.stdout.strip()
+        return version if version else None
+    except subprocess.CalledProcessError:
+        return None
+
+
 def _create_config_for_floorplan(
     floorplan_name,
     output_dir,

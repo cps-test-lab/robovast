@@ -14,6 +14,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from robovast.results_processing.publication_plugins.base import BasePublicationPlugin
+from robovast.results_processing.publication_plugins.base import \
+    BasePublicationPlugin
 
 __all__ = ["BasePublicationPlugin"]
