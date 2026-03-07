@@ -212,14 +212,23 @@ def generate_prov_metadata(
     graph.extend(location_nodes)
 
     # --- Scenario and config generation ---
+    scenario_file = metadata.get("scenario_file", "scenario.osc")
     abstract_scenario = {
-        _ID: CAMPAIGN["_config/scenario.osc"],
+        _ID: CAMPAIGN[f"_config/{scenario_file}"],
         _TYPE: [PROV["Entity"], SCENARIOS["AbstractScenario"]],
     }
     graph.append(abstract_scenario)
 
+    # Discover the .vast file from the campaign's _config/ directory
+    vast_file_name = None
+    config_dir = campaign_dir / "_config"
+    if config_dir.is_dir():
+        vast_files = list(config_dir.glob("*.vast"))
+        if vast_files:
+            vast_file_name = vast_files[0].name
+
     vast_config = {
-        _ID: CAMPAIGN["_config/most_important.vast"],
+        _ID: CAMPAIGN[f"_config/{vast_file_name or 'config.vast'}"],
         _TYPE: [PROV["Entity"], ROBOVAST["VastConfiguration"]],
         "references": abstract_scenario[_ID]
     }
@@ -236,15 +245,15 @@ def generate_prov_metadata(
     # --- Per-configuration ---
     all_configs = {c["name"]: c for c in metadata["configurations"]}
 
-    config_dirs = sorted(
-        str(p) + "/"
+    config_names = sorted(
+        p.name
         for p in campaign_dir.iterdir()
         if p.is_dir() and not p.name.startswith("_")
     )
 
-    for config_path in config_dirs:
-        CONFIG = Namespace(f"{dataset_iri}{config_path}")
-        config_name = os.path.split(os.path.split(config_path)[0])[-1]
+    for config_name in config_names:
+        config_path = config_name + "/"
+        CONFIG = Namespace(f"{dataset_iri}{campaign}{config_path}")
 
         config_md = all_configs.get(config_name)
         if config_md is None:
@@ -255,6 +264,7 @@ def generate_prov_metadata(
             _ID: CAMPAIGN[config_path],
             _TYPE: [PROV["Entity"], SCENARIOS["ConcreteScenario"]],
             "wasGeneratedBy": gen_activity[_ID],
+            PROV["specializationOf"]: abstract_scenario[_ID],
         }
 
         # Collect domain-specific PROV contributions from variation plugins
