@@ -90,7 +90,7 @@ class RunResultsAnalyzer(QMainWindow):
 
         self.base_dir = Path(base_dir)
 
-        self.setWindowTitle(f"Run Results Analyzer - {self.base_dir}")
+        self.setWindowTitle(f"RoboVAST Results Analyzer - {self.base_dir}")
 
         # Set window icon
         icon_path = Path(__file__).parent.parent.parent.parent.parent / "docs" / "images" / "icon.png"
