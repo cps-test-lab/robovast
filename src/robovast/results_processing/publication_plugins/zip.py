@@ -37,6 +37,7 @@ Configuration format:
            overwrite: true
 """
 
+import datetime
 import fnmatch
 import os
 import re
@@ -49,6 +50,29 @@ import yaml
 
 from robovast.results_processing.publication_plugins.base import \
     BasePublicationPlugin
+
+
+class _FormattableTimestamp(str):
+    """A ``str`` subclass that supports datetime format specs.
+
+    When used in a ``format_map`` call:
+
+    * ``{timestamp}``            → original string, e.g. ``2026-03-07-224410``
+    * ``{timestamp:%Y-%m-%d}``  → ``2026-03-07``
+    * ``{timestamp:%Y%m%d}``    → ``20260307``
+    """
+
+    _PARSE_FORMAT = "%Y-%m-%d-%H%M%S"
+
+    def __format__(self, format_spec: str) -> str:  # type: ignore[override]
+        if not format_spec:
+            return str(self)
+        try:
+            dt = datetime.datetime.strptime(str(self), self._PARSE_FORMAT)
+            return dt.strftime(format_spec)
+        except ValueError:
+            # Fall back to the raw string if parsing fails.
+            return str(self)
 
 
 def _file_matches_pattern(rel_path: str, pattern: str) -> bool:
@@ -150,10 +174,11 @@ def _resolve_filename(template: str, campaign_name: str, vast_metadata: Dict[str
         else campaign_name
     )
 
-    substitutions: Dict[str, Any] = {"timestamp": timestamp}
+    substitutions: Dict[str, Any] = {"timestamp": _FormattableTimestamp(timestamp)}
     substitutions.update(vast_metadata)
 
-    keys_in_template = re.findall(r"\{(\w+)\}", template)
+    # Match both plain {key} and formatted {key:spec} placeholders.
+    keys_in_template = re.findall(r"\{(\w+)[^}]*\}", template)
     missing = [k for k in keys_in_template if k not in substitutions]
     if missing:
         available = sorted(substitutions.keys())
