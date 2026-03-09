@@ -455,11 +455,13 @@ def download_from_share_cmd(output, campaigns, force, keep_archive):
     3. Extracts the archive into the output directory.
     4. Removes the temporary archive (unless ``--keep-archive``).
 
-    Required ``.env`` variables (same as ``cluster upload-to-share``):
+    Required ``.env`` variables:
 
     \b
     ROBOVAST_SHARE_TYPE  — share provider (e.g. ``gcs``)
     ROBOVAST_GCS_BUCKET  — GCS bucket name  (when ROBOVAST_SHARE_TYPE=gcs)
+
+    No credentials are required when the bucket is publicly readable.
     """
     _load_share_dotenv()
 

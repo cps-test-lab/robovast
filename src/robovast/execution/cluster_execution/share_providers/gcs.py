@@ -52,6 +52,8 @@ class GcsShareProvider(BaseShareProvider):
          - Target GCS bucket name (e.g. ``my-robovast-results``)
        * - ``ROBOVAST_GCS_KEY_FILE``
          - Path to the service-account JSON key file
+           (**required for** ``cluster upload-to-share`` **only**;
+           not needed for ``results download-from-share`` on public buckets)
 
     Optional ``.env`` variables:
 
@@ -68,13 +70,11 @@ class GcsShareProvider(BaseShareProvider):
     SHARE_TYPE = "gcs"
 
     def required_env_vars(self) -> dict[str, str]:
+        # ROBOVAST_GCS_KEY_FILE is only required for upload (cluster upload-to-share);
+        # download uses the public GCS HTTP API and needs no credentials.
         return {
             "ROBOVAST_GCS_BUCKET": (
                 "GCS bucket name (e.g. my-robovast-results)"
-            ),
-            "ROBOVAST_GCS_KEY_FILE": (
-                "Path to the service-account JSON key file "
-                "(grant Storage Object Creator on the bucket)"
             ),
         }
 
@@ -85,7 +85,13 @@ class GcsShareProvider(BaseShareProvider):
         )
 
     def build_pod_env(self) -> dict[str, str]:
-        key_file = os.environ["ROBOVAST_GCS_KEY_FILE"]
+        key_file = os.environ.get("ROBOVAST_GCS_KEY_FILE", "")
+        if not key_file:
+            raise click.UsageError(
+                "ROBOVAST_GCS_KEY_FILE is required for cluster upload-to-share.\n"
+                "Set it to the path of a service-account JSON key file with "
+                "Storage Object Creator access on the bucket."
+            )
         if not os.path.isfile(key_file):
             raise click.UsageError(
                 f"ROBOVAST_GCS_KEY_FILE: file not found: {key_file}"
