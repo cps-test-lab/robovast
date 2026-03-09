@@ -481,30 +481,27 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                     with tarfile.open(_tar_path, "r:gz") as tar:
                         tar.extractall(output_dir)  # nosec – trusted local cache
                     logger.debug("Restored output_dir from cache tar to %s", output_dir)
-            # Reconstruct (rel, abs) tuples in _config_files for each config.
-            # Source files: abs is stored directly in the cache entry.
-            # Artifact files: abs is reconstructed from the caller's output_dir
-            #   (files were extracted from the artifact tar above).
+            # Reconstruct _config_files and _config_transient_files as (rel, path) tuples,
+            # using the same format as the non-cached path: source files keep their
+            # absolute path; artifact files use rel_from_output (relative to output_dir).
             for cfg in _cached.get("configs", []):
-                # Reconstruct _config_files (rel, abs) tuples
                 rebuilt = []
                 for entry in cfg.get("_config_files", []):
                     rel = entry["rel"]
                     if entry["kind"] == "source":
                         rebuilt.append((rel, entry["abs"]))
-                    else:  # artifact
-                        if output_dir:
-                            abs_path = os.path.abspath(os.path.join(output_dir, entry.get("rel_from_output", rel)))
-                            rebuilt.append((rel, abs_path))
+                    else:  # artifact — keep relative to output_dir
+                        rebuilt.append((rel, entry["rel_from_output"]))
                 cfg["_config_files"] = rebuilt
-                # Reconstruct _config_transient_files (rel, abs) tuples
-                rebuilt_transient = []
-                if output_dir:
-                    for entry in cfg.get("_config_transient_files", []):
-                        rel = entry["rel"]
-                        abs_path = os.path.abspath(os.path.join(output_dir, entry["rel_from_output"]))
-                        rebuilt_transient.append((rel, abs_path))
-                cfg["_config_transient_files"] = rebuilt_transient
+
+                cfg["_config_transient_files"] = [
+                    (entry["rel"], entry["rel_from_output"])
+                    for entry in cfg.get("_config_transient_files", [])
+                ]
+            # Expose the output_dir so callers (e.g. execution.py) can resolve
+            # relative artifact paths without needing extra context.
+            if output_dir is not None:
+                _cached["_output_dir"] = os.path.abspath(output_dir)
             progress_update_callback("Loaded configurations from cache (no changes detected).")
             return _cached, _rebuild_variation_gui_classes(configurations)
         logger.info("Cache MISS for generate_scenario_variations (%s)", variation_file)
@@ -626,6 +623,25 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
 
         configs.extend(current_configs)
 
+    # Normalize _config_files and _config_transient_files: convert artifact absolute
+    # paths (those inside output_dir) to paths relative to output_dir.  This makes
+    # cached and non-cached results structurally identical, and lets execution.py
+    # resolve paths via campaign_data["_output_dir"] instead of relying on
+    # whichever absolute path happened to be used during generation.
+    _abs_output = os.path.abspath(output_dir)
+    _norm_prefix = _abs_output + os.sep
+    for cfg in configs:
+        for field in ("_config_files", "_config_transient_files"):
+            entries = cfg.get(field)
+            if not entries:
+                continue
+            normalized = []
+            for rel, path in entries:
+                if os.path.isabs(path) and os.path.abspath(path).startswith(_norm_prefix):
+                    path = os.path.relpath(os.path.abspath(path), _abs_output)
+                normalized.append((rel, path))
+            cfg[field] = normalized
+
     # Extract execution parameters from execution section
     execution_section = parameters.get('execution', {})
     execution_params = {
@@ -645,6 +661,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         "_run_files": run_files,
         "_input_files": campaign_input_files,
         "_transient_files": campaign_transient_files,
+        "_output_dir": os.path.abspath(output_dir),
         "execution": execution_params,
         "created_at": datetime.now().isoformat()
     }
@@ -658,48 +675,35 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     if _cache_meta is not None and _cache_key is not None:
         try:
             cacheable = copy.deepcopy(result)
-            # Strip campaign-level fields with absolute, run-specific paths.
+            # Strip ephemeral / run-specific fields before storing.
             cacheable["_transient_files"] = []
+            cacheable.pop("_output_dir", None)  # reconstructed from caller's output_dir on hit
 
-            # For _config_files, split into:
-            #   - source files  (abs NOT under output_dir): store {rel, abs, kind}; the
-            #     abs path is stable (lives in vast_dir or project) so it's safe to cache.
-            #   - artifact files (abs IS under output_dir): store {rel, kind}; the actual
-            #     file is restored from the companion .tar.gz on cache hit.
-            # Both rel paths must be relative — raise immediately if not.
-            norm_output = (os.path.abspath(output_dir) + os.sep) if output_dir else None
+            # _config_files: after normalization, artifact paths are already relative to
+            # output_dir while source paths remain absolute.  Detect by os.path.isabs.
             for cfg in cacheable.get("configs", []):
                 cfg.pop("_config_block", None)
 
-                # _config_files: split source vs artifact
                 raw_files = cfg.get("_config_files", [])
                 storable = []
-                for rel, abs_path in raw_files:
+                for rel, path in raw_files:
                     if os.path.isabs(rel):
                         raise ValueError(
-                            f"_config_files entry has an absolute relative path '{rel}' "
+                            f"_config_files entry has an absolute deploy path '{rel}' "
                             f"in config '{cfg.get('name')}'. "
                             "Variation plugins must use relative paths in _config_files."
                         )
-                    is_artifact = bool(norm_output and os.path.abspath(abs_path).startswith(norm_output))
-                    if is_artifact:
-                        rel_from_output = os.path.relpath(os.path.abspath(abs_path), os.path.abspath(output_dir))
-                        storable.append({"rel": rel, "rel_from_output": rel_from_output, "kind": "artifact"})
-                    else:
-                        storable.append({"rel": rel, "abs": abs_path, "kind": "source"})
+                    if os.path.isabs(path):  # source file — stable project path
+                        storable.append({"rel": rel, "abs": path, "kind": "source"})
+                    else:  # artifact — relative to output_dir
+                        storable.append({"rel": rel, "rel_from_output": path, "kind": "artifact"})
                 cfg["_config_files"] = storable
 
-                # _config_transient_files: store rel_from_output so abs can be
-                # reconstructed after extracting the tarball into output_dir.
+                # _config_transient_files are always artifacts (relative after normalization)
                 raw_transient = cfg.get("_config_transient_files", [])
-                storable_transient = []
-                for rel, abs_path in raw_transient:
-                    if norm_output:
-                        rel_from_output = os.path.relpath(os.path.abspath(abs_path), os.path.abspath(output_dir))
-                    else:
-                        rel_from_output = rel
-                    storable_transient.append({"rel": rel, "rel_from_output": rel_from_output})
-                cfg["_config_transient_files"] = storable_transient
+                cfg["_config_transient_files"] = [
+                    {"rel": rel, "rel_from_output": path} for rel, path in raw_transient
+                ]
 
             _cache_meta.set_json(_cache_key, convert_dataclasses_to_dict(cacheable))
             logger.debug("Stored generate_scenario_variations metadata in cache")

@@ -191,9 +191,11 @@ def generate(output_dir, keep_transient, no_cache):
 def _print_transient_locations(campaign_data):
     """Print all transient directories produced during config generation."""
     transient_dirs = set()
+    _gen_output_dir = campaign_data.get("_output_dir", "")
 
     for config in campaign_data.get("configs", []):
-        for _rel, abs_path in config.get("_config_transient_files", []):
+        for _rel, path in config.get("_config_transient_files", []):
+            abs_path = path if os.path.isabs(path) else os.path.join(_gen_output_dir, path)
             transient_dirs.add(os.path.dirname(abs_path))
 
     for _rel, abs_path in campaign_data.get("_transient_files", []):
