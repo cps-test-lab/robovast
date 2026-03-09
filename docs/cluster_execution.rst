@@ -506,6 +506,47 @@ the percentage, transferred size, and upload rate:
 
    ✓ Uploaded 3 campaign(s) to nextcloud successfully!
 
+Google Cloud Storage (GCS)
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The GCS provider uploads archives directly from the archiver pod to a GCS
+bucket using a service-account key.  Downloads use the public GCS HTTP API
+and **do not require credentials** when the bucket is publicly readable.
+
+.. code-block:: ini
+
+   ROBOVAST_SHARE_TYPE=gcs
+
+   # GCS bucket name
+   ROBOVAST_GCS_BUCKET=my-robovast-results
+
+   # Required for upload (cluster upload-to-share) only.
+   # Not needed for results download-from-share on public buckets.
+   ROBOVAST_GCS_KEY_FILE=/path/to/service-account-key.json
+
+   # Optional: object-name prefix inside the bucket (default: bucket root)
+   # ROBOVAST_GCS_PREFIX=results/
+
+**Service-account setup (upload only):**
+
+1. Create a service account in the GCP IAM console.
+2. Grant it the *Storage Object Creator* role on the target bucket.
+3. Generate a JSON key, download it, and set ``ROBOVAST_GCS_KEY_FILE`` to its
+   path.
+
+**Making the bucket publicly readable (for download):**
+
+Grant the ``Storage Object Viewer`` role to the special principal
+``allUsers`` in the GCP console (or via ``gsutil iam``):
+
+.. code-block:: bash
+
+   gsutil iam ch allUsers:objectViewer gs://my-robovast-results
+
+Once the bucket is public, ``vast results download-from-share`` works without
+any credentials — only ``ROBOVAST_SHARE_TYPE`` and ``ROBOVAST_GCS_BUCKET``
+need to be set.
+
 Adding a new share provider (plugin system)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
