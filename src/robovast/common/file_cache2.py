@@ -183,13 +183,13 @@ class FileCache2:
         cache_path, _ = self._path_for_key(key)
         return cache_path
 
-    def get(
+    def get(  # pylint: disable=too-many-return-statements
         self,
         key: Union[CacheKey, Any],
         *,
         content: bool = True,
         binary: bool = False,
-    ) -> Optional[Union[str, bytes]]:  # pylint: disable=too-many-return-statements
+    ) -> Optional[Union[str, bytes]]:
         """
         Retrieve cached data if valid.
 
