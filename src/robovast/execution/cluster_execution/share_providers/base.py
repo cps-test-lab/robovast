@@ -127,3 +127,41 @@ class BaseShareProvider(ABC):
         Returns:
             dict[str, str]: Mapping of variable name to value.
         """
+
+    # ------------------------------------------------------------------
+    # Optional download interface (used by ``results download-from-share``)
+    # ------------------------------------------------------------------
+
+    def list_campaign_archives(self) -> list[str]:
+        """Return a list of ``campaign-*.tar.gz`` object names on the share.
+
+        Raise :class:`NotImplementedError` if the provider does not support
+        downloading (default).  Implementations should return bare object names
+        (keys), not full URLs.
+        """
+        raise NotImplementedError(
+            f"Provider '{self.SHARE_TYPE}' does not support 'results download-from-share'."
+        )
+
+    def download_archive(
+        self,
+        object_name: str,
+        dest_path: str,
+        progress_callback=None,
+    ) -> None:
+        """Download *object_name* from the share to the local *dest_path*.
+
+        Args:
+            object_name: The object/file name on the share (as returned by
+                :meth:`list_campaign_archives`).
+            dest_path: Absolute local path to write the downloaded file to.
+            progress_callback: Optional callable ``(bytes_received, total_bytes)``
+                called periodically during the download.
+
+        Raise :class:`NotImplementedError` if the provider does not support
+        downloading (default).
+        """
+        _ = object_name, dest_path, progress_callback
+        raise NotImplementedError(
+            f"Provider '{self.SHARE_TYPE}' does not support 'results download-from-share'."
+        )

@@ -63,6 +63,7 @@ azure = "robovast.execution.cluster_config.azure:AzureClusterConfig"
 
 [tool.poetry.plugins."robovast.share_providers"]
 nextcloud = "robovast.execution.cluster_execution.share_providers.nextcloud:NextcloudShareProvider"
+gcs = "robovast.execution.cluster_execution.share_providers.gcs:GcsShareProvider"
 
 [tool.poetry.plugins."robovast.variation_types"]
 "ParameterVariationList" = "robovast.common.variation.parameter_variation:ParameterVariationList"

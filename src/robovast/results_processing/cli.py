@@ -17,15 +17,22 @@
 
 """CLI for results processing and management."""
 
+import os
 import sys
+import tarfile
+import tempfile
+import time
 from pathlib import Path
 
 import click
 import yaml
+from dotenv import load_dotenv
 
 from robovast.common.cli import get_project_config, handle_cli_exception
 from robovast.common.cli.project_config import ProjectConfig
 from robovast.evaluation.merge_results import merge_results
+from robovast.execution.cluster_execution.share_providers import \
+    load_share_provider_plugins
 from robovast.results_processing import run_postprocessing
 from robovast.results_processing.fair_metadata import generate_prov_metadata
 from robovast.results_processing.postprocessing import \
@@ -359,3 +366,234 @@ def list_publication_plugins():
     click.echo("        - '*.pyc'")
     click.echo("\nPlugins without parameters can be simple strings.")
     click.echo("Plugins with parameters use plugin name as key with parameters as dict.")
+
+
+# ---------------------------------------------------------------------------
+# Progress helpers
+# ---------------------------------------------------------------------------
+
+_BAR_WIDTH = 20
+_CLEAR_EOL = "\033[K"
+
+
+def _fmt_size(n: int) -> str:
+    return f"{n / 1024 / 1024:.1f} MiB"
+
+
+def _fmt_rate(bps: float) -> str:
+    if bps >= 1024 * 1024:
+        return f"{bps / 1024 / 1024:.1f} MiB/s"
+    if bps >= 1024:
+        return f"{bps / 1024:.1f} KiB/s"
+    return f"{bps:.0f} B/s"
+
+
+def _make_progress_callback(label: str, start: float):
+    """Return a ``(received, total)`` callback that prints a progress bar."""
+    last_pct = [-1.0]
+
+    def _cb(received: int, total: int) -> None:
+        if total <= 0:
+            sys.stdout.write(f"\r{label}  {_fmt_size(received)}" + _CLEAR_EOL)
+            sys.stdout.flush()
+            return
+        pct = received / total * 100
+        if pct - last_pct[0] < 0.5 and received < total:
+            return
+        last_pct[0] = pct
+        elapsed = max(time.monotonic() - start, 1e-6)
+        rate = received / elapsed
+        filled = int(_BAR_WIDTH * received / total)
+        progressbar = "█" * filled + "░" * (_BAR_WIDTH - filled)
+        line = (
+            f"{label}  [{progressbar}]  {pct:5.1f}%  "
+            f"{_fmt_size(received)}/{_fmt_size(total)}  {_fmt_rate(rate)}"
+        )
+        sys.stdout.write("\r" + line + _CLEAR_EOL)
+        sys.stdout.flush()
+
+    return _cb
+
+
+def _load_share_dotenv() -> None:
+    """Load ``.env`` using the same search order as ``cluster upload-to-share``."""
+    project_file = ProjectConfig.find_project_file()
+    if project_file:
+        project_dir = os.path.dirname(os.path.abspath(project_file))
+        pc = ProjectConfig.load()
+        if pc and pc.config_path:
+            load_dotenv(os.path.join(os.path.dirname(pc.config_path), ".env"), override=False)
+        load_dotenv(os.path.join(project_dir, ".env"), override=False)
+    else:
+        load_dotenv(override=False)
+
+
+# ---------------------------------------------------------------------------
+# Command
+# ---------------------------------------------------------------------------
+
+@results.command(name='download-from-share')
+@click.option('--output', '-o', default=None,
+              help='Directory to extract results into (uses project results dir if not specified)')
+@click.option('--campaign', '-i', 'campaigns', multiple=True,
+              help='Only download this campaign (e.g. campaign-2025-02-27-123456). '
+                   'Can be specified multiple times. Without this, downloads all campaigns.')
+@click.option('--force', '-f', is_flag=True,
+              help='Re-download and re-extract even if the campaign directory already exists')
+@click.option('--keep-archive', is_flag=True,
+              help='Keep the downloaded .tar.gz file after extraction')
+def download_from_share_cmd(output, campaigns, force, keep_archive):
+    """Download campaign archives from the configured share service.
+
+    Reads the same ``.env`` configuration as ``cluster upload-to-share``.
+    For each ``campaign-*.tar.gz`` found on the share the command:
+
+    \b
+    1. Checks whether the campaign directory already exists locally
+       (skips the download if it does, unless ``--force`` is given).
+    2. Streams the archive to a temporary file with a live progress bar.
+    3. Extracts the archive into the output directory.
+    4. Removes the temporary archive (unless ``--keep-archive``).
+
+    Required ``.env`` variables:
+
+    \b
+    ROBOVAST_SHARE_TYPE  — share provider (e.g. ``gcs``)
+    ROBOVAST_GCS_BUCKET  — GCS bucket name  (when ROBOVAST_SHARE_TYPE=gcs)
+
+    No credentials are required when the bucket is publicly readable.
+    """
+    _load_share_dotenv()
+
+    share_type = os.environ.get("ROBOVAST_SHARE_TYPE", "").strip()
+    if not share_type:
+        raise click.UsageError(
+            "ROBOVAST_SHARE_TYPE is not set.\n"
+            "Add it to a .env file in your project directory.\n"
+            "Example:\n"
+            "  ROBOVAST_SHARE_TYPE=gcs\n"
+            "  ROBOVAST_GCS_BUCKET=my-robovast-results"
+        )
+
+    providers = load_share_provider_plugins()
+    if share_type not in providers:
+        available = ", ".join(sorted(providers)) or "(none installed)"
+        raise click.UsageError(
+            f"Unknown share type '{share_type}'.\n"
+            f"Available providers: {available}"
+        )
+
+    try:
+        provider = providers[share_type]()
+    except click.UsageError:
+        raise
+    except Exception as exc:
+        handle_cli_exception(exc)
+        return
+
+    # Resolve output directory
+    if output is None:
+        raw_config = ProjectConfig.load()
+        if not raw_config or not raw_config.results_dir:
+            raise click.ClickException(
+                "Project not initialized. Run 'vast init <config-file>' first, "
+                "or pass --output explicitly."
+            )
+        output = raw_config.results_dir
+
+    output_path = Path(output)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # List available archives
+    click.echo(f"Listing campaigns on {share_type}...")
+    try:
+        archives = provider.list_campaign_archives()
+    except NotImplementedError as exc:
+        raise click.UsageError(str(exc)) from exc
+    except click.UsageError:
+        raise
+    except Exception as exc:
+        handle_cli_exception(exc)
+        return
+
+    if not archives:
+        click.echo("No campaign archives found on the share.")
+        return
+
+    # Filter by requested campaign IDs
+    requested = set(campaigns)
+    if requested:
+        def _archive_id(name: str) -> str:
+            # Strip leading prefix (e.g. "results/") and trailing ".tar.gz"
+            base = os.path.basename(name)
+            return base[: -len(".tar.gz")] if base.endswith(".tar.gz") else base
+
+        archives = [a for a in archives if _archive_id(a) in requested]
+        if not archives:
+            raise click.UsageError(
+                f"None of the requested campaigns were found on the share.\n"
+                f"Requested: {', '.join(sorted(requested))}"
+            )
+
+    downloaded = 0
+    skipped = 0
+
+    for object_name in archives:
+        base = os.path.basename(object_name)
+        campaign_id = base[: -len(".tar.gz")] if base.endswith(".tar.gz") else base
+        campaign_dir = output_path / campaign_id
+
+        if campaign_dir.exists() and not force:
+            click.echo(f"  {campaign_id}  already exists, skipping (use --force to re-download)")
+            skipped += 1
+            continue
+
+        click.echo(f"  {campaign_id}  downloading...")
+        start = time.monotonic()
+        progress_cb = _make_progress_callback(campaign_id, start)
+
+        # Stream to a temp file in the output directory so extraction is local
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".tar.gz", dir=output_path)
+        os.close(tmp_fd)
+        try:
+            try:
+                provider.download_archive(object_name, tmp_path, progress_cb)
+            except Exception as exc:
+                if isinstance(exc, (click.UsageError, click.ClickException)):
+                    raise
+                handle_cli_exception(exc)
+                continue
+            finally:
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+
+            # Extract
+            click.echo(f"  {campaign_id}  extracting...")
+            try:
+                with tarfile.open(tmp_path, "r:gz") as tf:
+                    tf.extractall(output_path)
+            except tarfile.TarError as exc:
+                raise click.ClickException(
+                    f"Failed to extract '{base}': {exc}"
+                ) from exc
+
+            elapsed = time.monotonic() - start
+            size_mib = os.path.getsize(tmp_path) / 1024 / 1024
+            click.echo(
+                f"  {campaign_id}  ✓  {size_mib:.1f} MiB in {elapsed:.0f}s"
+            )
+            downloaded += 1
+
+            if keep_archive:
+                dest_archive = output_path / base
+                os.replace(tmp_path, dest_archive)
+                tmp_path = ""  # don't delete below
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+    click.echo()
+    parts = [f"✓ Downloaded {downloaded} campaign(s)"]
+    if skipped:
+        parts.append(f"{skipped} skipped")
+    click.echo("  ".join(parts))
