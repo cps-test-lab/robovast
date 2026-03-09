@@ -74,7 +74,7 @@ class _ProgressReader:
     ``Content-Length`` on the PUT request.
     """
 
-    CHUNK = 256 * 1024  # 256 KiB
+    chunk = 256 * 1024  # 256 KiB
 
     def __init__(self, fh, total, campaign, start_offset=0):
         self._fh = fh
@@ -86,7 +86,7 @@ class _ProgressReader:
         self._start = time.monotonic()
 
     def read(self, n=-1):  # called by urllib internals
-        data = self._fh.read(self.CHUNK if n == -1 else n)
+        data = self._fh.read(self.chunk if n == -1 else n)
         self._sent += len(data)
         self._render()
         return data
@@ -123,7 +123,9 @@ class _ProgressReader:
 def _get_access_token(key_json: dict) -> str:
     """Exchange a service-account key for a short-lived Bearer token."""
     try:
-        import google.auth.transport.requests  # noqa: PLC0415
+        import google.auth.transport.requests  # noqa: PLC0415, pylint: disable=import-outside-toplevel
+        import google.oauth2.service_account  # noqa: PLC0415, pylint: disable=import-outside-toplevel
+    except ImportError as exc:
         from google.oauth2 import service_account  # noqa: PLC0415
     except ImportError as exc:
         sys.stderr.write(

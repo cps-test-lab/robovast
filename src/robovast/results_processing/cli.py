@@ -404,9 +404,9 @@ def _make_progress_callback(label: str, start: float):
         elapsed = max(time.monotonic() - start, 1e-6)
         rate = received / elapsed
         filled = int(_BAR_WIDTH * received / total)
-        bar = "█" * filled + "░" * (_BAR_WIDTH - filled)
+        progressbar = "█" * filled + "░" * (_BAR_WIDTH - filled)
         line = (
-            f"{label}  [{bar}]  {pct:5.1f}%  "
+            f"{label}  [{progressbar}]  {pct:5.1f}%  "
             f"{_fmt_size(received)}/{_fmt_size(total)}  {_fmt_rate(rate)}"
         )
         sys.stdout.write("\r" + line + _CLEAR_EOL)
@@ -558,9 +558,9 @@ def download_from_share_cmd(output, campaigns, force, keep_archive):
         try:
             try:
                 provider.download_archive(object_name, tmp_path, progress_cb)
-            except (click.UsageError, click.ClickException):
-                raise
             except Exception as exc:
+                if isinstance(exc, (click.UsageError, click.ClickException)):
+                    raise
                 handle_cli_exception(exc)
                 continue
             finally:

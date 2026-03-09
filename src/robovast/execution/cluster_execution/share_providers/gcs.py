@@ -212,4 +212,3 @@ class GcsShareProvider(BaseShareProvider):
             raise click.UsageError(
                 f"Failed to download '{object_name}': {exc.reason}"
             ) from exc
-
