@@ -188,7 +188,7 @@ class Command(BasePostprocessingPlugin):
                 return False, f"Command failed with exit code {result.returncode}\n{result.stderr}"
 
             output = result.stdout.strip()
-            return True, f"Command executed successfully\n{output}" if output else (True, "Command executed successfully")
+            return True, f"Command executed successfully\n{output}" if output else "Command executed successfully"
 
         except Exception as e:
             return False, f"Error executing command: {e}"
@@ -255,7 +255,7 @@ class RosbagsTfToCsv(BasePostprocessingPlugin):
                 return False, f"rosbags_tf_to_csv failed with exit code {result.returncode}\n{result.stderr}"
 
             output = result.stdout.strip()
-            return True, f"TF data converted to CSV successfully\n{output}" if output else (True, "TF data converted to CSV successfully")
+            return True, f"TF data converted to CSV successfully\n{output}" if output else "TF data converted to CSV successfully"
 
         except Exception as e:
             return False, f"Error executing rosbags_tf_to_csv: {e}"
@@ -314,7 +314,7 @@ class RosbagsBtToCsv(BasePostprocessingPlugin):
                 return False, f"rosbags_bt_to_csv failed with exit code {result.returncode}\n{result.stderr}"
 
             output = result.stdout.strip()
-            return True, f"Behavior tree data converted to CSV successfully\n{output}" if output else (True, "Behavior tree data converted to CSV successfully")
+            return True, f"Behavior tree data converted to CSV successfully\n{output}" if output else "Behavior tree data converted to CSV successfully"
 
         except Exception as e:
             return False, f"Error executing rosbags_bt_to_csv: {e}"
@@ -386,7 +386,7 @@ class RosbagsActionToCsv(BasePostprocessingPlugin):
                 return False, f"rosbags_action_to_csv failed with exit code {result.returncode}\n{result.stderr}"
 
             output = result.stdout.strip()
-            return True, f"Action '{action_name}' data extracted to CSV successfully\n{output}" if output else (True, f"Action '{action_name}' data extracted to CSV successfully")
+            return True, f"Action '{action_name}' data extracted to CSV successfully\n{output}" if output else f"Action '{action_name}' data extracted to CSV successfully"
 
         except Exception as e:
             return False, f"Error executing rosbags_action_to_csv: {e}"
@@ -454,7 +454,7 @@ class RosbagsToCsv(BasePostprocessingPlugin):
                 return False, f"rosbags_to_csv failed with exit code {result.returncode}\n{result.stderr}"
 
             output = result.stdout.strip()
-            return True, f"ROS messages converted to CSV successfully\n{output}" if output else (True, "ROS messages converted to CSV successfully")
+            return True, f"ROS messages converted to CSV successfully\n{output}" if output else "ROS messages converted to CSV successfully"
 
         except Exception as e:
             return False, f"Error executing rosbags_to_csv: {e}"
@@ -524,7 +524,7 @@ class RosbagsToWebm(BasePostprocessingPlugin):
                 return False, f"rosbags_to_webm failed with exit code {result.returncode}\n{result.stderr}"
 
             output = result.stdout.strip()
-            return True, f"CompressedImage topic converted to WebM successfully\n{output}" if output else (True, "CompressedImage topic converted to WebM successfully")
+            return True, f"CompressedImage topic converted to WebM successfully\n{output}" if output else "CompressedImage topic converted to WebM successfully"
 
         except Exception as e:
             return False, f"Error executing rosbags_to_webm: {e}"
