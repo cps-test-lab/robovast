@@ -15,7 +15,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""script that reads ROS2 messages using the rosbag2_py API."""
+"""script that reads ROS2 messages using the rosbag2_py API and writes separate CSV files per topic."""
 import argparse
 import csv
 import os
@@ -29,17 +29,22 @@ from rosbags_common import find_rosbags, gen_msg_values, write_provenance_entry
 from rosidl_runtime_py.utilities import get_message
 
 
+def topic_to_filename(topic: str) -> str:
+    """Convert a topic name like /foo/bar to foo_bar."""
+    return topic.strip("/").replace("/", "_")
+
+
 def process_rosbag_wrapper(args):
     """Wrapper function for multiprocessing that unpacks arguments."""
-    bag_path, skipped_topics = args
-    return process_rosbag(bag_path, skipped_topics)
+    bag_path, topics = args
+    return process_rosbag(bag_path, topics)
 
 
-def process_rosbag(bag_path, skipped_topics):
-    """Process a single rosbag and save to CSV in the output directory."""
+def process_rosbag(bag_path, topics):
+    """Process a single rosbag and write one CSV file per requested topic."""
     try:
-        records = []
-        append = records.append  # Local variable for faster access
+        # records_by_topic: dict[topic -> list[record]]
+        records_by_topic: dict = {t: [] for t in topics}
 
         reader = rosbag2_py.SequentialReader()
         reader.open(
@@ -59,76 +64,83 @@ def process_rosbag(bag_path, skipped_topics):
 
         while reader.has_next():
             topic, data, timestamp = reader.read_next()
+            if topic not in records_by_topic:
+                continue
             msg_type = get_message(typename(topic))
             msg = deserialize_message(data, msg_type)
+            fields = dict(gen_msg_values(msg))
+            record = {
+                "timestamp": timestamp,
+                "type": type(msg).__name__,
+                **fields,
+            }
+            records_by_topic[topic].append(record)
 
-            if topic not in skipped_topics:
-                fields = dict(gen_msg_values(msg))
-                record = {
-                    "timestamp": timestamp,
-                    "topic": topic,
-                    "type": type(msg).__name__,
-                    **fields
-                }
-                append(record)
+        parent_folder = os.path.abspath(os.path.dirname(bag_path))
+        bag_name = os.path.basename(bag_path)
+        base_fields = ["timestamp", "type"]
 
-        if records:
-            # Use only the immediate parent folder name for the CSV filename
-            parent_folder = os.path.abspath(os.path.dirname(bag_path))
-            output_file = os.path.join(parent_folder, os.path.basename(bag_path) + '.csv')
+        output_files = []
+        total_records = 0
+        for topic, records in records_by_topic.items():
+            if not records:
+                print(f"  ✗ {bag_path} [{topic}]: no messages")
+                continue
 
-            # Collect all fieldnames from all records (dynamic fields)
-            fieldnames_set = set()
+            fieldnames_set: set = set()
             for record in records:
                 fieldnames_set.update(record.keys())
-            # Sort fieldnames, but keep timestamp, topic, type first
-            base_fields = ['timestamp', 'topic', 'type']
             other_fields = sorted(fieldnames_set - set(base_fields))
             fieldnames = base_fields + other_fields
 
-            # Write to CSV using DictWriter
-            with open(output_file, 'w', newline='') as csvfile:
+            output_file = os.path.join(
+                parent_folder,
+                f"{bag_name}_{topic_to_filename(topic)}.csv",
+            )
+            with open(output_file, "w", newline="") as csvfile:
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
                 writer.writeheader()
                 for record in records:
                     writer.writerow(record)
 
-            print(f"✓ {output_file}: {len(records)} messages")
-            return len(records)
-        else:
-            print(f"✗ {bag_path}: No records found")
-            return 0
+            print(f"  ✓ {output_file}: {len(records)} messages")
+            total_records += len(records)
+            output_files.append(output_file)
+
+        return total_records, output_files
     except Exception as e:
         print(f"✗ {bag_path}: Error - {str(e)}")
-        return -2  # Return -2 to indicate error
+        return -2, []
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--skip-topic",
+        "--topic",
         action="append",
-        default=["/scenario_execution/snapshots", "/local_costmap/costmap", "/map"],
-        help="Topic to skip (can be specified multiple times)"
+        dest="topics",
+        default=[],
+        required=True,
+        help="Topic to extract (can be specified multiple times)",
     )
     parser.add_argument(
         "--workers",
         type=int,
         default=cpu_count(),
-        help=f"Number of parallel workers (default: {cpu_count()})"
+        help=f"Number of parallel workers (default: {cpu_count()})",
     )
     parser.add_argument(
         "input",
-        help="input directory path to search for rosbags"
+        help="input directory path to search for rosbags",
     )
     parser.add_argument(
         "--provenance-file",
         default=None,
-        help="Write provenance JSON to this path (output/source paths relative to input dir)"
+        help="Write provenance JSON to this path (output/source paths relative to input dir)",
     )
 
     args = parser.parse_args()
-    skipped_topics = set(args.skip_topic)
+    topics = list(dict.fromkeys(args.topics))  # deduplicate, preserve order
 
     # Find all rosbags in subdirectories
     rosbag_paths = find_rosbags(args.input)
@@ -137,29 +149,29 @@ def main():
         print(f"No rosbags found in {args.input}")
         return 0
 
-    print(f"Found {len(rosbag_paths)} rosbags to process. Using {args.workers} parallel workers...")
+    print(
+        f"Found {len(rosbag_paths)} rosbags to process, "
+        f"{len(topics)} topic(s): {topics}. "
+        f"Using {args.workers} parallel workers..."
+    )
 
     start = time.time()
     total_records = 0
     processed_bags = 0
 
-    # Prepare arguments for parallel processing
-    process_args = []
-    for bag_path in rosbag_paths:
-        process_args.append((bag_path, skipped_topics))
+    process_args = [(bag_path, topics) for bag_path in rosbag_paths]
 
-    # Process rosbags in parallel
     try:
         with Pool(processes=args.workers) as pool:
             results = pool.map(process_rosbag_wrapper, process_args)
     except KeyboardInterrupt:
         print("Processing interrupted by user.")
         return 1
-    # Calculate summary statistics and write provenance
+
     input_root = os.path.abspath(args.input)
     failed_bags = 0
     error_bags = 0
-    for i, records_count in enumerate(results):
+    for i, (records_count, output_files) in enumerate(results):
         if records_count == -2:
             error_bags += 1
         elif records_count > 0:
@@ -167,23 +179,25 @@ def main():
             processed_bags += 1
             if args.provenance_file:
                 bag_path = rosbag_paths[i]
-                parent_folder = os.path.abspath(os.path.dirname(bag_path))
-                output_file = os.path.join(parent_folder, os.path.basename(bag_path) + '.csv')
-                output_rel = os.path.relpath(output_file, input_root)
                 source_rel = os.path.relpath(bag_path, input_root)
-                write_provenance_entry(
-                    args.provenance_file,
-                    output_rel,
-                    [source_rel],
-                    "rosbags_to_csv",
-                    params={"skip_topics": list(skipped_topics)},
-                )
-        elif records_count == 0:
+                for output_file in output_files:
+                    output_rel = os.path.relpath(output_file, input_root)
+                    write_provenance_entry(
+                        args.provenance_file,
+                        output_rel,
+                        [source_rel],
+                        "rosbags_to_csv",
+                        params={"topics": topics},
+                    )
+        else:
             failed_bags += 1
 
     elapsed = time.time() - start
-    print(f"Summary: {len(rosbag_paths)} rosbags ({processed_bags} success, "
-          f"{error_bags} errors, {failed_bags} failed), time {elapsed:.2f}s")
+    print(
+        f"Summary: {len(rosbag_paths)} rosbags ({processed_bags} success, "
+        f"{error_bags} errors, {failed_bags} failed), "
+        f"{total_records} total records, time {elapsed:.2f}s"
+    )
     return 0
 
 

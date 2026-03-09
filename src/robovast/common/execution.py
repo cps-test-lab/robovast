@@ -333,6 +333,7 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
     # Prepare campaign_data for configurations.yaml (strip internal keys)
     campaign_data_for_dump = copy.deepcopy(campaign_data)
     campaign_data_for_dump.pop("_transient_files", None)
+    campaign_data_for_dump.pop("_output_dir", None)
     for c in campaign_data_for_dump.get("configs", []):
         c.pop("_config_block", None)
 
@@ -446,18 +447,30 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
             )
 
         # Copy config files
+        # artifact paths may be relative to campaign_data["_output_dir"]; source
+        # paths are always absolute.
+        _gen_output_dir = campaign_data.get("_output_dir", "")
         if "_config_files" in config_data:
             for config_rel_path, config_path in config_data["_config_files"]:
-                if not os.path.exists(config_path):
-                    raise FileNotFoundError(f"Config file {config_path} does not exist.")
-                src_path = config_path
+                src_path = (
+                    config_path
+                    if os.path.isabs(config_path)
+                    else os.path.join(_gen_output_dir, config_path)
+                )
+                if not os.path.exists(src_path):
+                    raise FileNotFoundError(f"Config file {src_path} does not exist.")
                 dst_path = os.path.join(run_config_dir, config_rel_path)
                 os.makedirs(os.path.dirname(dst_path), exist_ok=True)
                 shutil.copy2(src_path, dst_path)
 
         # Copy config-level transient files into <config>/_transient/
         config_name = config_data.get("name", "")
-        for rel_path, abs_path in config_data.get("_config_transient_files", []):
+        for rel_path, path in config_data.get("_config_transient_files", []):
+            abs_path = (
+                path
+                if os.path.isabs(path)
+                else os.path.join(_gen_output_dir, path)
+            )
             if not os.path.exists(abs_path):
                 logger.warning(f"Config transient file not found, skipping: {abs_path}")
                 continue

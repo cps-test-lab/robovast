@@ -23,5 +23,10 @@ echo "Detected ROS distribution: $ROS_DISTRO"
 # Source the ROS setup
 source "/opt/ros/$ROS_DISTRO/setup.bash"
 
+# Source /ws if existing
+if [ -f "/ws/install/setup.bash" ]; then
+    source "/ws/install/setup.bash"
+fi
+
 # Execute the Python script with all arguments
 exec python3 "$@"

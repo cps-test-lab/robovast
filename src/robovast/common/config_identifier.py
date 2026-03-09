@@ -136,6 +136,11 @@ def hash_config_block(config_block: dict) -> str:
     return _hash_config_block_cached(canonical)
 
 
+def collect_paths_from_config(config_block: dict, vast_dir: str) -> set[str]:
+    """Recursively extract string values from config block that resolve to existing paths."""
+    return _collect_paths_from_config(config_block, vast_dir)
+
+
 def _collect_paths_from_config(config_block: dict, vast_dir: str) -> set[str]:
     """Recursively extract string values from config block that exist as paths."""
     paths = set()

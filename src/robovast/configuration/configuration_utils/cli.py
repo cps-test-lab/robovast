@@ -19,7 +19,6 @@
 
 import os
 import sys
-import tempfile
 from importlib.metadata import entry_points
 
 import click
@@ -145,7 +144,9 @@ def info():
 @click.argument('output-dir', type=click.Path())
 @click.option('--keep-transient', is_flag=True, default=False,
               help='Keep and display temporary folders used during generation (e.g. by FloorplanGeneration).')
-def generate(output_dir, keep_transient):
+@click.option('--no-cache', is_flag=True, default=False,
+              help='Skip cache lookup and force a fresh generation even if inputs are unchanged.')
+def generate(output_dir, keep_transient, no_cache):
     """Generate run configurations and output files.
 
     Creates all configurations and associated files in the
@@ -165,7 +166,8 @@ def generate(output_dir, keep_transient):
         campaign_data, _ = generate_scenario_variations(
             variation_file=config,
             progress_update_callback=None,
-            output_dir=output_dir
+            output_dir=output_dir,
+            use_cache=not no_cache,
         )
         configs = campaign_data["configs"]
 
@@ -189,9 +191,11 @@ def generate(output_dir, keep_transient):
 def _print_transient_locations(campaign_data):
     """Print all transient directories produced during config generation."""
     transient_dirs = set()
+    _gen_output_dir = campaign_data.get("_output_dir", "")
 
     for config in campaign_data.get("configs", []):
-        for _rel, abs_path in config.get("_config_transient_files", []):
+        for _rel, path in config.get("_config_transient_files", []):
+            abs_path = path if os.path.isabs(path) else os.path.join(_gen_output_dir, path)
             transient_dirs.add(os.path.dirname(abs_path))
 
     for _rel, abs_path in campaign_data.get("_transient_files", []):
@@ -272,16 +276,15 @@ def variation_points():
     click.echo("Loading scenario parameter template...")
     click.echo("")
 
-    with tempfile.TemporaryDirectory(prefix="robovast_list_configs_") as temp_dir:
-        try:
-            campaign_data, _ = generate_scenario_variations(
-                variation_file=config,
-                progress_update_callback=None,
-                output_dir=temp_dir
-            )
-            configs = campaign_data["configs"]
-        except Exception as e:
-            handle_cli_exception(e)
+    try:
+        campaign_data, _ = generate_scenario_variations(
+            variation_file=config,
+            progress_update_callback=None,
+            output_dir=None,
+        )
+        configs = campaign_data["configs"]
+    except Exception as e:
+        handle_cli_exception(e)
 
     unique_scenarios = set()
     for config in configs:
