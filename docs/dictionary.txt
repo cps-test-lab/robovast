@@ -69,3 +69,4 @@ callables
 basename
 Graphviz
 cyber
+stdout
