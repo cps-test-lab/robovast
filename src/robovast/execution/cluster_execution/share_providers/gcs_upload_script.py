@@ -125,13 +125,15 @@ def _get_access_token(key_json: dict) -> str:
     try:
         import google.auth.transport.requests  # noqa: PLC0415, pylint: disable=import-outside-toplevel
         import google.oauth2.service_account  # noqa: PLC0415, pylint: disable=import-outside-toplevel
-    except ImportError as exc:
-        from google.oauth2 import service_account  # noqa: PLC0415
-    except ImportError as exc:
-        sys.stderr.write(
-            f"ERROR: google-auth is not installed in this environment: {exc}\n"
-        )
-        sys.exit(1)
+        service_account = google.oauth2.service_account
+    except ImportError:
+        try:
+            from google.oauth2 import service_account  # noqa: PLC0415, pylint: disable=import-outside-toplevel
+        except ImportError as exc:
+            sys.stderr.write(
+                f"ERROR: google-auth is not installed in this environment: {exc}\n"
+            )
+            sys.exit(1)
 
     scopes = ["https://www.googleapis.com/auth/devstorage.read_write"]
     credentials = service_account.Credentials.from_service_account_info(

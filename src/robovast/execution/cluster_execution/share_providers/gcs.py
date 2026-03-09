@@ -188,7 +188,7 @@ class GcsShareProvider(BaseShareProvider):
             f"/{urllib.parse.quote(object_name, safe='/')}"
         )
 
-        CHUNK = 256 * 1024  # 256 KiB
+        chunk_size = 256 * 1024  # 256 KiB
         received = 0
 
         try:
@@ -196,7 +196,7 @@ class GcsShareProvider(BaseShareProvider):
                 total = int(resp.headers.get("Content-Length") or 0)
                 with open(dest_path, "wb") as fh:
                     while True:
-                        chunk = resp.read(CHUNK)
+                        chunk = resp.read(chunk_size)
                         if not chunk:
                             break
                         fh.write(chunk)
