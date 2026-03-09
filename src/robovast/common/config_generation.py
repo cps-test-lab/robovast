@@ -323,7 +323,7 @@ def _collect_analysis_input_files(parameters, base_dir=None):
 
 
 # Bump this whenever the cache storage format changes, to auto-invalidate stale entries.
-_CACHE_FORMAT_VERSION = 4
+_CACHE_FORMAT_VERSION = 5
 
 
 def _build_generate_cache_key(
@@ -637,8 +637,12 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                 continue
             normalized = []
             for rel, path in entries:
-                if os.path.isabs(path) and os.path.abspath(path).startswith(_norm_prefix):
-                    path = os.path.relpath(os.path.abspath(path), _abs_output)
+                abs_path = os.path.abspath(path)
+                if abs_path.startswith(_norm_prefix):
+                    path = os.path.relpath(abs_path, _abs_output)
+                else:
+                    # Source file – keep absolute for portability
+                    path = abs_path
                 normalized.append((rel, path))
             cfg[field] = normalized
 
