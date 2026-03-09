@@ -323,7 +323,7 @@ def _collect_analysis_input_files(parameters, base_dir=None):
 
 
 # Bump this whenever the cache storage format changes, to auto-invalidate stale entries.
-_CACHE_FORMAT_VERSION = 2
+_CACHE_FORMAT_VERSION = 4
 
 
 def _build_generate_cache_key(
@@ -408,15 +408,13 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     entries are stored under ``<vast_dir>/.cache/``:
 
     * ``config_generation_{key}.json`` — config metadata.  Per-config
-      ``_config_files`` are stored as relative paths only.
-    * ``config_generation_artifacts_{key}.tar.gz`` — artifact files that
-      variation plugins wrote into ``output_dir`` (only created when
-      ``_config_files`` is non-empty, e.g. for FloorplanVariation).
+      ``_config_files`` entries are stored with kind ("source" / "artifact").
+    * ``config_generation_artifacts_{key}.tar.gz`` — the entire output_dir
+      archived as a tarball (created whenever output_dir has contents).
 
-    On a cache hit the metadata is returned immediately.  If an
-    ``output_dir`` was requested and artifact files were cached, they are
-    extracted into that directory and ``_config_files`` is reconstructed
-    with absolute paths pointing there.
+    On a cache hit the metadata JSON is returned immediately and, when an
+    ``output_dir`` was provided, the artifact tarball is extracted there so
+    that ``_config_files`` absolute paths are valid.
     """
     if not progress_update_callback:
         progress_update_callback = logger.debug
@@ -475,23 +473,20 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         _cached = _cache_meta.get_json(_cache_key)
         if _cached is not None:
             logger.info("Cache HIT for generate_scenario_variations (%s)", variation_file)
-            # Restore artifact files if an output_dir was requested
-            _artifacts_path = _cache_artifacts.get_path(_cache_key)
-            _have_artifacts = (
-                output_dir is not None
-                and os.path.exists(_artifacts_path)
-                and _cache_artifacts.get(_cache_key, content=False) is not None
-            )
-            if _have_artifacts:
-                os.makedirs(output_dir, exist_ok=True)
-                with tarfile.open(_artifacts_path, "r:gz") as tar:
-                    tar.extractall(output_dir)  # nosec – trusted local cache
-                logger.debug("Restored artifact files to %s from cache", output_dir)
+            # Restore the whole output_dir from the tarball when the caller wants it.
+            if output_dir is not None:
+                _tar_path = _cache_artifacts.get(_cache_key, content=False)
+                if _tar_path is not None:
+                    os.makedirs(output_dir, exist_ok=True)
+                    with tarfile.open(_tar_path, "r:gz") as tar:
+                        tar.extractall(output_dir)  # nosec – trusted local cache
+                    logger.debug("Restored output_dir from cache tar to %s", output_dir)
             # Reconstruct (rel, abs) tuples in _config_files for each config.
             # Source files: abs is stored directly in the cache entry.
             # Artifact files: abs is reconstructed from the caller's output_dir
             #   (files were extracted from the artifact tar above).
             for cfg in _cached.get("configs", []):
+                # Reconstruct _config_files (rel, abs) tuples
                 rebuilt = []
                 for entry in cfg.get("_config_files", []):
                     rel = entry["rel"]
@@ -499,8 +494,17 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                         rebuilt.append((rel, entry["abs"]))
                     else:  # artifact
                         if output_dir:
-                            rebuilt.append((rel, os.path.abspath(os.path.join(output_dir, rel))))
+                            abs_path = os.path.abspath(os.path.join(output_dir, entry.get("rel_from_output", rel)))
+                            rebuilt.append((rel, abs_path))
                 cfg["_config_files"] = rebuilt
+                # Reconstruct _config_transient_files (rel, abs) tuples
+                rebuilt_transient = []
+                if output_dir:
+                    for entry in cfg.get("_config_transient_files", []):
+                        rel = entry["rel"]
+                        abs_path = os.path.abspath(os.path.join(output_dir, entry["rel_from_output"]))
+                        rebuilt_transient.append((rel, abs_path))
+                cfg["_config_transient_files"] = rebuilt_transient
             progress_update_callback("Loaded configurations from cache (no changes detected).")
             return _cached, _rebuild_variation_gui_classes(configurations)
         logger.info("Cache MISS for generate_scenario_variations (%s)", variation_file)
@@ -661,13 +665,13 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
             #   - source files  (abs NOT under output_dir): store {rel, abs, kind}; the
             #     abs path is stable (lives in vast_dir or project) so it's safe to cache.
             #   - artifact files (abs IS under output_dir): store {rel, kind}; the actual
-            #     file is packaged into the companion .tar.gz and extracted on cache hit.
+            #     file is restored from the companion .tar.gz on cache hit.
             # Both rel paths must be relative — raise immediately if not.
-            artifact_entries = []  # (rel, abs_path) for tar packaging
             norm_output = (os.path.abspath(output_dir) + os.sep) if output_dir else None
             for cfg in cacheable.get("configs", []):
-                cfg.pop("_config_transient_files", None)
                 cfg.pop("_config_block", None)
+
+                # _config_files: split source vs artifact
                 raw_files = cfg.get("_config_files", [])
                 storable = []
                 for rel, abs_path in raw_files:
@@ -679,33 +683,35 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                         )
                     is_artifact = bool(norm_output and os.path.abspath(abs_path).startswith(norm_output))
                     if is_artifact:
-                        storable.append({"rel": rel, "kind": "artifact"})
-                        artifact_entries.append((rel, abs_path))
+                        rel_from_output = os.path.relpath(os.path.abspath(abs_path), os.path.abspath(output_dir))
+                        storable.append({"rel": rel, "rel_from_output": rel_from_output, "kind": "artifact"})
                     else:
                         storable.append({"rel": rel, "abs": abs_path, "kind": "source"})
                 cfg["_config_files"] = storable
 
+                # _config_transient_files: store rel_from_output so abs can be
+                # reconstructed after extracting the tarball into output_dir.
+                raw_transient = cfg.get("_config_transient_files", [])
+                storable_transient = []
+                for rel, abs_path in raw_transient:
+                    if norm_output:
+                        rel_from_output = os.path.relpath(os.path.abspath(abs_path), os.path.abspath(output_dir))
+                    else:
+                        rel_from_output = rel
+                    storable_transient.append({"rel": rel, "rel_from_output": rel_from_output})
+                cfg["_config_transient_files"] = storable_transient
+
             _cache_meta.set_json(_cache_key, convert_dataclasses_to_dict(cacheable))
             logger.debug("Stored generate_scenario_variations metadata in cache")
 
-            # Package artifact files into a tar.gz when variations wrote any.
-            # Use the original abs_path (not output_dir/rel) since artifacts may live
-            # in subdirectories of output_dir (e.g. output_dir/<floorplan_name>/maps/).
-            # arcname = rel so they are extracted to the right place on cache hit.
-            if artifact_entries and output_dir:
+            # Archive the entire output_dir as a single tarball.
+            # On cache hit the whole folder is extracted, no per-file bookkeeping needed.
+            if output_dir and os.path.isdir(output_dir):
                 tar_path = _cache_artifacts.get_path(_cache_key)
                 with tarfile.open(tar_path, "w:gz") as tar:
-                    seen = set()
-                    for rel, abs_path in artifact_entries:
-                        if rel in seen:
-                            continue
-                        seen.add(rel)
-                        if os.path.exists(abs_path):
-                            tar.add(abs_path, arcname=rel)
-                        else:
-                            logger.warning("Artifact file not found, skipping: %s", abs_path)
+                    tar.add(output_dir, arcname="")
                 _cache_artifacts.set_from_path(_cache_key)
-                logger.debug("Stored %d artifact file(s) in cache tar", len(seen))
+                logger.debug("Stored output_dir tarball in cache: %s", tar_path)
 
         except Exception as e:  # pylint: disable=broad-except
             logger.warning("Failed to cache generate_scenario_variations result: %s", e)
