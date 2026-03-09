@@ -19,7 +19,6 @@
 
 import os
 import sys
-import tempfile
 from importlib.metadata import entry_points
 
 import click
@@ -275,16 +274,15 @@ def variation_points():
     click.echo("Loading scenario parameter template...")
     click.echo("")
 
-    with tempfile.TemporaryDirectory(prefix="robovast_list_configs_") as temp_dir:
-        try:
-            campaign_data, _ = generate_scenario_variations(
-                variation_file=config,
-                progress_update_callback=None,
-                output_dir=temp_dir
-            )
-            configs = campaign_data["configs"]
-        except Exception as e:
-            handle_cli_exception(e)
+    try:
+        campaign_data, _ = generate_scenario_variations(
+            variation_file=config,
+            progress_update_callback=None,
+            output_dir=None,
+        )
+        configs = campaign_data["configs"]
+    except Exception as e:
+        handle_cli_exception(e)
 
     unique_scenarios = set()
     for config in configs:

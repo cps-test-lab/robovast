@@ -19,6 +19,7 @@ import fnmatch
 import logging
 import os
 import re
+import tarfile
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -26,7 +27,7 @@ from importlib.metadata import entry_points
 from pprint import pformat
 
 from .common import convert_dataclasses_to_dict, get_scenario_parameters, load_config
-from .config_identifier import collect_paths_from_config
+from .config_identifier import collect_paths_from_config, hash_variation_entrypoints
 from .file_cache2 import CacheKey, FileCache2
 
 logger = logging.getLogger(__name__)
@@ -321,6 +322,10 @@ def _collect_analysis_input_files(parameters, base_dir=None):
     return analysis_files
 
 
+# Bump this whenever the cache storage format changes, to auto-invalidate stale entries.
+_CACHE_FORMAT_VERSION = 2
+
+
 def _build_generate_cache_key(
     variation_file: str,
     vast_dir: str,
@@ -329,44 +334,54 @@ def _build_generate_cache_key(
     analysis_files: list,
     configurations: list,
 ) -> CacheKey:
-    """Build a FileCache2 CacheKey covering every input that affects generate_scenario_variations output."""
+    """Build a FileCache2 CacheKey covering every input that affects generate_scenario_variations.
+
+    All ``add_file`` calls pass *base_dir=vast_dir* so that the key uses
+    ``relpath(file, vast_dir)`` rather than basename, preventing collisions
+    between different files that share the same name.
+    """
     key = CacheKey()
 
+    # Cache format version — bumped whenever the stored structure changes.
+    key.add("cache_format_version", _CACHE_FORMAT_VERSION)
+
     # .vast file itself
-    key.add_file(variation_file)
+    key.add_file(variation_file, base_dir=vast_dir)
 
     # scenario .osc file
     if scenario_file and os.path.exists(scenario_file):
-        key.add_file(scenario_file)
+        key.add_file(scenario_file, base_dir=vast_dir)
 
     # files matched by execution.run_files globs
     for rel in run_files:
         abs_path = os.path.join(vast_dir, rel)
         if os.path.exists(abs_path):
-            key.add_file(abs_path)
+            key.add_file(abs_path, base_dir=vast_dir)
 
     # analysis notebooks / scripts referenced in evaluation/results_processing
     for rel in analysis_files:
         abs_path = os.path.join(vast_dir, rel)
         if os.path.exists(abs_path):
-            key.add_file(abs_path)
+            key.add_file(abs_path, base_dir=vast_dir)
 
     # files linked in each configuration block (map files, nav configs, etc.)
     for config_block in configurations:
         for rel in sorted(collect_paths_from_config(config_block, vast_dir)):
             abs_path = os.path.join(vast_dir, rel)
             if os.path.exists(abs_path):
-                key.add_file(abs_path)
+                key.add_file(abs_path, base_dir=vast_dir)
 
-    # variation type names — detects added/removed variation plugins
-    all_variation_names = sorted({
+    # Hash the source code of every variation plugin referenced in the .vast file.
+    # This ensures a cache miss when plugin implementation changes, even if the
+    # .vast file and input data files are untouched.
+    all_variation_names = tuple(sorted({
         class_name
         for config_block in configurations
         for item in config_block.get('variations', [])
         if isinstance(item, dict)
         for class_name in item.keys()
-    })
-    key.add("variation_types", all_variation_names)
+    }))
+    key.add("variation_entrypoints_hash", hash_variation_entrypoints(all_variation_names))
 
     return key
 
@@ -387,6 +402,22 @@ def _rebuild_variation_gui_classes(configurations: list) -> dict:
 
 
 def generate_scenario_variations(variation_file, progress_update_callback=None, variation_classes=None, output_dir=None, use_cache=True):
+    """Generate all scenario variation configs from a .vast file.
+
+    Caching is active for all flows when ``use_cache=True``.  Two cache
+    entries are stored under ``<vast_dir>/.cache/``:
+
+    * ``config_generation_{key}.json`` — config metadata.  Per-config
+      ``_config_files`` are stored as relative paths only.
+    * ``config_generation_artifacts_{key}.tar.gz`` — artifact files that
+      variation plugins wrote into ``output_dir`` (only created when
+      ``_config_files`` is non-empty, e.g. for FloorplanVariation).
+
+    On a cache hit the metadata is returned immediately.  If an
+    ``output_dir`` was requested and artifact files were cached, they are
+    extracted into that directory and ``_config_files`` is reconstructed
+    with absolute paths pointing there.
+    """
     if not progress_update_callback:
         progress_update_callback = logger.debug
     progress_update_callback("Start generating configs.")
@@ -424,8 +455,15 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         _validate_relative_path(af, "analysis file")
 
     # --- Cache check ---
-    if use_cache and variation_classes is None:
-        _cache = FileCache2(vast_dir, "config_generation_", suffix=".json")
+    # Cache is active for all flows when use_cache=True and variation_classes is None.
+    # Two cache entries share the same key:
+    #   config_generation_{key}.json      – config metadata
+    #   config_generation_artifacts_{key}.tar.gz – artifact files written to output_dir
+    #     by variation plugins (only created/restored when non-empty _config_files exist)
+    _cache_enabled = use_cache and variation_classes is None
+    if _cache_enabled:
+        _cache_meta = FileCache2(vast_dir, "config_generation_", suffix=".json")
+        _cache_artifacts = FileCache2(vast_dir, "config_generation_artifacts_", suffix=".tar.gz")
         _cache_key = _build_generate_cache_key(
             variation_file=os.path.abspath(variation_file),
             vast_dir=vast_dir,
@@ -434,14 +472,41 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
             analysis_files=analysis_files,
             configurations=configurations,
         )
-        _cached = _cache.get_json(_cache_key)
+        _cached = _cache_meta.get_json(_cache_key)
         if _cached is not None:
             logger.info("Cache HIT for generate_scenario_variations (%s)", variation_file)
+            # Restore artifact files if an output_dir was requested
+            _artifacts_path = _cache_artifacts.get_path(_cache_key)
+            _have_artifacts = (
+                output_dir is not None
+                and os.path.exists(_artifacts_path)
+                and _cache_artifacts.get(_cache_key, content=False) is not None
+            )
+            if _have_artifacts:
+                os.makedirs(output_dir, exist_ok=True)
+                with tarfile.open(_artifacts_path, "r:gz") as tar:
+                    tar.extractall(output_dir)  # nosec – trusted local cache
+                logger.debug("Restored artifact files to %s from cache", output_dir)
+            # Reconstruct (rel, abs) tuples in _config_files for each config.
+            # Source files: abs is stored directly in the cache entry.
+            # Artifact files: abs is reconstructed from the caller's output_dir
+            #   (files were extracted from the artifact tar above).
+            for cfg in _cached.get("configs", []):
+                rebuilt = []
+                for entry in cfg.get("_config_files", []):
+                    rel = entry["rel"]
+                    if entry["kind"] == "source":
+                        rebuilt.append((rel, entry["abs"]))
+                    else:  # artifact
+                        if output_dir:
+                            rebuilt.append((rel, os.path.abspath(os.path.join(output_dir, rel))))
+                cfg["_config_files"] = rebuilt
             progress_update_callback("Loaded configurations from cache (no changes detected).")
             return _cached, _rebuild_variation_gui_classes(configurations)
         logger.info("Cache MISS for generate_scenario_variations (%s)", variation_file)
     else:
-        _cache = None
+        _cache_meta = None
+        _cache_artifacts = None
         _cache_key = None
 
     configs = []
@@ -586,12 +651,62 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         result["metadata"] = metadata
 
     # --- Store result in cache ---
-    if _cache is not None and _cache_key is not None:
+    if _cache_meta is not None and _cache_key is not None:
         try:
-            cacheable = dict(result)
-            cacheable["_transient_files"] = []  # strip absolute temp-dir paths
-            _cache.set_json(_cache_key, convert_dataclasses_to_dict(cacheable))
-            logger.debug("Stored generate_scenario_variations result in cache")
+            cacheable = copy.deepcopy(result)
+            # Strip campaign-level fields with absolute, run-specific paths.
+            cacheable["_transient_files"] = []
+
+            # For _config_files, split into:
+            #   - source files  (abs NOT under output_dir): store {rel, abs, kind}; the
+            #     abs path is stable (lives in vast_dir or project) so it's safe to cache.
+            #   - artifact files (abs IS under output_dir): store {rel, kind}; the actual
+            #     file is packaged into the companion .tar.gz and extracted on cache hit.
+            # Both rel paths must be relative — raise immediately if not.
+            artifact_entries = []  # (rel, abs_path) for tar packaging
+            norm_output = (os.path.abspath(output_dir) + os.sep) if output_dir else None
+            for cfg in cacheable.get("configs", []):
+                cfg.pop("_config_transient_files", None)
+                cfg.pop("_config_block", None)
+                raw_files = cfg.get("_config_files", [])
+                storable = []
+                for rel, abs_path in raw_files:
+                    if os.path.isabs(rel):
+                        raise ValueError(
+                            f"_config_files entry has an absolute relative path '{rel}' "
+                            f"in config '{cfg.get('name')}'. "
+                            "Variation plugins must use relative paths in _config_files."
+                        )
+                    is_artifact = bool(norm_output and os.path.abspath(abs_path).startswith(norm_output))
+                    if is_artifact:
+                        storable.append({"rel": rel, "kind": "artifact"})
+                        artifact_entries.append((rel, abs_path))
+                    else:
+                        storable.append({"rel": rel, "abs": abs_path, "kind": "source"})
+                cfg["_config_files"] = storable
+
+            _cache_meta.set_json(_cache_key, convert_dataclasses_to_dict(cacheable))
+            logger.debug("Stored generate_scenario_variations metadata in cache")
+
+            # Package artifact files into a tar.gz when variations wrote any.
+            # Use the original abs_path (not output_dir/rel) since artifacts may live
+            # in subdirectories of output_dir (e.g. output_dir/<floorplan_name>/maps/).
+            # arcname = rel so they are extracted to the right place on cache hit.
+            if artifact_entries and output_dir:
+                tar_path = _cache_artifacts.get_path(_cache_key)
+                with tarfile.open(tar_path, "w:gz") as tar:
+                    seen = set()
+                    for rel, abs_path in artifact_entries:
+                        if rel in seen:
+                            continue
+                        seen.add(rel)
+                        if os.path.exists(abs_path):
+                            tar.add(abs_path, arcname=rel)
+                        else:
+                            logger.warning("Artifact file not found, skipping: %s", abs_path)
+                _cache_artifacts.set_from_path(_cache_key)
+                logger.debug("Stored %d artifact file(s) in cache tar", len(seen))
+
         except Exception as e:  # pylint: disable=broad-except
             logger.warning("Failed to cache generate_scenario_variations result: %s", e)
 

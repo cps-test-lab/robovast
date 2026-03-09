@@ -90,20 +90,34 @@ class CacheKey:
     def __init__(self) -> None:
         self._parts: list[str] = []
 
-    def add_file(self, path: str) -> "CacheKey":
+    def add_file(self, path: str, base_dir: Optional[str] = None) -> "CacheKey":
         """
         Add a file or directory to the key.
-        Uses path-invariant identifiers (basename/relpath + mtime + size) so that
-        temporary directories do not cause cache misses.
-        - File: basename + mtime + size (no content read).
-        - Directory: relpath from dir root + mtime + size for each file.
+
+        The path component used in the key is determined as follows:
+        - If *base_dir* is given and *path* is under it: ``relpath(path, base_dir)``.
+          This keeps the key stable even when the project is moved, and avoids
+          collisions between files that share the same basename but live in different
+          directories.
+        - Otherwise: the full absolute path is used.
+
+        mtime + size are always included (no content read).
+
+        - File: path_component + mtime + size.
+        - Directory: relpath-from-dir-root + mtime + size for each file inside.
         """
         path = os.path.abspath(path)
+        if base_dir is not None:
+            base_dir = os.path.abspath(base_dir)
         if not os.path.exists(path):
             raise FileNotFoundError(f"Path for hashing not found: {path}")
         if os.path.isfile(path):
             stat = os.stat(path)
-            self._parts.append(f"{os.path.basename(path)}:{stat.st_mtime}:{stat.st_size}")
+            if base_dir and path.startswith(base_dir + os.sep):
+                path_component = os.path.relpath(path, base_dir)
+            else:
+                path_component = path
+            self._parts.append(f"{path_component}:{stat.st_mtime}:{stat.st_size}")
         else:
             for root, dirs, files in os.walk(path, topdown=True):
                 dirs.sort()
@@ -338,12 +352,17 @@ class FileCache2:
         """
         Serialize *data* as JSON and store in cache.
 
+        Uses :func:`_to_jsonable` to coerce any non-standard types (Pydantic
+        models, dataclasses, bytes, …) so that the serialisation never fails
+        on well-behaved plugin output.
+
         Args:
             key: CacheKey or object with fingerprint().
-            data: Any JSON-serializable Python object.
+            data: Any Python object that can be made JSON-serialisable via
+                  ``_to_jsonable``.
 
         Returns:
             Path to the cached file.
         """
-        raw = json.dumps(data, ensure_ascii=False)
+        raw = json.dumps(_to_jsonable(data), ensure_ascii=False)
         return self.set(key, raw, binary=False)
