@@ -25,7 +25,9 @@ from datetime import datetime, timezone
 from importlib.metadata import entry_points
 from pprint import pformat
 
-from .common import get_scenario_parameters, load_config
+from .common import convert_dataclasses_to_dict, get_scenario_parameters, load_config
+from .config_identifier import collect_paths_from_config
+from .file_cache2 import CacheKey, FileCache2
 
 logger = logging.getLogger(__name__)
 
@@ -319,7 +321,72 @@ def _collect_analysis_input_files(parameters, base_dir=None):
     return analysis_files
 
 
-def generate_scenario_variations(variation_file, progress_update_callback=None, variation_classes=None, output_dir=None):
+def _build_generate_cache_key(
+    variation_file: str,
+    vast_dir: str,
+    scenario_file: str,
+    run_files: list,
+    analysis_files: list,
+    configurations: list,
+) -> CacheKey:
+    """Build a FileCache2 CacheKey covering every input that affects generate_scenario_variations output."""
+    key = CacheKey()
+
+    # .vast file itself
+    key.add_file(variation_file)
+
+    # scenario .osc file
+    if scenario_file and os.path.exists(scenario_file):
+        key.add_file(scenario_file)
+
+    # files matched by execution.run_files globs
+    for rel in run_files:
+        abs_path = os.path.join(vast_dir, rel)
+        if os.path.exists(abs_path):
+            key.add_file(abs_path)
+
+    # analysis notebooks / scripts referenced in evaluation/results_processing
+    for rel in analysis_files:
+        abs_path = os.path.join(vast_dir, rel)
+        if os.path.exists(abs_path):
+            key.add_file(abs_path)
+
+    # files linked in each configuration block (map files, nav configs, etc.)
+    for config_block in configurations:
+        for rel in sorted(collect_paths_from_config(config_block, vast_dir)):
+            abs_path = os.path.join(vast_dir, rel)
+            if os.path.exists(abs_path):
+                key.add_file(abs_path)
+
+    # variation type names — detects added/removed variation plugins
+    all_variation_names = sorted({
+        class_name
+        for config_block in configurations
+        for item in config_block.get('variations', [])
+        if isinstance(item, dict)
+        for class_name in item.keys()
+    })
+    key.add("variation_types", all_variation_names)
+
+    return key
+
+
+def _rebuild_variation_gui_classes(configurations: list) -> dict:
+    """Cheaply reconstruct variation_gui_classes from config blocks without running variations."""
+    gui_classes = {}
+    for config_block in configurations:
+        for variation_class, _ in _get_variation_classes(config_block):
+            gui_class = getattr(variation_class, 'GUI_CLASS', None)
+            renderer_class = getattr(variation_class, 'GUI_RENDERER_CLASS', None)
+            if gui_class:
+                if gui_class not in gui_classes:
+                    gui_classes[gui_class] = []
+                if renderer_class and renderer_class not in gui_classes[gui_class]:
+                    gui_classes[gui_class].append(renderer_class)
+    return gui_classes
+
+
+def generate_scenario_variations(variation_file, progress_update_callback=None, variation_classes=None, output_dir=None, use_cache=True):
     if not progress_update_callback:
         progress_update_callback = logger.debug
     progress_update_callback("Start generating configs.")
@@ -337,13 +404,9 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         progress_update_callback(f"Loaded {len(run_files_patterns)} run_files patterns (found {len(additional_run_files)} files).")
         run_files.extend(additional_run_files)
 
-    configs = []
-    variation_gui_classes = {}
-    campaign_input_files = []
-    campaign_transient_files = []
-    config_transient_files = []
+    vast_dir = os.path.abspath(os.path.dirname(variation_file))
 
-    # Get scenario_file from execution section
+    # Get scenario_file from execution section (resolved early for cache key)
     execution_scenario_file_name = parameters.get('execution', {}).get('scenario_file')
 
     # Validate scenario_file path
@@ -352,6 +415,41 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
 
     scenario_file = os.path.join(os.path.dirname(variation_file), execution_scenario_file_name) if execution_scenario_file_name else None
 
+    if scenario_file is None:
+        raise ValueError("No scenario_file specified in execution section of the variation file. Please add 'scenario_file' to the execution section.")
+
+    # Collect analysis notebook files (resolved early for cache key)
+    analysis_files = _collect_analysis_input_files(parameters, base_dir=os.path.dirname(variation_file))
+    for af in analysis_files:
+        _validate_relative_path(af, "analysis file")
+
+    # --- Cache check ---
+    if use_cache and variation_classes is None:
+        _cache = FileCache2(vast_dir, "config_generation_", suffix=".json")
+        _cache_key = _build_generate_cache_key(
+            variation_file=os.path.abspath(variation_file),
+            vast_dir=vast_dir,
+            scenario_file=scenario_file,
+            run_files=run_files,
+            analysis_files=analysis_files,
+            configurations=configurations,
+        )
+        _cached = _cache.get_json(_cache_key)
+        if _cached is not None:
+            logger.info("Cache HIT for generate_scenario_variations (%s)", variation_file)
+            progress_update_callback("Loaded configurations from cache (no changes detected).")
+            return _cached, _rebuild_variation_gui_classes(configurations)
+        logger.info("Cache MISS for generate_scenario_variations (%s)", variation_file)
+    else:
+        _cache = None
+        _cache_key = None
+
+    configs = []
+    variation_gui_classes = {}
+    campaign_input_files = []
+    campaign_transient_files = []
+    config_transient_files = []
+
     if output_dir is None:
         temp_path = tempfile.TemporaryDirectory(prefix="robovast_variation_")
         output_dir = temp_path.name
@@ -359,15 +457,9 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     general_parameters = parameters.get('general', {})
 
     # Get scenario parameters once (same for all configurations)
-    if scenario_file is None:
-        raise ValueError("No scenario_file specified in execution section of the variation file. Please add 'scenario_file' to the execution section.")
     scenario_param_dict = get_scenario_parameters(scenario_file)
     existing_scenario_parameters = next(iter(scenario_param_dict.values())) if scenario_param_dict else []
 
-    # Collect analysis notebook files
-    analysis_files = _collect_analysis_input_files(parameters, base_dir=os.path.dirname(variation_file))
-    for af in analysis_files:
-        _validate_relative_path(af, "analysis file")
     campaign_input_files.extend(analysis_files)
 
     for config in configurations:
@@ -492,5 +584,15 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     metadata = parameters.get('metadata')
     if metadata:
         result["metadata"] = metadata
+
+    # --- Store result in cache ---
+    if _cache is not None and _cache_key is not None:
+        try:
+            cacheable = dict(result)
+            cacheable["_transient_files"] = []  # strip absolute temp-dir paths
+            _cache.set_json(_cache_key, convert_dataclasses_to_dict(cacheable))
+            logger.debug("Stored generate_scenario_variations result in cache")
+        except Exception as e:  # pylint: disable=broad-except
+            logger.warning("Failed to cache generate_scenario_variations result: %s", e)
 
     return result, variation_gui_classes

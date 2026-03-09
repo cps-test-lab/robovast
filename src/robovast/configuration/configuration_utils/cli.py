@@ -145,7 +145,9 @@ def info():
 @click.argument('output-dir', type=click.Path())
 @click.option('--keep-transient', is_flag=True, default=False,
               help='Keep and display temporary folders used during generation (e.g. by FloorplanGeneration).')
-def generate(output_dir, keep_transient):
+@click.option('--no-cache', is_flag=True, default=False,
+              help='Skip cache lookup and force a fresh generation even if inputs are unchanged.')
+def generate(output_dir, keep_transient, no_cache):
     """Generate run configurations and output files.
 
     Creates all configurations and associated files in the
@@ -165,7 +167,8 @@ def generate(output_dir, keep_transient):
         campaign_data, _ = generate_scenario_variations(
             variation_file=config,
             progress_update_callback=None,
-            output_dir=output_dir
+            output_dir=output_dir,
+            use_cache=not no_cache,
         )
         configs = campaign_data["configs"]
 
