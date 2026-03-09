@@ -80,16 +80,26 @@ RUN curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/
 RUN mkdir -p /ws/src
 
 # hadolint ignore=DL3003
-RUN  git clone "https://github.com/cps-test-lab/scenario-execution.git" /ws/src/scenario-execution && \
+RUN  git clone --depth=1 "https://github.com/cps-test-lab/scenario-execution.git" /ws/src/scenario-execution && \
      cd /ws/src/scenario-execution && \
      git checkout 6081a30342b8ed7c88983737711b2e050462bd10 && \
      cd /ws && \
-     git clone "https://github.com/cps-test-lab/scenario-execution-server.git" /ws/src/scenario-execution-server && \
+     git clone --depth=1 "https://github.com/cps-test-lab/scenario-execution-server.git" /ws/src/scenario-execution-server && \
      cd /ws/src/scenario-execution-server && \
      git checkout 2d2c082d926c3b88c1fe51ed29e4ceaa160eade2 && \
      cd /ws && \
      . "/opt/ros/${ROS_DISTRO}/setup.bash" && \
      colcon build
+
+# Needed while WorldStatistics is not released for ROS 2 Jazzy
+# hadolint ignore=DL3003
+RUN git clone --depth=1 "https://github.com/gazebosim/ros_gz.git" /ws/src/ros_gz && \
+     cd /ws/src/ros_gz && \
+     git checkout 78957e5292d986ef74e3f0151187e8d5d1faebe2 && \
+     cd /ws && \
+     . "/opt/ros/${ROS_DISTRO}/setup.bash" && \
+     . "/ws/install/setup.bash" && \
+     colcon build --packages-select ros_gz_bridge ros_gz_interfaces
 
 # Environment variables
 ENV DISPLAY=:0
