@@ -189,7 +189,7 @@ class FileCache2:
         *,
         content: bool = True,
         binary: bool = False,
-    ) -> Optional[Union[str, bytes]]:
+    ) -> Optional[Union[str, bytes]]:  # pylint: disable=too-many-return-statements
         """
         Retrieve cached data if valid.
 
