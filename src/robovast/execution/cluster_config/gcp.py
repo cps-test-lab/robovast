@@ -74,7 +74,7 @@ spec:
         name: minio-storage
         readOnly: true
   - name: archiver
-    image: ghcr.io/cps-test-lab/robovast-sidecar:pr-87@sha256:509d6d630081f1caedb11b3d08fdb61af75c1e8502f738da0f6cab3ea40090c3
+    image: ghcr.io/cps-test-lab/robovast-sidecar:pr-87@sha256:0eecdfb57b0ff144ad85c5a1470eeeaec8080e2642eca181df173f645769d596
     command: ["sleep", "infinity"]
     volumeMounts:
       - mountPath: /data
