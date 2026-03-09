@@ -613,5 +613,8 @@ Share provider API reference
 .. autoclass:: robovast.execution.cluster_execution.share_providers.nextcloud.NextcloudShareProvider
    :members:
 
+.. autoclass:: robovast.execution.cluster_execution.share_providers.gcs.GcsShareProvider
+   :members:
+
 .. autoclass:: robovast.execution.cluster_execution.upload_to_share.ShareUploader
    :members:
