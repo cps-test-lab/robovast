@@ -58,7 +58,9 @@ def results():
 @click.option('--override', '-o', default=None, metavar='VAST_FILE',
               help='Override the .vast file used for postprocessing instead of the one '
                    'found in campaign-<id>/_config/')
-def postprocess_cmd(results_dir, force, override):
+@click.option('--debug', is_flag=True,
+              help='Show full plugin output (stdout) for each postprocessing step.')
+def postprocess_cmd(results_dir, force, override, debug):
     """Run postprocessing commands on run results.
 
     Executes postprocessing commands defined in the .vast file found in the
@@ -96,6 +98,7 @@ def postprocess_cmd(results_dir, force, override):
         output_callback=click.echo,
         force=force,
         vast_file=override,
+        debug=debug,
     )
 
     click.echo("\n" + "=" * 60)

@@ -187,7 +187,8 @@ class Command(BasePostprocessingPlugin):
             if result.returncode != 0:
                 return False, f"Command failed with exit code {result.returncode}\n{result.stderr}"
 
-            return True, "Command executed successfully"
+            output = result.stdout.strip()
+            return True, f"Command executed successfully\n{output}" if output else (True, "Command executed successfully")
 
         except Exception as e:
             return False, f"Error executing command: {e}"
@@ -253,7 +254,8 @@ class RosbagsTfToCsv(BasePostprocessingPlugin):
             if result.returncode != 0:
                 return False, f"rosbags_tf_to_csv failed with exit code {result.returncode}\n{result.stderr}"
 
-            return True, "TF data converted to CSV successfully"
+            output = result.stdout.strip()
+            return True, f"TF data converted to CSV successfully\n{output}" if output else (True, "TF data converted to CSV successfully")
 
         except Exception as e:
             return False, f"Error executing rosbags_tf_to_csv: {e}"
@@ -311,7 +313,8 @@ class RosbagsBtToCsv(BasePostprocessingPlugin):
             if result.returncode != 0:
                 return False, f"rosbags_bt_to_csv failed with exit code {result.returncode}\n{result.stderr}"
 
-            return True, "Behavior tree data converted to CSV successfully"
+            output = result.stdout.strip()
+            return True, f"Behavior tree data converted to CSV successfully\n{output}" if output else (True, "Behavior tree data converted to CSV successfully")
 
         except Exception as e:
             return False, f"Error executing rosbags_bt_to_csv: {e}"
@@ -382,32 +385,32 @@ class RosbagsActionToCsv(BasePostprocessingPlugin):
             if result.returncode != 0:
                 return False, f"rosbags_action_to_csv failed with exit code {result.returncode}\n{result.stderr}"
 
-            return True, f"Action '{action_name}' data extracted to CSV successfully"
+            output = result.stdout.strip()
+            return True, f"Action '{action_name}' data extracted to CSV successfully\n{output}" if output else (True, f"Action '{action_name}' data extracted to CSV successfully")
 
         except Exception as e:
             return False, f"Error executing rosbags_action_to_csv: {e}"
 
 
 class RosbagsToCsv(BasePostprocessingPlugin):
-    """Convert all ROS messages from rosbags to CSV format.
+    """Extract a specific set of ROS topics from rosbags to separate CSV files.
 
-    Extracts all message data from ROS bag files and converts each topic
-    to a separate CSV file. Useful for analyzing any ROS topic data that
-    doesn't have a specialized converter. By default, skips large topics
-    like costmaps and snapshots.
+    For each requested topic one CSV file per bag is written next to the bag
+    file, named ``<bag_name>_<topic_as_filename>.csv`` (topic slashes replaced
+    by underscores, leading slash stripped).  Only the explicitly listed topics
+    are extracted; all other topics are ignored.
 
     Example usage in .vast config:
         postprocessing:
-          - rosbags_to_csv  # Use default skip list
           - rosbags_to_csv:
-              skip_topics: [/large_topic, /another_topic]
+              topics: [/cmd_vel, /odom]
     """
 
     def __call__(
         self,
         results_dir: str,
         config_dir: str,
-        skip_topics: Optional[List[str]] = None,
+        topics: Optional[List[str]] = None,
         provenance_file: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Execute rosbags_to_csv plugin.
@@ -415,12 +418,15 @@ class RosbagsToCsv(BasePostprocessingPlugin):
         Args:
             results_dir: Path to the campaign-<id> directory to process
             config_dir: Directory containing the config file (for resolving relative paths)
-            skip_topics: Optional list of topic names to skip during conversion
+            topics: List of topic names to extract (required; at least one topic)
             provenance_file: Optional path for provenance JSON
 
         Returns:
             Tuple of (success, message)
         """
+        if not topics:
+            return False, "rosbags_to_csv requires at least one topic via the 'topics' parameter"
+
         # Get docker_exec.sh from package data
         script_path = str(files('robovast.results_processing.data').joinpath('docker_exec.sh'))
 
@@ -430,9 +436,8 @@ class RosbagsToCsv(BasePostprocessingPlugin):
         cmd.append("rosbags_to_csv.py")
         if provenance_file:
             cmd.extend(["--provenance-file", f"/provenance/{os.path.basename(provenance_file)}"])
-        if skip_topics:
-            for topic in skip_topics:
-                cmd.extend(["--skip-topic", topic])
+        for topic in topics:
+            cmd.extend(["--topic", topic])
         cmd.append(results_dir)
 
         try:
@@ -448,7 +453,8 @@ class RosbagsToCsv(BasePostprocessingPlugin):
             if result.returncode != 0:
                 return False, f"rosbags_to_csv failed with exit code {result.returncode}\n{result.stderr}"
 
-            return True, "ROS messages converted to CSV successfully"
+            output = result.stdout.strip()
+            return True, f"ROS messages converted to CSV successfully\n{output}" if output else (True, "ROS messages converted to CSV successfully")
 
         except Exception as e:
             return False, f"Error executing rosbags_to_csv: {e}"
@@ -517,7 +523,8 @@ class RosbagsToWebm(BasePostprocessingPlugin):
             if result.returncode != 0:
                 return False, f"rosbags_to_webm failed with exit code {result.returncode}\n{result.stderr}"
 
-            return True, "CompressedImage topic converted to WebM successfully"
+            output = result.stdout.strip()
+            return True, f"CompressedImage topic converted to WebM successfully\n{output}" if output else (True, "CompressedImage topic converted to WebM successfully")
 
         except Exception as e:
             return False, f"Error executing rosbags_to_webm: {e}"

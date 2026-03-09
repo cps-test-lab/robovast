@@ -478,7 +478,7 @@ To list all available plugins and their descriptions:
 
 - ``rosbags_tf_to_csv``: Convert ROS TF transformations to CSV format. Optional ``frames`` parameter (list of frame names).
 - ``rosbags_bt_to_csv``: Convert ROS behavior tree logs to CSV format (no parameters).
-- ``rosbags_to_csv``: Convert all ROS messages from rosbags to CSV format. Optional ``skip_topics`` parameter (list of topic names to skip).
+- ``rosbags_to_csv``: Extract a specific set of ROS topics from rosbags to separate CSV files. Required ``topics`` parameter (list of topic names to extract). For each topic one CSV file per bag is written next to the bag, named ``<bag>_<topic>.csv``.
 - ``rosbags_to_webm``: Convert a ``sensor_msgs/msg/CompressedImage`` topic from ROS bags to WebM video files (VP9 codec). Optional ``topic`` parameter (compressed image topic name, default ``/camera/image_raw/compressed``) and ``fps`` parameter (fallback frame rate when timestamps are unavailable, default ``30``).
 - ``rosbags_action_to_csv``: Extract ROS2 action feedback and status messages to two CSV files (``<filename_prefix>_feedback.csv`` and ``<filename_prefix>_status.csv``). Reads ``/<action>/_action/feedback`` and ``/<action>/_action/status`` topics. Nested data is flattened to columns. Required ``action`` parameter (action name, e.g. ``navigate_to_pose``). Optional ``filename_prefix`` parameter (default: ``action_<action>``).
 - ``command``: Execute arbitrary commands or scripts. Requires ``script`` parameter, optional ``args`` parameter (list).

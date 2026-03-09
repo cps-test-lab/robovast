@@ -328,6 +328,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         output_callback=None,
         force: bool = False,
         vast_file: Optional[str] = None,
+        debug: bool = False,
 ):
     """Run postprocessing commands on run results.
 
@@ -341,6 +342,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         force: If True, bypass caching and force postprocessing even if results are unchanged
         vast_file: Optional explicit path to a ``.vast`` file.  When given, the
             campaign copy is ignored entirely.
+        debug: If True, include full plugin stdout in output; otherwise show only the summary line.
 
     Returns:
         Tuple of (success: bool, message: str)
@@ -470,7 +472,8 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
                 output(f"✗ {message}")
                 success = False
                 continue
-            output(f"✓ {message}")
+            display_message = message if debug else message.splitlines()[0]
+            output(f"✓ {display_message}")
 
     # Store the hash, list of postprocessing outputs, and write postprocessing.yaml
     output_paths = set()
