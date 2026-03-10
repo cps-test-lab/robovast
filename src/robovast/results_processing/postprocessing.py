@@ -28,6 +28,7 @@ from typing import Dict, List, Optional, Tuple
 import yaml
 
 from robovast.common.common import load_config
+from robovast.common.execution import is_campaign_dir
 from robovast.results_processing.metadata import generate_campaign_metadata
 from robovast.common.results_utils import find_campaign_vast_file
 
@@ -323,6 +324,65 @@ def compute_dir_hash(dir_path: str, exclude_set: Optional[set] = None) -> str:
     return hashlib.md5(hash_string.encode()).hexdigest()
 
 
+def is_postprocessing_needed(
+        results_dir: str,
+        vast_file: Optional[str] = None,
+) -> bool:
+    """Check whether postprocessing needs to run for *results_dir*.
+
+    Returns ``True`` when:
+    - No hash file exists (postprocessing has never been run), or
+    - The results directory hash differs from the stored hash, or
+    - Postprocessing commands are defined but the hash cannot be determined.
+
+    Returns ``False`` when:
+    - No postprocessing commands are configured, or
+    - The stored hash matches the current directory hash (cache is valid).
+
+    Args:
+        results_dir: Directory containing run results (parent of campaign-* dirs).
+        vast_file: Optional explicit path to a ``.vast`` file.
+
+    Returns:
+        ``True`` if postprocessing should be run, ``False`` otherwise.
+    """
+    if not os.path.exists(results_dir):
+        return False
+
+    # Resolve vast file
+    if vast_file is not None:
+        if not os.path.isfile(vast_file):
+            return False
+        vast_path = os.path.abspath(vast_file)
+    else:
+        vast_path, _ = find_campaign_vast_file(results_dir)
+        if vast_path is None:
+            return False
+
+    # If no postprocessing commands are defined, nothing to do
+    commands = get_postprocessing_commands(vast_path)
+    if not commands:
+        return False
+
+    # Compare directory hash with stored hash
+    _, hash_file, outputs_file = _get_postprocessing_cache_paths(results_dir)
+    exclude_set = _load_postprocessing_outputs_exclude_set(outputs_file)
+    try:
+        current_hash = compute_dir_hash(results_dir, exclude_set=exclude_set)
+    except Exception:  # pylint: disable=broad-except
+        return True
+
+    if not os.path.exists(hash_file):
+        return True
+
+    try:
+        with open(hash_file, 'r') as f:
+            stored_hash = f.read().strip()
+        return stored_hash != current_hash
+    except Exception:  # pylint: disable=broad-except
+        return True
+
+
 def run_postprocessing(  # pylint: disable=too-many-return-statements
         results_dir: str,
         output_callback=None,
@@ -511,7 +571,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
 
     # Add metadata.yaml to exclude set for future hash computations
     for campaign_item in Path(results_dir_abs).iterdir():
-        if campaign_item.is_dir() and campaign_item.name.startswith("campaign-"):
+        if campaign_item.is_dir() and is_campaign_dir(campaign_item.name):
             meta_file = campaign_item / "metadata.yaml"
             if meta_file.exists():
                 rel = str(meta_file.relative_to(Path(results_dir_abs)))

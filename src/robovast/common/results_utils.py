@@ -14,32 +14,34 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Common utilities for results directory layout (campaign-<id>/<config>/<run-number>)."""
+"""Common utilities for results directory layout (<name>-<timestamp>/<config>/<run-number>)."""
 from pathlib import Path
 from typing import Iterator, Optional, Tuple
+
+from robovast.common.execution import is_campaign_dir
 
 
 def iter_run_folders(results_dir: str) -> Iterator[Tuple[str, str, str, Path]]:
     """Iterate over all run folders under a results directory.
 
-    Discovers the standard layout: results_dir/campaign-<id>/<config>/<run-number>/.
-    Under results_dir, only directories whose name starts with 'campaign-' are
+    Discovers the standard layout: results_dir/<name>-<timestamp>/<config>/<run-number>/.
+    Under results_dir, only directories matching the campaign naming pattern are
     considered; under each campaign, subdirs are config names; under each config,
     subdirs whose names are numeric are run numbers.
 
     Args:
-        results_dir: Path to the project results directory (parent of campaign-* dirs).
+        results_dir: Path to the project results directory (parent of campaign directories).
 
     Yields:
         Tuples (campaign, config_name, run_number, folder_path) where folder_path
-        is the full path to campaign-<id>/<config>/<run-number>.
+        is the full path to <name>-<timestamp>/<config>/<run-number>.
     """
     root = Path(results_dir)
     if not root.is_dir():
         return
 
     for campaign_item in sorted(root.iterdir()):
-        if not campaign_item.is_dir() or not campaign_item.name.startswith("campaign-"):
+        if not campaign_item.is_dir() or not is_campaign_dir(campaign_item.name):
             continue
         if campaign_item.name == "_config":
             continue
@@ -61,12 +63,12 @@ def iter_run_folders(results_dir: str) -> Iterator[Tuple[str, str, str, Path]]:
 def find_campaign_vast_file(results_dir: str) -> tuple[Optional[str], Optional[str]]:
     """Find the .vast file from the most recent campaign in results_dir.
 
-    Searches ``results_dir/campaign-<id>/_config/*.vast`` and returns the
+    Searches ``results_dir/<name>-<timestamp>/_config/*.vast`` and returns the
     path from the last (most recent, lexicographically) campaign that has a
     ``.vast`` file.
 
     Args:
-        results_dir: Path to the project results directory (parent of campaign-* dirs).
+        results_dir: Path to the project results directory (parent of campaign directories).
 
     Returns:
         Tuple ``(vast_file_path, config_dir)`` where *config_dir* is the
@@ -79,7 +81,7 @@ def find_campaign_vast_file(results_dir: str) -> tuple[Optional[str], Optional[s
 
     # Reverse-sorted so the most recent campaign comes first
     for campaign_item in sorted(root.iterdir(), reverse=True):
-        if not campaign_item.is_dir() or not campaign_item.name.startswith("campaign-"):
+        if not campaign_item.is_dir() or not is_campaign_dir(campaign_item.name):
             continue
         config_dir = campaign_item / "_config"
         if config_dir.is_dir():

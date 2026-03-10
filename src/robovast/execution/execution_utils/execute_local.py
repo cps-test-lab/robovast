@@ -157,7 +157,7 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
 DOCKER_IMAGE="ghcr.io/cps-test-lab/robovast:latest"
 USE_GUI=true
 START_ONLY=false
-RUN_ID="campaign-$(date +%Y-%m-%d-%H%M%S)"
+RUN_ID="CAMPAIGN_NAME_PLACEHOLDER-$(date +%Y-%m-%d-%H%M%S)"
 RESULTS_DIR=
 
 # Variables to track cleanup and interrupt state
@@ -529,6 +529,9 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
     script = RUN_SCRIPT_HEADER.replace(
         'DOCKER_IMAGE="ghcr.io/cps-test-lab/robovast:latest"',
         f'DOCKER_IMAGE="{docker_image}"', 1
+    ).replace(
+        'CAMPAIGN_NAME_PLACEHOLDER',
+        (campaign_data.get('metadata') or {}).get('name', 'campaign'), 1
     ).replace(
         'RESULTS_DIR=',
         f'RESULTS_DIR="{results_dir}/${{RUN_ID}}"', 1

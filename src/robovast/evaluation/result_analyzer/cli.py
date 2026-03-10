@@ -23,7 +23,7 @@ import click
 
 from robovast.common.cli import handle_cli_exception
 from robovast.common.cli.project_config import ProjectConfig
-from robovast.results_processing import run_postprocessing
+from robovast.results_processing import is_postprocessing_needed, run_postprocessing
 
 
 @click.group()
@@ -71,20 +71,28 @@ def result_analyzer_cmd(results_dir, force, skip_postprocessing, override):
     if not skip_postprocessing:
         if override:
             click.echo(f"Override .vast file: {override}")
-        success, message = run_postprocessing(
-            results_dir=results_dir,
-            output_callback=click.echo,
-            force=force,
-            vast_file=override,
-        )
 
-        if not success:
-            click.echo(f"\n\u2717 Postprocessing failed: {message}", err=True)
-            if not click.confirm(
-                "Proceed to GUI anyway?",
-                default=True
-            ):
-                sys.exit(1)
+        needs_pp = force or is_postprocessing_needed(results_dir, vast_file=override)
+
+        if needs_pp:
+            if not click.confirm("Run postprocessing?", default=True):
+                needs_pp = False
+
+        if needs_pp:
+            success, message = run_postprocessing(
+                results_dir=results_dir,
+                output_callback=click.echo,
+                force=force,
+                vast_file=override,
+            )
+
+            if not success:
+                click.echo(f"\n\u2717 Postprocessing failed: {message}", err=True)
+                if not click.confirm(
+                    "Proceed to GUI anyway?",
+                    default=True
+                ):
+                    sys.exit(1)
 
     try:
         from PySide6.QtWidgets import \

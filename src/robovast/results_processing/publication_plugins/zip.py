@@ -48,6 +48,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
+from robovast.common.execution import get_campaign_timestamp, is_campaign_dir
 from robovast.results_processing.publication_plugins.base import \
     BasePublicationPlugin
 
@@ -153,12 +154,14 @@ def _resolve_filename(template: str, campaign_name: str, vast_metadata: Dict[str
     Available substitution keys:
 
     * ``timestamp`` – the timestamp portion of the campaign directory name
-      (e.g. ``campaign-2026-03-05-121530`` → ``2026-03-05-121530``).
+      (e.g. ``campaign-2026-03-05-121530`` → ``2026-03-05-121530``,
+      ``dynamic_obstacle-2026-03-05-121530`` → ``2026-03-05-121530``).
     * Any key present in the vast file's top-level ``metadata`` section.
 
     Args:
         template: Filename template, e.g. ``my_dataset_{robot_id}_{timestamp}.zip``.
-        campaign_name: The ``campaign-<timestamp>`` directory name.
+        campaign_name: The campaign directory name (e.g. ``campaign-<timestamp>`` or
+            ``<metadata-name>-<timestamp>``).
         vast_metadata: Dict loaded from ``metadata:`` in the .vast file.
 
     Returns:
@@ -168,11 +171,7 @@ def _resolve_filename(template: str, campaign_name: str, vast_metadata: Dict[str
         ValueError: If the template references placeholders not available in
             *vast_metadata* or as the built-in ``timestamp`` key.
     """
-    timestamp = (
-        campaign_name[len("campaign-"):]
-        if campaign_name.startswith("campaign-")
-        else campaign_name
-    )
+    timestamp = get_campaign_timestamp(campaign_name)
 
     substitutions: Dict[str, Any] = {"timestamp": _FormattableTimestamp(timestamp)}
     substitutions.update(vast_metadata)
@@ -194,7 +193,7 @@ def _resolve_filename(template: str, campaign_name: str, vast_metadata: Dict[str
 class Zip(BasePublicationPlugin):
     """Create a zip archive for each campaign directory.
 
-    For each ``campaign-*`` directory found under *results_dir*, a zip file is
+    For each ``<name>-<timestamp>`` directory found under *results_dir*, a zip file is
     created containing the campaign's files.  Use ``include_filter`` to select
     only specific files and ``exclude_filter`` to skip files that would
     otherwise be included.
@@ -206,8 +205,8 @@ class Zip(BasePublicationPlugin):
     When ``omit_hidden`` is ``True``, directory components whose names start
     with ``'_'`` are stripped from the file paths inside the archive.  For
     example a file stored on disk as
-    ``campaign-2026-03-05-163338/_config/my_file.yaml`` is stored in the zip
-    as ``campaign-2026-03-05-163338/my_file.yaml``.
+    ``dynamic_obstacle-2026-03-05-163338/_config/my_file.yaml`` is stored in the zip
+    as ``dynamic_obstacle-2026-03-05-163338/my_file.yaml``.
 
     Configuration example:
 
@@ -237,7 +236,7 @@ class Zip(BasePublicationPlugin):
         """Create a zip archive for each campaign directory.
 
         Args:
-            results_dir: Path to the results directory (parent of campaign-* dirs).
+            results_dir: Path to the results directory (parent of campaign directories).
             config_dir: Directory containing the .vast config file; relative
                 *destination* paths are resolved from here.
             exclude_filter: Glob patterns for files to exclude.  Patterns without
@@ -254,7 +253,8 @@ class Zip(BasePublicationPlugin):
                 ``my_dataset_{robot_id}_{timestamp}.zip``.  Supported placeholders:
 
                 * ``{timestamp}`` – timestamp extracted from the campaign directory
-                  name (``campaign-<timestamp>``).
+                  name (e.g. ``campaign-<timestamp>`` or ``<name>-<timestamp>``
+                  → ``<timestamp>``).
                 * ``{<key>}`` – any key from the ``metadata:`` section of the
                   .vast file (e.g. ``{robot_id}``, ``{config_id}``).
 
@@ -319,7 +319,7 @@ class Zip(BasePublicationPlugin):
 
         created = []
         for campaign_item in sorted(results_path.iterdir()):
-            if not campaign_item.is_dir() or not campaign_item.name.startswith("campaign-"):
+            if not campaign_item.is_dir() or not is_campaign_dir(campaign_item.name):
                 continue
 
             if filename:
@@ -376,5 +376,5 @@ class Zip(BasePublicationPlugin):
                 return False, f"Failed to create {zip_path}: {e}"
 
         if not created:
-            return True, "No campaign-* directories found"
+            return True, "No campaign directories found (expected pattern: <name>-YYYY-MM-DD-HHMMSS)"
         return True, f"Created zip archives: {', '.join(created)}"
