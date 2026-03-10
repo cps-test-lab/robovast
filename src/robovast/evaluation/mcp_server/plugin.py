@@ -37,7 +37,6 @@ class MCPPlugin(Protocol):
     @property
     def name(self) -> str:
         """A short unique identifier for this plugin (e.g. ``"nav"``)."""
-        ...
 
     def register(self, mcp: FastMCP) -> None:
         """Register tools and resources with the MCP server.
@@ -50,4 +49,3 @@ class MCPPlugin(Protocol):
         mcp:
             The :class:`~mcp.server.fastmcp.FastMCP` instance.
         """
-        ...

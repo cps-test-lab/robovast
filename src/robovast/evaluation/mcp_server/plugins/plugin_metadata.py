@@ -158,9 +158,9 @@ def list_plugins(group: str = "") -> list[dict]:
     else:
         groups = list(_PLUGIN_GROUPS.keys())
     
-    for group in groups:
+    for grp in groups:
         records = []
-        for ep in entry_points(group=group):
+        for ep in entry_points(group=grp):
             records.append(
                 {
                     "name": ep.name,

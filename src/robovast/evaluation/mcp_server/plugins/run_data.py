@@ -163,7 +163,7 @@ def _iter_matching_runs(
         cname = c.get("name", "")
         cident = str(c.get("config_identifier", ""))
         if configuration_id is not None:
-            if configuration_id != cname and configuration_id != cident:
+            if configuration_id not in (cname, cident):
                 continue
         effective_ident = cident or cname
         if run is not None:
@@ -933,8 +933,6 @@ def query_run_log(
 
         next_offset = offset + len(page_rows)
         has_more = next_offset < total_rows
-
-        scenario_ts = success_timestamps[0] if len(success_timestamps) == 1 else None
 
         return {
             "campaign_id": campaign_id,

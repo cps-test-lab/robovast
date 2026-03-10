@@ -93,9 +93,9 @@ class _ProgressCallback:
         elapsed = max(time.monotonic() - self._start, 1e-6)
         rate = transferred / elapsed
         filled = int(BAR_WIDTH * transferred / total)
-        bar = "█" * filled + "░" * (BAR_WIDTH - filled)
+        progress_bar = "█" * filled + "░" * (BAR_WIDTH - filled)
         line = (
-            f"{self._campaign}  [{bar}]  {pct:5.1f}%  "
+            f"{self._campaign}  [{progress_bar}]  {pct:5.1f}%  "
             f"{_fmt_size(transferred)}/{_fmt_size(total)}  {_fmt_rate(rate)}"
         )
         sys.stdout.write("\r" + line + CLEAR_EOL)
@@ -108,7 +108,7 @@ class _ProgressCallback:
 
 def _load_pkey(pem: str):
     """Parse a PEM-encoded private key string, trying common key types."""
-    import io
+    import io  # pylint: disable=import-outside-toplevel
 
     for cls in (
         paramiko.RSAKey,

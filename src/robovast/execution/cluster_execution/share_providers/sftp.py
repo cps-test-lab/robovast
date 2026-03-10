@@ -17,7 +17,6 @@
 
 """SFTP share provider for ``cluster upload-to-share``."""
 
-import io
 import os
 
 import click
@@ -198,8 +197,6 @@ class SftpShareProvider(BaseShareProvider):
 
         ssh, sftp = self._connect()
         try:
-            total = sftp.stat(remote_path).st_size or 0
-
             def _cb(transferred: int, total_bytes: int) -> None:
                 if progress_callback:
                     progress_callback(transferred, total_bytes)

@@ -325,7 +325,7 @@ def compute_dir_hash(dir_path: str, exclude_set: Optional[set] = None) -> str:
     return hashlib.md5(hash_string.encode()).hexdigest()
 
 
-def is_postprocessing_needed(
+def is_postprocessing_needed(  # pylint: disable=too-many-return-statements
         results_dir: str,
         vast_file: Optional[str] = None,
 ) -> bool:

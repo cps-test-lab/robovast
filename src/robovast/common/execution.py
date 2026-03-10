@@ -251,13 +251,21 @@ _LOCAL_POST_RUN_BLOCK = """\
 #!/bin/bash
 if [ -f /tmp/rosbag.pid ]; then
     if start-stop-daemon --stop --signal INT --pidfile /tmp/rosbag.pid >/dev/null 2>&1; then
-        while kill -0 $(cat /tmp/rosbag.pid) 2>/dev/null; do sleep 0.1; done
+        _t=0
+        while kill -0 $(cat /tmp/rosbag.pid) 2>/dev/null && [ $_t -lt 50 ]; do
+            sleep 0.1; _t=$((_t + 1))
+        done
+        kill -KILL $(cat /tmp/rosbag.pid) 2>/dev/null || true
     fi
     echo "ROS bag process stopped."
 fi
 if [ -f /tmp/monitor.pid ]; then
     if kill -TERM $(cat /tmp/monitor.pid) 2>/dev/null; then
-        while kill -0 $(cat /tmp/monitor.pid) 2>/dev/null; do sleep 0.1; done
+        _t=0
+        while kill -0 $(cat /tmp/monitor.pid) 2>/dev/null && [ $_t -lt 30 ]; do
+            sleep 0.1; _t=$((_t + 1))
+        done
+        kill -KILL $(cat /tmp/monitor.pid) 2>/dev/null || true
     fi
     echo "Resource monitor process stopped."
 fi

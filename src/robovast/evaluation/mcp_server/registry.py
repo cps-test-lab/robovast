@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 def _get_tool_names(mcp: FastMCP) -> set[str]:
     """Return the set of currently registered tool names."""
-    return set(mcp._tool_manager._tools.keys())
+    return set(mcp._tool_manager._tools.keys())  # pylint: disable=protected-access
 
 
 def load_plugins(mcp: FastMCP) -> list[MCPPlugin]:

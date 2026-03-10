@@ -85,7 +85,7 @@ def _install_debug_logging(mcp: FastMCP) -> None:
     the instance attribute has no effect.  Patching the ToolManager instead works
     because FastMCP.call_tool delegates to it at call time.
     """
-    tm = mcp._tool_manager
+    tm = mcp._tool_manager  # pylint: disable=protected-access
     original = tm.call_tool
 
     async def logged_call_tool(name: str, arguments: dict, **kwargs: object) -> object:

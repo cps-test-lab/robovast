@@ -7,7 +7,7 @@ import time
 import os
 import psutil
 
-_shutdown = False
+_shutdown = False  # pylint: disable=invalid-name
 
 
 def _handle_signal(signum, frame):  # pylint: disable=unused-argument

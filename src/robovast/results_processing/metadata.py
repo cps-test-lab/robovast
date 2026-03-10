@@ -38,14 +38,13 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-from robovast.common.variation.loader import load_variation_classes
-
 from robovast.common.campaign_data import (
     read_execution_metadata,
     read_sysinfo,
     read_test_result,
 )
 from robovast.common import load_config
+from robovast.common.execution import is_campaign_dir
 from robovast.common.results_utils import find_campaign_vast_file
 from robovast.common.variation.loader import load_variation_classes
 

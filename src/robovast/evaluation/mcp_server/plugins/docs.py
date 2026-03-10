@@ -256,7 +256,7 @@ class DocsPlugin:
 
         # --- Tool: list_docs ---
 
-        @mcp.tool()
+        @mcp.tool()  # pylint: disable=function-redefined
         def docs_list() -> list[dict]:
             """List all available RoboVAST documentation pages.
 

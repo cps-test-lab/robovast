@@ -235,16 +235,15 @@ class GcsShareProvider(BaseShareProvider):
                 f"ROBOVAST_GCS_KEY_FILE: file not found: {key_file}"
             )
         try:
-            import json as _json
             with open(key_file) as fh:
-                key_data = _json.load(fh)
+                key_data = json.load(fh)
         except (OSError, ValueError) as exc:
             raise click.UsageError(
                 f"ROBOVAST_GCS_KEY_FILE: cannot read key file {key_file!r}: {exc}"
             ) from exc
         try:
-            import google.auth.transport.requests  # noqa: PLC0415
-            import google.oauth2.service_account  # noqa: PLC0415
+            import google.auth.transport.requests  # pylint: disable=import-outside-toplevel
+            import google.oauth2.service_account  # pylint: disable=import-outside-toplevel
         except ImportError as exc:
             raise click.UsageError(
                 f"google-auth is not installed: {exc}\n"

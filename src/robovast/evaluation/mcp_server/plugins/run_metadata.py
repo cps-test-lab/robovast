@@ -154,6 +154,7 @@ def list_run_additional_output_files(
             if not f.lower().endswith(".csv")
             and not f.startswith("logs/")
         ]
+    return []
 
 
 def get_run_output_file(

@@ -136,12 +136,12 @@ class ProgressBar:
     def _render(self) -> None:
         pct = (self._current / self.total * 100) if self.total > 0 else 0.0
         filled = int(_BAR_WIDTH * self._current / self.total) if self.total > 0 else 0
-        bar = "█" * filled + "░" * (_BAR_WIDTH - filled)
+        progress_bar = "█" * filled + "░" * (_BAR_WIDTH - filled)
         elapsed = max(time.monotonic() - self._start, 1e-6)
         rate = self._current / elapsed if self._current > 0 else 0.0
         rate_str = f"  {rate:.1f} {self.unit}/s" if rate > 0 else ""
         line = (
-            f"{self.desc}  [{bar}]  {pct:5.1f}%"
+            f"{self.desc}  [{progress_bar}]  {pct:5.1f}%"
             f"  {self._current}/{self.total} {self.unit}{rate_str}"
         )
         sys.stdout.write("\r" + line + _CLEAR_EOL)

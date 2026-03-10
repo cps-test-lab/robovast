@@ -45,7 +45,7 @@ from robovast_mcp.results_resolver import (
 )
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
+import matplotlib.pyplot as plt  # noqa: E402  # pylint: disable=wrong-import-position,ungrouped-imports
 
 logger = logging.getLogger(__name__)
 
@@ -500,8 +500,7 @@ def nav_get_path_deviation(
                 planned_path[i]["x"], planned_path[i]["y"],
                 planned_path[i + 1]["x"], planned_path[i + 1]["y"],
             )
-            if d < min_dist:
-                min_dist = d
+            min_dist = min(min_dist, d)
         cross_track_errors.append(min_dist)
 
     mean_cte = sum(cross_track_errors) / len(cross_track_errors) if cross_track_errors else 0.0
@@ -554,7 +553,7 @@ def nav_get_map_info(campaign: str, config: str) -> dict:
         image_path = maps_dir / image_name
         if image_path.exists():
             try:
-                from PIL import Image as PILImage
+                from PIL import Image as PILImage  # pylint: disable=import-outside-toplevel
                 with PILImage.open(image_path) as img:
                     w, h = img.size
                     result["width_px"] = w
@@ -595,7 +594,7 @@ def nav_get_map_occupancy_stats(campaign: str, config: str) -> dict:
         return {"error": f"Map image not found: {image_name}"}
 
     try:
-        from PIL import Image as PILImage
+        from PIL import Image as PILImage  # pylint: disable=import-outside-toplevel
     except ImportError:
         return {"error": "PIL/numpy not available for map analysis."}
 
@@ -796,7 +795,7 @@ def draw_map(
         title: Optional title drawn above the map.
         show_legend: Render a legend when any layer has a label (default true).
     """
-    from robovast_nav.gui.map_visualizer import MapVisualizer
+    from robovast_nav.gui.map_visualizer import MapVisualizer  # pylint: disable=import-outside-toplevel
 
     cfg = _get_config_by_identifier_or_name(campaign, config)
     if cfg is None:

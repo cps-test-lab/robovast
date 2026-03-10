@@ -26,9 +26,7 @@ from typing import Literal, TypedDict
 
 from mcp.server.fastmcp import FastMCP
 
-from robovast.evaluation.mcp_server import results_resolver
-
-from ..plugin_common import _iter_all_configs, read_campaign_metadata
+from ..plugin_common import _iter_all_configs
 
 logger = logging.getLogger(__name__)
 
@@ -393,7 +391,7 @@ def search_runs(
         config_ident = str(c.get("config_identifier", ""))
 
         if configuration_id is not None:
-            if configuration_id != config_name and configuration_id != config_ident:
+            if configuration_id not in (config_name, config_ident):
                 continue
 
         for tr in c.get("test_results", []):

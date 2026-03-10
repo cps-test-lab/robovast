@@ -93,9 +93,9 @@ class _ProgressReader:
                 elapsed = max(time.monotonic() - self._start, 1e-6)
                 rate = self._sent / elapsed
                 filled = int(BAR_WIDTH * self._sent / self._total) if self._total else 0
-                bar = "█" * filled + "░" * (BAR_WIDTH - filled)
+                progress_bar = "█" * filled + "░" * (BAR_WIDTH - filled)
                 line = (
-                    f"{self._campaign}  [{bar}]  {pct:5.1f}%  "
+                    f"{self._campaign}  [{progress_bar}]  {pct:5.1f}%  "
                     f"{_fmt_size(self._sent)}/{_fmt_size(self._total)}  "
                     f"{_fmt_rate(rate)}"
                 )
