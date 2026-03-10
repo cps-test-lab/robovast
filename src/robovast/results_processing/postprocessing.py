@@ -535,6 +535,27 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
             display_message = message if debug else message.splitlines()[0]
             output(f"✓ {display_message}")
 
+    # Always run rosbags_rosout_to_csv after custom plugin execution and database creation
+    if 'rosbags_rosout_to_csv' in plugins:
+        output("Executing rosbags_rosout_to_csv...")
+        with tempfile.TemporaryDirectory(prefix="robovast_provenance_") as rosout_temp_dir:
+            rosout_provenance_file = os.path.join(rosout_temp_dir, "rosbags_rosout_to_csv_provenance.json")
+            rosout_success, rosout_msg, _ = execute_postprocessing_plugin(
+                plugin_name='rosbags_rosout_to_csv',
+                plugin_func=plugins['rosbags_rosout_to_csv'],
+                params={},
+                results_dir=results_dir,
+                config_dir=config_dir,
+                provenance_file=rosout_provenance_file,
+            )
+        if rosout_success:
+            display_rosout_msg = rosout_msg if debug else rosout_msg.splitlines()[0]
+            output(f"✓ {display_rosout_msg}")
+        else:
+            output(f"Warning: rosbags_rosout_to_csv failed: {rosout_msg}")
+    else:
+        raise RuntimeError("rosbags_rosout_to_csv plugin not available")
+
     # Store the hash, list of postprocessing outputs, and write postprocessing.yaml
     output_paths = set()
     if success:
@@ -567,7 +588,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     if db_success:
         output(f"✓ {db_msg}")
     else:
-        output(f"Warning: data.db generation failed: {db_msg}")
+        raise RuntimeError(f"data.db generation failed: {db_msg}")
 
     # Generate metadata.yaml in each campaign directory
     meta_success, meta_msg = generate_campaign_metadata(

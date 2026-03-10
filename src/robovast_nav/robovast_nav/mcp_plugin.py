@@ -117,20 +117,6 @@ def _point_to_segment_distance(
 # Tools
 # ---------------------------------------------------------------------------
 
-def list_nav_variation_types() -> list[str]:
-    """List all installed navigation variation type names.
-
-    Variation types registered under the ``robovast.variation_types``
-    entry-point group that belong to the ``robovast_nav`` package are
-    returned.
-    """
-    nav_types = [
-        ep.name
-        for ep in entry_points(group="robovast.variation_types")
-        if "robovast_nav" in ep.value
-    ]
-    return sorted(nav_types)
-
 
 def nav_describe_data_model() -> dict[str, str]:
     """Return descriptions of the core navigation data-model types.
@@ -143,44 +129,15 @@ def nav_describe_data_model() -> dict[str, str]:
         "Position": "2D position with x (float) and y (float) coordinates in metres.",
         "Orientation": "Heading in the 2D plane expressed as yaw (float) in radians.",
         "Pose": "Combined Position and Orientation representing a robot pose.",
-        "StaticObject": (
-            "A static obstacle/object with entity_name (str), model (str), "
-            "spawn_pose (Pose), and optional xacro_arguments (str)."
+        "Object": (
+            "An obstacle/object with entity_name (str), model (str), "
+            "spawn_pose (Pose), and optional xacro_arguments (str). It can be spawned within the simulation."
         ),
     }
 
 
-def nav_get_poses(campaign: str, config: str) -> dict:
-    """Get start pose, goal pose, and static objects for a navigation config.
-
-    Extracts navigation-specific parameters from ``scenario.config``.
-    Returns ``{start_pose, goal_pose, static_objects}`` or an error
-    if this is not a navigation campaign.
-
-    Args:
-        campaign: Campaign name.
-        config: Configuration name.
-    """
-    config_path = resolve_config_path(campaign, config)
-    params = read_scenario_config(config_path)
-
-    result: dict[str, Any] = {}
-    for key in ("start_pose", "goal_pose"):
-        if key in params:
-            result[key] = params[key]
-    if "static_objects" in params:
-        result["static_objects"] = params["static_objects"]
-
-    if not result:
-        return {"error": "No navigation poses found in scenario.config. This may not be a navigation campaign."}
-    return result
-
-
-def get_nav_path(campaign: str, config: str) -> dict:
+def nav_get_planned_path(campaign: str, config: str) -> dict:
     """Get the planned navigation path waypoints for a config.
-
-    Extracts the ``_path`` field from the resolved configurations,
-    which contains the planned waypoints generated during variation.
 
     Args:
         campaign: Campaign name.
@@ -190,7 +147,7 @@ def get_nav_path(campaign: str, config: str) -> dict:
     try:
         configurations = read_resolved_configurations(campaign_path)
     except FileNotFoundError:
-        return {"error": "configurations.yaml not found."}
+        return {"error": "no planned path found."}
 
     for cfg in configurations.get("configs", []):
         if cfg.get("name") == config:
@@ -201,9 +158,9 @@ def get_nav_path(campaign: str, config: str) -> dict:
                     "path_length": cfg.get("_path_length"),
                     "waypoints": path,
                 }
-            return {"error": "No _path field found for this config. May not be a navigation config."}
+            return {"error": "Data source is available, but no path found. May not be a navigation config."}
 
-    return {"error": f"Config '{config}' not found in configurations.yaml."}
+    return {"error": f"Config '{config}' not found in configurations."}
 
 
 def nav_get_obstacles(campaign: str, config: str) -> list[dict]:
@@ -911,10 +868,8 @@ def draw_map(
 # ---------------------------------------------------------------------------
 
 _TOOLS = [
-    list_nav_variation_types,
     nav_describe_data_model,
-    nav_get_poses,
-    get_nav_path,
+    nav_get_planned_path,
     nav_get_obstacles,
     nav_get_trajectory,
     nav_get_trajectory_stats,

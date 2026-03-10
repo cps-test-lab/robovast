@@ -539,7 +539,14 @@ class RosbagsRosoutToCsv(BasePostprocessingPlugin):
             if result.returncode != 0:
                 return False, f"rosbags_rosout_to_csv failed with exit code {result.returncode}\n{result.stderr}"
 
-            return True, "rosout log messages extracted to CSV successfully"
+            stdout = result.stdout.strip()
+            # Extract the Summary line as the primary message for concise non-debug output
+            summary_line = next(
+                (line for line in stdout.splitlines() if line.startswith("Summary:")),
+                "rosout log messages extracted to CSV successfully",
+            )
+            full_msg = f"{summary_line}\n{stdout}" if stdout else summary_line
+            return True, full_msg
 
         except Exception as e:
             return False, f"Error executing rosbags_rosout_to_csv: {e}"
@@ -571,7 +578,7 @@ class RosbagsToWebm(BasePostprocessingPlugin):
         """Execute rosbags_to_webm plugin.
 
         Args:
-            results_dir: Path to the campaign-<id> directory to process
+            results_dir: Path to the <campaign-name>-<timestamp> directory to process
             config_dir: Directory containing the config file (for resolving relative paths)
             topic: CompressedImage topic name to convert (default: /camera/image_raw/compressed)
             fps: Fallback FPS when timestamps are unavailable (default: 30)
@@ -606,7 +613,8 @@ class RosbagsToWebm(BasePostprocessingPlugin):
             )
 
             if result.returncode != 0:
-                return False, f"rosbags_to_webm failed with exit code {result.returncode}\n{result.stderr}"
+                details = (result.stdout.strip() or result.stderr.strip())
+                return False, f"rosbags_to_webm failed with exit code {result.returncode}\n{details}"
 
             output = result.stdout.strip()
             return True, f"CompressedImage topic converted to WebM successfully\n{output}" if output else "CompressedImage topic converted to WebM successfully"
@@ -619,7 +627,7 @@ class Compress(BasePostprocessingPlugin):
     """Create a gzipped tarball for each campaign-* directory (runs on host).
 
     For each direct subdirectory of results_dir whose name starts with ``campaign-``,
-    creates a ``campaign-<id>.tar.gz`` in the output directory containing that campaign's
+    creates a ``<campaign-name>-<id>.tar.gz`` in the output directory containing that campaign's
     contents. Does not use Docker; runs entirely on the host using Python's
     tarfile module. Useful for archiving or transferring results.
 
@@ -651,7 +659,7 @@ class Compress(BasePostprocessingPlugin):
         """Execute compress plugin.
 
         Args:
-            results_dir: Path to the results directory (parent of campaign-* dirs).
+            results_dir: Path to the results directory (parent of campaign* dirs).
             config_dir: Directory containing the .vast config file; relative output_dir
                 is resolved from here.
             output_dir: Where to write tarballs. If not set, defaults to config_dir.
@@ -713,7 +721,7 @@ class Compress(BasePostprocessingPlugin):
                 return False, f"Failed to create {tarball_path}: {e}"
 
         if not created:
-            return True, "No campaign-* directories found or all tarballs already exist (use overwrite: true to recreate)"
+            return True, "No campaign* directories found or all tarballs already exist (use overwrite: true to recreate)"
         return True, f"Created tarballs: {', '.join(created)}"
 
 
@@ -809,6 +817,8 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
         created_tables: dict[str, set[str]] = {}
         # display_name -> sql_table_name
         name_map: dict[str, str] = {}
+        # display_name -> total row count across all runs
+        table_rows: dict[str, int] = {}
 
         config_dirs = sorted(
             d for d in campaign_path.iterdir()
@@ -829,10 +839,21 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
                 scenario_ts: float | None = None
                 scenario_status: str | None = None
                 scenario_msg: str | None = None
+                # Track stems seen within this run to detect duplicate table names
+                run_stem_to_path: dict[str, Path] = {}
 
-                for csv_path in sorted(run_dir.glob("*.csv")):
+                for csv_path in sorted(run_dir.rglob("*.csv")):
                     display_name = csv_path.stem
                     sql_name = _csv_to_table_name(csv_path.name)
+
+                    # Raise an error if two CSV files in the same run would map to the same table
+                    if display_name in run_stem_to_path:
+                        raise ValueError(
+                            f"Duplicate table name '{display_name}' in run {run_id} of config "
+                            f"'{config_name}': '{csv_path.relative_to(run_dir)}' conflicts with "
+                            f"'{run_stem_to_path[display_name].relative_to(run_dir)}'"
+                        )
+                    run_stem_to_path[display_name] = csv_path
 
                     if display_name not in name_map:
                         name_map[display_name] = sql_name
@@ -854,7 +875,7 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
                     csv_cols = [c for c in rows[0].keys() if isinstance(c, str)]
 
                     # Extract scenario timestamp from rosout rows
-                    if display_name == "rosout" and scenario_ts is None:
+                    if csv_path.stem == "rosout" and scenario_ts is None:
                         for row in rows:
                             name_val = str(row.get("name", ""))
                             msg_val = str(row.get("msg", ""))
@@ -892,7 +913,6 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
                         )
                         created_tables[sql_name] = set(all_data_cols)
                         conn.commit()
-                        _log(f"    table: {display_name}")
                     else:
                         # Add any new columns from this CSV
                         existing = created_tables[sql_name]
@@ -914,6 +934,7 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
                     ]
                     conn.executemany(insert_sql, batch)
                     conn.commit()
+                    table_rows[display_name] = table_rows.get(display_name, 0) + len(rows)
 
                 # Record scenario timestamp (even if None)
                 conn.execute(
@@ -928,5 +949,8 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
         table_count = len(created_tables)
     finally:
         conn.close()
+
+    for display_name, row_count in sorted(table_rows.items()):
+        _log(f"  table: {display_name} ({row_count} rows)")
 
     return True, f"Created data.db with {table_count} table(s) in {db_path}"

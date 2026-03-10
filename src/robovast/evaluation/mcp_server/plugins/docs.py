@@ -232,7 +232,7 @@ if _docs_dir is not None:
 # -- Tool functions ----------------------------------------------------------
 
 
-def docs_list() -> list[dict] | str:
+def list_docs() -> list[dict] | str:
     """List all available RoboVAST documentation pages.
 
     Returns a list of records with ``name`` (use in docs://<name>) and
@@ -249,7 +249,7 @@ def docs_list() -> list[dict] | str:
     ]
 
 
-def docs_search(query: str) -> list[dict]:
+def search_docs(query: str) -> list[dict]:
     """Search across all RoboVAST documentation pages for a keyword or phrase.
 
     Returns matching excerpts (with 2 lines of surrounding context) grouped
@@ -287,8 +287,8 @@ def docs_search(query: str) -> list[dict]:
 # -- Plugin class ------------------------------------------------------------
 
 _TOOLS = [
-    docs_list,
-    docs_search,
+    list_docs,
+    search_docs,
 ]
 
 
@@ -306,7 +306,7 @@ class DocsPlugin:
         def get_doc(name: str) -> str:
             """Retrieve a RoboVAST documentation page by name.
 
-            Use docs_list() to discover available page names.
+            Use list_docs() to discover available page names.
             """
             if name not in _doc_files:
                 available = ", ".join(sorted(_doc_files))
@@ -314,3 +314,18 @@ class DocsPlugin:
                     f"Unknown documentation page {name!r}. Available: {available}"
                 )
             return _doc_content[name]
+
+        # Register each page as a static resource so clients can discover them
+        # without calling the list_docs tool first.
+        for _page_name, _page_content in _doc_content.items():
+            _uri = f"docs://{_page_name}"
+            _title = _doc_meta.get(_page_name, _page_name)
+
+            def _make_resource(content: str):
+                def _resource_fn() -> str:
+                    return content
+                return _resource_fn
+
+            mcp.resource(_uri, name=_title, description=f"RoboVAST docs: {_title}")(
+                _make_resource(_page_content)
+            )

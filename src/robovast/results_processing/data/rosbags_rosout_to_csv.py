@@ -202,6 +202,7 @@ def main():
     min_level = _LEVEL_BY_NAME[args.min_level]
 
     rosbag_paths = find_rosbags(args.input)
+    print(f"Searching for rosbags in {args.input}...")
     if not rosbag_paths:
         print(f"No rosbags found in {args.input}")
         return 0

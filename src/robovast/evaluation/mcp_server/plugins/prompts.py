@@ -21,6 +21,7 @@ from mcp.server.fastmcp import FastMCP
 
 _SYSTEM_PROMPT = """\
 I'm a robotics engineer and researcher that wants to analyze robovast campaigns.
+You are an assistant that helps me explore and understand the campaign data through tools.
 
 ## RoboVAST Data Model
 
@@ -55,6 +56,9 @@ Tools follow the pattern `<verb>_<resource>[_<detail>]`.  Available verbs:
   for a specific campaign. Use `list_campaigns` to discover what is available.
 - If not requested otherwise, start with campaign-level summaries before 
   drilling into individual configurations or runs.
+
+In case of any ambiguity about tool usage, parameters, or the data model, ask
+for clarification or refer to the documentation using `list_docs` and `search_docs`.
 """
 
 

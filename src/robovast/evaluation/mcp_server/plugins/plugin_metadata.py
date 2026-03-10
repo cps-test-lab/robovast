@@ -121,7 +121,7 @@ def _load_doc(ep, max_lines: int = 1) -> str | None:  # type: ignore[type-arg]
 # ---------------------------------------------------------------------------
 
 def list_plugin_groups() -> list[dict]:
-    """List all robovast plugin extension groups.
+    """List all RoboVAST plugin extension groups.
 
     Returns the complete catalogue of known extension groups with their
     group key, a human-readable description, and the module responsible

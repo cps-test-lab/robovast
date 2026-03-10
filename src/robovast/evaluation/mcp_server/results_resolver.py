@@ -19,6 +19,7 @@
 from pathlib import Path
 
 from robovast.common.cli.project_config import ProjectConfig
+from robovast.common.execution import is_campaign_dir
 
 # Directories at campaign level that are not config directories
 _RESERVED_DIRS = {"_config", "_execution", "_transient"}
@@ -109,12 +110,13 @@ def list_campaigns() -> list[Path]:
     """List all campaigns that are available.
 
     Returns:
-        Sorted list of campaigns (directories in results_dir that start with "campaign-").
+        Sorted list of campaigns (directories in results_dir matching the
+        campaign directory naming pattern ``<name>-YYYY-MM-DD-HHMMSS``).
     """
-    results = resolve_results_dir()
+    results_dir = resolve_results_dir()
     return sorted(
-        d for d in results.iterdir()
-        if d.is_dir() and d.name.startswith("campaign-")
+        d for d in results_dir.iterdir()
+        if d.is_dir() and is_campaign_dir(d.name)
     )
 
 

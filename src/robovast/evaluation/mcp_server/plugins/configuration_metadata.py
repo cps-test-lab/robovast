@@ -133,14 +133,11 @@ def get_configuration_transient_file(
     return _read_text_paginated(path, lines, offset)
 
 
-def get_configuration_scenario_config(
+def get_configuration_scenario_parameter(
     campaign_id: str,
     configuration_id: str,
 ) -> dict:
-    """Get the value of a single scenario parameter for a configuration.
-
-    Reads the parameter from the ``config`` section of the configuration
-    entry in the campaign ``metadata.yaml``.
+    """Get the scenario parameter values of a configuration.
 
     Args:
         campaign_id: Campaign name.
@@ -227,7 +224,7 @@ def get_configuration_variations(campaign_id: str, configuration_id: str) -> lis
 
 _TOOLS = [
     get_configuration_summary,
-    get_configuration_scenario_config,
+    get_configuration_scenario_parameter,
     get_configuration_variations,
     list_configuration_transient_files,
     get_configuration_transient_file,

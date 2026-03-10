@@ -78,11 +78,8 @@ def process_rosbag(bag_path, frames, csv_filename):
         fieldnames = ["frame", "timestamp", "position.x", "position.y", "position.z",
                       "orientation.roll", "orientation.pitch", "orientation.yaw"]
 
-        # Open CSV file for writing
-        csv_file_path = os.path.join(os.path.dirname(bag_path), csv_filename)
-        csvfile = open(csv_file_path, 'w', newline='')
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
+        csvfile = None
+        writer = None
         try:
             while reader.has_next():
                 topic, data, timestamp = reader.read_next()
@@ -111,6 +108,12 @@ def process_rosbag(bag_path, frames, csv_filename):
 
                                     roll, pitch, yaw = quat_to_rpy(rotation.x, rotation.y, rotation.z, rotation.w)
 
+                                    # Open file and write header on first entry
+                                    if csvfile is None:
+                                        csvfile = open(csv_filename, 'w', newline='')
+                                        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                                        writer.writeheader()
+
                                     # Write row directly to CSV
                                     writer.writerow({
                                         "frame": frame,
@@ -127,14 +130,15 @@ def process_rosbag(bag_path, frames, csv_filename):
                                 except (LookupException, ConnectivityException, ExtrapolationException):
                                     pass
         finally:
-            csvfile.close()
+            if csvfile is not None:
+                csvfile.close()
 
         total_records = sum(record_counts.values())
 
         # Report results
         if total_records > 0:
             frame_summary = ", ".join([f"{frame}: {count}" for frame, count in record_counts.items() if count > 0])
-            print(f"✓ {csv_file_path}: {total_records} messages ({frame_summary})")
+            print(f"✓ {csv_filename}: {total_records} messages ({frame_summary})")
             return (total_records, record_counts)
         else:
             print(f"✗ {bag_path}: No records found")

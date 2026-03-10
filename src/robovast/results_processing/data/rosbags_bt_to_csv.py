@@ -59,11 +59,10 @@ def reconstruct_behavior_timeline(bag_path, output_file):
 
     fieldnames = ['timestamp', 'behavior_name', 'behavior_id', 'status', 'status_name', 'class_name']
     record_count = 0
+    csvfile = None
+    writer = None
 
-    with open(output_file, 'w', newline='') as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
-
+    try:
         while reader.has_next():
             topic, data, timestamp = reader.read_next()
 
@@ -88,6 +87,12 @@ def reconstruct_behavior_timeline(bag_path, output_file):
                     continue
                 last_status[key] = behavior.status
 
+                # Open file and write header on first entry
+                if csvfile is None:
+                    csvfile = open(output_file, 'w', newline='')
+                    writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                    writer.writeheader()
+
                 writer.writerow({
                     'timestamp': timestamp / 1000000000.0,
                     'behavior_name': behavior.name,
@@ -97,6 +102,9 @@ def reconstruct_behavior_timeline(bag_path, output_file):
                     'class_name': behavior.class_name
                 })
                 record_count += 1
+    finally:
+        if csvfile is not None:
+            csvfile.close()
 
     return record_count
 
