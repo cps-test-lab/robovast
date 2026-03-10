@@ -126,7 +126,7 @@ Clean up only the job objects (without touching the result storage):
 .. code-block:: bash
 
    vast execution cluster run-cleanup
-   vast execution cluster run-cleanup --campaign dynamic_obstacle-2025-06-01-120000
+   vast execution cluster run-cleanup --campaign campaign-2025-06-01-120000
 
 Remove result archives from S3 without downloading:
 
@@ -501,8 +501,8 @@ the percentage, transferred size, and upload rate:
 
 .. code-block:: text
 
-   dynamic_obstacle-2026-03-01-120000  [████████████░░░░░░░░]   60.0%  1.2 MiB/2.0 MiB  3.4 MiB/s
-   dynamic_obstacle-2026-03-01-120000  uploaded (2.0 MiB)  ✓
+   campaign-2026-03-01-120000  [████████████░░░░░░░░]   60.0%  1.2 MiB/2.0 MiB  3.4 MiB/s
+   campaign-2026-03-01-120000  uploaded (2.0 MiB)  ✓
 
    ✓ Uploaded 3 campaign(s) to nextcloud successfully!
 
