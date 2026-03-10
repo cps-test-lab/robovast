@@ -14,6 +14,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import fnmatch
 import logging
 import os
 import sys
@@ -88,22 +89,18 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
         feedback_callback("Error: No configs found in vast-file.", file=sys.stderr)
         sys.exit(1)
 
-    # Filter to specific config if requested
+    # Filter to configs matching the pattern if requested
     if config:
-        found_config = None
-        for cfg in campaign_data["configs"]:
-            if cfg['name'] == config:
-                found_config = cfg
-                break
+        matched = [cfg for cfg in campaign_data["configs"] if fnmatch.fnmatch(cfg['name'], config)]
 
-        if not found_config:
-            feedback_callback(f"Error: Config '{config}' not found in config.", file=sys.stderr)
+        if not matched:
+            feedback_callback(f"Error: No configs matched pattern '{config}'.", file=sys.stderr)
             feedback_callback("Available configs:")
             for cfg in campaign_data["configs"]:
                 feedback_callback(f"  - {cfg['name']}")
             sys.exit(1)
 
-        campaign_data["configs"] = [found_config]
+        campaign_data["configs"] = matched
 
     logger.debug(f"Preparing {len(campaign_data['configs'])} configs from {config_path}...")
     logger.debug(f"Output directory: {output_dir}")

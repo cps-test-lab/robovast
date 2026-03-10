@@ -72,7 +72,7 @@ def local():
 
 @local.command()
 @click.option('--config', '-c', default=None,
-              help='Run only a specific configuration by name')
+              help='Run only configurations matching this name or glob pattern (e.g. hall*)')
 @click.option('--runs', '-r', type=int, default=None,
               help='Override the number of runs specified in the config')
 @click.option('--output', '-o', default=None,
@@ -203,7 +203,7 @@ def cluster():
 
 @cluster.command()
 @click.option('--config', '-c', default=None,
-              help='Run only a specific configuration by name')
+              help='Run only configurations matching this name or glob pattern (e.g. hall*)')
 @click.option('--runs', '-r', type=int, default=None,
               help='Override the number of runs specified in the config')
 @click.option('--follow', '-f', is_flag=True, default=False,

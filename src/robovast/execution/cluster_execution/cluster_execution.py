@@ -17,6 +17,7 @@
 
 import copy
 import datetime
+import fnmatch
 import hashlib
 import logging
 import os
@@ -427,23 +428,21 @@ class JobRunner:
 
         if not self.configs:
             raise ValueError("No scenario configs generated.")
-        # Filter scenarios if single_config is specified
+        # Filter scenarios if single_config (pattern) is specified
         if single_config:
-            found_config = None
-            for config in self.configs:
-                config_name = config.get("name", "<unnamed>")
-                if config_name == single_config:
-                    found_config = config
-                    break
+            matched_configs = [
+                cfg for cfg in self.configs
+                if fnmatch.fnmatch(cfg.get("name", "<unnamed>"), single_config)
+            ]
 
-            if not found_config:
-                logger.error(f"Config '{single_config}' not found.")
+            if not matched_configs:
+                logger.error(f"No configs matched pattern '{single_config}'.")
                 logger.info("Available configs:")
                 for v in self.configs:
                     logger.info(f"   - {v.get('name', '<unnamed>')}")
-                raise ValueError(f"Config '{single_config}' not found (see available configs above)")
-            self.campaign_data["configs"] = [found_config]
-            self.configs = [found_config]
+                raise ValueError(f"No configs matched pattern '{single_config}' (see available configs above)")
+            self.campaign_data["configs"] = matched_configs
+            self.configs = matched_configs
 
         # Initialize k8s clients to None - will be initialized lazily when needed
         self.k8s_client = None
