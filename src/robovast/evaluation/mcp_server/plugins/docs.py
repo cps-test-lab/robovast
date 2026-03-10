@@ -17,8 +17,8 @@
 """MCP plugin that exposes the RoboVAST documentation as resources and tools.
 
 Documentation pages are available as ``docs://<name>`` resources (e.g.
-``docs://configuration``).  Use ``list_docs()`` to see all pages and
-``search_docs(query)`` for keyword search across all pages.
+``docs://configuration``).  Use ``docs_list()`` to see all pages and
+``docs_search(query)`` for keyword search across all pages.
 
 The docs directory is resolved in this order:
 1. ``ROBOVAST_DOCS_DIR`` environment variable.
@@ -36,6 +36,9 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 logger = logging.getLogger(__name__)
+
+
+# -- Helpers -----------------------------------------------------------------
 
 
 def _find_docs_dir() -> Path | None:
@@ -158,7 +161,6 @@ def _resolve_mcp_tools_directive(target: str) -> str:
 
 def _resolve_autodoc(text: str) -> str:
     """Replace Sphinx autodoc and mcp-tools directives with actual content."""
-    # Expand .. mcp-tools:: directives first (single-line, no options)
     def _replace_mcp_tools(m: re.Match) -> str:
         return _resolve_mcp_tools_directive(m.group(1)) + "\n"
 
@@ -207,100 +209,108 @@ def _extract_title(text: str) -> str | None:
     return None
 
 
+# -- Module-level doc loading ------------------------------------------------
+
+_docs_dir: Path | None = _find_docs_dir()
+
+_doc_files: dict[str, Path] = {}
+_doc_meta: dict[str, str] = {}
+_doc_content: dict[str, str] = {}
+
+if _docs_dir is not None:
+    _doc_files = {
+        p.stem: p
+        for p in sorted(_docs_dir.glob("*.rst"))
+        if p.stem != "index"
+    }
+    for _name, _path in _doc_files.items():
+        _text = _path.read_text(encoding="utf-8")
+        _doc_meta[_name] = _extract_title(_text) or _name
+        _doc_content[_name] = _resolve_autodoc(_text)
+
+
+# -- Tool functions ----------------------------------------------------------
+
+
+def docs_list() -> list[dict] | str:
+    """List all available RoboVAST documentation pages.
+
+    Returns a list of records with ``name`` (use in docs://<name>) and
+    ``title`` (human-readable heading from the document).
+    """
+    if not _doc_files:
+        return (
+            "Documentation directory not found. "
+            "Set the ROBOVAST_DOCS_DIR environment variable to the docs/ path."
+        )
+    return [
+        {"name": name, "title": _doc_meta[name]}
+        for name in sorted(_doc_files)
+    ]
+
+
+def docs_search(query: str) -> list[dict]:
+    """Search across all RoboVAST documentation pages for a keyword or phrase.
+
+    Returns matching excerpts (with 2 lines of surrounding context) grouped
+    by page.  Fetch the full page via the ``docs://<name>`` resource.
+
+    Args:
+        query: Case-insensitive search term.
+    """
+    results = []
+    query_lower = query.lower()
+    for name in _doc_files:
+        lines = _doc_content[name].splitlines()
+        matches = []
+        for i, line in enumerate(lines):
+            if query_lower in line.lower():
+                start = max(0, i - 2)
+                end = min(len(lines), i + 3)
+                matches.append(
+                    {
+                        "line": i + 1,
+                        "excerpt": "\n".join(lines[start:end]),
+                    }
+                )
+        if matches:
+            results.append(
+                {
+                    "page": name,
+                    "title": _doc_meta[name],
+                    "matches": matches,
+                }
+            )
+    return results
+
+
+# -- Plugin class ------------------------------------------------------------
+
+_TOOLS = [
+    docs_list,
+    docs_search,
+]
+
+
 class DocsPlugin:
-    """Expose ``docs/`` as MCP resources with search support."""
+    """Expose ``docs/`` as MCP resources and tools."""
 
     name = "docs"
 
-    def register(self, mcp: FastMCP, context=None) -> None:
-        docs_dir = _find_docs_dir()
-
-        if docs_dir is None:
-            @mcp.tool()
-            def docs_list() -> str:
-                """List available RoboVAST documentation pages."""
-                return (
-                    "Documentation directory not found. "
-                    "Set the ROBOVAST_DOCS_DIR environment variable to the docs/ path."
-                )
-            return
-
-        # Collect all .rst files except index (which is just a TOC).
-        doc_files: dict[str, Path] = {
-            p.stem: p
-            for p in sorted(docs_dir.glob("*.rst"))
-            if p.stem != "index"
-        }
-
-        doc_meta: dict[str, str] = {}
-        doc_content: dict[str, str] = {}
-        for name, path in doc_files.items():
-            text = path.read_text(encoding="utf-8")
-            doc_meta[name] = _extract_title(text) or name
-            doc_content[name] = _resolve_autodoc(text)
-
-        # --- Resource: docs://{name} ---
+    def register(self, mcp: FastMCP) -> None:
+        """Register all tool functions and the docs resource with the MCP server."""
+        for fn in _TOOLS:
+            mcp.tool()(fn)
 
         @mcp.resource("docs://{name}")
         def get_doc(name: str) -> str:
             """Retrieve a RoboVAST documentation page by name.
 
-            Use list_docs() to discover available page names.
+            Use docs_list() to discover available page names.
             """
-            if name not in doc_files:
-                available = ", ".join(sorted(doc_files))
+            if name not in _doc_files:
+                available = ", ".join(sorted(_doc_files))
                 raise ValueError(
                     f"Unknown documentation page {name!r}. Available: {available}"
                 )
-            return doc_content[name]
-
-        # --- Tool: list_docs ---
-
-        @mcp.tool()  # pylint: disable=function-redefined
-        def docs_list() -> list[dict]:
-            """List all available RoboVAST documentation pages.
-
-            Returns a list of records with ``name`` (use in docs://<name>) and
-            ``title`` (human-readable heading from the document).
-            """
-            return [
-                {"name": name, "title": doc_meta[name]}
-                for name in sorted(doc_files)
-            ]
-
-        # --- Tool: docs_search ---
-
-        @mcp.tool()
-        def docs_search(query: str) -> list[dict]:
-            """Search across all RoboVAST documentation pages for a keyword or phrase.
-
-            Returns matching excerpts (with 2 lines of surrounding context) grouped
-            by page.  Fetch the full page via the ``docs://<name>`` resource.
-
-            Args:
-                query: Case-insensitive search term.
-            """
-            results = []
-            query_lower = query.lower()
-            for name in doc_files:
-                lines = doc_content[name].splitlines()
-                matches = []
-                for i, line in enumerate(lines):
-                    if query_lower in line.lower():
-                        start = max(0, i - 2)
-                        end = min(len(lines), i + 3)
-                        matches.append(
-                            {
-                                "line": i + 1,
-                                "excerpt": "\n".join(lines[start:end]),
-                            }
-                        )
-                if matches:
-                    results.append(
-                        {
-                            "page": name,
-                            "title": doc_meta[name],
-                            "matches": matches,
-                        }
-                    )
-            return results
+            return _doc_content[name]
