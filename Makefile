@@ -40,7 +40,7 @@ venv/.robovast_installed:
 	fi
 	
 	@echo "Setting up RoboVAST environment..."
-	. venv/bin/activate && pip install -e .[docs] && pip install -e src/robovast_nav && pip install -e src/robovast_ros
+	. venv/bin/activate && pip install -e .[docs] && pip install -e src/robovast_nav
 
 	@touch venv/.robovast_installed
 	@echo ""

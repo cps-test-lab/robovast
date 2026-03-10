@@ -70,6 +70,7 @@ RUN \
         ros-${ROS_DISTRO}-rmw-cyclonedds-cpp \
         ros-${ROS_DISTRO}-rmw-zenoh-cpp \
         libgl1 \
+        tini \
         python3-zmq python3-msgpack && \
     rm -rf /var/lib/apt/lists/*
 
@@ -119,11 +120,5 @@ RUN USER=ubuntu && \
     chmod 4755 /usr/local/bin/fixuid && \
     mkdir -p /etc/fixuid && \
     printf "user: $USER\ngroup: $GROUP\npaths:\n  - /\n  - /out\n" > /etc/fixuid/config.yml
-
-RUN \
-    apt-get update && \
-    apt-get install -y --no-install-recommends \
-        tini && \
-    rm -rf /var/lib/apt/lists/*
 
 USER ubuntu:ubuntu
