@@ -17,6 +17,7 @@
 
 """CLI plugin for run definition."""
 
+import fnmatch
 import os
 import sys
 from importlib.metadata import entry_points
@@ -138,6 +139,80 @@ def info():
             click.echo(f"Metadata: {campaign_data['metadata']}")
     except Exception as e:
         handle_cli_exception(e)
+
+
+@configuration.command(name='extract-configs')
+@click.argument('args', nargs=-1, required=True, metavar='PATTERN... OUTPUT')
+@click.option('--input', 'input_file', default=None, type=click.Path(exists=True),
+              help='Source .vast file. Defaults to the project config file.')
+def extract_configs(args, input_file):
+    """Extract configurations matching PATTERN(s) into a new .vast file.
+
+    PATTERN is one or more glob patterns (e.g. 'unirandom*') matched against
+    configuration names. OUTPUT is the last argument and specifies the path
+    of the new .vast file to create.
+
+    Example::
+
+        vast config extract-configs unirandom* new.vast
+        vast config extract-configs 'office*' 'hospital*' subset.vast
+    """
+    if len(args) < 2:
+        raise click.UsageError(
+            "Requires at least one PATTERN and an OUTPUT file.\n"
+            "Usage: vast config extract-configs PATTERN... OUTPUT"
+        )
+
+    patterns = args[:-1]
+    output = args[-1]
+
+    # Determine source file
+    if input_file:
+        source_path = input_file
+    else:
+        project_config = get_project_config()
+        source_path = project_config.config_path
+
+    try:
+        with open(source_path, 'r', encoding='utf-8') as f:
+            data = yaml.safe_load(f)
+    except Exception as e:
+        handle_cli_exception(e)
+        return
+
+    configurations = data.get('configuration', [])
+    if not isinstance(configurations, list):
+        click.echo("Error: 'configuration' key is missing or not a list.", err=True)
+        sys.exit(1)
+
+    def matches_any(name):
+        return any(fnmatch.fnmatch(name, p) for p in patterns)
+
+    matched = [cfg for cfg in configurations if matches_any(cfg.get('name', ''))]
+
+    if not matched:
+        click.echo(
+            f"No configurations matched patterns: {', '.join(patterns)}", err=True
+        )
+        sys.exit(1)
+
+    data['configuration'] = matched
+
+    output_dir = os.path.dirname(output)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
+    try:
+        with open(output, 'w', encoding='utf-8') as f:
+            yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    except Exception as e:
+        handle_cli_exception(e)
+        return
+
+    click.echo(
+        f"✓ Extracted {len(matched)} configuration(s) matching "
+        f"{', '.join(repr(p) for p in patterns)} → {output}"
+    )
 
 
 @configuration.command()
