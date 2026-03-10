@@ -124,7 +124,7 @@ class GcsShareProvider(BaseShareProvider):
         """List all campaign ``*.tar.gz`` objects in the configured GCS bucket.
 
         Recognises archives whose base name (without ``.tar.gz``) matches the
-        campaign naming convention (``<name>-YYYY-MM-DD-HHMMSS``).
+        campaign naming convention (``<campaign-name>-YYYY-MM-DD-HHMMSS``).
         Uses the public GCS XML API (no credentials required for public buckets).
         Handles GCS list pagination via the ``NextContinuationToken`` marker.
         """
