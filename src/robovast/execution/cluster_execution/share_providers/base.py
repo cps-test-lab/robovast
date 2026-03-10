@@ -136,7 +136,7 @@ class BaseShareProvider(ABC):
         """Return a list of campaign ``*.tar.gz`` object names on the share.
 
         Archives whose base name (without ``.tar.gz``) matches the campaign
-        naming convention (``<name>-YYYY-MM-DD-HHMMSS``) are returned.
+        naming convention (``<campaign-name>-YYYY-MM-DD-HHMMSS``) are returned.
 
         Raise :class:`NotImplementedError` if the provider does not support
         downloading (default).  Implementations should return bare object names
