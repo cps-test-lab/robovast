@@ -43,7 +43,8 @@ class ObstaclePlacer(QObject):
         xacro_arguments: str = "",
         robot_diameter: float = 0.354,
         waypoints: List[Pose] = None,
-    ) -> List[StaticObject]:
+        min_arc_length: float = 0.0,
+    ) -> List[tuple]:
         """Place obstacles near a navigation path as StaticObject instances.
 
         Args:
@@ -54,14 +55,22 @@ class ObstaclePlacer(QObject):
             xacro_arguments: Optional xacro arguments string for the model
             robot_diameter: Diameter of the robot in meters (default: 0.354m for TurtleBot4)
             waypoints: List of Pose objects to avoid placing obstacles near (e.g., start/goal poses)
+            min_arc_length: Minimum arc-length from the path start before obstacles can be placed.
+                Segments before this distance are excluded from sampling.
 
         Returns:
-            List of StaticObject instances for obstacles
+            List of (StaticObject, path_point) tuples where path_point is the
+            anchor position on the path from which the obstacle was offset.
         """
         if not path or len(path) < 2:
             return []
 
-        obstacle_objects: List[StaticObject] = []
+        # Trim path to start at min_arc_length
+        effective_path = self._trim_path_to_arc_length(path, min_arc_length)
+        if not effective_path or len(effective_path) < 2:
+            return []
+
+        obstacle_objects: List[tuple] = []  # List of (StaticObject, path_point)
         # Define minimum clearance around waypoints (robot diameter + safety
         # margin)
         waypoint_clearance = robot_diameter * 2.0  # 2x robot diameter for safety
@@ -73,9 +82,9 @@ class ObstaclePlacer(QObject):
         path_segments = []
         total_length = 0.0
 
-        for i in range(len(path) - 1):
-            start = path[i]
-            end = path[i + 1]
+        for i in range(len(effective_path) - 1):
+            start = effective_path[i]
+            end = effective_path[i + 1]
             length = self._distance(start, end)
             path_segments.append({"start": start, "end": end, "length": length})
             total_length += length
@@ -103,11 +112,12 @@ class ObstaclePlacer(QObject):
                 path_point, segment["start"], segment["end"], max_distance
             )
             # Check if obstacle is too close to waypoints
+            existing_positions = [obj.spawn_pose.position for obj, _ in obstacle_objects]
             if self._is_valid_obstacle_position(
                 obstacle_pos,
                 waypoint_positions,
                 waypoint_clearance,
-                [obj.spawn_pose.position for obj in obstacle_objects],
+                existing_positions,
                 robot_diameter,
             ):
                 # Generate random yaw angle (rotation) for the obstacle
@@ -123,7 +133,7 @@ class ObstaclePlacer(QObject):
                     xacro_arguments=xacro_arguments,
                 )
 
-                obstacle_objects.append(obstacle)
+                obstacle_objects.append((obstacle, path_point))
         return obstacle_objects
 
     def place_obstacles_random(
@@ -211,6 +221,28 @@ class ObstaclePlacer(QObject):
                 obstacle_objects.append(obstacle)
 
         return obstacle_objects
+
+    def _trim_path_to_arc_length(self, path: List[Position], min_arc_length: float) -> List[Position]:
+        """Return the sub-path starting at the given arc-length from the path start.
+
+        If min_arc_length is 0 or negative, returns the original path unchanged.
+        The first point of the returned path is interpolated exactly at min_arc_length.
+        """
+        if min_arc_length <= 0.0:
+            return path
+        cum = 0.0
+        for i in range(len(path) - 1):
+            seg_len = self._distance(path[i], path[i + 1])
+            if cum + seg_len >= min_arc_length:
+                t = (min_arc_length - cum) / seg_len if seg_len > 0 else 0.0
+                trim_point = Position(
+                    x=path[i].x + t * (path[i + 1].x - path[i].x),
+                    y=path[i].y + t * (path[i + 1].y - path[i].y),
+                )
+                return [trim_point] + list(path[i + 1:])
+            cum += seg_len
+        # min_arc_length exceeds total path length
+        return []
 
     def _distance(self, p1: Position, p2: Position) -> float:
         """Calculate Euclidean distance between two positions."""

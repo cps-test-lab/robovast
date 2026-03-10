@@ -69,8 +69,22 @@ class ObstacleVariationConfig(BaseModel):
 
 class ObstacleVariationGuiRenderer(VariationGuiRenderer):
 
+    @staticmethod
+    def _find_obstacles(config):
+        """Return the list of obstacle dicts from the config.
+
+        Prefers the explicit ``_objects_parameter_name`` private key; falls back to
+        scanning ``config['config']`` for any list whose first element looks like an
+        obstacle (has a ``spawn_pose`` key).
+        """
+        cfg = config.get('config', {})
+        obstacle_name = config.get('_objects_parameter_name')
+        if obstacle_name:
+            return cfg.get(obstacle_name, [])
+        return []
+
     def update_gui(self, config, path):
-        for obstacle in config["config"].get('static_objects', []):
+        for obstacle in self._find_obstacles(config):
             # Get model path and determine shape
             model_path = obstacle.get('model', '')
             object_type = get_object_type_from_model_path(model_path)
@@ -114,9 +128,10 @@ class ObstacleVariation(NavVariation):
     def collect_prov_metadata(cls, config_entry, campaign_namespace, config_namespace, gen_activity_id):
         """Contribute obstacle count to the PROV scenario node."""
         config_cfg = config_entry.get("config", {})
-        static_objects = config_cfg.get("static_objects", [])
+        objects_parameter_name = config_entry.get("_objects_parameter_name", "")
+        objects_list = config_cfg.get(objects_parameter_name, [])
         return ProvContribution(
-            scenario_properties={ROBOVAST["obstacles"]: len(static_objects)}
+            scenario_properties={ROBOVAST["obstacles"]: len(objects_list)}
         )
 
     def variation(self, in_configs):
@@ -172,8 +187,9 @@ class ObstacleVariation(NavVariation):
             path = path_generator.generate_path(waypoints, [])
             self.progress_update("Generated new path for obstacle placement")
 
-        obstacle_objects = []
-        for obstacle_config in obstacle_configs:
+        obstacle_objects = []  # List[StaticObject]
+        obstacle_anchors = []  # List[Position] — path anchors for placed obstacles
+        for i, obstacle_config in enumerate(obstacle_configs):
             if obstacle_config.amount > 0:
                 max_attempts = 10
                 attempt = 0
@@ -186,7 +202,7 @@ class ObstacleVariation(NavVariation):
                     attempt += 1
 
                     try:
-                        placed_obstacles = placer.place_obstacles(
+                        placed_pairs = placer.place_obstacles(
                             path,
                             obstacle_config.max_distance,
                             obstacle_config.amount,
@@ -194,10 +210,14 @@ class ObstacleVariation(NavVariation):
                             obstacle_config.xacro_arguments,
                             robot_diameter=self.parameters.robot_diameter,
                             waypoints=waypoints,
+                            min_arc_length=self._min_arc_length_for_config(i),
                         )
                     except Exception as e:
                         self.progress_update(f"Error placing obstacles: {e}")
-                        placed_obstacles = []
+                        placed_pairs = []
+
+                    placed_obstacles = [obj for obj, _ in placed_pairs]
+                    placed_anchor_pts = [anchor for _, anchor in placed_pairs]
 
                     # Check if we got the expected number of obstacles
                     if len(placed_obstacles) == obstacle_config.amount:
@@ -221,6 +241,7 @@ class ObstacleVariation(NavVariation):
                                 if validation_path:
                                     # Success! Add these obstacles to our collection
                                     obstacle_objects.extend(placed_obstacles)
+                                    obstacle_anchors.extend(placed_anchor_pts)
                                     navigable_config_found = True
                                     self.progress_update(
                                         f"Successfully placed {obstacle_config.amount} obstacles for config"
@@ -245,18 +266,42 @@ class ObstacleVariation(NavVariation):
                 # If we couldn't find a navigable configuration after all attempts
                 if not navigable_config_found:
                     self.progress_update(
-                        f"Warning: Could not place {obstacle_config.amount} obstacles for config while maintaining navigation"
+                        f"Warning: Could not place {obstacle_config.amount} obstacles while maintaining navigation"
                     )
                     raise ValueError(f"Could not place {obstacle_config.amount} obstacles while maintaining navigation after {
                                      max_attempts} attempts")
 
         # Always create variation with parameter, even if obstacle_objects is empty
         # This ensures consistent naming and parameters in scenario.config
-        static_objects_parameter_name = self.parameters.name
+        objects_parameter_name = self.parameters.name
+        extra_params = self._post_process(obstacle_objects, obstacle_anchors, path)
         result_config = self.update_config(config, {
-            static_objects_parameter_name: convert_dataclasses_to_dict(obstacle_objects) if obstacle_objects else []
-        })
+            objects_parameter_name: convert_dataclasses_to_dict(obstacle_objects) if obstacle_objects else [],
+            **extra_params,
+        }, other_values={'_map_file': map_file_path, '_path': path, '_objects_parameter_name': objects_parameter_name})
 
         resulting_configs.append(result_config)
 
         return resulting_configs
+
+    # ------------------------------------------------------------------
+    # Hooks for subclasses
+    # ------------------------------------------------------------------
+
+    def _min_arc_length_for_config(self, obstacle_config_index: int) -> float:
+        """Return the minimum arc-length from path start before obstacles can be placed.
+
+        Called once per obstacle_config entry (indexed by *obstacle_config_index*).
+        Base implementation returns 0.0 (no restriction)."""
+        return 0.0
+
+    def _post_process(self, obstacle_objects, obstacle_anchors, path) -> dict:
+        """Return additional scenario parameters to merge after obstacle placement.
+
+        Called after all obstacle_configs have been placed successfully.
+        *obstacle_objects*: List[StaticObject]
+        *obstacle_anchors*: List[Position] — path anchors matching each obstacle
+        *path*: full planned path (List[Position])
+
+        Base implementation returns an empty dict."""
+        return {}

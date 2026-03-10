@@ -19,6 +19,7 @@ import copy
 import datetime
 import hashlib
 import logging
+import os
 import re
 import sys
 import tempfile
@@ -535,6 +536,9 @@ class JobRunner:
 
         # Add environment variables and volume mounts to the main (robovast) container
         containers = spec['containers']
+        scenario_file_name = os.path.basename(
+            self.campaign_data.get('scenario_file', 'scenario.osc')
+        )
         if containers:
             if 'env' not in containers[0]:
                 containers[0]['env'] = []
@@ -573,6 +577,11 @@ class JobRunner:
                     'value': '-t'
                 })
 
+            containers[0]['env'].append({
+                'name': 'SCENARIO_FILE',
+                'value': scenario_file_name
+            })
+
             containers[0]['volumeMounts'] = shared_volume_mounts
 
         # Add secondary containers
@@ -581,7 +590,11 @@ class JobRunner:
             sc_resources = resolve_resources(sc['resources'], self.kube_context)
             secondary_env = [
                 {'name': 'CONTAINER_NAME', 'value': sc_name},
+<<<<<<< Updated upstream
                 {'name': 'ROS_LOG_DIR', 'value': '/out/logs'},
+=======
+                {'name': 'SCENARIO_FILE', 'value': scenario_file_name},
+>>>>>>> Stashed changes
             ]
             for env_var in self.env:
                 if isinstance(env_var, dict):

@@ -341,6 +341,7 @@ def _build_compose_yaml(
     use_gui_block,
     skip_resource_allocation=True,
     scenario_execution_params='',
+    scenario_file_name='scenario.osc',
 ):
     """Build the docker-compose YAML content for one run as a shell heredoc string."""
 
@@ -351,7 +352,7 @@ def _build_compose_yaml(
 
     def _config_volume_mounts():
         """Yield volume mount lines shared by main and secondary containers."""
-        yield f'      - "{quote(results_dir_var)}/_config/scenario.osc:/config/scenario.osc:ro"'
+        yield f'      - "{quote(results_dir_var)}/_config/{scenario_file_name}:/config/{scenario_file_name}:ro"'
         yield f'      - "{quote(results_dir_var)}/{config_name}/_config/scenario.config:/config/scenario.config:ro"'
         for run_file in run_files:
             yield f'      - "{quote(results_dir_var)}/_config/{run_file}:/config/{run_file}:ro"'
@@ -390,6 +391,7 @@ def _build_compose_yaml(
         lines.append(f'      - POST_COMMAND={post_command}')
     lines.append("      - AVAILABLE_CPUS=${AVAILABLE_CPUS}")
     lines.append("      - AVAILABLE_MEM=${AVAILABLE_MEM}")
+    lines.append(f"      - SCENARIO_FILE={scenario_file_name}")
     if scenario_execution_params:
         lines.append(f"      - SCENARIO_EXECUTION_PARAMETERS={scenario_execution_params}")
     if use_gui_block:
@@ -437,7 +439,11 @@ def _build_compose_yaml(
             lines.append("      - /dev/dri:/dev/dri")
         lines.append("    environment:")
         lines.append(f"      - CONTAINER_NAME={sc_name}")
+<<<<<<< Updated upstream
         lines.append("      - ROS_LOG_DIR=/out/logs")
+=======
+        lines.append(f"      - SCENARIO_FILE={scenario_file_name}")
+>>>>>>> Stashed changes
         for key, value in env_vars.items():
             lines.append(f"      - {key}={value}")
         if use_gui_block:
@@ -585,6 +591,7 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
 
         env_vars = get_execution_env_variables(run_num, config_name, campaign_data.get('execution', {}).get('env'))
         scenario_execution_params = "-t" if log_tree else "${SCENARIO_EXECUTION_PARAMS}"
+        scenario_file_name = os.path.basename(campaign_data.get("scenario_file", "scenario.osc"))
 
         compose_yaml = _build_compose_yaml(
             docker_image=docker_image,
@@ -606,6 +613,7 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
             use_gui_block=True,
             skip_resource_allocation=skip_resource_allocation,
             scenario_execution_params=scenario_execution_params,
+            scenario_file_name=scenario_file_name,
         )
 
         script += f'CURRENT_COMPOSE_FILE="{compose_file}"\n'
