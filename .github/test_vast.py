@@ -213,7 +213,7 @@ def test_vast_workflow(vast_file_path, test_directory, config=None, runs=None): 
         print("✓ vast init executed successfully")
         
         # Check for .robovast_project file (critical for execution step)
-        if not os.path.exists(os.path.join(repo_root, '.robovast_project')):
+        if not os.path.exists(os.path.join(test_directory, '.robovast_project')):
             print("✗ .robovast_project file not found - execution step will fail")
             return False
         
@@ -250,8 +250,8 @@ def test_vast_workflow(vast_file_path, test_directory, config=None, runs=None): 
 
         cmd_postprocess = f'vast results postprocess'
 
-        # Execute in the repo root where .robovast_project exists
-        result = run_command(cmd_postprocess, repo_root, cwd=repo_root)
+        # Execute in the test directory where .robovast_project exists
+        result = run_command(cmd_postprocess, repo_root, cwd=test_directory)
 
         if result != 0:
             print("\u2717 vast results postprocess failed")
