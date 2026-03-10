@@ -51,7 +51,6 @@ The ``metadata`` section allows you to provide structured information about the 
 .. code-block:: yaml
 
    metadata:
-     name: "dynamic_obstacle"
      title: "Robot Navigation Results"
      description: "Autonomous navigation performance evaluation"
      creator: "Your Name"
@@ -66,7 +65,7 @@ All fields within ``metadata`` are optional and can be customized according to y
 
    **Campaign directory naming:** if ``metadata.name`` is set, it is used as
    the prefix for the campaign output directory:
-   ``<name>-YYYY-MM-DD-HHMMSS`` (e.g. ``dynamic_obstacle-2026-03-10-142530``).
+   ``<name>-YYYY-MM-DD-HHMMSS`` (e.g. ``campaign-2026-03-10-142530``).
    When ``metadata.name`` is omitted the prefix defaults to ``campaign``
    (e.g. ``campaign-2026-03-10-142530``).
 
@@ -529,7 +528,7 @@ full results directory (parent of campaign directories).
   - ``filename``: Template for the zip filename.  Supports ``{key}``
     placeholders resolved from the ``.vast`` file's ``metadata:`` section and
     the built-in ``{timestamp}`` placeholder (extracted from the campaign
-    directory name, e.g. ``dynamic_obstacle-2026-03-05-121530`` → ``2026-03-05-121530``).
+    directory name, e.g. ``campaign-2026-03-05-121530`` → ``2026-03-05-121530``).
     Example: ``my_dataset_{robot_id}_{timestamp}.zip``.
     If omitted, the default name ``<campaign-dir-name>.zip`` is used.
     A descriptive error listing all available placeholders is raised when an
