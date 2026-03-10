@@ -291,7 +291,7 @@ def import_results(archive, output, force):
                 campaign = list(top_level_dirs)[0] if top_level_dirs else None
                 if campaign and not is_campaign_dir(campaign):
                     click.echo(
-                        f"Warning: Archive does not contain a recognised campaign directory "
+                        f"Warning: Archive does not contain a recognized campaign directory "
                         f"(expected '<campaign-name>-YYYY-MM-DD-HHMMSS', found '{campaign}')")
             click.echo(f"Archive validation successful")
         except (tarfile.TarError, OSError) as e:
