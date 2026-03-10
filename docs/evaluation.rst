@@ -343,27 +343,27 @@ Use MCP Inspector or a compatible client to explore the available tools and thei
 Campaign metadata tools
 """""""""""""""""""""""
 
-.. mcp-tools:: robovast_mcp.plugins.campaign_metadata._TOOLS
+.. mcp-tools:: robovast.evaluation.mcp_server.plugins.campaign_metadata._TOOLS
 
 Configuration metadata tools
 """"""""""""""""""""""""""""
 
-.. mcp-tools:: robovast_mcp.plugins.configuration_metadata._TOOLS
+.. mcp-tools:: robovast.evaluation.mcp_server.plugins.configuration_metadata._TOOLS
 
 Run metadata tools
 """"""""""""""""""
 
-.. mcp-tools:: robovast_mcp.plugins.run_metadata._TOOLS
+.. mcp-tools:: robovast.evaluation.mcp_server.plugins.run_metadata._TOOLS
 
 Run data tools
 """"""""""""
 
-.. mcp-tools:: robovast_mcp.plugins.run_data._TOOLS
+.. mcp-tools:: robovast.evaluation.mcp_server.plugins.run_data._TOOLS
 
 Plugin metadata tools
 """""""""""""""""""""
 
-.. mcp-tools:: robovast_mcp.plugins.plugin_metadata._TOOLS
+.. mcp-tools:: robovast.evaluation.mcp_server.plugins.plugin_metadata._TOOLS
 
 
 .. _evaluation-mcp-plugins:

@@ -37,8 +37,8 @@ from robovast.common.campaign_data import (
     read_resolved_configurations,
     read_scenario_config,
 )
-from robovast_mcp.plugin_common import _get_config_by_identifier_or_name
-from robovast_mcp.results_resolver import (
+from robovast.evaluation.mcp_server.plugin_common import _get_config_by_identifier_or_name
+from robovast.evaluation.mcp_server.results_resolver import (
     resolve_campaign_path,
     resolve_config_path,
     resolve_run_path,

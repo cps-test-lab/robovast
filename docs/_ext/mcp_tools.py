@@ -18,7 +18,7 @@
 
 Usage in ``.rst`` files::
 
-    .. mcp-tools:: robovast_mcp.plugin_common._TOOLS
+    .. mcp-tools:: robovast.evaluation.mcp_server.plugin_common._TOOLS
 
 The directive imports the referenced list of functions and renders a
 two-column table (Tool / Description) from each function's name and
@@ -36,7 +36,7 @@ from sphinx.application import Sphinx
 class MCPToolsDirective(Directive):
     """Render an MCP tools table from a Python list of functions."""
 
-    required_arguments = 1  # e.g. "robovast_mcp.plugin_common._TOOLS"
+    required_arguments = 1  # e.g. "robovast.evaluation.mcp_server.plugin_common._TOOLS"
     has_content = False
 
     def run(self):
