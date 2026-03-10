@@ -25,9 +25,7 @@ Start via the VAST CLI::
     vast eval mcp-server --transport streamable-http --debug  # human-readable request/reply log
 
 All tools are provided by plugins registered under the
-``robovast.mcp_plugins`` entry-point group.  The server itself only adds
-``describe_server_capabilities`` and ``describe_tool_taxonomy`` as
-built-in introspection tools so that AI clients can orient themselves.
+``robovast.mcp_plugins`` entry-point group.
 """
 
 import json
@@ -36,7 +34,6 @@ import logging
 from mcp.server.fastmcp import FastMCP
 
 from .registry import load_plugins
-from .taxonomy import describe_server_capabilities, describe_tool_taxonomy
 
 logger = logging.getLogger(__name__)
 
@@ -127,9 +124,6 @@ def create_server(
     logger.info(
         f"Started MCP server: host={host}, port={port}, debug={debug}, plugins=[{', '.join(plugin_names)}]"
     )
-
-    mcp.tool()(describe_server_capabilities)
-    mcp.tool()(describe_tool_taxonomy)
 
     if debug:
         _install_debug_logging(mcp)

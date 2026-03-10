@@ -124,7 +124,7 @@ def result_analyzer_cmd(results_dir, force, skip_postprocessing, override):
 
 @evaluation.command(name='mcp-server')
 @click.option('--transport', type=click.Choice(['stdio', 'sse', 'streamable-http']),
-              default='stdio', show_default=True,
+              default='sse', show_default=True,
               help='Transport to use.')
 @click.option('--host', default='0.0.0.0', show_default=True,
               help='Host to bind when using HTTP transport.')
@@ -141,7 +141,7 @@ def mcp_server_cmd(transport, host, port, debug):
 
     Examples::
 
-      vast eval mcp-server                                      # stdio (default)
+      vast eval mcp-server                                      # sse (default)
       vast eval mcp-server --transport streamable-http          # HTTP transport
     """
     from robovast.evaluation.mcp_server.server import create_server  # pylint: disable=import-outside-toplevel

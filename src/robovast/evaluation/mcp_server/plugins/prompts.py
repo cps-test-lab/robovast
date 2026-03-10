@@ -29,15 +29,13 @@ Campaigns are organised in a three-level hierarchy:
 - **campaign** – An experiment dataset containing configurations and runs.
   Defines the shared input files (scenario, .vast config, run files) available
   to every configuration and run.
-- **configuration** – A specific parameterised experiment setup within a
-  campaign.  May add configuration-specific files generated during variation
-  (stored in _transient).
+- **configuration** – A specific parameterized experiment setup within a
+  campaign. There can be multiple runs of the same configuration.
 - **run** – An individual execution of a configuration.  Inherits all input
-  files from its configuration and campaign.  Produces output files (test
-  results, logs, rosbags).
-- **run_data** – Structured tabular output derived from run artefacts,
-  primarily CSV files, exposed through query/inspect tools.
-- **artifact** – Files generated or consumed during execution.
+  files from its configuration and campaign. Produces output files (test
+  results, logs, rosbags). Typically it runs a simulation.
+- **run_data** – Structured tabular output derived from a run. It is accessible
+  through query/inspect tools like `query_run_data_table`,`inspect_run_data_table`.
 
 ## Tool Naming Convention
 
@@ -52,13 +50,11 @@ Tools follow the pattern `<verb>_<resource>[_<detail>]`.  Available verbs:
 
 ## Important Instructions
 
-- **Do not ask for campaign IDs.** Only the campaigns relevant to the current
-  analysis task are accessible through this server.  Use `list_campaigns` to
-  discover what is available.
-- Call `describe_server_capabilities` to get an overview of all available
-  tools before diving into specific operations.
-- Start with campaign-level summaries before drilling into individual
-  configurations or runs.
+- **In a typical workflow, only campaigns relevant to the current
+  analysis task are accessible through this server. So if not needed, don't ask
+  for a specific campaign. Use `list_campaigns` to discover what is available.
+- If not requested otherwise, start with campaign-level summaries before 
+  drilling into individual configurations or runs.
 """
 
 
