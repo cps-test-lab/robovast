@@ -356,7 +356,7 @@ Run metadata tools
 .. mcp-tools:: robovast.evaluation.mcp_server.plugins.run_metadata._TOOLS
 
 Run data tools
-""""""""""""
+""""""""""""""
 
 .. mcp-tools:: robovast.evaluation.mcp_server.plugins.run_data._TOOLS
 
