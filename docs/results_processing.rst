@@ -22,7 +22,7 @@ Top-Level Layout
 .. code-block:: text
 
    <results-dir>/
-   └── <name>-<timestamp>/                  # One per execution (e.g. dynamic_obstacle-2026-03-04-152130)
+   └── <campaign-name>-<timestamp>/          # One per execution (e.g. dynamic_obstacle-2026-03-04-152130)
        ├── metadata.yaml                     # Campaign metadata (auto-generated)
        ├── _config/                          # Campaign-level configuration snapshot
        ├── _execution/                       # Execution metadata
@@ -335,7 +335,7 @@ analysis-friendly formats (e.g. CSV).  Commands are defined in the
 .. option:: -o, --override VAST_FILE
 
    Use the given ``.vast`` file instead of the one stored in
-   ``<name>-<timestamp>/_config/``.  See :ref:`results-override` for details.
+   ``<campaign-name>-<timestamp>/_config/``.  See :ref:`results-override` for details.
 
 Postprocessing is **cached** by a hash of the results directory.  When the
 directory is unchanged the step is skipped automatically.  Use ``--force`` (or
@@ -371,7 +371,7 @@ creating zip archives for upload or hand-off.
 .. option:: -o, --override VAST_FILE
 
    Use the given ``.vast`` file instead of the one stored in
-   ``<name>-<timestamp>/_config/``.
+   ``<campaign-name>-<timestamp>/_config/``.
 
 .. option:: -f, --force
 
@@ -456,7 +456,7 @@ Using ``--override`` to Supply a Local ``.vast`` File
 
 By default ``vast results postprocess`` reads the ``.vast`` configuration from the
 **campaign snapshot** stored in
-``<results-dir>/<name>-<timestamp>/_config/<name>.vast``.  This snapshot is copied
+``<results-dir>/<campaign-name>-<timestamp>/_config/<name>.vast``.  This snapshot is copied
 at execution time and may be out of date.
 
 ``--override`` (short form ``-o``) lets you point to any ``.vast`` file on disk,
