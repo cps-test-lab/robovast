@@ -14,7 +14,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Common utilities for results directory layout (<name>-<timestamp>/<config>/<run-number>)."""
+"""Common utilities for results directory layout (<campaign-name>-<timestamp>/<config>/<run-number>)."""
 from pathlib import Path
 from typing import Iterator, Optional, Tuple
 
@@ -24,7 +24,7 @@ from robovast.common.execution import is_campaign_dir
 def iter_run_folders(results_dir: str) -> Iterator[Tuple[str, str, str, Path]]:
     """Iterate over all run folders under a results directory.
 
-    Discovers the standard layout: results_dir/<name>-<timestamp>/<config>/<run-number>/.
+    Discovers the standard layout: results_dir/<campaign-name>-<timestamp>/<config>/<run-number>/.
     Under results_dir, only directories matching the campaign naming pattern are
     considered; under each campaign, subdirs are config names; under each config,
     subdirs whose names are numeric are run numbers.
@@ -34,7 +34,7 @@ def iter_run_folders(results_dir: str) -> Iterator[Tuple[str, str, str, Path]]:
 
     Yields:
         Tuples (campaign, config_name, run_number, folder_path) where folder_path
-        is the full path to <name>-<timestamp>/<config>/<run-number>.
+        is the full path to <campaign-name>-<timestamp>/<config>/<run-number>.
     """
     root = Path(results_dir)
     if not root.is_dir():
@@ -63,7 +63,7 @@ def iter_run_folders(results_dir: str) -> Iterator[Tuple[str, str, str, Path]]:
 def find_campaign_vast_file(results_dir: str) -> tuple[Optional[str], Optional[str]]:
     """Find the .vast file from the most recent campaign in results_dir.
 
-    Searches ``results_dir/<name>-<timestamp>/_config/*.vast`` and returns the
+    Searches ``results_dir/<campaign-name>-<timestamp>/_config/*.vast`` and returns the
     path from the last (most recent, lexicographically) campaign that has a
     ``.vast`` file.
 
