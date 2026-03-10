@@ -70,6 +70,7 @@ RUN \
         ros-${ROS_DISTRO}-rmw-cyclonedds-cpp \
         ros-${ROS_DISTRO}-rmw-zenoh-cpp \
         libgl1 \
+        tini \
         python3-zmq python3-msgpack && \
     rm -rf /var/lib/apt/lists/*
 
