@@ -39,7 +39,10 @@ Configuration format:
           param2: value2
       - simple_plugin_name
 """
+import csv
 import os
+import re
+import sqlite3
 import subprocess
 import tarfile
 from importlib.resources import files
@@ -462,6 +465,85 @@ class RosbagsToCsv(BasePostprocessingPlugin):
             return False, f"Error executing rosbags_to_csv: {e}"
 
 
+class RosbagsRosoutToCsv(BasePostprocessingPlugin):
+    """Extract /rosout log messages from rosbags to CSV format.
+
+    Reads ``rcl_interfaces/msg/Log`` messages from the ``/rosout`` topic and
+    writes one row per message to ``rosout.csv`` (or the configured filename)
+    next to each rosbag.  Useful for correlating node-level log output with
+    other bag data during post-mortem analysis.
+
+    Output CSV columns: ``timestamp``, ``stamp``, ``level``, ``level_name``,
+    ``name``, ``msg``, ``file``, ``function``, ``line``.
+
+    Example usage in .vast config:
+
+    .. code-block:: yaml
+
+        postprocessing:
+          - rosbags_rosout_to_csv                    # all levels
+          - rosbags_rosout_to_csv:
+              min_level: WARN                        # warnings and above only
+          - rosbags_rosout_to_csv:
+              min_level: ERROR
+              csv_filename: rosout_errors.csv
+    """
+
+    def __call__(
+        self,
+        results_dir: str,
+        config_dir: str,
+        min_level: Optional[str] = None,
+        csv_filename: Optional[str] = None,
+        provenance_file: Optional[str] = None,
+    ) -> Tuple[bool, str]:
+        """Execute rosbags_rosout_to_csv plugin.
+
+        Args:
+            results_dir: Path to the campaign-<id> directory to process.
+            config_dir: Directory containing the config file (for resolving relative paths).
+            min_level: Minimum log level to include: DEBUG, INFO, WARN, ERROR, FATAL
+                (default: DEBUG, i.e. all messages).
+            csv_filename: Output CSV file name written next to each rosbag
+                (default: rosout.csv).
+            provenance_file: Optional path for provenance JSON.
+
+        Returns:
+            Tuple of (success, message).
+        """
+        script_path = str(files('robovast.results_processing.data').joinpath('docker_exec.sh'))
+
+        cmd = [script_path]
+        if provenance_file:
+            cmd.extend(["--provenance-file", provenance_file])
+        cmd.append("rosbags_rosout_to_csv.py")
+        if provenance_file:
+            cmd.extend(["--provenance-file", f"/provenance/{os.path.basename(provenance_file)}"])
+        if min_level:
+            cmd.extend(["--min-level", min_level])
+        if csv_filename:
+            cmd.extend(["--csv-filename", csv_filename])
+        cmd.append(results_dir)
+
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=os.path.dirname(script_path),
+                check=False,
+                capture_output=True,
+                text=True,
+                env={**os.environ, 'PYTHONUNBUFFERED': '1'}
+            )
+
+            if result.returncode != 0:
+                return False, f"rosbags_rosout_to_csv failed with exit code {result.returncode}\n{result.stderr}"
+
+            return True, "rosout log messages extracted to CSV successfully"
+
+        except Exception as e:
+            return False, f"Error executing rosbags_rosout_to_csv: {e}"
+
+
 class RosbagsToWebm(BasePostprocessingPlugin):
     """Convert a CompressedImage topic from rosbags to WebM video files.
 
@@ -632,3 +714,215 @@ class Compress(BasePostprocessingPlugin):
         if not created:
             return True, "No campaign-* directories found or all tarballs already exist (use overwrite: true to recreate)"
         return True, f"Created tarballs: {', '.join(created)}"
+
+
+# Reserved campaign-level directory names (not config dirs)
+_CAMPAIGN_RESERVED_DIRS = {"_config", "_execution", "_transient"}
+
+
+def _csv_to_table_name(filename: str) -> str:
+    """Convert a CSV filename to a valid SQLite table name.
+
+    Strips the .csv extension, replaces non-alphanumeric/underscore characters
+    with underscores, lowercases, and prefixes with 't_' if it starts with a digit.
+
+    Examples:
+        ``behaviors.csv``              -> ``behaviors``
+        ``resource_usage_cpu.csv``     -> ``resource_usage_cpu``
+        ``action-nav.csv``             -> ``action_nav``
+        ``1_metric.csv``               -> ``t_1_metric``
+    """
+    stem = filename
+    if stem.lower().endswith(".csv"):
+        stem = stem[:-4]
+    sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", stem).lower()
+    if sanitized and sanitized[0].isdigit():
+        sanitized = "t_" + sanitized
+    return sanitized or "t_unknown"
+
+
+def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str]:
+    """Consolidate all per-run CSV files into a single SQLite database.
+
+    Creates ``<campaign_dir>/_execution/data.db`` (replacing any existing file).
+    Each CSV filename (e.g. ``behaviors.csv``) becomes a separate table containing
+    data from all configs and all runs, with extra ``config_name`` and ``run_id``
+    columns prepended.
+
+    A ``scenario_timestamps`` table is also created containing the timestamp of
+    the first scenario-end rosout entry per run (from ``scenario_execution_ros``
+    log messages).
+
+    A ``_table_name_map`` table records the mapping from display names (CSV stems)
+    to actual SQL table names.
+
+    Args:
+        campaign_dir: Path to a ``campaign-<id>`` directory.
+
+    Returns:
+        Tuple of (success, message).
+    """
+    def _log(msg: str) -> None:
+        if output_callback:
+            output_callback(msg)
+        else:
+            print(msg)
+
+    campaign_path = Path(campaign_dir)
+    if not campaign_path.is_dir():
+        return False, f"Campaign directory does not exist: {campaign_dir}"
+
+    exec_dir = campaign_path / "_execution"
+    exec_dir.mkdir(parents=True, exist_ok=True)
+    db_path = exec_dir / "data.db"
+
+    # Remove existing DB for clean rebuild
+    if db_path.exists():
+        db_path.unlink()
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=OFF")
+
+        # Metadata table: display_name -> sql_table_name
+        conn.execute(
+            "CREATE TABLE _table_name_map "
+            "(display_name TEXT PRIMARY KEY, sql_name TEXT NOT NULL)"
+        )
+        # Scenario timestamps
+        conn.execute(
+            "CREATE TABLE scenario_timestamps ("
+            "config_name TEXT NOT NULL, "
+            "run_id INTEGER NOT NULL, "
+            "timestamp REAL, "
+            "status TEXT, "
+            "message TEXT, "
+            "PRIMARY KEY (config_name, run_id)"
+            ")"
+        )
+        conn.commit()
+
+        # Track which SQL tables have been created and their current columns
+        # sql_table_name -> set of column names already in the schema
+        created_tables: dict[str, set[str]] = {}
+        # display_name -> sql_table_name
+        name_map: dict[str, str] = {}
+
+        config_dirs = sorted(
+            d for d in campaign_path.iterdir()
+            if d.is_dir()
+            and d.name not in _CAMPAIGN_RESERVED_DIRS
+            and not d.name.startswith(".")
+        )
+
+        for config_dir in config_dirs:
+            config_name = config_dir.name
+            run_dirs = sorted(
+                (d for d in config_dir.iterdir() if d.is_dir() and d.name.isdigit()),
+                key=lambda d: int(d.name),
+            )
+            _log(f"  config: {config_name} ({len(run_dirs)} run(s))")
+            for run_dir in run_dirs:
+                run_id = int(run_dir.name)
+                scenario_ts: float | None = None
+                scenario_status: str | None = None
+                scenario_msg: str | None = None
+
+                for csv_path in sorted(run_dir.glob("*.csv")):
+                    display_name = csv_path.stem
+                    sql_name = _csv_to_table_name(csv_path.name)
+
+                    if display_name not in name_map:
+                        name_map[display_name] = sql_name
+                        conn.execute(
+                            "INSERT OR IGNORE INTO _table_name_map (display_name, sql_name) VALUES (?, ?)",
+                            (display_name, sql_name),
+                        )
+
+                    try:
+                        with open(csv_path, encoding="utf-8", newline="") as f:
+                            reader = csv.DictReader(f)
+                            rows = list(reader)
+                    except Exception:
+                        continue
+
+                    if not rows:
+                        continue
+
+                    csv_cols = list(rows[0].keys())
+
+                    # Extract scenario timestamp from rosout rows
+                    if display_name == "rosout" and scenario_ts is None:
+                        for row in rows:
+                            name_val = str(row.get("name", ""))
+                            msg_val = str(row.get("msg", ""))
+                            if name_val == "scenario_execution_ros":
+                                if msg_val.startswith("Scenario '") and msg_val.endswith("' succeeded."):
+                                    try:
+                                        ts_str = row.get("timestamp", "")
+                                        scenario_ts = float(ts_str) if ts_str else None
+                                    except (ValueError, TypeError):
+                                        scenario_ts = None
+                                    scenario_status = "succeeded"
+                                    scenario_msg = msg_val
+                                    break
+                                if ": execution failed." in msg_val:
+                                    try:
+                                        ts_str = row.get("timestamp", "")
+                                        scenario_ts = float(ts_str) if ts_str else None
+                                    except (ValueError, TypeError):
+                                        scenario_ts = None
+                                    scenario_status = "failed"
+                                    scenario_msg = msg_val
+                                    break
+
+                    context_cols = ["config_name", "run_id"]
+                    all_data_cols = context_cols + csv_cols
+
+                    if sql_name not in created_tables:
+                        col_defs = ", ".join(
+                            f'"{c}" TEXT' for c in all_data_cols
+                        )
+                        conn.execute(f'CREATE TABLE "{sql_name}" ({col_defs})')
+                        conn.execute(
+                            f'CREATE INDEX IF NOT EXISTS "idx_{sql_name}_ctx" '
+                            f'ON "{sql_name}" (config_name, run_id)'
+                        )
+                        created_tables[sql_name] = set(all_data_cols)
+                        conn.commit()
+                        _log(f"    table: {display_name}")
+                    else:
+                        # Add any new columns from this CSV
+                        existing = created_tables[sql_name]
+                        for col in csv_cols:
+                            if col not in existing:
+                                conn.execute(f'ALTER TABLE "{sql_name}" ADD COLUMN "{col}" TEXT')
+                                existing.add(col)
+                        conn.commit()
+
+                    placeholders = ", ".join("?" for _ in all_data_cols)
+                    col_list = ", ".join(f'"{c}"' for c in all_data_cols)
+                    insert_sql = f'INSERT INTO "{sql_name}" ({col_list}) VALUES ({placeholders})'
+                    batch = [
+                        [config_name, run_id] + [row.get(c) for c in csv_cols]
+                        for row in rows
+                    ]
+                    conn.executemany(insert_sql, batch)
+                    conn.commit()
+
+                # Record scenario timestamp (even if None)
+                conn.execute(
+                    "INSERT OR REPLACE INTO scenario_timestamps "
+                    "(config_name, run_id, timestamp, status, message) VALUES (?, ?, ?, ?, ?)",
+                    (config_name, run_id, scenario_ts, scenario_status, scenario_msg),
+                )
+                conn.commit()
+
+        # Persist name map
+        conn.commit()
+        table_count = len(created_tables)
+    finally:
+        conn.close()
+
+    return True, f"Created data.db with {table_count} table(s) in {db_path}"

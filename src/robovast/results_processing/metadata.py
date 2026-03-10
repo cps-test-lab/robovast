@@ -31,17 +31,21 @@ This module provides:
 import logging
 import os
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, timedelta
 from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
 
-from robovast.common.campaign_data import (read_execution_metadata, read_sysinfo,
-                            read_test_result)
-from robovast.common.common import load_config
-from robovast.common.execution import is_campaign_dir
+from robovast.common.variation.loader import load_variation_classes
+
+from robovast.common.campaign_data import (
+    read_execution_metadata,
+    read_sysinfo,
+    read_test_result,
+)
+from robovast.common import load_config
 from robovast.common.results_utils import find_campaign_vast_file
 from robovast.common.variation.loader import load_variation_classes
 
@@ -142,6 +146,13 @@ class MetadataGenerator:
             # Timestamp
             config_entry["created_at"] = data.get("created_at")
 
+            # Content of _config/config.yaml
+            config_yaml_path = self.campaign_dir / config_name / "_config" / "config.yaml"
+            if config_yaml_path.exists():
+                with open(config_yaml_path, "r", encoding="utf-8") as f:
+                    config_yaml_content = yaml.safe_load(f) or {}
+                config_entry.update(config_yaml_content)
+
         # Strip internal fields (keys starting with "_"), preserving
         # _variations for the metadata hooks phase.
         for config_entry in metadata["configurations"]:
@@ -159,7 +170,20 @@ class MetadataGenerator:
         pp_yaml_path = self.campaign_dir / "_transient" / "postprocessing.yaml"
         if pp_yaml_path.exists():
             with open(pp_yaml_path, "r", encoding="utf-8") as f:
-                metadata["postprocessing"] = yaml.safe_load(f) or {}
+                postprocessing = yaml.safe_load(f) or {}
+
+            if isinstance(postprocessing.get("entries"), list):
+                for entry in postprocessing["entries"]:
+                    if isinstance(entry, dict):
+                        if isinstance(entry.get("output"), str):
+                            entry["output"] = entry["output"].removeprefix("../")
+                        if isinstance(entry.get("sources"), list):
+                            entry["sources"] = [
+                                s.removeprefix("../") if isinstance(s, str) else s
+                                for s in entry["sources"]
+                            ]
+
+            metadata["postprocessing"] = postprocessing
         else:
             metadata["postprocessing"] = {}
 
@@ -183,6 +207,17 @@ class MetadataGenerator:
                     f"but expected {expected_runs} runs"
                 )
 
+            # Transient files
+            transient_dir = config_dir_path / "_transient"
+            transient_files = []
+            if transient_dir.exists() and transient_dir.is_dir():
+                for file_path in transient_dir.rglob("*"):
+                    if file_path.is_file():
+                        relative_path = file_path.relative_to(self.campaign_dir)
+                        transient_files.append(str(relative_path))
+            transient_files.sort()
+            config_entry["transient_files"] = transient_files
+
             config_entry["test_results"] = []
             for test_num in test_dirs:
                 run_dir = self.campaign_dir / config_name / str(test_num)
@@ -191,13 +226,11 @@ class MetadataGenerator:
                 # test.xml
                 try:
                     result = read_test_result(run_dir)
-                    entry["success"] = "true" if result["passed"] else "false"
+                    entry["success"] = "true" if result["success"] else "false"
                     entry["start_time"] = result["start_time"]
                     if result["start_time"] and result["duration_sec"] is not None:
                         start_dt = datetime.fromisoformat(result["start_time"])
-                        end_dt = datetime.fromtimestamp(
-                            start_dt.timestamp() + result["duration_sec"]
-                        )
+                        end_dt = start_dt + timedelta(seconds=result["duration_sec"])
                         entry["end_time"] = end_dt.isoformat()
                 except Exception as e:
                     raise ValueError(
@@ -209,7 +242,7 @@ class MetadataGenerator:
                 if run_dir.exists() and run_dir.is_dir():
                     for file_path in run_dir.rglob("*"):
                         if file_path.is_file() and file_path.name not in (
-                            "test.xml", "postprocessing.yaml"
+                            "test.xml"
                         ):
                             relative_path = file_path.relative_to(
                                 run_dir.parent.parent
@@ -225,14 +258,6 @@ class MetadataGenerator:
                     raise FileNotFoundError(
                         f"sysinfo.yaml not found in {run_dir}"
                     ) from exc
-
-                # postprocessing.yaml
-                pp_path = run_dir / "postprocessing.yaml"
-                if pp_path.exists():
-                    with open(pp_path, "r", encoding="utf-8") as f:
-                        entry["postprocessing"] = yaml.safe_load(f)
-                else:
-                    entry["postprocessing"] = {}
 
                 # rosbag2 metadata
                 rosbag2_meta_path = run_dir / "rosbag2" / "metadata.yaml"

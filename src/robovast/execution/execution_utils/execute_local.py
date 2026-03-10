@@ -367,6 +367,7 @@ def _build_compose_yaml(
     lines.append("  robovast:")
     lines.append(f"    image: ${{DOCKER_IMAGE}}")
     lines.append(f"    container_name: robovast")
+    lines.append(f"    init: true") # to cleanup zombie processes and ensure signals are delivered to all processes
     if main_gpu:
         lines.append("    runtime: nvidia")
 
@@ -377,6 +378,7 @@ def _build_compose_yaml(
     lines.append(f'      - "{quote(run_path)}:/out"')
     lines.append(f'      - "{quote(results_dir_var)}/_transient/entrypoint.sh:/config/entrypoint.sh:ro"')
     lines.append(f'      - "{quote(results_dir_var)}/_transient/collect_sysinfo.py:/config/collect_sysinfo.py:ro"')
+    lines.append(f'      - "{quote(results_dir_var)}/_transient/monitor_resources.py:/config/monitor_resources.py:ro"')
     lines.extend(_config_volume_mounts())
     if use_gui_block:
         lines.append("      - /tmp/.X11-unix:/tmp/.X11-unix:rw")
@@ -433,17 +435,14 @@ def _build_compose_yaml(
         lines.append(f'      - "{quote(run_path)}:/out"')
         lines.append(f'      - "{quote(results_dir_var)}/_transient/secondary_entrypoint.sh:/config/secondary_entrypoint.sh:ro"')
         lines.append(f'      - "{quote(results_dir_var)}/_transient/collect_sysinfo.py:/config/collect_sysinfo.py:ro"')
+        lines.append(f'      - "{quote(results_dir_var)}/_transient/monitor_resources.py:/config/monitor_resources.py:ro"')
         lines.extend(_config_volume_mounts())
         if use_gui_block:
             lines.append("      - /tmp/.X11-unix:/tmp/.X11-unix:rw")
             lines.append("      - /dev/dri:/dev/dri")
         lines.append("    environment:")
         lines.append(f"      - CONTAINER_NAME={sc_name}")
-<<<<<<< Updated upstream
-        lines.append("      - ROS_LOG_DIR=/out/logs")
-=======
         lines.append(f"      - SCENARIO_FILE={scenario_file_name}")
->>>>>>> Stashed changes
         for key, value in env_vars.items():
             lines.append(f"      - {key}={value}")
         if use_gui_block:

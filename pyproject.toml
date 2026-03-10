@@ -30,6 +30,9 @@ rdflib = "^7.0"
 pyld = "^2.0"
 ipykernel = "^7.1.0"
 python-dotenv = "^1.0"
+mcp = "^1.0"
+paramiko = "^4.0"
+requests = "^2.32"
 # Optional documentation dependencies
 sphinx = {version = "^7.0.0", optional = true}
 sphinx-rtd-theme = {version = "^3.0.2", optional = true}
@@ -64,6 +67,8 @@ azure = "robovast.execution.cluster_config.azure:AzureClusterConfig"
 [tool.poetry.plugins."robovast.share_providers"]
 nextcloud = "robovast.execution.cluster_execution.share_providers.nextcloud:NextcloudShareProvider"
 gcs = "robovast.execution.cluster_execution.share_providers.gcs:GcsShareProvider"
+sftp = "robovast.execution.cluster_execution.share_providers.sftp:SftpShareProvider"
+webdav = "robovast.execution.cluster_execution.share_providers.webdav:WebDavShareProvider"
 
 [tool.poetry.plugins."robovast.variation_types"]
 "ParameterVariationList" = "robovast.common.variation.parameter_variation:ParameterVariationList"
@@ -77,11 +82,22 @@ rosbags_bt_to_csv = "robovast.results_processing.postprocessing_plugins:RosbagsB
 rosbags_to_csv = "robovast.results_processing.postprocessing_plugins:RosbagsToCsv"
 rosbags_to_webm = "robovast.results_processing.postprocessing_plugins:RosbagsToWebm"
 rosbags_action_to_csv = "robovast.results_processing.postprocessing_plugins:RosbagsActionToCsv"
+rosbags_rosout_to_csv = "robovast.results_processing.postprocessing_plugins:RosbagsRosoutToCsv"
 
 [tool.poetry.plugins."robovast.publication_plugins"]
 zip = "robovast.results_processing.publication_plugins.zip:Zip"
 
 [tool.poetry.plugins."robovast.metadata_processing"]
+
+[tool.poetry.plugins."robovast.mcp_plugins"]
+docs = "robovast.evaluation.mcp_server.plugins.docs:DocsPlugin"
+campaign_metadata = "robovast.evaluation.mcp_server.plugins.campaign_metadata:CampaignMetadataPlugin"
+configuration_metadata = "robovast.evaluation.mcp_server.plugins.configuration_metadata:ConfigurationMetadataPlugin"
+plugin_metadata = "robovast.evaluation.mcp_server.plugins.plugin_metadata:PluginMetadataPlugin"
+run_metadata = "robovast.evaluation.mcp_server.plugins.run_metadata:RunMetadataPlugin"
+run_data = "robovast.evaluation.mcp_server.plugins.run_data:RunDataPlugin"
+search_metadata = "robovast.evaluation.mcp_server.plugins.search_metadata:SearchMetadataPlugin"
+prompts = "robovast.evaluation.mcp_server.plugins.prompts:PromptsPlugin"
 
 [build-system]
 requires = ["poetry-core"]

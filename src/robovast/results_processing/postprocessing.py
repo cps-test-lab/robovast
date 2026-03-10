@@ -30,6 +30,7 @@ import yaml
 from robovast.common.common import load_config
 from robovast.common.execution import is_campaign_dir
 from robovast.results_processing.metadata import generate_campaign_metadata
+from robovast.results_processing.postprocessing_plugins import generate_data_db
 from robovast.common.results_utils import find_campaign_vast_file
 
 
@@ -435,7 +436,6 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
             )
         output(f"Using config from: {vast_path}")
 
-    # campaign_dir is the parent of config_dir (e.g. campaign-<id>/_config/ -> campaign-<id>/)
     campaign_dir = str(Path(config_dir).parent)
 
     # Get postprocessing commands
@@ -562,6 +562,13 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     # Write postprocessing.yaml in campaign/_transient/
     _write_postprocessing_provenance_yaml(campaign_dir, all_provenance_entries)
 
+    # Build SQLite data.db for the campaign
+    db_success, db_msg = generate_data_db(campaign_dir, output_callback=output_callback)
+    if db_success:
+        output(f"✓ {db_msg}")
+    else:
+        output(f"Warning: data.db generation failed: {db_msg}")
+
     # Generate metadata.yaml in each campaign directory
     meta_success, meta_msg = generate_campaign_metadata(
         results_dir, vast_file=vast_file, output_callback=output_callback,
@@ -569,12 +576,16 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     if not meta_success:
         output(f"Warning: Metadata generation failed: {meta_msg}")
 
-    # Add metadata.yaml to exclude set for future hash computations
+    # Add metadata.yaml and data.db to exclude set for future hash computations
     for campaign_item in Path(results_dir_abs).iterdir():
         if campaign_item.is_dir() and is_campaign_dir(campaign_item.name):
             meta_file = campaign_item / "metadata.yaml"
             if meta_file.exists():
                 rel = str(meta_file.relative_to(Path(results_dir_abs)))
+                output_paths.add(rel)
+            db_file = campaign_item / "_execution" / "data.db"
+            if db_file.exists():
+                rel = str(db_file.relative_to(Path(results_dir_abs)))
                 output_paths.add(rel)
     # Re-write outputs file with metadata.yaml included
     try:

@@ -10,39 +10,48 @@ import traceback
 from pathlib import Path
 
 
-def run_command(cmd, cwd=None, check=True):
+def run_command(cmd, repo_root, cwd=None, check=True, stream_output=False):
     """Run a command, stream its output, and return the exit code.
 
     On failure always prints clearly labelled stdout and stderr so CI logs
     contain enough context to debug the problem.
     """
-    print(f"Running: {' '.join(cmd)}")
+    print(f"Running: {cmd}")
 
-    result = subprocess.run(
-        cmd,
-        cwd=cwd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=False,
-    )
+    if stream_output:
+        # Stream output directly to stdout for live visibility
+        result = subprocess.run(
+            ['poetry', 'run', '--directory', str(repo_root),
+            'bash', '-c', f'cd {cwd} && {cmd}'],
+            text=True,
+            check=False,
+        )
+    else:
+        result = subprocess.run(
+            ['poetry', 'run', '--directory', str(repo_root),
+            'bash', '-c', f'cd {cwd} && {cmd}'],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
 
-    # Always emit stdout so progress is visible in the CI log.
-    if result.stdout:
-        sys.stdout.write(result.stdout)
-        sys.stdout.flush()
+        # Always emit stdout so progress is visible in the CI log.
+        if result.stdout:
+            sys.stdout.write(result.stdout)
+            sys.stdout.flush()
 
     if result.returncode != 0:
         print(f"\n✗ Command exited with code {result.returncode}")
-        if result.stdout:
+        if hasattr(result, 'stdout') and result.stdout:
             print("--- stdout ---")
             print(result.stdout)
-        if result.stderr:
+        if hasattr(result, 'stderr') and result.stderr:
             print("--- stderr ---")
             print(result.stderr)
         if check:
             raise subprocess.CalledProcessError(
-                result.returncode, cmd, result.stdout, result.stderr
+                result.returncode, cmd, getattr(result, 'stdout', ''), getattr(result, 'stderr', '')
             )
 
     return result.returncode
@@ -168,15 +177,18 @@ def check_results_dir_structure(results_dir):  # pylint: disable=too-many-return
     return True
 
 
-def test_vast_workflow(vast_file_path, config=None):  # pylint: disable=too-many-return-statements
+def test_vast_workflow(vast_file_path, test_directory, config=None, runs=None):  # pylint: disable=too-many-return-statements
     """Test complete VAST workflow: init -> execution -> postprocessing."""
     print("\n" + "="*60)
     print("Testing: Complete VAST workflow")
     print("="*60)
+    print(f"Test directory: {test_directory}")
+    print(f"VAST file: {vast_file_path}")
     
     # Get the config path and repo root
     repo_root = Path(__file__).parent.parent
     config_path = Path(vast_file_path)
+    results_dir = os.path.join(test_directory, "results")
     
     # Handle relative paths
     if not config_path.is_absolute():
@@ -189,78 +201,69 @@ def test_vast_workflow(vast_file_path, config=None):  # pylint: disable=too-many
     print(f"✓ Config file found: {config_path}")
     
     try:
-            
-        with tempfile.TemporaryDirectory() as temp_output:
-            # Step 1: vast init
-            print("\n--- Step 1: vast init ---")
-            cmd_init = [
-                'poetry', 'run', '--directory', str(repo_root),
-                'vast', 'init', str(config_path)
-            ]
-            
-            result = run_command(cmd_init, cwd=temp_output)
-            
-            if result != 0:
-                print("✗ vast init failed")
-                return False
-            
-            print("✓ vast init executed successfully")
-            
-            # Check for .robovast_project file (critical for execution step)
-            if not os.path.exists(os.path.join(repo_root, '.robovast_project')):
-                print("✗ .robovast_project file not found - execution step will fail")
-                return False
-            
-            print("✓ .robovast_project file exists - environment is properly initialized")
+        # Step 1: vast init
+        print("\n--- Step 1: vast init ---")
+        cmd_init = f"vast init {config_path}"
         
-            # Step 2: vast exec local run
-            # Use a temporary directory for output
-            print("\n--- Step 2: vast exec local run ---")
-            
-            cmd_exec = [
-                'poetry', 'run', '--directory', str(repo_root),
-                'vast', 'exec', 'local', 'run', "-r", "1"
-            ]
-            
-            # Add config option if provided
-            if config:
-                cmd_exec.extend(["-c", config])
-            
-            result = run_command(cmd_exec, cwd=repo_root)
-            
-            if result != 0:
-                print("✗ vast exec local run failed")
-                return False
-            
-            print("✓ vast exec local run executed successfully")
-            
-            # Check output structure
-            if not check_results_dir_structure(os.path.join(repo_root, "results")):
-                return False
-            
-            print("✓ Output structure is valid")
-            
-            # Step 3: vast results postprocess
-            print("\n--- Step 3: vast results postprocess ---")
+        result = run_command(cmd_init, repo_root, cwd=test_directory)
+        
+        if result != 0:
+            print("✗ vast init failed")
+            return False
+        
+        print("✓ vast init executed successfully")
+        
+        # Check for .robovast_project file (critical for execution step)
+        if not os.path.exists(os.path.join(repo_root, '.robovast_project')):
+            print("✗ .robovast_project file not found - execution step will fail")
+            return False
+        
+        print("✓ .robovast_project file exists - environment is properly initialized")
+    
+        # Step 2: vast exec local run
+        # Use a temporary directory for output
+        print("\n--- Step 2: vast exec local run ---")
+        
+        cmd_exec = f'vast exec local run'
+        if runs:
+            cmd_exec += f' -r {runs}'
+        
+        # Add config option if provided
+        if config:
+            cmd_exec += f' -c {config}'
+        
+        result = run_command(cmd_exec, repo_root, cwd=test_directory, stream_output=True)
+        
+        if result != 0:
+            print("✗ vast exec local run failed")
+            return False
+        
+        print("✓ vast exec local run executed successfully")
+        
+        # Check output structure
+        if not check_results_dir_structure(results_dir):
+            return False
+        
+        print("✓ Output structure is valid")
+        
+        # Step 3: vast results postprocess
+        print("\n--- Step 3: vast results postprocess ---")
 
-            cmd_postprocess = [
-                'poetry', 'run', '--directory', str(repo_root),
-                'vast', 'results', 'postprocess'
-            ]
+        cmd_postprocess = f'vast results postprocess'
 
-            # Execute in the repo root where .robovast_project exists
-            result = run_command(cmd_postprocess, cwd=temp_output)
+        # Execute in the repo root where .robovast_project exists
+        result = run_command(cmd_postprocess, repo_root, cwd=repo_root)
 
-            if result != 0:
-                print("\u2717 vast results postprocess failed")
-                return False
+        if result != 0:
+            print("\u2717 vast results postprocess failed")
+            return False
 
-            print("\u2713 vast results postprocess executed successfully")
-            
-            print("✓ Postprocessing completed successfully")
-            
-            print("\n✓ Complete workflow succeeded!")
-            return True
+        print("\u2713 vast results postprocess executed successfully")
+        
+        print("✓ Postprocessing completed successfully")
+        
+        print("\n✓ Complete workflow succeeded!")
+        return True
         
     except subprocess.CalledProcessError as e:
         print(f"✗ Command failed with exit code {e.returncode}")
@@ -286,6 +289,18 @@ def main():
         default=None,
         help='Configuration to run (will be passed as -c <config> to vast exec)'
     )
+    parser.add_argument(
+        '-d', '--test-directory',
+        type=str,
+        required=True,
+        help='Directory for test output (will be passed as -d <directory> to vast exec)'
+    )
+    parser.add_argument(
+        '-r', '--runs',
+        type=int,
+        default=None,
+        help='Number of runs (will be passed as -r <runs> to vast exec)'
+    )
     
     args = parser.parse_args()
     
@@ -295,9 +310,11 @@ def main():
     print(f"VAST file: {args.vast_file}")
     if args.config:
         print(f"Configuration: {args.config}")
+    if args.test_directory:
+        print(f"Test directory: {args.test_directory}")
     
     tests = [
-        ("Complete workflow: init -> execution -> postprocess", test_vast_workflow, args.vast_file, args.config),
+        ("Complete workflow: init -> execution -> postprocess", test_vast_workflow, args.vast_file, args.test_directory, args.config, args.runs),
     ]
     
     results = []

@@ -44,7 +44,7 @@ is specified.
 .. _evaluation-override:
 
 Using ``--override`` to Supply a Local ``.vast`` File
-------------------------------------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 By default ``vast eval gui`` reads the ``.vast`` configuration from the
 **campaign snapshot** stored in
@@ -80,7 +80,7 @@ for example your current working copy:
 .. _evaluation-notebooks:
 
 Writing Evaluation Notebooks
------------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Notebooks are plain Jupyter ``.ipynb`` files referenced from the
 ``evaluation.visualization`` section of the ``.vast`` file:
@@ -115,7 +115,7 @@ are instant.
 .. _evaluation-self-contained:
 
 Self-Contained Evaluation Notebooks
--------------------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The *self-contained* pattern extends the basic requirement above: the
 notebook is written so it can be opened and executed **directly in VS Code
@@ -227,3 +227,143 @@ Typical development workflow
    will be replaced automatically.
 6. To share the notebook with colleagues working on the same dataset, leave
    the real ``DATA_DIR`` value in place -- they only need to update the path.
+
+
+.. _evaluation-mcp:
+
+MCP Server
+----------
+
+RoboVAST ships an `MCP (Model Context Protocol) <https://modelcontextprotocol.io>`_
+server that exposes campaign results as tools so that AI assistants (Claude,
+Open WebUI, etc.) can inspect runs, read logs, and analyse data.
+
+.. code-block:: bash
+
+   vast eval mcp-server                                # stdio (default)
+   vast eval mcp-server --transport sse                # legacy SSE on 0.0.0.0:8000
+   vast eval mcp-server --transport streamable-http    # modern HTTP
+   vast eval mcp-server --transport streamable-http --host 127.0.0.1 --port 9000
+   vast eval mcp-server --debug                        # log all MCP messages
+
+**Options**
+
+.. option:: --transport {stdio,sse,streamable-http}
+
+   Transport layer.  ``stdio`` is the default and is used by local MCP
+   clients such as Claude Desktop.  ``sse`` and ``streamable-http`` expose
+   the server over HTTP.
+
+.. option:: --host HOST
+
+   Host to bind when using an HTTP transport (default ``0.0.0.0``).
+
+.. option:: --port PORT
+
+   Port to bind when using an HTTP transport (default ``8000``).
+
+.. option:: --debug
+
+   Enable ``DEBUG`` logging for all MCP messages.
+
+
+.. _evaluation-mcp-taxonomy:
+
+Tool Taxonomy
+^^^^^^^^^^^^^
+
+The MCP server organises its tools along two dimensions: **operations**
+(verbs) and **resources**.  Tool names follow the pattern
+``<verb>_<resource>[_<detail>]``.
+
+**Operations**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 15 55
+
+   * - Verb
+     - Meaning
+   * - ``get``
+     - Retrieve a specific structured metadata object
+   * - ``list``
+     - Enumerate objects within a resource
+   * - ``search``
+     - Filter and query resources by criteria
+   * - ``inspect``
+     - Compute derived analysis or statistics
+
+**Resources**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 50
+
+   * - Resource
+     - Description
+   * - ``campaign``
+     - An experiment dataset containing configurations and runs.
+       Defines the shared input files (scenario, .vast config)
+       available to every configuration and run.
+   * - ``configuration``
+     - A specific parameterized experiment setup.
+       May add configuration-specific files generated during variation.
+   * - ``run``
+     - An individual execution of a configuration.
+       Inherits all input files from its configuration and campaign.
+       Produces output files (test results, logs, rosbags).
+   * - ``run_data``
+     - Structured tabular run output exposed via
+       dedicated query/inspect tools.
+   * - ``artifact``
+     - Files generated or consumed during execution
+
+**Tool groups**
+
+The tools are grouped by domain.  Two introspection tools
+(``describe_server_capabilities``, ``describe_tool_taxonomy``) are always
+available so that AI clients can orient themselves at runtime.
+
+
+.. _evaluation-mcp-tools:
+
+Available Tools
+^^^^^^^^^^^^^^^
+
+All tools are provided by plugins loaded at startup via the
+``robovast.mcp_plugins`` entry-point group.
+
+Use MCP Inspector or a compatible client to explore the available tools and their input/output schemas.
+
+.. code-block:: bash
+
+    npx @modelcontextprotocol/inspector
+
+
+Campaign metadata tools
+"""""""""""""""""""""""
+
+.. mcp-tools:: robovast_mcp.plugins.campaign_metadata._TOOLS
+
+Configuration metadata tools
+""""""""""""""""""""""""""""
+
+.. mcp-tools:: robovast_mcp.plugins.configuration_metadata._TOOLS
+
+Run metadata tools
+""""""""""""""""""
+
+.. mcp-tools:: robovast_mcp.plugins.run_metadata._TOOLS
+
+Run data tools
+""""""""""""
+
+.. mcp-tools:: robovast_mcp.plugins.run_data._TOOLS
+
+Plugin metadata tools
+"""""""""""""""""""""
+
+.. mcp-tools:: robovast_mcp.plugins.plugin_metadata._TOOLS
+
+
+.. _evaluation-mcp-plugins:

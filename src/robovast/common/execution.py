@@ -227,7 +227,6 @@ def get_execution_env_variables(run_num, config_name, additional_env=None):
     campaign_id = get_campaign()
     env_vars = {
         'CAMPAIGN_ID': campaign_id,
-        'ROS_LOG_DIR': '/out/logs',
     }
 
     # Add custom environment variables from execution config
@@ -246,18 +245,63 @@ _LOCAL_INIT_BLOCK = "eval $(fixuid -q)"
 _CLUSTER_INIT_BLOCK = ""
 
 _LOCAL_POST_RUN_BLOCK = """\
+    # Build built-in cleanup script (stop rosbag and resource monitor gracefully)
+    BUILTIN_CLEANUP_SCRIPT="/tmp/robovast_cleanup.sh"
+    cat > "${BUILTIN_CLEANUP_SCRIPT}" << 'CLEANUP_EOF'
+#!/bin/bash
+if [ -f /tmp/rosbag.pid ]; then
+    if start-stop-daemon --stop --signal INT --pidfile /tmp/rosbag.pid >/dev/null 2>&1; then
+        while kill -0 $(cat /tmp/rosbag.pid) 2>/dev/null; do sleep 0.1; done
+    fi
+    echo "ROS bag process stopped."
+fi
+if [ -f /tmp/monitor.pid ]; then
+    if kill -TERM $(cat /tmp/monitor.pid) 2>/dev/null; then
+        while kill -0 $(cat /tmp/monitor.pid) 2>/dev/null; do sleep 0.1; done
+    fi
+    echo "Resource monitor process stopped."
+fi
+exit 0
+CLEANUP_EOF
+    chmod +x "${BUILTIN_CLEANUP_SCRIPT}"
+
     POST_COMMAND_PARAM=""
     if [ -n "${POST_COMMAND}" ]; then
         if [ -e "${POST_COMMAND}" ]; then
-            POST_COMMAND_PARAM="--post-run ${POST_COMMAND}"
-            log "Post-command set to: ${POST_COMMAND}"
+            COMBINED_SCRIPT="/tmp/combined_post_run.sh"
+            cat > "${COMBINED_SCRIPT}" << COMBINED_EOF
+#!/bin/bash
+set -e
+source "${POST_COMMAND}"
+"${BUILTIN_CLEANUP_SCRIPT}"
+COMBINED_EOF
+            chmod +x "${COMBINED_SCRIPT}"
+            POST_COMMAND_PARAM="--post-run ${COMBINED_SCRIPT}"
+            log "Post-command '${POST_COMMAND}' combined with built-in cleanup."
         else
             log "ERROR: Post-command '${POST_COMMAND}' does not exist."
             exit 1
         fi
+    else
+        POST_COMMAND_PARAM="--post-run ${BUILTIN_CLEANUP_SCRIPT}"
     fi"""
 
 _CLUSTER_POST_RUN_BLOCK = """\
+    # Build built-in cleanup script (stop rosbag and resource monitor gracefully)
+    BUILTIN_CLEANUP_SCRIPT="/tmp/robovast_cleanup.sh"
+    cat > "${BUILTIN_CLEANUP_SCRIPT}" << 'CLEANUP_EOF'
+#!/bin/bash
+if [ -f /tmp/rosbag.pid ]; then
+    start-stop-daemon --stop --signal INT --pidfile /tmp/rosbag.pid --retry INT/30/KILL/5 --remove-pidfile >/dev/null 2>&1 || true
+    echo "ROS bag process stopped."
+fi
+if [ -f /tmp/monitor.pid ]; then
+    start-stop-daemon --stop --signal TERM --pidfile /tmp/monitor.pid --retry TERM/10/KILL/5 --remove-pidfile >/dev/null 2>&1 || true
+    echo "Resource monitor process stopped."
+fi
+CLEANUP_EOF
+    chmod +x "${BUILTIN_CLEANUP_SCRIPT}"
+
     # Build the S3 upload script; output is mirrored to the S3 bucket after the run
     S3_UPLOAD_SCRIPT="/tmp/s3_upload.sh"
     cat > "${S3_UPLOAD_SCRIPT}" << 'UPLOAD_EOF'
@@ -280,17 +324,26 @@ UPLOAD_EOF
 #!/bin/bash
 set -e
 source "${POST_COMMAND}"
+"${BUILTIN_CLEANUP_SCRIPT}"
 "${S3_UPLOAD_SCRIPT}"
 COMBINED_EOF
             chmod +x "${COMBINED_SCRIPT}"
             POST_COMMAND_PARAM="--post-run ${COMBINED_SCRIPT}"
-            log "Post-command '${POST_COMMAND}' combined with S3 upload."
+            log "Post-command '${POST_COMMAND}' combined with built-in cleanup and S3 upload."
         else
             log "ERROR: Post-command '${POST_COMMAND}' does not exist."
             exit 1
         fi
     else
-        POST_COMMAND_PARAM="--post-run ${S3_UPLOAD_SCRIPT}"
+        COMBINED_SCRIPT="/tmp/combined_post_run.sh"
+        cat > "${COMBINED_SCRIPT}" << COMBINED_EOF
+#!/bin/bash
+set -e
+"${BUILTIN_CLEANUP_SCRIPT}"
+"${S3_UPLOAD_SCRIPT}"
+COMBINED_EOF
+        chmod +x "${COMBINED_SCRIPT}"
+        POST_COMMAND_PARAM="--post-run ${COMBINED_SCRIPT}"
     fi"""
 
 
@@ -362,6 +415,17 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
     collect_sysinfo_src = str(files('robovast.execution.data').joinpath('collect_sysinfo.py'))
     collect_sysinfo_dst = os.path.join(campaign_transient_dir, "collect_sysinfo.py")
     shutil.copy2(collect_sysinfo_src, collect_sysinfo_dst)
+
+    # Copy monitor_resources.py into _transient/
+    monitor_resources_src = str(files('robovast.execution.data').joinpath('monitor_resources.py'))
+    monitor_resources_dst = os.path.join(campaign_transient_dir, "monitor_resources.py")
+    shutil.copy2(monitor_resources_src, monitor_resources_dst)
+
+    # Copy rosout conversion scripts into _transient/ for host-side post-run processing
+    for script_name in ('rosbags_rosout_to_csv.py', 'rosbags_common.py', 'ros2_exec.sh'):
+        src = str(files('robovast.results_processing.data').joinpath(script_name))
+        shutil.copy2(src, os.path.join(campaign_transient_dir, script_name))
+    os.chmod(os.path.join(campaign_transient_dir, 'ros2_exec.sh'), 0o755)
 
     vast_file_path = os.path.dirname(campaign_data["vast"])
 

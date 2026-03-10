@@ -93,6 +93,15 @@ else
         fi
     fi
 
+    # Start built-in daemons
+    python3 /config/monitor_resources.py "${OUTPUT_DIR}/resource_usage_main.csv" &
+    echo $! > /tmp/monitor.pid
+    log "Started resource monitor (PID=$(cat /tmp/monitor.pid)) -> ${OUTPUT_DIR}/resource_usage_main.csv"
+
+    start-stop-daemon --start --background --make-pidfile --pidfile /tmp/rosbag.pid \
+        --startas /bin/bash -- -c "exec ros2 bag record -o ${OUTPUT_DIR}/logs/rosout_bag --storage mcap --topics /rosout"
+    log "Started rosbag recording /rosout (PID=$(cat /tmp/rosbag.pid)) -> ${OUTPUT_DIR}/logs/rosout_bag"
+
     # @@POST_RUN_BLOCK@@
 
     SCENARIO_FILE="${SCENARIO_FILE:-scenario.osc}"

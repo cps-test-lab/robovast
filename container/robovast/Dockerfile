@@ -120,4 +120,10 @@ RUN USER=ubuntu && \
     mkdir -p /etc/fixuid && \
     printf "user: $USER\ngroup: $GROUP\npaths:\n  - /\n  - /out\n" > /etc/fixuid/config.yml
 
+RUN \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        tini && \
+    rm -rf /var/lib/apt/lists/*
+
 USER ubuntu:ubuntu

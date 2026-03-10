@@ -54,6 +54,9 @@ def reconstruct_behavior_timeline(bag_path, output_file):
     uuid_to_int = {}
     next_id = 1
 
+    # Track last status per behavior to avoid duplicate rows
+    last_status = {}
+
     fieldnames = ['timestamp', 'behavior_name', 'behavior_id', 'status', 'status_name', 'class_name']
     record_count = 0
 
@@ -79,10 +82,16 @@ def reconstruct_behavior_timeline(bag_path, output_file):
                     uuid_to_int[uuid_str] = next_id
                     next_id += 1
 
+                behavior_id = uuid_to_int[uuid_str]
+                key = (behavior.name, behavior_id)
+                if last_status.get(key) == behavior.status:
+                    continue
+                last_status[key] = behavior.status
+
                 writer.writerow({
                     'timestamp': timestamp / 1000000000.0,
                     'behavior_name': behavior.name,
-                    'behavior_id': uuid_to_int[uuid_str],
+                    'behavior_id': behavior_id,
                     'status': behavior.status,
                     'status_name': status_names.get(behavior.status, 'UNKNOWN'),
                     'class_name': behavior.class_name

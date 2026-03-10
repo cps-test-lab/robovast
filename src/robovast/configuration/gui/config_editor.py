@@ -17,6 +17,8 @@
 """PySide6 GUI for editing and validating YAML configuration files."""
 
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -187,6 +189,27 @@ class ConfigEditor(QMainWindow):
         button_layout = QHBoxLayout(button_container)
         button_layout.setContentsMargins(0, 0, 0, 0)
         button_layout.setSpacing(5)
+
+        # Add Open button
+        self.open_button = QPushButton("Open")
+        self.open_button.setMaximumWidth(150)
+        self.open_button.clicked.connect(self.on_open_clicked)
+        self.open_button.setStyleSheet("""
+            QPushButton {
+                background-color: #5a3f7a;
+                color: white;
+                border: 1px solid #7a57a0;
+                padding: 5px 15px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #7a57a0;
+            }
+            QPushButton:pressed {
+                background-color: #47306a;
+            }
+        """)
+        button_layout.addWidget(self.open_button)
 
         # Add Generate button
         self.generate_button = QPushButton("Generate")
@@ -538,6 +561,75 @@ class ConfigEditor(QMainWindow):
                 self.generation_thread.terminate()
                 # Do not wait indefinitely here to avoid blocking the GUI
 
+    def on_open_clicked(self):
+        """Handle Open button click – pick a .vast file, load it, and run vast init."""
+        if self.editor.toPlainText().strip() and not self.confirm_discard_changes():
+            return
+
+        file_name, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open Configuration",
+            self.current_file or "",
+            "VAST Files (*.vast);;YAML Files (*.yaml *.yml);;All Files (*)"
+        )
+        if not file_name:
+            return
+
+        try:
+            with open(file_name, 'r', encoding='utf-8') as f:
+                content = f.read()
+            self.editor.setPlainText(content)
+            self.current_file = file_name
+            self.setWindowTitle(f"Configuration Editor - {Path(file_name).name}")
+            self.error_display.clear()
+            self.validate_config()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to open file:\n{str(e)}")
+            return
+
+        # Run 'vast init --force <file>' to initialise the project
+        self.error_display.append(
+            f"<span style='color: #9cdcfe;'>Running: vast init --force {Path(file_name).name} …</span>"
+        )
+        vast_exe = shutil.which("vast")
+        if vast_exe is None:
+            # Fall back to running via the same Python interpreter's entry point
+            vast_exe = os.path.join(os.path.dirname(sys.executable), "vast")
+
+        try:
+            result = subprocess.run(
+                [vast_exe, "init", "--force", file_name],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.stdout:
+                for line in result.stdout.strip().splitlines():
+                    self.error_display.append(
+                        f"<span style='color: #dcdcaa;'>{line}</span>"
+                    )
+            if result.returncode == 0:
+                self.error_display.append(
+                    "<span style='color: #4ec9b0;'><b>✓ vast init completed successfully</b></span>"
+                )
+            else:
+                stderr = result.stderr.strip() if result.stderr else "(no details)"
+                self.error_display.append(
+                    f"<span style='color: #f48771;'><b>✗ vast init failed (exit {result.returncode}):</b> {stderr}</span>"
+                )
+        except FileNotFoundError:
+            self.error_display.append(
+                "<span style='color: #f48771;'><b>✗ 'vast' executable not found – project not initialised.</b></span>"
+            )
+        except subprocess.TimeoutExpired:
+            self.error_display.append(
+                "<span style='color: #f48771;'><b>✗ vast init timed out.</b></span>"
+            )
+        except Exception as e:
+            self.error_display.append(
+                f"<span style='color: #f48771;'><b>✗ Error running vast init:</b> {str(e)}</span>"
+            )
+
     def on_save_clicked(self):
         """Handle Save button click."""
         if not self.current_file:
@@ -654,9 +746,12 @@ class ConfigEditor(QMainWindow):
 
     def keyPressEvent(self, event: QKeyEvent):
         """Handle key press events."""
-        # Check for Ctrl+S to save
+        # Ctrl+O => Open
+        if event.key() == Qt.Key_O and event.modifiers() == Qt.ControlModifier:
+            self.on_open_clicked()
+            event.accept()
         # Ctrl+S => Save
-        if event.key() == Qt.Key_S and event.modifiers() == Qt.ControlModifier:
+        elif event.key() == Qt.Key_S and event.modifiers() == Qt.ControlModifier:
             self.on_save_clicked()
             event.accept()
         # Ctrl+Shift+S => Save As

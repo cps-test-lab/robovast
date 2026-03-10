@@ -120,3 +120,44 @@ def result_analyzer_cmd(results_dir, force, skip_postprocessing, override):
 
     except Exception as e:
         handle_cli_exception(e)
+
+
+@evaluation.command(name='mcp-server')
+@click.option('--transport', type=click.Choice(['stdio', 'sse', 'streamable-http']),
+              default='stdio', show_default=True,
+              help='Transport to use.')
+@click.option('--host', default='0.0.0.0', show_default=True,
+              help='Host to bind when using HTTP transport.')
+@click.option('--port', default=8000, show_default=True, type=int,
+              help='Port to bind when using HTTP transport.')
+@click.option('--debug', is_flag=True,
+              help='Enable DEBUG logging for all MCP messages.')
+def mcp_server_cmd(transport, host, port, debug):
+    """Start the RoboVAST MCP server.
+
+    Exposes RoboVAST tools via the Model Context Protocol so that AI
+    assistants (e.g. Claude, Open WebUI) can interact with run results
+    and documentation.
+
+    Examples::
+
+      vast eval mcp-server                                      # stdio (default)
+      vast eval mcp-server --transport streamable-http          # HTTP transport
+    """
+    from robovast.evaluation.mcp_server.server import create_server  # pylint: disable=import-outside-toplevel
+
+    import logging  # pylint: disable=import-outside-toplevel
+
+    logging.basicConfig(level=logging.WARNING)
+    logging.getLogger("mcp").setLevel(logging.CRITICAL)
+
+    if debug:
+        # Enable only our own human-readable wrapper; keep MCP internals quiet.
+        logging.getLogger("robovast.evaluation.mcp_server").setLevel(logging.DEBUG)
+
+    mcp = create_server(host=host, port=port, debug=debug)
+
+    try:
+        mcp.run(transport=transport)
+    except KeyboardInterrupt:
+        pass

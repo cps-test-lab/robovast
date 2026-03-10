@@ -25,7 +25,7 @@ execution:
   image: ghcr.io/cps-test-lab/robovast:latest
   resources:
     cpu: 1
-  runs: 20
+  runs: 2
   env:
   - ENABLE_X11: "false"
   scenario_file: scenario.osc

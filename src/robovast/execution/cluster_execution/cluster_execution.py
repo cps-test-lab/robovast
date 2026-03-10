@@ -30,8 +30,9 @@ import yaml
 from kubernetes import client
 from kubernetes import config as kube_config
 
-from robovast.common import (get_campaign, get_execution_env_variables,
-                             load_config, normalize_secondary_containers)
+from robovast.common import (ProgressBar, get_campaign,
+                             get_execution_env_variables, load_config,
+                             normalize_secondary_containers)
 from robovast.common.cluster_context import resolve_resources
 from robovast.common.config_generation import generate_scenario_variations
 from robovast.execution.cluster_execution.kubernetes import check_pod_running
@@ -57,7 +58,7 @@ def _label_safe_campaign(campaign: str) -> str:
 def _short_job_name(campaign: str, config_name: str, run_number: int) -> str:
     """Create a short Kubernetes job name (max 63 chars) for campaign-id-config-run.
 
-    Format: <name6>-<HHMMSS>-<config8><hash4>-<run_number>
+    Format: <name6>-<HHMMSS>-<config6chars><sha256_16chars>-<run_number>
     - campaign: "<name>-2026-02-27-141130"
         -> name prefix: first 6 lowercase alphanumeric chars of <name>
         -> time suffix: last 6 chars of timestamp (HHMMSS) = "141130"
@@ -78,9 +79,9 @@ def _short_job_name(campaign: str, config_name: str, run_number: int) -> str:
         name_alpha = 'r' + name_alpha[:5]
     run_part = f"{name_alpha}-{hhmmss}"
 
-    # First 8 alphanumeric chars for readability, rest as 4-char hash for uniqueness
-    config_alpha = re.sub(r"[^a-zA-Z0-9]", "", config_name)[:8]
-    config_hash = hashlib.md5(config_name.encode()).hexdigest()[:4]
+    # First 6 alphanumeric chars for readability + 16-char SHA-256 for collision-free uniqueness
+    config_alpha = re.sub(r"[^a-zA-Z0-9]", "", config_name)[:6].lower()
+    config_hash = hashlib.sha256(config_name.encode()).hexdigest()[:16]
     config_part = f"{config_alpha}{config_hash}" if config_alpha else config_hash
 
     return f"{run_part}-{config_part}-{run_number}"
@@ -158,25 +159,41 @@ def cleanup_cluster_campaign(namespace="default", campaign=None, context=None):
         raise
 
     # Step 5: Force-clear finalizers on any Jobs still stuck in Terminating.
-    try:
-        remaining_jobs = k8s_batch_client.list_namespaced_job(
-            namespace=namespace,
-            label_selector=label_selector,
-        )
-        for job in remaining_jobs.items:
-            if job.metadata.deletion_timestamp is not None or job.metadata.finalizers:
-                logger.warning(
-                    "Job '%s' is stuck (Terminating or has finalizers); clearing finalizers",
-                    job.metadata.name,
-                )
+    # Retry in a loop: after patching finalizers, Kubernetes may surface more
+    # stuck jobs that were waiting behind the ones just cleared.
+    for _attempt in range(30):
+        try:
+            remaining_jobs = k8s_batch_client.list_namespaced_job(
+                namespace=namespace,
+                label_selector=label_selector,
+            )
+        except client.rest.ApiException as e:
+            logger.warning("Error listing remaining jobs: %s", e)
+            break
+        stuck_jobs = [
+            job for job in remaining_jobs.items
+            if job.metadata.deletion_timestamp is not None or job.metadata.finalizers
+        ]
+        if not stuck_jobs:
+            break
+        for job in stuck_jobs:
+            logger.warning(
+                "Job '%s' is stuck (Terminating or has finalizers); clearing finalizers",
+                job.metadata.name,
+            )
+            try:
                 k8s_batch_client.patch_namespaced_job(
                     name=job.metadata.name,
                     namespace=namespace,
                     body={"metadata": {"finalizers": None}},
                 )
                 logger.info("Cleared finalizers on job '%s'", job.metadata.name)
-    except client.rest.ApiException as e:
-        logger.warning("Error while clearing finalizers from stuck jobs: %s", e)
+            except client.rest.ApiException as e:
+                if e.status == 404:
+                    logger.debug("Job '%s' already gone (404), skipping", job.metadata.name)
+                else:
+                    logger.warning("Error clearing finalizers from job '%s': %s", job.metadata.name, e)
+        time.sleep(1)
 
     # Step 6: Delete Pods.
     try:
@@ -194,25 +211,39 @@ def cleanup_cluster_campaign(namespace="default", campaign=None, context=None):
         raise
 
     # Step 7: Force-clear finalizers on any Pods still stuck in Terminating.
-    try:
-        remaining_pods = k8s_client.list_namespaced_pod(
-            namespace=namespace,
-            label_selector=label_selector,
-        )
-        for pod in remaining_pods.items:
-            if pod.metadata.deletion_timestamp is not None or pod.metadata.finalizers:
-                logger.warning(
-                    "Pod '%s' is stuck (Terminating or has finalizers); clearing finalizers",
-                    pod.metadata.name,
-                )
+    for _attempt in range(30):
+        try:
+            remaining_pods = k8s_client.list_namespaced_pod(
+                namespace=namespace,
+                label_selector=label_selector,
+            )
+        except client.rest.ApiException as e:
+            logger.warning("Error listing remaining pods: %s", e)
+            break
+        stuck_pods = [
+            pod for pod in remaining_pods.items
+            if pod.metadata.deletion_timestamp is not None or pod.metadata.finalizers
+        ]
+        if not stuck_pods:
+            break
+        for pod in stuck_pods:
+            logger.warning(
+                "Pod '%s' is stuck (Terminating or has finalizers); clearing finalizers",
+                pod.metadata.name,
+            )
+            try:
                 k8s_client.patch_namespaced_pod(
                     name=pod.metadata.name,
                     namespace=namespace,
                     body={"metadata": {"finalizers": None}},
                 )
                 logger.info("Cleared finalizers on pod '%s'", pod.metadata.name)
-    except client.rest.ApiException as e:
-        logger.warning("Error while clearing finalizers from stuck pods: %s", e)
+            except client.rest.ApiException as e:
+                if e.status == 404:
+                    logger.debug("Pod '%s' already gone (404), skipping", pod.metadata.name)
+                else:
+                    logger.warning("Error clearing finalizers from pod '%s': %s", pod.metadata.name, e)
+        time.sleep(1)
 
     # Step 8: Resume the ClusterQueue so future runs can be admitted.
     logger.info("Restoring ClusterQueue stopPolicy to None after cleanup")
@@ -603,11 +634,7 @@ class JobRunner:
             sc_resources = resolve_resources(sc['resources'], self.kube_context)
             secondary_env = [
                 {'name': 'CONTAINER_NAME', 'value': sc_name},
-<<<<<<< Updated upstream
-                {'name': 'ROS_LOG_DIR', 'value': '/out/logs'},
-=======
                 {'name': 'SCENARIO_FILE', 'value': scenario_file_name},
->>>>>>> Stashed changes
             ]
             for env_var in self.env:
                 if isinstance(env_var, dict):
@@ -616,7 +643,7 @@ class JobRunner:
             secondary_spec = {
                 'name': sc_name,
                 'image': job_manifest['spec']['template']['spec']['containers'][0]['image'],
-                'command': ['/bin/bash', '/config/secondary_entrypoint.sh'],
+                'command': ['/usr/bin/tini', '--', '/bin/bash', '/config/secondary_entrypoint.sh'],
                 'env': secondary_env,
                 'resources': {
                     'requests': {},
@@ -844,24 +871,43 @@ class JobRunner:
 
         # Create all jobs for all campaigns before executing any
         all_jobs = []
+        total_jobs = self.num_runs * len(self.configs)
         logger.info(f"Creating {len(self.configs)} config(s) with {self.num_runs} runs each (ID: {self.campaign})...")
-        for run_number in range(self.num_runs):
-            logger.debug(f"Creating jobs for run {run_number + 1}/{self.num_runs}")
+        with ProgressBar(
+            total=total_jobs,
+            desc=f"Creating {len(self.configs)} config(s) with {self.num_runs} runs each",
+            unit="job",
+        ) as pbar:
+            for run_number in range(self.num_runs):
+                logger.debug(f"Creating jobs for run {run_number + 1}/{self.num_runs}")
 
-            for config in self.configs:
-                config_name = config.get("name")
-                job_manifest = self.create_job_manifest_for_configuration(config_name, run_number)
-                job_name = job_manifest['metadata']['name']
-                all_jobs.append(job_name)
-                with warnings.catch_warnings(record=True) as caught:
-                    warnings.simplefilter("always")
-                    self.k8s_batch_client.create_namespaced_job(namespace=self.namespace, body=job_manifest)
-                if caught:
-                    logger.error(f"Kubernetes API warnings for job '{job_name}':")
-                    for w in caught:
-                        logger.error(f"  Warning: {w.message}")
-                    raise SystemExit(1)
-                logger.debug(f"Created job {job_name} for run {run_number + 1}")
+                for config in self.configs:
+                    config_name = config.get("name")
+                    job_manifest = self.create_job_manifest_for_configuration(config_name, run_number)
+                    job_name = job_manifest['metadata']['name']
+                    all_jobs.append(job_name)
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always")
+                        # Suppress known-harmless urllib3 deprecation from older k8s client
+                        warnings.filterwarnings(
+                            "ignore",
+                            message="HTTPResponse.getheaders\\(\\) is deprecated",
+                            category=DeprecationWarning,
+                        )
+                        try:
+                            self.k8s_batch_client.create_namespaced_job(namespace=self.namespace, body=job_manifest)
+                        except client.exceptions.ApiException as exc:
+                            if exc.status == 409:
+                                logger.debug(
+                                    f"[{self.campaign}] Job '{job_name}' already exists, skipping (will be tracked)."
+                                )
+                            else:
+                                raise
+                    if caught:
+                        for w in caught:
+                            logger.warning(f"[{self.campaign}] Kubernetes API warning for job '{job_name}': {w.message}")
+                    logger.debug(f"Created job {job_name} for run {run_number + 1}")
+                    pbar.update(1)
 
         logger.info(f"All {len(all_jobs)} jobs created. Starting execution...")
 

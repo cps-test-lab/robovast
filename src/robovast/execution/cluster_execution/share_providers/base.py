@@ -141,9 +141,25 @@ class BaseShareProvider(ABC):
         Raise :class:`NotImplementedError` if the provider does not support
         downloading (default).  Implementations should return bare object names
         (keys), not full URLs.
+
+        The default implementation delegates to
+        :meth:`list_campaign_archives_with_size` and discards the size.
+        Override :meth:`list_campaign_archives_with_size` to provide sizes.
+        """
+        return [name for name, _ in self.list_campaign_archives_with_size()]
+
+    def list_campaign_archives_with_size(self) -> list[tuple[str, int]]:
+        """Return a list of ``(object_name, size_in_bytes)`` for each
+        ``campaign-*.tar.gz`` object on the share.
+
+        *size_in_bytes* is ``-1`` when the provider cannot determine the file
+        size.  Raise :class:`NotImplementedError` if the provider does not
+        support listing at all (default).
+
+        Implementations should return bare object names (keys), not full URLs.
         """
         raise NotImplementedError(
-            f"Provider '{self.SHARE_TYPE}' does not support 'results download-from-share'."
+            f"Provider '{self.SHARE_TYPE}' does not support 'results list-share'."
         )
 
     def download_archive(
@@ -167,4 +183,23 @@ class BaseShareProvider(ABC):
         _ = object_name, dest_path, progress_callback
         raise NotImplementedError(
             f"Provider '{self.SHARE_TYPE}' does not support 'results download-from-share'."
+        )
+
+    # ------------------------------------------------------------------
+    # Optional remove interface (used by ``results remove-from-share``)
+    # ------------------------------------------------------------------
+
+    def remove_archive(self, object_name: str) -> None:
+        """Remove *object_name* from the share.
+
+        Args:
+            object_name: The object/file name on the share (as returned by
+                :meth:`list_campaign_archives`).
+
+        Raise :class:`NotImplementedError` if the provider does not support
+        removal (default).
+        """
+        _ = object_name
+        raise NotImplementedError(
+            f"Provider '{self.SHARE_TYPE}' does not support 'results remove-from-share'."
         )
