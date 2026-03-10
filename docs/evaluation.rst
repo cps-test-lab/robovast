@@ -236,7 +236,7 @@ MCP Server
 
 RoboVAST ships an `MCP (Model Context Protocol) <https://modelcontextprotocol.io>`_
 server that exposes campaign results as tools so that AI assistants (Claude,
-Open WebUI, etc.) can inspect runs, read logs, and analyse data.
+Open WebUI, etc.) can inspect runs, read logs, and analyze data.
 
 .. code-block:: bash
 
@@ -272,7 +272,7 @@ Open WebUI, etc.) can inspect runs, read logs, and analyse data.
 Tool Taxonomy
 ^^^^^^^^^^^^^
 
-The MCP server organises its tools along two dimensions: **operations**
+The MCP server organizes its tools along two dimensions: **operations**
 (verbs) and **resources**.  Tool names follow the pattern
 ``<verb>_<resource>[_<detail>]``.
 

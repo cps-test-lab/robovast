@@ -40,6 +40,7 @@ Configuration format:
       - simple_plugin_name
 """
 import csv
+import json
 import os
 import re
 import sqlite3
@@ -850,7 +851,7 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
                     if not rows:
                         continue
 
-                    csv_cols = list(rows[0].keys())
+                    csv_cols = [c for c in rows[0].keys() if isinstance(c, str)]
 
                     # Extract scenario timestamp from rosout rows
                     if display_name == "rosout" and scenario_ts is None:
@@ -905,7 +906,10 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
                     col_list = ", ".join(f'"{c}"' for c in all_data_cols)
                     insert_sql = f'INSERT INTO "{sql_name}" ({col_list}) VALUES ({placeholders})'
                     batch = [
-                        [config_name, run_id] + [row.get(c) for c in csv_cols]
+                        [config_name, run_id] + [
+                            json.dumps(v) if isinstance(v, (list, dict)) else v
+                            for v in (row.get(c) for c in csv_cols)
+                        ]
                         for row in rows
                     ]
                     conn.executemany(insert_sql, batch)

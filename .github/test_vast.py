@@ -73,10 +73,10 @@ def check_results_dir_structure(results_dir):  # pylint: disable=too-many-return
     # Check for campaign directories (prefer campaign-*, but accept legacy run-*)
     campaign_dirs = [
         d for d in contents
-        if d.is_dir() and (d.name.startswith('campaign-') or d.name.startswith('run-'))
+        if d.is_dir() and (d.name.startswith('campaign-') or d.name.startswith('growth_sim-'))
     ]
     if not campaign_dirs:
-        print("✗ No campaign or run directories found (expected campaign-* or run-* directories)")
+        print("✗ No campaign or run directories found (expected campaign-* or growth_sim-* directories)")
         return False
     
     print(f"✓ Found {len(campaign_dirs)} campaign directory/directories")
