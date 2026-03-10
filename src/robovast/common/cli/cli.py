@@ -237,7 +237,7 @@ def import_results(archive, output, force):
     to the results directory. This is useful for importing results that were
     downloaded on a different machine or for re-importing previously downloaded results.
 
-    The archive should be in the format ``<name>-<timestamp>.tar.gz`` and contain
+    The archive should be in the format ``<campaign-name>-<timestamp>.tar.gz`` and contain
     a campaign directory with all run results.
 
     Requires project initialization with ``vast init`` first (unless ``--output`` is specified).
@@ -292,7 +292,7 @@ def import_results(archive, output, force):
                 if campaign and not is_campaign_dir(campaign):
                     click.echo(
                         f"Warning: Archive does not contain a recognised campaign directory "
-                        f"(expected '<name>-YYYY-MM-DD-HHMMSS', found '{campaign}')")
+                        f"(expected '<campaign-name>-YYYY-MM-DD-HHMMSS', found '{campaign}')")
             click.echo(f"Archive validation successful")
         except (tarfile.TarError, OSError) as e:
             click.echo(f"Error: Archive validation failed: {e}", err=True)
