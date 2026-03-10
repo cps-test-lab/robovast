@@ -65,7 +65,7 @@ All fields within ``metadata`` are optional and can be customized according to y
 
    **Campaign directory naming:** if ``metadata.name`` is set, it is used as
    the prefix for the campaign output directory:
-   ``<name>-YYYY-MM-DD-HHMMSS`` (e.g. ``campaign-2026-03-10-142530``).
+   ``<name>-YYYY-MM-DD-HHMMSS`` (e.g. ``navigation-evaluation-2026-03-10-142530``).
    When ``metadata.name`` is omitted the prefix defaults to ``campaign``
    (e.g. ``campaign-2026-03-10-142530``).
 
