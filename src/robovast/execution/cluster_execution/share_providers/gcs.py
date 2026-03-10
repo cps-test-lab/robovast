@@ -27,6 +27,8 @@ from typing import Callable
 
 import click
 
+from robovast.common.execution import is_campaign_dir
+
 from .base import BaseShareProvider
 
 __all__ = ["GcsShareProvider"]
@@ -119,13 +121,15 @@ class GcsShareProvider(BaseShareProvider):
     # ------------------------------------------------------------------
 
     def list_campaign_archives(self) -> list[str]:
-        """List all ``campaign-*.tar.gz`` objects in the configured GCS bucket.
+        """List all campaign ``*.tar.gz`` objects in the configured GCS bucket.
 
+        Recognises archives whose base name (without ``.tar.gz``) matches the
+        campaign naming convention (``<campaign-name>-YYYY-MM-DD-HHMMSS``).
         Uses the public GCS XML API (no credentials required for public buckets).
         Handles GCS list pagination via the ``NextContinuationToken`` marker.
         """
         bucket = os.environ["ROBOVAST_GCS_BUCKET"]
-        prefix = os.environ.get("ROBOVAST_GCS_PREFIX", "") + "campaign"
+        prefix = os.environ.get("ROBOVAST_GCS_PREFIX", "")
 
         found: list[str] = []
         continuation_token: str | None = None
@@ -153,7 +157,9 @@ class GcsShareProvider(BaseShareProvider):
             for content in root.findall("s3:Contents", ns):
                 key_el = content.find("s3:Key", ns)
                 if key_el is not None and key_el.text and key_el.text.endswith(".tar.gz"):
-                    found.append(key_el.text)
+                    base = key_el.text.rstrip("/").rsplit("/", 1)[-1]
+                    if is_campaign_dir(base[:-len(".tar.gz")]):
+                        found.append(key_el.text)
 
             # Check for next page
             token_el = root.find("s3:NextContinuationToken", ns)

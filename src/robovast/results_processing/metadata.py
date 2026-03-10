@@ -41,6 +41,7 @@ import yaml
 from robovast.common.campaign_data import (read_execution_metadata, read_sysinfo,
                             read_test_result)
 from robovast.common.common import load_config
+from robovast.common.execution import is_campaign_dir
 from robovast.common.results_utils import find_campaign_vast_file
 from robovast.common.variation.loader import load_variation_classes
 
@@ -304,7 +305,7 @@ def generate_campaign_metadata(
     # Find campaign directories
     campaign_dirs = sorted(
         d for d in results_path.iterdir()
-        if d.is_dir() and d.name.startswith("campaign-")
+        if d.is_dir() and is_campaign_dir(d.name)
     )
     if not campaign_dirs:
         return False, f"No campaign directories found in {results_dir}"

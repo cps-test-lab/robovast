@@ -30,6 +30,7 @@ from dotenv import load_dotenv
 
 from robovast.common.cli import get_project_config, handle_cli_exception
 from robovast.common.cli.project_config import ProjectConfig
+from robovast.common.execution import is_campaign_dir
 from robovast.evaluation.merge_results import merge_results
 from robovast.execution.cluster_execution.share_providers import \
     load_share_provider_plugins
@@ -57,14 +58,14 @@ def results():
               help='Force postprocessing even if results directory is unchanged (bypasses caching)')
 @click.option('--override', '-o', default=None, metavar='VAST_FILE',
               help='Override the .vast file used for postprocessing instead of the one '
-                   'found in campaign-<id>/_config/')
+                   'found in <campaign-name>-<timestamp>/_config/')
 @click.option('--debug', is_flag=True,
               help='Show full plugin output (stdout) for each postprocessing step.')
 def postprocess_cmd(results_dir, force, override, debug):
     """Run postprocessing commands on run results.
 
     Executes postprocessing commands defined in the .vast file found in the
-    most recent ``campaign-<id>/_config/`` directory of the results directory.
+    most recent ``<campaign-name>-<timestamp>/_config/`` directory of the results directory.
     Postprocessing is skipped if the result-directory is unchanged,
     unless --force is specified.
 
@@ -74,7 +75,7 @@ def postprocess_cmd(results_dir, force, override, debug):
     """
     # Resolve results_dir from project config when not explicitly provided.
     # postprocess never uses config_path from the project file (it always reads
-    # the .vast from campaign-<id>/_config/ or --override), so only results_dir
+    # the .vast from <campaign-name>-<timestamp>/_config/ or --override), so only results_dir
     # is needed and config_path validation is intentionally skipped.
     if results_dir is None:
         raw_config = ProjectConfig.load()
@@ -112,7 +113,7 @@ def postprocess_cmd(results_dir, force, override, debug):
               help='Directory containing run results (uses project results dir if not specified)')
 @click.option('--override', '-o', default=None, metavar='VAST_FILE',
               help='Override the .vast file used for publication instead of the one '
-                   'found in campaign-<id>/_config/')
+                   'found in <campaign-name>-<timestamp>/_config/')
 @click.option('--force', '-f', is_flag=True,
               help='Overwrite existing output files without prompting.')
 @click.option('--skip-postprocessing', is_flag=True,
@@ -122,7 +123,7 @@ def publish_cmd(results_dir, override, force, skip_postprocessing):
 
     Executes postprocessing plugins (unless ``--skip-postprocessing`` is used)
     followed by publication plugins defined in the .vast file found in the
-    most recent ``campaign-<id>/_config/`` directory of the results directory.
+    most recent ``<campaign-name>-<timestamp>/_config/`` directory of the results directory.
     Publication plugins handle packaging and distribution of results.
 
     Use --override to supply a .vast file explicitly instead of the campaign copy.
@@ -215,7 +216,7 @@ def merge_results_cmd(merged_campaign_dir, results_dir):
 def generate_metadata_cmd(results_dir, dot_pdf):
     """Generate FAIR/PROV-O provenance metadata for all campaigns.
 
-    Reads the ``metadata.yaml`` from each ``campaign-<id>`` directory and
+    Reads the ``metadata.yaml`` from each campaign directory and
     (re-)generates the compact JSON-LD provenance graph
     ``metadata.prov.json``.  Optionally also writes ``metadata.dot`` and
     renders ``metadata.pdf`` via Graphviz (requires ``dot`` on PATH).
@@ -237,7 +238,7 @@ def generate_metadata_cmd(results_dir, dot_pdf):
 
     campaign_dirs = sorted(
         d for d in results_path.iterdir()
-        if d.is_dir() and d.name.startswith("campaign-")
+        if d.is_dir() and is_campaign_dir(d.name)
     )
     if not campaign_dirs:
         raise click.ClickException(f"No campaign directories found in {results_dir}")
@@ -439,7 +440,7 @@ def _load_share_dotenv() -> None:
 @click.option('--output', '-o', default=None,
               help='Directory to extract results into (uses project results dir if not specified)')
 @click.option('--campaign', '-i', 'campaigns', multiple=True,
-              help='Only download this campaign (e.g. campaign-2025-02-27-123456). '
+              help='Only download this campaign (e.g. dynamic_obstacle-2025-02-27-123456 or campaign-2025-02-27-123456). '
                    'Can be specified multiple times. Without this, downloads all campaigns.')
 @click.option('--force', '-f', is_flag=True,
               help='Re-download and re-extract even if the campaign directory already exists')
@@ -449,7 +450,7 @@ def download_from_share_cmd(output, campaigns, force, keep_archive):
     """Download campaign archives from the configured share service.
 
     Reads the same ``.env`` configuration as ``cluster upload-to-share``.
-    For each ``campaign-*.tar.gz`` found on the share the command:
+    For each ``<campaign-name>-<timestamp>.tar.gz`` found on the share the command:
 
     \b
     1. Checks whether the campaign directory already exists locally

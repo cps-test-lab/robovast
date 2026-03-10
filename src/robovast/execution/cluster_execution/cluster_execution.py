@@ -57,17 +57,28 @@ def _label_safe_campaign(campaign: str) -> str:
 def _short_job_name(campaign: str, config_name: str, run_number: int) -> str:
     """Create a short Kubernetes job name (max 63 chars) for campaign-id-config-run.
 
-    Format: r<4chars>-<config8chars><hash4>-<run_number>
-    - campaign: "campaign-2026-02-27-141130" -> "r" + last 6 of timestamp = "r1130"
+    Format: <name6>-<HHMMSS>-<config8><hash4>-<run_number>
+    - campaign: "<name>-2026-02-27-141130"
+        -> name prefix: first 6 lowercase alphanumeric chars of <name>
+        -> time suffix: last 6 chars of timestamp (HHMMSS) = "141130"
+      e.g. "dynamic_obstacle-2026-02-27-141130" -> "dynami-141130"
+           "campaign-2026-02-27-141130"         -> "campai-141130"
     - config_name: first 8 alphanumeric for readability, rest as 4-char hash for uniqueness
     - run_number: as-is (e.g. 0, 1, ...)
     Labels keep full campaign-id for identifying.
     """
-    # r + last 6 chars of campaign (typically the HHMMSS part of timestamp)
-    run_suffix = campaign.split("-")[-1][-6:] if "-" in campaign else campaign[-6:]
-    run_part = f"r{run_suffix}"
+    # Extract "<name>" from "<name>-YYYY-MM-DD-HHMMSS"
+    ts_match = re.search(r'\d{4}-\d{2}-\d{2}-(\d{6})$', campaign)
+    hhmmss = ts_match.group(1) if ts_match else campaign[-6:]
+    # Strip the timestamp suffix to get the name prefix
+    raw_name = re.sub(r'-\d{4}-\d{2}-\d{2}-\d{6}$', '', campaign) if ts_match else campaign
+    name_alpha = re.sub(r'[^a-z0-9]', '', raw_name.lower())[:6]
+    # Kubernetes names must start with a letter; fall back to 'r' if name is empty or starts with digit
+    if not name_alpha or name_alpha[0].isdigit():
+        name_alpha = 'r' + name_alpha[:5]
+    run_part = f"{name_alpha}-{hhmmss}"
 
-    # First 8 alphanumeric chars for readability, rest as hash for uniqueness
+    # First 8 alphanumeric chars for readability, rest as 4-char hash for uniqueness
     config_alpha = re.sub(r"[^a-zA-Z0-9]", "", config_name)[:8]
     config_hash = hashlib.md5(config_name.encode()).hexdigest()[:4]
     config_part = f"{config_alpha}{config_hash}" if config_alpha else config_hash
@@ -338,8 +349,10 @@ class JobRunner:
         # Store config path for later use
         self.config_path = config_path
 
-        # Generate unique run ID
-        self.campaign = get_campaign()
+        # Generate unique run ID – use metadata.name as prefix when available
+        _full_cfg = load_config(config_path)
+        _campaign_name = (_full_cfg.get("metadata") or {}).get("name", "campaign")
+        self.campaign = get_campaign(_campaign_name)
 
         parameters = load_config(config_path, subsection="execution")
 

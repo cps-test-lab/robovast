@@ -1,4 +1,6 @@
 version: 1
+metadata:
+  name: growth_sim
 configuration:
 - name: test
   variations:

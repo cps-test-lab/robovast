@@ -61,6 +61,14 @@ The ``metadata`` section allows you to provide structured information about the 
 
 All fields within ``metadata`` are optional and can be customized according to your needs.
 
+.. note::
+
+   **Campaign directory naming:** if ``metadata.name`` is set, it is used as
+   the prefix for the campaign output directory:
+   ``<name>-YYYY-MM-DD-HHMMSS`` (e.g. ``navigation-evaluation-2026-03-10-142530``).
+   When ``metadata.name`` is omitted the prefix defaults to ``campaign``
+   (e.g. ``campaign-2026-03-10-142530``).
+
 
 Configuration Section
 ---------------------
@@ -482,7 +490,7 @@ To list all available plugins and their descriptions:
 - ``rosbags_to_webm``: Convert a ``sensor_msgs/msg/CompressedImage`` topic from ROS bags to WebM video files (VP9 codec). Optional ``topic`` parameter (compressed image topic name, default ``/camera/image_raw/compressed``) and ``fps`` parameter (fallback frame rate when timestamps are unavailable, default ``30``).
 - ``rosbags_action_to_csv``: Extract ROS2 action feedback and status messages to two CSV files (``<filename_prefix>_feedback.csv`` and ``<filename_prefix>_status.csv``). Reads ``/<action>/_action/feedback`` and ``/<action>/_action/status`` topics. Nested data is flattened to columns. Required ``action`` parameter (action name, e.g. ``navigate_to_pose``). Optional ``filename_prefix`` parameter (default: ``action_<action>``).
 - ``command``: Execute arbitrary commands or scripts. Requires ``script`` parameter, optional ``args`` parameter (list).
-- ``compress``: Create a gzipped tarball (``campaign-<id>.tar.gz``) for each campaign directory; runs on the host (no Docker). Optional ``output_dir`` (default: results directory), ``exclude_dirs`` (directory names to exclude, default ``['.cache']``), ``overwrite`` (if ``false``, skip when a tarball already exists; default ``false``).
+- ``compress``: Create a gzipped tarball (``<name>-<timestamp>.tar.gz``) for each campaign directory; runs on the host (no Docker). Optional ``output_dir`` (default: results directory), ``exclude_dirs`` (directory names to exclude, default ``['.cache']``), ``overwrite`` (if ``false``, skip when a tarball already exists; default ``false``).
 
 See :ref:`extending-postprocessing` for how to add custom postprocessing plugins.
 
@@ -498,7 +506,7 @@ postprocessing.  Each entry is either a plugin name (string) or a dictionary wit
 the plugin name as key and plugin-specific parameters as value.
 
 Publication plugins are executed by ``vast results publish`` and operate on the
-full results directory (parent of ``campaign-*`` directories).
+full results directory (parent of campaign directories).
 
 .. code-block:: yaml
 
@@ -514,7 +522,7 @@ full results directory (parent of ``campaign-*`` directories).
 
 **Built-in Publication Plugins:**
 
-- ``zip``: Create a zip archive for every ``campaign-*`` directory under the
+- ``zip``: Create a zip archive for every campaign directory under the
   results directory.  Optional parameters:
 
   - ``filename``: Template for the zip filename.  Supports ``{key}``
