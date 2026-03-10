@@ -22,6 +22,7 @@ pyyaml = "^6.0"
 "PathVariationRandom" = "robovast_nav.variation.path_variation:PathVariationRandom"
 "PathVariationRasterized" = "robovast_nav.variation.path_variation:PathVariationRasterized"
 "ObstacleVariation" = "robovast_nav.variation.obstacle_variation:ObstacleVariation"
+"ObstacleVariationWithDistanceTrigger" = "robovast_nav.variation.obstacle_variation_with_distance_trigger:ObstacleVariationWithDistanceTrigger"
 
 [build-system]
 requires = ["poetry-core"]

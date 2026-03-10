@@ -95,12 +95,13 @@ else
 
     # @@POST_RUN_BLOCK@@
 
+    SCENARIO_FILE="${SCENARIO_FILE:-scenario.osc}"
     if [ -e /config/scenario.config ]; then
         log "Starting scenario execution with config file..."
-        log "Commandline: ros2 run scenario_execution_ros scenario_execution_ros -o ${OUTPUT_DIR} /config/scenario.osc ${POST_COMMAND_PARAM} --scenario-parameter-file /config/scenario.config ${SCENARIO_EXECUTION_PARAMETERS}"
-        exec ros2 run scenario_execution_ros scenario_execution_ros -o ${OUTPUT_DIR} /config/scenario.osc ${POST_COMMAND_PARAM} --scenario-parameter-file /config/scenario.config ${SCENARIO_EXECUTION_PARAMETERS}
+        log "Commandline: ros2 run scenario_execution_ros scenario_execution_ros -o ${OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file /config/scenario.config ${SCENARIO_EXECUTION_PARAMETERS}"
+        exec ros2 run scenario_execution_ros scenario_execution_ros -o ${OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file /config/scenario.config ${SCENARIO_EXECUTION_PARAMETERS}
     else
         log "Starting scenario execution without config file..."
-        exec ros2 run scenario_execution_ros scenario_execution_ros -o ${OUTPUT_DIR} /config/scenario.osc ${POST_COMMAND_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
+        exec ros2 run scenario_execution_ros scenario_execution_ros -o ${OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
     fi
 fi

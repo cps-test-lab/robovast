@@ -32,10 +32,11 @@ class NavigationGui(MapVisualizerWidget, VariationGui):
             path: The file path of the config.
         """
         map_file = config.get('_map_file', None)
-        if os.path.isabs(map_file):
-            map_path = map_file
-        else:
-            map_path = os.path.join(path, map_file)
+        if map_file:
+            if os.path.isabs(map_file):
+                map_path = map_file
+            else:
+                map_path = os.path.join(path, map_file)
         if map_file:
             print(f"Loading map file in GUI: {map_path}")
             self.load_map(map_path)
