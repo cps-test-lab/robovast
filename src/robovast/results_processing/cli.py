@@ -58,14 +58,14 @@ def results():
               help='Force postprocessing even if results directory is unchanged (bypasses caching)')
 @click.option('--override', '-o', default=None, metavar='VAST_FILE',
               help='Override the .vast file used for postprocessing instead of the one '
-                   'found in <name>-<timestamp>/_config/')
+                   'found in <campaign-name>-<timestamp>/_config/')
 @click.option('--debug', is_flag=True,
               help='Show full plugin output (stdout) for each postprocessing step.')
 def postprocess_cmd(results_dir, force, override, debug):
     """Run postprocessing commands on run results.
 
     Executes postprocessing commands defined in the .vast file found in the
-    most recent ``<name>-<timestamp>/_config/`` directory of the results directory.
+    most recent ``<campaign-name>-<timestamp>/_config/`` directory of the results directory.
     Postprocessing is skipped if the result-directory is unchanged,
     unless --force is specified.
 
@@ -75,7 +75,7 @@ def postprocess_cmd(results_dir, force, override, debug):
     """
     # Resolve results_dir from project config when not explicitly provided.
     # postprocess never uses config_path from the project file (it always reads
-    # the .vast from <name>-<timestamp>/_config/ or --override), so only results_dir
+    # the .vast from <campaign-name>-<timestamp>/_config/ or --override), so only results_dir
     # is needed and config_path validation is intentionally skipped.
     if results_dir is None:
         raw_config = ProjectConfig.load()
@@ -113,7 +113,7 @@ def postprocess_cmd(results_dir, force, override, debug):
               help='Directory containing run results (uses project results dir if not specified)')
 @click.option('--override', '-o', default=None, metavar='VAST_FILE',
               help='Override the .vast file used for publication instead of the one '
-                   'found in <name>-<timestamp>/_config/')
+                   'found in <campaign-name>-<timestamp>/_config/')
 @click.option('--force', '-f', is_flag=True,
               help='Overwrite existing output files without prompting.')
 @click.option('--skip-postprocessing', is_flag=True,
@@ -123,7 +123,7 @@ def publish_cmd(results_dir, override, force, skip_postprocessing):
 
     Executes postprocessing plugins (unless ``--skip-postprocessing`` is used)
     followed by publication plugins defined in the .vast file found in the
-    most recent ``<name>-<timestamp>/_config/`` directory of the results directory.
+    most recent ``<campaign-name>-<timestamp>/_config/`` directory of the results directory.
     Publication plugins handle packaging and distribution of results.
 
     Use --override to supply a .vast file explicitly instead of the campaign copy.
@@ -450,7 +450,7 @@ def download_from_share_cmd(output, campaigns, force, keep_archive):
     """Download campaign archives from the configured share service.
 
     Reads the same ``.env`` configuration as ``cluster upload-to-share``.
-    For each ``<name>-<timestamp>.tar.gz`` found on the share the command:
+    For each ``<campaign-name>-<timestamp>.tar.gz`` found on the share the command:
 
     \b
     1. Checks whether the campaign directory already exists locally
