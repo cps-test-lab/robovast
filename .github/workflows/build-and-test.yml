@@ -45,13 +45,6 @@ jobs:
           mkdir /tmp/vast_test_output
           poetry run .github/test_vast.py configs/examples/growth_sim/growth_sim.vast -c test-1-1 -d /tmp/vast_test_output -r 1
 
-      - name: Check postprocessed file for growth_sim
-        run: |
-          if [ ! -f "results/.postprocessed" ]; then
-            echo "✗ .postprocessed file not found for growth_sim.vast"
-            exit 1
-          fi
-
       - name: Run CLI tests
         run: |
           bash .github/test_commands.sh

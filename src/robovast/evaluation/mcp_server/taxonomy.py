@@ -38,7 +38,6 @@ _RESOURCES = {
            "Produces output files (test results, logs, rosbags).",
     "run_data": "Structured tabular output derived from run artifacts, "
                 "primarily CSV files, exposed through query/inspect tools.",
-    "artifact": "Files generated or consumed during execution",
 }
 
 _OPERATIONS = {
