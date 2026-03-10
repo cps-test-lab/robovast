@@ -208,7 +208,7 @@ class ClusterS3Client:
     def list_campaign_buckets(self) -> list:
         """List all buckets whose names match the campaign naming convention.
 
-        Recognises both the legacy ``campaign-YYYY-MM-DD-HHMMSS`` format and
+        Recognizes both the legacy ``campaign-YYYY-MM-DD-HHMMSS`` format and
         any ``<name>-YYYY-MM-DD-HHMMSS`` format.
 
         Returns:

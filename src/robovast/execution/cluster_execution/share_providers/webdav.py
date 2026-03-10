@@ -125,7 +125,7 @@ class WebDavShareProvider(BaseShareProvider):
     def list_campaign_archives_with_size(self) -> list[tuple[str, int]]:
         """List all campaign ``*.tar.gz`` files on the share.
 
-        Recognises archives whose base name (without ``.tar.gz``) matches the
+        Recognizes archives whose base name (without ``.tar.gz``) matches the
         campaign naming convention: ``<name>-YYYY-MM-DD-HHMMSS``.
 
         Tries WebDAV ``PROPFIND`` first; falls back to parsing the Apache/nginx
