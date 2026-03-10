@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (QApplication, QGroupBox, QHBoxLayout, QLabel,
 
 from robovast.common import load_config
 from robovast.common.analysis import get_run_status
+from robovast.common.execution import is_campaign_dir
 from robovast.common.results_utils import iter_run_folders
 
 from .widgets.common import RunType
@@ -135,7 +136,7 @@ class RunResultsAnalyzer(QMainWindow):
                 raise RuntimeError(f"Could not load override config from {self._override_vast}: {e}") from e
 
         for campaign_item in sorted(root.iterdir()):
-            if not campaign_item.is_dir() or not campaign_item.name.startswith("campaign-"):
+            if not campaign_item.is_dir() or not is_campaign_dir(campaign_item.name):
                 continue
 
             if self._override_vast and override_parameters is not None:
@@ -200,11 +201,11 @@ class RunResultsAnalyzer(QMainWindow):
         return result
 
     def _get_campaign_for_path(self, path):
-        """Return the ``campaign-<id>`` folder name that contains *path*, or ``None``."""
+        """Return the campaign folder name that contains *path*, or ``None``."""
         try:
             rel = Path(path).relative_to(self.base_dir)
             first = rel.parts[0] if rel.parts else None
-            if first and first.startswith("campaign-"):
+            if first and is_campaign_dir(first):
                 return first
         except Exception:
             pass

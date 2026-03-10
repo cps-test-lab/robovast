@@ -19,6 +19,7 @@ import datetime
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 from importlib.metadata import PackageNotFoundError
@@ -173,8 +174,42 @@ def _get_cluster_info(context=None):
     return cluster_info or None
 
 
-def get_campaign():
-    return f"campaign-{datetime.datetime.now().strftime('%Y-%m-%d-%H%M%S')}"
+# Regex that matches any campaign directory name: <name>-YYYY-MM-DD-HHMMSS
+# The default name prefix is "campaign" for backward compatibility.
+_CAMPAIGN_DIR_RE = re.compile(r'^.+-\d{4}-\d{2}-\d{2}-\d{6}$')
+
+
+def is_campaign_dir(name: str) -> bool:
+    """Return True if *name* looks like a campaign directory.
+
+    Both the legacy ``campaign-YYYY-MM-DD-HHMMSS`` format and the newer
+    ``<metadata-name>-YYYY-MM-DD-HHMMSS`` format are recognised.
+    """
+    return bool(_CAMPAIGN_DIR_RE.match(name))
+
+
+def get_campaign_timestamp(dir_name: str) -> str:
+    """Extract the timestamp portion from a campaign directory name.
+
+    Works for both ``campaign-YYYY-MM-DD-HHMMSS`` and
+    ``<name>-YYYY-MM-DD-HHMMSS``.  Returns the full *dir_name* unchanged
+    when the expected suffix cannot be found.
+    """
+    m = re.search(r'(\d{4}-\d{2}-\d{2}-\d{6})$', dir_name)
+    return m.group(1) if m else dir_name
+
+
+def get_campaign(name: str = "campaign") -> str:
+    """Return a unique campaign directory name.
+
+    Args:
+        name: Campaign name prefix taken from ``metadata.name`` in the ``.vast``
+              file.  Defaults to ``"campaign"`` for backward compatibility.
+
+    Returns:
+        A string of the form ``<name>-YYYY-MM-DD-HHMMSS``.
+    """
+    return f"{name}-{datetime.datetime.now().strftime('%Y-%m-%d-%H%M%S')}"
 
 
 def get_execution_env_variables(run_num, config_name, additional_env=None):

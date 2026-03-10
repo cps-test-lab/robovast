@@ -31,6 +31,8 @@ import boto3
 from botocore.client import Config
 from botocore.exceptions import ClientError
 
+from robovast.common.execution import is_campaign_dir
+
 logger = logging.getLogger(__name__)
 
 S3_PORT = 9000
@@ -204,13 +206,16 @@ class ClusterS3Client:
             raise
 
     def list_campaign_buckets(self) -> list:
-        """List all buckets whose names start with 'campaign-'.
+        """List all buckets whose names match the campaign naming convention.
+
+        Recognises both the legacy ``campaign-YYYY-MM-DD-HHMMSS`` format and
+        any ``<name>-YYYY-MM-DD-HHMMSS`` format.
 
         Returns:
             list[str]: Sorted list of matching bucket names.
         """
         response = self._s3.list_buckets()
-        buckets = [b["Name"] for b in response.get("Buckets", []) if b["Name"].startswith("campaign-")]
+        buckets = [b["Name"] for b in response.get("Buckets", []) if is_campaign_dir(b["Name"])]
         return sorted(buckets)
 
     def cleanup_campaign_buckets(self, campaign_id: Optional[str] = None) -> int:

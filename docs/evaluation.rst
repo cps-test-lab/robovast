@@ -48,7 +48,7 @@ Using ``--override`` to Supply a Local ``.vast`` File
 
 By default ``vast eval gui`` reads the ``.vast`` configuration from the
 **campaign snapshot** stored in
-``<results-dir>/campaign-<id>/_config/<name>.vast``.  This snapshot is copied
+``<results-dir>/<campaign-name>-<timestamp>/_config/<name>.vast``.  This snapshot is copied
 at execution time and may be out of date.
 
 ``--override`` (short form ``-o``) lets you point to any ``.vast`` file on disk,
@@ -72,7 +72,7 @@ for example your current working copy:
 .. note::
 
    When ``--override`` is supplied, the same ``.vast`` file is used for
-   **every** ``campaign-*`` folder found under the results directory.  The
+   **every** campaign folder (``<campaign-name>-<timestamp>``) found under the results directory.  The
    config directory of the override file (its parent folder) is used to
    resolve relative notebook paths defined under ``evaluation.visualization``.
 
@@ -97,11 +97,11 @@ Notebooks are plain Jupyter ``.ipynb`` files referenced from the
 There are three reserved scopes:
 
 - **run** -- executed once per individual run directory
-  (``campaign-<id>/<config>/<run-number>/``).
+  (``<campaign-name>-<timestamp>/<config>/<run-number>/``).
 - **config** -- executed once per configuration directory
-  (``campaign-<id>/<config>/``).
+  (``<campaign-name>-<timestamp>/<config>/``).
 - **campaign** -- executed once per campaign directory
-  (``campaign-<id>/``).
+  (``<campaign-name>-<timestamp>/``).
 
 The **only hard requirement** is that every notebook contains the line::
 
@@ -131,7 +131,7 @@ Set ``DATA_DIR`` to a real results directory in the very first code cell:
 
    # Self-contained: set DATA_DIR to a real path during development.
    # The RoboVAST GUI replaces this line at runtime.
-   DATA_DIR = '/path/to/results/campaign-2026-03-04-132444/my-config-1/'
+   DATA_DIR = '/path/to/results/dynamic_obstacle-2026-03-04-132444/my-config-1/'
 
 When the GUI runs the notebook it replaces the entire ``DATA_DIR = ...``
 line, so the hardcoded path is never used in production.
@@ -148,7 +148,7 @@ Recommended first-cell pattern
 
    # Set DATA_DIR to a real path for interactive development.
    # The RoboVAST GUI replaces this line automatically.
-   DATA_DIR = '/path/to/results/campaign-<id>/<config-name>/'
+   DATA_DIR = '/path/to/results/<campaign-name>-<timestamp>/<config-name>/'
 
    try:
        from robovast.common.analysis import read_output_files, read_output_csv
@@ -185,13 +185,13 @@ Use paths appropriate to the *scope* of the notebook:
      - Example ``DATA_DIR``
      - Available columns
    * - ``run``
-     - ``/campaign-<id>/<config>/<run-number>/``
+     - ``/<campaign-name>-<timestamp>/<config>/<run-number>/``
      - ``frame``, ``timestamp``, ...
    * - ``config``
-     - ``/campaign-<id>/<config>/``
+     - ``/<campaign-name>-<timestamp>/<config>/``
      - ``run``, ``frame``, ``timestamp``, ...
    * - ``campaign``
-     - ``/campaign-<id>/``
+     - ``/<campaign-name>-<timestamp>/``
      - ``run``, ``config``, ``test``, ``frame``, ...
 
 .. note::

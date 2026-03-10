@@ -46,6 +46,8 @@ from importlib.resources import files
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from robovast.common.execution import is_campaign_dir
+
 
 class BasePostprocessingPlugin:
     """Base class for class-based postprocessing plugins.
@@ -606,7 +608,7 @@ class Compress(BasePostprocessingPlugin):
 
         created = []
         for campaign_item in sorted(root.iterdir()):
-            if not campaign_item.is_dir() or not campaign_item.name.startswith("campaign-"):
+            if not campaign_item.is_dir() or not is_campaign_dir(campaign_item.name):
                 continue
             if campaign_item.name == "_config":
                 continue

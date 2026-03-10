@@ -24,6 +24,8 @@ from typing import Iterator
 
 import yaml
 
+from robovast.common.execution import is_campaign_dir
+
 logger = logging.getLogger(__name__)
 
 
@@ -37,7 +39,7 @@ def _iter_campaign_configs(results_dir: str) -> Iterator[tuple[str, str, Path, s
         return
 
     for run_item in sorted(root.iterdir()):
-        if not run_item.is_dir() or not run_item.name.startswith("campaign-"):
+        if not run_item.is_dir() or not is_campaign_dir(run_item.name):
             continue
         if run_item.name == "_config":
             continue
