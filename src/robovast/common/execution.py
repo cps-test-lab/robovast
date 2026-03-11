@@ -315,12 +315,12 @@ CLEANUP_EOF
     cat > "${S3_UPLOAD_SCRIPT}" << 'UPLOAD_EOF'
 #!/bin/bash
 set -e
-mc alias set myminio "${S3_ENDPOINT}" "${S3_ACCESS_KEY}" "${S3_SECRET_KEY}" --quiet
-mc mirror /out/ "myminio/${S3_BUCKET}/${S3_PREFIX}/"
+mc alias set mystore "${S3_ENDPOINT}" "${S3_ACCESS_KEY}" "${S3_SECRET_KEY}" --quiet
+mc mirror /out/ "mystore/${S3_BUCKET}/${S3_PREFIX}/"
 # Re-tag executable files with x-amz-meta-executable metadata
 find /out/ -type f -executable | while IFS= read -r f; do
     rel="${f#/out/}"
-    mc cp --attr "x-amz-meta-executable=yes" "myminio/${S3_BUCKET}/${S3_PREFIX}/${rel}" "myminio/${S3_BUCKET}/${S3_PREFIX}/${rel}" --quiet
+    mc cp --attr "x-amz-meta-executable=yes" "mystore/${S3_BUCKET}/${S3_PREFIX}/${rel}" "mystore/${S3_BUCKET}/${S3_PREFIX}/${rel}" --quiet
 done
 UPLOAD_EOF
     chmod +x "${S3_UPLOAD_SCRIPT}"

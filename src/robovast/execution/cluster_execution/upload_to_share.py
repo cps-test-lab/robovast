@@ -17,16 +17,19 @@
 
 """Upload campaign archives from the cluster pod to a remote share service.
 
-This module provides :class:`ShareUploader`, which:
+Workflow
+--------
+For each available campaign:
 
-1. Ensures a tar.gz archive exists in the archiver sidecar for each run
-   (by running :mod:`~robovast.execution.cluster_execution.s3_to_targz`)
-   exactly like ``cluster download`` does.
-2. Executes the share-provider upload script inside the same archiver
-   container, streaming progress back to the local terminal.
-3. Keeps the tar.gz on the pod if the upload fails (so the user can retry
-   or download normally), or removes it on success unless ``keep_archive``
-   is requested.
+1. **Compress** – run ``s3_to_targz.py`` inside the archiver sidecar to
+   create ``/data/<campaign>.tar.gz`` on the pod.
+2. **Upload** – execute the share-provider upload script inside the same
+   archiver container, streaming progress back to the local terminal.
+3. **Cleanup** – remove the remote archive on success (unless
+   ``keep_archive`` is set) and delete the S3/GCS prefix (unless
+   ``skip_removal`` is set).
+
+On failure the archive and S3 data are kept so the user can retry.
 """
 
 import logging
@@ -34,14 +37,61 @@ import subprocess
 import sys
 import threading
 
-from .download_results import ResultDownloader, _filter_campaigns
-from .s3_client import ClusterS3Client
+from kubernetes import client, config
+
+from . import archiver, bucket_ops
+from .cluster_execution import get_cluster_job_counts_per_campaign
 from .share_providers.base import BaseShareProvider
 
 logger = logging.getLogger(__name__)
 
-# Progress bar constants (match download_results.py / upload scripts)
 CLEAR_LINE = "\033[2K"
+
+
+def _filter_campaigns(campaign_ids, available_campaigns, excluded_runs):
+    """Filter available/excluded campaign lists to the requested *campaign_ids*.
+
+    Returns:
+        (filtered_available, filtered_excluded), or (None, None) when any
+        requested campaign is not found at all (after logging an error).
+    """
+    requested = list(campaign_ids)
+    available_set = set(available_campaigns)
+    excluded_map = {rid: (running, pending) for rid, running, pending in excluded_runs}
+
+    filtered_available = []
+    filtered_excluded = []
+    not_found = []
+
+    for cid in requested:
+        if cid in available_set:
+            filtered_available.append(cid)
+        elif cid in excluded_map:
+            running, pending = excluded_map[cid]
+            logger.info(
+                "Campaign %s is not ready yet (jobs still running: %d, pending: %d).",
+                cid, running, pending,
+            )
+            filtered_excluded.append((cid, running, pending))
+        else:
+            not_found.append(cid)
+
+    if not_found:
+        all_known = sorted(available_set) + sorted(excluded_map)
+        if all_known:
+            logger.error(
+                "Campaign(s) not found: %s\nAvailable campaigns:\n  %s",
+                ", ".join(not_found),
+                "\n  ".join(all_known),
+            )
+        else:
+            logger.error(
+                "Campaign(s) not found: %s. No campaigns available.",
+                ", ".join(not_found),
+            )
+        return None, None
+
+    return filtered_available, filtered_excluded
 
 
 class ShareUploader:
@@ -49,7 +99,7 @@ class ShareUploader:
 
     Args:
         namespace: Kubernetes namespace where the robovast pod lives.
-        cluster_config: Cluster configuration object (used for S3 credentials).
+        cluster_config: Cluster configuration object providing S3/GCS credentials.
         context: Kubernetes context name (or ``None`` for the active context).
         provider: Instantiated :class:`~.share_providers.base.BaseShareProvider`
             that supplies the upload script and pod environment.
@@ -62,17 +112,79 @@ class ShareUploader:
         context: str | None = None,
         provider: BaseShareProvider | None = None,
     ) -> None:
+        if cluster_config is None:
+            raise ValueError("cluster_config is required for ShareUploader.")
+
         self.namespace = namespace
         self.cluster_config = cluster_config
         self.context = context
         self.provider = provider
 
-        # Reuse ResultDownloader for: pod check, run listing, archive creation
-        self._downloader = ResultDownloader(
-            namespace=namespace,
-            cluster_config=cluster_config,
-            context=context,
-        )
+        # Verify the robovast pod (with archiver sidecar) is reachable.
+        config.load_kube_config(context=context)
+        self._k8s = client.CoreV1Api()
+        self._check_pod()
+
+    # ------------------------------------------------------------------
+    # Pod health check
+    # ------------------------------------------------------------------
+
+    def _check_pod(self) -> None:
+        """Exit with an error message if the robovast pod is not running."""
+        try:
+            pod = self._k8s.read_namespaced_pod(name="robovast", namespace=self.namespace)
+            if pod.status.phase not in ("Running", "Pending"):
+                logger.error(
+                    "Pod 'robovast' exists but is not running (status: %s).",
+                    pod.status.phase,
+                )
+                sys.exit(1)
+            logger.debug("Found robovast pod (phase: %s)", pod.status.phase)
+        except client.exceptions.ApiException as exc:
+            if exc.status == 404:
+                logger.error("Required pod 'robovast' does not exist.")
+                sys.exit(1)
+            raise
+
+    # ------------------------------------------------------------------
+    # Campaign listing
+    # ------------------------------------------------------------------
+
+    def list_available_campaigns(self):
+        """List campaigns that are finished and ready for upload.
+
+        Returns:
+            tuple: (available_campaigns, excluded_runs) where *excluded_runs*
+                is a list of ``(campaign_id, running_count, pending_count)``
+                for campaigns that still have active jobs.
+        """
+        try:
+            all_campaigns = bucket_ops.list_campaigns(
+                self.cluster_config,
+                namespace=self.namespace,
+                context=self.context,
+            )
+
+            job_counts = get_cluster_job_counts_per_campaign(
+                namespace=self.namespace, context=self.context
+            )
+            available, excluded = [], []
+            for cid in all_campaigns:
+                counts = job_counts.get(cid, {})
+                running = counts.get("running", 0)
+                pending = counts.get("pending", 0)
+                if running == 0 and pending == 0:
+                    available.append(cid)
+                else:
+                    excluded.append((cid, running, pending))
+
+            if available:
+                logger.debug("Available campaigns (finished): %s", available)
+            return available, excluded
+
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.error("Unexpected error listing campaigns: %s", exc)
+            return [], []
 
     # ------------------------------------------------------------------
     # Public API
@@ -115,7 +227,7 @@ class ShareUploader:
         Returns:
             int: Number of runs successfully uploaded.
         """
-        available_campaigns, excluded_runs = self._downloader.list_available_campaigns()
+        available_campaigns, excluded_runs = self.list_available_campaigns()
 
         if campaign_ids is not None:
             available_campaigns, excluded_runs = _filter_campaigns(
@@ -127,19 +239,15 @@ class ShareUploader:
         if excluded_runs:
             for rid, running, pending in excluded_runs:
                 logger.info(
-                    "Campaign %s not ready (jobs still running: %d, pending: %d)",
-                    rid,
-                    running,
-                    pending,
+                    "Campaign %s not ready (jobs still running: %d, pending: %d).",
+                    rid, running, pending,
                 )
 
         if not available_campaigns:
             if excluded_runs:
-                logger.info(
-                    "No runs ready to upload. Wait for jobs to finish and try again."
-                )
+                logger.info("No campaigns ready. Wait for jobs to finish and try again.")
             else:
-                logger.info("No runs found to upload.")
+                logger.info("No campaigns found.")
             return 0
 
         logger.info(
@@ -150,35 +258,48 @@ class ShareUploader:
 
         uploaded = 0
         for campaign in available_campaigns:
-            success = self._process_campaign(campaign, force=force, verbose=verbose)
+            script_path, env_vars, script_args = archiver.compress_args_for_config(
+                self.cluster_config, campaign
+            )
+            archive_ok = archiver.compress_campaign(
+                campaign,
+                script_path,
+                env_vars,
+                script_args,
+                namespace=self.namespace,
+                context=self.context,
+                force=force,
+                verbose=verbose,
+            )
+            if not archive_ok:
+                logger.error(
+                    "Failed to create archive for %s, skipping upload.", campaign
+                )
+                continue
+
+            success = self._upload_campaign(campaign, verbose=verbose)
             if success:
                 if not keep_archive:
                     self._remove_remote_archive(campaign)
                 if not skip_removal:
-                    self._delete_campaign_s3(campaign)
+                    bucket_ops.delete_campaign(
+                        campaign,
+                        self.cluster_config,
+                        namespace=self.namespace,
+                        context=self.context,
+                    )
                 uploaded += 1
             else:
-                logger.error("Stopping after failed upload of %s.", campaign)
-                break
+                logger.error(
+                    "Upload failed for %s. Archive and S3 data kept for retry.", campaign
+                )
 
         return uploaded
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-
-    def _process_campaign(self, campaign: str, force: bool, verbose: bool) -> bool:
-        """Ensure archive exists, then upload. Returns True on success."""
-        # Step 1: create/check the tar.gz archive
-        archive_ok = self._downloader._create_remote_archive(  # pylint: disable=protected-access
-            campaign, force=force, verbose=verbose
-        )
-        if not archive_ok:
-            logger.error("Failed to create archive for campaign %s, skipping upload.", campaign)
-            return False
-
-        # Step 2: upload via the provider's pod-side script
-        return self._upload_campaign(campaign, verbose=verbose)
+    # ------------------------------------------------------------------
 
     def _upload_campaign(self, campaign: str, verbose: bool) -> bool:
         """Execute the provider upload script inside the archiver container."""
@@ -270,25 +391,6 @@ class ShareUploader:
             sys.stdout.flush()
             logger.debug("Upload exception for %s: %s", campaign, exc, exc_info=True)
             return False
-
-    def _delete_campaign_s3(self, campaign_id: str) -> None:
-        """Delete the S3 bucket for *campaign_id* after a successful upload."""
-        logger.debug("Deleting S3 bucket %s...", campaign_id)
-        try:
-            if self.cluster_config:
-                access_key, secret_key = self.cluster_config.get_s3_credentials()
-            else:
-                access_key, secret_key = "minioadmin", "minioadmin"
-            with ClusterS3Client(
-                namespace=self.namespace,
-                access_key=access_key,
-                secret_key=secret_key,
-                context=self.context,
-            ) as s3:
-                s3.delete_bucket(campaign_id)
-            logger.debug("Deleted S3 bucket %s", campaign_id)
-        except Exception as exc:  # pylint: disable=broad-except
-            logger.warning("Could not delete S3 bucket %s: %s", campaign_id, exc)
 
     def _remove_remote_archive(self, campaign_id: str) -> None:
         """Remove the tar.gz from /data/ in the archiver container."""
