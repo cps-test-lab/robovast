@@ -26,6 +26,7 @@ import sys
 import tempfile
 import time
 import warnings
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import yaml
 from kubernetes import client
@@ -177,11 +178,8 @@ def cleanup_cluster_campaign(namespace="default", campaign=None, context=None):
         ]
         if not stuck_jobs:
             break
-        for job in stuck_jobs:
-            logger.warning(
-                "Job '%s' is stuck (Terminating or has finalizers); clearing finalizers",
-                job.metadata.name,
-            )
+
+        def _clear_job_finalizers(job):
             try:
                 k8s_batch_client.patch_namespaced_job(
                     name=job.metadata.name,
@@ -194,6 +192,13 @@ def cleanup_cluster_campaign(namespace="default", campaign=None, context=None):
                     logger.debug("Job '%s' already gone (404), skipping", job.metadata.name)
                 else:
                     logger.warning("Error clearing finalizers from job '%s': %s", job.metadata.name, e)
+
+        logger.warning(
+            "%d job(s) stuck (Terminating or has finalizers); clearing finalizers in batch",
+            len(stuck_jobs),
+        )
+        with ThreadPoolExecutor(max_workers=min(len(stuck_jobs), 16)) as pool:
+            list(pool.map(_clear_job_finalizers, stuck_jobs))
         time.sleep(1)
 
     # Step 6: Delete Pods.
@@ -227,11 +232,8 @@ def cleanup_cluster_campaign(namespace="default", campaign=None, context=None):
         ]
         if not stuck_pods:
             break
-        for pod in stuck_pods:
-            logger.warning(
-                "Pod '%s' is stuck (Terminating or has finalizers); clearing finalizers",
-                pod.metadata.name,
-            )
+
+        def _clear_pod_finalizers(pod):
             try:
                 k8s_client.patch_namespaced_pod(
                     name=pod.metadata.name,
@@ -244,6 +246,13 @@ def cleanup_cluster_campaign(namespace="default", campaign=None, context=None):
                     logger.debug("Pod '%s' already gone (404), skipping", pod.metadata.name)
                 else:
                     logger.warning("Error clearing finalizers from pod '%s': %s", pod.metadata.name, e)
+
+        logger.warning(
+            "%d pod(s) stuck (Terminating or has finalizers); clearing finalizers in batch",
+            len(stuck_pods),
+        )
+        with ThreadPoolExecutor(max_workers=min(len(stuck_pods), 16)) as pool:
+            list(pool.map(_clear_pod_finalizers, stuck_pods))
         time.sleep(1)
 
     # Step 8: Resume the ClusterQueue so future runs can be admitted.

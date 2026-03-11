@@ -34,7 +34,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 from importlib.metadata import entry_points
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import yaml
 
@@ -365,8 +365,8 @@ def generate_campaign_metadata(
 
                     _resolve_file_strings(
                         config_entry["config"],
-                        os.path.join(config_name, "_config"),
-                        config_entry.get("config_files", []),
+                        [os.path.join(config_name, "_config"), "_config"],
+                        config_entry.get("config_files", []) + (metadata.get("run_files", [])),
                     )
 
             # Phase 3: User-defined metadata processors
@@ -422,20 +422,23 @@ def _replace_file_urls(obj):
 
 def _resolve_file_strings(
     obj: Any,
-    real_path: str,
+    real_paths: Union[str, List[str]],
     config_files: list,
 ) -> list:
     """Recursively find string values that reference a known config file.
 
     For each string value in *obj* (dict or list, searched recursively), if
-    the value matches an entry in *config_files* when prefixed with
-    ``<config_name>/_config/``, the string is replaced in-place with that
-    full relative path and the ``(key, path)`` pair is appended to the
-    returned list.
+    the value matches an entry in *config_files* when prefixed with any of the
+    paths in *real_paths*, the string is replaced in-place with the first
+    matching full relative path and the ``(key, path)`` pair is appended to
+    the returned list.  When *real_paths* is empty or ``None``, the bare
+    string value is compared directly against *config_files*.
 
     Args:
         obj: Dict or list to search (modified in-place).
-        config_name: Name of the configuration (e.g. ``"config-1"``).
+        real_paths: A prefix path or list of prefix paths to try in order
+            (e.g. ``["config-1/_config", "_config"]``).  Pass ``None`` or an
+            empty list to compare bare values.
         config_files: List of known relative config-file paths under the
             campaign directory (e.g. ``["config-1/_config/params.yaml"]``).
 
@@ -443,28 +446,47 @@ def _resolve_file_strings(
         List of ``(key_or_index, resolved_path)`` tuples for every string
         that was resolved to a config file.
     """
+    if real_paths is None:
+        prefixes: List[str] = []
+    elif isinstance(real_paths, str):
+        prefixes = [real_paths]
+    else:
+        prefixes = list(real_paths)
+
+    def _first_match(value: str) -> Optional[str]:
+        """Return the first candidate that exists in config_files, or None."""
+        if prefixes:
+            for prefix in prefixes:
+                candidate = os.path.join(prefix, value)
+                print(f"Checking candidate config file path: {candidate} in {config_files}")
+                if candidate in config_files:
+                    print("FOUND MATCH:", candidate)
+                    return candidate
+        else:
+            if value in config_files:
+                return value
+        return None
+
     found: list = []
     if isinstance(obj, dict):
         for key, value in obj.items():
             if isinstance(value, str):
-                if real_path is not None:
-                    candidate = os.path.join(real_path, value)
-                else:
-                    candidate = value
-                if candidate in config_files:
-                    obj[key] = candidate
-                    found.append((key, candidate))
+                resolved = _first_match(value)
+                if resolved is not None:
+                    obj[key] = resolved
+                    found.append((key, resolved))
             else:
-                found.extend(_resolve_file_strings(value, real_path, config_files))
+                found.extend(_resolve_file_strings(value, prefixes, config_files))
     elif isinstance(obj, list):
         for i, item in enumerate(obj):
             if isinstance(item, str):
-                candidate = os.path.join(real_path, item)
-                if candidate in config_files:
-                    obj[i] = candidate
-                    found.append((i, candidate))
+                resolved = _first_match(item)
+                if resolved is not None:
+                    obj[i] = resolved
+                    found.append((i, resolved))
             else:
-                found.extend(_resolve_file_strings(item, real_path, config_files))
+                found.extend(_resolve_file_strings(item, prefixes, config_files))
+    print(f"Resolved config file references: {obj}")
     return found
 
 

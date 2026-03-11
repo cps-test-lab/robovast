@@ -48,6 +48,7 @@ Tools follow the pattern `<verb>_<resource>[_<detail>]`.  Available verbs:
 - **search** – Filter and query resources by criteria.
 - **inspect** – Compute derived analysis or statistics.
 - **draw** – Render a visual image from data (map overlays, plots).
+- **display** – Show a captured image (e.g. simulation screenshot).
 
 ## Important Instructions
 

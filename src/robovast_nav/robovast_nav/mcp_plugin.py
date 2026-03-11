@@ -341,9 +341,6 @@ def nav_get_action_feedback(
 ) -> dict:
     """Get navigation action feedback data for a run.
 
-    Reads the ``navigate_to_pose`` action feedback CSV produced by
-    ``rosbags_action_to_csv`` postprocessing.
-
     Args:
         campaign: Campaign name.
         config: Configuration name.
@@ -577,119 +574,6 @@ def nav_get_map_occupancy_stats(campaign: str, config: str) -> dict:
     }
 
 
-def nav_list_environment_models(campaign: str) -> list[str]:
-    """List available environment models for a campaign.
-
-    Returns the names of environment directories under
-    ``_transient/`` that contain JSON-LD semantic data.
-
-    Args:
-        campaign: Campaign name.
-    """
-    campaign_path = resolve_campaign_path(campaign)
-    transient = campaign_path / "_transient"
-    if not transient.is_dir():
-        return []
-
-    envs = []
-    for d in sorted(transient.iterdir()):
-        if d.is_dir() and (d / "json-ld").is_dir():
-            envs.append(d.name)
-    return envs
-
-
-def nav_get_environment_topology(campaign: str, config: str) -> dict:
-    """Get the floor plan topology for a navigation environment.
-
-    Reads the JSON-LD floorplan data and extracts spaces, openings,
-    walls, and features.
-
-    Args:
-        campaign: Campaign name.
-        config: Configuration name (used to infer environment name).
-    """
-    floorplan_path = _find_jsonld_file(campaign, "floorplan.json")
-    if floorplan_path is None:
-        return {"error": "No JSON-LD floorplan data found. This may not be a navigation campaign."}
-
-    with open(floorplan_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    graph = data.get("@graph", [])
-
-    floorplan = None
-    spaces = []
-    openings = []
-
-    for node in graph:
-        node_type = node.get("@type")
-        if node_type == "FloorPlan":
-            floorplan = {
-                "id": node.get("@id"),
-                "spaces": node.get("spaces", []),
-                "openings": node.get("openings", []),
-            }
-        elif node_type == "Space":
-            spaces.append({
-                "id": node.get("@id"),
-                "walls": node.get("walls", []),
-                "features": node.get("feature", []),
-            })
-        elif node_type in ("Door", "Window", "Opening"):
-            openings.append({
-                "id": node.get("@id"),
-                "type": node_type,
-            })
-
-    return {
-        "floorplan": floorplan,
-        "spaces": spaces,
-        "openings": openings,
-    }
-
-
-def nav_get_environment_spatial_relations(campaign: str, config: str) -> dict:
-    """Get spatial relations for a navigation environment.
-
-    Reads the JSON-LD spatial relations data with room poses and
-    corner positions.
-
-    Args:
-        campaign: Campaign name.
-        config: Configuration name.
-    """
-    sr_path = _find_jsonld_file(campaign, "spatial_relations.json")
-    if sr_path is None:
-        return {"error": "No JSON-LD spatial relations data found."}
-
-    with open(sr_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    graph = data.get("@graph", [])
-
-    poses = []
-    positions = []
-    for node in graph:
-        node_type = node.get("@type")
-        if node_type == "Pose":
-            poses.append({
-                "id": node.get("@id"),
-                "of": node.get("of"),
-                "with_respect_to": node.get("with-respect-to"),
-            })
-        elif node_type == "Position":
-            positions.append({
-                "id": node.get("@id"),
-                "of": node.get("of"),
-                "with_respect_to": node.get("with-respect-to"),
-            })
-
-    return {
-        "poses": poses,
-        "positions": positions,
-    }
-
-
 def draw_map(
     campaign: str,
     config: str,
@@ -863,13 +747,129 @@ def draw_map(
     return Image(data=buf.getvalue(), format="png")
 
 
+def display_simulation_screenshot(
+    campaign: str,
+    config: str,
+    run: int,
+    simulation_time: float,
+) -> Image:
+    """Return a simulation camera screenshot at the given simulation time.
+
+    Locates the single WebM camera recording for the specified run and seeks
+    to the frame corresponding to *simulation_time* (seconds since the start of the simulation,
+    as used by ROS). The video time offset is derived from the rosbag
+    ``metadata.yaml`` starting_time so that the correct frame is selected even
+    when the bag was recorded mid-session.
+
+    Args:
+        campaign: Campaign directory name (e.g. ``performance-2026-03-10-213012``).
+        config:   Config directory name (e.g. ``uniraster-59-1``).
+        run:      Run index (integer, e.g. ``0``).
+        simulation_time: Simulation time in seconds (float, since the start of the simulation).
+
+
+    Returns:
+        PNG screenshot as an MCP ``Image``.
+
+    Raises:
+        FileNotFoundError: No ``.webm`` file found in the run directory.
+        ValueError: More than one ``.webm`` file exists (pass the correct one
+            explicitly or clean up the directory).
+    """
+    import cv2  # pylint: disable=import-outside-toplevel
+
+    run_path: Path = resolve_run_path(campaign, config, run)
+
+    # --- Locate the single .webm file ---
+    webm_files = list(run_path.glob("*.webm"))
+    if len(webm_files) == 0:
+        raise FileNotFoundError(f"No .webm file found in {run_path}")
+    if len(webm_files) > 1:
+        names = ", ".join(f.name for f in sorted(webm_files))
+        raise ValueError(
+            f"Multiple .webm files found in {run_path}: {names}. "
+            "Cannot auto-select; please remove the unwanted file."
+        )
+    webm_path = webm_files[0]
+
+    # --- Determine video seek offset from rosbag metadata ---
+    seek_s = 0.0
+    rosbag_dirs = [
+        d for d in run_path.iterdir()
+        if d.is_dir() and (d / "metadata.yaml").exists()
+    ]
+    if rosbag_dirs:
+        meta_file = rosbag_dirs[0] / "metadata.yaml"
+        try:
+            with meta_file.open() as fh:
+                meta = yaml.safe_load(fh)
+            ns = (
+                meta["rosbag2_bagfile_information"]["starting_time"][
+                    "nanoseconds_since_epoch"
+                ]
+            )
+            bag_start_s = ns / 1e9
+            seek_s = max(0.0, simulation_time - bag_start_s)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not read rosbag metadata for time offset: %s", exc)
+            seek_s = 0.0
+    else:
+        logger.warning(
+            "No rosbag metadata.yaml found in %s; seeking to t=0", run_path
+        )
+
+    # --- Extract frame with OpenCV ---
+    cap = cv2.VideoCapture(str(webm_path))
+    try:
+        # Determine video duration so we can clamp the seek position rather than
+        # silently wrapping to the first frame when the timestamp overshoots the end.
+        total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        vid_fps = cap.get(cv2.CAP_PROP_FPS) or 1.0
+        video_duration_s = (total_frames / vid_fps) if total_frames > 0 else None
+
+        if video_duration_s is not None and seek_s >= video_duration_s:
+            clamped = max(0.0, video_duration_s - 1.0 / vid_fps)
+            logger.warning(
+                "simulation_time %.3f s maps to seek offset %.3f s which exceeds "
+                "video duration %.3f s for %s; clamping to last frame (%.3f s)",
+                simulation_time,
+                seek_s,
+                video_duration_s,
+                webm_path.name,
+                clamped,
+            )
+            seek_s = clamped
+
+        cap.set(cv2.CAP_PROP_POS_MSEC, seek_s * 1000.0)
+        ret, frame = cap.read()
+        if not ret:
+            # Decoder-level seek failure (e.g. keyframe alignment) — last-resort fallback
+            logger.warning(
+                "Seek to %.3f s failed for %s; falling back to first frame",
+                seek_s,
+                webm_path.name,
+            )
+            cap.set(cv2.CAP_PROP_POS_MSEC, 0.0)
+            ret, frame = cap.read()
+        if not ret:
+            raise RuntimeError(f"Could not read any frame from {webm_path}")
+    finally:
+        cap.release()
+
+    # --- Encode frame as PNG and return ---
+    success, png_buf = cv2.imencode(".png", frame)
+    if not success:
+        raise RuntimeError("cv2.imencode failed to produce PNG data")
+    return Image(data=png_buf.tobytes(), format="png")
+
+
 # ---------------------------------------------------------------------------
 # Plugin class
 # ---------------------------------------------------------------------------
 
 _TOOLS = [
     nav_describe_data_model,
-    nav_get_planned_path,
+    # nav_get_path,
     nav_get_obstacles,
     nav_get_trajectory,
     nav_get_trajectory_stats,
@@ -877,10 +877,8 @@ _TOOLS = [
     nav_get_path_deviation,
     nav_get_map_info,
     nav_get_map_occupancy_stats,
-    nav_list_environment_models,
-    nav_get_environment_topology,
-    nav_get_environment_spatial_relations,
     draw_map,
+    display_simulation_screenshot,
 ]
 
 
