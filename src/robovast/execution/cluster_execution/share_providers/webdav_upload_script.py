@@ -33,6 +33,7 @@ Progress lines are written to stdout in the format:
   <campaign>  [████████░░░░░░░░░░░░]  xx.x%  X.X MiB  X.X MiB/s
 """
 
+import base64
 import os
 import subprocess
 import sys
@@ -133,15 +134,22 @@ def upload(campaign: str) -> None:
     sys.stdout.write(f"{campaign}  uploading via WebDAV to {upload_url}…\n")
     sys.stdout.flush()
 
-    auth = (user, password)
+    # Pre-bake Authorization header so it is sent with the first request.
+    # requests' auth=(user, password) waits for a 401 challenge before adding
+    # the header, which cannot work with a streamed body (the body can't be
+    # replayed after the mid-stream 401).
+    token = base64.b64encode(f"{user}:{password}".encode()).decode()
+    headers = {
+        "Content-Length": str(total),
+        "Authorization": f"Basic {token}",
+    }
 
     with open(archive_path, "rb") as fh:
         reader = _ProgressReader(fh, total, campaign)
         resp = requests.put(
             upload_url,
             data=reader,
-            auth=auth,
-            headers={"Content-Length": str(total)},
+            headers=headers,
             timeout=None,
         )
 

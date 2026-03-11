@@ -411,7 +411,7 @@ def _load_share_dotenv() -> None:
 # Command
 # ---------------------------------------------------------------------------
 
-@results.command(name='download-from-share')
+@results.command(name='download')
 @click.option('--output', '-o', default=None,
               help='Directory to extract results into (uses project results dir if not specified)')
 @click.option('--campaign', '-i', 'campaigns', multiple=True,

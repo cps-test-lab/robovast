@@ -17,13 +17,23 @@
 """
 Stream S3 bucket contents to a tar.gz file.
 
-Runs inside the archiver sidecar. Connects to MinIO at localhost:9000,
-lists all objects in the given bucket, streams them into a gzipped tarball
-using pigz (parallel gzip) for multi-core compression, and writes to
-/data/{bucket_name}.tar.gz.
+Runs inside the archiver sidecar. Connects to the S3 backend, lists all
+objects in the given bucket (optionally under a key prefix), streams them into
+a gzipped tarball using pigz (parallel gzip) for multi-core compression, and
+writes to ``/data/{archive_name}.tar.gz``.
 
-Usage: python - campaign-xxx  (script from stdin, bucket name from argv)
-  or:  python s3_to_targz.py campaign-xxx
+Usage::
+
+    python - <bucket_name> [--prefix <prefix>] [--archive-name <name>]
+    python s3_to_targz.py <bucket_name> [--prefix <prefix>]
+
+The ``--prefix`` flag is used in **shared-bucket mode** (e.g. GCS) where all
+campaigns live under distinct key prefixes inside a single bucket.  When given,
+only objects whose key starts with ``<prefix>/`` are included, and the prefix
+is stripped from the archive paths.
+
+The ``--archive-name`` flag overrides the name used for the output tar.gz
+(default: ``<bucket_name>.tar.gz``, or ``<prefix>.tar.gz`` when set).
 
 Environment variables (optional):
   S3_ENDPOINT: default http://localhost:9000
@@ -45,20 +55,36 @@ S3_SECRET_KEY = os.environ.get("S3_SECRET_KEY", "minioadmin")
 
 
 def main():
-    if len(sys.argv) < 2:
-        sys.stderr.write("Usage: python - <bucket_name> or python s3_to_targz.py <bucket_name>\n")
-        sys.exit(1)
+    import argparse  # pylint: disable=import-outside-toplevel
+    parser = argparse.ArgumentParser(description="Stream S3 bucket to tar.gz")
+    parser.add_argument("bucket", help="S3 bucket name")
+    parser.add_argument("--prefix", default=None,
+                        help="Only include objects under this key prefix (shared-bucket mode)")
+    parser.add_argument("--archive-name", default=None,
+                        help="Override output archive name (without .tar.gz)")
+    args = parser.parse_args()
 
-    bucket_name = sys.argv[1]
-    output_path = f"/data/{bucket_name}.tar.gz"
+    bucket_name = args.bucket
+    prefix = args.prefix.rstrip("/") + "/" if args.prefix else None
+    archive_label = args.archive_name or (args.prefix or bucket_name)
+    output_path = f"/data/{archive_label}.tar.gz"
 
     s3 = boto3.client(
         "s3",
         endpoint_url=S3_ENDPOINT,
         aws_access_key_id=S3_ACCESS_KEY,
         aws_secret_access_key=S3_SECRET_KEY,
-        config=Config(signature_version="s3v4"),
+        config=Config(
+            signature_version="s3v4",
+            s3={"addressing_style": "path"},
+            request_checksum_calculation="when_required",
+            response_checksum_validation="when_required",
+        ),
     )
+
+    paginate_kwargs = {"Bucket": bucket_name}
+    if prefix:
+        paginate_kwargs["Prefix"] = prefix
 
     paginator = s3.get_paginator("list_objects_v2")
 
@@ -71,12 +97,19 @@ def main():
         )
         try:
             with tarfile.open(fileobj=pigz.stdin, mode="w|") as tar:
-                for page in paginator.paginate(Bucket=bucket_name):
+                for page in paginator.paginate(**paginate_kwargs):
                     for obj in page.get("Contents", []):
                         key = obj["Key"]
                         size = obj["Size"]
-                        # Use bucket name (campaign-<id>) as top-level folder in the archive
-                        tar_name = f"{bucket_name}/{key}"
+
+                        if prefix:
+                            # Strip the prefix, use campaign name as top-level folder.
+                            relative_key = key[len(prefix):]
+                            tar_name = f"{archive_label}/{relative_key}"
+                        else:
+                            # Use bucket name as top-level folder in the archive.
+                            tar_name = f"{bucket_name}/{key}"
+
                         tarinfo = tarfile.TarInfo(name=tar_name)
                         tarinfo.size = size
                         response = s3.get_object(Bucket=bucket_name, Key=key)

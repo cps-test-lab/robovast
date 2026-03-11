@@ -32,8 +32,11 @@ To run the example, execute the following commands in the base folder of the Rob
    # Multiple runs can run in parallel by default. Use --cleanup to remove
    # previous runs before starting.
     
-   # download results from the cluster
-   vast exec cluster download
+   # upload results from the cluster to a share service
+   vast exec cluster upload-to-share
+
+   # optionally: remove result buckets from S3
+   vast exec cluster download-cleanup
 
    # cleanup pods in cluster
    vast exec cluster cleanup
@@ -176,16 +179,26 @@ To clean up after a detached run:
 
 This removes all scenario execution jobs and their associated pods from the cluster.
 
-Download Results
-""""""""""""""""
+Upload Results
+""""""""""""""
 
-The output of an execution is stored within the cluster-internal server and can be downloaded with:
+The output of an execution is stored on the cluster-internal S3 server and can
+be uploaded to a share service (Nextcloud, GCS, …) with:
 
 .. code-block:: bash
 
-   vast exec cluster download
+   vast exec cluster upload-to-share
 
-See :ref:`results-processing` for a complete description of all files.
+This transfers archives entirely inside the archiver sidecar — nothing is
+downloaded to the local machine.  After a successful upload, the S3 bucket is
+removed automatically.  To retrieve the results on another machine, use:
+
+.. code-block:: bash
+
+   vast results download
+
+See :ref:`cluster-sharing` for configuration details and :ref:`results-processing`
+for a complete description of the result files.
 
 
 Analysis

@@ -15,12 +15,29 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from typing import Optional
+
 
 class BaseConfig(object):
-    """Base class for cluster configurations."""
+    """Base class for cluster configurations.
+
+    Every cluster config plugin must subclass this and implement the abstract
+    methods.  The default implementations assume an **embedded MinIO** server
+    deployed inside the Kubernetes cluster.  Subclasses that use an external
+    S3-compatible service (e.g. Google Cloud Storage) should override the
+    ``uses_embedded_s3``, ``get_s3_*``, and ``get_host_s3_endpoint`` methods.
+    """
+
+    # ------------------------------------------------------------------
+    # Cluster lifecycle
+    # ------------------------------------------------------------------
 
     def setup_cluster(self, **kwargs):
-        """Set up the MinIO S3 server in the cluster.
+        """Set up the S3-compatible storage infrastructure in the cluster.
+
+        For embedded-MinIO configs this deploys the MinIO pod.  For external-S3
+        configs this may deploy only supporting pods (archiver, HTTP server)
+        and validate connectivity to the external service.
 
         Args:
             **kwargs: Cluster-specific configuration options
@@ -32,7 +49,11 @@ class BaseConfig(object):
         raise NotImplementedError("get_instance_type_command method must be implemented by subclasses.")
 
     def cleanup_cluster(self, **kwargs):
-        """Clean up the MinIO S3 server from the cluster.
+        """Tear down the storage infrastructure from the cluster.
+
+        For embedded-MinIO configs this removes the MinIO pod.  For external-S3
+        configs this removes supporting pods.  External buckets are **not**
+        deleted (user-managed).
 
         Args:
             **kwargs: Cluster-specific configuration options
@@ -48,22 +69,102 @@ class BaseConfig(object):
         """
         raise NotImplementedError("prepare_setup_cluster method must be implemented by subclasses.")
 
-    def get_s3_endpoint(self) -> str:
-        """Return the cluster-internal S3 endpoint URL for the embedded MinIO server.
+    # ------------------------------------------------------------------
+    # S3 storage configuration
+    # ------------------------------------------------------------------
 
-        Subclasses may override this to point to an external S3 service.
+    def uses_embedded_s3(self) -> bool:
+        """Return ``True`` if this config runs an embedded MinIO server.
+
+        When ``True`` (the default), host-side tools use ``kubectl port-forward``
+        to reach the S3 API.  When ``False``, host-side tools connect directly
+        to the endpoint returned by :meth:`get_host_s3_endpoint`.
 
         Returns:
-            str: S3 endpoint URL, e.g. 'http://robovast:9000'
+            bool
+        """
+        return True
+
+    def get_s3_endpoint(self) -> str:
+        """Return the **cluster-internal** S3 endpoint URL.
+
+        Used by init containers and job pods running inside the cluster.
+
+        For embedded MinIO this is ``http://robovast:9000``.
+        For external services (e.g. GCS) this may be
+        ``https://storage.googleapis.com``.
+
+        Returns:
+            str: S3 endpoint URL
         """
         return "http://robovast:9000"
 
-    def get_s3_credentials(self) -> tuple:
-        """Return the (access_key, secret_key) pair for the S3 server.
+    def get_host_s3_endpoint(self) -> Optional[str]:
+        """Return the S3 endpoint URL reachable from the **host** machine.
 
-        Subclasses may override this to supply credentials for an external S3 service.
+        * ``None`` (default) – host-side tools open a ``kubectl port-forward``
+          to the embedded MinIO pod.
+        * A URL string – host-side tools connect directly to this endpoint,
+          skipping port-forward.
+
+        Returns:
+            str | None
+        """
+        return None
+
+    def get_s3_credentials(self) -> tuple:
+        """Return the ``(access_key, secret_key)`` pair for the S3 service.
 
         Returns:
             tuple[str, str]: (access_key, secret_key)
         """
         return ("minioadmin", "minioadmin")
+
+    def get_s3_bucket(self) -> Optional[str]:
+        """Return a fixed/shared S3 bucket name, or ``None``.
+
+        * ``None`` (default) – each campaign creates its own bucket
+          (embedded-MinIO mode).
+        * A bucket name string – all campaigns share this single bucket and
+          are separated by key prefixes (external-S3 mode).  The bucket must
+          be pre-created by the user.
+
+        Returns:
+            str | None
+        """
+        return None
+
+    def get_s3_region(self) -> str:
+        """Return the S3 region to use.
+
+        Returns:
+            str: AWS/S3 region name (default ``'us-east-1'`` for MinIO).
+        """
+        return "us-east-1"
+
+    def get_storage_backend(self) -> str:
+        """Return the storage backend identifier: ``'s3'`` or ``'gcs'``.
+
+        The default implementation returns ``'s3'``, which covers both
+        embedded MinIO and any external S3-compatible service.  Subclasses
+        that use native Google Cloud Storage should override this and return
+        ``'gcs'``.
+
+        Returns:
+            str: ``'s3'`` (default) or ``'gcs'``.
+        """
+        return "s3"
+
+    def restore_from_setup_kwargs(self, kwargs: dict) -> None:
+        """Restore config state from the kwargs saved during ``setup_cluster``.
+
+        The default implementation is a no-op.  Subclasses that need
+        persistent credentials (e.g. :class:`GcpClusterConfig`) should
+        override this to re-populate their instance state from the stored
+        kwargs so that methods like :meth:`get_s3_credentials` work correctly
+        on a freshly instantiated config object.
+
+        Args:
+            kwargs: The ``setup_kwargs`` dict that was persisted to the
+                    cluster flag file by :func:`save_cluster_setup_info`.
+        """

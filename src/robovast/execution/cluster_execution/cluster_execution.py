@@ -38,8 +38,7 @@ from robovast.common import (ProgressBar, get_campaign,
 from robovast.common.cluster_context import resolve_resources
 from robovast.common.config_generation import generate_scenario_variations
 from robovast.execution.cluster_execution.kubernetes import check_pod_running
-from robovast.execution.cluster_execution.s3_client import \
-    upload_campaign_configs
+from . import archiver, bucket_ops
 
 from .kubernetes_kueue import (cleanup_kueue_workloads,
                                set_cluster_queue_stop_policy)
@@ -529,8 +528,12 @@ class JobRunner:
         # S3 connection details from cluster config
         s3_endpoint = self.cluster_config.get_s3_endpoint()
         s3_access_key, s3_secret_key = self.cluster_config.get_s3_credentials()
-        bucket_name = self._bucket_name_for_campaign(self.campaign)
-        s3_prefix = f"{config_name}/{run_number}"
+        shared_bucket = self.cluster_config.get_s3_bucket()
+        campaign_bucket_name = self._bucket_name_for_campaign(self.campaign)
+
+        bucket_name = shared_bucket if shared_bucket else campaign_bucket_name
+        campaign_prefix = f"{campaign_bucket_name}/" if shared_bucket else ""
+        s3_prefix = f"{campaign_prefix}{config_name}/{run_number}"
 
         spec = job_manifest['spec']['template']['spec']
 
@@ -547,15 +550,18 @@ class JobRunner:
         # Build the initContainer that downloads all needed files from S3 into /config/.
         # After mirroring, restore the executable bit on any file whose S3 object carries
         # the x-amz-meta-executable=yes metadata header (set during upload).
+        #
+        # $S3_CAMPAIGN_PREFIX is set to "<campaign>/" for shared-bucket backends (e.g. GCS)
+        # and to "" for per-campaign buckets (embedded MinIO).
         init_cmd = (
-            f"mc alias set myminio \"$S3_ENDPOINT\" \"$S3_ACCESS_KEY\" \"$S3_SECRET_KEY\" && "
-            f"mc mirror myminio/$S3_BUCKET/_config/ /config/ && "
-            f"mc mirror myminio/$S3_BUCKET/_transient/ /config/ && "
-            f"(mc mirror myminio/$S3_BUCKET/{config_name}/_config/ /config/ 2>/dev/null || true); "
-            f"for s3pfx in _config _transient {config_name}/_config; do "
-            f"mc find myminio/$S3_BUCKET/$s3pfx/ 2>/dev/null | while IFS= read -r obj; do "
+            f"mc alias set mystore \"$S3_ENDPOINT\" \"$S3_ACCESS_KEY\" \"$S3_SECRET_KEY\" && "
+            f"mc mirror mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}_config/ /config/ && "
+            f"mc mirror mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}_transient/ /config/ && "
+            f"(mc mirror mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}{config_name}/_config/ /config/ 2>/dev/null || true); "
+            f"for s3pfx in ${{S3_CAMPAIGN_PREFIX}}_config ${{S3_CAMPAIGN_PREFIX}}_transient ${{S3_CAMPAIGN_PREFIX}}{config_name}/_config; do "
+            f"mc find mystore/$S3_BUCKET/$s3pfx/ 2>/dev/null | while IFS= read -r obj; do "
             f"mc stat --json \"$obj\" 2>/dev/null | grep -qi 'executable.*yes' && "
-            f"chmod +x \"/config/${{obj#myminio/$S3_BUCKET/$s3pfx/}}\" 2>/dev/null || true; "
+            f"chmod +x \"/config/${{obj#mystore/$S3_BUCKET/$s3pfx/}}\" 2>/dev/null || true; "
             f"done; done; true"
         )
 
@@ -564,6 +570,7 @@ class JobRunner:
             {'name': 'S3_BUCKET', 'value': bucket_name},
             {'name': 'S3_ACCESS_KEY', 'value': s3_access_key},
             {'name': 'S3_SECRET_KEY', 'value': s3_secret_key},
+            {'name': 'S3_CAMPAIGN_PREFIX', 'value': campaign_prefix},
         ]
 
         spec['initContainers'] = [
@@ -976,16 +983,77 @@ class JobRunner:
             logger.error(f"Error deleting pods with label selector: {e}")
 
     def upload_campaigns_to_s3(self):
-        """Prepare and upload run config files to S3.
+        """Prepare and upload run config files to the storage backend.
 
-        Delegates to :func:`~robovast.execution.cluster_execution.s3_client.upload_campaign_configs`
-        which performs the existence check and upload in a single port-forward session.
-        Raises :class:`RuntimeError` if the bucket already exists.
+        Uses :mod:`.archiver` and :mod:`.bucket_ops` to upload via the
+        archiver sidecar.  Raises :class:`RuntimeError` if the campaign
+        already exists in storage.
         """
-        upload_campaign_configs(
-            self.campaign, self.campaign_data, self.num_runs, self.cluster_config, self.namespace,
-            context=self.kube_context
-        )
+        from robovast.common import (  # pylint: disable=import-outside-toplevel
+            create_execution_yaml, prepare_campaign_configs)
+
+        campaign_id = self.campaign
+
+        if bucket_ops.campaign_exists(
+            campaign_id,
+            self.cluster_config,
+            namespace=self.namespace,
+            context=self.kube_context,
+        ):
+            raise RuntimeError(
+                f"Campaign '{campaign_id}' already exists in storage. "
+                f"A campaign with this ID is already in progress or was not cleaned up. "
+                f"Clean up the existing campaign first or wait until the next second."
+            )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out_dir = os.path.join(temp_dir, "out_template")
+            prepare_campaign_configs(out_dir, self.campaign_data, cluster=True)
+
+            # Inject instance-type detection command when supported.
+            entrypoint_path = os.path.join(out_dir, "_transient", "entrypoint.sh")
+            try:
+                instance_type_cmd = None
+                if hasattr(self.cluster_config, "get_instance_type_command"):
+                    instance_type_cmd = self.cluster_config.get_instance_type_command()
+                if instance_type_cmd and os.path.exists(entrypoint_path):
+                    with open(entrypoint_path, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    placeholder = 'INSTANCE_TYPE=""'
+                    if placeholder in content:
+                        content = content.replace(placeholder, instance_type_cmd, 1)
+                        with open(entrypoint_path, "w", encoding="utf-8") as f:
+                            f.write(content)
+            except Exception as exc:  # pragma: no cover – best-effort, non-fatal
+                logger.warning(
+                    "Could not inject instance type command into entrypoint.sh: %s", exc
+                )
+
+            create_execution_yaml(
+                self.num_runs,
+                out_dir,
+                execution_params=self.campaign_data.get("execution", {}),
+                context=self.kube_context,
+            )
+
+            script_path, env_vars, bucket, prefix = archiver.upload_args_for_config(
+                self.cluster_config, campaign_id
+            )
+            logger.info(
+                "Uploading config files for campaign '%s' to bucket '%s'...",
+                campaign_id,
+                bucket,
+            )
+            archiver.upload_configs(
+                out_dir,
+                campaign_id,
+                bucket,
+                script_path,
+                env_vars,
+                namespace=self.namespace,
+                context=self.kube_context,
+                prefix=prefix,
+            )
 
     def get_job_manifest(self, image: str, resources: dict, env: list, run_as_user: int = None,
                          secondary_containers: list = None) -> dict:

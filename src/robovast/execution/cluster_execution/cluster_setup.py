@@ -206,6 +206,37 @@ def get_cluster_config(config_name):
     return plugins[config_name]()
 
 
+def get_cluster_config_for_context(context_key=None):
+    """Get a cluster config instance with setup kwargs restored from the flag file.
+
+    This is the preferred way to obtain a config object for all commands that
+    run *after* ``setup`` (e.g. ``run``, ``download``, ``upload-to-share``).
+    It loads both the config name and the persisted kwargs from the cluster
+    flag file and calls :meth:`~BaseConfig.restore_from_setup_kwargs` on the
+    newly created instance so that credential-dependent methods such as
+    :meth:`~BaseConfig.get_s3_credentials` work correctly without the user
+    having to pass ``-o`` flags again.
+
+    Args:
+        context_key (str | None): Kubernetes context name used to look up the
+            per-context flag file.  ``None`` uses the legacy single-file path.
+
+    Returns:
+        BaseConfig: Configured cluster config instance, or ``None`` if no flag
+            file exists for the given context.
+
+    Raises:
+        ValueError: If the stored config name is not found in the available plugins.
+    """
+    name, setup_kwargs = load_cluster_setup_info(context_key)
+    if name is None:
+        return None
+    cfg = get_cluster_config(name)
+    if cfg is not None and setup_kwargs:
+        cfg.restore_from_setup_kwargs(setup_kwargs)
+    return cfg
+
+
 def setup_server(config_name=None, list_configs=False, force=False, **cluster_kwargs):
     """Set up transfer mechanism for cluster execution.
 

@@ -112,7 +112,7 @@ class NextcloudShareProvider(BaseShareProvider):
         return session
 
     # ------------------------------------------------------------------
-    # Download interface (``results download-from-share``)
+    # Download interface (``results download``)
     # ------------------------------------------------------------------
 
     def list_campaign_archives_with_size(self) -> list[tuple[str, int]]:

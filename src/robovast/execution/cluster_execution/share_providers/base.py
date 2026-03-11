@@ -15,15 +15,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Abstract base class for share providers used by ``cluster upload-to-share``."""
+"""Abstract base class for share providers."""
 
 import os
 from abc import ABC, abstractmethod
+from typing import Callable, Optional
 
 import click
 
 __all__ = ["BaseShareProvider"]
-
 
 class BaseShareProvider(ABC):
     """Base class for all share providers.
@@ -129,7 +129,7 @@ class BaseShareProvider(ABC):
         """
 
     # ------------------------------------------------------------------
-    # Optional download interface (used by ``results download-from-share``)
+    # Optional download interface (used by ``results download``)
     # ------------------------------------------------------------------
 
     def list_campaign_archives(self) -> list[str]:
@@ -182,7 +182,7 @@ class BaseShareProvider(ABC):
         """
         _ = object_name, dest_path, progress_callback
         raise NotImplementedError(
-            f"Provider '{self.SHARE_TYPE}' does not support 'results download-from-share'."
+            f"Provider '{self.SHARE_TYPE}' does not support 'results download'."
         )
 
     # ------------------------------------------------------------------

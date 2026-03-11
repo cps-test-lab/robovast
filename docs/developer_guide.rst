@@ -102,10 +102,10 @@ A good practice is, to first run a single configuration to verify that everythin
     # 1. run single configuration in cluster, once
     vast exec cluster run --config config1 --runs 1
 
-    # 2. check results
-    vast exec cluster download
-    # Results are organized as: <results-dir>/<campaign-name>-<timestamp>/<config-name>/<run_number>/
-    find ./results/
+    # 2. upload results to share service (or use download-cleanup to just remove S3 buckets)
+    vast exec cluster upload-to-share
+    # Results can then be retrieved with: vast results download
+    # Files are organized as: <results-dir>/<campaign-name>-<timestamp>/<config-name>/<run_number>/
 
 For long-running tests, you can use detached mode to run jobs in the background:
 

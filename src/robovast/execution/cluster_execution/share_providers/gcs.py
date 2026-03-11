@@ -55,7 +55,7 @@ class GcsShareProvider(BaseShareProvider):
        * - ``ROBOVAST_GCS_KEY_FILE``
          - Path to the service-account JSON key file
            (**required for** ``cluster upload-to-share`` **only**;
-           not needed for ``results download-from-share`` on public buckets)
+           not needed for ``results download`` on public buckets)
 
     Optional ``.env`` variables:
 
