@@ -240,8 +240,8 @@ Open WebUI, etc.) can inspect runs, read logs, and analyze data.
 
 .. code-block:: bash
 
-   vast eval mcp-server                                # stdio (default)
-   vast eval mcp-server --transport sse                # legacy SSE on 0.0.0.0:8000
+   vast eval mcp-server                                # legacy SSE on 0.0.0.0:8000 (default)  
+   vast eval mcp-server --transport stdio              # stdio
    vast eval mcp-server --transport streamable-http    # modern HTTP
    vast eval mcp-server --transport streamable-http --host 127.0.0.1 --port 9000
    vast eval mcp-server --debug                        # log all MCP messages
