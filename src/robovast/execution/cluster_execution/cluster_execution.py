@@ -885,43 +885,54 @@ class JobRunner:
         self.upload_campaigns_to_s3()
 
         # Create all jobs for all campaigns before executing any
-        all_jobs = []
         total_jobs = self.num_runs * len(self.configs)
         logger.info(f"Creating {len(self.configs)} config(s) with {self.num_runs} runs each (ID: {self.campaign})...")
+
+        # Build all manifests first (fast, serial), then submit API calls in parallel.
+        job_manifests = []
+        for run_number in range(self.num_runs):
+            for config in self.configs:
+                config_name = config.get("name")
+                job_manifest = self.create_job_manifest_for_configuration(config_name, run_number)
+                job_manifests.append((job_manifest['metadata']['name'], job_manifest, run_number))
+
+        all_jobs = [job_name for job_name, _, _ in job_manifests]
+
+        def _submit_job(args):
+            job_name, job_manifest, run_number = args
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                # Suppress known-harmless urllib3 deprecation from older k8s client
+                warnings.filterwarnings(
+                    "ignore",
+                    message="HTTPResponse.getheaders\\(\\) is deprecated",
+                    category=DeprecationWarning,
+                )
+                try:
+                    self.k8s_batch_client.create_namespaced_job(namespace=self.namespace, body=job_manifest)
+                except client.exceptions.ApiException as exc:
+                    if exc.status == 409:
+                        logger.debug(
+                            f"[{self.campaign}] Job '{job_name}' already exists, skipping (will be tracked)."
+                        )
+                    else:
+                        raise
+            if caught:
+                for w in caught:
+                    logger.warning(f"[{self.campaign}] Kubernetes API warning for job '{job_name}': {w.message}")
+            logger.debug(f"Created job {job_name} for run {run_number + 1}")
+            return job_name
+
+        from concurrent.futures import as_completed  # noqa: PLC0415
         with ProgressBar(
             total=total_jobs,
             desc=f"Creating {len(self.configs)} config(s) with {self.num_runs} runs each",
             unit="job",
         ) as pbar:
-            for run_number in range(self.num_runs):
-                logger.debug(f"Creating jobs for run {run_number + 1}/{self.num_runs}")
-
-                for config in self.configs:
-                    config_name = config.get("name")
-                    job_manifest = self.create_job_manifest_for_configuration(config_name, run_number)
-                    job_name = job_manifest['metadata']['name']
-                    all_jobs.append(job_name)
-                    with warnings.catch_warnings(record=True) as caught:
-                        warnings.simplefilter("always")
-                        # Suppress known-harmless urllib3 deprecation from older k8s client
-                        warnings.filterwarnings(
-                            "ignore",
-                            message="HTTPResponse.getheaders\\(\\) is deprecated",
-                            category=DeprecationWarning,
-                        )
-                        try:
-                            self.k8s_batch_client.create_namespaced_job(namespace=self.namespace, body=job_manifest)
-                        except client.exceptions.ApiException as exc:
-                            if exc.status == 409:
-                                logger.debug(
-                                    f"[{self.campaign}] Job '{job_name}' already exists, skipping (will be tracked)."
-                                )
-                            else:
-                                raise
-                    if caught:
-                        for w in caught:
-                            logger.warning(f"[{self.campaign}] Kubernetes API warning for job '{job_name}': {w.message}")
-                    logger.debug(f"Created job {job_name} for run {run_number + 1}")
+            with ThreadPoolExecutor(max_workers=min(total_jobs, 32)) as pool:
+                futures = {pool.submit(_submit_job, args): args for args in job_manifests}
+                for future in as_completed(futures):
+                    future.result()  # re-raise any exception
                     pbar.update(1)
 
         logger.info(f"All {len(all_jobs)} jobs created. Starting execution...")
