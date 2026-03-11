@@ -18,8 +18,8 @@
 
 Start via the VAST CLI::
 
-    vast eval mcp-server                                      # stdio (default)
-    vast eval mcp-server --transport sse                      # legacy SSE on 0.0.0.0:8000
+    vast eval mcp-server                                      # legacy SSE on 0.0.0.0:8000 (default)
+    vast eval mcp-server --transport stdio                    # stdio (default)
     vast eval mcp-server --transport streamable-http          # modern HTTP (Open WebUI etc.)
     vast eval mcp-server --transport streamable-http --host 127.0.0.1 --port 9000
     vast eval mcp-server --transport streamable-http --debug  # human-readable request/reply log
