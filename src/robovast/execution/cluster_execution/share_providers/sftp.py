@@ -22,6 +22,8 @@ import os
 import click
 import paramiko
 
+from robovast.common.execution import is_campaign_dir
+
 from .base import BaseShareProvider
 
 __all__ = ["SftpShareProvider"]
@@ -170,8 +172,8 @@ class SftpShareProvider(BaseShareProvider):
             result = [
                 (attr.filename, attr.st_size if attr.st_size is not None else -1)
                 for attr in entries
-                if attr.filename.startswith("campaign-")
-                and attr.filename.endswith(".tar.gz")
+                if attr.filename.endswith(".tar.gz")
+                and is_campaign_dir(attr.filename[: -len(".tar.gz")])
             ]
             result.sort(key=lambda t: t[0])
             return result

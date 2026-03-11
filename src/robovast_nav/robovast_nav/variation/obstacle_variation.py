@@ -14,9 +14,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import itertools
 import os
 import random
-from typing import Optional
+from typing import List, Optional, Union
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, field_validator
@@ -39,7 +40,7 @@ ROBOVAST = Namespace("https://purl.org/robovast/metamodels/")
 class ObstacleConfig(BaseModel):
     model_config = ConfigDict(extra='forbid')
     amount: int
-    max_distance: float
+    max_distance: Union[float, List[float]]
     model: str
     xacro_arguments: str
 
@@ -135,16 +136,28 @@ class ObstacleVariation(NavVariation):
             scenario_properties={ROBOVAST["obstacles"]: len(objects_list)}
         )
 
+    @staticmethod
+    def _expand_obstacle_configs(obstacle_configs):
+        """Return a list of concrete obstacle-config tuples, expanding any list-valued
+        max_distance fields into one entry per value (cartesian product across configs)."""
+        options = []
+        for oc in obstacle_configs:
+            distances = oc.max_distance if isinstance(oc.max_distance, list) else [oc.max_distance]
+            options.append([oc.model_copy(update={'max_distance': d}) for d in distances])
+        return list(itertools.product(*options))
+
     def variation(self, in_configs):
         self.progress_update("Running Obstacle Variation...")
 
+        all_expanded = self._expand_obstacle_configs(self.parameters.obstacle_configs)
         results = []
         for config in in_configs:
-            np.random.seed(self.parameters.seed)
-            random.seed(self.parameters.seed)
-            for _ in range(self.parameters.count):
-                result = self._generate_obstacles_for_config(self.base_path, config, self.parameters.obstacle_configs)
-                results.extend(result)
+            for exp_idx, expanded_configs in enumerate(all_expanded):
+                np.random.seed(self.parameters.seed + exp_idx)
+                random.seed(self.parameters.seed + exp_idx)
+                for _ in range(self.parameters.count):
+                    result = self._generate_obstacles_for_config(self.base_path, config, list(expanded_configs))
+                    results.extend(result)
         return results
 
     def _generate_obstacles_for_config(self, base_path, config, obstacle_configs):
@@ -270,7 +283,7 @@ class ObstacleVariation(NavVariation):
                     self.progress_update(
                         f"Warning: Could not place {obstacle_config.amount} obstacles while maintaining navigation"
                     )
-                    raise ValueError(f"Could not place {obstacle_config.amount} obstacles while maintaining navigation after {
+                    raise ValueError(f"Config '{config['name']}': Could not place {obstacle_config.amount} obstacles while maintaining navigation after {
                                      max_attempts} attempts")
 
         # Always create variation with parameter, even if obstacle_objects is empty

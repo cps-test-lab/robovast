@@ -40,8 +40,14 @@ class NavVariation(Variation):
         map_file_from_yaml = None
         map_file_from_variation = None
 
-        # Check if map file is provided via YAML parameter
-        if not map_file_parameter and "map_file" in config.get("config", {}):
+        # Check if map file is provided via YAML parameter.
+        # Only fall back to config["config"]["map_file"] when no previous variation has
+        # already resolved the map file (i.e. _map_file is not set).  If _map_file is
+        # present it was placed there by a variation such as FloorplanGeneration and the
+        # relative path stored in config["config"]["map_file"] is not meaningful relative
+        # to base_path, so using it would cause a spurious "not a valid scenario parameter
+        # reference" error.
+        if not map_file_parameter and "_map_file" not in config and "map_file" in config.get("config", {}):
             # Fall back to map_file from configuration parameters block
             map_file_parameter = config["config"]["map_file"]
             self.progress_update(f"Using map_file from configuration parameters: {map_file_parameter}")

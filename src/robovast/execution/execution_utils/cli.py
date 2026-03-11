@@ -36,10 +36,10 @@ from robovast.execution.cluster_execution.cluster_execution import (
     JobRunner, _label_safe_campaign, cleanup_cluster_campaign,
     get_cluster_job_counts_per_campaign)
 from robovast.execution.cluster_execution.cluster_setup import (
-    delete_server, get_cluster_config, get_cluster_namespace,
-    load_cluster_config_name, setup_server)
-from robovast.execution.cluster_execution.download_results import \
-    ResultDownloader
+    delete_server, get_cluster_config, get_cluster_config_for_context,
+    get_cluster_namespace, load_cluster_config_name, load_cluster_setup_info,
+    setup_server)
+from robovast.execution.cluster_execution import bucket_ops
 from robovast.execution.cluster_execution.share_providers import \
     load_share_provider_plugins
 from robovast.execution.cluster_execution.upload_to_share import ShareUploader
@@ -235,6 +235,21 @@ def run(config, runs, follow, cleanup, log_tree, kube_context):  # pylint: disab
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
     context_key = kube_context
+
+    # Load .env before accessing cluster config / credentials so that
+    # ROBOVAST_GCS_KEY_FILE, ROBOVAST_GCS_KEY_JSON, etc. are available.
+    from robovast.common.cli.project_config import \
+        ProjectConfig as _PC  # pylint: disable=import-outside-toplevel
+    _pf = _PC.find_project_file()
+    if _pf:
+        _pd = os.path.dirname(os.path.abspath(_pf))
+        _pc = _PC.load()
+        if _pc and _pc.config_path:
+            load_dotenv(os.path.join(os.path.dirname(_pc.config_path), ".env"), override=False)
+        load_dotenv(os.path.join(_pd, ".env"), override=False)
+    else:
+        load_dotenv(override=False)
+
     # Get project configuration
     project_config = get_project_config()
 
@@ -256,15 +271,14 @@ def run(config, runs, follow, cleanup, log_tree, kube_context):  # pylint: disab
 
     if pod_ok:
         try:
-            config_name = load_cluster_config_name(context_key)
-            if config_name:
-                logging.debug(f"Auto-detected cluster config: {config_name}")
+            cluster_config = get_cluster_config_for_context(context_key)
+            if cluster_config:
+                logging.debug("Auto-detected cluster config (credentials restored from flag file)")
             else:
                 raise ValueError(
                     "No cluster config specified and no saved config found. "
                     "Use --config <name> to select a config, or run setup first."
                 )
-            cluster_config = get_cluster_config(config_name)
         except Exception as e:
             pod_msg = f"Failed to get cluster config: {e}"
             pod_ok = False
@@ -296,9 +310,9 @@ def run(config, runs, follow, cleanup, log_tree, kube_context):  # pylint: disab
         else:
             click.echo("Cluster execution finished.")
             click.echo()
-            click.echo("You can now download the results using:")
+            click.echo("You can now upload results to a share using:")
             click.echo()
-            click.echo("  vast execution cluster download")
+            click.echo("  vast execution cluster upload-to-share")
             click.echo()
     except Exception as e:
         handle_cli_exception(e)
@@ -532,97 +546,6 @@ def monitor(interval, once, kube_context):
         handle_cli_exception(e)
 
 
-@cluster.command()
-@click.option('--output', '-o', default=None,
-              help='Directory where all campaign data will be downloaded (uses project results dir if not specified)')
-@click.option('--campaign', '-i', multiple=True,
-              help='Only download this campaign (e.g. campaign-2025-02-27-123456). Can be specified multiple times. Without this, downloads all campaigns.')
-@click.option('--force', '-f', is_flag=True,
-              help='Force re-download even if files already exist locally')
-@click.option('--verbose', '-v', is_flag=True,
-              help='Print per-file progress instead of a single-line progress bar per run')
-@click.option('--skip-removal', is_flag=True,
-              help='Do not remove remote archive or delete S3 bucket after download')
-@click.option('--port-forward-only', is_flag=True,
-              help='Only start port-forward and print URLs; do not download (Ctrl+C to stop)')
-@click.option('--remote-compress-only', is_flag=True,
-              help='Only create .tar.gz archives on the remote pod; do not download')
-@click.option('--no-keep-archive', is_flag=True,
-              help='Remove the local .tar.gz file after extraction (default: keep it)')
-@click.option('--context', '-x', 'kube_context', default=None,
-              help='Kubernetes context to use (default: active context in kubeconfig)')
-def download(output, campaign, force, verbose, skip_removal, port_forward_only, remote_compress_only,
-             no_keep_archive, kube_context):
-    """Download result files from the cluster S3 (MinIO) server.
-
-    Downloads all campaign results from the MinIO S3 server embedded in the
-    robovast pod. Each run is stored in a separate S3 bucket (``campaign-*``) and
-    downloaded into a subdirectory of the output directory.
-
-    Use ``--campaign`` (``-i``) to download a single campaign. If the specified
-    campaign is not found, available campaigns are listed.
-
-    By default a single progress bar line is shown for each run. Use
-    ``--verbose`` to print individual file names instead.
-
-    Use ``--force`` to re-download runs that already exist locally.
-
-    Use ``--skip-removal`` to keep the remote archive and S3 bucket after download.
-
-    Use ``--port-forward-only`` to start a port-forward and print HTTP URLs for
-    manual download (e.g. with curl). Press Ctrl+C to stop.
-
-    Use ``--remote-compress-only`` to create compressed archives on the remote
-    pod without downloading. Useful to pre-compress before downloading later
-    via ``--port-forward-only`` or a full download run.
-
-    By default the downloaded .tar.gz is kept after extraction; use
-    ``--no-keep-archive`` to remove it to save space.
-
-    Requires project initialization with ``vast init`` first (unless ``--output``
-    is specified, or when using ``--port-forward-only`` or ``--remote-compress-only``).
-    """
-    if port_forward_only and remote_compress_only:
-        click.echo("Error: --port-forward-only and --remote-compress-only are mutually exclusive", err=True)
-        sys.exit(1)
-
-    try:
-        require_context_for_multi_cluster(kube_context)
-        context_key = kube_context
-        config_name = load_cluster_config_name(context_key)
-        cluster_config = get_cluster_config(config_name)
-        downloader = ResultDownloader(namespace=get_cluster_namespace(context_key), cluster_config=cluster_config,
-                                      context=kube_context)
-
-        if port_forward_only:
-            downloader.port_forward_only()
-            return
-
-        if remote_compress_only:
-            count = downloader.remote_compress_only(force=force, verbose=verbose, campaign_ids=list(campaign) or None)
-            click.echo(f"✓ Compressed {count} runs on remote pod.")
-            return
-
-        # Full download
-        if output is None:
-            project_config = get_project_config()
-            output = project_config.results_dir
-
-        if not output:
-            click.echo("Error: --output parameter is required (or use 'vast init' to set default)", err=True)
-            click.echo("Use --help for usage information", err=True)
-            sys.exit(1)
-
-        count = downloader.download_results(
-            output, force, verbose=verbose, skip_removal=skip_removal,
-            keep_archive=not no_keep_archive, campaign_ids=list(campaign) or None
-        )
-        click.echo(f"✓ Download of {count} campaign(s) completed successfully!")
-
-    except Exception as e:
-        handle_cli_exception(e)
-
-
 @cluster.command(name='upload-to-share')
 @click.option('--campaign', '-i', multiple=True,
               help='Only upload this campaign (e.g. campaign-2025-02-27-123456). Can be specified multiple times. Without this, uploads all campaigns.')
@@ -636,7 +559,7 @@ def download(output, campaign, force, verbose, skip_removal, port_forward_only, 
               help='Do not delete the S3 bucket after a successful upload')
 @click.option('--context', '-x', 'kube_context', default=None,
               help='Kubernetes context to use (default: active context in kubeconfig)')
-def download_to_share(campaign, force, verbose, keep_archive, skip_removal, kube_context):
+def upload_to_share(campaign, force, verbose, keep_archive, skip_removal, kube_context):
     """Upload campaign archives from the cluster pod to a remote share service.
 
     Results are transferred entirely inside the archiver sidecar of the
@@ -648,13 +571,13 @@ def download_to_share(campaign, force, verbose, keep_archive, skip_removal, kube
     For each available run the command:
 
     \b
-    1. Creates a compressed tar.gz archive in the pod (same as
-       ``cluster download``).  Skips this step if the archive already exists.
+    1. Creates a compressed tar.gz archive in the pod.
+       Skips this step if the archive already exists.
     2. Uploads the archive to the configured share service from inside the pod.
     3. Removes the archive from the pod on success (unless ``--keep-archive``).
     4. Deletes the S3 bucket on success (unless ``--skip-removal``).
     5. Keeps both the archive and the bucket if the upload fails so you can
-       retry or fall back to ``cluster download``.
+       retry.
 
     Configuration is read from a ``.env`` file in the current or any parent
     directory.  Required variables:
@@ -723,8 +646,7 @@ def download_to_share(campaign, force, verbose, keep_archive, skip_removal, kube
     try:
         require_context_for_multi_cluster(kube_context)
         context_key = kube_context
-        config_name = load_cluster_config_name(context_key)
-        cluster_config = get_cluster_config(config_name)
+        cluster_config = get_cluster_config_for_context(context_key)
         uploader = ShareUploader(
             namespace=get_cluster_namespace(context_key),
             cluster_config=cluster_config,
@@ -820,19 +742,19 @@ def download_cleanup(campaign, kube_context):
     """Remove result buckets from cluster S3 without downloading.
 
     Deletes run result buckets (``campaign-*``) from the MinIO S3 server in the cluster.
-    Does not download any data; use ``vast execution cluster download`` if you
-    need the results first.
 
     Use --campaign to remove only a specific campaign's bucket.
     """
     try:
         require_context_for_multi_cluster(kube_context)
         context_key = kube_context
-        config_name = load_cluster_config_name(context_key)
-        cluster_config = get_cluster_config(config_name)
-        downloader = ResultDownloader(namespace=get_cluster_namespace(context_key), cluster_config=cluster_config,
-                                      context=kube_context)
-        count = downloader.cleanup_s3_buckets(campaign_id=campaign)
+        cluster_config = get_cluster_config_for_context(context_key)
+        count = bucket_ops.cleanup_campaigns(
+            cluster_config,
+            namespace=get_cluster_namespace(context_key),
+            context=kube_context,
+            campaign_id=campaign,
+        )
         click.echo(f"✓ Removed {count} bucket(s) from S3.")
 
     except Exception as e:
@@ -903,11 +825,13 @@ def run_cleanup(campaign, data, kube_context):
             click.echo("✓ Job/pod cleanup completed successfully!")
 
         if data:
-            config_name = load_cluster_config_name(context_key)
-            cluster_config = get_cluster_config(config_name)
-            downloader = ResultDownloader(namespace=namespace, cluster_config=cluster_config,
-                                          context=kube_context)
-            count = downloader.cleanup_s3_buckets(campaign_id=campaign)
+            cluster_config = get_cluster_config_for_context(context_key)
+            count = bucket_ops.cleanup_campaigns(
+                cluster_config,
+                namespace=namespace,
+                context=kube_context,
+                campaign_id=campaign,
+            )
             click.echo(f"✓ Removed {count} S3 bucket(s).")
 
     except Exception as e:
@@ -1017,18 +941,22 @@ def prepare_run(output, config, runs, cluster_config, options, log_tree, kube_co
             cluster_kwargs[key] = value
 
         if cluster_config is None:
-            cluster_config = load_cluster_config_name(context_key)
+            cluster_config = get_cluster_config_for_context(context_key)
             if cluster_config:
-                logging.debug(f"Auto-detected cluster config: {cluster_config}")
+                logging.debug("Auto-detected cluster config (credentials restored from flag file)")
             else:
                 raise ValueError(
                     "No cluster config specified and no saved config found. "
                     "Use --cluster-config <name> to select a config, or run setup first."
                 )
-        try:
-            cluster_config = get_cluster_config(cluster_config)
-        except Exception as e:
-            raise RuntimeError(f"Failed to get cluster config: {e}") from e
+        else:
+            try:
+                _, stored_kwargs = load_cluster_setup_info(context_key)
+                cluster_config = get_cluster_config(cluster_config)
+                if cluster_config and stored_kwargs:
+                    cluster_config.restore_from_setup_kwargs(stored_kwargs)
+            except Exception as e:
+                raise RuntimeError(f"Failed to get cluster config: {e}") from e
 
         namespace = cluster_kwargs.get("namespace", get_cluster_namespace(context_key))
 
@@ -1104,9 +1032,24 @@ def generate_upload_script(output_dir, campaign, namespace="default", cluster_co
     if cluster_config is not None:
         access_key, secret_key = cluster_config.get_s3_credentials()
 
+    # Determine shared-bucket / external-S3 settings from the cluster config.
+    uses_embedded = True
+    host_endpoint = "None"
+    shared_bucket = "None"
+    s3_region = '"us-east-1"'
+    if cluster_config is not None:
+        uses_embedded = cluster_config.uses_embedded_s3()
+        ep = cluster_config.get_host_s3_endpoint()
+        if ep is not None:
+            host_endpoint = f'"{ep}"'
+        sb = cluster_config.get_s3_bucket()
+        if sb is not None:
+            shared_bucket = f'"{sb}"'
+        s3_region = f'"{cluster_config.get_s3_region()}"'
+
     script_content = f'''#!/usr/bin/env python3
 """
-Script to upload configuration files to the cluster S3 (MinIO) server.
+Script to upload configuration files to the cluster storage backend.
 
 Generated by: vast execution cluster prepare-run
 Run ID: {campaign}
@@ -1116,13 +1059,23 @@ Namespace: {namespace}
 
 import os
 import sys
-from robovast.execution.cluster_execution.s3_client import upload_configs_to_s3
+from robovast.execution.cluster_execution import archiver
 from robovast.execution.cluster_config.base_config import BaseConfig
 
 
 class _StaticConfig(BaseConfig):
     def get_s3_credentials(self):
         return ("{access_key}", "{secret_key}")
+    def uses_embedded_s3(self):
+        return {uses_embedded}
+    def get_host_s3_endpoint(self):
+        return {host_endpoint}
+    def get_s3_bucket(self):
+        return {shared_bucket}
+    def get_s3_region(self):
+        return {s3_region}
+    def get_storage_backend(self):
+        return "s3"
     def setup_cluster(self, **kw): pass
     def cleanup_cluster(self, **kw): pass
     def prepare_setup_cluster(self, output_dir, **kw): pass
@@ -1132,15 +1085,17 @@ class _StaticConfig(BaseConfig):
 def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     config_dir = os.path.join(script_dir, "out_template")
-    bucket_name = "{bucket_name}"
+    campaign_id = "{bucket_name}"
     namespace = "{namespace}"
 
     if not os.path.exists(config_dir):
         print(f"ERROR: Config directory not found: {{config_dir}}")
         sys.exit(1)
 
-    print(f"Uploading config files to S3 bucket '{{bucket_name}}'...")
-    upload_configs_to_s3(config_dir, bucket_name, _StaticConfig(), namespace)
+    config = _StaticConfig()
+    script_path, env_vars, bucket, prefix = archiver.upload_args_for_config(config, campaign_id)
+    print(f"Uploading config files to bucket \'{{bucket}}\'...")
+    archiver.upload_configs(config_dir, campaign_id, bucket, script_path, env_vars, namespace=namespace, prefix=prefix)
     print("Upload complete.")
 
 
@@ -1160,7 +1115,7 @@ This directory contains the necessary manifests to set up the RoboVAST execution
 
 Follow README_kueue.md to install Kueue and apply the queue manifests.
 
-### 1. Set up the MinIO S3 server
+### 1. Set up the S3 storage backend
 
 Follow README_<CLUSTER CONFIG>.md for cluster-specific setup instructions.
 

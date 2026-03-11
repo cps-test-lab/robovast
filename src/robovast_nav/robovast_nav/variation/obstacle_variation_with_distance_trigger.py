@@ -14,73 +14,30 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""ObstacleVariationWithDistanceTrigger — obstacle placement with a computed spawn trigger point.
+"""ObstacleVariationWithDistanceTrigger — single-obstacle placement with a distance-based spawn trigger.
 
-Obstacles are placed at path positions at least *trigger_distance* arc-length ahead of the
-robot's start.  A *spawn_trigger_point* scenario parameter is also computed: the position on
-the planned path that is exactly *trigger_distance* before the earliest placed obstacle.
-When the robot reaches that point it can trigger the dynamic spawning of the obstacles.
+Exactly **one** obstacle is placed at a path position at least *trigger_distance* arc-length
+ahead of the robot's start.
+
+Two scenario parameters are written:
+
+* *spawn_trigger_point*  — the spawn pose position of the single placed obstacle.
+* *spawn_trigger_threshold* — the trigger distance (arc-length in metres) that was used.
 
 trigger_distance can be a single float or a list of floats.  When a list is provided, one
 output configuration is produced per value (multiplied with the normal count/in_configs fan-out).
 """
 
 import copy
-import math
 import random
 from typing import List, Optional, Union
 
 import numpy as np
-from pydantic import ConfigDict, field_validator
+from pydantic import ConfigDict, field_validator, model_validator
 
+from robovast.common import convert_dataclasses_to_dict
 from ..data_model import Orientation, Pose, Position
 from .obstacle_variation import ObstacleVariation, ObstacleVariationConfig, ObstacleVariationGuiRenderer
-
-
-# ---------------------------------------------------------------------------
-# Path geometry helpers
-# ---------------------------------------------------------------------------
-
-def _arc_length_of_point(path: List[Position], point: Position) -> float:
-    """Return the arc-length from path start of the projection of *point* onto *path*."""
-    best_arc = 0.0
-    best_dist = float('inf')
-    cum = 0.0
-    for i in range(1, len(path)):
-        dx = path[i].x - path[i - 1].x
-        dy = path[i].y - path[i - 1].y
-        seg = math.hypot(dx, dy)
-        if seg > 0:
-            t = max(0.0, min(1.0, (
-                (point.x - path[i - 1].x) * dx + (point.y - path[i - 1].y) * dy
-            ) / (seg * seg)))
-        else:
-            t = 0.0
-        proj_x = path[i - 1].x + t * dx
-        proj_y = path[i - 1].y + t * dy
-        dist = math.hypot(point.x - proj_x, point.y - proj_y)
-        if dist < best_dist:
-            best_dist = dist
-            best_arc = cum + t * seg
-        cum += seg
-    return best_arc
-
-
-def _position_at_arc_length(path: List[Position], arc: float) -> Position:
-    """Return the interpolated position on *path* at the given arc-length from its start."""
-    arc = max(0.0, arc)
-    cum = 0.0
-    for i in range(1, len(path)):
-        seg = math.hypot(path[i].x - path[i - 1].x, path[i].y - path[i - 1].y)
-        if cum + seg >= arc:
-            t = (arc - cum) / seg if seg > 0 else 0.0
-            t = max(0.0, min(1.0, t))
-            return Position(
-                x=path[i - 1].x + t * (path[i].x - path[i - 1].x),
-                y=path[i - 1].y + t * (path[i].y - path[i - 1].y),
-            )
-        cum += seg
-    return path[-1]
 
 
 # ---------------------------------------------------------------------------
@@ -91,16 +48,20 @@ class ObstacleVariationWithDistanceTriggerConfig(ObstacleVariationConfig):
     """Configuration for ObstacleVariationWithDistanceTrigger.
 
     Inherits all fields from ObstacleVariationConfig and adds:
-    - spawn_trigger_point: scenario parameter name to store the computed trigger position
-    - trigger_distance:    arc-length (m) from start_pose before obstacles may be placed.
-                           A single float or a list of floats (one config per value).
-    - start_pose:          optional explicit start pose (dict); falls back to config['config']['start_pose']
-    - goal_pose:           optional explicit goal pose (dict); falls back to config['config']['goal_pose']
+    - spawn_trigger_point:     scenario parameter name to store the obstacle position.
+    - spawn_trigger_threshold: scenario parameter name to store the trigger distance.
+    - trigger_distance:        arc-length (m) before the obstacle; a single float or a list
+                               of floats (one output config per value).
+    - start_pose:              optional explicit start pose (dict).
+    - goal_pose:               optional explicit goal pose (dict).
+
+    Exactly one obstacle must be configured (i.e. a single ObstacleConfig entry with amount=1).
     """
 
     model_config = ConfigDict(extra='forbid')
 
     spawn_trigger_point: str
+    spawn_trigger_threshold: str
     trigger_distance: Union[float, List[float]]
     start_pose: Optional[dict] = None
     goal_pose: Optional[dict] = None
@@ -112,6 +73,17 @@ class ObstacleVariationWithDistanceTriggerConfig(ObstacleVariationConfig):
         if isinstance(v, (int, float)):
             return [float(v)]
         return [float(x) for x in v]
+
+    @model_validator(mode='after')
+    def validate_single_obstacle(self):
+        """Raise an error if the total obstacle amount is not exactly 1."""
+        total = sum(c.amount for c in self.obstacle_configs)
+        if total != 1:
+            raise ValueError(
+                f"ObstacleVariationWithDistanceTrigger only supports a single obstacle "
+                f"(total amount must be 1), but got {total}."
+            )
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -153,13 +125,13 @@ class ObstacleVariationWithDistanceTriggerGuiRenderer(ObstacleVariationGuiRender
 # ---------------------------------------------------------------------------
 
 class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
-    """Obstacle placement where obstacles are guaranteed to be at least *trigger_distance*
-    arc-length ahead of the robot start, together with a computed *spawn_trigger_point*.
+    """Single-obstacle placement with a distance-based spawn trigger.
 
-    The spawn_trigger_point is the path position exactly *trigger_distance* before the
-    first (closest-to-start) placed obstacle.  It is written as a scenario parameter of
-    type position_3d so that an OSC scenario can trigger dynamic spawning when the robot
-    reaches that point.
+    Exactly one obstacle is placed at least *trigger_distance* arc-length ahead of the
+    robot start on the planned path.  Two scenario parameters are emitted:
+
+    * *spawn_trigger_point*     — position of the placed obstacle.
+    * *spawn_trigger_threshold* — the trigger distance value that was used.
 
     When *trigger_distance* is a list, one output configuration is produced per value.
     Seeds are offset by the list index for reproducibility across values.
@@ -170,24 +142,27 @@ class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
 
     def variation(self, in_configs):
         self.progress_update("Running ObstacleVariationWithDistanceTrigger...")
+        all_expanded = self._expand_obstacle_configs(self.parameters.obstacle_configs)
+        n_expanded = len(all_expanded)
         results = []
         for config in in_configs:
-            for idx, td in enumerate(self.parameters.trigger_distance):
+            for td_idx, td in enumerate(self.parameters.trigger_distance):
                 self._current_trigger_distance = td
-                seed = self.parameters.seed + idx
-                np.random.seed(seed)
-                random.seed(seed)
-                effective_config = self._inject_poses(config)
-                for _ in range(self.parameters.count):
-                    result = self._generate_obstacles_for_config(
-                        self.base_path, effective_config, self.parameters.obstacle_configs
-                    )
-                    # Propagate spawn trigger point to a private key for GUI access
-                    for r in result:
-                        tp = r['config'].get(self.parameters.spawn_trigger_point)
-                        if tp:
-                            r['_spawn_trigger_point'] = tp
-                    results.extend(result)
+                for exp_idx, expanded_configs in enumerate(all_expanded):
+                    seed = self.parameters.seed + td_idx * n_expanded + exp_idx
+                    np.random.seed(seed)
+                    random.seed(seed)
+                    effective_config = self._inject_poses(config)
+                    for _ in range(self.parameters.count):
+                        result = self._generate_obstacles_for_config(
+                            self.base_path, effective_config, list(expanded_configs)
+                        )
+                        # Propagate spawn trigger point to a private key for GUI access
+                        for r in result:
+                            tp = r['config'].get(self.parameters.spawn_trigger_point)
+                            if tp:
+                                r['_spawn_trigger_point'] = tp
+                        results.extend(result)
         return results
 
     # ------------------------------------------------------------------
@@ -248,29 +223,21 @@ class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
         return self._current_trigger_distance
 
     def _post_process(self, obstacle_objects, obstacle_anchors, path) -> dict:
-        """Compute and return the spawn_trigger_point scenario parameter.
+        """Return spawn_trigger_point (obstacle position) and spawn_trigger_threshold.
 
-        The trigger point is the path position exactly *trigger_distance* before the
-        earliest (closest-to-start) obstacle anchor.  If no anchors are available,
-        the start of the path is used as a safe fallback.
+        * spawn_trigger_point     — the spawn pose position of the single placed obstacle.
+        * spawn_trigger_threshold — the current trigger distance value.
         """
-        if not path:
+        if not obstacle_objects:
             return {}
 
-        if obstacle_anchors:
-            # Find the arc-length of each anchor on the full path
-            anchor_arcs = [_arc_length_of_point(path, a) for a in obstacle_anchors]
-            # Use the anchor closest to start — that determines the earliest trigger
-            min_anchor_arc = min(anchor_arcs)
-            trigger_arc = max(0.0, min_anchor_arc - self._current_trigger_distance)
-        else:
-            trigger_arc = 0.0
-
-        trigger_pos = _position_at_arc_length(path, trigger_arc)
+        obj_dict = convert_dataclasses_to_dict([obstacle_objects[0]])[0]
+        pos = obj_dict['spawn_pose']['position']
         return {
             self.parameters.spawn_trigger_point: {
-                'x': trigger_pos.x,
-                'y': trigger_pos.y,
+                'x': pos['x'],
+                'y': pos['y'],
                 'z': 0.0,
-            }
+            },
+            self.parameters.spawn_trigger_threshold: self._current_trigger_distance,
         }

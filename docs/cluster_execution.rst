@@ -27,8 +27,10 @@ internally:
    ensure that jobs are admitted only when sufficient CPU/memory is available,
    preventing cluster oversubscription.
 4. **Result collection** — After each job, the scenario container uploads
-   result files back to the S3 bucket.  ``vast execution cluster download``
-   streams the archives to a local results directory and removes the bucket.
+   result files back to the S3 bucket.  ``vast execution cluster upload-to-share``
+   compresses and transfers the archives from inside the pod to a configured
+   share service (Nextcloud, GCS, …), or ``vast execution cluster download-cleanup``
+   removes the buckets once results have been handled.
 
 
 Prerequisites
@@ -115,11 +117,11 @@ Check the status of a running (or recently completed) run:
 
    vast execution cluster monitor
 
-Download results once jobs have finished:
+Upload results to a share service once jobs have finished:
 
 .. code-block:: bash
 
-   vast execution cluster download
+   vast execution cluster upload-to-share
 
 Clean up only the job objects (without touching the result storage):
 
@@ -128,7 +130,7 @@ Clean up only the job objects (without touching the result storage):
    vast execution cluster run-cleanup
    vast execution cluster run-cleanup --campaign campaign-2025-06-01-120000
 
-Remove result archives from S3 without downloading:
+Remove result archives from S3 (after uploading or when no longer needed):
 
 .. code-block:: bash
 
@@ -204,7 +206,7 @@ the ``--context`` flag to any cluster sub-command to select a specific context
    vast execution cluster run --context gcp-c4
 
 The ``--context`` flag is available on ``setup``, ``run``, ``monitor``,
-``download``, ``prepare-run``, ``run-cleanup``, and ``cleanup``.
+``upload-to-share``, ``prepare-run``, ``run-cleanup``, and ``cleanup``.
 
 Contexts can be renamed to shorter, human-friendly identifiers:
 
@@ -360,7 +362,8 @@ volume — data persists as long as the pod is alive.
 **Notes:**
 
 * ``emptyDir`` is ephemeral: if the ``robovast`` pod is restarted, all data is
-  lost.  Download results before modifying the pod.
+  lost.  Upload results with ``vast execution cluster upload-to-share`` before
+  modifying or restarting the pod.
 
 .. _cluster-config-minikube:
 
@@ -390,8 +393,8 @@ and local integration tests.
 **Notes:**
 
 * No HTTP result server — the nginx sidecar and archiver are not included in
-  the minikube manifest.  Use ``vast execution cluster download`` which uses
-  kubectl port-forwarding to access MinIO directly.
+  the minikube manifest.  Use ``vast execution cluster download-cleanup`` to
+  remove S3 buckets after processing results via ``kubectl port-forward``.
 * ``emptyDir`` storage means all data is lost if the pod restarts.
 
 
@@ -412,11 +415,9 @@ The resolution logic for per-cluster resources lives in
 Sharing Results via ``cluster upload-to-share``
 -------------------------------------------------
 
-Instead of downloading cluster results to a local machine and then
-re-uploading them to a shared folder (Nextcloud, Google Drive, …), the
-``upload-to-share`` command performs the entire transfer **inside the
-archiver sidecar of the robovast pod**.  No data ever reaches the user's
-machine.
+The ``upload-to-share`` command transfers campaign results **entirely inside
+the archiver sidecar of the robovast pod** — directly to a shared folder
+(Nextcloud, GCS, …).  No data ever reaches the user's machine.
 
 .. code-block:: bash
 
@@ -427,15 +428,14 @@ How it works
 
 For each available campaign the command:
 
-1. Creates a compressed ``{campaign_id}.tar.gz`` archive in ``/data/`` on the pod
-   (reuses the same mechanism as ``cluster download``).  If the archive
-   already exists it is reused.
+1. Creates a compressed ``{campaign_id}.tar.gz`` archive in ``/data/`` on the
+   pod.  If the archive already exists it is reused.
 2. Executes the share-provider upload script inside the archiver container,
    streaming upload progress back to the local terminal.
-3. Removes the archive from the pod on success  (use ``--keep-archive`` to
-   retain it, e.g. when you also want to download the results locally later).
-4. Keeps the archive if the upload fails, so you can retry or fall back to
-   a plain ``cluster download``.
+3. Removes the archive from the pod on success (use ``--keep-archive`` to
+   retain it for other uses).
+4. Keeps both the archive and the S3 bucket if the upload fails, so the
+   command can be retried safely.
 
 Configuration via ``.env``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -487,7 +487,7 @@ Example usage:
    # Upload all available runs
    vast execution cluster upload-to-share
 
-   # Keep the pod-side archive after upload (so you can also download it)
+   # Keep the pod-side archive after upload
    vast execution cluster upload-to-share --keep-archive
 
    # Force recreation of the tar.gz even if it already exists
@@ -521,7 +521,7 @@ and **do not require credentials** when the bucket is publicly readable.
    ROBOVAST_GCS_BUCKET=my-robovast-results
 
    # Required for upload (cluster upload-to-share) only.
-   # Not needed for results download-from-share on public buckets.
+   # Not needed for results download on public buckets.
    ROBOVAST_GCS_KEY_FILE=/path/to/service-account-key.json
 
    # Optional: object-name prefix inside the bucket (default: bucket root)
@@ -543,7 +543,7 @@ Grant the ``Storage Object Viewer`` role to the special principal
 
    gsutil iam ch allUsers:objectViewer gs://my-robovast-results
 
-Once the bucket is public, ``vast results download-from-share`` works without
+Once the bucket is public, ``vast results download`` works without
 any credentials — only ``ROBOVAST_SHARE_TYPE`` and ``ROBOVAST_GCS_BUCKET``
 need to be set.
 
