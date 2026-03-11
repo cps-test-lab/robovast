@@ -15,6 +15,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import random
 from typing import Optional
 
 import numpy as np
@@ -140,6 +141,7 @@ class ObstacleVariation(NavVariation):
         results = []
         for config in in_configs:
             np.random.seed(self.parameters.seed)
+            random.seed(self.parameters.seed)
             for _ in range(self.parameters.count):
                 result = self._generate_obstacles_for_config(self.base_path, config, self.parameters.obstacle_configs)
                 results.extend(result)

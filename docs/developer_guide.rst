@@ -502,3 +502,34 @@ To test your cluster configuration, you can use:
     vast exec cluster prepare-setup --cluster-config YourClusterConfig ./setup_output
 
 The output directory will contain all necessary files and instructions to manually execute the setup steps for your cluster configuration and execution.
+
+
+Add a MCP Plugin
+^^^^^^^^^^^^^^^^
+
+Create a class with a ``name`` property and a ``register(mcp)`` method:
+
+.. code-block:: python
+
+   # my_package/mcp_plugin.py
+   from mcp.server.fastmcp import FastMCP
+
+   class MyMCPPlugin:
+       @property
+       def name(self) -> str:
+           return "my_plugin"
+
+       def register(self, mcp: FastMCP) -> None:
+           @mcp.tool()
+           def my_tool() -> str:
+               """A custom tool."""
+               return "hello"
+
+Then register the class as an entry point in ``pyproject.toml``:
+
+.. code-block:: toml
+
+   [tool.poetry.plugins."robovast.mcp_plugins"]
+   my_plugin = "my_package.mcp_plugin:MyMCPPlugin"
+
+The plugin is picked up automatically the next time the server starts.

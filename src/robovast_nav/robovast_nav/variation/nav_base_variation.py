@@ -41,6 +41,11 @@ class NavVariation(Variation):
         map_file_from_variation = None
 
         # Check if map file is provided via YAML parameter
+        if not map_file_parameter and "map_file" in config.get("config", {}):
+            # Fall back to map_file from configuration parameters block
+            map_file_parameter = config["config"]["map_file"]
+            self.progress_update(f"Using map_file from configuration parameters: {map_file_parameter}")
+
         if map_file_parameter:
             temp_path = os.path.join(self.base_path, map_file_parameter)
             if os.path.exists(temp_path):

@@ -473,7 +473,7 @@ Commands to run for postprocessing run results. These are executed before the ev
        - rosbags_action_to_csv:
            action: navigate_to_pose
        - command:
-           script: ../../../tools/custom_script.sh
+           script: tools/custom_script.sh
            args: [--arg, value]
 
 To list all available plugins and their descriptions:
@@ -489,6 +489,7 @@ To list all available plugins and their descriptions:
 - ``rosbags_to_csv``: Extract a specific set of ROS topics from rosbags to separate CSV files. Required ``topics`` parameter (list of topic names to extract). For each topic one CSV file per bag is written next to the bag, named ``<bag>_<topic>.csv``.
 - ``rosbags_to_webm``: Convert a ``sensor_msgs/msg/CompressedImage`` topic from ROS bags to WebM video files (VP9 codec). Optional ``topic`` parameter (compressed image topic name, default ``/camera/image_raw/compressed``) and ``fps`` parameter (fallback frame rate when timestamps are unavailable, default ``30``).
 - ``rosbags_action_to_csv``: Extract ROS2 action feedback and status messages to two CSV files (``<filename_prefix>_feedback.csv`` and ``<filename_prefix>_status.csv``). Reads ``/<action>/_action/feedback`` and ``/<action>/_action/status`` topics. Nested data is flattened to columns. Required ``action`` parameter (action name, e.g. ``navigate_to_pose``). Optional ``filename_prefix`` parameter (default: ``action_<action>``).
+- ``rosbags_rosout_to_csv``: Extract ROS log messages from the ``/rosout`` topic in ROS bags to a CSV file. Optional ``skip_levels`` parameter (list of log levels to skip, e.g. ``[ERROR, FATAL]``).
 - ``command``: Execute arbitrary commands or scripts. Requires ``script`` parameter, optional ``args`` parameter (list).
 - ``compress``: Create a gzipped tarball (``<name>-<timestamp>.tar.gz``) for each campaign directory; runs on the host (no Docker). Optional ``output_dir`` (default: results directory), ``exclude_dirs`` (directory names to exclude, default ``['.cache']``), ``overwrite`` (if ``false``, skip when a tarball already exists; default ``false``).
 

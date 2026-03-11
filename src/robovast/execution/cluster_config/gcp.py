@@ -64,6 +64,11 @@ spec:
         port: 9000
       initialDelaySeconds: 10
       periodSeconds: 5
+
+    resources:
+      limits:
+        cpu: "2000m"
+        memory: "1Gi"
   - name: http-server
     image: nginx:alpine
     ports:
@@ -73,12 +78,20 @@ spec:
       - mountPath: /usr/share/nginx/html
         name: minio-storage
         readOnly: true
+    resources:
+      limits:
+        cpu: "500m"
+        memory: "1Gi"
   - name: archiver
     image: ghcr.io/cps-test-lab/robovast-sidecar:latest
     command: ["sleep", "infinity"]
     volumeMounts:
       - mountPath: /data
         name: minio-storage
+    resources:
+      limits:
+        cpu: "2000m"
+        memory: "1Gi"
   volumes:
   - name: minio-storage
     ephemeral:

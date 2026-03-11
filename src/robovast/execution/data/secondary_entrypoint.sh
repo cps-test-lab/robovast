@@ -27,5 +27,10 @@ exec > >(stdbuf -oL tee -a "${LOG_FILE}")
 exec 2>&1
 
 SOCKET="/ipc/${CONTAINER_NAME}"
+
+# Start resource monitor
+python3 /config/monitor_resources.py "${OUTPUT_DIR}/resource_usage_${CONTAINER_NAME}.csv" &
+log "Started resource monitor (PID=$!) -> ${OUTPUT_DIR}/resource_usage_${CONTAINER_NAME}.csv"
+
 log "Starting scenario-execution-server-ros on socket '${SOCKET}'..."
 exec ros2 run scenario_execution_server_ros scenario_execution_server_ros --watchdog ${WATCHDOG_TIMEOUT} --connect-timeout ${CONNECT_TIMEOUT} --socket "${SOCKET}"

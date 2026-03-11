@@ -115,12 +115,13 @@ class NextcloudShareProvider(BaseShareProvider):
     # Download interface (``results download-from-share``)
     # ------------------------------------------------------------------
 
-    def list_campaign_archives(self) -> list[str]:
-        """Return a list of campaign ``*.tar.gz`` filenames on the share.
+    def list_campaign_archives_with_size(self) -> list[tuple[str, int]]:
+        """Return ``(filename, size_in_bytes)`` for each campaign ``*.tar.gz`` on the share.
 
         Uses WebDAV ``PROPFIND Depth: 1`` against the Nextcloud
         ``public.php/webdav/`` endpoint, authenticated with the share token
-        as the HTTP Basic Auth username.
+        as the HTTP Basic Auth username.  *size_in_bytes* is ``-1`` when the
+        server does not return a ``getcontentlength`` value.
         """
         webdav_url, _ = self._parse_share_url()
         propfind_body = (
@@ -145,7 +146,7 @@ class NextcloudShareProvider(BaseShareProvider):
 
         ns = {"D": "DAV:"}
         root = ET.fromstring(resp.text)
-        results: list[str] = []
+        results: list[tuple[str, int]] = []
         for response in root.findall("D:response", ns):
             href = response.findtext("D:href", default="", namespaces=ns)
             name = urllib.parse.unquote(href.rstrip("/").rsplit("/", 1)[-1])
@@ -153,10 +154,23 @@ class NextcloudShareProvider(BaseShareProvider):
                 continue
             if not is_campaign_dir(name[: -len(".tar.gz")]):
                 continue
-            results.append(name)
+            size = -1
+            for propstat in response.findall("D:propstat", ns):
+                length_el = propstat.find("D:prop/D:getcontentlength", ns)
+                if length_el is not None and length_el.text:
+                    try:
+                        size = int(length_el.text)
+                    except ValueError:
+                        pass
+                    break
+            results.append((name, size))
 
-        results.sort()
+        results.sort(key=lambda t: t[0])
         return results
+
+    def list_campaign_archives(self) -> list[str]:
+        """Return a list of campaign ``*.tar.gz`` filenames on the share."""
+        return [name for name, _ in self.list_campaign_archives_with_size()]
 
     def download_archive(
         self,
@@ -184,3 +198,19 @@ class NextcloudShareProvider(BaseShareProvider):
                         received += len(chunk)
                         if progress_callback and total:
                             progress_callback(received, total)
+    def remove_archive(self, object_name: str) -> None:
+        """Delete *object_name* from the Nextcloud share via WebDAV ``DELETE``.
+
+        Args:
+            object_name: Filename of the archive on the share (as returned by
+                :meth:`list_campaign_archives`).
+        """
+        webdav_url, _ = self._parse_share_url()
+        file_url = webdav_url + urllib.parse.quote(object_name, safe="")
+        with self._session() as session:
+            resp = session.delete(file_url, timeout=30)
+        if resp.status_code not in (200, 204):
+            raise click.UsageError(
+                f"Nextcloud DELETE failed for '{object_name}': "
+                f"HTTP {resp.status_code}: {resp.text[:300]}"
+            )

@@ -30,6 +30,7 @@ import yaml
 from robovast.common.common import load_config
 from robovast.common.execution import is_campaign_dir
 from robovast.results_processing.metadata import generate_campaign_metadata
+from robovast.results_processing.postprocessing_plugins import generate_data_db
 from robovast.common.results_utils import find_campaign_vast_file
 
 
@@ -324,7 +325,7 @@ def compute_dir_hash(dir_path: str, exclude_set: Optional[set] = None) -> str:
     return hashlib.md5(hash_string.encode()).hexdigest()
 
 
-def is_postprocessing_needed(
+def is_postprocessing_needed(  # pylint: disable=too-many-return-statements
         results_dir: str,
         vast_file: Optional[str] = None,
 ) -> bool:
@@ -435,7 +436,6 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
             )
         output(f"Using config from: {vast_path}")
 
-    # campaign_dir is the parent of config_dir (e.g. campaign-<id>/_config/ -> campaign-<id>/)
     campaign_dir = str(Path(config_dir).parent)
 
     # Get postprocessing commands
@@ -535,6 +535,27 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
             display_message = message if debug else message.splitlines()[0]
             output(f"✓ {display_message}")
 
+    # Always run rosbags_rosout_to_csv after custom plugin execution and database creation
+    if 'rosbags_rosout_to_csv' in plugins:
+        output("Executing rosbags_rosout_to_csv...")
+        with tempfile.TemporaryDirectory(prefix="robovast_provenance_") as rosout_temp_dir:
+            rosout_provenance_file = os.path.join(rosout_temp_dir, "rosbags_rosout_to_csv_provenance.json")
+            rosout_success, rosout_msg, _ = execute_postprocessing_plugin(
+                plugin_name='rosbags_rosout_to_csv',
+                plugin_func=plugins['rosbags_rosout_to_csv'],
+                params={},
+                results_dir=results_dir,
+                config_dir=config_dir,
+                provenance_file=rosout_provenance_file,
+            )
+        if rosout_success:
+            display_rosout_msg = rosout_msg if debug else rosout_msg.splitlines()[0]
+            output(f"✓ {display_rosout_msg}")
+        else:
+            output(f"Warning: rosbags_rosout_to_csv failed: {rosout_msg}")
+    else:
+        raise RuntimeError("rosbags_rosout_to_csv plugin not available")
+
     # Store the hash, list of postprocessing outputs, and write postprocessing.yaml
     output_paths = set()
     if success:
@@ -562,6 +583,13 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     # Write postprocessing.yaml in campaign/_transient/
     _write_postprocessing_provenance_yaml(campaign_dir, all_provenance_entries)
 
+    # Build SQLite data.db for the campaign
+    db_success, db_msg = generate_data_db(campaign_dir, output_callback=output_callback)
+    if db_success:
+        output(f"✓ {db_msg}")
+    else:
+        raise RuntimeError(f"data.db generation failed: {db_msg}")
+
     # Generate metadata.yaml in each campaign directory
     meta_success, meta_msg = generate_campaign_metadata(
         results_dir, vast_file=vast_file, output_callback=output_callback,
@@ -569,12 +597,16 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     if not meta_success:
         output(f"Warning: Metadata generation failed: {meta_msg}")
 
-    # Add metadata.yaml to exclude set for future hash computations
+    # Add metadata.yaml and data.db to exclude set for future hash computations
     for campaign_item in Path(results_dir_abs).iterdir():
         if campaign_item.is_dir() and is_campaign_dir(campaign_item.name):
             meta_file = campaign_item / "metadata.yaml"
             if meta_file.exists():
                 rel = str(meta_file.relative_to(Path(results_dir_abs)))
+                output_paths.add(rel)
+            db_file = campaign_item / "_execution" / "data.db"
+            if db_file.exists():
+                rel = str(db_file.relative_to(Path(results_dir_abs)))
                 output_paths.add(rel)
     # Re-write outputs file with metadata.yaml included
     try:

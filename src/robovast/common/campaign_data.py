@@ -123,7 +123,7 @@ def read_test_result(run_dir: Path) -> dict[str, Any]:
             failure_message = failure_elem.get("message") or failure_elem.text
 
     return {
-        "passed": errors == 0 and failures == 0,
+        "success": errors == 0 and failures == 0,
         "duration_sec": duration,
         "start_time": start_time_iso,
         "errors": errors,
@@ -264,7 +264,7 @@ def get_vast_configuration_info(
         for run_dir in run_dirs:
             try:
                 result = read_test_result(run_dir)
-                if result["passed"]:
+                if result["success"]:
                     config_passed += 1
                 else:
                     if result["errors"] > 0:

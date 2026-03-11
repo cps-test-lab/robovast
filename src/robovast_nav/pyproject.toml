@@ -10,11 +10,13 @@ packages = [{include = "robovast_nav"}]
 [tool.poetry.dependencies]
 python = ">=3.12,<3.14"
 robovast = "^1.0.0"
+robovast-mcp = {version = "^0.1.0", optional = true}
 pyside6-essentials = "^6.6"
 scipy = "^1.11"
 numpy = "^1.26"
 Pillow = "^12.0"
 pyyaml = "^6.0"
+opencv-python-headless = ">=4.8"
 
 [tool.poetry.plugins."robovast.variation_types"]
 "FloorplanVariation" = "robovast_nav.variation.floorplan_variation:FloorplanVariation"
@@ -23,6 +25,9 @@ pyyaml = "^6.0"
 "PathVariationRasterized" = "robovast_nav.variation.path_variation:PathVariationRasterized"
 "ObstacleVariation" = "robovast_nav.variation.obstacle_variation:ObstacleVariation"
 "ObstacleVariationWithDistanceTrigger" = "robovast_nav.variation.obstacle_variation_with_distance_trigger:ObstacleVariationWithDistanceTrigger"
+
+[tool.poetry.plugins."robovast.mcp_plugins"]
+nav = "robovast_nav.mcp_plugin:NavMCPPlugin"
 
 [build-system]
 requires = ["poetry-core"]

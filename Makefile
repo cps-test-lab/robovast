@@ -41,6 +41,7 @@ venv/.robovast_installed:
 	
 	@echo "Setting up RoboVAST environment..."
 	. venv/bin/activate && pip install -e .[docs] && pip install -e src/robovast_nav
+
 	@touch venv/.robovast_installed
 	@echo ""
 	@echo "✅ Virtual environment created successfully!"

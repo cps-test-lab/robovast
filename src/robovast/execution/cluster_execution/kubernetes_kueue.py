@@ -22,6 +22,7 @@ import os
 import subprocess
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from kubernetes import client, config
 from kubernetes.utils.quantity import parse_quantity
@@ -208,29 +209,38 @@ def cleanup_kueue_workloads(
                 plural=KUEUE_WORKLOAD_PLURAL,
                 label_selector=queue_selector,
             )
-            deleted = 0
-            for wl in workloads.get("items", []):
-                owner_uids = {
+            target_wls = [
+                wl["metadata"]["name"]
+                for wl in workloads.get("items", [])
+                if {
                     ref["uid"]
                     for ref in (wl.get("metadata", {}).get("ownerReferences") or [])
-                }
-                if owner_uids & campaign_job_uids:
-                    wl_name = wl["metadata"]["name"]
-                    try:
-                        custom_api.delete_namespaced_custom_object(
-                            group=KUEUE_WORKLOAD_GROUP,
-                            version=KUEUE_WORKLOAD_VERSION,
-                            namespace=namespace,
-                            plural=KUEUE_WORKLOAD_PLURAL,
-                            name=wl_name,
-                            body=delete_opts,
-                        )
+                } & campaign_job_uids
+            ]
+
+            def _delete_workload(wl_name):
+                try:
+                    custom_api.delete_namespaced_custom_object(
+                        group=KUEUE_WORKLOAD_GROUP,
+                        version=KUEUE_WORKLOAD_VERSION,
+                        namespace=namespace,
+                        plural=KUEUE_WORKLOAD_PLURAL,
+                        name=wl_name,
+                        body=delete_opts,
+                    )
+                    return True
+                except client.rest.ApiException as e:
+                    if e.status == 404:
+                        return True  # already gone
+                    logger.warning(f"Could not delete workload '{wl_name}': {e}")
+                    return False
+
+            deleted = 0
+            with ThreadPoolExecutor(max_workers=min(len(target_wls) or 1, 16)) as pool:
+                futures = {pool.submit(_delete_workload, n): n for n in target_wls}
+                for fut in as_completed(futures):
+                    if fut.result():
                         deleted += 1
-                    except client.rest.ApiException as e:
-                        if e.status == 404:
-                            pass  # already gone
-                        else:
-                            logger.warning(f"Could not delete workload '{wl_name}': {e}")
             logger.info(
                 "Successfully deleted %d scenario-runs Kueue workload(s) for campaign '%s'",
                 deleted, campaign_id,

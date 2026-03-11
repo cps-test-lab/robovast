@@ -1,5 +1,5 @@
 from .base_variation import ProvContribution, Variation
-from .loader import load_variation_classes
+from .loader import load_variation_classes, validate_variation_plugins
 from .parameter_variation import (ParameterVariationDistributionGaussian,
                                   ParameterVariationDistributionUniform,
                                   ParameterVariationList)

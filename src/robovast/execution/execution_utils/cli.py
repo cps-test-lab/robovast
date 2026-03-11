@@ -72,7 +72,7 @@ def local():
 
 @local.command()
 @click.option('--config', '-c', default=None,
-              help='Run only a specific configuration by name')
+              help='Run only configurations matching this name or glob pattern (e.g. hall*)')
 @click.option('--runs', '-r', type=int, default=None,
               help='Override the number of runs specified in the config')
 @click.option('--output', '-o', default=None,
@@ -203,7 +203,7 @@ def cluster():
 
 @cluster.command()
 @click.option('--config', '-c', default=None,
-              help='Run only a specific configuration by name')
+              help='Run only configurations matching this name or glob pattern (e.g. hall*)')
 @click.option('--runs', '-r', type=int, default=None,
               help='Override the number of runs specified in the config')
 @click.option('--follow', '-f', is_flag=True, default=False,
@@ -660,7 +660,7 @@ def download_to_share(campaign, force, verbose, keep_archive, skip_removal, kube
     directory.  Required variables:
 
     \b
-    ROBOVAST_SHARE_TYPE  — share provider: ``nextcloud``
+    ROBOVAST_SHARE_TYPE  — share provider: ``nextcloud``, ``gcs``, ``sftp``, ``webdav``
 
     Additional variables depend on the share type.  Run with no ``.env`` file
     to see a list of required variables for the detected share type.
@@ -689,8 +689,13 @@ def download_to_share(campaign, force, verbose, keep_archive, skip_removal, kube
         raise click.UsageError(
             "ROBOVAST_SHARE_TYPE is not set.\n"
             "Add it to a .env file in your project directory.\n"
-            "Supported values: nextcloud\n"
-            "Example .env:\n"
+            "Supported values: nextcloud, gcs, sftp, webdav\n"
+            "Example .env (WebDAV):\n"
+            "  ROBOVAST_SHARE_TYPE=webdav\n"
+            "  ROBOVAST_WEBDAV_URL=https://nas.example.com/dav/results/\n"
+            "  ROBOVAST_WEBDAV_USER=myuser\n"
+            "  ROBOVAST_WEBDAV_PASSWORD=secret\n"
+            "Example .env (Nextcloud):\n"
             "  ROBOVAST_SHARE_TYPE=nextcloud\n"
             "  ROBOVAST_SHARE_URL=https://cloud.example.com/s/AbCdEfGhIjKlMn"
         )

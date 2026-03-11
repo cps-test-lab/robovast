@@ -41,11 +41,13 @@ extensions = ['sphinx.ext.extlinks',
               'sphinx.ext.autodoc',
               'sphinx.ext.napoleon',
               'sphinx_click',
-              'sphinxcontrib.spelling']
+              'sphinxcontrib.spelling',
+              'mcp_tools']
 
 # Add the project root to the path so we can import the modules
 
 sys.path.insert(0, os.path.abspath('../src'))
+sys.path.insert(0, os.path.abspath('_ext'))
 
 # sphinx-click configuration
 # Enable proper formatting of Click docstrings

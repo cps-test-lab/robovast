@@ -1,0 +1,18 @@
+version: 1
+metadata:
+  name: ros2_basic
+configuration:
+- name: test-parameter
+  parameters:
+  - test_parameter_value: "YES"
+execution:
+  image: ghcr.io/cps-test-lab/robovast:latest
+  resources:
+    cpu: 1
+  runs: 1
+  env:
+  - ENABLE_X11: "false"
+  scenario_file: scenario.osc
+  run_files:
+  - "files/*.yaml"
+  - "files/*.py"

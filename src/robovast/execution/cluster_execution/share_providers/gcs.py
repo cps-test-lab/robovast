@@ -120,18 +120,21 @@ class GcsShareProvider(BaseShareProvider):
     # Download interface (public bucket, no auth required)
     # ------------------------------------------------------------------
 
-    def list_campaign_archives(self) -> list[str]:
+    def list_campaign_archives_with_size(self) -> list[str]:
         """List all campaign ``*.tar.gz`` objects in the configured GCS bucket.
 
-        Recognises archives whose base name (without ``.tar.gz``) matches the
+        Recognizes archives whose base name (without ``.tar.gz``) matches the
         campaign naming convention (``<campaign-name>-YYYY-MM-DD-HHMMSS``).
         Uses the public GCS XML API (no credentials required for public buckets).
         Handles GCS list pagination via the ``NextContinuationToken`` marker.
+
+        Returns:
+            List of ``(object_name, size_in_bytes)`` tuples.
         """
         bucket = os.environ["ROBOVAST_GCS_BUCKET"]
         prefix = os.environ.get("ROBOVAST_GCS_PREFIX", "")
 
-        found: list[str] = []
+        found: list[tuple[str, int]] = []
         continuation_token: str | None = None
         ns = {"s3": "http://doc.s3.amazonaws.com/2006-03-01"}
 
@@ -156,10 +159,12 @@ class GcsShareProvider(BaseShareProvider):
             root = ET.fromstring(body)
             for content in root.findall("s3:Contents", ns):
                 key_el = content.find("s3:Key", ns)
+                size_el = content.find("s3:Size", ns)
                 if key_el is not None and key_el.text and key_el.text.endswith(".tar.gz"):
                     base = key_el.text.rstrip("/").rsplit("/", 1)[-1]
                     if is_campaign_dir(base[:-len(".tar.gz")]):
-                        found.append(key_el.text)
+                        size = int(size_el.text) if size_el is not None and size_el.text else -1
+                        found.append((key_el.text, size))
 
             # Check for next page
             token_el = root.find("s3:NextContinuationToken", ns)
@@ -217,4 +222,86 @@ class GcsShareProvider(BaseShareProvider):
         except urllib.error.URLError as exc:
             raise click.UsageError(
                 f"Failed to download '{object_name}': {exc.reason}"
+            ) from exc
+
+    # ------------------------------------------------------------------
+    # Remove interface (authenticated, requires ROBOVAST_GCS_KEY_FILE)
+    # ------------------------------------------------------------------
+
+    def _get_gcs_access_token(self, key_file: str) -> str:
+        """Exchange a service-account key file for a short-lived Bearer token."""
+        if not os.path.isfile(key_file):
+            raise click.UsageError(
+                f"ROBOVAST_GCS_KEY_FILE: file not found: {key_file}"
+            )
+        try:
+            with open(key_file) as fh:
+                key_data = json.load(fh)
+        except (OSError, ValueError) as exc:
+            raise click.UsageError(
+                f"ROBOVAST_GCS_KEY_FILE: cannot read key file {key_file!r}: {exc}"
+            ) from exc
+        try:
+            import google.auth.transport.requests  # pylint: disable=import-outside-toplevel
+            import google.oauth2.service_account  # pylint: disable=import-outside-toplevel
+        except ImportError as exc:
+            raise click.UsageError(
+                f"google-auth is not installed: {exc}\n"
+                "Install it with: pip install google-auth"
+            ) from exc
+        scopes = ["https://www.googleapis.com/auth/devstorage.read_write"]
+        creds = google.oauth2.service_account.Credentials.from_service_account_info(
+            key_data, scopes=scopes
+        )
+        creds.refresh(google.auth.transport.requests.Request())
+        return creds.token
+
+    def remove_archive(self, object_name: str) -> None:
+        """Delete *object_name* from the GCS bucket.
+
+        Requires ``ROBOVAST_GCS_KEY_FILE`` to be set to a service-account key
+        file with at least *Storage Object Admin* (or *Storage Object Viewer* +
+        *Storage Object Creator* + delete permission) on the bucket.
+
+        Uses the GCS JSON API ``DELETE`` endpoint with a Bearer token.
+
+        Args:
+            object_name: GCS object key (as returned by
+                :meth:`list_campaign_archives`).
+        """
+        bucket = os.environ["ROBOVAST_GCS_BUCKET"]
+        key_file = os.environ.get("ROBOVAST_GCS_KEY_FILE", "")
+        if not key_file:
+            raise click.UsageError(
+                "ROBOVAST_GCS_KEY_FILE is required for results remove-from-share.\n"
+                "Set it to the path of a service-account JSON key file with "
+                "Storage Object Admin access on the bucket."
+            )
+
+        token = self._get_gcs_access_token(key_file)
+        url = (
+            f"https://storage.googleapis.com/storage/v1/b/"
+            f"{urllib.parse.quote(bucket, safe='')}/o/"
+            f"{urllib.parse.quote(object_name, safe='')}"
+        )
+        req = urllib.request.Request(
+            url,
+            method="DELETE",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30):
+                pass
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                raise click.UsageError(
+                    f"Object '{object_name}' not found in bucket '{bucket}'."
+                ) from exc
+            raise click.UsageError(
+                f"Failed to delete '{object_name}' from bucket '{bucket}': "
+                f"HTTP {exc.code} {exc.reason}"
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise click.UsageError(
+                f"Failed to delete '{object_name}': {exc.reason}"
             ) from exc

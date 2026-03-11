@@ -1,0 +1,24 @@
+import osc.helpers
+import osc.ros
+import osc.dataops
+
+scenario test_scenario:
+    timeout(10s)
+    
+    test_parameter_value: string
+    
+    do serial:
+        run_process("cp /config/files/params.yaml /out/params.yaml")            
+        set_yaml_value("/out/params.yaml",
+             key_path: "basic_node.ros__parameters.test_parameter",
+             value: test_parameter_value,
+             value_type: "str")
+        parallel:
+            serial:
+                wait elapsed(1s)
+                run_process(common.get_scenario_file_directory() + '/files/ros2_basic_node.py --ros-args --params-file /out/params.yaml')
+                emit fail
+            serial:
+                log_check(values: [test_parameter_value])
+                emit end
+

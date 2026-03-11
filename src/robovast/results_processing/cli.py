@@ -17,6 +17,7 @@
 
 """CLI for results processing and management."""
 
+import fnmatch
 import os
 import sys
 import tarfile
@@ -28,14 +29,16 @@ import click
 import yaml
 from dotenv import load_dotenv
 
+from robovast.common import fmt_size as _fmt_size, make_download_progress_callback
 from robovast.common.cli import get_project_config, handle_cli_exception
 from robovast.common.cli.project_config import ProjectConfig
 from robovast.common.execution import is_campaign_dir
-from robovast.evaluation.merge_results import merge_results
+from robovast.results_processing.merge_results import merge_results
 from robovast.execution.cluster_execution.share_providers import \
     load_share_provider_plugins
 from robovast.results_processing import run_postprocessing
 from robovast.results_processing.fair_metadata import generate_prov_metadata
+from robovast.results_processing.metadata import generate_campaign_metadata
 from robovast.results_processing.postprocessing import \
     load_postprocessing_plugins
 from robovast.results_processing.publication import (load_publication_plugins,
@@ -214,12 +217,13 @@ def merge_results_cmd(merged_campaign_dir, results_dir):
 @click.option('--dot-pdf', is_flag=True, default=False,
               help='Also generate Graphviz DOT and PDF visualizations of the FAIR metadata graph.')
 def generate_metadata_cmd(results_dir, dot_pdf):
-    """Generate FAIR/PROV-O provenance metadata for all campaigns.
+    """Generate metadata.yaml and FAIR/PROV-O provenance metadata for all campaigns.
 
-    Reads the ``metadata.yaml`` from each campaign directory and
-    (re-)generates the compact JSON-LD provenance graph
-    ``metadata.prov.json``.  Optionally also writes ``metadata.dot`` and
-    renders ``metadata.pdf`` via Graphviz (requires ``dot`` on PATH).
+    First generates (or regenerates) ``metadata.yaml`` for each campaign via
+    the standard metadata pipeline, then produces the compact JSON-LD
+    provenance graph ``metadata.prov.json``.  Optionally also writes
+    ``metadata.dot`` and renders ``metadata.pdf`` via Graphviz
+    (requires ``dot`` on PATH).
 
     Requires project initialization with ``vast init`` first (unless
     ``--results-dir`` is specified).
@@ -243,11 +247,29 @@ def generate_metadata_cmd(results_dir, dot_pdf):
     if not campaign_dirs:
         raise click.ClickException(f"No campaign directories found in {results_dir}")
 
-    click.echo("Generating FAIR/PROV-O metadata...")
+    click.echo("Generating metadata...")
     click.echo(f"Results directory: {results_dir}")
     if dot_pdf:
         click.echo("DOT/PDF visualization: enabled")
     click.echo("-" * 60)
+
+    # Phase 1: generate metadata.yaml for all campaigns
+    click.echo("Generating metadata.yaml...")
+    try:
+        meta_success, meta_msg = generate_campaign_metadata(
+            str(results_dir),
+            output_callback=lambda msg: click.echo(f"  {msg}"),
+        )
+        if not meta_success:
+            raise click.ClickException(f"metadata.yaml generation failed: {meta_msg}")
+        click.echo(f"  ✓ {meta_msg}")
+    except click.ClickException:
+        raise
+    except Exception as e:  # pylint: disable=broad-except
+        raise click.ClickException(f"metadata.yaml generation failed: {e}") from e
+
+    click.echo("-" * 60)
+    click.echo("Generating FAIR/PROV-O metadata (metadata.prov.json)...")
 
     errors = []
     for campaign_dir in campaign_dirs:
@@ -277,7 +299,7 @@ def generate_metadata_cmd(results_dir, dot_pdf):
     if errors:
         click.echo(f"✗ Metadata generation failed for: {', '.join(errors)}", err=True)
         sys.exit(1)
-    click.echo(f"✓ FAIR metadata generated for {len(campaign_dirs)} campaign(s)")
+    click.echo(f"✓ Metadata generated for {len(campaign_dirs)} campaign(s)")
 
 
 @results.command(name='postprocess-commands')
@@ -372,53 +394,6 @@ def list_publication_plugins():
     click.echo("Plugins with parameters use plugin name as key with parameters as dict.")
 
 
-# ---------------------------------------------------------------------------
-# Progress helpers
-# ---------------------------------------------------------------------------
-
-_BAR_WIDTH = 20
-_CLEAR_EOL = "\033[K"
-
-
-def _fmt_size(n: int) -> str:
-    return f"{n / 1024 / 1024:.1f} MiB"
-
-
-def _fmt_rate(bps: float) -> str:
-    if bps >= 1024 * 1024:
-        return f"{bps / 1024 / 1024:.1f} MiB/s"
-    if bps >= 1024:
-        return f"{bps / 1024:.1f} KiB/s"
-    return f"{bps:.0f} B/s"
-
-
-def _make_progress_callback(label: str, start: float):
-    """Return a ``(received, total)`` callback that prints a progress bar."""
-    last_pct = [-1.0]
-
-    def _cb(received: int, total: int) -> None:
-        if total <= 0:
-            sys.stdout.write(f"\r{label}  {_fmt_size(received)}" + _CLEAR_EOL)
-            sys.stdout.flush()
-            return
-        pct = received / total * 100
-        if pct - last_pct[0] < 0.5 and received < total:
-            return
-        last_pct[0] = pct
-        elapsed = max(time.monotonic() - start, 1e-6)
-        rate = received / elapsed
-        filled = int(_BAR_WIDTH * received / total)
-        progressbar = "█" * filled + "░" * (_BAR_WIDTH - filled)
-        line = (
-            f"{label}  [{progressbar}]  {pct:5.1f}%  "
-            f"{_fmt_size(received)}/{_fmt_size(total)}  {_fmt_rate(rate)}"
-        )
-        sys.stdout.write("\r" + line + _CLEAR_EOL)
-        sys.stdout.flush()
-
-    return _cb
-
-
 def _load_share_dotenv() -> None:
     """Load ``.env`` using the same search order as ``cluster upload-to-share``."""
     project_file = ProjectConfig.find_project_file()
@@ -462,10 +437,11 @@ def download_from_share_cmd(output, campaigns, force, keep_archive):
     Required ``.env`` variables:
 
     \b
-    ROBOVAST_SHARE_TYPE  — share provider (e.g. ``gcs``)
-    ROBOVAST_GCS_BUCKET  — GCS bucket name  (when ROBOVAST_SHARE_TYPE=gcs)
-
-    No credentials are required when the bucket is publicly readable.
+    ROBOVAST_SHARE_TYPE      — share provider (e.g. ``gcs``, ``webdav``, ``sftp``)
+    ROBOVAST_GCS_BUCKET      — GCS bucket name         (when ROBOVAST_SHARE_TYPE=gcs)
+    ROBOVAST_WEBDAV_URL      — WebDAV collection URL   (when ROBOVAST_SHARE_TYPE=webdav)
+    ROBOVAST_WEBDAV_USER     — WebDAV username          (when ROBOVAST_SHARE_TYPE=webdav)
+    ROBOVAST_WEBDAV_PASSWORD — WebDAV password          (when ROBOVAST_SHARE_TYPE=webdav)
     """
     _load_share_dotenv()
 
@@ -554,7 +530,7 @@ def download_from_share_cmd(output, campaigns, force, keep_archive):
 
         click.echo(f"  {campaign_id}  downloading...")
         start = time.monotonic()
-        progress_cb = _make_progress_callback(campaign_id, start)
+        progress_cb = make_download_progress_callback(campaign_id, start)
 
         # Stream to a temp file in the output directory so extraction is local
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".tar.gz", dir=output_path)
@@ -601,3 +577,224 @@ def download_from_share_cmd(output, campaigns, force, keep_archive):
     if skipped:
         parts.append(f"{skipped} skipped")
     click.echo("  ".join(parts))
+
+
+@results.command(name='list-share')
+@click.option('--campaign', '-i', 'campaigns', multiple=True,
+              help='Only show specific campaigns (e.g. campaign-2025-02-27-123456). '
+                   'Can be specified multiple times. Without this, shows all campaigns.')
+def list_share_cmd(campaigns):
+    """List campaign archives on the configured share service with sizes.
+
+    Reads the same ``.env`` configuration as ``cluster upload-to-share``.
+    Prints one line per archive with its size on the share.
+
+    Required ``.env`` variables:
+
+    \b
+    ROBOVAST_SHARE_TYPE  — share provider (e.g. ``gcs``)
+    ROBOVAST_GCS_BUCKET  — GCS bucket name  (when ROBOVAST_SHARE_TYPE=gcs)
+    """
+    _load_share_dotenv()
+
+    share_type = os.environ.get("ROBOVAST_SHARE_TYPE", "").strip()
+    if not share_type:
+        raise click.UsageError(
+            "ROBOVAST_SHARE_TYPE is not set.\n"
+            "Add it to a .env file in your project directory.\n"
+            "Example:\n"
+            "  ROBOVAST_SHARE_TYPE=gcs\n"
+            "  ROBOVAST_GCS_BUCKET=my-robovast-results"
+        )
+
+    providers = load_share_provider_plugins()
+    if share_type not in providers:
+        available = ", ".join(sorted(providers)) or "(none installed)"
+        raise click.UsageError(
+            f"Unknown share type '{share_type}'.\n"
+            f"Available providers: {available}"
+        )
+
+    try:
+        provider = providers[share_type]()
+    except click.UsageError:
+        raise
+    except Exception as exc:
+        handle_cli_exception(exc)
+        return
+
+    click.echo(f"Listing campaigns on {share_type}...")
+    try:
+        archives = provider.list_campaign_archives_with_size()
+    except NotImplementedError as exc:
+        raise click.UsageError(str(exc)) from exc
+    except click.UsageError:
+        raise
+    except Exception as exc:
+        handle_cli_exception(exc)
+        return
+
+    if not archives:
+        click.echo("No campaign archives found on the share.")
+        return
+
+    # Filter by requested campaign IDs
+    if campaigns:
+        requested = set(campaigns)
+
+        def _archive_id(name: str) -> str:
+            base = os.path.basename(name)
+            return base[: -len(".tar.gz")] if base.endswith(".tar.gz") else base
+
+        archives = [(n, s) for n, s in archives if _archive_id(n) in requested]
+        if not archives:
+            raise click.UsageError(
+                f"None of the requested campaigns were found on the share.\n"
+                f"Requested: {', '.join(sorted(campaigns))}"
+            )
+
+    total_size = 0
+    for object_name, size in sorted(archives):
+        base = os.path.basename(object_name)
+        campaign_id = base[: -len(".tar.gz")] if base.endswith(".tar.gz") else base
+        size_str = _fmt_size(size) if size >= 0 else "unknown size"
+        click.echo(f"  {campaign_id}  {size_str}")
+        if size >= 0:
+            total_size += size
+
+    click.echo()
+    known_sizes = [(n, s) for n, s in archives if s >= 0]
+    if known_sizes:
+        click.echo(f"  {len(archives)} campaign(s)  total {_fmt_size(total_size)}")
+    else:
+        click.echo(f"  {len(archives)} campaign(s)")
+
+
+@results.command(name='remove-from-share')
+@click.option('--campaign', '-i', 'campaigns', multiple=True, required=True,
+              help='Campaign to remove (e.g. campaign-2025-02-27-123456 or '
+                   'campaign-2026-03-09-*). Can be specified multiple times. '
+                   'Wildcards (* ? [...]) are supported.')
+@click.option('--yes', '-y', is_flag=True,
+              help='Skip confirmation prompt')
+def remove_from_share_cmd(campaigns, yes):
+    """Remove campaign archives from the configured share service.
+
+    Reads the same ``.env`` configuration as ``cluster upload-to-share``.
+    Each named campaign archive is permanently deleted from the share.
+    Wildcards (``*``, ``?``, ``[…]``) are supported in campaign names;
+    e.g. ``campaign-2026-03-09-*`` removes all campaigns from that day.
+
+    Required ``.env`` variables:
+
+    \b
+    ROBOVAST_SHARE_TYPE  — share provider (e.g. ``gcs``)
+    ROBOVAST_GCS_BUCKET  — GCS bucket name  (when ROBOVAST_SHARE_TYPE=gcs)
+    ROBOVAST_GCS_KEY_FILE — service-account key file with delete permission
+    """
+    _load_share_dotenv()
+
+    share_type = os.environ.get("ROBOVAST_SHARE_TYPE", "").strip()
+    if not share_type:
+        raise click.UsageError(
+            "ROBOVAST_SHARE_TYPE is not set.\n"
+            "Add it to a .env file in your project directory.\n"
+            "Example:\n"
+            "  ROBOVAST_SHARE_TYPE=gcs\n"
+            "  ROBOVAST_GCS_BUCKET=my-robovast-results"
+        )
+
+    providers = load_share_provider_plugins()
+    if share_type not in providers:
+        available = ", ".join(sorted(providers)) or "(none installed)"
+        raise click.UsageError(
+            f"Unknown share type '{share_type}'.\n"
+            f"Available providers: {available}"
+        )
+
+    try:
+        provider = providers[share_type]()
+    except click.UsageError:
+        raise
+    except Exception as exc:
+        handle_cli_exception(exc)
+        return
+
+    # List archives to resolve object names for the requested campaign IDs
+    click.echo(f"Listing campaigns on {share_type}...")
+    try:
+        all_archives = provider.list_campaign_archives_with_size()
+    except NotImplementedError as exc:
+        raise click.UsageError(str(exc)) from exc
+    except click.UsageError:
+        raise
+    except Exception as exc:
+        handle_cli_exception(exc)
+        return
+
+    def _archive_id(name: str) -> str:
+        base = os.path.basename(name)
+        return base[: -len(".tar.gz")] if base.endswith(".tar.gz") else base
+
+    def _is_glob(pattern: str) -> bool:
+        return any(c in pattern for c in ("*", "?", "["))
+
+    # Match each pattern (exact or glob) against all archive IDs
+    matched: dict[str, tuple[str, int]] = {}  # archive_id -> (object_name, size)
+    for archive_name, size in all_archives:
+        aid = _archive_id(archive_name)
+        for pattern in campaigns:
+            if fnmatch.fnmatch(aid, pattern):
+                matched[aid] = (archive_name, size)
+                break
+
+    to_remove = list(matched.values())
+
+    # Report patterns that matched nothing
+    unmatched_exact = [p for p in campaigns if not _is_glob(p) and not any(
+        fnmatch.fnmatch(_archive_id(n), p) for n, _ in all_archives
+    )]
+    unmatched_glob = [p for p in campaigns if _is_glob(p) and not any(
+        fnmatch.fnmatch(_archive_id(n), p) for n, _ in all_archives
+    )]
+    if unmatched_exact:
+        raise click.UsageError(
+            f"Campaign(s) not found on the share: {', '.join(sorted(unmatched_exact))}\n"
+            "Use 'vast results list-share' to see available campaigns."
+        )
+    for pattern in unmatched_glob:
+        click.echo(f"  Warning: no campaigns matched pattern '{pattern}'")
+
+    if not to_remove:
+        click.echo("No campaigns to remove.")
+        return
+
+    if not yes:
+        click.echo()
+        for object_name, size in sorted(to_remove):
+            size_str = f"  ({_fmt_size(size)})" if size >= 0 else ""
+            click.echo(f"  {_archive_id(object_name)}{size_str}")
+        click.echo()
+        click.confirm(
+            f"Remove {len(to_remove)} campaign archive(s) from {share_type}?",
+            abort=True,
+        )
+
+    removed = 0
+    for object_name, _size in sorted(to_remove):
+        campaign_id = _archive_id(object_name)
+        click.echo(f"  {campaign_id}  removing...")
+        try:
+            provider.remove_archive(object_name)
+        except NotImplementedError as exc:
+            raise click.UsageError(str(exc)) from exc
+        except click.UsageError:
+            raise
+        except Exception as exc:
+            handle_cli_exception(exc)
+            continue
+        click.echo(f"  {campaign_id}  ✓ removed")
+        removed += 1
+
+    click.echo()
+    click.echo(f"✓ Removed {removed} campaign archive(s) from {share_type}.")

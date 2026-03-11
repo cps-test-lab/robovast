@@ -10,8 +10,12 @@ from .execution import (create_execution_yaml, generate_execution_yaml_script,
                         get_campaign, get_campaign_timestamp, get_execution_env_variables,
                         is_campaign_dir, prepare_campaign_configs)
 from .file_cache import FileCache
+from .progress import ProgressBar, fmt_size, make_download_progress_callback
 
 __all__ = [
+    'ProgressBar',
+    'fmt_size',
+    'make_download_progress_callback',
     'FileCache',
     'generate_scenario_variations',
     'load_config',

@@ -45,10 +45,17 @@ def process_rosbag(bag_path: str, topic: str, default_fps: float) -> int:
     """Process a single rosbag: pipe JPEG frames directly to FFmpeg → WebM.
 
     Returns:
-        Number of frames written, or 0 if topic missing/empty.
-    Raises:
-        Exception: propagated to the pool caller so the real traceback is visible.
+        Number of frames written, 0 if topic missing/empty, or -2 on error.
     """
+    try:
+        return _process_rosbag(bag_path, topic, default_fps)
+    except Exception as e:
+        print(f"✗ {bag_path}: Error - {str(e)}", flush=True)
+        return -2
+
+
+def _process_rosbag(bag_path: str, topic: str, default_fps: float) -> int:
+    """Internal implementation; exceptions propagate to process_rosbag."""
     reader = rosbag2_py.SequentialReader()
     reader.open(
         rosbag2_py.StorageOptions(uri=bag_path, storage_id="mcap"),
@@ -240,14 +247,13 @@ def main():
     except KeyboardInterrupt:
         print("Processing interrupted by user.")
         return 1
-    except Exception as e:
-        print(f"Error during processing: {e}")
-        return 1
 
     input_root = os.path.abspath(args.input)
     topic_suffix = sanitize_topic(args.topic)
     for i, frame_count in enumerate(results):
-        if frame_count > 0:
+        if frame_count == -2:
+            error_bags += 1
+        elif frame_count > 0:
             total_frames += frame_count
             processed_bags += 1
             if args.provenance_file:

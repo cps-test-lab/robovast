@@ -1,0 +1,3 @@
+basic_node:
+  ros__parameters:
+    test_parameter: "hello from yaml"

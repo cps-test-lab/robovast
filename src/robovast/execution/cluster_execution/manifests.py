@@ -25,7 +25,7 @@ spec:
       containers:
         - name: robovast
           image: {image}
-          command: ["/bin/bash", "/config/entrypoint.sh"]
+          command: ["/usr/bin/tini", "--", "/bin/bash", "/config/entrypoint.sh"]
           env:
           - name: AVAILABLE_CPUS
             valueFrom:
