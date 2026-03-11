@@ -26,7 +26,7 @@ import sys
 import tempfile
 import time
 import warnings
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 
 import yaml
 from kubernetes import client

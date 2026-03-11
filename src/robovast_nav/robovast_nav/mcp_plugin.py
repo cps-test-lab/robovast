@@ -20,10 +20,8 @@ from __future__ import annotations
 
 import csv
 import io
-import json
 import logging
 import math
-from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Any
 
