@@ -377,6 +377,11 @@ class RunResultsAnalyzer(QMainWindow):
         menu = QMenu(self)
         copy_path_action = menu.addAction("Copy Path")
 
+        # Add "Open Folder" action if applicable
+        open_folder_action = None
+        if directory_path.is_dir():
+            open_folder_action = menu.addAction("Open Folder")
+
         # Config-level: add Copy vast cluster/local run command actions
         copy_cluster_action = None
         copy_local_action = None
@@ -398,6 +403,8 @@ class RunResultsAnalyzer(QMainWindow):
         if action == copy_path_action:
             clipboard = QApplication.clipboard()
             clipboard.setText(str(item_path))
+        elif action == open_folder_action:
+            subprocess.Popen(["xdg-open", str(directory_path)])
         elif action == copy_cluster_action and run_type == RunType.CONFIG:
             clipboard = QApplication.clipboard()
             clipboard.setText(f"vast execution cluster run -r 1 -c {config_name}")

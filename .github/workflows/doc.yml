@@ -33,11 +33,7 @@ jobs:
         run: |
           apt update
           apt install -y make python3 python3.12 enchant-2 python3.12-venv
-          make venv
-          source venv/bin/activate
-          sphinx-build -W -b linkcheck ./docs _build
-          sphinx-build -W -b spelling ./docs _build
-          sphinx-build -M html ./docs _build
+          make doc
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
