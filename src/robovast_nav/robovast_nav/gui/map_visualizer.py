@@ -23,15 +23,7 @@ in Jupyter notebooks with support for drawing paths on top of the map.
 
 """
 
-import os
 from typing import List, Optional, Tuple
-
-# Skip this module if no graphical display is available
-if not (os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY')):
-    raise ImportError(
-        'No GUI display available (DISPLAY or WAYLAND_DISPLAY not set). '
-        'MapVisualizer requires a graphical display.'
-    )
 
 import matplotlib.pyplot as plt
 import numpy as np
