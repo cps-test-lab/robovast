@@ -32,7 +32,7 @@ jobs:
         shell: bash
         run: |
           apt update
-          apt install -y make python3 python3.12 enchant-2 python3.12-venv libgl1 libegl1
+          apt install -y make python3 python3.12 enchant-2 python3.12-venv libgl1 libegl1 libfontconfig libxkbcommon libdbus
           MPLBACKEND=Agg make doc
 
       - name: Upload artifact
