@@ -23,12 +23,16 @@ in Jupyter notebooks with support for drawing paths on top of the map.
 
 """
 
+import os
 from typing import List, Optional, Tuple
 
-import os
-# Fall back to non-interactive Agg backend when no display is available (e.g. CI / headless).
-# An explicit MPLBACKEND env-var or a prior matplotlib.use() call will take precedence.
-os.environ.setdefault("MPLBACKEND", "Agg")
+# Skip this module if no graphical display is available
+if not (os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY')):
+    raise ImportError(
+        'No GUI display available (DISPLAY or WAYLAND_DISPLAY not set). '
+        'MapVisualizer requires a graphical display.'
+    )
+
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib import patches
