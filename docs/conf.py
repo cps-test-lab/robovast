@@ -45,11 +45,13 @@ extensions = ['sphinx.ext.extlinks',
               'mcp_tools',
               'variation_plugins']
 
-# Add the project root to the path so we can import the modules
-
-sys.path.insert(0, os.path.abspath('../src'))
-sys.path.insert(0, os.path.abspath('../src/robovast_nav'))
-sys.path.insert(0, os.path.abspath('_ext'))
+# Add the project root to the path so we can import the modules.
+# Paths are relative to this conf.py file so they work regardless of CWD
+# (e.g. local `make doc` vs GitHub Actions).
+_docs_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(_docs_dir, '_ext'))
+sys.path.insert(0, os.path.join(_docs_dir, '..', 'src'))
+sys.path.insert(0, os.path.join(_docs_dir, '..', 'src', 'robovast_nav'))
 
 # sphinx-click configuration
 # Enable proper formatting of Click docstrings

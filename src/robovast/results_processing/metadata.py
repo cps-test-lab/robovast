@@ -458,9 +458,7 @@ def _resolve_file_strings(
         if prefixes:
             for prefix in prefixes:
                 candidate = os.path.join(prefix, value)
-                print(f"Checking candidate config file path: {candidate} in {config_files}")
                 if candidate in config_files:
-                    print("FOUND MATCH:", candidate)
                     return candidate
         else:
             if value in config_files:
