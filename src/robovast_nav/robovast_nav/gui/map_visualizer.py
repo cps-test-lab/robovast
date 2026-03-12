@@ -25,6 +25,10 @@ in Jupyter notebooks with support for drawing paths on top of the map.
 
 from typing import List, Optional, Tuple
 
+import os
+# Fall back to non-interactive Agg backend when no display is available (e.g. CI / headless).
+# An explicit MPLBACKEND env-var or a prior matplotlib.use() call will take precedence.
+os.environ.setdefault("MPLBACKEND", "Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib import patches
