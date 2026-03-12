@@ -486,7 +486,6 @@ def _resolve_file_strings(
                     found.append((i, resolved))
             else:
                 found.extend(_resolve_file_strings(item, prefixes, config_files))
-    print(f"Resolved config file references: {obj}")
     return found
 
 

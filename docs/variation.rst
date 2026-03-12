@@ -197,7 +197,7 @@ Places random obstacles in the environment based on configured obstacle types.
   - ``obstacle_configs``: List of obstacle configurations, each containing:
 
     - ``amount``: Number of obstacles to place. Mutually exclusive with ``amount_per_m``.
-    - ``amount_per_m``: Obstacles per metre of path length (computed as ``floor(amount_per_m × path_length)``). Accepts a single float or a list of floats — each value produces a separate variation. Mutually exclusive with ``amount``.
+    - ``amount_per_m``: Obstacles per meter of path length (computed as ``floor(amount_per_m × path_length)``). Accepts a single float or a list of floats — each value produces a separate variation. Mutually exclusive with ``amount``.
     - ``max_distance``: Maximum distance from the path for obstacle placement. Accepts a single float or a list of floats — each value produces a separate variation.
     - ``model``: Model name/path for the obstacle
     - ``xacro_arguments``: Arguments to pass to xacro for model generation
@@ -221,10 +221,10 @@ Places exactly one obstacle at a position that is at least *trigger_distance* ar
   - ``name``: Name of the parameter to store the placed obstacle
   - ``spawn_trigger_point``: Scenario parameter name to receive the obstacle's spawn pose position
   - ``spawn_trigger_threshold``: Scenario parameter name to receive the trigger distance value that was used
-  - ``trigger_distance``: Arc-length in metres from the start to the obstacle. Accepts a single float or a list of floats — one output configuration is produced per value.
+  - ``trigger_distance``: Arc-length in meter from the start to the obstacle. Accepts a single float or a list of floats — one output configuration is produced per value.
   - ``obstacle_configs``: List of obstacle configurations (same format as ``ObstacleVariation``). Total ``amount`` across all entries must equal exactly 1.
   - ``seed``: Seed for random number generation to ensure reproducibility
-  - ``robot_diameter``: Diameter of the robot for collision checking in metres
+  - ``robot_diameter``: Diameter of the robot for collision checking in meter
   - ``map_file``: Optional map file path (uses scenario default if omitted)
   - ``count``: Number of obstacle configurations to generate (default: 1)
   - ``start_pose``: Optional explicit start pose (dict with ``x``, ``y``, ``yaw``)
