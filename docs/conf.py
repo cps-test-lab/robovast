@@ -27,11 +27,6 @@ import datetime
 import os
 import sys
 
-# Force matplotlib to use a non-interactive backend so it never tries to load
-# Qt/PySide6 GUI libraries (libEGL, libfontconfig, etc.) which are unavailable
-# in headless CI environments. Must be set before any module imports matplotlib.
-os.environ.setdefault('MPLBACKEND', 'Agg')
-
 project = "RoboVAST"
 copyright = f"{datetime.datetime.now().year}, Frederik Pasch"
 author = "Frederik Pasch"
