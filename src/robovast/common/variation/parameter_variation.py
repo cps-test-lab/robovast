@@ -197,7 +197,7 @@ class ParameterVariationDistributionGaussian(Variation):
 
 
 class ParameterVariationListConfig(VariationConfig):
-    name: str
+    name: str | list[str]
     values: list[float | int | bool | dict | list]
 
 
@@ -205,9 +205,16 @@ class ParameterVariationList(Variation):
     """
     Creates configs with parameter values from a predefined list.
 
-    Expected parameters:
+    Single-key form:
         name: Name of the parameter to vary
-        values: List of values to use for the parameter
+        values: List of scalar/dict/list values
+
+    Multi-key form (combined variation):
+        name: [key1, key2, ...]
+        values:
+          - [val1_for_key1, val1_for_key2, ...]
+          - [val2_for_key1, val2_for_key2, ...]
+        Each entry in values is applied together as a unit (not cross-product).
     """
     CONFIG_CLASS = ParameterVariationListConfig
 
@@ -228,14 +235,33 @@ class ParameterVariationList(Variation):
         if not in_configs or len(in_configs) == 0:
             in_configs = [{'config': {}}]
 
-        # Log each value that will be used
-        for value in values:
-            self.progress_update(f"Using value: {param_name}={value}")
+        multi_key = isinstance(param_name, list)
 
-        # Apply each value to all input configs (creating all combinations)
-        results = []
-        for config in in_configs:
+        if multi_key:
+            # Validate that every value entry is a list of the same length as param_name
+            for entry in values:
+                if not isinstance(entry, list) or len(entry) != len(param_name):
+                    raise ValueError(
+                        f"Each entry in 'values' must be a list of length {len(param_name)} "
+                        f"to match 'name' {param_name}, got: {entry!r}"
+                    )
+            for entry in values:
+                combo = dict(zip(param_name, entry))
+                self.progress_update(f"Using values: {combo}")
+
+            results = []
+            for config in in_configs:
+                for entry in values:
+                    combo = dict(zip(param_name, entry))
+                    results.append(self.update_config(config, combo))
+        else:
+            # Single-key form (original behaviour)
             for value in values:
-                results.append(self.update_config(config, {param_name: value}))
+                self.progress_update(f"Using value: {param_name}={value}")
+
+            results = []
+            for config in in_configs:
+                for value in values:
+                    results.append(self.update_config(config, {param_name: value}))
 
         return results

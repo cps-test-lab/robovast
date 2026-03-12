@@ -149,7 +149,17 @@ def _is_gcs(cluster_config) -> bool:
 
 
 def _delete_s3_prefix(s3, bucket: str, prefix: str) -> None:
-    """Delete all objects in *bucket* whose key starts with *prefix*."""
+    """Delete all objects in *bucket* whose key starts with *prefix*.
+
+    Raises:
+        ValueError: If *prefix* is empty/None — that would delete the
+            **entire** bucket contents.
+    """
+    if not prefix or not prefix.strip():
+        raise ValueError(
+            "Refusing to delete with empty prefix — this would wipe the "
+            f"entire bucket '{bucket}'.  Pass a non-empty prefix."
+        )
     paginator = s3.get_paginator("list_objects_v2")
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
         objects = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
@@ -269,7 +279,19 @@ def delete_campaign(
         cluster_config: :class:`~robovast.execution.cluster_config.base_config.BaseConfig`.
         namespace:      Kubernetes namespace.
         context:        Kubernetes context.
+
+    Raises:
+        ValueError: If *campaign_id* is empty or does not look like a valid
+            campaign identifier.
     """
+    if not campaign_id or not campaign_id.strip():
+        raise ValueError("campaign_id must not be empty.")
+    if not is_campaign_dir(campaign_id):
+        raise ValueError(
+            f"Refusing to delete '{campaign_id}': does not match the expected "
+            f"campaign naming pattern.  This guard prevents accidental "
+            f"deletion of unrelated data."
+        )
     if _is_gcs(cluster_config):
         gcs_bucket = cluster_config.get_s3_bucket()
         with _gcs_connection(cluster_config) as gcs:
@@ -305,8 +327,12 @@ def cleanup_campaigns(
     namespace: str = "default",
     context: Optional[str] = None,
     campaign_id: Optional[str] = None,
+    running_campaigns: set | None = None,
 ) -> int:
-    """Remove one or all campaigns from storage.
+    """Remove one or all *finished* campaigns from storage.
+
+    Campaigns listed in *running_campaigns* are **always skipped** to prevent
+    deleting data that is still being produced by active jobs.
 
     Args:
         cluster_config: :class:`~robovast.execution.cluster_config.base_config.BaseConfig`.
@@ -314,10 +340,19 @@ def cleanup_campaigns(
         context:        Kubernetes context.
         campaign_id:    If given, remove only this campaign.  If ``None``,
                         remove all campaigns returned by :func:`list_campaigns`.
+        running_campaigns:
+                        Optional set of campaign IDs that have running or
+                        pending jobs.  These will be excluded from deletion
+                        even if they appear in storage.  Pass ``None`` only
+                        when the caller has already verified nothing is
+                        running.
 
     Returns:
         int: Number of campaigns successfully removed.
     """
+    if running_campaigns is None:
+        running_campaigns = set()
+
     all_campaigns = list_campaigns(cluster_config, namespace, context)
     if campaign_id:
         to_remove = [c for c in all_campaigns if c == campaign_id]
@@ -329,6 +364,20 @@ def cleanup_campaigns(
 
     if not to_remove:
         logger.info("No campaigns found to remove.")
+        return 0
+
+    # Safety: never delete campaigns that still have active jobs.
+    skipped = [c for c in to_remove if c in running_campaigns]
+    if skipped:
+        for name in skipped:
+            logger.warning(
+                "Skipping campaign '%s' — it still has running/pending jobs.",
+                name,
+            )
+    to_remove = [c for c in to_remove if c not in running_campaigns]
+
+    if not to_remove:
+        logger.info("No finished campaigns to remove (all still running).")
         return 0
 
     removed = 0

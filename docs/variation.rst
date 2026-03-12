@@ -15,8 +15,28 @@ Creates configurations from a predefined list of parameter values.
 
   Expected parameters:
 
-  - ``name``: Name of the parameter to vary
-  - ``values``: List of values for the parameter
+  - ``name``: Name of the parameter to vary, or a list of parameter names for simultaneous multi-parameter variation
+  - ``values``: List of values for the parameter. When ``name`` is a list, each entry must itself be a list of values — one per parameter name.
+
+  Example (single parameter)::
+
+    - ParameterVariationList:
+        name: robot_radius
+        values:
+        - 0.175
+        - 0.22
+
+  Example (multiple parameters varied together)::
+
+    - ParameterVariationList:
+        name:
+        - mesh_file
+        - map_file
+        values:
+        - - environments/office/office.stl
+          - environments/office/office.yaml
+        - - environments/hospital/hospital.stl
+          - environments/hospital/hospital.yaml
 
 
 ParameterVariationDistributionUniform
@@ -48,6 +68,43 @@ Creates configurations with random parameter values from a Gaussian (normal) dis
   - ``max``: Maximum value for the parameter
   - ``type``: Data type of the parameter (e.g., int, float, string)
   - ``seed``: Seed for random number generation to ensure reproducibility
+
+OneOfVariation
+^^^^^^^^^^^^^^
+
+Branches the configuration pipeline by running each child variation independently on a copy of the current configurations. All resulting branches are concatenated into a single flat list.
+
+This enables "one of N alternatives" semantics: every alternative becomes a separate configuration in the downstream pipeline.
+
+  Expected parameters:
+
+  - ``variations``: List of child variation entries, using the same syntax as the top-level ``variations:`` list.
+
+  Example::
+
+    - OneOfVariation:
+        variations:
+        - ObstacleVariation:
+            name: static_objects
+            obstacle_configs:
+            - amount: 3
+              max_distance: 0.3
+              model: file:///config/files/models/box.sdf.xacro
+            seed: 42
+            robot_diameter: 0.35
+            count: 2
+        - ObstacleVariationWithDistanceTrigger:
+            name: dynamic_objects
+            spawn_trigger_point: spawn_trigger_point
+            spawn_trigger_threshold: spawn_trigger_threshold
+            trigger_distance: [1.0, 2.0]
+            obstacle_configs:
+            - amount: 1
+              max_distance: 0.3
+              model: file:///config/files/models/box.sdf.xacro
+            seed: 42
+            robot_diameter: 0.35
+            count: 2
 
 Navigation
 ----------
@@ -139,8 +196,9 @@ Places random obstacles in the environment based on configured obstacle types.
   - ``name``: Name of the parameter to store static objects
   - ``obstacle_configs``: List of obstacle configurations, each containing:
 
-    - ``amount``: Number of obstacles to place
-    - ``max_distance``: Maximum distance from path (currently not used for random placement)
+    - ``amount``: Number of obstacles to place. Mutually exclusive with ``amount_per_m``.
+    - ``amount_per_m``: Obstacles per metre of path length (computed as ``floor(amount_per_m × path_length)``). Accepts a single float or a list of floats — each value produces a separate variation. Mutually exclusive with ``amount``.
+    - ``max_distance``: Maximum distance from the path for obstacle placement. Accepts a single float or a list of floats — each value produces a separate variation.
     - ``model``: Model name/path for the obstacle
     - ``xacro_arguments``: Arguments to pass to xacro for model generation
 
@@ -152,6 +210,47 @@ Places random obstacles in the environment based on configured obstacle types.
   Generated outputs:
 
   - List of static objects with spawn poses and model information
+
+ObstacleVariationWithDistanceTrigger
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Places exactly one obstacle at a position that is at least *trigger_distance* arc-length ahead of the robot's start along the planned path. Writes two scenario parameters for use in the scenario script.
+
+  Expected parameters:
+
+  - ``name``: Name of the parameter to store the placed obstacle
+  - ``spawn_trigger_point``: Scenario parameter name to receive the obstacle's spawn pose position
+  - ``spawn_trigger_threshold``: Scenario parameter name to receive the trigger distance value that was used
+  - ``trigger_distance``: Arc-length in metres from the start to the obstacle. Accepts a single float or a list of floats — one output configuration is produced per value.
+  - ``obstacle_configs``: List of obstacle configurations (same format as ``ObstacleVariation``). Total ``amount`` across all entries must equal exactly 1.
+  - ``seed``: Seed for random number generation to ensure reproducibility
+  - ``robot_diameter``: Diameter of the robot for collision checking in metres
+  - ``map_file``: Optional map file path (uses scenario default if omitted)
+  - ``count``: Number of obstacle configurations to generate (default: 1)
+  - ``start_pose``: Optional explicit start pose (dict with ``x``, ``y``, ``yaw``)
+  - ``goal_pose``: Optional explicit goal pose (dict with ``x``, ``y``, ``yaw``)
+
+  Generated outputs:
+
+  - ``<name>``: Placed obstacle with spawn pose and model information
+  - ``<spawn_trigger_point>``: Position of the placed obstacle
+  - ``<spawn_trigger_threshold>``: The trigger distance value that was applied
+
+  Example::
+
+    - ObstacleVariationWithDistanceTrigger:
+        name: dynamic_objects
+        spawn_trigger_point: spawn_trigger_point
+        spawn_trigger_threshold: spawn_trigger_threshold
+        trigger_distance: [1.0, 2.0]
+        obstacle_configs:
+        - amount: 1
+          max_distance: [0.0, 0.3]
+          model: file:///config/files/models/box.sdf.xacro
+          xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+        seed: 42
+        robot_diameter: 0.35
+        count: 2
 
 PathVariationRasterized
 ^^^^^^^^^^^^^^^^^^^^^^^

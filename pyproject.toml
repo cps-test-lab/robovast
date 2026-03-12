@@ -75,6 +75,7 @@ webdav = "robovast.execution.cluster_execution.share_providers.webdav:WebDavShar
 "ParameterVariationList" = "robovast.common.variation.parameter_variation:ParameterVariationList"
 "ParameterVariationDistributionUniform" = "robovast.common.variation.parameter_variation:ParameterVariationDistributionUniform"
 "ParameterVariationDistributionGaussian" = "robovast.common.variation.parameter_variation:ParameterVariationDistributionGaussian"
+"OneOfVariation" = "robovast.common.variation.one_of_variation:OneOfVariation"
 
 [tool.poetry.plugins."robovast.postprocessing_commands"]
 command = "robovast.results_processing.postprocessing_plugins:Command"

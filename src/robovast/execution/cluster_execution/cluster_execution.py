@@ -25,7 +25,6 @@ import re
 import sys
 import tempfile
 import time
-import warnings
 from concurrent.futures import ThreadPoolExecutor
 
 import yaml
@@ -888,7 +887,7 @@ class JobRunner:
         total_jobs = self.num_runs * len(self.configs)
         logger.info(f"Creating {len(self.configs)} config(s) with {self.num_runs} runs each (ID: {self.campaign})...")
 
-        # Build all manifests first (fast, serial), then submit API calls in parallel.
+        # Build all manifests first, then submit one by one.
         job_manifests = []
         for run_number in range(self.num_runs):
             for config in self.configs:
@@ -898,18 +897,16 @@ class JobRunner:
 
         all_jobs = [job_name for job_name, _, _ in job_manifests]
 
-        def _submit_job(args):
-            job_name, job_manifest, run_number = args
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always")
-                # Suppress known-harmless urllib3 deprecation from older k8s client
-                warnings.filterwarnings(
-                    "ignore",
-                    message="HTTPResponse.getheaders\\(\\) is deprecated",
-                    category=DeprecationWarning,
-                )
+        with ProgressBar(
+            total=total_jobs,
+            desc=f"Creating {len(self.configs)} config(s) with {self.num_runs} runs each",
+            unit="job",
+        ) as pbar:
+            for job_name, job_manifest, run_number in job_manifests:
                 try:
-                    self.k8s_batch_client.create_namespaced_job(namespace=self.namespace, body=job_manifest)
+                    self.k8s_batch_client.create_namespaced_job(
+                        namespace=self.namespace, body=job_manifest
+                    )
                 except client.exceptions.ApiException as exc:
                     if exc.status == 409:
                         logger.debug(
@@ -917,23 +914,8 @@ class JobRunner:
                         )
                     else:
                         raise
-            if caught:
-                for w in caught:
-                    logger.warning(f"[{self.campaign}] Kubernetes API warning for job '{job_name}': {w.message}")
-            logger.debug(f"Created job {job_name} for run {run_number + 1}")
-            return job_name
-
-        from concurrent.futures import as_completed  # noqa: PLC0415
-        with ProgressBar(
-            total=total_jobs,
-            desc=f"Creating {len(self.configs)} config(s) with {self.num_runs} runs each",
-            unit="job",
-        ) as pbar:
-            with ThreadPoolExecutor(max_workers=min(total_jobs, 32)) as pool:
-                futures = {pool.submit(_submit_job, args): args for args in job_manifests}
-                for future in as_completed(futures):
-                    future.result()  # re-raise any exception
-                    pbar.update(1)
+                logger.debug(f"Created job {job_name} for run {run_number + 1}")
+                pbar.update(1)
 
         logger.info(f"All {len(all_jobs)} jobs created. Starting execution...")
 

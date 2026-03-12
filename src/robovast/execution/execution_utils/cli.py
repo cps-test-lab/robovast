@@ -555,11 +555,13 @@ def monitor(interval, once, kube_context):
               help='Print detailed progress')
 @click.option('--keep-archive', is_flag=True,
               help='Keep the tar.gz in the pod /data/ after a successful upload')
-@click.option('--skip-removal', is_flag=True,
-              help='Do not delete the S3 bucket after a successful upload')
+@click.option('--skip-removal', is_flag=True, hidden=True,
+              help='Deprecated: S3/GCS data is now kept by default. Use --remove-from-storage to opt in to deletion.')
+@click.option('--remove-from-storage', is_flag=True,
+              help='Delete the campaign data from S3/GCS after a successful upload. Without this flag, data is kept in storage.')
 @click.option('--context', '-x', 'kube_context', default=None,
               help='Kubernetes context to use (default: active context in kubeconfig)')
-def upload_to_share(campaign, force, verbose, keep_archive, skip_removal, kube_context):
+def upload_to_share(campaign, force, verbose, keep_archive, skip_removal, remove_from_storage, kube_context):
     """Upload campaign archives from the cluster pod to a remote share service.
 
     Results are transferred entirely inside the archiver sidecar of the
@@ -575,7 +577,7 @@ def upload_to_share(campaign, force, verbose, keep_archive, skip_removal, kube_c
        Skips this step if the archive already exists.
     2. Uploads the archive to the configured share service from inside the pod.
     3. Removes the archive from the pod on success (unless ``--keep-archive``).
-    4. Deletes the S3 bucket on success (unless ``--skip-removal``).
+    4. Keeps the S3/GCS campaign data (use ``--remove-from-storage`` to delete it).
     5. Keeps both the archive and the bucket if the upload fails so you can
        retry.
 
@@ -643,6 +645,10 @@ def upload_to_share(campaign, force, verbose, keep_archive, skip_removal, kube_c
     if share_url:
         click.echo(f"Share target ({share_type}): {share_url}")
 
+    # --skip-removal is the old flag (kept for backward compat, now a no-op).
+    # --remove-from-storage is the new explicit opt-in.
+    actually_skip_removal = not remove_from_storage
+
     try:
         require_context_for_multi_cluster(kube_context)
         context_key = kube_context
@@ -657,7 +663,7 @@ def upload_to_share(campaign, force, verbose, keep_archive, skip_removal, kube_c
             force=force,
             verbose=verbose,
             keep_archive=keep_archive,
-            skip_removal=skip_removal,
+            skip_removal=actually_skip_removal,
             campaign_ids=list(campaign) or None,
         )
         click.echo(f"✓ Uploaded {count} campaign(s) to {share_type} successfully!")
@@ -736,24 +742,62 @@ def setup(list_configs, namespace, options, force, kube_context, cluster_config)
 @cluster.command(name='download-cleanup')
 @click.option('--campaign', '-i', default=None,
               help='Only remove this campaign\'s bucket (e.g. campaign-2025-02-27-123456). Without this, removes all campaign buckets.')
+@click.option('--option', '-o', 'options', multiple=True,
+              help='Cluster-specific option in key=value format (e.g. gcs_access_key=<key>).')
 @click.option('--context', '-x', 'kube_context', default=None,
               help='Kubernetes context to use (default: active context in kubeconfig)')
-def download_cleanup(campaign, kube_context):
+def download_cleanup(campaign, options, kube_context):
     """Remove result buckets from cluster S3 without downloading.
 
     Deletes run result buckets (``campaign-*``) from the MinIO S3 server in the cluster.
 
     Use --campaign to remove only a specific campaign's bucket.
+    Use ``-o key=value`` to pass credentials not stored in the flag file
+    (e.g. ``-o gcs_access_key=<key> -o gcs_secret_key=<secret>``).
     """
     try:
         require_context_for_multi_cluster(kube_context)
         context_key = kube_context
         cluster_config = get_cluster_config_for_context(context_key)
+        if cluster_config and options:
+            extra_kwargs = {}
+            for option in options:
+                if '=' not in option:
+                    click.echo(f"Error: Invalid option format '{option}'. Expected key=value", err=True)
+                    sys.exit(1)
+                key, value = option.split('=', 1)
+                extra_kwargs[key] = value
+            cluster_config.restore_from_setup_kwargs(extra_kwargs)
+
+        # Determine which campaigns still have running/pending jobs so we
+        # never accidentally delete data that is still being produced.
+        namespace = get_cluster_namespace(context_key)
+        running_campaigns: set = set()
+        try:
+            job_counts = get_cluster_job_counts_per_campaign(
+                namespace=namespace, context=kube_context
+            )
+            for cid, counts in job_counts.items():
+                if counts.get("running", 0) > 0 or counts.get("pending", 0) > 0:
+                    running_campaigns.add(cid)
+        except Exception:  # pylint: disable=broad-except
+            # If we cannot reach the cluster to check job status, refuse to
+            # do a bulk delete — only targeted single-campaign deletion is
+            # allowed.
+            if not campaign:
+                click.echo(
+                    "Error: Cannot determine running campaigns.  "
+                    "Use --campaign to specify which campaign to remove.",
+                    err=True,
+                )
+                sys.exit(1)
+
         count = bucket_ops.cleanup_campaigns(
             cluster_config,
-            namespace=get_cluster_namespace(context_key),
+            namespace=namespace,
             context=kube_context,
             campaign_id=campaign,
+            running_campaigns=running_campaigns,
         )
         click.echo(f"✓ Removed {count} bucket(s) from S3.")
 
@@ -766,9 +810,11 @@ def download_cleanup(campaign, kube_context):
               help='Clean only jobs for this campaign (e.g. campaign-2025-02-27-123456). Without this, cleans all scenario-runs jobs.')
 @click.option('--data', is_flag=True,
               help='Also remove the campaign S3 result bucket(s) from the cluster MinIO server.')
+@click.option('--option', '-o', 'options', multiple=True,
+              help='Cluster-specific option in key=value format (e.g. gcs_access_key=<key>). Used with --data when credentials are not stored in the flag file.')
 @click.option('--context', '-x', 'kube_context', default=None,
               help='Kubernetes context to use (default: active context in kubeconfig)')
-def run_cleanup(campaign, data, kube_context):
+def run_cleanup(campaign, data, options, kube_context):
     """Clean up jobs and pods from a cluster run.
 
     Removes scenario execution jobs and their associated pods. By default
@@ -781,9 +827,14 @@ def run_cleanup(campaign, data, kube_context):
     MinIO server (equivalent to additionally running ``download-cleanup``).
     Requires the robovast pod to be running.
 
+    Use ``-o key=value`` to pass credentials that are not stored in the flag
+    file (e.g. ``-o gcs_access_key=<key> -o gcs_secret_key=<secret>``).
+    Only needed together with ``--data`` when GCS credentials are missing.
+
     Usage: vast execution cluster run-cleanup
     Usage: vast execution cluster run-cleanup --campaign campaign-2025-02-27-123456
     Usage: vast execution cluster run-cleanup --campaign campaign-2025-02-27-123456 --data
+    Usage: vast execution cluster run-cleanup --data -o gcs_access_key=<key> -o gcs_secret_key=<secret>
     """
     try:
         require_context_for_multi_cluster(kube_context)
@@ -826,11 +877,41 @@ def run_cleanup(campaign, data, kube_context):
 
         if data:
             cluster_config = get_cluster_config_for_context(context_key)
+            if cluster_config and options:
+                extra_kwargs = {}
+                for option in options:
+                    if '=' not in option:
+                        click.echo(f"Error: Invalid option format '{option}'. Expected key=value", err=True)
+                        sys.exit(1)
+                    key, value = option.split('=', 1)
+                    extra_kwargs[key] = value
+                cluster_config.restore_from_setup_kwargs(extra_kwargs)
+
+            # Determine which campaigns still have running/pending jobs so
+            # we never accidentally delete data that is still being produced.
+            running_campaigns: set = set()
+            try:
+                remaining = get_cluster_job_counts_per_campaign(
+                    namespace=namespace, context=kube_context
+                )
+                for cid, counts in remaining.items():
+                    if counts.get("running", 0) > 0 or counts.get("pending", 0) > 0:
+                        running_campaigns.add(cid)
+            except Exception:  # pylint: disable=broad-except
+                if not campaign:
+                    click.echo(
+                        "Error: Cannot determine running campaigns.  "
+                        "Use --campaign to specify which campaign to remove.",
+                        err=True,
+                    )
+                    sys.exit(1)
+
             count = bucket_ops.cleanup_campaigns(
                 cluster_config,
                 namespace=namespace,
                 context=kube_context,
                 campaign_id=campaign,
+                running_campaigns=running_campaigns,
             )
             click.echo(f"✓ Removed {count} S3 bucket(s).")
 
