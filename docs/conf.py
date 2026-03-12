@@ -27,6 +27,9 @@ import datetime
 import os
 import sys
 
+# Use non-interactive Agg backend to avoid requiring a display / libGL in CI
+os.environ.setdefault("MPLBACKEND", "Agg")
+
 project = "RoboVAST"
 copyright = f"{datetime.datetime.now().year}, Frederik Pasch"
 author = "Frederik Pasch"
