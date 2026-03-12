@@ -22,6 +22,8 @@ This module provides SVG-based shape definitions that can be rendered based on
 object types and their parameters.
 """
 
+from __future__ import annotations
+
 import math
 from typing import Any, Dict
 
