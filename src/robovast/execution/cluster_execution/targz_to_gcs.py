@@ -48,7 +48,6 @@ Environment variables (optional):
   ROBOVAST_GCS_WORKERS:   Number of parallel upload threads (default: 1, streaming mode)
 """
 
-import io
 import json
 import os
 import socket
@@ -69,8 +68,8 @@ GCS_KEY_JSON = os.environ.get("ROBOVAST_GCS_KEY_JSON", "")
 def _get_access_token(key_json: dict) -> str:
     """Exchange a service-account key dict for a short-lived Bearer token."""
     try:
-        import google.auth.transport.requests  # noqa: PLC0415
-        import google.oauth2.service_account  # noqa: PLC0415
+        import google.auth.transport.requests  # pylint: disable=import-outside-toplevel
+        import google.oauth2.service_account   # pylint: disable=import-outside-toplevel
     except ImportError as exc:
         sys.stderr.write(f"ERROR: google-auth is not installed: {exc}\n")
         sys.exit(1)

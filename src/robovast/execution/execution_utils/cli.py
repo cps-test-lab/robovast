@@ -37,7 +37,7 @@ from robovast.execution.cluster_execution.cluster_execution import (
     get_cluster_job_counts_per_campaign)
 from robovast.execution.cluster_execution.cluster_setup import (
     delete_server, get_cluster_config, get_cluster_config_for_context,
-    get_cluster_namespace, load_cluster_config_name, load_cluster_setup_info,
+    get_cluster_namespace, load_cluster_setup_info,
     setup_server)
 from robovast.execution.cluster_execution import bucket_ops
 from robovast.execution.cluster_execution.share_providers import \

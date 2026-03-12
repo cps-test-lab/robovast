@@ -47,7 +47,7 @@ class PathVariationRandomConfig(BaseModel):
     start_pose: str | PoseConfig
     goal_poses: str | list[dict] | list[PoseConfig]  # Can be a reference like "@goal_poses" or "@goal_pose"
     num_goal_poses: Optional[int] = None  # Number of goal poses to generate (optional, defaults based on target parameter)
-    num_goal_poses_per_m: Optional[float | list[float]] = None  # Goal poses per metre of path length; single value or list for additional variations
+    num_goal_poses_per_m: Optional[float | list[float]] = None  # Goal poses per meters of path length; single value or list for additional variations
     map_file: Optional[str] = None
     path_length: float | list[float]
     num_paths: int
@@ -249,7 +249,7 @@ class PathVariationRandom(NavVariation):
             config: Configuration dictionary
             path_index: Index of the path being generated
             seed: Random seed for generation
-            path_length: Target path length in metres. Overrides
+            path_length: Target path length in meters. Overrides
                 ``self.parameters.path_length`` (which may now be a list).
             num_goal_poses: Number of goal poses to generate. When provided,
                 overrides ``self.parameters.num_goal_poses``.

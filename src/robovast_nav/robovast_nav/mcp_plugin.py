@@ -124,7 +124,7 @@ def nav_describe_data_model() -> dict[str, str]:
     variation types.
     """
     return {
-        "Position": "2D position with x (float) and y (float) coordinates in metres.",
+        "Position": "2D position with x (float) and y (float) coordinates in meters.",
         "Orientation": "Heading in the 2D plane expressed as yaw (float) in radians.",
         "Pose": "Combined Position and Orientation representing a robot pose.",
         "Object": (
@@ -582,7 +582,7 @@ def draw_map(
 ) -> Image:
     """Render a map with overlaid layers and return a PNG image.
 
-    All coordinates are world coordinates (metres).
+    All coordinates are world coordinates (meters).
 
     Args:
         campaign: Campaign name.
@@ -612,12 +612,12 @@ def draw_map(
             ``"circle"`` — filled circle.
 
             - ``x``, ``y``: centre in world coordinates (required).
-            - ``radius``: radius in metres (default 0.5).
+            - ``radius``: radius in meters (default 0.5).
 
             ``"rectangle"`` — filled rectangle, optionally rotated.
 
             - ``x``, ``y``: centre in world coordinates (required).
-            - ``width``, ``height``: dimensions in metres (required).
+            - ``width``, ``height``: dimensions in meters (required).
             - ``yaw``: rotation in radians (default 0).
 
             ``"polygon"`` — filled closed polygon.
@@ -627,8 +627,8 @@ def draw_map(
             ``"arrow"`` — directional arrow.
 
             - ``x``, ``y``: tail position (required).
-            - ``dx``, ``dy``: delta to head in metres (required).
-            - ``head_width``: arrowhead width in metres (default 0.1).
+            - ``dx``, ``dy``: delta to head in meters (required).
+            - ``head_width``: arrowhead width in meters (default 0.1).
 
         figsize: Figure size as [width, height] in inches (default [12, 10]).
         title: Optional title drawn above the map.

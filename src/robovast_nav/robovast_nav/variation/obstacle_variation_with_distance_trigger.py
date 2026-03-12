@@ -22,7 +22,7 @@ ahead of the robot's start.
 Two scenario parameters are written:
 
 * *spawn_trigger_point*  — the spawn pose position of the single placed obstacle.
-* *spawn_trigger_threshold* — the trigger distance (arc-length in metres) that was used.
+* *spawn_trigger_threshold* — the trigger distance (arc-length in meters) that was used.
 
 trigger_distance can be a single float or a list of floats.  When a list is provided, one
 output configuration is produced per value (multiplied with the normal count/in_configs fan-out).

@@ -60,8 +60,8 @@ _CHUNK = 4 * 1024 * 1024  # 4 MiB per read chunk
 def _get_access_token(key_json: dict) -> str:
     """Exchange a service-account key dict for a short-lived Bearer token."""
     try:
-        import google.auth.transport.requests  # noqa: PLC0415
-        import google.oauth2.service_account  # noqa: PLC0415
+        import google.auth.transport.requests # pylint: disable=import-outside-toplevel
+        import google.oauth2.service_account  # pylint: disable=import-outside-toplevel
     except ImportError as exc:
         sys.stderr.write(f"ERROR: google-auth is not installed: {exc}\n")
         sys.exit(1)
