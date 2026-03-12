@@ -42,11 +42,13 @@ extensions = ['sphinx.ext.extlinks',
               'sphinx.ext.napoleon',
               'sphinx_click',
               'sphinxcontrib.spelling',
-              'mcp_tools']
+              'mcp_tools',
+              'variation_plugins']
 
 # Add the project root to the path so we can import the modules
 
 sys.path.insert(0, os.path.abspath('../src'))
+sys.path.insert(0, os.path.abspath('../src/robovast_nav'))
 sys.path.insert(0, os.path.abspath('_ext'))
 
 # sphinx-click configuration

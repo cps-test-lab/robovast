@@ -33,16 +33,16 @@ class ParameterVariationDistributionUniformConfig(VariationConfig):
 
 
 class ParameterVariationDistributionUniform(Variation):
-    """
-    Creates configs with random parameter values from a uniform distribution.
+    """Creates configurations with random parameter values from a uniform distribution.
 
     Expected parameters:
-        name: Name of the parameter to vary
-        num_variations: Number of random configs to generate
-        min: Minimum value (inclusive)
-        max: Maximum value (inclusive)
-        type: Type to convert values to ('string', 'int', 'float', 'bool')
-        seed: Random seed for reproducibility
+
+    - ``name``: Name of the parameter to vary
+    - ``num_variations``: Number of configurations to create
+    - ``min``: Minimum value for the parameter
+    - ``max``: Maximum value for the parameter
+    - ``type``: Data type of the parameter (e.g., ``int``, ``float``, ``string``)
+    - ``seed``: Seed for random number generation to ensure reproducibility
     """
     CONFIG_CLASS = ParameterVariationDistributionUniformConfig
 
@@ -115,18 +115,18 @@ class ParameterVariationDistributionGaussianConfig(VariationConfig):
 
 
 class ParameterVariationDistributionGaussian(Variation):
-    """
-    Creates configs with random parameter values from a Gaussian (normal) distribution.
+    """Creates configurations with random parameter values from a Gaussian (normal) distribution.
 
     Expected parameters:
-        name: Name of the parameter to vary
-        num_variations: Number of random configs to generate
-        mean: Mean (mu) of the Gaussian distribution
-        std: Standard deviation (sigma) of the Gaussian distribution
-        min: Minimum value (optional, clips values below this)
-        max: Maximum value (optional, clips values above this)
-        type: Type to convert values to ('string', 'int', 'float', 'bool')
-        seed: Random seed for reproducibility
+
+    - ``name``: Name of the parameter to vary
+    - ``num_variations``: Number of configurations to create
+    - ``mean``: Mean value for the parameter
+    - ``std``: Standard deviation for the parameter
+    - ``min``: Minimum value for the parameter
+    - ``max``: Maximum value for the parameter
+    - ``type``: Data type of the parameter (e.g., ``int``, ``float``, ``string``)
+    - ``seed``: Seed for random number generation to ensure reproducibility
     """
     CONFIG_CLASS = ParameterVariationDistributionGaussianConfig
 
@@ -202,19 +202,38 @@ class ParameterVariationListConfig(VariationConfig):
 
 
 class ParameterVariationList(Variation):
-    """
-    Creates configs with parameter values from a predefined list.
+    """Creates configurations from a predefined list of parameter values.
 
-    Single-key form:
-        name: Name of the parameter to vary
-        values: List of scalar/dict/list values
+    Expected parameters:
 
-    Multi-key form (combined variation):
-        name: [key1, key2, ...]
-        values:
-          - [val1_for_key1, val1_for_key2, ...]
-          - [val2_for_key1, val2_for_key2, ...]
-        Each entry in values is applied together as a unit (not cross-product).
+    - ``name``: Name of the parameter to vary, or a list of parameter names for
+      simultaneous multi-parameter variation.
+    - ``values``: List of values for the parameter.  When ``name`` is a list,
+      each entry must itself be a list of values — one per parameter name.
+
+    Example (single parameter):
+
+    .. code-block:: yaml
+
+        - ParameterVariationList:
+            name: robot_radius
+            values:
+            - 0.175
+            - 0.22
+
+    Example (multiple parameters varied together):
+
+    .. code-block:: yaml
+
+        - ParameterVariationList:
+            name:
+            - mesh_file
+            - map_file
+            values:
+            - - environments/office/office.stl
+              - environments/office/office.yaml
+            - - environments/hospital/hospital.stl
+              - environments/hospital/hospital.yaml
     """
     CONFIG_CLASS = ParameterVariationListConfig
 

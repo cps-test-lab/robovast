@@ -202,15 +202,20 @@ class ShareUploader:
 
         Steps for each available run:
 
-        1. Create the remote ``{campaign}.tar.gz`` archive in ``/data/`` (skip
+        1. **Existence check** – if the archive already exists on the share and
+           *force* is ``False``, skip both compression and upload (only for
+           providers that implement
+           :meth:`~.share_providers.base.BaseShareProvider.archive_exists_on_share`,
+           e.g. WebDAV).
+        2. Create the remote ``{campaign}.tar.gz`` archive in ``/data/`` (skip
            if it already exists and *force* is ``False``).
-        2. Execute the provider's upload script inside the archiver container,
+        3. Execute the provider's upload script inside the archiver container,
            streaming progress to the local terminal.
-        3. On success: remove the remote archive from ``/data/`` unless
+        4. On success: remove the remote archive from ``/data/`` unless
            *keep_archive* is ``True``.  Also delete the S3 bucket for the run
            unless *skip_removal* is ``True`` (mirrors ``cluster download``
            behavior).
-        4. On failure: keep both the remote archive and the S3 bucket so the
+        5. On failure: keep both the remote archive and the S3 bucket so the
            user can retry or fall back to ``cluster download``.
 
         Args:
@@ -258,6 +263,15 @@ class ShareUploader:
 
         uploaded = 0
         for campaign in available_campaigns:
+            archive_name = f"{campaign}.tar.gz"
+            if not force and self.provider.archive_exists_on_share(archive_name):
+                logger.info(
+                    "Archive %s already exists on share, skipping compression and upload "
+                    "(use --force to re-upload).",
+                    archive_name,
+                )
+                continue
+
             script_path, env_vars, script_args = archiver.compress_args_for_config(
                 self.cluster_config, campaign
             )

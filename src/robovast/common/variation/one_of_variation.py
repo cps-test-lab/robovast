@@ -45,30 +45,44 @@ class OneOfVariationConfig(VariationConfig):
 
 
 class OneOfVariation(Variation):
-    """Branches the config pipeline by running each child variation independently.
+    """Branches the configuration pipeline by running each child variation independently on a copy of the current configurations.
 
-    Each child variation receives its own deep copy of ``in_configs`` and
-    produces a branch of output configs.  All branches are concatenated into
-    a single flat list, so the result is::
+    All resulting branches are concatenated into a single flat list.
+    This enables "one of N alternatives" semantics: every alternative becomes
+    a separate configuration in the downstream pipeline.
 
-        output = branch_1 + branch_2 + ... + branch_N
+    Expected parameters:
 
-    This is the "one of N alternatives" semantic: the downstream pipeline
-    sees every possible alternative as a separate configuration.
+    - ``variations``: List of child variation entries, using the same syntax as
+      the top-level ``variations:`` list.
 
-    Child variations are specified with their full type name and parameters,
-    mirroring the top-level ``variations:`` list syntax:
+    Example:
 
     .. code-block:: yaml
 
         - OneOfVariation:
             variations:
-              - ParameterVariationList:
-                  name: my_param
-                  values: [1, 2]
-              - ParameterVariationList:
-                  name: my_param
-                  values: [3, 4]
+            - ObstacleVariation:
+                name: static_objects
+                obstacle_configs:
+                - amount: 3
+                  max_distance: 0.3
+                  model: file:///config/files/models/box.sdf.xacro
+                seed: 42
+                robot_diameter: 0.35
+                count: 2
+            - ObstacleVariationWithDistanceTrigger:
+                name: dynamic_objects
+                spawn_trigger_point: spawn_trigger_point
+                spawn_trigger_threshold: spawn_trigger_threshold
+                trigger_distance: [1.0, 2.0]
+                obstacle_configs:
+                - amount: 1
+                  max_distance: 0.3
+                  model: file:///config/files/models/box.sdf.xacro
+                seed: 42
+                robot_diameter: 0.35
+                count: 2
     """
 
     CONFIG_CLASS = OneOfVariationConfig

@@ -132,18 +132,28 @@ class FloorplanGenerationConfig(BaseModel):
 
 
 class FloorplanGeneration(NavVariation):
-    """Generate floorplan artifacts from existing floorplan files.
+    """Generates artifacts (maps and 3D meshes) from existing floorplan files without creating variations.
 
-    This variation takes existing .fpm (floorplan) files and generates the necessary
-    artifacts for navigation testing:
-    - Occupancy grid maps (.yaml and .pgm files)
-    - 3D meshes (.stl files)
+    Unlike :class:`FloorplanVariation` which creates multiple variations from
+    ``.variation`` files, this processes ``.fpm`` floorplan files directly and
+    generates exactly one configuration per input floorplan.
 
-    Unlike FloorplanVariation which creates multiple variations from .variation files,
-    FloorplanGeneration processes floorplan files directly without creating variations.
-    It generates exactly one configuration per input floorplan file.
+    Expected parameters:
 
-    Example configuration:
+    - ``name``: List of two parameter names — first for map file, second for mesh file.
+    - ``floorplans``: List of paths to ``.fpm`` floorplan files to generate artifacts
+      for (must contain at least one file).
+
+    Generated outputs:
+
+    - Map YAML file (``maps/*.yaml``)
+    - Map PGM file (``maps/*.pgm``)
+    - 3D mesh STL file (``3d-mesh/*.stl``)
+
+    Example:
+
+    .. code-block:: yaml
+
         - FloorplanGeneration:
             name:
             - map_file
@@ -151,9 +161,6 @@ class FloorplanGeneration(NavVariation):
             floorplans:
             - floorplans/rooms/rooms.fpm
             - floorplans/hallways/hallways.fpm
-
-    This will generate map and mesh artifacts for each floorplan and create
-    configurations with the map_file and mesh_file parameters set appropriately.
     """
 
     CONFIG_CLASS = FloorplanGenerationConfig
@@ -407,7 +414,22 @@ class FloorplanGeneration(NavVariation):
 
 
 class FloorplanVariation(NavVariation):
-    """Create floorplan variation."""
+    """Creates floorplan variations from variation files and generates corresponding map and mesh files.
+
+    Expected parameters:
+
+    - ``name``: List of two parameter names — first for map file, second for mesh file.
+    - ``variation_files``: List of variation files to use for floorplan generation
+      (must contain at least one file).
+    - ``num_variations``: Number of floorplan variations to generate (minimum 1).
+    - ``seed``: Seed for random number generation to ensure reproducibility.
+
+    Generated outputs:
+
+    - Map YAML file (``maps/*.yaml``)
+    - Map PGM file (``maps/*.pgm``)
+    - 3D mesh STL file (``3d-mesh/*.stl``)
+    """
 
     CONFIG_CLASS = FloorplanVariationConfig
     # GUI_CLASS = FloorplanVariationGui

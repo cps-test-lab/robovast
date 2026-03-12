@@ -119,7 +119,37 @@ class PathVariationGuiRenderer(VariationGuiRenderer):
 
 
 class PathVariationRandom(NavVariation):
-    """Create random route variations."""
+    """Generates random navigation paths with multiple waypoints between start and goal poses.
+
+    Expected parameters:
+
+    - ``start_pose``: Start position as parameter reference (``@start_pose``) or direct
+      pose with ``x``, ``y``, ``yaw`` (in metres and radians).
+    - ``goal_poses``: Goal positions as parameter reference (``@goal_poses`` or
+      ``@goal_pose``) or list of poses.
+    - ``num_goal_poses``: Number of goal poses to generate per path.
+    - ``path_length``: Target path length in metres.
+    - ``num_paths``: Number of different paths to generate.
+    - ``min_distance``: Minimum distance between consecutive waypoints in metres.
+    - ``map_file``: Optional map file path (uses scenario default if omitted).
+    - ``path_length_tolerance``: Acceptable deviation from target path length in metres
+      (default: ``0.5``).
+    - ``seed``: Random seed for reproducible generation.
+    - ``robot_diameter``: Robot diameter for collision checking in metres.
+
+    Behaviour:
+
+    - Generates sequential waypoints with target distances between them.
+    - Validates path length within the specified tolerance.
+    - Automatically detects output parameter name from reference: ``@goal_pose`` outputs
+      a single pose, ``@goal_poses`` outputs a list.
+    - Uses path caching for performance optimisation.
+
+    Generated outputs:
+
+    - ``start_pose``: Generated or specified start pose.
+    - ``goal_pose`` or ``goal_poses``: Generated goal pose(s) depending on reference.
+    """
 
     CONFIG_CLASS = PathVariationRandomConfig
     GUI_CLASS = NavigationGui
@@ -440,7 +470,44 @@ class PathVariationRasterizedConfig(BaseModel):
 
 
 class PathVariationRasterized(NavVariation):
-    """Create route variations covering all areas of the map using a square grid."""
+    """Creates route variations covering all areas of the map using a square grid rasterisation.
+
+    Generates paths between raster points that meet specified path length criteria.
+
+    Expected parameters:
+
+    - ``raster_size``: Grid spacing between raster points in metres.
+    - ``path_length``: Target path length in metres.
+    - ``robot_diameter``: Robot diameter for collision checking in metres.
+    - ``start_pose``: Optional start position as parameter reference (``@start_pose``)
+      or direct pose with ``x``, ``y``, ``yaw``.  If omitted, all valid raster points
+      are used as potential start poses.
+    - ``num_goal_poses``: Number of goal poses per path (default: ``1``).
+      Single goal mode uses grid-to-grid paths; multi-goal mode uses a search radius
+      algorithm.
+    - ``map_file``: Optional map file path (uses scenario default if omitted).
+    - ``raster_offset_x``: X-axis offset for grid alignment in metres (default: ``0.0``).
+    - ``raster_offset_y``: Y-axis offset for grid alignment in metres (default: ``0.0``).
+    - ``path_length_tolerance``: Acceptable deviation from target path length in metres
+      (default: ``0.5``).
+
+    Behaviour:
+
+    - Creates a square grid covering the entire map area, filtering points in obstacles
+      or too close to walls.
+    - **Single goal mode** (``num_goal_poses: 1``): Generates paths from each valid
+      raster point to every other valid raster point for comprehensive coverage testing.
+    - **Multi-goal mode** (``num_goal_poses > 1``): Calculates search radius as
+      ``(path_length / raster_size) / (num_goal_poses + 1)`` and generates multiple
+      waypoints per path.
+    - Respects robot diameter for collision checking; grid alignment is controlled by
+      the offset parameters.
+
+    Generated outputs:
+
+    - ``start_pose``: Start pose (either specified or from raster grid).
+    - ``goal_pose`` or ``goal_poses``: Goal pose(s) depending on ``num_goal_poses``.
+    """
 
     CONFIG_CLASS = PathVariationRasterizedConfig
     GUI_CLASS = NavigationGui

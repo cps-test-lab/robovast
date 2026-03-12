@@ -125,16 +125,53 @@ class ObstacleVariationWithDistanceTriggerGuiRenderer(ObstacleVariationGuiRender
 # ---------------------------------------------------------------------------
 
 class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
-    """Single-obstacle placement with a distance-based spawn trigger.
+    """Places exactly one obstacle at a position at least *trigger_distance* arc-length ahead of the robot's start along the planned path.
 
-    Exactly one obstacle is placed at least *trigger_distance* arc-length ahead of the
-    robot start on the planned path.  Two scenario parameters are emitted:
+    Two scenario parameters are written for use in the scenario script.
 
-    * *spawn_trigger_point*     — position of the placed obstacle.
-    * *spawn_trigger_threshold* — the trigger distance value that was used.
+    Expected parameters:
 
-    When *trigger_distance* is a list, one output configuration is produced per value.
-    Seeds are offset by the list index for reproducibility across values.
+    - ``name``: Name of the parameter to store the placed obstacle.
+    - ``spawn_trigger_point``: Scenario parameter name to receive the obstacle's spawn
+      pose position.
+    - ``spawn_trigger_threshold``: Scenario parameter name to receive the trigger
+      distance value that was used.
+    - ``trigger_distance``: Arc-length in metres from the start to the obstacle.
+      Accepts a single float or a list of floats — one output configuration is produced
+      per value.
+    - ``obstacle_configs``: List of obstacle configurations (same format as
+      :class:`ObstacleVariation`).  Total ``amount`` across all entries must equal
+      exactly 1.
+    - ``seed``: Seed for random number generation to ensure reproducibility.
+    - ``robot_diameter``: Diameter of the robot for collision checking in metres.
+    - ``map_file``: Optional map file path (uses scenario default if omitted).
+    - ``count``: Number of obstacle configurations to generate (default: ``1``).
+    - ``start_pose``: Optional explicit start pose (dict with ``x``, ``y``, ``yaw``).
+    - ``goal_pose``: Optional explicit goal pose (dict with ``x``, ``y``, ``yaw``).
+
+    Generated outputs:
+
+    - ``<name>``: Placed obstacle with spawn pose and model information.
+    - ``<spawn_trigger_point>``: Position of the placed obstacle.
+    - ``<spawn_trigger_threshold>``: The trigger distance value that was applied.
+
+    Example:
+
+    .. code-block:: yaml
+
+        - ObstacleVariationWithDistanceTrigger:
+            name: dynamic_objects
+            spawn_trigger_point: spawn_trigger_point
+            spawn_trigger_threshold: spawn_trigger_threshold
+            trigger_distance: [1.0, 2.0]
+            obstacle_configs:
+            - amount: 1
+              max_distance: [0.0, 0.3]
+              model: file:///config/files/models/box.sdf.xacro
+              xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+            seed: 42
+            robot_diameter: 0.35
+            count: 2
     """
 
     CONFIG_CLASS = ObstacleVariationWithDistanceTriggerConfig

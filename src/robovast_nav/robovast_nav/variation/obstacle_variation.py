@@ -176,7 +176,35 @@ class ObstacleVariationGuiRenderer(VariationGuiRenderer):
 
 
 class ObstacleVariation(NavVariation):
-    """Placement of random obstacles in the environment."""
+    """Places random obstacles in the environment based on configured obstacle types.
+
+    Expected parameters:
+
+    - ``name``: Name of the parameter to store static objects.
+    - ``obstacle_configs``: List of obstacle configurations, each containing:
+
+      - ``amount``: Number of obstacles to place.  Mutually exclusive with
+        ``amount_per_m``.
+      - ``amount_per_m``: Obstacles per metre of path length (computed as
+        ``floor(amount_per_m × path_length)``).  Accepts a single float or a list of
+        floats — each value produces a separate variation.  Mutually exclusive with
+        ``amount``.
+      - ``max_distance``: Maximum distance from the path for obstacle placement.
+        Accepts a single float or a list of floats — each value produces a separate
+        variation.
+      - ``model``: Model name/path for the obstacle.
+      - ``xacro_arguments``: Arguments to pass to xacro for model generation.
+
+    - ``seed``: Seed for random number generation to ensure reproducibility.
+    - ``robot_diameter``: Diameter of the robot for collision checking.
+    - ``map_file``: Optional map file path (can be omitted if provided by a previous
+      variation).
+    - ``count``: Number of obstacle configurations to generate (default: ``1``).
+
+    Generated outputs:
+
+    - List of static objects with spawn poses and model information.
+    """
 
     CONFIG_CLASS = ObstacleVariationConfig
     GUI_CLASS = NavigationGui
