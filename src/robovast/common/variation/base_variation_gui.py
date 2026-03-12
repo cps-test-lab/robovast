@@ -14,8 +14,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-
-from PySide6.QtWidgets import QWidget
+try:
+    from PySide6.QtWidgets import QWidget
+    _PYSIDE6_AVAILABLE = True
+except ImportError:
+    _PYSIDE6_AVAILABLE = False
+    QWidget = object  # type: ignore[assignment,misc]
 
 
 class VariationGuiRenderer:
