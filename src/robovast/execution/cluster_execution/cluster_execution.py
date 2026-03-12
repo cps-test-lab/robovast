@@ -100,7 +100,8 @@ def cleanup_cluster_campaign(namespace="default", campaign=None, context=None):
     """Clean up scenario run jobs, pods, and Kueue workloads from the cluster.
 
     Cleanup order is designed to avoid confusing Kueue's quota tracking:
-    1. HoldAll the ClusterQueue to prevent new admissions during cleanup.
+    1. Hold the ClusterQueue to prevent new admissions during cleanup (does NOT
+       preempt running workloads — use Hold, not HoldAndDrain).
     2. Delete Workloads first so Kueue releases quota before Jobs disappear.
     3. Force-clear finalizers on stuck Workloads.
     4. Delete Jobs (Foreground propagation so pods are reaped by the Job controller).
@@ -127,9 +128,11 @@ def cleanup_cluster_campaign(namespace="default", campaign=None, context=None):
         label_safe = _label_safe_campaign(campaign)
         label_selector = f"jobgroup=scenario-runs,campaign-id={label_safe}"
 
-    # Step 1: Stop the ClusterQueue so Kueue does not admit new jobs during cleanup.
-    logger.info("Setting ClusterQueue stopPolicy to HoldAndDrain before cleanup")
-    set_cluster_queue_stop_policy("HoldAndDrain", kube_context=context)
+    # Step 1: Pause the ClusterQueue so Kueue does not admit new jobs during
+    # cleanup. Use "Hold" (not "HoldAndDrain") to avoid preempting workloads
+    # that belong to other campaigns or that the user did not intend to kill.
+    logger.info("Setting ClusterQueue stopPolicy to Hold before cleanup")
+    set_cluster_queue_stop_policy("Hold", kube_context=context)
 
     # Step 2+3: Delete Workloads FIRST so Kueue can release quota cleanly
     # before the underlying Jobs disappear. Hard finalizer cleanup is handled
