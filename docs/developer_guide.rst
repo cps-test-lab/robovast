@@ -170,6 +170,61 @@ Afterwards you can start the GUI:
     vast evaluation gui
 
 
+Container Image Compatibility Version
+-------------------------------------
+
+RoboVAST enforces a compatibility version between the host Python code and the
+Docker container image.  This prevents cryptic runtime failures when the two
+sides are out of sync (e.g. after updating one without the other).
+
+How it works
+^^^^^^^^^^^^
+
+A single integer ``COMPAT_VERSION`` is defined in
+``src/robovast/common/execution.py``.  The same value is baked into the
+container image in two forms:
+
+- A Docker label ``robovast.compat_version`` (read by host-side checks via
+  ``docker inspect``)
+- A file ``/etc/robovast_compat_version`` (read by the Kubernetes init
+  container)
+
+Before any container starts, the version is checked:
+
+- **Local execution**: the generated ``run.sh`` script checks the image label
+  before ``docker-compose up``.
+- **Cluster execution**: a Kubernetes init container reads
+  ``/etc/robovast_compat_version`` and compares it to the expected value.
+- **Postprocessing**: ``docker_exec.sh`` checks the image label before
+  ``docker run``.
+
+If the versions do not match (or the label/file is missing), execution fails
+immediately with a clear error message.
+
+When to bump the version
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+Bump ``COMPAT_VERSION`` when the contract between host scripts and the
+container changes:
+
+- A new Python or system package is required inside the container
+- The ROS distribution changes
+- The interface of mounted scripts changes (e.g. ``ros2_exec.sh``,
+  ``entrypoint.sh``)
+- A postprocessing script requires a new ROS package
+
+How to bump the version
+^^^^^^^^^^^^^^^^^^^^^^^
+
+1. Increment ``COMPAT_VERSION`` in ``src/robovast/common/execution.py``
+2. Update the ``LABEL`` and ``RUN echo`` lines in
+   ``container/robovast/Dockerfile`` to match
+3. Rebuild and push the container image
+
+The CI workflow (``image.yml``) validates that all three values are in sync
+before building the image.
+
+
 Extending RoboVAST
 ------------------
 

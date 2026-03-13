@@ -20,7 +20,7 @@ import os
 import sys
 import tempfile
 
-from robovast.common import (generate_execution_yaml_script,
+from robovast.common import (COMPAT_VERSION, generate_execution_yaml_script,
                              get_execution_env_variables, load_config,
                              normalize_secondary_containers,
                              prepare_campaign_configs)
@@ -299,6 +299,19 @@ if [ "$USE_GUI" = true ]; then
 fi
 
 mkdir -p "${RESULTS_DIR}"
+
+# Compatibility version check
+IMAGE_COMPAT=$(docker inspect --format='{{index .Config.Labels "robovast.compat_version"}}' "$DOCKER_IMAGE" 2>/dev/null || echo "")
+if [ -z "$IMAGE_COMPAT" ] || [ "$IMAGE_COMPAT" != "@@COMPAT_VERSION@@" ]; then
+    echo "ERROR: Compatibility version mismatch!"
+    echo "  Host robovast expects compat version: @@COMPAT_VERSION@@"
+    echo "  Container image provides: ${IMAGE_COMPAT:-<missing>}"
+    echo "  Image: $DOCKER_IMAGE"
+    echo ""
+    echo "  Fix: Pull the latest image with 'docker pull $DOCKER_IMAGE'"
+    echo "       or rebuild with the matching robovast version."
+    exit 1
+fi
 """
 
 
@@ -537,6 +550,8 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
     ).replace(
         'RESULTS_DIR=',
         f'RESULTS_DIR="{results_dir}/${{RUN_ID}}"', 1
+    ).replace(
+        '@@COMPAT_VERSION@@', str(COMPAT_VERSION),
     )
 
     # Warn if timeout is configured (not respected in local runs)

@@ -47,6 +47,20 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
+      - name: Validate compat version consistency
+        run: |
+          PYTHON_VER=$(grep -oP 'COMPAT_VERSION\s*=\s*\K\d+' src/robovast/common/execution.py)
+          DOCKER_LABEL=$(grep -oP 'LABEL robovast\.compat_version="\K\d+' container/robovast/Dockerfile)
+          DOCKER_FILE=$(grep -oP 'echo "\K\d+(?=" > /etc/robovast_compat_version)' container/robovast/Dockerfile)
+          echo "Python COMPAT_VERSION: $PYTHON_VER"
+          echo "Dockerfile LABEL: $DOCKER_LABEL"
+          echo "Dockerfile /etc file: $DOCKER_FILE"
+          if [ "$PYTHON_VER" != "$DOCKER_LABEL" ] || [ "$PYTHON_VER" != "$DOCKER_FILE" ]; then
+            echo "::error::Compat version mismatch! Python=$PYTHON_VER, Label=$DOCKER_LABEL, File=$DOCKER_FILE"
+            exit 1
+          fi
+          echo "Compat version check passed: $PYTHON_VER"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
