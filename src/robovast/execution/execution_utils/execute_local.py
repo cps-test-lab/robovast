@@ -154,7 +154,7 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
 DOCKER_IMAGE="ghcr.io/cps-test-lab/robovast:latest"
 USE_GUI=true
 START_ONLY=false
-RUN_ID="CAMPAIGN_NAME_PLACEHOLDER-$(date +%Y-%m-%d-%H%M%S)"
+RUN_ID="CAMPAIGN_NAME_PLACEHOLDER-$(date +%Y-%m-%d-%H%M%S%N | cut -c1-19)"
 RESULTS_DIR=
 
 # Variables to track cleanup and interrupt state

@@ -69,7 +69,11 @@ class _FormattableTimestamp(str):
         if not format_spec:
             return str(self)
         try:
-            dt = datetime.datetime.strptime(str(self), self._PARSE_FORMAT)
+            # Parse the base YYYY-MM-DD-HHMMSS portion (17 chars); ignore
+            # optional sub-second suffix (e.g. "cc" hundredths added for
+            # concurrent-run disambiguation).
+            base = str(self)[:17]
+            dt = datetime.datetime.strptime(base, self._PARSE_FORMAT)
             return dt.strftime(format_spec)
         except ValueError:
             # Fall back to the raw string if parsing fails.

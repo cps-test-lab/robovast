@@ -176,14 +176,15 @@ def _get_cluster_info(context=None):
 
 # Regex that matches any campaign directory name: <name>-YYYY-MM-DD-HHMMSS
 # The default name prefix is "campaign" for backward compatibility.
-_CAMPAIGN_DIR_RE = re.compile(r'^.+-\d{4}-\d{2}-\d{2}-\d{6}$')
+_CAMPAIGN_DIR_RE = re.compile(r'^.+-\d{4}-\d{2}-\d{2}-\d{6,8}$')
 
 
 def is_campaign_dir(name: str) -> bool:
     """Return True if *name* looks like a campaign directory.
 
     Both the legacy ``campaign-YYYY-MM-DD-HHMMSS`` format and the newer
-    ``<metadata-name>-YYYY-MM-DD-HHMMSS`` format are recognised.
+    ``<metadata-name>-YYYY-MM-DD-HHMMSScc`` format (with hundredths of a
+    second for concurrent-run disambiguation) are recognised.
     """
     return bool(_CAMPAIGN_DIR_RE.match(name))
 
@@ -192,10 +193,10 @@ def get_campaign_timestamp(dir_name: str) -> str:
     """Extract the timestamp portion from a campaign directory name.
 
     Works for both ``campaign-YYYY-MM-DD-HHMMSS`` and
-    ``<name>-YYYY-MM-DD-HHMMSS``.  Returns the full *dir_name* unchanged
+    ``<name>-YYYY-MM-DD-HHMMSScc``.  Returns the full *dir_name* unchanged
     when the expected suffix cannot be found.
     """
-    m = re.search(r'(\d{4}-\d{2}-\d{2}-\d{6})$', dir_name)
+    m = re.search(r'(\d{4}-\d{2}-\d{2}-\d{6,8})$', dir_name)
     return m.group(1) if m else dir_name
 
 
@@ -207,9 +208,13 @@ def get_campaign(name: str = "campaign") -> str:
               file.  Defaults to ``"campaign"`` for backward compatibility.
 
     Returns:
-        A string of the form ``<name>-YYYY-MM-DD-HHMMSS``.
+        A string of the form ``<name>-YYYY-MM-DD-HHMMSScc`` where *cc* are
+        hundredths of a second.  The extra precision virtually eliminates
+        campaign-ID collisions when multiple ``vast exec cluster run``
+        invocations start in the same second.
     """
-    return f"{name}-{datetime.datetime.now().strftime('%Y-%m-%d-%H%M%S')}"
+    now = datetime.datetime.now()
+    return f"{name}-{now.strftime('%Y-%m-%d-%H%M%S')}{now.strftime('%f')[:2]}"
 
 
 def get_execution_env_variables(run_num, config_name, additional_env=None):
@@ -273,25 +278,15 @@ exit 0
 CLEANUP_EOF
     chmod +x "${BUILTIN_CLEANUP_SCRIPT}"
 
-    POST_COMMAND_PARAM=""
+    POST_COMMAND_PARAM="--post-run ${BUILTIN_CLEANUP_SCRIPT}"
     if [ -n "${POST_COMMAND}" ]; then
         if [ -e "${POST_COMMAND}" ]; then
-            COMBINED_SCRIPT="/tmp/combined_post_run.sh"
-            cat > "${COMBINED_SCRIPT}" << COMBINED_EOF
-#!/bin/bash
-set -e
-source "${POST_COMMAND}"
-"${BUILTIN_CLEANUP_SCRIPT}"
-COMBINED_EOF
-            chmod +x "${COMBINED_SCRIPT}"
-            POST_COMMAND_PARAM="--post-run ${COMBINED_SCRIPT}"
-            log "Post-command '${POST_COMMAND}' combined with built-in cleanup."
+            POST_COMMAND_PARAM="--post-run ${POST_COMMAND} --post-run ${BUILTIN_CLEANUP_SCRIPT}"
+            log "Post-command '${POST_COMMAND}' will run before built-in cleanup."
         else
             log "ERROR: Post-command '${POST_COMMAND}' does not exist."
             exit 1
         fi
-    else
-        POST_COMMAND_PARAM="--post-run ${BUILTIN_CLEANUP_SCRIPT}"
     fi"""
 
 _CLUSTER_POST_RUN_BLOCK = """\
@@ -299,14 +294,55 @@ _CLUSTER_POST_RUN_BLOCK = """\
     BUILTIN_CLEANUP_SCRIPT="/tmp/robovast_cleanup.sh"
     cat > "${BUILTIN_CLEANUP_SCRIPT}" << 'CLEANUP_EOF'
 #!/bin/bash
-if [ -f /tmp/rosbag.pid ]; then
-    start-stop-daemon --stop --signal INT --pidfile /tmp/rosbag.pid --retry INT/30/KILL/5 --remove-pidfile >/dev/null 2>&1 || true
-    echo "ROS bag process stopped."
-fi
-if [ -f /tmp/monitor.pid ]; then
-    start-stop-daemon --stop --signal TERM --pidfile /tmp/monitor.pid --retry TERM/10/KILL/5 --remove-pidfile >/dev/null 2>&1 || true
-    echo "Resource monitor process stopped."
-fi
+echo "[cleanup] Starting robovast cleanup (PID=$$)..."
+echo "[cleanup] Process tree at cleanup start:"
+ps -eo pid,ppid,stat,args 2>/dev/null || ps ax 2>/dev/null || true
+echo ""
+
+_stop_daemon() {
+    local _name="$1" _pidfile="$2" _signal="$3" _retry="$4"
+    if [ ! -f "$_pidfile" ]; then
+        echo "[cleanup] ${_name}: no pidfile at ${_pidfile}, skipping."
+        return 0
+    fi
+    local _pid
+    _pid=$(cat "$_pidfile" 2>/dev/null)
+    if [ -z "$_pid" ]; then
+        echo "[cleanup] ${_name}: pidfile ${_pidfile} is empty, removing."
+        rm -f "$_pidfile"
+        return 0
+    fi
+    local _state _ppid _comm
+    _state=$(awk '/^State:/{print $2}' /proc/$_pid/status 2>/dev/null)
+    _ppid=$(awk '/^PPid:/{print $2}' /proc/$_pid/status 2>/dev/null)
+    _comm=$(cat /proc/$_pid/comm 2>/dev/null)
+    if [ -z "$_state" ]; then
+        echo "[cleanup] ${_name}: PID=$_pid not found in /proc (already exited), removing pidfile."
+        rm -f "$_pidfile"
+        return 0
+    fi
+    echo "[cleanup] ${_name}: PID=$_pid state=$_state ppid=$_ppid comm=$_comm"
+    if [ "$_state" = "Z" ]; then
+        echo "[cleanup] ${_name}: PID=$_pid is a zombie (ppid=$_ppid), cannot signal. Removing pidfile."
+        rm -f "$_pidfile"
+        return 0
+    fi
+    echo "[cleanup] ${_name}: sending ${_signal} to PID=$_pid (retry=${_retry})..."
+    if start-stop-daemon --stop --signal "$_signal" --pidfile "$_pidfile" --retry "$_retry" --remove-pidfile --verbose 2>&1; then
+        echo "[cleanup] ${_name}: stopped successfully."
+    else
+        local _rc=$?
+        echo "[cleanup] ${_name}: start-stop-daemon exited with code $_rc."
+        local _post_state
+        _post_state=$(awk '/^State:/{print $2}' /proc/$_pid/status 2>/dev/null)
+        echo "[cleanup] ${_name}: PID=$_pid post-stop state=${_post_state:-gone}"
+        rm -f "$_pidfile"
+    fi
+}
+
+_stop_daemon "rosbag" "/tmp/rosbag.pid" "INT" "INT/30/KILL/5"
+_stop_daemon "monitor" "/tmp/monitor.pid" "TERM" "TERM/10/KILL/5"
+echo "[cleanup] Cleanup finished."
 CLEANUP_EOF
     chmod +x "${BUILTIN_CLEANUP_SCRIPT}"
 
@@ -315,43 +351,32 @@ CLEANUP_EOF
     cat > "${S3_UPLOAD_SCRIPT}" << 'UPLOAD_EOF'
 #!/bin/bash
 set -e
+echo "[s3-upload] Starting S3 upload..."
+echo "[s3-upload] Setting up mc alias for S3 endpoint..."
 mc alias set mystore "${S3_ENDPOINT}" "${S3_ACCESS_KEY}" "${S3_SECRET_KEY}" --quiet
+echo "[s3-upload] Mirroring /out/ to mystore/${S3_BUCKET}/${S3_PREFIX}/..."
 mc mirror /out/ "mystore/${S3_BUCKET}/${S3_PREFIX}/"
+echo "[s3-upload] Mirror complete. Re-tagging executable files..."
 # Re-tag executable files with x-amz-meta-executable metadata
+_exec_count=0
 find /out/ -type f -executable | while IFS= read -r f; do
     rel="${f#/out/}"
     mc cp --attr "x-amz-meta-executable=yes" "mystore/${S3_BUCKET}/${S3_PREFIX}/${rel}" "mystore/${S3_BUCKET}/${S3_PREFIX}/${rel}" --quiet
+    _exec_count=$((_exec_count + 1))
 done
+echo "[s3-upload] S3 upload finished."
 UPLOAD_EOF
     chmod +x "${S3_UPLOAD_SCRIPT}"
 
+    POST_COMMAND_PARAM="--post-run ${BUILTIN_CLEANUP_SCRIPT} --post-run ${S3_UPLOAD_SCRIPT}"
     if [ -n "${POST_COMMAND}" ]; then
         if [ -e "${POST_COMMAND}" ]; then
-            COMBINED_SCRIPT="/tmp/combined_post_run.sh"
-            cat > "${COMBINED_SCRIPT}" << COMBINED_EOF
-#!/bin/bash
-set -e
-source "${POST_COMMAND}"
-"${BUILTIN_CLEANUP_SCRIPT}"
-"${S3_UPLOAD_SCRIPT}"
-COMBINED_EOF
-            chmod +x "${COMBINED_SCRIPT}"
-            POST_COMMAND_PARAM="--post-run ${COMBINED_SCRIPT}"
-            log "Post-command '${POST_COMMAND}' combined with built-in cleanup and S3 upload."
+            POST_COMMAND_PARAM="--post-run ${POST_COMMAND} --post-run ${BUILTIN_CLEANUP_SCRIPT} --post-run ${S3_UPLOAD_SCRIPT}"
+            log "Post-command '${POST_COMMAND}' will run before built-in cleanup and S3 upload."
         else
             log "ERROR: Post-command '${POST_COMMAND}' does not exist."
             exit 1
         fi
-    else
-        COMBINED_SCRIPT="/tmp/combined_post_run.sh"
-        cat > "${COMBINED_SCRIPT}" << COMBINED_EOF
-#!/bin/bash
-set -e
-"${BUILTIN_CLEANUP_SCRIPT}"
-"${S3_UPLOAD_SCRIPT}"
-COMBINED_EOF
-        chmod +x "${COMBINED_SCRIPT}"
-        POST_COMMAND_PARAM="--post-run ${COMBINED_SCRIPT}"
     fi"""
 
 

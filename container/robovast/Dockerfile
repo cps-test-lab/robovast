@@ -83,7 +83,7 @@ RUN mkdir -p /ws/src
 # hadolint ignore=DL3003
 RUN  git clone --depth=1 "https://github.com/cps-test-lab/scenario-execution.git" /ws/src/scenario-execution && \
      cd /ws/src/scenario-execution && \
-     git checkout 6081a30342b8ed7c88983737711b2e050462bd10 && \
+     git checkout 939b79c9787f43827b2d245753f76ede6d04829e && \
      cd /ws && \
      git clone --depth=1 "https://github.com/cps-test-lab/scenario-execution-server.git" /ws/src/scenario-execution-server && \
      cd /ws/src/scenario-execution-server && \
@@ -94,7 +94,7 @@ RUN  git clone --depth=1 "https://github.com/cps-test-lab/scenario-execution.git
 
 # Needed while WorldStatistics is not released for ROS 2 Jazzy
 # hadolint ignore=DL3003
-RUN git clone --depth=1 "https://github.com/gazebosim/ros_gz.git" /ws/src/ros_gz && \
+RUN git clone "https://github.com/gazebosim/ros_gz.git" /ws/src/ros_gz && \
      cd /ws/src/ros_gz && \
      git checkout 78957e5292d986ef74e3f0151187e8d5d1faebe2 && \
      cd /ws && \

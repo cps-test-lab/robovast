@@ -94,8 +94,8 @@ else
     fi
 
     # Start built-in daemons
-    python3 /config/monitor_resources.py "${OUTPUT_DIR}/resource_usage_main.csv" &
-    echo $! > /tmp/monitor.pid
+    start-stop-daemon --start --background --make-pidfile --pidfile /tmp/monitor.pid \
+        --startas /usr/bin/python3 -- /config/monitor_resources.py "${OUTPUT_DIR}/resource_usage_main.csv"
     log "Started resource monitor (PID=$(cat /tmp/monitor.pid)) -> ${OUTPUT_DIR}/resource_usage_main.csv"
 
     start-stop-daemon --start --background --make-pidfile --pidfile /tmp/rosbag.pid \

@@ -58,21 +58,21 @@ def _label_safe_campaign(campaign: str) -> str:
 def _short_job_name(campaign: str, config_name: str, run_number: int) -> str:
     """Create a short Kubernetes job name (max 63 chars) for campaign-id-config-run.
 
-    Format: <name6>-<HHMMSS>-<config6chars><sha256_16chars>-<run_number>
-    - campaign: "<name>-2026-02-27-141130"
+    Format: <name6>-<HHMMSScc>-<config6chars><sha256_16chars>-<run_number>
+    - campaign: "<name>-2026-02-27-14113025"
         -> name prefix: first 6 lowercase alphanumeric chars of <name>
-        -> time suffix: last 6 chars of timestamp (HHMMSS) = "141130"
-      e.g. "dynamic_obstacle-2026-02-27-141130" -> "dynami-141130"
-           "campaign-2026-02-27-141130"         -> "campai-141130"
+        -> time suffix: last 8 chars of timestamp (HHMMSScc) = "14113025"
+      e.g. "dynamic_obstacle-2026-02-27-14113025" -> "dynami-14113025"
+           "campaign-2026-02-27-14113025"         -> "campai-14113025"
     - config_name: first 8 alphanumeric for readability, rest as 4-char hash for uniqueness
     - run_number: as-is (e.g. 0, 1, ...)
     Labels keep full campaign-id for identifying.
     """
-    # Extract "<name>" from "<name>-YYYY-MM-DD-HHMMSS"
-    ts_match = re.search(r'\d{4}-\d{2}-\d{2}-(\d{6})$', campaign)
-    hhmmss = ts_match.group(1) if ts_match else campaign[-6:]
+    # Extract "<name>" from "<name>-YYYY-MM-DD-HHMMSScc" (6-8 digit tail)
+    ts_match = re.search(r'\d{4}-\d{2}-\d{2}-(\d{6,8})$', campaign)
+    hhmmss = ts_match.group(1) if ts_match else campaign[-8:]
     # Strip the timestamp suffix to get the name prefix
-    raw_name = re.sub(r'-\d{4}-\d{2}-\d{2}-\d{6}$', '', campaign) if ts_match else campaign
+    raw_name = re.sub(r'-\d{4}-\d{2}-\d{2}-\d{6,8}$', '', campaign) if ts_match else campaign
     name_alpha = re.sub(r'[^a-z0-9]', '', raw_name.lower())[:6]
     # Kubernetes names must start with a letter; fall back to 'r' if name is empty or starts with digit
     if not name_alpha or name_alpha[0].isdigit():

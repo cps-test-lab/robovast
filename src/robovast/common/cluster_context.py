@@ -153,8 +153,20 @@ def require_context_for_multi_cluster(kube_context: Optional[str]) -> None:
     try:
         from robovast.common.cli.project_config import \
             ProjectConfig  # pylint: disable=import-outside-toplevel  # local import – avoid cycles
-        pc = ProjectConfig.load()
-        config_path = pc.config_path if pc else None
+        # Prefer the global --vast-file override when available.
+        override_path = None
+        try:
+            import click as _click  # pylint: disable=import-outside-toplevel
+            _ctx = _click.get_current_context(silent=True)
+            if _ctx and _ctx.obj:
+                override_path = _ctx.obj.get('vast_file')
+        except RuntimeError:
+            pass
+        if override_path:
+            config_path = override_path
+        else:
+            pc = ProjectConfig.load()
+            config_path = pc.config_path if pc else None
     except Exception:
         config_path = None
 
