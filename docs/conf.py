@@ -26,6 +26,15 @@ import datetime
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 import os
 import sys
+from unittest.mock import MagicMock
+
+# Mock PySide6 and Qt-dependent matplotlib backends so that Sphinx can import
+# variation modules (which pull in GUI classes) without a display server.
+for _mod in [
+    'PySide6', 'PySide6.QtCore', 'PySide6.QtGui', 'PySide6.QtWidgets',
+    'matplotlib.backends.backend_qt5agg',
+]:
+    sys.modules.setdefault(_mod, MagicMock())
 
 project = "RoboVAST"
 copyright = f"{datetime.datetime.now().year}, Frederik Pasch"
