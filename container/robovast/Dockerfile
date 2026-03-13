@@ -114,9 +114,8 @@ ENV QT_X11_NO_MITSHM=1
 RUN mkdir -p /out && chmod 777 /out
 
 # Compatibility version — must match COMPAT_VERSION in
-# src/robovast/common/execution.py.  Used by host-side checks (docker inspect
-# label) and in-container checks (file read by k8s init container).
-LABEL robovast.compat_version="1"
+# src/robovast/common/execution.py.  Read by all execution contexts
+# (local, cluster, postprocessing) to detect host/container mismatches.
 RUN echo "1" > /etc/robovast_compat_version
 
 RUN USER=ubuntu && \

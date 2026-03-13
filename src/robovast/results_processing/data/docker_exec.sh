@@ -107,9 +107,9 @@ elif [ -e "$LAST_ARG" ]; then
     exit 1
 fi
 
-# Compatibility version check
+# Compatibility version check (reads /etc/robovast_compat_version inside the container)
 if [ -n "$COMPAT_VERSION" ]; then
-    IMAGE_COMPAT=$(docker inspect --format='{{index .Config.Labels "robovast.compat_version"}}' "$DOCKER_IMAGE" 2>/dev/null || echo "")
+    IMAGE_COMPAT=$(docker run --rm "$DOCKER_IMAGE" cat /etc/robovast_compat_version 2>/dev/null || echo "")
     if [ -z "$IMAGE_COMPAT" ] || [ "$COMPAT_VERSION" != "$IMAGE_COMPAT" ]; then
         echo "ERROR: Compatibility version mismatch!"
         echo "  Host robovast expects compat version: $COMPAT_VERSION"

@@ -300,8 +300,8 @@ fi
 
 mkdir -p "${RESULTS_DIR}"
 
-# Compatibility version check
-IMAGE_COMPAT=$(docker inspect --format='{{index .Config.Labels "robovast.compat_version"}}' "$DOCKER_IMAGE" 2>/dev/null || echo "")
+# Compatibility version check (reads /etc/robovast_compat_version inside the container)
+IMAGE_COMPAT=$(docker run --rm "$DOCKER_IMAGE" cat /etc/robovast_compat_version 2>/dev/null || echo "")
 if [ -z "$IMAGE_COMPAT" ] || [ "$IMAGE_COMPAT" != "@@COMPAT_VERSION@@" ]; then
     echo "ERROR: Compatibility version mismatch!"
     echo "  Host robovast expects compat version: @@COMPAT_VERSION@@"

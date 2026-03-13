@@ -36,8 +36,8 @@ from .config_identifier import (compute_config_identifier, hash_file_content,
 # Compatibility version between host robovast code and the container image.
 # Bump this integer when the contract between host scripts and the container
 # changes (e.g. new required package, ROS distro change, script interface
-# change).  The same value must appear in the Dockerfile as both a LABEL and
-# a file at /etc/robovast_compat_version.
+# change).  The same value must appear in the Dockerfile as
+# /etc/robovast_compat_version.
 COMPAT_VERSION = 1
 
 

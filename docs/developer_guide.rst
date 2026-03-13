@@ -182,23 +182,19 @@ How it works
 
 A single integer ``COMPAT_VERSION`` is defined in
 ``src/robovast/common/execution.py``.  The same value is baked into the
-container image in two forms:
+container image as the file ``/etc/robovast_compat_version``.
 
-- A Docker label ``robovast.compat_version`` (read by host-side checks via
-  ``docker inspect``)
-- A file ``/etc/robovast_compat_version`` (read by the Kubernetes init
-  container)
+Before any container starts, the version is checked by reading
+``/etc/robovast_compat_version`` from inside the container:
 
-Before any container starts, the version is checked:
-
-- **Local execution**: the generated ``run.sh`` script checks the image label
+- **Local execution**: the generated ``run.sh`` script checks the file
   before ``docker-compose up``.
-- **Cluster execution**: a Kubernetes init container reads
-  ``/etc/robovast_compat_version`` and compares it to the expected value.
-- **Postprocessing**: ``docker_exec.sh`` checks the image label before
+- **Cluster execution**: a Kubernetes init container reads the file and
+  compares it to the expected value.
+- **Postprocessing**: ``docker_exec.sh`` checks the file before
   ``docker run``.
 
-If the versions do not match (or the label/file is missing), execution fails
+If the versions do not match (or the file is missing), execution fails
 immediately with a clear error message.
 
 When to bump the version
