@@ -240,11 +240,20 @@ def run(config, runs, follow, cleanup, log_tree, kube_context):  # pylint: disab
     # ROBOVAST_GCS_KEY_FILE, ROBOVAST_GCS_KEY_JSON, etc. are available.
     from robovast.common.cli.project_config import \
         ProjectConfig as _PC  # pylint: disable=import-outside-toplevel
+
+    # Respect the global --vast-file override for .env discovery.
+    _vast_override = None
+    _click_ctx = click.get_current_context(silent=True)
+    if _click_ctx and _click_ctx.obj:
+        _vast_override = _click_ctx.obj.get('vast_file')
+    if _vast_override:
+        load_dotenv(os.path.join(os.path.dirname(_vast_override), ".env"), override=False)
+
     _pf = _PC.find_project_file()
     if _pf:
         _pd = os.path.dirname(os.path.abspath(_pf))
         _pc = _PC.load()
-        if _pc and _pc.config_path:
+        if _pc and _pc.config_path and not _vast_override:
             load_dotenv(os.path.join(os.path.dirname(_pc.config_path), ".env"), override=False)
         load_dotenv(os.path.join(_pd, ".env"), override=False)
     else:
@@ -351,8 +360,16 @@ def monitor(interval, once, kube_context):
             try:
                 from robovast.common.cli.project_config import \
                     ProjectConfig  # pylint: disable=import-outside-toplevel
-                pc = ProjectConfig.load()
-                config_path = pc.config_path if pc else None
+                # Prefer the global --vast-file override when available.
+                _vast_override = None
+                _click_ctx = click.get_current_context(silent=True)
+                if _click_ctx and _click_ctx.obj:
+                    _vast_override = _click_ctx.obj.get('vast_file')
+                if _vast_override:
+                    config_path = _vast_override
+                else:
+                    pc = ProjectConfig.load()
+                    config_path = pc.config_path if pc else None
             except Exception:
                 config_path = None
 
@@ -594,16 +611,25 @@ def upload_to_share(campaign, force, verbose, keep_archive, skip_removal, remove
     (useful when you want to also download the results locally later).
     """
     # Load .env in priority order:
-    #   1. Next to the .vast config file (dirname of config_path)
-    #   2. Next to the .vast_project file (project_dir)
+    #   1. Next to the --vast-file override (if given)
+    #   2. Next to the .vast config file (dirname of config_path)
+    #   3. Next to the .vast_project file (project_dir)
     # Falls back to the default cwd-upward search when no project is found.
     from robovast.common.cli.project_config import \
         ProjectConfig  # pylint: disable=import-outside-toplevel
+
+    _vast_override = None
+    _click_ctx = click.get_current_context(silent=True)
+    if _click_ctx and _click_ctx.obj:
+        _vast_override = _click_ctx.obj.get('vast_file')
+    if _vast_override:
+        load_dotenv(os.path.join(os.path.dirname(_vast_override), ".env"), override=False)
+
     _project_file = ProjectConfig.find_project_file()
     if _project_file:
         _project_dir = os.path.dirname(os.path.abspath(_project_file))
         _pc = ProjectConfig.load()
-        if _pc and _pc.config_path:
+        if _pc and _pc.config_path and not _vast_override:
             load_dotenv(os.path.join(os.path.dirname(_pc.config_path), ".env"), override=False)
         load_dotenv(os.path.join(_project_dir, ".env"), override=False)
     else:

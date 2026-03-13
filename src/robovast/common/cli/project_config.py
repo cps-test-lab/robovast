@@ -179,8 +179,29 @@ class ProjectConfig:
         return True, None
 
 
+def _get_vast_file_override() -> Optional[str]:
+    """Return the ``--vast-file`` override from the Click context, if any."""
+    try:
+        ctx = click.get_current_context(silent=True)
+        if ctx and ctx.obj:
+            return ctx.obj.get('vast_file')
+    except RuntimeError:
+        pass
+    return None
+
+
 def get_project_config() -> ProjectConfig:
     """Get project configuration or raise an error if not found.
+
+    If the global ``--vast-file`` / ``-V`` option was supplied on the
+    ``vast`` command line, the returned :class:`ProjectConfig` will
+    use that path as ``config_path`` instead of the value stored in
+    ``.robovast_project``.
+
+    When ``--vast-file`` is given but no project has been initialised,
+    a minimal :class:`ProjectConfig` with a ``results`` default
+    directory is created so that commands that only need ``config_path``
+    (e.g. ``vast config list``, ``vast exec cluster run``) still work.
 
     Returns:
         ProjectConfig instance
@@ -188,12 +209,24 @@ def get_project_config() -> ProjectConfig:
     Raises:
         click.ClickException: If project is not initialized or configuration is invalid
     """
+    override_path = _get_vast_file_override()
 
     config = ProjectConfig.load()
     if not config:
-        raise click.ClickException(
-            "Project not initialized. Run 'vast init <config-file>' first."
-        )
+        if override_path:
+            # No project file, but an override was given – create a
+            # minimal config so commands that only need config_path work.
+            config = ProjectConfig(
+                config_path=override_path,
+                results_dir=os.path.abspath("results"),
+            )
+        else:
+            raise click.ClickException(
+                "Project not initialized. Run 'vast init <config-file>' first."
+            )
+
+    if override_path:
+        config.config_path = override_path
 
     is_valid, error = config.validate()
     if not is_valid:

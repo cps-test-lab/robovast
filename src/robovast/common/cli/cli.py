@@ -57,9 +57,11 @@ def configure_logging(ctx, param, value):
               callback=configure_logging,
               is_eager=True,
               expose_value=False)
+@click.option('--vast-file', '-V', type=click.Path(exists=True), default=None,
+              help='Override the .vast configuration file (instead of project default)')
 @click.version_option(package_name="robovast", prog_name="RoboVAST")
 @click.pass_context
-def cli(ctx):
+def cli(ctx, vast_file):
     """VAST - RoboVAST Command-Line Interface.
 
     Main command for managing variations, executing scenarios,
@@ -68,14 +70,21 @@ def cli(ctx):
     The global ``--log-level`` option can be used to control logging verbosity
     for any command, overriding the project configuration.
 
+    Use ``--vast-file`` / ``-V`` to temporarily use a different ``.vast``
+    configuration file instead of the one stored in the project.
+
     Examples:
       vast --log-level DEBUG execution cluster cleanup
       vast --log-level INFO init config.yaml
+      vast -V other.vast config list
+      vast -V other.vast exec cluster run
 
     See ``vast --help`` for a list of available commands.
     """
     # Ensure context object exists
     ctx.ensure_object(dict)
+    if vast_file:
+        ctx.obj['vast_file'] = os.path.abspath(vast_file)
 
 
 @cli.command()
