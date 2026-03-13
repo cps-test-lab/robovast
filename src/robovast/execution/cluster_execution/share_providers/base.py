@@ -166,6 +166,7 @@ class BaseShareProvider(ABC):
         object_name: str,
         dest_path: str,
         progress_callback=None,
+        resume_offset: int = 0,
     ) -> None:
         """Download *object_name* from the share to the local *dest_path*.
 
@@ -175,11 +176,14 @@ class BaseShareProvider(ABC):
             dest_path: Absolute local path to write the downloaded file to.
             progress_callback: Optional callable ``(bytes_received, total_bytes)``
                 called periodically during the download.
+            resume_offset: Byte offset to resume downloading from.  When
+                non-zero the provider should skip the first *resume_offset*
+                bytes and **append** to *dest_path*.
 
         Raise :class:`NotImplementedError` if the provider does not support
         downloading (default).
         """
-        _ = object_name, dest_path, progress_callback
+        _ = object_name, dest_path, progress_callback, resume_offset
         raise NotImplementedError(
             f"Provider '{self.SHARE_TYPE}' does not support 'results download'."
         )

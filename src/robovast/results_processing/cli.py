@@ -21,7 +21,6 @@ import fnmatch
 import os
 import sys
 import tarfile
-import tempfile
 import time
 from pathlib import Path
 
@@ -528,16 +527,24 @@ def download_from_share_cmd(output, campaigns, force, keep_archive):
             skipped += 1
             continue
 
-        click.echo(f"  {campaign_id}  downloading...")
+        # Use a deterministic partial-download path so we can resume
+        tmp_path = str(output_path / f".{base}.part")
+        resume_offset = 0
+        if os.path.exists(tmp_path):
+            resume_offset = os.path.getsize(tmp_path)
+            click.echo(f"  {campaign_id}  resuming from {resume_offset / 1024 / 1024:.1f} MiB...")
+        else:
+            click.echo(f"  {campaign_id}  downloading...")
+
         start = time.monotonic()
         progress_cb = make_download_progress_callback(campaign_id, start)
 
-        # Stream to a temp file in the output directory so extraction is local
-        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".tar.gz", dir=output_path)
-        os.close(tmp_fd)
         try:
             try:
-                provider.download_archive(object_name, tmp_path, progress_cb)
+                provider.download_archive(
+                    object_name, tmp_path, progress_cb,
+                    resume_offset=resume_offset,
+                )
             except Exception as exc:
                 if isinstance(exc, (click.UsageError, click.ClickException)):
                     raise

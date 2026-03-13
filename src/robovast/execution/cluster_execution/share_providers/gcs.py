@@ -180,6 +180,7 @@ class GcsShareProvider(BaseShareProvider):
         object_name: str,
         dest_path: str,
         progress_callback: Callable[[int, int], None] | None = None,
+        resume_offset: int = 0,
     ) -> None:
         """Stream *object_name* from the public GCS bucket to *dest_path*.
 
@@ -191,6 +192,7 @@ class GcsShareProvider(BaseShareProvider):
             dest_path: Local file path to write the downloaded content to.
             progress_callback: Optional ``(bytes_received, total_bytes)`` callable
                 called after each chunk.  *total_bytes* is 0 if unknown.
+            resume_offset: Byte offset to resume downloading from.
         """
         bucket = os.environ["ROBOVAST_GCS_BUCKET"]
         url = (
@@ -200,12 +202,26 @@ class GcsShareProvider(BaseShareProvider):
         )
 
         chunk_size = 256 * 1024  # 256 KiB
-        received = 0
+        received = resume_offset
+
+        req = urllib.request.Request(url)
+        if resume_offset > 0:
+            req.add_header("Range", f"bytes={resume_offset}-")
 
         try:
-            with urllib.request.urlopen(url, timeout=60) as resp:
-                total = int(resp.headers.get("Content-Length") or 0)
-                with open(dest_path, "wb") as fh:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                if resume_offset > 0:
+                    # 206 Partial Content — Content-Range: bytes START-END/TOTAL
+                    cr = resp.headers.get("Content-Range", "")
+                    if cr and "/" in cr:
+                        total = int(cr.rsplit("/", 1)[1])
+                    else:
+                        total = int(resp.headers.get("Content-Length") or 0) + resume_offset
+                else:
+                    total = int(resp.headers.get("Content-Length") or 0)
+
+                mode = "ab" if resume_offset > 0 else "wb"
+                with open(dest_path, mode) as fh:
                     while True:
                         chunk = resp.read(chunk_size)
                         if not chunk:
