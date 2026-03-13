@@ -186,6 +186,7 @@ class SftpShareProvider(BaseShareProvider):
         object_name: str,
         dest_path: str,
         progress_callback=None,
+        resume_offset: int = 0,
     ) -> None:
         """Download *object_name* from the remote directory to *dest_path*.
 
@@ -193,17 +194,35 @@ class SftpShareProvider(BaseShareProvider):
             object_name: Filename (not full path) of the archive on the server.
             dest_path: Local destination path.
             progress_callback: Optional ``(bytes_received, total_bytes)`` callable.
+            resume_offset: Byte offset to resume downloading from.
         """
         remote_dir = os.environ["ROBOVAST_SFTP_REMOTE_DIR"]
         remote_path = f"{remote_dir.rstrip('/')}/{object_name}"
 
         ssh, sftp = self._connect()
         try:
-            def _cb(transferred: int, total_bytes: int) -> None:
-                if progress_callback:
-                    progress_callback(transferred, total_bytes)
+            if resume_offset > 0:
+                stat = sftp.stat(remote_path)
+                total = stat.st_size or 0
+                chunk_size = 256 * 1024
+                received = resume_offset
+                with sftp.open(remote_path, "rb") as remote_fh:
+                    remote_fh.seek(resume_offset)
+                    with open(dest_path, "ab") as local_fh:
+                        while True:
+                            chunk = remote_fh.read(chunk_size)
+                            if not chunk:
+                                break
+                            local_fh.write(chunk)
+                            received += len(chunk)
+                            if progress_callback:
+                                progress_callback(received, total)
+            else:
+                def _cb(transferred: int, total_bytes: int) -> None:
+                    if progress_callback:
+                        progress_callback(transferred, total_bytes)
 
-            sftp.get(remote_path, dest_path, callback=_cb if progress_callback else None)
+                sftp.get(remote_path, dest_path, callback=_cb if progress_callback else None)
         finally:
             sftp.close()
             ssh.close()

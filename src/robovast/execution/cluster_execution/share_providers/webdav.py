@@ -249,6 +249,7 @@ class WebDavShareProvider(BaseShareProvider):
         object_name: str,
         dest_path: str,
         progress_callback=None,
+        resume_offset: int = 0,
     ) -> None:
         """Download *object_name* from the WebDAV share to *dest_path*.
 
@@ -256,15 +257,27 @@ class WebDavShareProvider(BaseShareProvider):
             object_name: Filename of the archive on the server.
             dest_path: Local destination path.
             progress_callback: Optional ``(bytes_received, total_bytes)`` callable.
+            resume_offset: Byte offset to resume downloading from.
         """
         url = self._file_url(object_name)
+        headers = {}
+        if resume_offset > 0:
+            headers["Range"] = f"bytes={resume_offset}-"
         try:
             with self._session() as session:
-                with session.get(url, stream=True, timeout=60) as resp:
+                with session.get(url, stream=True, timeout=60, headers=headers) as resp:
                     resp.raise_for_status()
-                    total = int(resp.headers.get("Content-Length", 0))
-                    received = 0
-                    with open(dest_path, "wb") as fh:
+                    if resume_offset > 0:
+                        cr = resp.headers.get("Content-Range", "")
+                        if cr and "/" in cr:
+                            total = int(cr.rsplit("/", 1)[1])
+                        else:
+                            total = int(resp.headers.get("Content-Length", 0)) + resume_offset
+                    else:
+                        total = int(resp.headers.get("Content-Length", 0))
+                    received = resume_offset
+                    mode = "ab" if resume_offset > 0 else "wb"
+                    with open(dest_path, mode) as fh:
                         for chunk in resp.iter_content(chunk_size=1024 * 256):
                             fh.write(chunk)
                             received += len(chunk)
