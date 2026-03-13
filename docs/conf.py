@@ -26,15 +26,64 @@ import datetime
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 import os
 import sys
-from unittest.mock import MagicMock
+import types
 
-# Mock PySide6 and Qt-dependent matplotlib backends so that Sphinx can import
-# variation modules (which pull in GUI classes) without a display server.
-for _mod in [
-    'PySide6', 'PySide6.QtCore', 'PySide6.QtGui', 'PySide6.QtWidgets',
-    'matplotlib.backends.backend_qt5agg',
-]:
-    sys.modules.setdefault(_mod, MagicMock())
+# ---------------------------------------------------------------------------
+# Stub out PySide6 and the Qt matplotlib backend for headless CI.
+#
+# Several variation modules (obstacle_variation, path_variation, …) pull in
+# PySide6 transitively through the GUI layer.  On GitHub Actions libEGL is
+# absent so the real PySide6 import fails.  We inject lightweight stub modules
+# with real classes (not MagicMock) so that multiple inheritance still works.
+# ``setdefault`` ensures stubs are only used when the real package is missing.
+# ---------------------------------------------------------------------------
+def _create_pyside6_stubs():
+    """Create minimal PySide6 stub modules if the real package is unavailable."""
+    try:
+        import PySide6  # noqa: F401 – just probe availability
+        return  # real PySide6 is usable – nothing to do
+    except (ImportError, OSError):
+        pass
+
+    # -- PySide6 top-level --------------------------------------------------
+    _pyside6 = types.ModuleType('PySide6')
+    _pyside6.__version__ = '0.0.0'
+
+    # -- PySide6.QtCore -----------------------------------------------------
+    _qtcore = types.ModuleType('PySide6.QtCore')
+    class _QObject: pass
+    class _Signal:
+        def __init__(self, *a, **kw): pass
+    _qtcore.QObject = _QObject
+    _qtcore.Signal = _Signal
+    _qtcore.QPointF = type('QPointF', (), {})
+
+    # -- PySide6.QtGui ------------------------------------------------------
+    _qtgui = types.ModuleType('PySide6.QtGui')
+    for _n in ('QBrush', 'QColor', 'QPainter', 'QPen', 'QPolygonF'):
+        setattr(_qtgui, _n, type(_n, (), {}))
+
+    # -- PySide6.QtWidgets --------------------------------------------------
+    _qtwidgets = types.ModuleType('PySide6.QtWidgets')
+    _qtwidgets.QWidget = type('QWidget', (), {})
+    _qtwidgets.QVBoxLayout = type('QVBoxLayout', (), {})
+
+    for name, mod in [
+        ('PySide6', _pyside6),
+        ('PySide6.QtCore', _qtcore),
+        ('PySide6.QtGui', _qtgui),
+        ('PySide6.QtWidgets', _qtwidgets),
+    ]:
+        sys.modules[name] = mod
+
+    # -- matplotlib Qt backend ----------------------------------------------
+    _mpl_qt = types.ModuleType('matplotlib.backends.backend_qt5agg')
+    _mpl_qt.FigureCanvasQTAgg = type('FigureCanvasQTAgg', (), {})
+    _mpl_qt.NavigationToolbar2QT = type('NavigationToolbar2QT', (), {})
+    sys.modules['matplotlib.backends.backend_qt5agg'] = _mpl_qt
+
+
+_create_pyside6_stubs()
 
 project = "RoboVAST"
 copyright = f"{datetime.datetime.now().year}, Frederik Pasch"
