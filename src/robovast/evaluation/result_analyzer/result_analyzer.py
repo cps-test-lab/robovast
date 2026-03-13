@@ -386,8 +386,12 @@ class RunResultsAnalyzer(QMainWindow):
         copy_cluster_action = None
         copy_local_action = None
         config_name = None
+        vast_file = None
         if run_type == RunType.CONFIG:
             config_name = directory_path.name
+            campaign_name = self._get_campaign_for_path(directory_path)
+            if campaign_name:
+                vast_file = self.campaign_notebooks.get(campaign_name, {}).get("config_file")
             copy_cluster_action = menu.addAction("Copy vast cluster run command")
             copy_local_action = menu.addAction("Copy vast local run command")
 
@@ -407,10 +411,12 @@ class RunResultsAnalyzer(QMainWindow):
             subprocess.Popen(["xdg-open", str(directory_path)])
         elif action == copy_cluster_action and run_type == RunType.CONFIG:
             clipboard = QApplication.clipboard()
-            clipboard.setText(f"vast execution cluster run -r 1 -c {config_name}")
+            vast_flag = f" -V {vast_file}" if vast_file else ""
+            clipboard.setText(f"vast{vast_flag} exec cluster run -c {config_name}")
         elif action == copy_local_action and run_type == RunType.CONFIG:
             clipboard = QApplication.clipboard()
-            clipboard.setText(f"vast execution local run -r 1 -c {config_name}")
+            vast_flag = f" -V {vast_file}" if vast_file else ""
+            clipboard.setText(f"vast{vast_flag} exec local run -c {config_name}")
         elif action == open_notebook_action:
             self.open_notebook_in_vscode(directory_path)
 

@@ -50,7 +50,7 @@ class LocalExecutionWorker(QThread):
             self.process.finished.connect(self.handle_finished)
 
             # Output will automatically go to project results_dir
-            command = f"vast execution local run -r 1 -c {self.config_name}"
+            command = f"vast -V {self.config_file} execution local run -r 1 -c {self.config_name}"
 
             # Create a script that sets up a new process group and runs the command
             # This ensures all child processes can be killed together
