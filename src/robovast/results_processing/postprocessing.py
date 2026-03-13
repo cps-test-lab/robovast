@@ -79,6 +79,7 @@ def execute_postprocessing_plugin(
     results_dir: str,
     config_dir: str,
     provenance_file: Optional[str] = None,
+    execution_image: Optional[str] = None,
 ) -> Tuple[bool, str, List[dict]]:
     """Execute a postprocessing plugin with parameters.
 
@@ -89,6 +90,7 @@ def execute_postprocessing_plugin(
         results_dir: Path to the campaign-<id> directory
         config_dir: Directory containing the configuration file
         provenance_file: Optional path for container plugins to write provenance JSON
+        execution_image: Optional Docker image from the execution phase
 
     Returns:
         Tuple of (success, message, provenance_entries)
@@ -100,6 +102,8 @@ def execute_postprocessing_plugin(
     }
     if provenance_file is not None:
         kwargs['provenance_file'] = provenance_file
+    if execution_image is not None:
+        kwargs['execution_image'] = execution_image
 
     try:
         result = plugin_func(**kwargs)
@@ -438,6 +442,19 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
 
     campaign_dir = str(Path(config_dir).parent)
 
+    # Read execution image from execution.yaml (if available)
+    execution_image = None
+    execution_yaml_path = os.path.join(campaign_dir, "_execution", "execution.yaml")
+    if os.path.isfile(execution_yaml_path):
+        try:
+            with open(execution_yaml_path, 'r', encoding='utf-8') as f:
+                exec_data = yaml.safe_load(f) or {}
+            execution_image = exec_data.get("image")
+            if execution_image:
+                output(f"Using execution image for postprocessing: {execution_image}")
+        except (yaml.YAMLError, OSError):
+            pass
+
     # Get postprocessing commands
     commands = get_postprocessing_commands(vast_path)
 
@@ -524,6 +541,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
                 results_dir=results_dir,
                 config_dir=config_dir,
                 provenance_file=provenance_file,
+                execution_image=execution_image,
             )
 
             all_provenance_entries.extend(entries)
@@ -546,6 +564,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
                 params={},
                 results_dir=results_dir,
                 config_dir=config_dir,
+                execution_image=execution_image,
                 provenance_file=rosout_provenance_file,
             )
         if rosout_success:

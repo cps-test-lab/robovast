@@ -50,7 +50,7 @@ from importlib.resources import files
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from robovast.common.execution import is_campaign_dir
+from robovast.common.execution import COMPAT_VERSION, is_campaign_dir
 
 
 class BasePostprocessingPlugin:
@@ -220,6 +220,7 @@ class RosbagsTfToCsv(BasePostprocessingPlugin):
         config_dir: str,
         frames: Optional[List[str]] = None,
         provenance_file: Optional[str] = None,
+        execution_image: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Execute rosbags_tf_to_csv plugin.
 
@@ -228,6 +229,7 @@ class RosbagsTfToCsv(BasePostprocessingPlugin):
             config_dir: Directory containing the config file (for resolving relative paths)
             frames: Optional list of TF frame names to extract
             provenance_file: Optional path for provenance JSON
+            execution_image: Optional Docker image override (from execution phase)
 
         Returns:
             Tuple of (success, message)
@@ -236,7 +238,9 @@ class RosbagsTfToCsv(BasePostprocessingPlugin):
         script_path = str(files('robovast.results_processing.data').joinpath('docker_exec.sh'))
 
         # Build command: docker_exec [--provenance-file HOST] script.py [--provenance-file /provenance/...] [args] results_dir
-        cmd = [script_path]
+        cmd = [script_path, "--compat-version", str(COMPAT_VERSION)]
+        if execution_image:
+            cmd.extend(["--image", execution_image])
         if provenance_file:
             cmd.extend(["--provenance-file", provenance_file])
         cmd.append("rosbags_tf_to_csv.py")
@@ -284,6 +288,7 @@ class RosbagsBtToCsv(BasePostprocessingPlugin):
         results_dir: str,
         config_dir: str,
         provenance_file: Optional[str] = None,
+        execution_image: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Execute rosbags_bt_to_csv plugin.
 
@@ -291,6 +296,7 @@ class RosbagsBtToCsv(BasePostprocessingPlugin):
             results_dir: Path to the campaign-<id> directory to process
             config_dir: Directory containing the config file (for resolving relative paths)
             provenance_file: Optional path for provenance JSON
+            execution_image: Optional Docker image override (from execution phase)
 
         Returns:
             Tuple of (success, message)
@@ -298,7 +304,9 @@ class RosbagsBtToCsv(BasePostprocessingPlugin):
         # Get docker_exec.sh from package data
         script_path = str(files('robovast.results_processing.data').joinpath('docker_exec.sh'))
 
-        cmd = [script_path]
+        cmd = [script_path, "--compat-version", str(COMPAT_VERSION)]
+        if execution_image:
+            cmd.extend(["--image", execution_image])
         if provenance_file:
             cmd.extend(["--provenance-file", provenance_file])
         cmd.append("rosbags_bt_to_csv.py")
@@ -349,6 +357,7 @@ class RosbagsActionToCsv(BasePostprocessingPlugin):
         action: str,
         filename_prefix: Optional[str] = None,
         provenance_file: Optional[str] = None,
+        execution_image: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Execute rosbags_action_to_csv plugin.
 
@@ -359,6 +368,7 @@ class RosbagsActionToCsv(BasePostprocessingPlugin):
             filename_prefix: Output filename prefix (default: action_<action>).
                 Produces <prefix>_feedback.csv and <prefix>_status.csv.
             provenance_file: Optional path for provenance JSON
+            execution_image: Optional Docker image override (from execution phase)
 
         Returns:
             Tuple of (success, message)
@@ -368,7 +378,9 @@ class RosbagsActionToCsv(BasePostprocessingPlugin):
         action_name = action.lstrip('/')
         effective_prefix = filename_prefix or f"action_{action_name}"
 
-        cmd = [script_path]
+        cmd = [script_path, "--compat-version", str(COMPAT_VERSION)]
+        if execution_image:
+            cmd.extend(["--image", execution_image])
         if provenance_file:
             cmd.extend(["--provenance-file", provenance_file])
         cmd.append("rosbags_action_to_csv.py")
@@ -418,6 +430,7 @@ class RosbagsToCsv(BasePostprocessingPlugin):
         config_dir: str,
         topics: Optional[List[str]] = None,
         provenance_file: Optional[str] = None,
+        execution_image: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Execute rosbags_to_csv plugin.
 
@@ -426,6 +439,7 @@ class RosbagsToCsv(BasePostprocessingPlugin):
             config_dir: Directory containing the config file (for resolving relative paths)
             topics: List of topic names to extract (required; at least one topic)
             provenance_file: Optional path for provenance JSON
+            execution_image: Optional Docker image override (from execution phase)
 
         Returns:
             Tuple of (success, message)
@@ -436,7 +450,9 @@ class RosbagsToCsv(BasePostprocessingPlugin):
         # Get docker_exec.sh from package data
         script_path = str(files('robovast.results_processing.data').joinpath('docker_exec.sh'))
 
-        cmd = [script_path]
+        cmd = [script_path, "--compat-version", str(COMPAT_VERSION)]
+        if execution_image:
+            cmd.extend(["--image", execution_image])
         if provenance_file:
             cmd.extend(["--provenance-file", provenance_file])
         cmd.append("rosbags_to_csv.py")
@@ -497,6 +513,7 @@ class RosbagsRosoutToCsv(BasePostprocessingPlugin):
         min_level: Optional[str] = None,
         csv_filename: Optional[str] = None,
         provenance_file: Optional[str] = None,
+        execution_image: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Execute rosbags_rosout_to_csv plugin.
 
@@ -508,13 +525,16 @@ class RosbagsRosoutToCsv(BasePostprocessingPlugin):
             csv_filename: Output CSV file name written next to each rosbag
                 (default: rosout.csv).
             provenance_file: Optional path for provenance JSON.
+            execution_image: Optional Docker image override (from execution phase).
 
         Returns:
             Tuple of (success, message).
         """
         script_path = str(files('robovast.results_processing.data').joinpath('docker_exec.sh'))
 
-        cmd = [script_path]
+        cmd = [script_path, "--compat-version", str(COMPAT_VERSION)]
+        if execution_image:
+            cmd.extend(["--image", execution_image])
         if provenance_file:
             cmd.extend(["--provenance-file", provenance_file])
         cmd.append("rosbags_rosout_to_csv.py")
@@ -574,6 +594,7 @@ class RosbagsToWebm(BasePostprocessingPlugin):
         topic: Optional[str] = None,
         fps: Optional[float] = None,
         provenance_file: Optional[str] = None,
+        execution_image: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Execute rosbags_to_webm plugin.
 
@@ -583,6 +604,7 @@ class RosbagsToWebm(BasePostprocessingPlugin):
             topic: CompressedImage topic name to convert (default: /camera/image_raw/compressed)
             fps: Fallback FPS when timestamps are unavailable (default: 30)
             provenance_file: Optional path for provenance JSON
+            execution_image: Optional Docker image override (from execution phase)
 
         Returns:
             Tuple of (success, message)
@@ -590,7 +612,9 @@ class RosbagsToWebm(BasePostprocessingPlugin):
         # Get docker_exec.sh from package data
         script_path = str(files('robovast.results_processing.data').joinpath('docker_exec.sh'))
 
-        cmd = [script_path]
+        cmd = [script_path, "--compat-version", str(COMPAT_VERSION)]
+        if execution_image:
+            cmd.extend(["--image", execution_image])
         if provenance_file:
             cmd.extend(["--provenance-file", provenance_file])
         cmd.append("rosbags_to_webm.py")

@@ -113,6 +113,11 @@ ENV QT_X11_NO_MITSHM=1
 
 RUN mkdir -p /out && chmod 777 /out
 
+# Compatibility version — must match COMPAT_VERSION in
+# src/robovast/common/execution.py.  Read by all execution contexts
+# (local, cluster, postprocessing) to detect host/container mismatches.
+RUN echo "1" > /etc/robovast_compat_version
+
 RUN USER=ubuntu && \
     GROUP=ubuntu && \
     curl -SsL https://github.com/boxboat/fixuid/releases/download/v0.6.0/fixuid-0.6.0-linux-amd64.tar.gz | tar -C /usr/local/bin -xzf - && \

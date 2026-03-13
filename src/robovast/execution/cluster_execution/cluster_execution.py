@@ -31,7 +31,7 @@ import yaml
 from kubernetes import client
 from kubernetes import config as kube_config
 
-from robovast.common import (ProgressBar, get_campaign,
+from robovast.common import (COMPAT_VERSION, ProgressBar, get_campaign,
                              get_execution_env_variables, load_config,
                              normalize_secondary_containers)
 from robovast.common.cluster_context import resolve_resources
@@ -1081,7 +1081,8 @@ class JobRunner:
 
         logger.debug(f"Using run_as_user={run_as_user} for job containers")
 
-        yaml_str = JOB_TEMPLATE.format(image=image, namespace=self.namespace)
+        yaml_str = JOB_TEMPLATE.format(image=image, namespace=self.namespace,
+                                       compat_version=COMPAT_VERSION)
         manifest = yaml.safe_load(yaml_str)
 
         manifest.setdefault("metadata", {}).setdefault("labels", {})[

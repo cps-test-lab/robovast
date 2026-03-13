@@ -34,6 +34,7 @@ Run a Python script with ROS from within a Docker container.
 
 OPTIONS:
     --image IMAGE           Use a custom Docker image (default: ghcr.io/cps-test-lab/robovast:latest)
+    --compat-version VER    Required compatibility version to check against the image
     --provenance-file PATH  Mount dirname(PATH) at /provenance in the container (for provenance JSON output)
     -h, --help              Show this help message
 
@@ -44,6 +45,7 @@ EOF
 
 # Provenance mount (optional)
 PROVENANCE_MOUNT=""
+COMPAT_VERSION=""
 
 # Parse command-line arguments
 while [ $# -gt 0 ]; do
@@ -54,6 +56,10 @@ while [ $# -gt 0 ]; do
             ;;
         --image)
             DOCKER_IMAGE="$2"
+            shift 2
+            ;;
+        --compat-version)
+            COMPAT_VERSION="$2"
             shift 2
             ;;
         --provenance-file)
@@ -99,6 +105,21 @@ if [ -d "$LAST_ARG" ]; then
 elif [ -e "$LAST_ARG" ]; then
     echo "Error: Last argument '$LAST_ARG' exists but is not a directory"
     exit 1
+fi
+
+# Compatibility version check (reads /etc/robovast_compat_version inside the container)
+if [ -n "$COMPAT_VERSION" ]; then
+    IMAGE_COMPAT=$(docker run --rm "$DOCKER_IMAGE" cat /etc/robovast_compat_version 2>/dev/null || echo "")
+    if [ -z "$IMAGE_COMPAT" ] || [ "$COMPAT_VERSION" != "$IMAGE_COMPAT" ]; then
+        echo "ERROR: Compatibility version mismatch!"
+        echo "  Host robovast expects compat version: $COMPAT_VERSION"
+        echo "  Container image provides: ${IMAGE_COMPAT:-<missing>}"
+        echo "  Image: $DOCKER_IMAGE"
+        echo ""
+        echo "  Fix: Pull the latest image with 'docker pull $DOCKER_IMAGE'"
+        echo "       or rebuild with the matching robovast version."
+        exit 1
+    fi
 fi
 
 # Run the script inside the Docker container, calling ros2_exec.sh
