@@ -900,23 +900,56 @@ class JobRunner:
 
         all_jobs = [job_name for job_name, _, _ in job_manifests]
 
+        _RETRY_WAIT_CAP = 30  # seconds; backoff is capped here
+
         with ProgressBar(
             total=total_jobs,
             desc=f"Creating {len(self.configs)} config(s) with {self.num_runs} runs each",
             unit="job",
         ) as pbar:
             for job_name, job_manifest, run_number in job_manifests:
-                try:
-                    self.k8s_batch_client.create_namespaced_job(
-                        namespace=self.namespace, body=job_manifest
-                    )
-                except client.exceptions.ApiException as exc:
-                    if exc.status == 409:
-                        logger.debug(
-                            f"[{self.campaign}] Job '{job_name}' already exists, skipping (will be tracked)."
+                attempt = 0
+                while True:
+                    try:
+                        self.k8s_batch_client.create_namespaced_job(
+                            namespace=self.namespace, body=job_manifest
                         )
-                    else:
-                        raise
+                        break
+                    except client.exceptions.ApiException as exc:
+                        if exc.status == 409:
+                            logger.debug(
+                                f"[{self.campaign}] Job '{job_name}' already exists, skipping (will be tracked)."
+                            )
+                            break
+                        elif exc.status is not None and exc.status < 500:
+                            # 4xx errors are not retryable (except 409 handled above)
+                            raise
+                        else:
+                            # 5xx / unknown server-side error — treat as transient
+                            attempt += 1
+                            wait = min(2 ** attempt, _RETRY_WAIT_CAP)
+                            logger.warning(
+                                "Server error creating job '%s' (attempt %d, status %s), "
+                                "retrying in %ds: %s",
+                                job_name, attempt, exc.status, wait, exc,
+                            )
+                            time.sleep(wait)
+                            # Re-init client to get a fresh connection after server errors
+                            kube_config.load_kube_config(context=self.kube_context)
+                            self.k8s_batch_client = client.BatchV1Api()
+                    except Exception as exc:
+                        attempt += 1
+                        wait = min(2 ** attempt, _RETRY_WAIT_CAP)
+                        logger.warning(
+                            "Connection error creating job '%s' (attempt %d), "
+                            "retrying in %ds: %s",
+                            job_name, attempt, wait, exc,
+                        )
+                        time.sleep(wait)
+                        # Re-init client: the underlying connection is broken and must
+                        # be replaced before the next attempt.
+                        kube_config.load_kube_config(context=self.kube_context)
+                        self.k8s_batch_client = client.BatchV1Api()
                 logger.debug(f"Created job {job_name} for run {run_number + 1}")
                 pbar.update(1)
 
