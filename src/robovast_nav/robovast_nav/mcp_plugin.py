@@ -29,7 +29,8 @@ import matplotlib
 import numpy as np
 import yaml
 from matplotlib import patches as mpatches
-from mcp.server.fastmcp import FastMCP, Image
+from fastmcp import FastMCP
+from fastmcp.utilities.types import Image
 
 from robovast.common.campaign_data import (
     read_resolved_configurations,

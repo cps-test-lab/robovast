@@ -16,7 +16,7 @@
 
 """MCP prompts plugin: pre-built prompts for robovast campaign analysis."""
 
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 
 
 _SYSTEM_PROMPT = """\

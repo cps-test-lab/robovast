@@ -24,7 +24,7 @@ import logging
 from typing import Any
 
 import yaml
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 
 from robovast.evaluation.mcp_server import results_resolver
 

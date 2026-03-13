@@ -158,6 +158,9 @@ def mcp_server_cmd(transport, host, port, debug):
     mcp = create_server(host=host, port=port, debug=debug)
 
     try:
-        mcp.run(transport=transport)
+        if transport in ("sse", "streamable-http"):
+            mcp.run(transport=transport, host=host, port=port)
+        else:
+            mcp.run(transport=transport)
     except KeyboardInterrupt:
         pass

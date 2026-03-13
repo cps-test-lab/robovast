@@ -26,7 +26,7 @@ import logging
 import textwrap
 from importlib.metadata import entry_points
 
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 
 logger = logging.getLogger(__name__)
 
