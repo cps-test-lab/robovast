@@ -86,6 +86,21 @@ class WebDavShareProvider(BaseShareProvider):
             "ROBOVAST_WEBDAV_PASSWORD": os.environ["ROBOVAST_WEBDAV_PASSWORD"],
         }
 
+    def archive_exists_on_share(self, object_name: str) -> bool:
+        """Return ``True`` if *object_name* already exists on the WebDAV share.
+
+        Sends an HTTP HEAD request to the target URL.  Returns ``True`` on
+        HTTP 200/204, ``False`` on HTTP 404.  Any other status code is treated
+        as ``False`` (upload will proceed).
+        """
+        url = self._file_url(object_name)
+        with self._session() as session:
+            try:
+                resp = session.head(url, timeout=30, allow_redirects=True)
+            except requests.RequestException:
+                return False
+        return resp.status_code in (200, 204)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -142,14 +157,20 @@ class WebDavShareProvider(BaseShareProvider):
             "<D:prop><D:displayname/><D:getcontentlength/></D:prop>"
             "</D:propfind>"
         )
-        with self._session() as session:
-            resp = session.request(
-                "PROPFIND",
-                self._base_url(),
-                data=propfind_body,
-                headers={"Depth": "1", "Content-Type": "application/xml"},
-                timeout=30,
-            )
+        try:
+            with self._session() as session:
+                resp = session.request(
+                    "PROPFIND",
+                    self._base_url(),
+                    data=propfind_body,
+                    headers={"Depth": "1", "Content-Type": "application/xml"},
+                    timeout=30,
+                )
+        except requests.RequestException as exc:
+            raise click.UsageError(
+                f"Cannot reach WebDAV server at {self._base_url()!r}: {exc}\n"
+                "Check network connectivity and the ROBOVAST_WEBDAV_URL setting."
+            ) from exc
 
         if resp.status_code == 207:
             return self._parse_propfind_response(resp.text)
@@ -198,8 +219,14 @@ class WebDavShareProvider(BaseShareProvider):
         name (without ``.tar.gz``) passes :func:`is_campaign_dir` and returns
         ``(name, -1)`` tuples (sizes not available from HTML listings).
         """
-        with self._session() as session:
-            resp = session.get(self._base_url(), timeout=30)
+        try:
+            with self._session() as session:
+                resp = session.get(self._base_url(), timeout=30)
+        except requests.RequestException as exc:
+            raise click.UsageError(
+                f"Cannot reach WebDAV server at {self._base_url()!r}: {exc}\n"
+                "Check network connectivity and the ROBOVAST_WEBDAV_URL setting."
+            ) from exc
 
         if not resp.ok:
             raise click.UsageError(
@@ -231,17 +258,23 @@ class WebDavShareProvider(BaseShareProvider):
             progress_callback: Optional ``(bytes_received, total_bytes)`` callable.
         """
         url = self._file_url(object_name)
-        with self._session() as session:
-            with session.get(url, stream=True, timeout=60) as resp:
-                resp.raise_for_status()
-                total = int(resp.headers.get("Content-Length", 0))
-                received = 0
-                with open(dest_path, "wb") as fh:
-                    for chunk in resp.iter_content(chunk_size=1024 * 256):
-                        fh.write(chunk)
-                        received += len(chunk)
-                        if progress_callback and total:
-                            progress_callback(received, total)
+        try:
+            with self._session() as session:
+                with session.get(url, stream=True, timeout=60) as resp:
+                    resp.raise_for_status()
+                    total = int(resp.headers.get("Content-Length", 0))
+                    received = 0
+                    with open(dest_path, "wb") as fh:
+                        for chunk in resp.iter_content(chunk_size=1024 * 256):
+                            fh.write(chunk)
+                            received += len(chunk)
+                            if progress_callback and total:
+                                progress_callback(received, total)
+        except requests.RequestException as exc:
+            raise click.UsageError(
+                f"Cannot download '{object_name}' from WebDAV server: {exc}\n"
+                "Check network connectivity and the ROBOVAST_WEBDAV_URL setting."
+            ) from exc
 
     def remove_archive(self, object_name: str) -> None:
         """Remove *object_name* from the WebDAV share via HTTP DELETE.
@@ -250,8 +283,14 @@ class WebDavShareProvider(BaseShareProvider):
             object_name: Filename of the archive to remove.
         """
         url = self._file_url(object_name)
-        with self._session() as session:
-            resp = session.delete(url, timeout=30)
+        try:
+            with self._session() as session:
+                resp = session.delete(url, timeout=30)
+        except requests.RequestException as exc:
+            raise click.UsageError(
+                f"Cannot reach WebDAV server to delete '{object_name}': {exc}\n"
+                "Check network connectivity and the ROBOVAST_WEBDAV_URL setting."
+            ) from exc
         if resp.status_code not in (200, 204):
             raise click.UsageError(
                 f"WebDAV DELETE of '{object_name}' failed with "

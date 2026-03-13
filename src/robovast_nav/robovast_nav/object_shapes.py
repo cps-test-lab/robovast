@@ -22,11 +22,18 @@ This module provides SVG-based shape definitions that can be rendered based on
 object types and their parameters.
 """
 
+from __future__ import annotations
+
 import math
 from typing import Any, Dict
 
-from PySide6.QtCore import QPointF
-from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QPolygonF
+try:
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QPolygonF
+
+    HAS_GUI = True
+except ImportError:
+    HAS_GUI = False
 
 
 class ObjectShapeRenderer:

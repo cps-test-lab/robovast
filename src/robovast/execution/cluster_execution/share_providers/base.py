@@ -19,7 +19,6 @@
 
 import os
 from abc import ABC, abstractmethod
-from typing import Callable, Optional
 
 import click
 
@@ -203,3 +202,28 @@ class BaseShareProvider(ABC):
         raise NotImplementedError(
             f"Provider '{self.SHARE_TYPE}' does not support 'results remove-from-share'."
         )
+
+    # ------------------------------------------------------------------
+    # Optional existence check (used by ``cluster upload-to-share``)
+    # ------------------------------------------------------------------
+
+    def archive_exists_on_share(self, object_name: str) -> bool:
+        """Return ``True`` if *object_name* already exists on the share.
+
+        Used by ``cluster upload-to-share`` to skip uploads when the archive
+        is already present (unless ``--force`` is given).  Only meaningful for
+        providers that support remote listing or HTTP HEAD checks.
+
+        The default implementation always returns ``False`` (no skip), so
+        providers that do not override this method will always re-upload.
+
+        Args:
+            object_name: Filename of the archive on the server
+                (e.g. ``campaign-2025-02-27-123456.tar.gz``).
+
+        Returns:
+            ``True`` if the archive already exists on the share, ``False``
+            otherwise.
+        """
+        _ = object_name
+        return False

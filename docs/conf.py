@@ -26,6 +26,68 @@ import datetime
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 import os
 import sys
+import types
+
+# ---------------------------------------------------------------------------
+# Stub out PySide6 and the Qt matplotlib backend for headless CI.
+#
+# Several variation modules (obstacle_variation, path_variation, …) pull in
+# PySide6 transitively through the GUI layer.  On GitHub Actions libEGL is
+# absent so the real PySide6 import fails.  We inject lightweight stub modules
+# with real classes (not MagicMock) so that multiple inheritance still works.
+# ``setdefault`` ensures stubs are only used when the real package is missing.
+# ---------------------------------------------------------------------------
+def _create_pyside6_stubs():
+    """Create minimal PySide6 stub modules if the real package is unavailable."""
+    try:
+        from PySide6 import QtCore, QtGui, QtWidgets  # noqa: F401
+        return  # real PySide6 is fully usable – nothing to do
+    except (ImportError, OSError):
+        pass
+
+    # Clean up any partially-loaded PySide6 submodules left by the failed probe
+    for _k in [k for k in sys.modules if k == 'PySide6' or k.startswith('PySide6.')]:
+        del sys.modules[_k]
+
+    # -- PySide6 top-level --------------------------------------------------
+    _pyside6 = types.ModuleType('PySide6')
+    _pyside6.__version__ = '0.0.0'
+
+    # -- PySide6.QtCore -----------------------------------------------------
+    _qtcore = types.ModuleType('PySide6.QtCore')
+    class _QObject: pass
+    class _Signal:
+        def __init__(self, *a, **kw): pass
+    _qtcore.QObject = _QObject
+    _qtcore.Signal = _Signal
+    _qtcore.QPointF = type('QPointF', (), {})
+
+    # -- PySide6.QtGui ------------------------------------------------------
+    _qtgui = types.ModuleType('PySide6.QtGui')
+    for _n in ('QBrush', 'QColor', 'QPainter', 'QPen', 'QPolygonF'):
+        setattr(_qtgui, _n, type(_n, (), {}))
+
+    # -- PySide6.QtWidgets --------------------------------------------------
+    _qtwidgets = types.ModuleType('PySide6.QtWidgets')
+    _qtwidgets.QWidget = type('QWidget', (), {})
+    _qtwidgets.QVBoxLayout = type('QVBoxLayout', (), {})
+
+    for name, mod in [
+        ('PySide6', _pyside6),
+        ('PySide6.QtCore', _qtcore),
+        ('PySide6.QtGui', _qtgui),
+        ('PySide6.QtWidgets', _qtwidgets),
+    ]:
+        sys.modules[name] = mod
+
+    # -- matplotlib Qt backend ----------------------------------------------
+    _mpl_qt = types.ModuleType('matplotlib.backends.backend_qt5agg')
+    _mpl_qt.FigureCanvasQTAgg = type('FigureCanvasQTAgg', (), {})
+    _mpl_qt.NavigationToolbar2QT = type('NavigationToolbar2QT', (), {})
+    sys.modules['matplotlib.backends.backend_qt5agg'] = _mpl_qt
+
+
+_create_pyside6_stubs()
 
 project = "RoboVAST"
 copyright = f"{datetime.datetime.now().year}, Frederik Pasch"
@@ -42,12 +104,16 @@ extensions = ['sphinx.ext.extlinks',
               'sphinx.ext.napoleon',
               'sphinx_click',
               'sphinxcontrib.spelling',
-              'mcp_tools']
+              'mcp_tools',
+              'variation_plugins']
 
-# Add the project root to the path so we can import the modules
-
-sys.path.insert(0, os.path.abspath('../src'))
-sys.path.insert(0, os.path.abspath('_ext'))
+# Add the project root to the path so we can import the modules.
+# Paths are relative to this conf.py file so they work regardless of CWD
+# (e.g. local `make doc` vs GitHub Actions).
+_docs_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(_docs_dir, '_ext'))
+sys.path.insert(0, os.path.join(_docs_dir, '..', 'src'))
+sys.path.insert(0, os.path.join(_docs_dir, '..', 'src', 'robovast_nav'))
 
 # sphinx-click configuration
 # Enable proper formatting of Click docstrings

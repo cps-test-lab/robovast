@@ -33,16 +33,16 @@ class ParameterVariationDistributionUniformConfig(VariationConfig):
 
 
 class ParameterVariationDistributionUniform(Variation):
-    """
-    Creates configs with random parameter values from a uniform distribution.
+    """Creates configurations with random parameter values from a uniform distribution.
 
     Expected parameters:
-        name: Name of the parameter to vary
-        num_variations: Number of random configs to generate
-        min: Minimum value (inclusive)
-        max: Maximum value (inclusive)
-        type: Type to convert values to ('string', 'int', 'float', 'bool')
-        seed: Random seed for reproducibility
+
+    - ``name``: Name of the parameter to vary
+    - ``num_variations``: Number of configurations to create
+    - ``min``: Minimum value for the parameter
+    - ``max``: Maximum value for the parameter
+    - ``type``: Data type of the parameter (e.g., ``int``, ``float``, ``string``)
+    - ``seed``: Seed for random number generation to ensure reproducibility
     """
     CONFIG_CLASS = ParameterVariationDistributionUniformConfig
 
@@ -115,18 +115,18 @@ class ParameterVariationDistributionGaussianConfig(VariationConfig):
 
 
 class ParameterVariationDistributionGaussian(Variation):
-    """
-    Creates configs with random parameter values from a Gaussian (normal) distribution.
+    """Creates configurations with random parameter values from a Gaussian (normal) distribution.
 
     Expected parameters:
-        name: Name of the parameter to vary
-        num_variations: Number of random configs to generate
-        mean: Mean (mu) of the Gaussian distribution
-        std: Standard deviation (sigma) of the Gaussian distribution
-        min: Minimum value (optional, clips values below this)
-        max: Maximum value (optional, clips values above this)
-        type: Type to convert values to ('string', 'int', 'float', 'bool')
-        seed: Random seed for reproducibility
+
+    - ``name``: Name of the parameter to vary
+    - ``num_variations``: Number of configurations to create
+    - ``mean``: Mean value for the parameter
+    - ``std``: Standard deviation for the parameter
+    - ``min``: Minimum value for the parameter
+    - ``max``: Maximum value for the parameter
+    - ``type``: Data type of the parameter (e.g., ``int``, ``float``, ``string``)
+    - ``seed``: Seed for random number generation to ensure reproducibility
     """
     CONFIG_CLASS = ParameterVariationDistributionGaussianConfig
 
@@ -197,17 +197,43 @@ class ParameterVariationDistributionGaussian(Variation):
 
 
 class ParameterVariationListConfig(VariationConfig):
-    name: str
+    name: str | list[str]
     values: list[float | int | bool | dict | list]
 
 
 class ParameterVariationList(Variation):
-    """
-    Creates configs with parameter values from a predefined list.
+    """Creates configurations from a predefined list of parameter values.
 
     Expected parameters:
-        name: Name of the parameter to vary
-        values: List of values to use for the parameter
+
+    - ``name``: Name of the parameter to vary, or a list of parameter names for
+      simultaneous multi-parameter variation.
+    - ``values``: List of values for the parameter.  When ``name`` is a list,
+      each entry must itself be a list of values — one per parameter name.
+
+    Example (single parameter):
+
+    .. code-block:: yaml
+
+        - ParameterVariationList:
+            name: robot_radius
+            values:
+            - 0.175
+            - 0.22
+
+    Example (multiple parameters varied together):
+
+    .. code-block:: yaml
+
+        - ParameterVariationList:
+            name:
+            - mesh_file
+            - map_file
+            values:
+            - - environments/office/office.stl
+              - environments/office/office.yaml
+            - - environments/hospital/hospital.stl
+              - environments/hospital/hospital.yaml
     """
     CONFIG_CLASS = ParameterVariationListConfig
 
@@ -228,14 +254,33 @@ class ParameterVariationList(Variation):
         if not in_configs or len(in_configs) == 0:
             in_configs = [{'config': {}}]
 
-        # Log each value that will be used
-        for value in values:
-            self.progress_update(f"Using value: {param_name}={value}")
+        multi_key = isinstance(param_name, list)
 
-        # Apply each value to all input configs (creating all combinations)
-        results = []
-        for config in in_configs:
+        if multi_key:
+            # Validate that every value entry is a list of the same length as param_name
+            for entry in values:
+                if not isinstance(entry, list) or len(entry) != len(param_name):
+                    raise ValueError(
+                        f"Each entry in 'values' must be a list of length {len(param_name)} "
+                        f"to match 'name' {param_name}, got: {entry!r}"
+                    )
+            for entry in values:
+                combo = dict(zip(param_name, entry))
+                self.progress_update(f"Using values: {combo}")
+
+            results = []
+            for config in in_configs:
+                for entry in values:
+                    combo = dict(zip(param_name, entry))
+                    results.append(self.update_config(config, combo))
+        else:
+            # Single-key form (original behaviour)
             for value in values:
-                results.append(self.update_config(config, {param_name: value}))
+                self.progress_update(f"Using value: {param_name}={value}")
+
+            results = []
+            for config in in_configs:
+                for value in values:
+                    results.append(self.update_config(config, {param_name: value}))
 
         return results

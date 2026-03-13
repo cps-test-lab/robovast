@@ -52,11 +52,11 @@ controllerManager:
   manager:
     resources:
       limits:
-        cpu: "2"
-        memory: "8Gi"
+        cpu: "6"
+        memory: "24Gi"
       requests:
-        cpu: "500m"
-        memory: "3Gi"
+        cpu: "4000m"
+        memory: "16Gi"
     configuration:
       clientConnection:
         qps: 1000      # High QPS to clear the 10,000 event backlog
@@ -67,7 +67,7 @@ controllerManager:
           Workload.kueue.x-k8s.io: 100  # Admit new jobs faster
       # IMPORTANT: Native Kueue cleanup
       workloadRetentionPolicy:
-        afterFinished: 30s    # Clean up the "Workload" 30s after the Job is done
+        afterFinished: 5s    # Clean up the "Workload" 5s after the Job is done
 """
 
 # ResourceFlavor + ClusterQueue + LocalQueue (execution namespace set at runtime)

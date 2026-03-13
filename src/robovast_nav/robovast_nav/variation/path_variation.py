@@ -47,6 +47,7 @@ class PathVariationRandomConfig(BaseModel):
     start_pose: str | PoseConfig
     goal_poses: str | list[dict] | list[PoseConfig]  # Can be a reference like "@goal_poses" or "@goal_pose"
     num_goal_poses: Optional[int] = None  # Number of goal poses to generate (optional, defaults based on target parameter)
+    num_goal_poses_per_m: Optional[float | list[float]] = None  # Goal poses per meters of path length; single value or list for additional variations
     map_file: Optional[str] = None
     path_length: float | list[float]
     num_paths: int
@@ -118,7 +119,37 @@ class PathVariationGuiRenderer(VariationGuiRenderer):
 
 
 class PathVariationRandom(NavVariation):
-    """Create random route variations."""
+    """Generates random navigation paths with multiple waypoints between start and goal poses.
+
+    Expected parameters:
+
+    - ``start_pose``: Start position as parameter reference (``@start_pose``) or direct
+      pose with ``x``, ``y``, ``yaw`` (in metres and radians).
+    - ``goal_poses``: Goal positions as parameter reference (``@goal_poses`` or
+      ``@goal_pose``) or list of poses.
+    - ``num_goal_poses``: Number of goal poses to generate per path.
+    - ``path_length``: Target path length in metres.
+    - ``num_paths``: Number of different paths to generate.
+    - ``min_distance``: Minimum distance between consecutive waypoints in metres.
+    - ``map_file``: Optional map file path (uses scenario default if omitted).
+    - ``path_length_tolerance``: Acceptable deviation from target path length in metres
+      (default: ``0.5``).
+    - ``seed``: Random seed for reproducible generation.
+    - ``robot_diameter``: Robot diameter for collision checking in metres.
+
+    Behaviour:
+
+    - Generates sequential waypoints with target distances between them.
+    - Validates path length within the specified tolerance.
+    - Automatically detects output parameter name from reference: ``@goal_pose`` outputs
+      a single pose, ``@goal_poses`` outputs a list.
+    - Uses path caching for performance optimisation.
+
+    Generated outputs:
+
+    - ``start_pose``: Generated or specified start pose.
+    - ``goal_pose`` or ``goal_poses``: Generated goal pose(s) depending on reference.
+    """
 
     CONFIG_CLASS = PathVariationRandomConfig
     GUI_CLASS = NavigationGui
@@ -154,53 +185,93 @@ class PathVariationRandom(NavVariation):
 
             single_pose_mode = goal_param_name == 'goal_pose'
 
-            # Set default num_goal_poses if not specified
-            if self.parameters.num_goal_poses is None:
-                self.parameters.num_goal_poses = 1
+            # Validate that at most one of num_goal_poses / num_goal_poses_per_m is set.
+            if self.parameters.num_goal_poses is not None and self.parameters.num_goal_poses_per_m is not None:
+                raise ValueError(
+                    "PathVariationRandom: 'num_goal_poses' and 'num_goal_poses_per_m' are mutually exclusive."
+                )
 
-            self.progress_update(f"Detected target parameter '{
-                                 goal_param_name}' - generating {self.parameters.num_goal_poses} goal pose(s)")
+            self.progress_update(f"Detected target parameter '{goal_param_name}'")
 
-            # Normalize path_length to a list so we can iterate uniformly
+            # Normalize path_length to a list so a single float and a list are
+            # handled uniformly. Each length value produces num_paths variations.
             path_lengths = (
                 self.parameters.path_length
                 if isinstance(self.parameters.path_length, list)
                 else [self.parameters.path_length]
             )
 
+            # Build the list of num_goal_poses_per_m values to iterate over.
+            # Each entry creates an additional variation dimension.
+            # None means "use num_goal_poses directly (or default to 1)".
+            if self.parameters.num_goal_poses_per_m is not None:
+                ngp_per_m_values = (
+                    self.parameters.num_goal_poses_per_m
+                    if isinstance(self.parameters.num_goal_poses_per_m, list)
+                    else [self.parameters.num_goal_poses_per_m]
+                )
+            else:
+                ngp_per_m_values = [None]  # sentinel: use num_goal_poses
+
             # calculate all start/goal poses for configuration
-            for length_idx, path_length in enumerate(path_lengths):
-                for path_index in range(self.parameters.num_paths):
-                    # Use unique seeds across (length, path_index) combinations
-                    current_seed = self.parameters.seed + length_idx * self.parameters.num_paths + path_index
-                    print(f"Generating path for configuration {config['name']}, path_length {path_length}, path index {path_index}, seed {current_seed}")
-                    start_pose, goal_poses, path, map_file = self.generate_path_for_config(
-                        self.base_path, config, path_index, current_seed, path_length
+            for ngp_index, ngp_per_m in enumerate(ngp_per_m_values):
+                for length_index, target_path_length in enumerate(path_lengths):
+                    # Compute effective num_goal_poses for this iteration.
+                    if ngp_per_m is not None:
+                        effective_num_goal_poses = max(1, round(target_path_length * ngp_per_m))
+                    else:
+                        effective_num_goal_poses = self.parameters.num_goal_poses if self.parameters.num_goal_poses is not None else 1
+
+                    self.progress_update(
+                        f"Detected target parameter '{goal_param_name}' - generating "
+                        f"{effective_num_goal_poses} goal pose(s) "
+                        f"(path_length={target_path_length}"
+                        + (f", num_goal_poses_per_m={ngp_per_m}" if ngp_per_m is not None else "") + ")"
                     )
 
-                    # Format goal_poses based on the target parameter
-                    if single_pose_mode and len(goal_poses) >= 1:
-                        # Single pose mode: output the first pose directly (not in a list)
-                        formatted_goal_poses = goal_poses[0]
-                        target_param = 'goal_pose'
-                    else:
-                        # Multiple poses mode: output as list
-                        formatted_goal_poses = goal_poses
-                        target_param = 'goal_poses'
+                    for path_index in range(self.parameters.num_paths):
+                        # Spread seeds across all three dimensions to avoid collisions
+                        current_seed = (
+                            self.parameters.seed
+                            + ngp_index * len(path_lengths) * self.parameters.num_paths
+                            + length_index * self.parameters.num_paths
+                            + path_index
+                        )
+                        print(f"Generating path for configuration {config['name']}, "
+                              f"path_length={target_path_length}, num_goal_poses={effective_num_goal_poses}, "
+                              f"path_index={path_index}, seed={current_seed}")
+                        start_pose, goal_poses, path, map_file, actual_path_length = self.generate_path_for_config(
+                            self.base_path, config, path_index, current_seed, target_path_length,
+                            num_goal_poses=effective_num_goal_poses
+                        )
 
-                    new_config = self.update_config(config, {
-                        'start_pose': start_pose,
-                        target_param: formatted_goal_poses},
-                        other_values={
+                        # Format goal_poses based on the target parameter
+                        if single_pose_mode and len(goal_poses) >= 1:
+                            # Single pose mode: output the first pose directly (not in a list)
+                            formatted_goal_poses = goal_poses[0]
+                            target_param = 'goal_pose'
+                        else:
+                            # Multiple poses mode: output as list
+                            formatted_goal_poses = goal_poses
+                            target_param = 'goal_poses'
+
+                        other_values = {
                             '_path': path,
-                            **({'_map_file': map_file} if not config.get('config', {}).get('map_file') else {}),
-                            '_path_length': path_length
-                        })
-                    results.append(new_config)
+                            '_path_length': actual_path_length,
+                        }
+                        if not config.get("config", {}).get("map_file"):
+                            other_values['_map_file'] = map_file
+                        new_config = self.update_config(config, {
+                            'start_pose': start_pose,
+                            target_param: formatted_goal_poses},
+                            other_values=other_values,
+                        )
+                        results.append(new_config)
 
         return results
 
-    def generate_path_for_config(self, cache_path, config, path_index, seed, path_length=None):
+    def generate_path_for_config(self, cache_path, config, path_index, seed,
+                                  path_length: float = None, num_goal_poses: int = None):
         """Generate a single path with multiple goal poses for a config.
 
         Args:
@@ -208,12 +279,17 @@ class PathVariationRandom(NavVariation):
             config: Configuration dictionary
             path_index: Index of the path being generated
             seed: Random seed for generation
-            path_length: Target path length in metres. If None, uses self.parameters.path_length
-                         (which may itself be a float or list; the first value is used).
+            path_length: Target path length in meters. Overrides
+                ``self.parameters.path_length`` (which may now be a list).
+            num_goal_poses: Number of goal poses to generate. When provided,
+                overrides ``self.parameters.num_goal_poses``.
 
         Returns:
-            Tuple of (start_pose, goal_poses, path, map_file_path)
+            Tuple of (start_pose, goal_poses, path, map_file_path, actual_path_length)
         """
+        if path_length is None:
+            raw = self.parameters.path_length
+            path_length = raw[0] if isinstance(raw, list) else raw
         try:
             map_file_path = self.get_map_file(self.parameters.map_file, config)
         except Exception as e:  # pylint: disable=broad-except
@@ -231,14 +307,18 @@ class PathVariationRandom(NavVariation):
         self.progress_update(f"Using path_length: {path_length}±{path_length_tolerance}")
         self.progress_update(f"Using robot_diameter: {self.parameters.robot_diameter}")
 
+        # Resolve effective num_goal_poses for this call.
+        if num_goal_poses is None:
+            num_goal_poses = self.parameters.num_goal_poses if self.parameters.num_goal_poses is not None else 1
+
         waypoint_generator = WaypointGenerator(map_file_path)
 
-        file_cache = FileCache(cache_path, "robovast_path_generation_", [self.parameters, seed])
+        file_cache = FileCache(cache_path, "robovast_path_generation_", [self.parameters, seed, path_length, num_goal_poses])
         cache = file_cache.get_cached_file([map_file_path], binary=True)
         if cache:
-            cached_start_pose, cached_goal_poses, cached_path = pickle.loads(cache)
+            cached_start_pose, cached_goal_poses, cached_path, cached_length = pickle.loads(cache)
             self.progress_update(f"Using cached start/goal poses {cached_start_pose} -> {cached_goal_poses}")
-            return cached_start_pose, cached_goal_poses, cached_path, map_file_path
+            return cached_start_pose, cached_goal_poses, cached_path, map_file_path, cached_length
 
         path_generator = PathGenerator(map_file_path)
 
@@ -266,14 +346,14 @@ class PathVariationRandom(NavVariation):
             waypoints = [start_pose]
 
             # Generate multiple goal poses sequentially within target radii
-            self.progress_update(f"  Generating {self.parameters.num_goal_poses} goal poses sequentially")
-            target_distance_per_segment = path_length / self.parameters.num_goal_poses
+            self.progress_update(f"  Generating {num_goal_poses} goal poses sequentially")
+            target_distance_per_segment = path_length / num_goal_poses
 
             goal_poses_list = []
             previous_pose = start_pose
 
-            for goal_idx in range(self.parameters.num_goal_poses):
-                self.progress_update(f"    Generating goal pose {goal_idx + 1}/{self.parameters.num_goal_poses}")
+            for goal_idx in range(num_goal_poses):
+                self.progress_update(f"    Generating goal pose {goal_idx + 1}/{num_goal_poses}")
 
                 # Generate next goal pose within the target radius from previous pose
                 next_goal_poses = waypoint_generator.generate_waypoints(
@@ -292,9 +372,9 @@ class PathVariationRandom(NavVariation):
                 goal_poses_list.append(next_goal_pose)
                 previous_pose = next_goal_pose
 
-            if len(goal_poses_list) < self.parameters.num_goal_poses:
+            if len(goal_poses_list) < num_goal_poses:
                 self.progress_update(f"   not enough valid goal poses found (got {
-                                     len(goal_poses_list)}, needed {self.parameters.num_goal_poses})")
+                                     len(goal_poses_list)}, needed {num_goal_poses})")
                 attempt += 1
                 continue
 
@@ -329,7 +409,19 @@ class PathVariationRandom(NavVariation):
             break
 
         if not path_found:
-            raise ValueError(f"PathVariationRandom: Failed to generate valid path within maximum attempts for config '{config['name']}'.")
+            raise ValueError(
+                f"PathVariationRandom: Failed to generate valid path within maximum attempts for config '{config['name']}'.\n"
+                f"  Variation parameters:\n"
+                f"    map_file:              {map_file_path} (parameter: {self.parameters.map_file or config.get('_map_file')})\n"
+                f"    path_length:           {path_length}\n"
+                f"    path_length_tolerance: {path_length_tolerance}\n"
+                f"    num_paths:             {self.parameters.num_paths}\n"
+                f"    num_goal_poses:        {num_goal_poses}\n"
+                f"    min_distance:          {self.parameters.min_distance}\n"
+                f"    robot_diameter:        {self.parameters.robot_diameter}\n"
+                f"    seed:                  {seed}\n"
+                f"    max_attempts:          {max_attempts}"
+            )
 
         # Convert numpy types to native Python types for start pose
         start_pose = Pose(
@@ -356,12 +448,12 @@ class PathVariationRandom(NavVariation):
             ))
 
         self.progress_update(f"  Found path after {attempt} attempts: {start_pose} -> {goal_poses}")
-        file_content = pickle.dumps((start_pose, goal_poses, path))
+        file_content = pickle.dumps((start_pose, goal_poses, path, length))
         file_cache.save_file_to_cache(
             input_files=[map_file_path],
             file_content=file_content,
             binary=True)
-        return start_pose, goal_poses, path, map_file_path
+        return start_pose, goal_poses, path, map_file_path, length
 
 
 class PathVariationRasterizedConfig(BaseModel):
@@ -378,7 +470,44 @@ class PathVariationRasterizedConfig(BaseModel):
 
 
 class PathVariationRasterized(NavVariation):
-    """Create route variations covering all areas of the map using a square grid."""
+    """Creates route variations covering all areas of the map using a square grid rasterisation.
+
+    Generates paths between raster points that meet specified path length criteria.
+
+    Expected parameters:
+
+    - ``raster_size``: Grid spacing between raster points in metres.
+    - ``path_length``: Target path length in metres.
+    - ``robot_diameter``: Robot diameter for collision checking in metres.
+    - ``start_pose``: Optional start position as parameter reference (``@start_pose``)
+      or direct pose with ``x``, ``y``, ``yaw``.  If omitted, all valid raster points
+      are used as potential start poses.
+    - ``num_goal_poses``: Number of goal poses per path (default: ``1``).
+      Single goal mode uses grid-to-grid paths; multi-goal mode uses a search radius
+      algorithm.
+    - ``map_file``: Optional map file path (uses scenario default if omitted).
+    - ``raster_offset_x``: X-axis offset for grid alignment in metres (default: ``0.0``).
+    - ``raster_offset_y``: Y-axis offset for grid alignment in metres (default: ``0.0``).
+    - ``path_length_tolerance``: Acceptable deviation from target path length in metres
+      (default: ``0.5``).
+
+    Behaviour:
+
+    - Creates a square grid covering the entire map area, filtering points in obstacles
+      or too close to walls.
+    - **Single goal mode** (``num_goal_poses: 1``): Generates paths from each valid
+      raster point to every other valid raster point for comprehensive coverage testing.
+    - **Multi-goal mode** (``num_goal_poses > 1``): Calculates search radius as
+      ``(path_length / raster_size) / (num_goal_poses + 1)`` and generates multiple
+      waypoints per path.
+    - Respects robot diameter for collision checking; grid alignment is controlled by
+      the offset parameters.
+
+    Generated outputs:
+
+    - ``start_pose``: Start pose (either specified or from raster grid).
+    - ``goal_pose`` or ``goal_poses``: Goal pose(s) depending on ``num_goal_poses``.
+    """
 
     CONFIG_CLASS = PathVariationRasterizedConfig
     GUI_CLASS = NavigationGui

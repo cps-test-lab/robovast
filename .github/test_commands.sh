@@ -41,7 +41,7 @@ commands=(
     "vast exec cluster cleanup"
     "vast exec cluster run"
     "vast exec cluster prepare-run"
-    "vast exec cluster download"
+    "vast results download"
     "vast eval"
     "vast eval gui"
 )

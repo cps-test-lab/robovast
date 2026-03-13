@@ -15,12 +15,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import itertools
+import math
 import os
 import random
-from typing import List, Optional, Union
+from typing import Optional
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 from rdflib import Namespace
 
 from robovast.common import convert_dataclasses_to_dict
@@ -39,10 +40,65 @@ ROBOVAST = Namespace("https://purl.org/robovast/metamodels/")
 
 class ObstacleConfig(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    amount: int
-    max_distance: Union[float, List[float]]
+    amount: Optional[int] = None
+    amount_per_m: Optional[float | list[float]] = None
+    max_distance: float | list[float]
     model: str
     xacro_arguments: str
+
+    @model_validator(mode='after')
+    def validate_amount_exclusive(self):
+        has_amount = self.amount is not None
+        has_per_m = self.amount_per_m is not None
+        if has_amount == has_per_m:  # both set or neither set
+            raise ValueError(
+                "Exactly one of 'amount' or 'amount_per_m' must be specified in obstacle_configs entry."
+            )
+        return self
+
+    def to_concrete(self, amount_per_m_value: float = None, max_distance_value: float = None) -> 'ObstacleConfig':
+        """Return a copy of this config with concrete scalar values for list fields."""
+        updates = {}
+        if amount_per_m_value is not None:
+            updates['amount_per_m'] = amount_per_m_value
+        if max_distance_value is not None:
+            updates['max_distance'] = max_distance_value
+        return self.model_copy(update=updates)
+
+    def resolve_amount(self, path_length: float) -> int:
+        """Return the concrete obstacle count, resolving amount_per_m if necessary."""
+        if self.amount is not None:
+            return self.amount
+        if isinstance(self.amount_per_m, list):
+            raise ValueError("resolve_amount called on un-expanded ObstacleConfig with list amount_per_m")
+        return max(0, math.floor(self.amount_per_m * path_length))
+
+
+def _expand_obstacle_configs(obstacle_configs: list) -> list:
+    """Expand obstacle_configs with list field values into a list of concrete
+    obstacle_config lists via cartesian product.
+
+    Example: [{amount_per_m: [0, 0.2], max_distance: [0.0, 0.3]}, {amount: 3}]
+    → all combinations of amount_per_m × max_distance for each entry,
+      then cartesian product across entries.
+    """
+    per_entry_options = []
+    for oc in obstacle_configs:
+        # Expand amount_per_m
+        apm_values = oc.amount_per_m if isinstance(oc.amount_per_m, list) else [None]
+        # Expand max_distance
+        md_values = oc.max_distance if isinstance(oc.max_distance, list) else [None]
+
+        alternatives = []
+        for apm in apm_values:
+            for md in md_values:
+                alternatives.append(oc.to_concrete(
+                    amount_per_m_value=apm,
+                    max_distance_value=md,
+                ))
+        per_entry_options.append(alternatives)
+
+    return [list(combo) for combo in itertools.product(*per_entry_options)]
 
 
 class ObstacleVariationConfig(BaseModel):
@@ -120,7 +176,35 @@ class ObstacleVariationGuiRenderer(VariationGuiRenderer):
 
 
 class ObstacleVariation(NavVariation):
-    """Placement of random obstacles in the environment."""
+    """Places random obstacles in the environment based on configured obstacle types.
+
+    Expected parameters:
+
+    - ``name``: Name of the parameter to store static objects.
+    - ``obstacle_configs``: List of obstacle configurations, each containing:
+
+      - ``amount``: Number of obstacles to place.  Mutually exclusive with
+        ``amount_per_m``.
+      - ``amount_per_m``: Obstacles per metre of path length (computed as
+        ``floor(amount_per_m × path_length)``).  Accepts a single float or a list of
+        floats — each value produces a separate variation.  Mutually exclusive with
+        ``amount``.
+      - ``max_distance``: Maximum distance from the path for obstacle placement.
+        Accepts a single float or a list of floats — each value produces a separate
+        variation.
+      - ``model``: Model name/path for the obstacle.
+      - ``xacro_arguments``: Arguments to pass to xacro for model generation.
+
+    - ``seed``: Seed for random number generation to ensure reproducibility.
+    - ``robot_diameter``: Diameter of the robot for collision checking.
+    - ``map_file``: Optional map file path (can be omitted if provided by a previous
+      variation).
+    - ``count``: Number of obstacle configurations to generate (default: ``1``).
+
+    Generated outputs:
+
+    - List of static objects with spawn poses and model information.
+    """
 
     CONFIG_CLASS = ObstacleVariationConfig
     GUI_CLASS = NavigationGui
@@ -149,14 +233,16 @@ class ObstacleVariation(NavVariation):
     def variation(self, in_configs):
         self.progress_update("Running Obstacle Variation...")
 
-        all_expanded = self._expand_obstacle_configs(self.parameters.obstacle_configs)
+        # Expand obstacle_configs: list amount_per_m values produce separate variations
+        expanded_configs_list = _expand_obstacle_configs(self.parameters.obstacle_configs)
+
         results = []
         for config in in_configs:
-            for exp_idx, expanded_configs in enumerate(all_expanded):
-                np.random.seed(self.parameters.seed + exp_idx)
-                random.seed(self.parameters.seed + exp_idx)
+            np.random.seed(self.parameters.seed)
+            random.seed(self.parameters.seed)
+            for expanded_obstacle_configs in expanded_configs_list:
                 for _ in range(self.parameters.count):
-                    result = self._generate_obstacles_for_config(self.base_path, config, list(expanded_configs))
+                    result = self._generate_obstacles_for_config(self.base_path, config, expanded_obstacle_configs)
                     results.extend(result)
         return results
 
@@ -202,10 +288,24 @@ class ObstacleVariation(NavVariation):
             path = path_generator.generate_path(waypoints, [])
             self.progress_update("Generated new path for obstacle placement")
 
+        # Resolve path length for amount_per_m computation.
+        # Must be set by a previous variation (e.g. PathVariationRandom) via _path_length.
+        if any(oc.amount_per_m is not None for oc in obstacle_configs):
+            if '_path_length' not in config:
+                raise ValueError(
+                    "obstacle_configs contains 'amount_per_m' but '_path_length' is not set in the config. "
+                    "Make sure a path variation (e.g. PathVariationRandom) runs before ObstacleVariation, "
+                    "or use 'amount' instead of 'amount_per_m'."
+                )
+            path_length = config['_path_length']
+        else:
+            path_length = 0.0  # not needed when all configs use fixed 'amount'
+
         obstacle_objects = []  # List[StaticObject]
         obstacle_anchors = []  # List[Position] — path anchors for placed obstacles
         for i, obstacle_config in enumerate(obstacle_configs):
-            if obstacle_config.amount > 0:
+            effective_amount = obstacle_config.resolve_amount(path_length)
+            if effective_amount > 0:
                 max_attempts = 10
                 attempt = 0
                 navigable_config_found = False
@@ -220,7 +320,7 @@ class ObstacleVariation(NavVariation):
                         placed_pairs = placer.place_obstacles(
                             path,
                             obstacle_config.max_distance,
-                            obstacle_config.amount,
+                            effective_amount,
                             obstacle_config.model,
                             obstacle_config.xacro_arguments,
                             robot_diameter=self.parameters.robot_diameter,
@@ -235,7 +335,7 @@ class ObstacleVariation(NavVariation):
                     placed_anchor_pts = [anchor for _, anchor in placed_pairs]
 
                     # Check if we got the expected number of obstacles
-                    if len(placed_obstacles) == obstacle_config.amount:
+                    if len(placed_obstacles) == effective_amount:
                         # Test with all obstacles so far (existing + new ones)
                         test_obstacles = obstacle_objects + placed_obstacles
 
@@ -275,16 +375,17 @@ class ObstacleVariation(NavVariation):
                     else:
                         self.progress_update(
                             f"Attempt {attempt}/{max_attempts}: only placed {len(placed_obstacles)
-                                                                             }/{obstacle_config.amount} obstacles, retrying..."
-                        )
+                                                                             }/{effective_amount} obstacles, retrying..."
+                            )
 
                 # If we couldn't find a navigable configuration after all attempts
                 if not navigable_config_found:
                     self.progress_update(
-                        f"Warning: Could not place {obstacle_config.amount} obstacles while maintaining navigation"
+                        f"Warning: Could not place {effective_amount} obstacles while maintaining navigation"
                     )
-                    raise ValueError(f"Config '{config['name']}': Could not place {obstacle_config.amount} obstacles while maintaining navigation after {
-                                     max_attempts} attempts")
+                    raise ValueError(
+                        f"Could not place {effective_amount} obstacles while maintaining navigation after {max_attempts} attempts"
+                    )
 
         # Always create variation with parameter, even if obstacle_objects is empty
         # This ensures consistent naming and parameters in scenario.config
