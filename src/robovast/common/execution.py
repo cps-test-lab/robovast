@@ -221,7 +221,7 @@ def get_campaign(name: str = "campaign") -> str:
         invocations start in the same second.
     """
     now = datetime.datetime.now()
-    return f"{name}-{now.strftime('%Y-%m-%d-%H%M%S')}{now.strftime('%f')[:2]}"
+    return f"{name}-{now.strftime('%Y-%m-%d-%H%M%S')}"
 
 
 def get_execution_env_variables(run_num, config_name, additional_env=None):
