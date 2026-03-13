@@ -40,10 +40,14 @@ import types
 def _create_pyside6_stubs():
     """Create minimal PySide6 stub modules if the real package is unavailable."""
     try:
-        from PySide6 import QtCore  # noqa: F401 – probe that Qt libs actually load
-        return  # real PySide6 is usable – nothing to do
+        from PySide6 import QtCore, QtGui, QtWidgets  # noqa: F401
+        return  # real PySide6 is fully usable – nothing to do
     except (ImportError, OSError):
         pass
+
+    # Clean up any partially-loaded PySide6 submodules left by the failed probe
+    for _k in [k for k in sys.modules if k == 'PySide6' or k.startswith('PySide6.')]:
+        del sys.modules[_k]
 
     # -- PySide6 top-level --------------------------------------------------
     _pyside6 = types.ModuleType('PySide6')
