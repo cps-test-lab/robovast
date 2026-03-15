@@ -24,7 +24,7 @@ import re
 from datetime import datetime
 from typing import Literal, TypedDict
 
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 
 from ..plugin_common import _iter_all_configs
 

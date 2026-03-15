@@ -563,7 +563,7 @@ Create a class with a ``name`` property and a ``register(mcp)`` method:
 .. code-block:: python
 
    # my_package/mcp_plugin.py
-   from mcp.server.fastmcp import FastMCP
+   from fastmcp import FastMCP
 
    class MyMCPPlugin:
        @property

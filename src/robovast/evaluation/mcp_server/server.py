@@ -31,7 +31,8 @@ All tools are provided by plugins registered under the
 import json
 import logging
 
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
+from mcp.types import Icon
 
 from .registry import load_plugins
 
@@ -43,11 +44,15 @@ _MAX_REPR = 400  # max chars for logged values
 
 
 def _extract_result(value: object) -> object:
-    """Extract a plain Python value from an MCP ContentBlock result list.
+    """Extract a plain Python value from a ToolResult or ContentBlock list.
 
-    call_tool returns a list of TextContent / ImageContent / etc. objects.
+    call_tool returns a ToolResult with a .content list of ContentBlock objects.
     For logging we just want the decoded payload.
     """
+    # FastMCP v3: ToolResult has a .content attribute
+    content = getattr(value, "content", None)
+    if content is not None:
+        value = content
     if not isinstance(value, (list, tuple)):
         return value
     texts = []
@@ -76,27 +81,24 @@ def _short(value: object) -> str:
 
 
 def _install_debug_logging(mcp: FastMCP) -> None:
-    """Wrap ToolManager.call_tool to emit human-readable request/reply log lines.
+    """Install middleware to emit human-readable request/reply log lines."""
+    from fastmcp.server.middleware import Middleware, MiddlewareContext  # pylint: disable=import-outside-toplevel
 
-    mcp.call_tool is captured by reference during _setup_handlers(), so patching
-    the instance attribute has no effect.  Patching the ToolManager instead works
-    because FastMCP.call_tool delegates to it at call time.
-    """
-    tm = mcp._tool_manager  # pylint: disable=protected-access
-    original = tm.call_tool
+    class _DebugLoggingMiddleware(Middleware):
+        async def on_call_tool(self, context: MiddlewareContext, call_next):  # type: ignore[override]
+            args_repr = ", ".join(
+                f"{k}={_short(v)}" for k, v in (context.message.arguments or {}).items()
+            )
+            logger.debug("→ %s(%s)", context.message.name, args_repr)
+            try:
+                result = await call_next(context)
+                logger.debug("← %s → %s", context.message.name, _short(_extract_result(result)))
+                return result
+            except Exception as exc:
+                logger.debug("← %s ✗ %s: %s", context.message.name, type(exc).__name__, exc)
+                raise
 
-    async def logged_call_tool(name: str, arguments: dict, **kwargs: object) -> object:
-        args_repr = ", ".join(f"{k}={_short(v)}" for k, v in (arguments or {}).items())
-        logger.debug("→ %s(%s)", name, args_repr)
-        try:
-            result = await original(name, arguments, **kwargs)
-            logger.debug("← %s → %s", name, _short(_extract_result(result)))
-            return result
-        except Exception as exc:
-            logger.debug("← %s ✗ %s: %s", name, type(exc).__name__, exc)
-            raise
-
-    tm.call_tool = logged_call_tool  # type: ignore[method-assign]
+    mcp.add_middleware(_DebugLoggingMiddleware())
 
 
 def create_server(
@@ -116,7 +118,16 @@ def create_server(
         When *True*, wrap ``call_tool`` to emit human-readable request/reply
         log lines at ``DEBUG`` level.
     """
-    mcp = FastMCP("robovast", host=host, port=port, log_level="CRITICAL")
+    mcp = FastMCP(name="RoboVAST Results API", instructions="""
+                This server provides access to the results created by RoboVAST.
+                """,
+                icons=[
+                    Icon(
+                        src="https://raw.githubusercontent.com/cps-test-lab/robovast/refs/heads/main/docs/images/icon.png",
+                        mimeType="image/png",
+                        sizes=["any"]
+                    ),
+                ])
 
     plugins = load_plugins(mcp)
     plugin_names = [p.name for p in plugins]

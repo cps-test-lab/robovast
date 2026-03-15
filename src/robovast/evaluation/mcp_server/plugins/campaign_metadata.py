@@ -24,7 +24,7 @@ import logging
 from typing import Any
 
 import yaml
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 
 from robovast.evaluation.mcp_server import results_resolver
 
@@ -36,23 +36,42 @@ logger = logging.getLogger(__name__)
 # -- Tool functions ----------------------------------------------------------
 
 
-def list_campaigns(limit: int = 20, offset: int = 0) -> list[dict]:
-    """List available campaigns with their metadata.
+def list_campaigns(limit: int = 20, offset: int = 0) -> dict:
+    """List available campaigns
 
-    Returns a paginated list of campaign records containing campaign_id
-    and all metadata fields that are not lists of dicts, keeping response
-    size manageable.
+    Returns a paginated list with campaigns and their execution time.
 
     Args:
         limit: Maximum number of campaigns to return (default 20).
         offset: Number of campaigns to skip (default 0).
     """
-    campaigns = []
+    with_metadata: list[dict] = []
+    missing_metadata: list[str] = []
+
     for d in results_resolver.list_campaigns():
-        campaign_record = {"campaign_id": d.name}
-        
-        campaigns.append(campaign_record)
-    return campaigns[offset : offset + limit]
+        metadata = read_campaign_metadata(d)
+        if metadata:
+            exec_info = metadata.get("execution", {})
+            with_metadata.append({
+                "campaign_id": d.name,
+                "execution_time": exec_info.get("execution_time"),
+            })
+        else:
+            missing_metadata.append(d.name)
+
+    page = with_metadata[offset : offset + limit]
+    result: dict = {
+        "campaigns": page,
+        "total": len(with_metadata),
+        "offset": offset,
+    }
+    if missing_metadata:
+        result["missing_metadata"] = missing_metadata
+        result["missing_metadata_hint"] = (
+            "These campaigns have no metadata. "
+            "Run 'vast results postprocess' to generate it."
+        )
+    return result
 
 
 def get_campaign_summary(campaign_id: str) -> dict:

@@ -19,7 +19,7 @@
 import logging
 from importlib.metadata import entry_points
 
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 
 from .plugin import MCPPlugin
 
@@ -30,7 +30,8 @@ logger = logging.getLogger(__name__)
 
 def _get_tool_names(mcp: FastMCP) -> set[str]:
     """Return the set of currently registered tool names."""
-    return set(mcp._tool_manager._tools.keys())  # pylint: disable=protected-access
+    from fastmcp.tools.tool import Tool  # pylint: disable=import-outside-toplevel
+    return {c.name for c in mcp._local_provider._components.values() if isinstance(c, Tool)}  # pylint: disable=protected-access
 
 
 def load_plugins(mcp: FastMCP) -> list[MCPPlugin]:

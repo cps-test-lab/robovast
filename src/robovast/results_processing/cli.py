@@ -420,7 +420,9 @@ def _load_share_dotenv() -> None:
               help='Re-download and re-extract even if the campaign directory already exists')
 @click.option('--keep-archive', is_flag=True,
               help='Keep the downloaded .tar.gz file after extraction')
-def download_from_share_cmd(output, campaigns, force, keep_archive):
+@click.option('--debug', is_flag=True,
+              help='Print HTTP request/response details (URL, status, headers) for debugging')
+def download_from_share_cmd(output, campaigns, force, keep_archive, debug):
     """Download campaign archives from the configured share service.
 
     Reads the same ``.env`` configuration as ``cluster upload-to-share``.
@@ -443,6 +445,17 @@ def download_from_share_cmd(output, campaigns, force, keep_archive):
     ROBOVAST_WEBDAV_PASSWORD — WebDAV password          (when ROBOVAST_SHARE_TYPE=webdav)
     """
     _load_share_dotenv()
+
+    if debug:
+        import logging  # pylint: disable=import-outside-toplevel
+        import http.client as http_client  # pylint: disable=import-outside-toplevel
+        http_client.HTTPConnection.debuglevel = 1
+        logging.basicConfig()
+        logging.getLogger().setLevel(logging.DEBUG)
+        requests_log = logging.getLogger("urllib3")
+        requests_log.setLevel(logging.DEBUG)
+        requests_log.propagate = True
+        click.echo("[debug] HTTP debug logging enabled", err=True)
 
     share_type = os.environ.get("ROBOVAST_SHARE_TYPE", "").strip()
     if not share_type:
@@ -539,6 +552,9 @@ def download_from_share_cmd(output, campaigns, force, keep_archive):
         start = time.monotonic()
         progress_cb = make_download_progress_callback(campaign_id, start)
 
+        # Keep the .part file when the download fails mid-transfer so the
+        # next invocation can resume from where it left off.
+        download_complete = False
         try:
             try:
                 provider.download_archive(
@@ -575,8 +591,13 @@ def download_from_share_cmd(output, campaigns, force, keep_archive):
                 dest_archive = output_path / base
                 os.replace(tmp_path, dest_archive)
                 tmp_path = ""  # don't delete below
+            download_complete = True
         finally:
-            if tmp_path and os.path.exists(tmp_path):
+            # Only remove the .part file after a fully successful
+            # download+extraction.  Any other exit path — network error,
+            # click exception, or Ctrl+C (KeyboardInterrupt) — leaves the
+            # partial file in place so the next run can resume.
+            if tmp_path and os.path.exists(tmp_path) and download_complete:
                 os.unlink(tmp_path)
 
     click.echo()

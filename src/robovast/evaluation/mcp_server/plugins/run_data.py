@@ -31,7 +31,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Literal, TypedDict
 
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 
 from robovast.evaluation.mcp_server import results_resolver
 

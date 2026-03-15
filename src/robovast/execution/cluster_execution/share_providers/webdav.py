@@ -257,26 +257,46 @@ class WebDavShareProvider(BaseShareProvider):
             object_name: Filename of the archive on the server.
             dest_path: Local destination path.
             progress_callback: Optional ``(bytes_received, total_bytes)`` callable.
-            resume_offset: Byte offset to resume downloading from.
+            resume_offset: Byte offset to resume downloading from.  When
+                non-zero a ``Range`` header is sent and the response is
+                appended to any existing partial file at *dest_path*.  If the
+                server does not honour the range request (returns 200 instead
+                of 206 Partial Content) the partial file is truncated and the
+                download restarts from the beginning.  A ``416 Range Not
+                Satisfiable`` response is treated as "already complete" and
+                returns immediately.
         """
         url = self._file_url(object_name)
-        headers = {}
+        headers: dict[str, str] = {}
         if resume_offset > 0:
             headers["Range"] = f"bytes={resume_offset}-"
         try:
             with self._session() as session:
                 with session.get(url, stream=True, timeout=60, headers=headers) as resp:
+                    if resume_offset > 0 and resp.status_code == 416:
+                        # Range Not Satisfiable — partial file already covers
+                        # the entire remote file; nothing left to download.
+                        return
                     resp.raise_for_status()
-                    if resume_offset > 0:
+
+                    # Only trust append-mode when the server confirmed it
+                    # returned a partial response (206).  A 200 means the
+                    # Range header was silently ignored and we received the
+                    # full file — we must truncate and restart in that case.
+                    range_honoured = resume_offset > 0 and resp.status_code == 206
+                    if range_honoured:
                         cr = resp.headers.get("Content-Range", "")
                         if cr and "/" in cr:
                             total = int(cr.rsplit("/", 1)[1])
                         else:
                             total = int(resp.headers.get("Content-Length", 0)) + resume_offset
+                        received = resume_offset
+                        mode = "ab"
                     else:
                         total = int(resp.headers.get("Content-Length", 0))
-                    received = resume_offset
-                    mode = "ab" if resume_offset > 0 else "wb"
+                        received = 0
+                        mode = "wb"
+
                     with open(dest_path, mode) as fh:
                         for chunk in resp.iter_content(chunk_size=1024 * 256):
                             fh.write(chunk)

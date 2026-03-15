@@ -15,6 +15,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import concurrent.futures
 import json
 import os
 from typing import List, Optional
@@ -82,14 +83,36 @@ def gen_msg_values(msg, prefix=""):
 
 
 def find_rosbags(directory):
-    """Find all rosbag directories in subdirectories."""
-    rosbag_dirs = []
-    for root, _, files in os.walk(directory):
-        # Check if this directory contains .mcap files or metadata.yaml (rosbag indicators)
-        has_mcap = any(f.endswith('.mcap') for f in files)
-        has_metadata = 'metadata.yaml' in files
+    """Find all rosbag directories in subdirectories (parallel directory scan)."""
 
-        if has_mcap or has_metadata:
-            rosbag_dirs.append(root)
+    def scan_dir(path):
+        """Scan one directory; return (path, is_rosbag, subdirectory_paths)."""
+        subdirs = []
+        is_rosbag = False
+        try:
+            with os.scandir(path) as it:
+                for entry in it:
+                    if entry.is_dir(follow_symlinks=False):
+                        subdirs.append(entry.path)
+                    elif entry.name.endswith('.mcap') or entry.name == 'metadata.yaml':
+                        is_rosbag = True
+        except PermissionError:
+            pass
+        return path, is_rosbag, subdirs
+
+    rosbag_dirs = []
+    max_workers = min(32, (os.cpu_count() or 1) * 4)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        pending = {executor.submit(scan_dir, directory)}
+        while pending:
+            done, pending = concurrent.futures.wait(
+                pending, return_when=concurrent.futures.FIRST_COMPLETED
+            )
+            for future in done:
+                path, is_rosbag, subdirs = future.result()
+                if is_rosbag:
+                    rosbag_dirs.append(path)
+                for subdir in subdirs:
+                    pending.add(executor.submit(scan_dir, subdir))
 
     return rosbag_dirs

@@ -26,7 +26,7 @@ during execution.
 import logging
 from datetime import datetime
 
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 
 from robovast.evaluation.mcp_server import results_resolver
 

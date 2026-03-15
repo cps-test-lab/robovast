@@ -18,7 +18,7 @@
 
 from typing import Protocol, runtime_checkable
 
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 
 
 @runtime_checkable
