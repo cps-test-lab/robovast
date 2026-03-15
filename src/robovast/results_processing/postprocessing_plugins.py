@@ -649,6 +649,104 @@ class RosbagsToWebm(BasePostprocessingPlugin):
             return False, f"Error executing rosbags_to_webm: {e}"
 
 
+class RosbagsProcess(BasePostprocessingPlugin):
+    """Unified single-pass rosbag processor with internal plugin system.
+
+    Reads each rosbag exactly once and dispatches messages to all configured
+    handler plugins. This is significantly more efficient than running separate
+    ``rosbags_*`` scripts when multiple data types are needed from the same bags.
+
+    This class is used automatically by the postprocessing orchestrator, which
+    batches all ``rosbags_*`` commands from the ``.vast`` config into a single
+    call. It can also be used directly in ``.vast`` configs.
+
+    Available handler types: ``to_csv``, ``tf_to_csv``, ``bt_to_csv``,
+    ``action_to_csv``, ``rosout_to_csv``.
+
+    Example direct usage in .vast config:
+
+    .. code-block:: yaml
+
+        postprocessing:
+          - rosbags_process:
+              plugins:
+                - type: tf_to_csv
+                  frames: [base_link]
+                - type: bt_to_csv
+                - type: to_csv
+                  topics: [/cmd_vel, /odom]
+                - type: rosout_to_csv
+    """
+
+    def __call__(
+        self,
+        results_dir: str,
+        config_dir: str,
+        plugins: List[dict],
+        workers: Optional[int] = None,
+        provenance_file: Optional[str] = None,
+        execution_image: Optional[str] = None,
+    ) -> Tuple[bool, str]:
+        """Execute rosbags_process plugin.
+
+        Args:
+            results_dir: Path to the campaign-<id> directory to process.
+            config_dir: Directory containing the config file.
+            plugins: List of handler config dicts, each with a ``type`` key.
+            workers: Optional number of parallel workers.
+            provenance_file: Optional path for provenance JSON.
+            execution_image: Optional Docker image override.
+
+        Returns:
+            Tuple of (success, message).
+        """
+        if not plugins:
+            return False, "rosbags_process requires at least one entry under 'plugins'"
+
+        script_path = str(files('robovast.results_processing.data').joinpath('docker_exec.sh'))
+        config_json = json.dumps({"plugins": plugins})
+
+        cmd = [script_path, "--compat-version", str(COMPAT_VERSION)]
+        if execution_image:
+            cmd.extend(["--image", execution_image])
+        if provenance_file:
+            cmd.extend(["--provenance-file", provenance_file])
+        cmd.append("rosbags_process.py")
+        if provenance_file:
+            cmd.extend(["--provenance-file", f"/provenance/{os.path.basename(provenance_file)}"])
+        cmd.extend(["--config", config_json])
+        if workers is not None:
+            cmd.extend(["--workers", str(workers)])
+        cmd.append(results_dir)
+
+        try:
+            # Stream output line-by-line so progress is visible in real-time.
+            process = subprocess.Popen(
+                cmd,
+                cwd=os.path.dirname(script_path),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,  # merge stderr into stdout to avoid deadlock
+                text=True,
+                env={**os.environ, 'PYTHONUNBUFFERED': '1'},
+            )
+            output_lines: List[str] = []
+            for line in process.stdout:
+                line = line.rstrip("\n")
+                print(line, flush=True)
+                output_lines.append(line)
+            returncode = process.wait()
+            output = "\n".join(output_lines)
+            if returncode != 0:
+                return False, f"rosbags_process failed with exit code {returncode}\n{output}"
+            summary = next(
+                (line for line in output_lines if line.startswith("Summary:")),
+                "rosbags processed successfully",
+            )
+            return True, summary
+        except Exception as e:
+            return False, f"Error executing rosbags_process: {e}"
+
+
 class Compress(BasePostprocessingPlugin):
     """Create a gzipped tarball for each campaign-* directory (runs on host).
 

@@ -81,21 +81,24 @@ class MinikubeClusterConfig(BaseConfig):
         """Set up MinIO S3 server for Minikube cluster.
 
         Args:
-            **kwargs: Cluster-specific options (ignored for Minikube)
+            **kwargs: Cluster-specific options (namespace, kube_context,
+                control_node_labels)
         """
+        control_node_labels = kwargs.pop('control_node_labels', None)
         logging.info("Setting up RoboVAST MinIO S3 server in minikube cluster...")
 
         config.load_kube_config(context=kwargs.get('kube_context'))
         k8s_client = client.ApiClient()
 
         try:
-            yaml_objects = yaml.safe_load_all(io.StringIO(MINIO_MANIFEST_MINIKUBE))
+            yaml_objects = list(yaml.safe_load_all(io.StringIO(MINIO_MANIFEST_MINIKUBE)))
         except yaml.YAMLError as e:
             raise RuntimeError(f"Failed to parse MinIO manifest YAML: {str(e)}") from e
 
+        yaml_objects = self._apply_pod_node_selector(yaml_objects, control_node_labels)
         namespace = kwargs.get('namespace', 'default')
         try:
-            apply_manifests(k8s_client, yaml_objects, namespace=namespace)
+            apply_manifests(k8s_client, iter(yaml_objects), namespace=namespace)
         except Exception as e:
             raise RuntimeError(f"Error applying MinIO manifest: {str(e)}") from e
 
@@ -125,10 +128,18 @@ class MinikubeClusterConfig(BaseConfig):
 
         Args:
             output_dir (str): Directory where setup files will be written
-            **kwargs: Cluster-specific options (ignored for Minikube)
+            **kwargs: Cluster-specific options (control_node_labels)
         """
+        control_node_labels = kwargs.pop('control_node_labels', None)
+        manifest_to_write = MINIO_MANIFEST_MINIKUBE
+        if control_node_labels:
+            docs = list(yaml.safe_load_all(io.StringIO(MINIO_MANIFEST_MINIKUBE)))
+            docs = self._apply_pod_node_selector(docs, control_node_labels)
+            manifest_to_write = "---\n".join(
+                yaml.dump(d, default_flow_style=False) for d in docs if d is not None
+            )
         with open(f"{output_dir}/robovast-manifest.yaml", "w") as f:
-            f.write(MINIO_MANIFEST_MINIKUBE)
+            f.write(manifest_to_write)
 
         readme_content = """# Minikube Cluster Setup Instructions
 

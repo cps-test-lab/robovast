@@ -130,6 +130,69 @@ def execute_postprocessing_plugin(
         return False, f"Plugin '{plugin_name}' execution error: {e}", []
 
 
+# Plugin names that can be transparently batched into a single rosbags_process call.
+# Maps plugin name → handler type string used in rosbags_process.py config.
+_ROSBAG_BATCH_MAP: Dict[str, str] = {
+    "rosbags_to_csv":       "to_csv",
+    "rosbags_tf_to_csv":    "tf_to_csv",
+    "rosbags_bt_to_csv":    "bt_to_csv",
+    "rosbags_action_to_csv": "action_to_csv",
+    "rosbags_rosout_to_csv": "rosout_to_csv",
+}
+
+
+def _batch_rosbags_commands(commands: List) -> List:
+    """Replace all batchable rosbags_* plugin calls with a single rosbags_process call.
+
+    Reads the command list and groups every command whose plugin name appears in
+    ``_ROSBAG_BATCH_MAP`` into a single ``rosbags_process`` command.  The batch
+    command is inserted at the position of the first batchable command found;
+    all other batchable commands are removed.  Non-batchable commands keep their
+    original order relative to the batch insertion point.
+
+    ``rosout_to_csv`` is always included in the batch (with default parameters if
+    not explicitly configured) so that the forced separate rosout run is no longer
+    needed.
+
+    Args:
+        commands: Raw list of postprocessing commands from the .vast config.
+
+    Returns:
+        New command list with batchable commands replaced by one rosbags_process call.
+    """
+    batch_plugins: List[dict] = []
+    result: List = []
+    batch_placeholder_inserted = False
+
+    for cmd in commands:
+        plugin_name = cmd if isinstance(cmd, str) else list(cmd.keys())[0]
+        if plugin_name in _ROSBAG_BATCH_MAP:
+            params = {} if isinstance(cmd, str) else (cmd[plugin_name] or {})
+            batch_plugins.append({"type": _ROSBAG_BATCH_MAP[plugin_name], **params})
+            if not batch_placeholder_inserted:
+                result.append(None)  # reserve slot at position of first batchable command
+                batch_placeholder_inserted = True
+        else:
+            result.append(cmd)
+
+    # Always include rosout (with defaults) so the forced separate rosout run is not needed
+    if not any(p.get("type") == "rosout_to_csv" for p in batch_plugins):
+        batch_plugins.append({"type": "rosout_to_csv"})
+
+    batch_cmd: dict = {"rosbags_process": {"plugins": batch_plugins}}
+
+    if batch_placeholder_inserted:
+        for i, item in enumerate(result):
+            if item is None:
+                result[i] = batch_cmd
+                break
+    else:
+        # No batchable commands were in the config — append batch (rosout-only) at end
+        result.append(batch_cmd)
+
+    return result
+
+
 def validate_postprocessing_command(command: str | dict, plugins: Dict[str, callable]) -> tuple[bool, str]:
     """Validate a postprocessing command.
 
@@ -492,6 +555,11 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     # Load plugins
     plugins = load_postprocessing_plugins()
 
+    # Batch all batchable rosbags_* commands into a single rosbags_process call
+    # (reads each rosbag once instead of once per plugin). rosout_to_csv is always
+    # included in the batch, so the separate forced rosout run below is no longer needed.
+    commands = _batch_rosbags_commands(commands)
+
     # Validate all commands first
     for command in commands:
         is_valid, error_msg = validate_postprocessing_command(command, plugins)
@@ -553,27 +621,8 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
             display_message = message if debug else message.splitlines()[0]
             output(f"✓ {display_message}")
 
-    # Always run rosbags_rosout_to_csv after custom plugin execution and database creation
-    if 'rosbags_rosout_to_csv' in plugins:
-        output("Executing rosbags_rosout_to_csv...")
-        with tempfile.TemporaryDirectory(prefix="robovast_provenance_") as rosout_temp_dir:
-            rosout_provenance_file = os.path.join(rosout_temp_dir, "rosbags_rosout_to_csv_provenance.json")
-            rosout_success, rosout_msg, _ = execute_postprocessing_plugin(
-                plugin_name='rosbags_rosout_to_csv',
-                plugin_func=plugins['rosbags_rosout_to_csv'],
-                params={},
-                results_dir=results_dir,
-                config_dir=config_dir,
-                execution_image=execution_image,
-                provenance_file=rosout_provenance_file,
-            )
-        if rosout_success:
-            display_rosout_msg = rosout_msg if debug else rosout_msg.splitlines()[0]
-            output(f"✓ {display_rosout_msg}")
-        else:
-            output(f"Warning: rosbags_rosout_to_csv failed: {rosout_msg}")
-    else:
-        raise RuntimeError("rosbags_rosout_to_csv plugin not available")
+    # Note: rosout_to_csv is always included in the rosbags_process batch created by
+    # _batch_rosbags_commands(), so a separate forced rosout run is no longer needed.
 
     # Store the hash, list of postprocessing outputs, and write postprocessing.yaml
     output_paths = set()

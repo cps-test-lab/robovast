@@ -336,7 +336,8 @@ def setup_server(config_name=None, list_configs=False, force=False, **cluster_kw
     # Install Kueue and queues first (always)
     namespace = cluster_kwargs.get("namespace", "default")
     install_kueue_helm(kube_context=kube_context)
-    apply_kueue_queues(namespace=namespace, kube_context=kube_context, node_labels=jobs_node_labels)
+    apply_kueue_queues(namespace=namespace, kube_context=kube_context,
+                       node_labels=jobs_node_labels, cluster_config=cluster_config)
 
     cluster_config.setup_cluster(
         kube_context=kube_context,
