@@ -76,11 +76,13 @@ def _fmt_rate(bps):
 class _ProgressReader:
     """Wraps a file object and renders a progress bar as bytes are read."""
 
-    def __init__(self, fh, total: int, campaign: str) -> None:
+    def __init__(self, fh, file_size: int, campaign: str, offset: int = 0) -> None:
         self._fh = fh
-        self._total = total
+        self._file_size = file_size   # total file size (for % display)
+        self._send_size = file_size - offset  # bytes we will send in this session
         self._campaign = campaign
-        self._sent = 0
+        self._sent = 0                # bytes sent in this session
+        self._display_offset = offset # bytes already on server (resume)
         self._last_pct = -1.0
         self._start = time.monotonic()
 
@@ -88,16 +90,17 @@ class _ProgressReader:
         chunk = self._fh.read(size)
         if chunk:
             self._sent += len(chunk)
-            pct = self._sent / self._total * 100 if self._total else 0.0
-            if pct - self._last_pct >= 1.0 or self._sent >= self._total:
+            displayed = self._display_offset + self._sent
+            pct = displayed / self._file_size * 100 if self._file_size else 0.0
+            if pct - self._last_pct >= 1.0 or displayed >= self._file_size:
                 self._last_pct = pct
                 elapsed = max(time.monotonic() - self._start, 1e-6)
                 rate = self._sent / elapsed
-                filled = int(BAR_WIDTH * self._sent / self._total) if self._total else 0
+                filled = int(BAR_WIDTH * displayed / self._file_size) if self._file_size else 0
                 progress_bar = "█" * filled + "░" * (BAR_WIDTH - filled)
                 line = (
                     f"{self._campaign}  [{progress_bar}]  {pct:5.1f}%  "
-                    f"{_fmt_size(self._sent)}/{_fmt_size(self._total)}  "
+                    f"{_fmt_size(displayed)}/{_fmt_size(self._file_size)}  "
                     f"{_fmt_rate(rate)}"
                 )
                 sys.stdout.write("\r" + line + CLEAR_EOL)
@@ -105,12 +108,28 @@ class _ProgressReader:
         return chunk
 
     def __len__(self) -> int:
-        return self._total
+        return self._send_size  # tells requests how many bytes to stream
 
 
 # ---------------------------------------------------------------------------
 # WebDAV upload
 # ---------------------------------------------------------------------------
+
+def _get_remote_size(upload_url: str, auth_header: str) -> int:
+    """Return the Content-Length of the remote file, or 0 if absent/unreachable."""
+    try:
+        resp = requests.head(
+            upload_url,
+            headers={"Authorization": auth_header},
+            timeout=30,
+            allow_redirects=True,
+        )
+        if resp.status_code in (200, 204):
+            return int(resp.headers.get("Content-Length", 0))
+    except Exception:
+        pass
+    return 0
+
 
 def upload(campaign: str) -> None:
     archive_path = f"/data/{campaign}.tar.gz"
@@ -131,21 +150,42 @@ def upload(campaign: str) -> None:
 
     total = os.path.getsize(archive_path)
 
-    sys.stdout.write(f"{campaign}  uploading via WebDAV to {upload_url}…\n")
-    sys.stdout.flush()
-
     # Pre-bake Authorization header so it is sent with the first request.
     # requests' auth=(user, password) waits for a 401 challenge before adding
     # the header, which cannot work with a streamed body (the body can't be
     # replayed after the mid-stream 401).
     token = base64.b64encode(f"{user}:{password}".encode()).decode()
+    auth_header = f"Basic {token}"
+
+    # Check for an existing (possibly partial) upload to resume.
+    remote_size = _get_remote_size(upload_url, auth_header)
+    if remote_size == total:
+        sys.stdout.write(
+            f"{campaign}  already fully uploaded ({_fmt_size(total)})  ✓\n"
+        )
+        sys.stdout.flush()
+        return
+
+    offset = remote_size if 0 < remote_size < total else 0
+    if offset > 0:
+        sys.stdout.write(
+            f"{campaign}  resuming from {_fmt_size(offset)} / {_fmt_size(total)}…\n"
+        )
+    else:
+        sys.stdout.write(f"{campaign}  uploading via WebDAV to {upload_url}…\n")
+    sys.stdout.flush()
+
     headers = {
-        "Content-Length": str(total),
-        "Authorization": f"Basic {token}",
+        "Content-Length": str(total - offset),
+        "Authorization": auth_header,
     }
+    if offset > 0:
+        headers["Content-Range"] = f"bytes {offset}-{total - 1}/{total}"
 
     with open(archive_path, "rb") as fh:
-        reader = _ProgressReader(fh, total, campaign)
+        if offset > 0:
+            fh.seek(offset)
+        reader = _ProgressReader(fh, total, campaign, offset=offset)
         resp = requests.put(
             upload_url,
             data=reader,
@@ -157,6 +197,17 @@ def upload(campaign: str) -> None:
         sys.stderr.write(
             f"\nERROR: WebDAV PUT returned HTTP {resp.status_code}: "
             f"{resp.text[:200]}\n"
+        )
+        sys.exit(1)
+
+    # Verify the connection didn't drop mid-stream (server may return 200 even
+    # when it only received partial data if the client closed the socket early).
+    if reader._sent < reader._send_size:
+        sys.stderr.write(
+            f"\nERROR: Upload incomplete — sent {_fmt_size(reader._sent + offset)} "
+            f"of {_fmt_size(total)} "
+            f"({(reader._sent + offset) / total * 100:.1f}%). "
+            "Re-run the command to resume.\n"
         )
         sys.exit(1)
 

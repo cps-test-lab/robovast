@@ -360,7 +360,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         debug: bool = False,
         skip_rosout: bool = False,
         skip: Optional[List[str]] = None,
-        skip_db_creation: bool = False,
+        skip_db: bool = False,
         skip_metadata: bool = False,
 ):
     """Run postprocessing commands on run results.
@@ -521,7 +521,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     _write_postprocessing_provenance_yaml(campaign_dir, all_provenance_entries)
 
     # Build SQLite data.db for the campaign
-    if skip_db_creation:
+    if skip_db:
         output("Skipping data.db creation")
     else:
         db_success, db_msg = generate_data_db(campaign_dir, output_callback=output_callback)
