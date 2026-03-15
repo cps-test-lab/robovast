@@ -78,6 +78,9 @@ def process_rosbag(bag_path, frames, csv_filename):
         fieldnames = ["frame", "timestamp", "position.x", "position.y", "position.z",
                       "orientation.roll", "orientation.pitch", "orientation.yaw"]
 
+        parent_folder = os.path.abspath(os.path.dirname(bag_path))
+        output_file = os.path.join(parent_folder, csv_filename)
+
         csvfile = None
         writer = None
         try:
@@ -110,7 +113,7 @@ def process_rosbag(bag_path, frames, csv_filename):
 
                                     # Open file and write header on first entry
                                     if csvfile is None:
-                                        csvfile = open(csv_filename, 'w', newline='')
+                                        csvfile = open(output_file, 'w', newline='')
                                         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
                                         writer.writeheader()
 
@@ -138,7 +141,7 @@ def process_rosbag(bag_path, frames, csv_filename):
         # Report results
         if total_records > 0:
             frame_summary = ", ".join([f"{frame}: {count}" for frame, count in record_counts.items() if count > 0])
-            print(f"✓ {csv_filename}: {total_records} messages ({frame_summary})")
+            print(f"✓ {output_file}: {total_records} messages ({frame_summary})")
             return (total_records, record_counts)
         else:
             print(f"✗ {bag_path}: No records found")
@@ -211,7 +214,7 @@ def main():
     # Process rosbags in parallel
     try:
         with Pool(processes=args.workers) as pool:
-            results = pool.map(process_rosbag_wrapper, process_args)
+            results = pool.map(process_rosbag_wrapper, process_args, chunksize=1)
     except KeyboardInterrupt:
         print("Processing interrupted by user.")
         return 1

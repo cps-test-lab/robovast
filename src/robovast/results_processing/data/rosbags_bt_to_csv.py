@@ -178,7 +178,7 @@ def main():
     # Process rosbags in parallel
     try:
         with Pool(processes=args.workers) as pool:
-            results = pool.map(process_rosbag_wrapper, process_args)
+            results = pool.map(process_rosbag_wrapper, process_args, chunksize=1)
     except KeyboardInterrupt:
         print("Processing interrupted by user.")
         return 1

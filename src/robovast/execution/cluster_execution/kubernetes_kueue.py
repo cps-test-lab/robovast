@@ -72,12 +72,13 @@ controllerManager:
 
 # ResourceFlavor + ClusterQueue + LocalQueue (execution namespace set at runtime)
 # {cpu_quota} and {memory_quota} are filled from cluster allocatable resources
+# {node_labels_spec} is an optional "spec:\n  nodeLabels:\n    key: value\n" block
 KUEUE_QUEUES_YAML = """
 apiVersion: kueue.x-k8s.io/v1beta2
 kind: ResourceFlavor
 metadata:
   name: default-flavor
----
+{node_labels_spec}---
 apiVersion: kueue.x-k8s.io/v1beta2
 kind: ClusterQueue
 metadata:
@@ -112,6 +113,16 @@ def _parse_resource(val):
         return float(parse_quantity(val))
     except (ValueError, TypeError):
         return 0
+
+
+def _format_node_labels_spec(node_labels):
+    """Return a YAML 'spec.nodeLabels' block for a ResourceFlavor, or empty string."""
+    if not node_labels:
+        return ""
+    lines = ["spec:", "  nodeLabels:"]
+    for k, v in node_labels.items():
+        lines.append(f"    {k}: {v}")
+    return "\n".join(lines) + "\n"
 
 
 def set_cluster_queue_stop_policy(stop_policy, kube_context=None):
@@ -606,7 +617,7 @@ def uninstall_kueue_helm(kube_context=None):
             raise RuntimeError(f"Failed to uninstall Kueue: {err}")
 
 
-def apply_kueue_queues(namespace="default", kube_context=None):
+def apply_kueue_queues(namespace="default", kube_context=None, node_labels=None):
     """Create ResourceFlavor, ClusterQueue, and LocalQueue for RoboVAST.
 
     Quotas are set from cluster allocatable CPU and memory.
@@ -614,6 +625,8 @@ def apply_kueue_queues(namespace="default", kube_context=None):
     Args:
         namespace: Kubernetes namespace for the LocalQueue (execution namespace)
         kube_context: Kubernetes context to use. None uses the active context.
+        node_labels: Optional dict of node labels to add to the ResourceFlavor spec
+            (e.g. {"node-pool": "primary"}). Jobs will only run on matching nodes.
     """
     cpu_quota, memory_quota = get_cluster_allocatable_resources(kube_context=kube_context)
     yaml_content = KUEUE_QUEUES_YAML.format(
@@ -622,6 +635,7 @@ def apply_kueue_queues(namespace="default", kube_context=None):
         cluster_queue=CLUSTER_QUEUE_NAME,
         cpu_quota=cpu_quota,
         memory_quota=memory_quota,
+        node_labels_spec=_format_node_labels_spec(node_labels),
     ).strip()
 
     # Retry to handle the race where a CRD from a previous uninstall is still
@@ -660,7 +674,7 @@ def apply_kueue_queues(namespace="default", kube_context=None):
     )
 
 
-def prepare_kueue_setup(output_dir, namespace="default", kube_context=None):
+def prepare_kueue_setup(output_dir, namespace="default", kube_context=None, node_labels=None):
     """Write Kueue queue manifests and README to output_dir.
 
     Quotas are set from cluster allocatable CPU and memory when cluster is
@@ -670,6 +684,8 @@ def prepare_kueue_setup(output_dir, namespace="default", kube_context=None):
         output_dir: Directory to write files
         namespace: Kubernetes namespace for LocalQueue
         kube_context: Kubernetes context to use. None uses the active context.
+        node_labels: Optional dict of node labels to add to the ResourceFlavor spec
+            (e.g. {"node-pool": "primary"}). Jobs will only run on matching nodes.
     """
     cpu_quota, memory_quota = get_cluster_allocatable_resources(kube_context=kube_context)
     yaml_content = KUEUE_QUEUES_YAML.format(
@@ -678,6 +694,7 @@ def prepare_kueue_setup(output_dir, namespace="default", kube_context=None):
         cluster_queue=CLUSTER_QUEUE_NAME,
         cpu_quota=cpu_quota,
         memory_quota=memory_quota,
+        node_labels_spec=_format_node_labels_spec(node_labels),
     ).strip()
     kueue_file = f"{output_dir}/kueue-queue-setup.yaml"
     with open(kueue_file, "w") as f:

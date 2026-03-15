@@ -25,6 +25,7 @@ from importlib.metadata import entry_points
 import yaml
 
 from robovast.common.cli.project_config import ProjectConfig
+from robovast.common.common import load_config
 
 from .kubernetes_kueue import (apply_kueue_queues, install_kueue_helm,
                                uninstall_kueue_helm)
@@ -157,6 +158,50 @@ def delete_cluster_config_flag(context_key=None):
         pass
 
 
+def get_kubernetes_node_labels_from_config(config_path=None):
+    """Read job and control pod node labels from the vast config.
+
+    Reads from::
+
+        execution:
+          kubernetes:
+            jobs:
+              node_labels:
+                <key>: <value>   # applied to ResourceFlavor (Kueue job scheduling)
+            control:
+              node_labels:
+                <key>: <value>   # applied as nodeSelector to the robovast control pod
+
+    Args:
+        config_path: Path to the ``.vast`` config file.  When ``None`` the
+            active project config is used.
+
+    Returns:
+        tuple: ``(jobs_node_labels, control_node_labels)`` — each is a ``dict``
+            or ``None`` when not configured.
+    """
+    if config_path is None:
+        pc = ProjectConfig.load()
+        if pc is None or not getattr(pc, 'config_path', None):
+            return None, None
+        config_path = pc.config_path
+    try:
+        execution = load_config(config_path, subsection="execution", allow_missing=True)
+    except Exception:
+        return None, None
+    k8s = (execution or {}).get("kubernetes") or {}
+    jobs_labels = (k8s.get("jobs") or {}).get("node_labels") or None
+    control_labels = (k8s.get("control") or {}).get("node_labels") or None
+    # Normalise: must be a plain dict or None
+    if jobs_labels and not isinstance(jobs_labels, dict):
+        logger.warning("execution.kubernetes.jobs.node_labels is not a mapping — ignoring")
+        jobs_labels = None
+    if control_labels and not isinstance(control_labels, dict):
+        logger.warning("execution.kubernetes.control.node_labels is not a mapping — ignoring")
+        control_labels = None
+    return jobs_labels, control_labels
+
+
 def load_cluster_config_plugins():
     """Load all available cluster config plugins from entry points.
 
@@ -281,12 +326,23 @@ def setup_server(config_name=None, list_configs=False, force=False, **cluster_kw
 
     cluster_config = get_cluster_config(config_name)
 
+    # Read node labels from the vast config
+    jobs_node_labels, control_node_labels = get_kubernetes_node_labels_from_config()
+    if jobs_node_labels:
+        logger.info("Job node labels (ResourceFlavor): %s", jobs_node_labels)
+    if control_node_labels:
+        logger.info("Control pod node labels (nodeSelector): %s", control_node_labels)
+
     # Install Kueue and queues first (always)
     namespace = cluster_kwargs.get("namespace", "default")
     install_kueue_helm(kube_context=kube_context)
-    apply_kueue_queues(namespace=namespace, kube_context=kube_context)
+    apply_kueue_queues(namespace=namespace, kube_context=kube_context, node_labels=jobs_node_labels)
 
-    cluster_config.setup_cluster(kube_context=kube_context, **cluster_kwargs)
+    cluster_config.setup_cluster(
+        kube_context=kube_context,
+        control_node_labels=control_node_labels,
+        **cluster_kwargs,
+    )
 
     # Save the config name and kwargs to flag file after successful setup
     flag_path = get_cluster_config_flag_path(context_key)

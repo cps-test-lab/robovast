@@ -37,7 +37,8 @@ from robovast.execution.cluster_execution.cluster_execution import (
     get_cluster_job_counts_per_campaign)
 from robovast.execution.cluster_execution.cluster_setup import (
     delete_server, get_cluster_config, get_cluster_config_for_context,
-    get_cluster_namespace, load_cluster_setup_info,
+    get_cluster_namespace, get_kubernetes_node_labels_from_config,
+    load_cluster_setup_info,
     setup_server)
 from robovast.execution.cluster_execution import bucket_ops
 from robovast.execution.cluster_execution.share_providers import \
@@ -728,6 +729,10 @@ def setup(list_configs, namespace, options, force, kube_context, cluster_config)
     Use ``--list`` to see available cluster configuration plugins.
 
     Cluster-specific options can be passed using ``--option key=value``.
+
+    Node label selectors for job and control pods are read from the ``.vast``
+    config file under ``execution.kubernetes.jobs.node_labels`` and
+    ``execution.kubernetes.control.node_labels``.
     """
     if list_configs:
         try:
@@ -1115,10 +1120,15 @@ def prepare_run(output, config, runs, cluster_config, options, log_tree, kube_co
         with open(combined_file, 'w') as f:
             yaml.dump_all(all_jobs, f, default_flow_style=False)
 
-        cluster_config.prepare_setup_cluster(output, **cluster_kwargs)
+        # Read node labels from the vast config
+        _jobs_node_labels, _control_node_labels = get_kubernetes_node_labels_from_config(config_path)
+
+        cluster_config.prepare_setup_cluster(output, control_node_labels=_control_node_labels,
+                                             **cluster_kwargs)
         from robovast.execution.cluster_execution.kubernetes_kueue import \
             prepare_kueue_setup  # pylint: disable=import-outside-toplevel
-        prepare_kueue_setup(output, namespace=namespace, kube_context=kube_context)
+        prepare_kueue_setup(output, namespace=namespace, kube_context=kube_context,
+                            node_labels=_jobs_node_labels)
 
         generate_upload_script(
             output, job_runner.campaign, namespace, cluster_config,
