@@ -70,7 +70,9 @@ def results():
                    '(e.g. --skip rosbags_to_webm). Can be specified multiple times.')
 @click.option('--skip-db-creation', is_flag=True,
               help='Skip data.db creation.')
-def postprocess_cmd(results_dir, force, override, debug, skip_rosout, skip_plugins, skip_db_creation):
+@click.option('--skip-metadata', is_flag=True,
+              help='Skip metadata.yaml generation.')
+def postprocess_cmd(results_dir, force, override, debug, skip_rosout, skip_plugins, skip_db_creation, skip_metadata):
     """Run postprocessing commands on run results.
 
     Executes postprocessing commands defined in the .vast file found in the
@@ -112,6 +114,7 @@ def postprocess_cmd(results_dir, force, override, debug, skip_rosout, skip_plugi
         skip_rosout=skip_rosout,
         skip=list(skip_plugins),
         skip_db_creation=skip_db_creation,
+        skip_metadata=skip_metadata,
     )
 
     click.echo("\n" + "=" * 60)

@@ -361,6 +361,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         skip_rosout: bool = False,
         skip: Optional[List[str]] = None,
         skip_db_creation: bool = False,
+        skip_metadata: bool = False,
 ):
     """Run postprocessing commands on run results.
 
@@ -530,11 +531,14 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
             raise RuntimeError(f"data.db generation failed: {db_msg}")
 
     # Generate metadata.yaml in each campaign directory
-    meta_success, meta_msg = generate_campaign_metadata(
-        results_dir, vast_file=vast_file, output_callback=output_callback,
-    )
-    if not meta_success:
-        output(f"Warning: Metadata generation failed: {meta_msg}")
+    if skip_metadata:
+        output("Skipping metadata generation")
+    else:
+        meta_success, meta_msg = generate_campaign_metadata(
+            results_dir, vast_file=vast_file, output_callback=output_callback,
+        )
+        if not meta_success:
+            output(f"Warning: Metadata generation failed: {meta_msg}")
 
     if success:
         return True, "Postprocessing completed successfully!"
