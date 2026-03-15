@@ -441,6 +441,88 @@ Parameters are validated against the scenario file (``.osc``); only parameters d
 
    Parameter values must match the types expected by the scenario. If the scenario defines a parameter as a string (e.g. ``headless: string = "False"``), use quoted values.
 
+kubernetes
+^^^^^^^^^^
+
+**Type:** Dictionary
+
+**Required:** No
+
+**Applies to:** Cluster execution only (ignored for local runs)
+
+Configuration options that apply only when running tests on a Kubernetes cluster (e.g. ``vast execution cluster run``).
+
+kubernetes.jobs
+"""""""""""""""
+
+**Type:** Dictionary
+
+**Required:** No
+
+Settings applied to the Kubernetes ``Job`` objects that execute individual runs.
+
+kubernetes.jobs.node_labels
+''''''''''''''''''''''''''''
+
+**Type:** Dictionary (label key-value pairs)
+
+**Required:** No
+
+Node selector labels added to the ``Job`` pod spec via ``nodeSelector``.
+Only nodes whose labels match **all** specified key-value pairs will be
+eligible to run the job pods.  Use this to pin simulation workloads to a
+dedicated node pool (e.g. high-CPU nodes).
+
+.. code-block:: yaml
+
+   execution:
+     kubernetes:
+       jobs:
+         node_labels:
+           node-pool: primary
+
+kubernetes.control
+""""""""""""""""""
+
+**Type:** Dictionary
+
+**Required:** No
+
+Settings applied to the RoboVAST control pod (the pod that orchestrates
+the campaign — uploading configs, monitoring jobs, collecting results).
+
+kubernetes.control.node_labels
+'''''''''''''''''''''''''''''''
+
+**Type:** Dictionary (label key-value pairs)
+
+**Required:** No
+
+Node selector labels added to the control pod's ``nodeSelector``.
+Use this to schedule the orchestration workload on a separate, lighter
+node pool so that it does not compete with simulation jobs for resources.
+
+.. code-block:: yaml
+
+   execution:
+     kubernetes:
+       control:
+         node_labels:
+           node-pool: extra
+
+**Combined example** (pin jobs to ``primary`` nodes, control pod to ``extra``)
+
+.. code-block:: yaml
+
+   execution:
+     kubernetes:
+       jobs:
+         node_labels:
+           node-pool: primary
+       control:
+         node_labels:
+           node-pool: extra
+
 
 Results Processing Section
 --------------------------
