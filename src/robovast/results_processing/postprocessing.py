@@ -373,13 +373,23 @@ def _path_should_exclude_from_hash(rel_path: str, exclude_set: set) -> bool:
     return False
 
 
-def compute_dir_hash(dir_path: str, exclude_set: Optional[set] = None) -> str:
+def compute_dir_hash(
+    dir_path: str,
+    exclude_set: Optional[set] = None,
+    progress_callback=None,
+) -> str:
     """Compute a hash for a directory based on modification time and file sizes.
 
     Uses parallel directory scanning (ThreadPoolExecutor + os.scandir) so that
     NFS/network stat latency is hidden behind concurrent requests.  os.scandir
     returns cached stat info from the directory listing itself, avoiding the
     double-stat that path.rglob() + stat() would incur.
+
+    Args:
+        dir_path: Directory to hash.
+        exclude_set: Set of relative paths to skip (postprocessing outputs).
+        progress_callback: Optional callable(n_files) invoked after each batch
+            of directory scans completes, with the running file count so far.
     """
     path_str = os.path.abspath(dir_path)
     path_len = len(path_str) + 1  # +1 for the path separator
@@ -430,6 +440,8 @@ def compute_dir_hash(dir_path: str, exclude_set: Optional[set] = None) -> str:
                 all_parts.extend(file_parts)
                 for sd in subdirs:
                     pending.add(executor.submit(scan_dir, sd))
+            if progress_callback is not None:
+                progress_callback(len(all_parts))
 
     return hashlib.md5("".join(sorted(all_parts)).encode()).hexdigest()
 
@@ -574,7 +586,13 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         output(f"Checking if postprocessing is needed...")
         # Compute hash of results directory
         start_time = time.time()
-        hash_result = compute_dir_hash(results_dir, exclude_set=exclude_set)
+
+        def _hash_progress(n: int) -> None:
+            print(f"\rHashing results... {n} files", end="", flush=True)
+
+        hash_result = compute_dir_hash(results_dir, exclude_set=exclude_set,
+                                       progress_callback=_hash_progress)
+        print()  # end the \r progress line
         elapsed_time = time.time() - start_time
         output(f"Hashing {results_dir} took {elapsed_time:.4f} seconds")
 
@@ -688,7 +706,13 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
                 output("Computing directory hash...")
                 _t = time.time()
                 combined_exclude = exclude_set | output_paths
-                hash_result = compute_dir_hash(results_dir, exclude_set=combined_exclude)
+
+                def _hash_progress_force(n: int) -> None:
+                    print(f"\rHashing results... {n} files", end="", flush=True)
+
+                hash_result = compute_dir_hash(results_dir, exclude_set=combined_exclude,
+                                               progress_callback=_hash_progress_force)
+                print()  # end the \r progress line
                 output(f"Directory hash computed in {time.time() - _t:.1f}s")
 
             with open(hash_file, 'w') as f:
