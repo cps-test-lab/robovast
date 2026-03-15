@@ -39,6 +39,7 @@ Usage::
 import argparse
 import contextlib
 import csv
+import hashlib
 import io
 import json
 import math
@@ -575,6 +576,46 @@ HANDLER_REGISTRY: Dict[str, type] = {
 
 
 # ---------------------------------------------------------------------------
+# Per-bag cache helpers
+# ---------------------------------------------------------------------------
+
+_CACHE_FILENAME = ".rosbags_process_cache"
+
+
+def _bag_fingerprint(bag_path: str, plugin_configs_hash: str) -> str:
+    """Stable fingerprint of a bag directory + plugin configs (mtime + size, no content read)."""
+    parts: List[str] = []
+    for root, _, files in os.walk(bag_path):
+        for f in sorted(files):
+            fp = os.path.join(root, f)
+            try:
+                stat = os.stat(fp)
+                rel = os.path.relpath(fp, bag_path)
+                parts.append(f"{rel}:{stat.st_mtime:.6f}:{stat.st_size}")
+            except OSError:
+                pass
+    parts.sort()
+    parts.append(f"plugins:{plugin_configs_hash}")
+    return hashlib.md5("|".join(parts).encode()).hexdigest()
+
+
+def _read_cache(run_dir: str) -> Optional[str]:
+    try:
+        with open(os.path.join(run_dir, _CACHE_FILENAME), "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+def _write_cache(run_dir: str, fingerprint: str) -> None:
+    try:
+        with open(os.path.join(run_dir, _CACHE_FILENAME), "w", encoding="utf-8") as f:
+            f.write(fingerprint)
+    except OSError:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Per-bag worker
 # ---------------------------------------------------------------------------
 
@@ -590,7 +631,14 @@ def process_rosbag_worker(args: tuple) -> Tuple[str, int, List[Tuple[int, List[s
         (record_count, output_files) per handler. total_records == -2 if the
         bag itself failed to open.
     """
-    bag_path, plugin_configs, debug = args
+    bag_path, plugin_configs, debug, force, plugin_configs_hash = args
+    run_dir = os.path.dirname(bag_path)
+    fingerprint: Optional[str] = None
+
+    if not force:
+        fingerprint = _bag_fingerprint(bag_path, plugin_configs_hash)
+        if _read_cache(run_dir) == fingerprint:
+            return bag_path, -1, []  # cache hit — already processed
 
     with contextlib.redirect_stdout(sys.stdout if debug else io.StringIO()):
         # Instantiate handlers from config inside the worker (avoids pickling issues)
@@ -698,6 +746,10 @@ def process_rosbag_worker(args: tuple) -> Tuple[str, int, List[Tuple[int, List[s
                 handler_results.append((-2, []))
 
     total = sum(r for r, _ in handler_results if r > 0)
+    if all(r != -2 for r, _ in handler_results):
+        if fingerprint is None:
+            fingerprint = _bag_fingerprint(bag_path, plugin_configs_hash)
+        _write_cache(run_dir, fingerprint)
     return bag_path, total, handler_results
 
 
@@ -737,6 +789,11 @@ def main() -> int:
         action="store_true",
         help="Print per-bag processing details (default: progress bar only)",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Reprocess all bags even if already cached",
+    )
     args = parser.parse_args()
 
     try:
@@ -766,13 +823,20 @@ def main() -> int:
         f"workers: {args.workers}"
     )
 
-    process_args = [(bag_path, plugin_configs, args.debug) for bag_path in rosbag_paths]
+    plugin_configs_hash = hashlib.md5(
+        json.dumps(plugin_configs, sort_keys=True).encode()
+    ).hexdigest()
+    process_args = [
+        (bag_path, plugin_configs, args.debug, args.force, plugin_configs_hash)
+        for bag_path in rosbag_paths
+    ]
     n_bags = len(rosbag_paths)
     input_root = os.path.abspath(args.input)
 
     start = time.time()
     total_records = 0
     processed_bags = 0
+    cached_bags = 0
     error_bags = 0
     failed_bags = 0
     completed = 0
@@ -789,9 +853,12 @@ def main() -> int:
                 filled = int(20 * completed / n_bags)
                 bar = "█" * filled + "░" * (20 - filled)
                 pct = completed / n_bags * 100
+                remaining = (n_bags - completed) / rate
+                eta_m, eta_s = divmod(int(remaining), 60)
+                eta_str = f"{eta_m}m{eta_s:02d}s" if eta_m else f"{eta_s}s"
                 print(
                     f"Processing rosbags  [{bar}]  {pct:5.1f}%"
-                    f"  {completed}/{n_bags} bag  {rate:.1f} bag/s",
+                    f"  {completed}/{n_bags} bag  {rate:.1f} bag/s  ETA {eta_str}",
                     flush=True,
                 )
                 all_results.append((bag_path, bag_total, handler_results))
@@ -801,6 +868,9 @@ def main() -> int:
 
     # Aggregate and write provenance
     for bag_path, bag_total, handler_results in all_results:
+        if bag_total == -1:
+            cached_bags += 1
+            continue
         if bag_total == -2:
             error_bags += 1
             continue
@@ -833,9 +903,10 @@ def main() -> int:
             failed_bags += 1
 
     elapsed = time.time() - start
+    cached_str = f", {cached_bags} cached" if cached_bags else ""
     print(
         f"Summary: {len(rosbag_paths)} rosbags "
-        f"({processed_bags} success, {error_bags} errors, {failed_bags} no-data), "
+        f"({processed_bags} success{cached_str}, {error_bags} errors, {failed_bags} no-data), "
         f"{total_records} total records, {elapsed:.2f}s"
     )
     return 0

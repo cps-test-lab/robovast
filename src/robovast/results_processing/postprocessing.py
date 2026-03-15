@@ -81,6 +81,7 @@ def execute_postprocessing_plugin(
     provenance_file: Optional[str] = None,
     execution_image: Optional[str] = None,
     debug: bool = False,
+    force: bool = False,
 ) -> Tuple[bool, str, List[dict]]:
     """Execute a postprocessing plugin with parameters.
 
@@ -107,6 +108,8 @@ def execute_postprocessing_plugin(
         kwargs['execution_image'] = execution_image
     if debug:
         kwargs['debug'] = debug
+    if force:
+        kwargs['force'] = force
 
     try:
         result = plugin_func(**kwargs)
@@ -622,6 +625,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
                 provenance_file=provenance_file,
                 execution_image=execution_image,
                 debug=debug,
+                force=force,
             )
 
             all_provenance_entries.extend(entries)

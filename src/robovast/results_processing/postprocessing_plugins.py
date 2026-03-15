@@ -688,6 +688,7 @@ class RosbagsProcess(BasePostprocessingPlugin):
         provenance_file: Optional[str] = None,
         execution_image: Optional[str] = None,
         debug: bool = False,
+        force: bool = False,
     ) -> Tuple[bool, str]:
         """Execute rosbags_process plugin.
 
@@ -725,6 +726,8 @@ class RosbagsProcess(BasePostprocessingPlugin):
             cmd.extend(["--bag-dir", bag_dir])
         if debug:
             cmd.append("--debug")
+        if force:
+            cmd.append("--force")
         cmd.append(results_dir)
 
         try:
