@@ -65,7 +65,10 @@ def results():
               help='Show full plugin output (stdout) for each postprocessing step.')
 @click.option('--skip-rosout', is_flag=True,
               help='Skip rosout bag processing.')
-def postprocess_cmd(results_dir, force, override, debug, skip_rosout):
+@click.option('--skip', 'skip_plugins', multiple=True, metavar='PLUGIN',
+              help='Skip a postprocessing plugin defined in the .vast file '
+                   '(e.g. --skip rosbags_to_webm). Can be specified multiple times.')
+def postprocess_cmd(results_dir, force, override, debug, skip_rosout, skip_plugins):
     """Run postprocessing commands on run results.
 
     Executes postprocessing commands defined in the .vast file found in the
@@ -105,6 +108,7 @@ def postprocess_cmd(results_dir, force, override, debug, skip_rosout):
         vast_file=override,
         debug=debug,
         skip_rosout=skip_rosout,
+        skip=list(skip_plugins),
     )
 
     click.echo("\n" + "=" * 60)

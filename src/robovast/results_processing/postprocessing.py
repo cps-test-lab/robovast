@@ -359,6 +359,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         vast_file: Optional[str] = None,
         debug: bool = False,
         skip_rosout: bool = False,
+        skip: Optional[List[str]] = None,
 ):
     """Run postprocessing commands on run results.
 
@@ -373,7 +374,8 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         vast_file: Optional explicit path to a ``.vast`` file.  When given, the
             campaign copy is ignored entirely.
         debug: If True, include full plugin stdout in output; otherwise show only the summary line.
-        skip_rosout: If True, skip rosout processing entirely.
+        skip_rosout: If True, skip rosout processing entirely (shorthand for ``skip=['rosbags_rosout_to_csv']``).
+        skip: List of plugin names to skip entirely (e.g. ``['rosbags_to_webm']``).
 
     Returns:
         Tuple of (success: bool, message: str)
@@ -427,13 +429,29 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     if force:
         output("Force mode: per-rosbag caches will be ignored")
 
+    # Build unified skip set
+    skip_set: set = set(skip) if skip else set()
+    if skip_rosout:
+        skip_set.add("rosbags_rosout_to_csv")
+
+    # Filter out explicitly skipped plugins before batching
+    if skip_set:
+        filtered = []
+        for cmd in commands:
+            name = cmd if isinstance(cmd, str) else list(cmd.keys())[0]
+            if name in skip_set:
+                output(f"Skipping: {name}")
+            else:
+                filtered.append(cmd)
+        commands = filtered
+
     # Load plugins
     plugins = load_postprocessing_plugins()
 
     # Batch all batchable rosbags_* commands into a single rosbags_process call
     # (reads each rosbag once instead of once per plugin). rosout_to_csv is always
-    # included in the batch, so the separate forced rosout run below is no longer needed.
-    commands = _batch_rosbags_commands(commands, skip_rosout=skip_rosout)
+    # included unless skipped.
+    commands = _batch_rosbags_commands(commands, skip_rosout="rosbags_rosout_to_csv" in skip_set)
 
     # Validate all commands first
     for command in commands:
