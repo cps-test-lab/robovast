@@ -812,15 +812,16 @@ def main() -> int:
         print(f"Error: unknown handler type(s): {unknown}. Available: {list(HANDLER_REGISTRY)}")
         return 1
 
+    print(f"Scanning for rosbags ({args.bag_dir})...", end="", flush=True)
+    _t_scan = time.time()
     rosbag_paths = find_rosbags(args.input, bag_dir_name=args.bag_dir)
+    print(f"\r{len(rosbag_paths)} rosbags found in {time.time() - _t_scan:.1f}s{' ' * 20}")
     if not rosbag_paths:
-        print(f"No rosbags found in {args.input}")
         return 0
 
     types_desc = ", ".join(c.get("type", "?") for c in plugin_configs)
     print(
-        f"Found {len(rosbag_paths)} rosbags, handlers: [{types_desc}], "
-        f"workers: {args.workers}"
+        f"Handlers: [{types_desc}]  workers: {args.workers}"
     )
 
     plugin_configs_hash = hashlib.md5(
