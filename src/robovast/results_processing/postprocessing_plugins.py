@@ -687,6 +687,7 @@ class RosbagsProcess(BasePostprocessingPlugin):
         bag_dir: Optional[str] = None,
         provenance_file: Optional[str] = None,
         execution_image: Optional[str] = None,
+        debug: bool = False,
     ) -> Tuple[bool, str]:
         """Execute rosbags_process plugin.
 
@@ -698,6 +699,7 @@ class RosbagsProcess(BasePostprocessingPlugin):
             bag_dir: Rosbag subdirectory name to search for (default: "rosbag2").
             provenance_file: Optional path for provenance JSON.
             execution_image: Optional Docker image override.
+            debug: If True, print all per-bag output; otherwise show only progress/summary.
 
         Returns:
             Tuple of (success, message).
@@ -721,6 +723,8 @@ class RosbagsProcess(BasePostprocessingPlugin):
             cmd.extend(["--workers", str(workers)])
         if bag_dir is not None:
             cmd.extend(["--bag-dir", bag_dir])
+        if debug:
+            cmd.append("--debug")
         cmd.append(results_dir)
 
         try:

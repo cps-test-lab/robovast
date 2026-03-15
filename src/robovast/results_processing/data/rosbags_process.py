@@ -37,7 +37,9 @@ Usage::
 """
 
 import argparse
+import contextlib
 import csv
+import io
 import json
 import math
 import os
@@ -580,104 +582,105 @@ def process_rosbag_worker(args: tuple) -> Tuple[str, int, List[Tuple[int, List[s
     """Process a single rosbag with all configured handlers.
 
     Args:
-        args: (bag_path, plugin_configs) where plugin_configs is a list of
-              handler config dicts.
+        args: (bag_path, plugin_configs, debug) where plugin_configs is a list of
+              handler config dicts and debug controls per-bag output.
 
     Returns:
         (bag_path, total_records, handler_results) where handler_results is a list of
         (record_count, output_files) per handler. total_records == -2 if the
         bag itself failed to open.
     """
-    bag_path, plugin_configs = args
+    bag_path, plugin_configs, debug = args
 
-    # Instantiate handlers from config inside the worker (avoids pickling issues)
-    handlers: List[RosbagHandler] = []
-    for cfg in plugin_configs:
-        handler_type = cfg.get("type", "")
-        handler_cls = HANDLER_REGISTRY.get(handler_type)
-        if handler_cls is None:
-            print(f"  ✗ Unknown handler type '{handler_type}' — skipping")
-            continue
-        try:
-            handlers.append(handler_cls.from_config(cfg))
-        except Exception as e:
-            print(f"  ✗ Handler '{handler_type}' init failed: {e}")
-
-    if not handlers:
-        return -2, []
-
-    # Open bag
-    try:
-        reader = rosbag2_py.SequentialReader()
-        reader.open(
-            rosbag2_py.StorageOptions(uri=bag_path, storage_id="mcap"),
-            rosbag2_py.ConverterOptions(
-                input_serialization_format="cdr",
-                output_serialization_format="cdr",
-            ),
-        )
-        topic_type_map: Dict[str, str] = {
-            t.name: t.type for t in reader.get_all_topics_and_types()
-        }
-    except Exception as e:
-        print(f"✗ {bag_path}: failed to open — {e}")
-        return -2, []
-
-    # Call on_begin for each handler; remove those that fail
-    active_handlers: List[RosbagHandler] = []
-    for h in handlers:
-        try:
-            h.on_begin(bag_path, topic_type_map)
-            active_handlers.append(h)
-        except Exception as e:
-            print(f"  ✗ Handler {type(h).__name__} on_begin failed: {e}")
-
-    if not active_handlers:
-        return 0, []
-
-    # Build topic→handlers dispatch map (intersect with topics in this bag)
-    topic_to_handlers: Dict[str, List[RosbagHandler]] = {}
-    for h in active_handlers:
-        for t in h.topics():
-            if t in topic_type_map:
-                topic_to_handlers.setdefault(t, []).append(h)
-
-    # Pre-load message types once for all subscribed+available topics
-    msg_type_cache: Dict[str, type] = {}
-    for topic in topic_to_handlers:
-        try:
-            msg_type_cache[topic] = get_message(topic_type_map[topic])
-        except Exception as e:
-            print(f"  ✗ Could not load message type for {topic}: {e}")
-
-    # Main read loop — deserialize each message at most once
-    while reader.has_next():
-        topic, data, timestamp = reader.read_next()
-        if topic not in topic_to_handlers:
-            continue
-        msg_cls = msg_type_cache.get(topic)
-        if msg_cls is None:
-            continue
-        try:
-            msg = deserialize_message(data, msg_cls)
-        except Exception as e:
-            print(f"  ✗ Deserialization error on {topic}: {e}")
-            continue
-        for h in topic_to_handlers[topic]:
+    with contextlib.redirect_stdout(sys.stdout if debug else io.StringIO()):
+        # Instantiate handlers from config inside the worker (avoids pickling issues)
+        handlers: List[RosbagHandler] = []
+        for cfg in plugin_configs:
+            handler_type = cfg.get("type", "")
+            handler_cls = HANDLER_REGISTRY.get(handler_type)
+            if handler_cls is None:
+                print(f"  ✗ Unknown handler type '{handler_type}' — skipping")
+                continue
             try:
-                h.on_message(topic, msg, timestamp)
+                handlers.append(handler_cls.from_config(cfg))
             except Exception as e:
-                print(f"  ✗ Handler {type(h).__name__} on_message error: {e}")
+                print(f"  ✗ Handler '{handler_type}' init failed: {e}")
 
-    # Collect results
-    handler_results: List[Tuple[int, List[str]]] = []
-    for h in active_handlers:
+        if not handlers:
+            return -2, []
+
+        # Open bag
         try:
-            result = h.on_end()
-            handler_results.append(result)
+            reader = rosbag2_py.SequentialReader()
+            reader.open(
+                rosbag2_py.StorageOptions(uri=bag_path, storage_id="mcap"),
+                rosbag2_py.ConverterOptions(
+                    input_serialization_format="cdr",
+                    output_serialization_format="cdr",
+                ),
+            )
+            topic_type_map: Dict[str, str] = {
+                t.name: t.type for t in reader.get_all_topics_and_types()
+            }
         except Exception as e:
-            print(f"  ✗ Handler {type(h).__name__} on_end error: {e}")
-            handler_results.append((-2, []))
+            print(f"✗ {bag_path}: failed to open — {e}")
+            return -2, []
+
+        # Call on_begin for each handler; remove those that fail
+        active_handlers: List[RosbagHandler] = []
+        for h in handlers:
+            try:
+                h.on_begin(bag_path, topic_type_map)
+                active_handlers.append(h)
+            except Exception as e:
+                print(f"  ✗ Handler {type(h).__name__} on_begin failed: {e}")
+
+        if not active_handlers:
+            return 0, []
+
+        # Build topic→handlers dispatch map (intersect with topics in this bag)
+        topic_to_handlers: Dict[str, List[RosbagHandler]] = {}
+        for h in active_handlers:
+            for t in h.topics():
+                if t in topic_type_map:
+                    topic_to_handlers.setdefault(t, []).append(h)
+
+        # Pre-load message types once for all subscribed+available topics
+        msg_type_cache: Dict[str, type] = {}
+        for topic in topic_to_handlers:
+            try:
+                msg_type_cache[topic] = get_message(topic_type_map[topic])
+            except Exception as e:
+                print(f"  ✗ Could not load message type for {topic}: {e}")
+
+        # Main read loop — deserialize each message at most once
+        while reader.has_next():
+            topic, data, timestamp = reader.read_next()
+            if topic not in topic_to_handlers:
+                continue
+            msg_cls = msg_type_cache.get(topic)
+            if msg_cls is None:
+                continue
+            try:
+                msg = deserialize_message(data, msg_cls)
+            except Exception as e:
+                print(f"  ✗ Deserialization error on {topic}: {e}")
+                continue
+            for h in topic_to_handlers[topic]:
+                try:
+                    h.on_message(topic, msg, timestamp)
+                except Exception as e:
+                    print(f"  ✗ Handler {type(h).__name__} on_message error: {e}")
+
+        # Collect results
+        handler_results: List[Tuple[int, List[str]]] = []
+        for h in active_handlers:
+            try:
+                result = h.on_end()
+                handler_results.append(result)
+            except Exception as e:
+                print(f"  ✗ Handler {type(h).__name__} on_end error: {e}")
+                handler_results.append((-2, []))
 
     total = sum(r for r, _ in handler_results if r > 0)
     return bag_path, total, handler_results
@@ -714,6 +717,11 @@ def main() -> int:
         default=None,
         help="Write provenance JSON to this path (paths relative to input dir)",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Print per-bag processing details (default: progress bar only)",
+    )
     args = parser.parse_args()
 
     try:
@@ -743,7 +751,7 @@ def main() -> int:
         f"workers: {args.workers}"
     )
 
-    process_args = [(bag_path, plugin_configs) for bag_path in rosbag_paths]
+    process_args = [(bag_path, plugin_configs, args.debug) for bag_path in rosbag_paths]
     n_bags = len(rosbag_paths)
     input_root = os.path.abspath(args.input)
 
