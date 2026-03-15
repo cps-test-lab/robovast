@@ -684,6 +684,7 @@ class RosbagsProcess(BasePostprocessingPlugin):
         config_dir: str,
         plugins: List[dict],
         workers: Optional[int] = None,
+        bag_dir: Optional[str] = None,
         provenance_file: Optional[str] = None,
         execution_image: Optional[str] = None,
     ) -> Tuple[bool, str]:
@@ -694,6 +695,7 @@ class RosbagsProcess(BasePostprocessingPlugin):
             config_dir: Directory containing the config file.
             plugins: List of handler config dicts, each with a ``type`` key.
             workers: Optional number of parallel workers.
+            bag_dir: Rosbag subdirectory name to search for (default: "rosbag2").
             provenance_file: Optional path for provenance JSON.
             execution_image: Optional Docker image override.
 
@@ -717,6 +719,8 @@ class RosbagsProcess(BasePostprocessingPlugin):
         cmd.extend(["--config", config_json])
         if workers is not None:
             cmd.extend(["--workers", str(workers)])
+        if bag_dir is not None:
+            cmd.extend(["--bag-dir", bag_dir])
         cmd.append(results_dir)
 
         try:
@@ -951,13 +955,24 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
             and not d.name.startswith(".")
         )
 
+        # Count total runs upfront for progress reporting
+        all_run_dirs: list = []
+        for config_dir in config_dirs:
+            for d in config_dir.iterdir():
+                if d.is_dir() and d.name.isdigit():
+                    all_run_dirs.append((config_dir.name, d))
+        total_runs = len(all_run_dirs)
+        _log(f"  Building data.db from {total_runs} run(s) across {len(config_dirs)} config(s)...")
+
+        _COMMIT_BATCH = 500  # commit every N runs to reduce fsync overhead
+        completed_runs = 0
+
         for config_dir in config_dirs:
             config_name = config_dir.name
             run_dirs = sorted(
                 (d for d in config_dir.iterdir() if d.is_dir() and d.name.isdigit()),
                 key=lambda d: int(d.name),
             )
-            _log(f"  config: {config_name} ({len(run_dirs)} run(s))")
             for run_dir in run_dirs:
                 run_id = int(run_dir.name)
                 scenario_ts: float | None = None
@@ -1040,11 +1055,14 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
                     else:
                         # Add any new columns from this CSV
                         existing = created_tables[sql_name]
+                        altered = False
                         for col in csv_cols:
                             if col not in existing:
                                 conn.execute(f'ALTER TABLE "{sql_name}" ADD COLUMN "{col}" TEXT')
                                 existing.add(col)
-                        conn.commit()
+                                altered = True
+                        if altered:
+                            conn.commit()
 
                     placeholders = ", ".join("?" for _ in all_data_cols)
                     col_list = ", ".join(f'"{c}"' for c in all_data_cols)
@@ -1057,7 +1075,6 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
                         for row in rows
                     ]
                     conn.executemany(insert_sql, batch)
-                    conn.commit()
                     table_rows[display_name] = table_rows.get(display_name, 0) + len(rows)
 
                 # Record scenario timestamp (even if None)
@@ -1066,9 +1083,14 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
                     "(config_name, run_id, timestamp, status, message) VALUES (?, ?, ?, ?, ?)",
                     (config_name, run_id, scenario_ts, scenario_status, scenario_msg),
                 )
-                conn.commit()
 
-        # Persist name map
+                completed_runs += 1
+                if completed_runs % _COMMIT_BATCH == 0:
+                    conn.commit()
+                    pct = completed_runs / total_runs * 100 if total_runs else 100
+                    _log(f"  {completed_runs}/{total_runs} runs ({pct:.0f}%)")
+
+        # Final commit and persist name map
         conn.commit()
         table_count = len(created_tables)
     finally:

@@ -81,15 +81,28 @@ def gen_msg_values(msg, prefix=""):
         yield prefix, msg
 
 
-def find_rosbags(directory):
-    """Find all rosbag directories in subdirectories."""
+def find_rosbags(directory, bag_dir_name="rosbag2"):
+    """Find all rosbag directories by looking for subdirs named bag_dir_name.
+
+    Instead of scanning file contents, this checks for the existence of a
+    subdirectory with a specific name (e.g. "rosbag2") under each directory in
+    the tree.  The first path component of bag_dir_name is pruned from the walk
+    to avoid recursing into bag directories.
+
+    Args:
+        directory: Root directory to search under.
+        bag_dir_name: Subdirectory name to look for (default: "rosbag2").
+                      May contain a single path separator, e.g. "logs/rosout_bag".
+
+    Returns:
+        Sorted list of found rosbag directory paths.
+    """
     rosbag_dirs = []
-    for root, _, files in os.walk(directory):
-        # Check if this directory contains .mcap files or metadata.yaml (rosbag indicators)
-        has_mcap = any(f.endswith('.mcap') for f in files)
-        has_metadata = 'metadata.yaml' in files
-
-        if has_mcap or has_metadata:
-            rosbag_dirs.append(root)
-
-    return rosbag_dirs
+    prune_name = bag_dir_name.split("/")[0]
+    for root, dirnames, _ in os.walk(directory):
+        candidate = os.path.join(root, bag_dir_name)
+        if os.path.isdir(candidate):
+            rosbag_dirs.append(candidate)
+            if prune_name in dirnames:
+                dirnames.remove(prune_name)
+    return sorted(rosbag_dirs)

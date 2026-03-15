@@ -131,64 +131,72 @@ def execute_postprocessing_plugin(
 
 
 # Plugin names that can be transparently batched into a single rosbags_process call.
-# Maps plugin name → handler type string used in rosbags_process.py config.
-_ROSBAG_BATCH_MAP: Dict[str, str] = {
-    "rosbags_to_csv":       "to_csv",
-    "rosbags_tf_to_csv":    "tf_to_csv",
-    "rosbags_bt_to_csv":    "bt_to_csv",
-    "rosbags_action_to_csv": "action_to_csv",
-    "rosbags_rosout_to_csv": "rosout_to_csv",
+# Maps plugin name → (handler_type, default_bag_dir).
+_ROSBAG_BATCH_MAP: Dict[str, Tuple[str, str]] = {
+    "rosbags_to_csv":        ("to_csv",         "rosbag2"),
+    "rosbags_tf_to_csv":     ("tf_to_csv",       "rosbag2"),
+    "rosbags_bt_to_csv":     ("bt_to_csv",       "rosbag2"),
+    "rosbags_action_to_csv": ("action_to_csv",   "rosbag2"),
+    "rosbags_rosout_to_csv": ("rosout_to_csv",   "logs/rosout_bag"),
 }
 
 
 def _batch_rosbags_commands(commands: List) -> List:
-    """Replace all batchable rosbags_* plugin calls with a single rosbags_process call.
+    """Replace all batchable rosbags_* plugin calls with rosbags_process calls.
 
-    Reads the command list and groups every command whose plugin name appears in
-    ``_ROSBAG_BATCH_MAP`` into a single ``rosbags_process`` command.  The batch
-    command is inserted at the position of the first batchable command found;
-    all other batchable commands are removed.  Non-batchable commands keep their
-    original order relative to the batch insertion point.
+    Groups every command whose plugin name appears in ``_ROSBAG_BATCH_MAP`` by
+    their ``bag_dir`` (the subdirectory name to search for rosbags).  One
+    ``rosbags_process`` command is emitted per distinct ``bag_dir``.  Each batch
+    is inserted at the position of the first batchable command sharing that
+    ``bag_dir``; all other batchable commands are removed.  Non-batchable
+    commands keep their original order.
 
-    ``rosout_to_csv`` is always included in the batch (with default parameters if
-    not explicitly configured) so that the forced separate rosout run is no longer
-    needed.
+    ``rosout_to_csv`` always gets its own batch with ``bag_dir="logs/rosout_bag"``
+    if not already present.
 
     Args:
         commands: Raw list of postprocessing commands from the .vast config.
 
     Returns:
-        New command list with batchable commands replaced by one rosbags_process call.
+        New command list with batchable commands replaced by rosbags_process calls.
     """
-    batch_plugins: List[dict] = []
+    # bag_dir → list of handler dicts for that bag dir
+    bag_dir_plugins: Dict[str, List[dict]] = {}
+    # bag_dir → index in result where the placeholder lives
+    bag_dir_slot: Dict[str, int] = {}
     result: List = []
-    batch_placeholder_inserted = False
 
     for cmd in commands:
         plugin_name = cmd if isinstance(cmd, str) else list(cmd.keys())[0]
         if plugin_name in _ROSBAG_BATCH_MAP:
+            handler_type, default_bag_dir = _ROSBAG_BATCH_MAP[plugin_name]
             params = {} if isinstance(cmd, str) else (cmd[plugin_name] or {})
-            batch_plugins.append({"type": _ROSBAG_BATCH_MAP[plugin_name], **params})
-            if not batch_placeholder_inserted:
-                result.append(None)  # reserve slot at position of first batchable command
-                batch_placeholder_inserted = True
+            # Allow per-command bag_dir override; pop it so it's not passed to handler
+            params = dict(params)
+            bag_dir = params.pop("bag_dir", default_bag_dir)
+            bag_dir_plugins.setdefault(bag_dir, []).append({"type": handler_type, **params})
+            if bag_dir not in bag_dir_slot:
+                bag_dir_slot[bag_dir] = len(result)
+                result.append(None)  # reserve slot
         else:
             result.append(cmd)
 
-    # Always include rosout (with defaults) so the forced separate rosout run is not needed
-    if not any(p.get("type") == "rosout_to_csv" for p in batch_plugins):
-        batch_plugins.append({"type": "rosout_to_csv"})
+    # Always include rosout with its default bag_dir
+    rosout_bag_dir = _ROSBAG_BATCH_MAP["rosbags_rosout_to_csv"][1]
+    if not any(
+        p.get("type") == "rosout_to_csv"
+        for plugins in bag_dir_plugins.values()
+        for p in plugins
+    ):
+        bag_dir_plugins.setdefault(rosout_bag_dir, []).append({"type": "rosout_to_csv"})
+        if rosout_bag_dir not in bag_dir_slot:
+            bag_dir_slot[rosout_bag_dir] = len(result)
+            result.append(None)
 
-    batch_cmd: dict = {"rosbags_process": {"plugins": batch_plugins}}
-
-    if batch_placeholder_inserted:
-        for i, item in enumerate(result):
-            if item is None:
-                result[i] = batch_cmd
-                break
-    else:
-        # No batchable commands were in the config — append batch (rosout-only) at end
-        result.append(batch_cmd)
+    # Fill placeholder slots with the batch commands
+    for bag_dir, slot_idx in bag_dir_slot.items():
+        plugins = bag_dir_plugins[bag_dir]
+        result[slot_idx] = {"rosbags_process": {"plugins": plugins, "bag_dir": bag_dir}}
 
     return result
 
@@ -550,7 +558,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
                 # Continue with postprocessing if we can't read the hash file
     else:
         output("Force mode enabled: skipping cache check")
-        hash_result = compute_dir_hash(results_dir, exclude_set=exclude_set)
+        hash_result = None  # deferred to after processing to avoid blocking startup
 
     # Load plugins
     plugins = load_postprocessing_plugins()
@@ -629,12 +637,8 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     if success:
         try:
             os.makedirs(cache_dir, exist_ok=True)
-            with open(hash_file, 'w') as f:
-                f.write(hash_result)
-            output(f"Stored postprocessing hash to {hash_file}")
 
-            # Write hidden file listing all postprocessing output paths (used to exclude from hash)
-            output_paths = set()
+            # Collect new output paths from provenance first (needed for exclude set)
             for ent in all_provenance_entries:
                 out = ent.get("output") or ""
                 if not out:
@@ -642,6 +646,19 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
                 if os.sep != "/":
                     out = str(Path(out))
                 output_paths.add(out)
+
+            # In force mode the hash was deferred — compute it now excluding new outputs
+            if hash_result is None:
+                output("Computing directory hash...")
+                _t = time.time()
+                combined_exclude = exclude_set | output_paths
+                hash_result = compute_dir_hash(results_dir, exclude_set=combined_exclude)
+                output(f"Directory hash computed in {time.time() - _t:.1f}s")
+
+            with open(hash_file, 'w') as f:
+                f.write(hash_result)
+            output(f"Stored postprocessing hash to {hash_file}")
+
             with open(outputs_file, "w", encoding="utf-8") as f:
                 for p in sorted(output_paths):
                     f.write(p + "\n")

@@ -201,7 +201,7 @@ def main():
     args = parser.parse_args()
     min_level = _LEVEL_BY_NAME[args.min_level]
 
-    rosbag_paths = find_rosbags(args.input)
+    rosbag_paths = find_rosbags(args.input, bag_dir_name="logs/rosout_bag")
     print(f"Searching for rosbags in {args.input}...")
     if not rosbag_paths:
         print(f"No rosbags found in {args.input}")

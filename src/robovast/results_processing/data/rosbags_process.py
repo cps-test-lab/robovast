@@ -699,6 +699,11 @@ def main() -> int:
         help='JSON config string: {"plugins": [{"type": "...", ...}, ...]}',
     )
     parser.add_argument(
+        "--bag-dir",
+        default="rosbag2",
+        help="Name of the rosbag subdirectory within each run directory (default: rosbag2)",
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=cpu_count(),
@@ -727,7 +732,7 @@ def main() -> int:
         print(f"Error: unknown handler type(s): {unknown}. Available: {list(HANDLER_REGISTRY)}")
         return 1
 
-    rosbag_paths = find_rosbags(args.input)
+    rosbag_paths = find_rosbags(args.input, bag_dir_name=args.bag_dir)
     if not rosbag_paths:
         print(f"No rosbags found in {args.input}")
         return 0
