@@ -144,7 +144,7 @@ _ROSBAG_BATCH_MAP: Dict[str, Tuple[str, str]] = {
 }
 
 
-def _batch_rosbags_commands(commands: List) -> List:
+def _batch_rosbags_commands(commands: List, skip_rosout: bool = False) -> List:
     """Replace all batchable rosbags_* plugin calls with rosbags_process calls.
 
     Groups every command whose plugin name appears in ``_ROSBAG_BATCH_MAP`` by
@@ -154,11 +154,13 @@ def _batch_rosbags_commands(commands: List) -> List:
     ``bag_dir``; all other batchable commands are removed.  Non-batchable
     commands keep their original order.
 
-    ``rosout_to_csv`` always gets its own batch with ``bag_dir="logs/rosout_bag"``
-    if not already present.
+    ``rosout_to_csv`` is always added unless *skip_rosout* is ``True``.
 
     Args:
         commands: Raw list of postprocessing commands from the .vast config.
+        skip_rosout: When ``True``, omit rosout processing entirely (neither
+            auto-injected nor taken from explicit ``rosbags_rosout_to_csv``
+            commands in the config).
 
     Returns:
         New command list with batchable commands replaced by rosbags_process calls.
@@ -169,10 +171,15 @@ def _batch_rosbags_commands(commands: List) -> List:
     bag_dir_slot: Dict[str, int] = {}
     result: List = []
 
+    rosout_bag_dir = _ROSBAG_BATCH_MAP["rosbags_rosout_to_csv"][1]
+
     for cmd in commands:
         plugin_name = cmd if isinstance(cmd, str) else list(cmd.keys())[0]
         if plugin_name in _ROSBAG_BATCH_MAP:
             handler_type, default_bag_dir = _ROSBAG_BATCH_MAP[plugin_name]
+            # Skip rosout if requested
+            if skip_rosout and handler_type == "rosout_to_csv":
+                continue
             params = {} if isinstance(cmd, str) else (cmd[plugin_name] or {})
             # Allow per-command bag_dir override; pop it so it's not passed to handler
             params = dict(params)
@@ -184,9 +191,8 @@ def _batch_rosbags_commands(commands: List) -> List:
         else:
             result.append(cmd)
 
-    # Always include rosout with its default bag_dir
-    rosout_bag_dir = _ROSBAG_BATCH_MAP["rosbags_rosout_to_csv"][1]
-    if not any(
+    # Always include rosout unless explicitly skipped
+    if not skip_rosout and not any(
         p.get("type") == "rosout_to_csv"
         for plugins in bag_dir_plugins.values()
         for p in plugins
@@ -352,6 +358,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         force: bool = False,
         vast_file: Optional[str] = None,
         debug: bool = False,
+        skip_rosout: bool = False,
 ):
     """Run postprocessing commands on run results.
 
@@ -362,10 +369,11 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     Args:
         results_dir: Directory containing run results (parent of campaign-* dirs)
         output_callback: Optional callback function for output messages (takes message string)
-        force: If True, bypass caching and force postprocessing even if results are unchanged
+        force: If True, bypass per-rosbag caches and reprocess all bags.
         vast_file: Optional explicit path to a ``.vast`` file.  When given, the
             campaign copy is ignored entirely.
         debug: If True, include full plugin stdout in output; otherwise show only the summary line.
+        skip_rosout: If True, skip rosout processing entirely.
 
     Returns:
         Tuple of (success: bool, message: str)
@@ -425,7 +433,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     # Batch all batchable rosbags_* commands into a single rosbags_process call
     # (reads each rosbag once instead of once per plugin). rosout_to_csv is always
     # included in the batch, so the separate forced rosout run below is no longer needed.
-    commands = _batch_rosbags_commands(commands)
+    commands = _batch_rosbags_commands(commands, skip_rosout=skip_rosout)
 
     # Validate all commands first
     for command in commands:

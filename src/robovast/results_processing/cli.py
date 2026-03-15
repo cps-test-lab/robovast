@@ -63,7 +63,9 @@ def results():
                    'found in <campaign-name>-<timestamp>/_config/')
 @click.option('--debug', is_flag=True,
               help='Show full plugin output (stdout) for each postprocessing step.')
-def postprocess_cmd(results_dir, force, override, debug):
+@click.option('--skip-rosout', is_flag=True,
+              help='Skip rosout bag processing.')
+def postprocess_cmd(results_dir, force, override, debug, skip_rosout):
     """Run postprocessing commands on run results.
 
     Executes postprocessing commands defined in the .vast file found in the
@@ -102,6 +104,7 @@ def postprocess_cmd(results_dir, force, override, debug):
         force=force,
         vast_file=override,
         debug=debug,
+        skip_rosout=skip_rosout,
     )
 
     click.echo("\n" + "=" * 60)
