@@ -15,13 +15,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Postprocessing functionality for run result data."""
-import concurrent.futures
-import hashlib
 import inspect
 import json
 import os
 import tempfile
-import time
 from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -29,7 +26,6 @@ from typing import Dict, List, Optional, Tuple
 import yaml
 
 from robovast.common.common import load_config
-from robovast.common.execution import is_campaign_dir
 from robovast.results_processing.metadata import generate_campaign_metadata
 from robovast.results_processing.postprocessing_plugins import generate_data_db
 from robovast.common.results_utils import find_campaign_vast_file
@@ -314,152 +310,18 @@ def _write_postprocessing_provenance_yaml(
         pass  # skip if we cannot write
 
 
-def get_project_cache_dir(results_dir: str) -> str:
-    """Return the .cache directory inside results_dir."""
-    cache_dir = os.path.join(os.path.abspath(results_dir), ".cache")
-    os.makedirs(cache_dir, exist_ok=True)
-    return cache_dir
 
-
-def _get_postprocessing_cache_paths(results_dir: str) -> tuple[str, str, str]:
-    """Return (cache_dir, hash_file, outputs_file) for postprocessing.
-
-    All cache files are stored inside ``results_dir/.cache/``.
-    """
-    cache_dir = get_project_cache_dir(results_dir)
-    hash_file = os.path.join(cache_dir, "postprocessing.hash")
-    outputs_file = os.path.join(cache_dir, "postprocessing.outputs")
-    return cache_dir, hash_file, outputs_file
-
-
-def _load_postprocessing_outputs_exclude_set(outputs_file: str) -> set:
-    """Load the set of paths to exclude from hashing (postprocessing outputs).
-
-    Reads the per-results hidden file in .cache that lists all files produced by
-    postprocessing. Paths are normalized to forward slashes, relative to the
-    results directory.
-    """
-    exclude = set()
-    if not os.path.isfile(outputs_file):
-        return exclude
-    try:
-        with open(outputs_file, "r", encoding="utf-8") as f:
-            for line in f:
-                p = line.strip()
-                if not p:
-                    continue
-                # Normalize to forward slashes for consistent comparison
-                if os.sep != "/":
-                    p = str(Path(p))
-                exclude.add(p)
-    except OSError:
-        pass
-    return exclude
-
-
-def _path_should_exclude_from_hash(rel_path: str, exclude_set: set) -> bool:
-    """Return True if rel_path is an output of postprocessing and should be excluded."""
-    if not exclude_set:
-        return False
-    # Normalize to forward slashes
-    if os.sep != "/":
-        rel_path = str(Path(rel_path))
-    if rel_path in exclude_set:
-        return True
-    # Exclude files under a listed path (e.g. output was a directory)
-    for prefix in exclude_set:
-        if prefix and (rel_path == prefix or rel_path.startswith(prefix + "/")):
-            return True
-    return False
-
-
-def compute_dir_hash(
-    dir_path: str,
-    exclude_set: Optional[set] = None,
-    progress_callback=None,
-) -> str:
-    """Compute a hash for a directory based on modification time and file sizes.
-
-    Uses parallel directory scanning (ThreadPoolExecutor + os.scandir) so that
-    NFS/network stat latency is hidden behind concurrent requests.  os.scandir
-    returns cached stat info from the directory listing itself, avoiding the
-    double-stat that path.rglob() + stat() would incur.
-
-    Args:
-        dir_path: Directory to hash.
-        exclude_set: Set of relative paths to skip (postprocessing outputs).
-        progress_callback: Optional callable(n_files) invoked after each batch
-            of directory scans completes, with the running file count so far.
-    """
-    path_str = os.path.abspath(dir_path)
-    path_len = len(path_str) + 1  # +1 for the path separator
-
-    def scan_dir(scan_path: str):
-        """Scan one directory level; return (file_parts, subdirs)."""
-        file_parts: List[str] = []
-        subdirs: List[str] = []
-        try:
-            with os.scandir(scan_path) as it:
-                for entry in it:
-                    name = entry.name
-                    if name.startswith("."):
-                        continue
-                    try:
-                        if entry.is_symlink():
-                            continue
-                        if entry.is_dir(follow_symlinks=False):
-                            if name != ".cache":
-                                subdirs.append(entry.path)
-                        elif entry.is_file(follow_symlinks=False):
-                            if name.endswith(".pyc") or name == "postprocessing.yaml":
-                                continue
-                            rel_path = entry.path[path_len:]
-                            if _path_should_exclude_from_hash(rel_path, exclude_set):
-                                continue
-                            st = entry.stat(follow_symlinks=False)
-                            file_parts.append(f"{rel_path}|{st.st_size}|{st.st_mtime}\n")
-                    except OSError:
-                        continue
-        except OSError:
-            pass
-        return file_parts, subdirs
-
-    # BFS over directory tree; each level's subdirs are submitted as new tasks.
-    # ThreadPoolExecutor is appropriate here: stat() releases the GIL, so
-    # threads actually run concurrently even on CPython.
-    workers = min(32, (os.cpu_count() or 4) * 4)
-    all_parts: List[str] = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-        pending: set = {executor.submit(scan_dir, path_str)}
-        while pending:
-            done, pending = concurrent.futures.wait(
-                pending, return_when=concurrent.futures.FIRST_COMPLETED
-            )
-            for fut in done:
-                file_parts, subdirs = fut.result()
-                all_parts.extend(file_parts)
-                for sd in subdirs:
-                    pending.add(executor.submit(scan_dir, sd))
-            if progress_callback is not None:
-                progress_callback(len(all_parts))
-
-    return hashlib.md5("".join(sorted(all_parts)).encode()).hexdigest()
-
-
-def is_postprocessing_needed(  # pylint: disable=too-many-return-statements
+def is_postprocessing_needed(
         results_dir: str,
         vast_file: Optional[str] = None,
 ) -> bool:
     """Check whether postprocessing needs to run for *results_dir*.
 
-    Returns ``True`` when:
-    - No hash file exists (postprocessing has never been run), or
-    - The results directory hash differs from the stored hash, or
-    - Postprocessing commands are defined but the hash cannot be determined.
+    Returns ``True`` when postprocessing commands are configured; per-rosbag
+    caching inside ``rosbags_process`` handles skipping already-processed bags.
 
-    Returns ``False`` when:
-    - No postprocessing commands are configured, or
-    - The stored hash matches the current directory hash (cache is valid).
+    Returns ``False`` when no postprocessing commands are configured or the
+    results directory / vast file cannot be found.
 
     Args:
         results_dir: Directory containing run results (parent of campaign-* dirs).
@@ -471,7 +333,6 @@ def is_postprocessing_needed(  # pylint: disable=too-many-return-statements
     if not os.path.exists(results_dir):
         return False
 
-    # Resolve vast file
     if vast_file is not None:
         if not os.path.isfile(vast_file):
             return False
@@ -481,28 +342,8 @@ def is_postprocessing_needed(  # pylint: disable=too-many-return-statements
         if vast_path is None:
             return False
 
-    # If no postprocessing commands are defined, nothing to do
     commands = get_postprocessing_commands(vast_path)
-    if not commands:
-        return False
-
-    # Compare directory hash with stored hash
-    _, hash_file, outputs_file = _get_postprocessing_cache_paths(results_dir)
-    exclude_set = _load_postprocessing_outputs_exclude_set(outputs_file)
-    try:
-        current_hash = compute_dir_hash(results_dir, exclude_set=exclude_set)
-    except Exception:  # pylint: disable=broad-except
-        return True
-
-    if not os.path.exists(hash_file):
-        return True
-
-    try:
-        with open(hash_file, 'r') as f:
-            stored_hash = f.read().strip()
-        return stored_hash != current_hash
-    except Exception:  # pylint: disable=broad-except
-        return True
+    return bool(commands)
 
 
 def run_postprocessing(  # pylint: disable=too-many-return-statements
@@ -575,42 +416,8 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     # Get postprocessing commands
     commands = get_postprocessing_commands(vast_path)
 
-    # Determine cache locations inside results_dir/.cache/
-    cache_dir, hash_file, outputs_file = _get_postprocessing_cache_paths(results_dir)
-
-    # Load list of postprocessing outputs (to be excluded from hashing)
-    exclude_set = _load_postprocessing_outputs_exclude_set(outputs_file)
-
-    # Skip cache check if force is enabled
-    if not force:
-        output(f"Checking if postprocessing is needed...")
-        # Compute hash of results directory
-        start_time = time.time()
-
-        def _hash_progress(n: int) -> None:
-            print(f"\rHashing results... {n} files", end="", flush=True)
-
-        hash_result = compute_dir_hash(results_dir, exclude_set=exclude_set,
-                                       progress_callback=_hash_progress)
-        print()  # end the \r progress line
-        elapsed_time = time.time() - start_time
-        output(f"Hashing {results_dir} took {elapsed_time:.4f} seconds")
-
-        # Check if postprocessing is needed by comparing with stored hash
-        if os.path.exists(hash_file):
-            try:
-                with open(hash_file, 'r') as f:
-                    stored_hash = f.read().strip()
-
-                if stored_hash == hash_result:
-                    output("Postprocessing skipped: results directory hash unchanged")
-                    return True, "Postprocessing not needed (hash unchanged)"
-            except Exception as e:
-                output(f"Warning: Could not read hash file: {e}")
-                # Continue with postprocessing if we can't read the hash file
-    else:
-        output("Force mode enabled: skipping cache check")
-        hash_result = None  # deferred to after processing to avoid blocking startup
+    if force:
+        output("Force mode: per-rosbag caches will be ignored")
 
     # Load plugins
     plugins = load_postprocessing_plugins()
@@ -626,7 +433,6 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         if not is_valid:
             return False, error_msg
 
-    results_dir_abs = os.path.abspath(results_dir)
     all_provenance_entries: List[dict] = []
 
     with tempfile.TemporaryDirectory(prefix="robovast_provenance_") as temp_dir:
@@ -683,48 +489,6 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
             display_message = message if debug else message.splitlines()[0]
             output(f"✓ {display_message}")
 
-    # Note: rosout_to_csv is always included in the rosbags_process batch created by
-    # _batch_rosbags_commands(), so a separate forced rosout run is no longer needed.
-
-    # Store the hash, list of postprocessing outputs, and write postprocessing.yaml
-    output_paths = set()
-    if success:
-        try:
-            os.makedirs(cache_dir, exist_ok=True)
-
-            # Collect new output paths from provenance first (needed for exclude set)
-            for ent in all_provenance_entries:
-                out = ent.get("output") or ""
-                if not out:
-                    continue
-                if os.sep != "/":
-                    out = str(Path(out))
-                output_paths.add(out)
-
-            # In force mode the hash was deferred — compute it now excluding new outputs
-            if hash_result is None:
-                output("Computing directory hash...")
-                _t = time.time()
-                combined_exclude = exclude_set | output_paths
-
-                def _hash_progress_force(n: int) -> None:
-                    print(f"\rHashing results... {n} files", end="", flush=True)
-
-                hash_result = compute_dir_hash(results_dir, exclude_set=combined_exclude,
-                                               progress_callback=_hash_progress_force)
-                print()  # end the \r progress line
-                output(f"Directory hash computed in {time.time() - _t:.1f}s")
-
-            with open(hash_file, 'w') as f:
-                f.write(hash_result)
-            output(f"Stored postprocessing hash to {hash_file}")
-
-            with open(outputs_file, "w", encoding="utf-8") as f:
-                for p in sorted(output_paths):
-                    f.write(p + "\n")
-        except Exception as e:
-            output(f"Warning: Could not write cache files: {e}")
-
     # Write postprocessing.yaml in campaign/_transient/
     _write_postprocessing_provenance_yaml(campaign_dir, all_provenance_entries)
 
@@ -741,25 +505,6 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     )
     if not meta_success:
         output(f"Warning: Metadata generation failed: {meta_msg}")
-
-    # Add metadata.yaml and data.db to exclude set for future hash computations
-    for campaign_item in Path(results_dir_abs).iterdir():
-        if campaign_item.is_dir() and is_campaign_dir(campaign_item.name):
-            meta_file = campaign_item / "metadata.yaml"
-            if meta_file.exists():
-                rel = str(meta_file.relative_to(Path(results_dir_abs)))
-                output_paths.add(rel)
-            db_file = campaign_item / "_execution" / "data.db"
-            if db_file.exists():
-                rel = str(db_file.relative_to(Path(results_dir_abs)))
-                output_paths.add(rel)
-    # Re-write outputs file with metadata.yaml included
-    try:
-        with open(outputs_file, "w", encoding="utf-8") as f:
-            for p in sorted(output_paths):
-                f.write(p + "\n")
-    except OSError:
-        pass
 
     if success:
         return True, "Postprocessing completed successfully!"
