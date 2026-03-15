@@ -901,7 +901,7 @@ class JobRunner:
 
         all_jobs = [job_name for job_name, _, _ in job_manifests]
 
-        _RETRY_WAIT_CAP = 30  # seconds; backoff is capped here
+        _retry_wait_cap = 30  # seconds; backoff is capped here
 
         with ProgressBar(
             total=total_jobs,
@@ -928,7 +928,7 @@ class JobRunner:
                         else:
                             # 5xx / unknown server-side error — treat as transient
                             attempt += 1
-                            wait = min(2 ** attempt, _RETRY_WAIT_CAP)
+                            wait = min(2 ** attempt, _retry_wait_cap)
                             logger.warning(
                                 "Server error creating job '%s' (attempt %d, status %s), "
                                 "retrying in %ds: %s",
@@ -940,7 +940,7 @@ class JobRunner:
                             self.k8s_batch_client = client.BatchV1Api()
                     except Exception as exc:
                         attempt += 1
-                        wait = min(2 ** attempt, _RETRY_WAIT_CAP)
+                        wait = min(2 ** attempt, _retry_wait_cap)
                         logger.warning(
                             "Connection error creating job '%s' (attempt %d), "
                             "retrying in %ds: %s",

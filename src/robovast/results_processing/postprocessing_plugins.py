@@ -151,6 +151,7 @@ class Command(BasePostprocessingPlugin):
         script: str,
         args: Optional[List[str]] = None,
         provenance_file: Optional[str] = None,
+        execution_image: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Execute the configured script.
 
@@ -160,6 +161,7 @@ class Command(BasePostprocessingPlugin):
             script: Script path to execute (relative or absolute)
             args: Optional list of command-line arguments to pass to the script
             provenance_file: Optional path for provenance JSON (passed to script if it supports it)
+            execution_image: Ignored by this plugin (accepted for interface compatibility)
 
         Returns:
             Tuple of (success, message)
