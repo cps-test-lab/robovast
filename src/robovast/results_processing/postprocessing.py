@@ -360,6 +360,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         debug: bool = False,
         skip_rosout: bool = False,
         skip: Optional[List[str]] = None,
+        skip_db_creation: bool = False,
 ):
     """Run postprocessing commands on run results.
 
@@ -519,11 +520,14 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     _write_postprocessing_provenance_yaml(campaign_dir, all_provenance_entries)
 
     # Build SQLite data.db for the campaign
-    db_success, db_msg = generate_data_db(campaign_dir, output_callback=output_callback)
-    if db_success:
-        output(f"✓ {db_msg}")
+    if skip_db_creation:
+        output("Skipping data.db creation")
     else:
-        raise RuntimeError(f"data.db generation failed: {db_msg}")
+        db_success, db_msg = generate_data_db(campaign_dir, output_callback=output_callback)
+        if db_success:
+            output(f"✓ {db_msg}")
+        else:
+            raise RuntimeError(f"data.db generation failed: {db_msg}")
 
     # Generate metadata.yaml in each campaign directory
     meta_success, meta_msg = generate_campaign_metadata(
