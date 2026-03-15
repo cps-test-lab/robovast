@@ -738,10 +738,20 @@ class RosbagsProcess(BasePostprocessingPlugin):
                 env={**os.environ, 'PYTHONUNBUFFERED': '1'},
             )
             output_lines: List[str] = []
+            _last_was_progress = False
             for line in process.stdout:
                 line = line.rstrip("\n")
-                print(line, flush=True)
                 output_lines.append(line)
+                is_progress = line.startswith("Processing rosbags")
+                if is_progress and not debug:
+                    print(f"\r{line}", end="", flush=True)
+                else:
+                    if _last_was_progress and not debug:
+                        print()
+                    print(line, flush=True)
+                _last_was_progress = is_progress
+            if _last_was_progress and not debug:
+                print()
             returncode = process.wait()
             output = "\n".join(output_lines)
             if returncode != 0:

@@ -607,13 +607,28 @@ def process_rosbag_worker(args: tuple) -> Tuple[str, int, List[Tuple[int, List[s
                 print(f"  ✗ Handler '{handler_type}' init failed: {e}")
 
         if not handlers:
-            return -2, []
+            return bag_path, -2, []
+
+        # Detect storage format from metadata.yaml, fall back to mcap
+        import yaml as _yaml  # noqa: PLC0415
+        storage_id = "mcap"
+        metadata_path = os.path.join(bag_path, "metadata.yaml")
+        if os.path.isfile(metadata_path):
+            try:
+                with open(metadata_path, "r", encoding="utf-8") as _f:
+                    _meta = _yaml.safe_load(_f) or {}
+                storage_id = (
+                    _meta.get("rosbag2_bagfile_information", {}).get("storage_identifier")
+                    or "mcap"
+                )
+            except Exception:
+                pass
 
         # Open bag
         try:
             reader = rosbag2_py.SequentialReader()
             reader.open(
-                rosbag2_py.StorageOptions(uri=bag_path, storage_id="mcap"),
+                rosbag2_py.StorageOptions(uri=bag_path, storage_id=storage_id),
                 rosbag2_py.ConverterOptions(
                     input_serialization_format="cdr",
                     output_serialization_format="cdr",
@@ -624,7 +639,7 @@ def process_rosbag_worker(args: tuple) -> Tuple[str, int, List[Tuple[int, List[s
             }
         except Exception as e:
             print(f"✗ {bag_path}: failed to open — {e}")
-            return -2, []
+            return bag_path, -2, []
 
         # Call on_begin for each handler; remove those that fail
         active_handlers: List[RosbagHandler] = []
@@ -636,7 +651,7 @@ def process_rosbag_worker(args: tuple) -> Tuple[str, int, List[Tuple[int, List[s
                 print(f"  ✗ Handler {type(h).__name__} on_begin failed: {e}")
 
         if not active_handlers:
-            return 0, []
+            return bag_path, 0, []
 
         # Build topic→handlers dispatch map (intersect with topics in this bag)
         topic_to_handlers: Dict[str, List[RosbagHandler]] = {}
