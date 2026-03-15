@@ -15,6 +15,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Postprocessing functionality for run result data."""
+import concurrent.futures
 import hashlib
 import inspect
 import json
@@ -373,37 +374,64 @@ def _path_should_exclude_from_hash(rel_path: str, exclude_set: set) -> bool:
 
 
 def compute_dir_hash(dir_path: str, exclude_set: Optional[set] = None) -> str:
-    """Compute a hash for a directory based on modification time and file sizes."""
-    path = Path(dir_path)
-    path_str = str(path)
-    path_len = len(path_str) + 1  # +1 for trailing slash
+    """Compute a hash for a directory based on modification time and file sizes.
 
-    # Collect all files recursively except outputs of postprocessing and cache
-    # Skip: hidden, .cache, .pyc, .tar.gz, postprocessing.yaml (written by postprocessing)
-    # Optimized: use tuple for endswith()
-    files_to_check = []
-    for f in path.rglob("*"):
-        if not f.is_file() or f.name.startswith(".") or f.is_symlink():
-            continue
-        if f.name.endswith(('.pyc')):
-            continue
-        if '.cache' in f.parts or f.name == "postprocessing.yaml":
-            continue
-        rel_path = str(f)[path_len:]
-        if _path_should_exclude_from_hash(rel_path, exclude_set):
-            continue
-        files_to_check.append(f)
+    Uses parallel directory scanning (ThreadPoolExecutor + os.scandir) so that
+    NFS/network stat latency is hidden behind concurrent requests.  os.scandir
+    returns cached stat info from the directory listing itself, avoiding the
+    double-stat that path.rglob() + stat() would incur.
+    """
+    path_str = os.path.abspath(dir_path)
+    path_len = len(path_str) + 1  # +1 for the path separator
 
-    # Build all data first, then hash once - fastest approach
-    hash_parts = []
-    for file_path in sorted(files_to_check):
-        stat = file_path.stat()
-        rel_path = str(file_path)[path_len:]  # Fast string slice
-        hash_parts.append(f"{rel_path}|{stat.st_size}|{stat.st_mtime}\n")
+    def scan_dir(scan_path: str):
+        """Scan one directory level; return (file_parts, subdirs)."""
+        file_parts: List[str] = []
+        subdirs: List[str] = []
+        try:
+            with os.scandir(scan_path) as it:
+                for entry in it:
+                    name = entry.name
+                    if name.startswith("."):
+                        continue
+                    try:
+                        if entry.is_symlink():
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            if name != ".cache":
+                                subdirs.append(entry.path)
+                        elif entry.is_file(follow_symlinks=False):
+                            if name.endswith(".pyc") or name == "postprocessing.yaml":
+                                continue
+                            rel_path = entry.path[path_len:]
+                            if _path_should_exclude_from_hash(rel_path, exclude_set):
+                                continue
+                            st = entry.stat(follow_symlinks=False)
+                            file_parts.append(f"{rel_path}|{st.st_size}|{st.st_mtime}\n")
+                    except OSError:
+                        continue
+        except OSError:
+            pass
+        return file_parts, subdirs
 
-    # Single join, encode, and hash operation
-    hash_string = "".join(hash_parts)
-    return hashlib.md5(hash_string.encode()).hexdigest()
+    # BFS over directory tree; each level's subdirs are submitted as new tasks.
+    # ThreadPoolExecutor is appropriate here: stat() releases the GIL, so
+    # threads actually run concurrently even on CPython.
+    workers = min(32, (os.cpu_count() or 4) * 4)
+    all_parts: List[str] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+        pending: set = {executor.submit(scan_dir, path_str)}
+        while pending:
+            done, pending = concurrent.futures.wait(
+                pending, return_when=concurrent.futures.FIRST_COMPLETED
+            )
+            for fut in done:
+                file_parts, subdirs = fut.result()
+                all_parts.extend(file_parts)
+                for sd in subdirs:
+                    pending.add(executor.submit(scan_dir, sd))
+
+    return hashlib.md5("".join(sorted(all_parts)).encode()).hexdigest()
 
 
 def is_postprocessing_needed(  # pylint: disable=too-many-return-statements
