@@ -44,7 +44,7 @@ def evaluation():
               help='Skip postprocessing before launching the GUI')
 @click.pass_context
 def result_analyzer_cmd(ctx, results_dir, force, skip_postprocessing):
-    """Launch the graphical run results analyzer.
+    """Launch the graphical run results gui.
 
     Opens a GUI application for interactive exploration and
     visualization of run results. Automatically runs postprocessing
