@@ -43,10 +43,11 @@ from robovast.common.campaign_data import (
     read_sysinfo,
     read_test_result,
 )
-from robovast.common.common import load_config
+from omegaconf import OmegaConf
+
 from robovast.common.execution import is_campaign_dir
-from robovast.common.results_utils import find_campaign_vast_file
-from robovast.common.variation.loader import load_variation_classes
+from robovast.common.results_utils import find_campaign_config
+from robovast.pipeline.callback import load_pipeline_callbacks
 
 logger = logging.getLogger(__name__)
 
@@ -294,14 +295,14 @@ class MetadataGenerator:
 
 def generate_campaign_metadata(
     results_dir: str,
-    vast_file: Optional[str] = None,
+    config_file: Optional[str] = None,
     output_callback=None,
 ) -> tuple[bool, str]:
     """Run the full metadata generation pipeline for all campaigns.
 
     Pipeline phases:
       1. Generic structural metadata (``MetadataGenerator``)
-      2. Variation-plugin metadata hooks (``collect_config_metadata``)
+      2. Callback-plugin metadata hooks (``collect_config_metadata``)
       3. User-defined ``MetadataProcessor`` plugins
 
     Writes ``metadata.yaml`` into each campaign directory.
@@ -309,8 +310,9 @@ def generate_campaign_metadata(
     Args:
         results_dir: Path to the results directory containing
             ``campaign-<id>`` subdirectories.
-        vast_file: Optional explicit ``.vast`` file path.  When ``None``,
-            the ``.vast`` file is discovered from the most recent campaign.
+        config_file: Optional explicit config file path. When ``None``,
+            the config is discovered from the most recent campaign's
+            ``.hydra/config.yaml``.
         output_callback: Optional callable for status messages.
 
     Returns:
@@ -334,15 +336,15 @@ def generate_campaign_metadata(
     if not campaign_dirs:
         return False, f"No campaign directories found in {results_dir}"
 
-    # Load variation classes (for metadata hooks)
-    variation_classes = load_variation_classes()
+    # Load pipeline callback classes (for metadata hooks)
+    callback_classes = load_pipeline_callbacks()
 
     # Load metadata processing plugins
     metadata_plugins = _load_metadata_plugins()
 
-    # Discover metadata_processing commands from vast file
+    # Discover metadata_processing commands from config
     metadata_processing_commands = _get_metadata_processing_commands(
-        results_dir, vast_file
+        results_dir, config_file
     )
 
     try:
@@ -353,8 +355,8 @@ def generate_campaign_metadata(
             generator = MetadataGenerator(campaign_dir)
             metadata = generator.generate_metadata()
 
-            # Phase 2: Variation plugin metadata hooks
-            _apply_variation_metadata(metadata, campaign_dir, variation_classes)
+            # Phase 2: Callback plugin metadata hooks
+            _apply_callback_metadata(metadata, campaign_dir, callback_classes)
 
             # Resolve config-file references inside each "config" block now that
             # variation hooks have had a chance to run first.
@@ -505,39 +507,42 @@ def _load_metadata_plugins() -> Dict[str, type]:
 
 def _get_metadata_processing_commands(
     results_dir: str,
-    vast_file: Optional[str],
+    config_file: Optional[str],
 ) -> List:
-    """Read ````results_processing.metadata_processing```` from the vast file."""
-    if vast_file is not None:
-        vast_path = vast_file
+    """Read ``results_processing.metadata_processing`` from the campaign config."""
+    if config_file is not None:
+        config_path = config_file
     else:
-        # Discover from most recent campaign
-        vast_path, _config_dir = find_campaign_vast_file(results_dir)
+        config_path, _ = find_campaign_config(results_dir)
 
-    if vast_path is None:
+    if config_path is None:
         return []
 
-    data_config = load_config(vast_path, subsection="results_processing", allow_missing=True)
-    return data_config.get("metadata_processing", [])
+    cfg = OmegaConf.load(config_path)
+    config_dict = OmegaConf.to_container(cfg, resolve=True)
+    results_processing = config_dict.get("results_processing", {})
+    if results_processing is None:
+        return []
+    return results_processing.get("metadata_processing", [])
 
 
-def _apply_variation_metadata(
+def _apply_callback_metadata(
     metadata: dict,
     campaign_dir: Path,
-    variation_classes: Dict[str, type],
+    callback_classes: Dict[str, type],
 ) -> None:
-    """Call variation-plugin metadata hooks and merge results."""
+    """Call pipeline callback metadata hooks and merge results."""
     for config_entry in metadata.get("configurations", []):
         config_name = config_entry.get("name", "")
         config_dir = campaign_dir / config_name
 
-        # Read and consume _variations, expose as public "variations"
-        variation_data = config_entry.pop("_variations", [])
-        config_entry["variations"] = variation_data
+        # Read and consume _callbacks, expose as public "callbacks"
+        callback_data = config_entry.pop("_callbacks", config_entry.pop("_variations", []))
+        config_entry["callbacks"] = callback_data
 
-        for vdata in variation_data:
-            vtype_name = vdata["name"]
-            cls = variation_classes.get(vtype_name)
+        for cdata in callback_data:
+            ctype_name = cdata.get("name", "")
+            cls = callback_classes.get(ctype_name)
             if cls is None:
                 continue
 
@@ -549,8 +554,8 @@ def _apply_variation_metadata(
                         config_entry.update(extra)
                 except Exception as e:
                     logger.warning(
-                        "Variation '%s' collect_config_metadata failed for '%s': %s",
-                        vtype_name, config_name, e,
+                        "Callback '%s' collect_config_metadata failed for '%s': %s",
+                        ctype_name, config_name, e,
                     )
 
 

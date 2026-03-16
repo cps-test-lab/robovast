@@ -1,4 +1,4 @@
-# Copyright (C) 2025 Frederik Pasch
+# Copyright (C) 2026 Frederik Pasch
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,72 +14,20 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+"""Common utility functions."""
+
 import logging
 import os
 import pickle
-import sys
 from dataclasses import asdict, is_dataclass
 
 import numpy as np
-import yaml
 from scenario_execution import \
     get_scenario_parameters as _external_get_scenario_parameters
 
-from .config import validate_config
 from .file_cache import FileCache
 
 logger = logging.getLogger(__name__)
-
-
-def load_config(config_file, subsection=None, allow_missing=False):
-    """Load and parse scenario variation file.
-
-    Args:
-        config_file: Path to the configuration file
-        subsection: Optional subsection to extract
-        allow_missing: If True, return empty dict when subsection is missing instead of raising error
-
-    Returns:
-        Configuration dict or subsection dict
-    """
-    logger.debug(f"Loading config file: {config_file}")
-    if not config_file:
-        logger.error("No config file provided")
-        raise ValueError("No config file provided")
-
-    if not os.path.exists(config_file):
-        logger.error(f"Config file {config_file} not found")
-        raise FileNotFoundError(f"Config file {config_file} not found")
-
-    with open(config_file, 'r') as f:
-        try:
-            # Load all documents, the first one contains the config
-            documents = list(yaml.safe_load_all(f))
-            if not documents:
-                logger.error("No documents found in scenario file")
-                raise ValueError("No documents found in scenario file")
-            config = documents[0]
-
-            # Validate the configuration
-            validate_config(config)
-
-            if subsection:
-                subsection_data = config.get(subsection, None)
-                if not subsection_data:
-                    if allow_missing:
-                        logger.debug(f"No subsection '{subsection}' found in configuration, returning empty dict")
-                        return {}
-                    else:
-                        logger.error(f"No subsection '{subsection}' found in configuration")
-                        raise ValueError(f"No subsection '{subsection}' found in configuration")
-                logger.debug(f"Successfully loaded config subsection: {subsection}")
-                return subsection_data
-            else:
-                logger.debug(f"Successfully loaded config file: {config_file}")
-                return config
-        except yaml.YAMLError as e:
-            logger.error(f"Error parsing YAML file: {e}")
-            sys.exit(1)
 
 
 def dataclass_representer(dumper, data):

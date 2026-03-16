@@ -109,7 +109,7 @@ def postprocess_cmd(results_dir, force, override, debug, skip_rosout, skip_plugi
         results_dir=results_dir,
         output_callback=click.echo,
         force=force,
-        vast_file=override,
+        config_file=override,
         debug=debug,
         skip_rosout=skip_rosout,
         skip=list(skip_plugins),
@@ -168,7 +168,7 @@ def publish_cmd(results_dir, override, force, skip_postprocessing):
         pp_success, pp_message = run_postprocessing(
             results_dir=results_dir,
             output_callback=click.echo,
-            vast_file=override,
+            config_file=override,
         )
         click.echo()
         if not pp_success:
@@ -181,7 +181,7 @@ def publish_cmd(results_dir, override, force, skip_postprocessing):
     success, message = run_publication(
         results_dir=results_dir,
         output_callback=click.echo,
-        vast_file=override,
+        config_file=override,
         force=force,
     )
 

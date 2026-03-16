@@ -33,6 +33,20 @@ from .common import convert_dataclasses_to_dict, get_scenario_parameters
 from .config_identifier import (compute_config_identifier, hash_file_content,
                                 hash_run_files)
 
+def normalize_secondary_containers(secondary_containers) -> list[dict]:
+    """Normalize secondary container entries to a uniform dict format."""
+    result = []
+    for sc in (secondary_containers or []):
+        if isinstance(sc, dict) and 'name' in sc:
+            result.append(sc)
+        elif isinstance(sc, dict):
+            name = next((k for k in sc if k != 'resources'), None)
+            if name is None:
+                raise ValueError(f"Cannot extract container name from secondary_containers entry: {sc}")
+            result.append({'name': name, 'resources': sc.get('resources') or {}})
+    return result
+
+
 # Compatibility version between host robovast code and the container image.
 # Bump this integer when the contract between host scripts and the container
 # changes (e.g. new required package, ROS distro change, script interface

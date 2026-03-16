@@ -42,7 +42,7 @@ from pyld import jsonld
 from rdflib import DCTERMS, Namespace, PROV
 from rdflib.tools.rdf2dot import rdf2dot
 
-from robovast.common.variation.loader import load_variation_classes
+from robovast.pipeline.callback import load_pipeline_callbacks
 
 logger = logging.getLogger(__name__)
 
@@ -221,8 +221,8 @@ def generate_prov_metadata(
     campaign_ns = Namespace(f"{dataset_iri}{campaign}")
     iri_context = _build_iri_context(dataset_iri)
 
-    # Load variation plugin classes for PROV hooks
-    variation_classes = load_variation_classes()
+    # Load pipeline callback classes for PROV hooks
+    callback_classes = load_pipeline_callbacks()
 
     graph = []
 
@@ -317,12 +317,12 @@ def generate_prov_metadata(
             PROV["specializationOf"]: {_ID: abstract_scenario[_ID]},
         }
 
-        # Collect domain-specific PROV contributions from variation plugins
+        # Collect domain-specific PROV contributions from callback plugins
         run_used_iris = [scenario_node[_ID]]
 
-        for vdata in config_md.get("variations", []):
-            vtype_name = vdata.get("name", "")
-            cls = variation_classes.get(vtype_name)
+        for cdata in config_md.get("callbacks", config_md.get("variations", [])):
+            ctype_name = cdata.get("name", "")
+            cls = callback_classes.get(ctype_name)
             if cls is None or not hasattr(cls, "collect_prov_metadata"):
                 continue
 
@@ -335,8 +335,8 @@ def generate_prov_metadata(
                 )
             except Exception as e:
                 logger.warning(
-                    "Variation '%s' collect_prov_metadata failed for '%s': %s",
-                    vtype_name, config_name, e,
+                    "Callback '%s' collect_prov_metadata failed for '%s': %s",
+                    ctype_name, config_name, e,
                 )
                 continue
 

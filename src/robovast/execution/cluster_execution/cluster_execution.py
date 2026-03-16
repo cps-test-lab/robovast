@@ -31,11 +31,12 @@ import yaml
 from kubernetes import client
 from kubernetes import config as kube_config
 
+from omegaconf import DictConfig, OmegaConf
+
 from robovast.common import (COMPAT_VERSION, ProgressBar, get_campaign,
-                             get_execution_env_variables, load_config,
-                             normalize_secondary_containers)
+                             get_execution_env_variables)
 from robovast.common.cluster_context import resolve_resources
-from robovast.common.config_generation import generate_scenario_variations
+from robovast.pipeline.executor import run_pipeline
 from robovast.execution.cluster_execution.kubernetes import check_pod_running
 from . import archiver, bucket_ops
 
@@ -392,11 +393,11 @@ class JobRunner:
         self.config_path = config_path
 
         # Generate unique run ID – use metadata.name as prefix when available
-        _full_cfg = load_config(config_path)
+        _full_cfg = OmegaConf.to_container(OmegaConf.load(config_path), resolve=True)
         _campaign_name = (_full_cfg.get("metadata") or {}).get("name", "campaign")
         self.campaign = get_campaign(_campaign_name)
 
-        parameters = load_config(config_path, subsection="execution")
+        parameters = _full_cfg.get("execution", {})
 
         # Use provided num_runs if specified, otherwise use config value or default to 1
         if num_runs is not None:
@@ -410,18 +411,16 @@ class JobRunner:
         self.pre_command = parameters.get("pre_command")
         self.post_command = parameters.get("post_command")
 
-        # Generate configs with filtered files first, so we have access to execution params
+        # Run pipeline to generate configs
         self.config_output_file_dir = tempfile.TemporaryDirectory(prefix="robovast_execution_")
-        self.campaign_data, _ = generate_scenario_variations(
-            config_path,
-            None,
-            variation_classes=None,
-            output_dir=self.config_output_file_dir.name,
-        )
-        self.configs = self.campaign_data["configs"]
+        cfg = OmegaConf.load(config_path)
+        OmegaConf.update(cfg, "_config_dir", os.path.dirname(os.path.abspath(config_path)), force_add=True)
+        from pathlib import Path
+        pipeline_ctx = run_pipeline(cfg, Path(self.config_output_file_dir.name))
+        self.configs = [{"name": pipeline_ctx.scenario_name, "config": pipeline_ctx.scenario_params}]
 
-        # Get execution parameters from campaign_data
-        execution_params = self.campaign_data.get("execution", {})
+        # Get execution parameters from config
+        execution_params = _full_cfg.get("execution", {})
         self.run_as_user = execution_params.get("run_as_user", 1000)
 
         # Create manifest with env vars from config

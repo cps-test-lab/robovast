@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (QApplication, QGroupBox, QHBoxLayout, QLabel,
                                QSplitter, QStatusBar, QTabWidget, QTreeWidget,
                                QTreeWidgetItem, QVBoxLayout, QWidget)
 
-from robovast.common import load_config
+from omegaconf import OmegaConf
 from robovast.common.analysis import get_run_status
 from robovast.common.execution import is_campaign_dir
 from robovast.common.results_utils import iter_run_folders
@@ -128,9 +128,8 @@ class RunResultsAnalyzer(QMainWindow):
             override_vast_path = Path(self._override_vast)
             override_config_dir = str(override_vast_path.parent)
             try:
-                override_parameters = load_config(
-                    str(override_vast_path), "evaluation", allow_missing=True
-                )
+                _cfg = OmegaConf.to_container(OmegaConf.load(str(override_vast_path)), resolve=True)
+                override_parameters = _cfg.get("evaluation", {})
                 print(f"Using override .vast for notebook discovery: {self._override_vast}")
             except Exception as e:
                 raise RuntimeError(f"Could not load override config from {self._override_vast}: {e}") from e
@@ -145,26 +144,16 @@ class RunResultsAnalyzer(QMainWindow):
                 cd = override_config_dir
                 vast_path_str = self._override_vast
             else:
-                # Normal path: look for a .vast file inside campaign-<id>/_config/
-                config_dir = campaign_item / "_config"
-                if not config_dir.is_dir():
+                # Normal path: look for .hydra/config.yaml inside campaign dir
+                hydra_config = campaign_item / ".hydra" / "config.yaml"
+                if not hydra_config.is_file():
                     continue
-                vast_files = [
-                    f for f in sorted(config_dir.iterdir())
-                    if f.is_file() and f.suffix == ".vast"
-                ]
-                if not vast_files:
-                    continue
-                if len(vast_files) > 1:
-                    names = ", ".join(f.name for f in vast_files)
-                    print(f"Warning: multiple .vast files in {config_dir}: {names}. "
-                          f"Using {vast_files[0].name}.")
-                vast_path_str = str(vast_files[0])
-                cd = str(config_dir)
+                cd = str(campaign_item)
                 try:
-                    parameters = load_config(vast_path_str, "evaluation", allow_missing=True)
+                    _cfg = OmegaConf.to_container(OmegaConf.load(str(hydra_config)), resolve=True)
+                    parameters = _cfg.get("evaluation", {})
                 except Exception as e:
-                    print(f"Warning: could not load config from {vast_path_str}: {e}")
+                    print(f"Warning: could not load config from {hydra_config}: {e}")
                     continue
 
             workloads = []

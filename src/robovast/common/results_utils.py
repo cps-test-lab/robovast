@@ -16,7 +16,9 @@
 
 """Common utilities for results directory layout (<campaign-name>-<timestamp>/<config>/<run-number>)."""
 from pathlib import Path
-from typing import Iterator, Optional, Tuple
+from typing import Any, Iterator, Optional, Tuple
+
+from omegaconf import OmegaConf
 
 from robovast.common.execution import is_campaign_dir
 
@@ -60,20 +62,19 @@ def iter_run_folders(results_dir: str) -> Iterator[Tuple[str, str, str, Path]]:
                 yield campaign, config_name, run_number, folder_path
 
 
-def find_campaign_vast_file(results_dir: str) -> tuple[Optional[str], Optional[str]]:
-    """Find the .vast file from the most recent campaign in results_dir.
+def find_campaign_config(results_dir: str) -> tuple[Optional[str], Optional[str]]:
+    """Find the Hydra config from the most recent campaign in results_dir.
 
-    Searches ``results_dir/<campaign-name>-<timestamp>/_config/*.vast`` and returns the
-    path from the last (most recent, lexicographically) campaign that has a
-    ``.vast`` file.
+    Searches ``results_dir/<campaign-name>-<timestamp>/.hydra/config.yaml``
+    and returns the path from the last (most recent, lexicographically)
+    campaign.
 
     Args:
         results_dir: Path to the project results directory (parent of campaign directories).
 
     Returns:
-        Tuple ``(vast_file_path, config_dir)`` where *config_dir* is the
-        ``_config/`` directory containing the ``.vast`` file, or
-        ``(None, None)`` if no campaign with a ``.vast`` file is found.
+        Tuple ``(config_path, campaign_dir)`` where *campaign_dir* is the
+        campaign directory, or ``(None, None)`` if no campaign config is found.
     """
     root = Path(results_dir)
     if not root.is_dir():
@@ -83,15 +84,32 @@ def find_campaign_vast_file(results_dir: str) -> tuple[Optional[str], Optional[s
     for campaign_item in sorted(root.iterdir(), reverse=True):
         if not campaign_item.is_dir() or not is_campaign_dir(campaign_item.name):
             continue
-        config_dir = campaign_item / "_config"
-        if config_dir.is_dir():
-            vast_files = [f for f in sorted(config_dir.iterdir()) if f.is_file() and f.suffix == ".vast"]
-            if len(vast_files) > 1:
-                names = ", ".join(f.name for f in vast_files)
-                raise ValueError(
-                    f"Multiple .vast files found in {config_dir}: {names}. "
-                    "Expected exactly one."
-                )
-            if vast_files:
-                return str(vast_files[0]), str(config_dir)
+        hydra_config = campaign_item / ".hydra" / "config.yaml"
+        if hydra_config.is_file():
+            return str(hydra_config), str(campaign_item)
     return None, None
+
+
+def load_campaign_config(results_dir: str, subsection: Optional[str] = None) -> dict:
+    """Load the Hydra config from the most recent campaign.
+
+    Args:
+        results_dir: Path to the project results directory.
+        subsection: Optional config subsection to extract.
+
+    Returns:
+        Full config dict or the requested subsection.
+
+    Raises:
+        FileNotFoundError: If no campaign config is found.
+    """
+    config_path, _ = find_campaign_config(results_dir)
+    if config_path is None:
+        raise FileNotFoundError(f"No campaign config found in {results_dir}")
+
+    cfg = OmegaConf.load(config_path)
+    config_dict = OmegaConf.to_container(cfg, resolve=True)
+
+    if subsection:
+        return config_dict.get(subsection, {})
+    return config_dict

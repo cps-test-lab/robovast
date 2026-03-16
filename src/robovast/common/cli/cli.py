@@ -26,7 +26,6 @@ from importlib.metadata import entry_points
 
 import click
 
-from ..common import load_config
 from ..execution import is_campaign_dir
 from ..logging_config import (get_logger, setup_logging,
                               setup_logging_from_project_config)
@@ -121,7 +120,8 @@ def init(config, results_dir, project_log_level, force):
 
     # check integrity of config file
     try:
-        load_config(config)
+        from omegaconf import OmegaConf
+        OmegaConf.load(config)
     except Exception as e:
         click.echo(f"✗ Error: Failed to load configuration file: {e}", err=True)
         if not force:

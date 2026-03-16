@@ -25,7 +25,7 @@ from importlib.metadata import entry_points
 import yaml
 
 from robovast.common.cli.project_config import ProjectConfig
-from robovast.common.common import load_config
+from omegaconf import OmegaConf
 
 from .kubernetes_kueue import (apply_kueue_queues, install_kueue_helm,
                                uninstall_kueue_helm)
@@ -186,7 +186,9 @@ def get_kubernetes_node_labels_from_config(config_path=None):
             return None, None
         config_path = pc.config_path
     try:
-        execution = load_config(config_path, subsection="execution", allow_missing=True)
+        cfg = OmegaConf.load(config_path)
+        config_dict = OmegaConf.to_container(cfg, resolve=True)
+        execution = config_dict.get("execution", {})
     except Exception:
         return None, None
     k8s = (execution or {}).get("kubernetes") or {}

@@ -25,10 +25,11 @@ from typing import Dict, List, Optional, Tuple
 
 import yaml
 
-from robovast.common.common import load_config
+from omegaconf import OmegaConf
+
 from robovast.results_processing.metadata import generate_campaign_metadata
 from robovast.results_processing.postprocessing_plugins import generate_data_db
-from robovast.common.results_utils import find_campaign_vast_file
+from robovast.common.results_utils import find_campaign_config, load_campaign_config
 
 
 def load_postprocessing_plugins() -> Dict[str, callable]:
@@ -245,23 +246,23 @@ def validate_postprocessing_command(command: str | dict, plugins: Dict[str, call
 
 
 def get_postprocessing_commands(config_path: str) -> List[dict]:
-    """Get postprocessing commands from a .vast configuration file.
+    """Get postprocessing commands from a Hydra config file.
 
     Args:
-        config_path: Path to .vast configuration file
+        config_path: Path to .hydra/config.yaml or any YAML config file.
 
     Returns:
-        List of postprocessing commands (dicts) or empty list if none defined
+        List of postprocessing commands (dicts) or empty list if none defined.
     """
-    data_config = load_config(config_path, subsection="results_processing", allow_missing=True)
-    if data_config is None:
+    cfg = OmegaConf.load(config_path)
+    data_config = OmegaConf.to_container(cfg, resolve=True)
+    results_processing = data_config.get("results_processing", {})
+    if results_processing is None:
         return []
-    else:
-        postprocessing_cmds = data_config.get("postprocessing", [])
-        if postprocessing_cmds is None:
-            return []
-        else:
-            return postprocessing_cmds
+    postprocessing_cmds = results_processing.get("postprocessing", [])
+    if postprocessing_cmds is None:
+        return []
+    return postprocessing_cmds
 
 
 def _write_postprocessing_provenance_yaml(
@@ -322,7 +323,7 @@ def _write_postprocessing_provenance_yaml(
 
 def is_postprocessing_needed(
         results_dir: str,
-        vast_file: Optional[str] = None,
+        config_file: Optional[str] = None,
 ) -> bool:
     """Check whether postprocessing needs to run for *results_dir*.
 
@@ -330,11 +331,11 @@ def is_postprocessing_needed(
     caching inside ``rosbags_process`` handles skipping already-processed bags.
 
     Returns ``False`` when no postprocessing commands are configured or the
-    results directory / vast file cannot be found.
+    results directory / config file cannot be found.
 
     Args:
         results_dir: Directory containing run results (parent of campaign-* dirs).
-        vast_file: Optional explicit path to a ``.vast`` file.
+        config_file: Optional explicit path to a config file.
 
     Returns:
         ``True`` if postprocessing should be run, ``False`` otherwise.
@@ -342,16 +343,16 @@ def is_postprocessing_needed(
     if not os.path.exists(results_dir):
         return False
 
-    if vast_file is not None:
-        if not os.path.isfile(vast_file):
+    if config_file is not None:
+        if not os.path.isfile(config_file):
             return False
-        vast_path = os.path.abspath(vast_file)
+        config_path = os.path.abspath(config_file)
     else:
-        vast_path, _ = find_campaign_vast_file(results_dir)
-        if vast_path is None:
+        config_path, _ = find_campaign_config(results_dir)
+        if config_path is None:
             return False
 
-    commands = get_postprocessing_commands(vast_path)
+    commands = get_postprocessing_commands(config_path)
     return bool(commands)
 
 
@@ -359,7 +360,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         results_dir: str,
         output_callback=None,
         force: bool = False,
-        vast_file: Optional[str] = None,
+        config_file: Optional[str] = None,
         debug: bool = False,
         skip_rosout: bool = False,
         skip: Optional[List[str]] = None,
@@ -368,15 +369,15 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
 ):
     """Run postprocessing commands on run results.
 
-    The postprocessing configuration is read from the ``.vast`` file found in
-    the most recent ``campaign-<id>/_config/`` directory under *results_dir*,
-    unless *vast_file* is provided explicitly.
+    The postprocessing configuration is read from ``.hydra/config.yaml`` in
+    the most recent campaign directory under *results_dir*, unless
+    *config_file* is provided explicitly.
 
     Args:
         results_dir: Directory containing run results (parent of campaign-* dirs)
         output_callback: Optional callback function for output messages (takes message string)
         force: If True, bypass per-rosbag caches and reprocess all bags.
-        vast_file: Optional explicit path to a ``.vast`` file.  When given, the
+        config_file: Optional explicit path to a config file. When given, the
             campaign copy is ignored entirely.
         debug: If True, include full plugin stdout in output; otherwise show only the summary line.
         skip_rosout: If True, skip rosout processing entirely (shorthand for ``skip=['rosbags_rosout_to_csv']``).
@@ -396,24 +397,22 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     if not os.path.exists(results_dir):
         return False, f"Results directory does not exist: {results_dir}"
 
-    if vast_file is not None:
+    if config_file is not None:
         # Explicit override: validate the supplied path and skip campaign discovery
-        if not os.path.isfile(vast_file):
-            return False, f"Override .vast file does not exist: {vast_file}"
-        vast_path = os.path.abspath(vast_file)
-        config_dir = os.path.dirname(vast_path)
-        output(f"Using override config: {vast_path}")
+        if not os.path.isfile(config_file):
+            return False, f"Override config file does not exist: {config_file}"
+        config_path = os.path.abspath(config_file)
+        campaign_dir = os.path.dirname(os.path.dirname(config_path))
+        output(f"Using override config: {config_path}")
     else:
-        # Discover the .vast config file from the most recent campaign
-        vast_path, config_dir = find_campaign_vast_file(results_dir)
-        if vast_path is None:
+        # Discover the config from the most recent campaign
+        config_path, campaign_dir = find_campaign_config(results_dir)
+        if config_path is None:
             return False, (
-                f"No .vast file found in any campaign-*/_config/ directory under: {results_dir}\n"
+                f"No .hydra/config.yaml found in any campaign directory under: {results_dir}\n"
                 "Ensure at least one execution campaign has been completed."
             )
-        output(f"Using config from: {vast_path}")
-
-    campaign_dir = str(Path(config_dir).parent)
+        output(f"Using config from: {config_path}")
 
     # Read execution image from execution.yaml (if available)
     execution_image = None
@@ -429,7 +428,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
             pass
 
     # Get postprocessing commands
-    commands = get_postprocessing_commands(vast_path)
+    commands = get_postprocessing_commands(config_path)
 
     if force:
         output("Force mode: per-rosbag caches will be ignored")
@@ -504,7 +503,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
                 plugin_func=plugin_func,
                 params=params,
                 results_dir=results_dir,
-                config_dir=config_dir,
+                config_dir=campaign_dir,
                 provenance_file=provenance_file,
                 execution_image=execution_image,
                 debug=debug,
@@ -538,7 +537,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         output("Skipping metadata generation")
     else:
         meta_success, meta_msg = generate_campaign_metadata(
-            results_dir, vast_file=vast_file, output_callback=output_callback,
+            results_dir, config_file=config_file, output_callback=output_callback,
         )
         if not meta_success:
             output(f"Warning: Metadata generation failed: {meta_msg}")

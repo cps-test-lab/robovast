@@ -1,4 +1,4 @@
-# Copyright (C) 2025 Frederik Pasch
+# Copyright (C) 2026 Frederik Pasch
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -32,7 +32,7 @@ Each publication plugin is a callable with the signature::
         ...
 
 where *results_dir* is the results directory (parent of campaign-* dirs),
-*config_dir* is the directory containing the .vast file, and *params* are the
+*config_dir* is the campaign directory, and *params* are the
 plugin-specific keyword arguments taken from the configuration.  The return
 value is a ``(success, message)`` tuple.
 
@@ -56,8 +56,9 @@ import os
 from importlib.metadata import entry_points
 from typing import Callable, Dict, List, Optional, Tuple
 
-from robovast.common.common import load_config
-from robovast.common.results_utils import find_campaign_vast_file
+from omegaconf import OmegaConf
+
+from robovast.common.results_utils import find_campaign_config
 
 
 def load_publication_plugins() -> Dict[str, Callable]:
@@ -83,18 +84,20 @@ def load_publication_plugins() -> Dict[str, Callable]:
 
 
 def get_publication_config(config_path: str) -> List:
-    """Read the publication configuration from a .vast file.
+    """Read the publication configuration from a Hydra config file.
 
     Args:
-        config_path: Path to the .vast configuration file.
+        config_path: Path to the config YAML file.
 
     Returns:
         List of publication entries or empty list if none are defined.
     """
-    data_config = load_config(config_path, subsection="results_processing", allow_missing=True)
-    if data_config is None:
+    cfg = OmegaConf.load(config_path)
+    config_dict = OmegaConf.to_container(cfg, resolve=True)
+    results_processing = config_dict.get("results_processing", {})
+    if results_processing is None:
         return []
-    entries = data_config.get("publication", [])
+    entries = results_processing.get("publication", [])
     return entries if entries else []
 
 
@@ -104,7 +107,7 @@ def _execute_plugin(
     params: dict,
     results_dir: str,
     config_dir: str,
-    vast_path: Optional[str] = None,
+    config_path: Optional[str] = None,
     force: bool = False,
 ) -> Tuple[bool, str]:
     """Execute a single publication plugin.
@@ -114,12 +117,9 @@ def _execute_plugin(
         plugin_func: The plugin callable.
         params: Keyword arguments for the plugin.
         results_dir: Results directory path.
-        config_dir: Config directory path.
-        vast_path: Absolute path to the resolved .vast file.  Injected as
-            ``_vast_file`` so plugins can load metadata from the known path.
-        force: When ``True``, inject ``overwrite=True`` into *params* so that
-            plugins that support the ``overwrite`` keyword skip any interactive
-            prompt and always overwrite existing output files.
+        config_dir: Campaign directory path.
+        config_path: Absolute path to the resolved config file.
+        force: When ``True``, inject ``overwrite=True`` into *params*.
 
     Returns:
         Tuple of (success, message).
@@ -128,8 +128,8 @@ def _execute_plugin(
         effective_params = dict(params)
         if force:
             effective_params.setdefault("overwrite", True)
-        if vast_path is not None:
-            effective_params.setdefault("_vast_file", vast_path)
+        if config_path is not None:
+            effective_params.setdefault("_config_file", config_path)
         result = plugin_func(results_dir=results_dir, config_dir=config_dir, **effective_params)
         if isinstance(result, (list, tuple)) and len(result) >= 2:
             return result[0], result[1]
@@ -143,18 +143,17 @@ def _execute_plugin(
 def run_publication(
     results_dir: str,
     output_callback=None,
-    vast_file: Optional[str] = None,
+    config_file: Optional[str] = None,
     force: bool = False,
 ) -> Tuple[bool, str]:
-    """Run all publication plugins defined in the .vast configuration.
+    """Run all publication plugins defined in the configuration.
 
     Args:
         results_dir: Directory containing run results (parent of campaign-* dirs).
         output_callback: Optional callable for status messages.
-        vast_file: Optional explicit path to a .vast file.  When given, the
-            campaign copy is ignored.
-        force: When ``True``, pass ``overwrite=True`` to every plugin so that
-            existing output files are silently overwritten without prompting.
+        config_file: Optional explicit path to a config file. When given,
+            the campaign copy is ignored.
+        force: When ``True``, pass ``overwrite=True`` to every plugin.
 
     Returns:
         Tuple of (success, message).
@@ -168,22 +167,22 @@ def run_publication(
     if not os.path.exists(results_dir):
         return False, f"Results directory does not exist: {results_dir}"
 
-    if vast_file is not None:
-        if not os.path.isfile(vast_file):
-            return False, f"Override .vast file does not exist: {vast_file}"
-        vast_path = os.path.abspath(vast_file)
-        config_dir = os.path.dirname(vast_path)
-        output(f"Using override config: {vast_path}")
+    if config_file is not None:
+        if not os.path.isfile(config_file):
+            return False, f"Override config file does not exist: {config_file}"
+        config_path = os.path.abspath(config_file)
+        campaign_dir = os.path.dirname(os.path.dirname(config_path))
+        output(f"Using override config: {config_path}")
     else:
-        vast_path, config_dir = find_campaign_vast_file(results_dir)
-        if vast_path is None:
+        config_path, campaign_dir = find_campaign_config(results_dir)
+        if config_path is None:
             return False, (
-                f"No .vast file found in any campaign-*/_config/ directory under: {results_dir}\n"
+                f"No .hydra/config.yaml found in any campaign directory under: {results_dir}\n"
                 "Ensure at least one execution campaign has been completed."
             )
-        output(f"Using config from: {vast_path}")
+        output(f"Using config from: {config_path}")
 
-    entries = get_publication_config(vast_path)
+    entries = get_publication_config(config_path)
     if not entries:
         return True, "No publication entries defined."
 
@@ -228,8 +227,8 @@ def run_publication(
             plugin_func=plugins[plugin_name],
             params=params,
             results_dir=results_dir,
-            config_dir=config_dir,
-            vast_path=vast_path,
+            config_dir=campaign_dir,
+            config_path=config_path,
             force=force,
         )
         if ok:

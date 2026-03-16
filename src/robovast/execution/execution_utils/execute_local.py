@@ -20,12 +20,16 @@ import os
 import sys
 import tempfile
 
+from pathlib import Path
+
+from omegaconf import OmegaConf
+
 from robovast.common import (COMPAT_VERSION, generate_execution_yaml_script,
-                             get_execution_env_variables, load_config,
+                             get_execution_env_variables,
                              normalize_secondary_containers,
                              prepare_campaign_configs)
 from robovast.common.cli import get_project_config
-from robovast.common.config_generation import generate_scenario_variations
+from robovast.pipeline.executor import run_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +62,9 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
     project_config = get_project_config()
     config_path = project_config.config_path
     logger.debug(f"Loading config from: {config_path}")
-    execution_parameters = load_config(config_path, "execution")
+    cfg = OmegaConf.load(config_path)
+    full_config = OmegaConf.to_container(cfg, resolve=True)
+    execution_parameters = full_config.get("execution", {})
     docker_image = execution_parameters.get("image", "ghcr.io/cps-test-lab/robovast:latest")
     pre_command = execution_parameters.get("pre_command")
     post_command = execution_parameters.get("post_command")
@@ -75,18 +81,22 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
 
     logger.debug(f"Using Docker image: {docker_image}")
 
-    # Generate and filter configs
-    logger.debug("Generating scenario variations")
+    # Run pipeline to generate configs
+    logger.debug("Running pipeline callbacks")
     temp_dir = tempfile.TemporaryDirectory(prefix="robovast_execution_")
-    campaign_data, _ = generate_scenario_variations(
-        variation_file=config_path,
-        progress_update_callback=None,
-        output_dir=temp_dir.name
-    )
+    OmegaConf.update(cfg, "_config_dir", os.path.dirname(os.path.abspath(config_path)), force_add=True)
+    pipeline_ctx = run_pipeline(cfg, Path(temp_dir.name))
+    campaign_data = {
+        "configs": [{"name": pipeline_ctx.scenario_name, "config": pipeline_ctx.scenario_params}],
+        "execution": execution_parameters,
+        "metadata": full_config.get("metadata", {}),
+        "_run_files": execution_parameters.get("run_files", []),
+        "scenario_file": execution_parameters.get("scenario_file", "scenario.osc"),
+    }
 
     if not campaign_data["configs"]:
-        logger.error("No configs found in vast-file")
-        feedback_callback("Error: No configs found in vast-file.", file=sys.stderr)
+        logger.error("No configs found in config file")
+        feedback_callback("Error: No configs found in config file.", file=sys.stderr)
         sys.exit(1)
 
     # Filter to configs matching the pattern if requested

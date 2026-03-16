@@ -31,8 +31,9 @@ from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel,
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
-from robovast.common import generate_scenario_variations
-from robovast.common.config import validate_config
+from omegaconf import OmegaConf
+
+from robovast.pipeline.executor import run_pipeline
 from robovast.configuration.gui.config_list import ConfigList
 from robovast.configuration.gui.config_view import ConfigView
 from robovast.configuration.gui.yaml_editor import YamlEditor
@@ -83,19 +84,18 @@ class GenerationWorker(QObject):
     def run(self):
         """Run the generation process."""
         try:
-            campaign_data, variation_gui_classes = generate_scenario_variations(
-                variation_file=self.yaml_path,
-                progress_update_callback=self._check_interruption,
-                output_dir=self.output_dir
-            )
+            from pathlib import Path
+            cfg = OmegaConf.load(self.yaml_path)
+            OmegaConf.update(cfg, "_config_dir", os.path.dirname(os.path.abspath(self.yaml_path)), force_add=True)
+            pipeline_ctx = run_pipeline(cfg, Path(self.output_dir))
 
             # Check if we were cancelled during generation
             if self._cancelled:
                 self.cancelled.emit()
                 return
 
-            self.configs = campaign_data["configs"]
-            self.variation_gui_classes = variation_gui_classes
+            self.configs = [{"name": pipeline_ctx.scenario_name, "config": pipeline_ctx.scenario_params}]
+            self.variation_gui_classes = {}
             self.finished.emit()
         except Exception as e:
             if not self._cancelled:
@@ -730,18 +730,15 @@ class ConfigEditor(QMainWindow):
             self.error_display.setHtml(error_msg)
             return
 
-        # Then, validate against Pydantic schema
+        # Validate via OmegaConf structured config
         try:
-            validate_config(config_data)
+            OmegaConf.create(config_data)
             success_msg = "<span style='color: #4ec9b0;'><b>✓ Configuration is valid!</b></span><br>"
-            success_msg += f"<span style='color: #9cdcfe;'>Version: {config_data.get('version', 'N/A')}</span>"
+            name = (config_data.get("metadata") or {}).get("name", "N/A")
+            success_msg += f"<span style='color: #9cdcfe;'>Name: {name}</span>"
             self.error_display.setHtml(success_msg)
-        except ValueError as e:
-            error_msg = f"<span style='color: #f48771;'><b>Validation Error:</b></span><br>"
-            error_msg += f"<span style='color: #dcdcaa;'>{str(e)}</span>"
-            self.error_display.setHtml(error_msg)
         except Exception as e:
-            error_msg = f"<span style='color: #f48771;'><b>Unexpected Error:</b></span><br>"
+            error_msg = f"<span style='color: #f48771;'><b>Validation Error:</b></span><br>"
             error_msg += f"<span style='color: #dcdcaa;'>{str(e)}</span>"
             self.error_display.setHtml(error_msg)
 
