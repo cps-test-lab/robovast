@@ -42,20 +42,21 @@ def evaluation():
               help='Force postprocessing even if results directory is unchanged (bypasses caching)')
 @click.option('--skip-postprocessing', is_flag=True,
               help='Skip postprocessing before launching the GUI')
-@click.option('--override', '-o', default=None, metavar='VAST_FILE',
-              help='Override the .vast file used for postprocessing instead of the one '
-                   'found in campaign-<id>/_config/')
-def result_analyzer_cmd(results_dir, force, skip_postprocessing, override):
-    """Launch the graphical run results analyzer.
+@click.pass_context
+def result_analyzer_cmd(ctx, results_dir, force, skip_postprocessing):
+    """Launch the graphical run results gui.
 
     Opens a GUI application for interactive exploration and
     visualization of run results. Automatically runs postprocessing
     before launching the GUI.
 
-    Use --override to supply a .vast file explicitly instead of the campaign copy.
+    Use the global ``-V`` flag to supply a .vast file explicitly instead of the campaign copy:
+    ``vast -V my.vast eval gui``
 
     Requires project initialization with ``vast init`` first (unless ``--results-dir`` is specified).
     """
+    vast_override = (ctx.obj or {}).get('vast_file')
+
     # Resolve results_dir from project config when not explicitly provided.
     # gui/postprocess never uses config_path from the project file, so only
     # results_dir is needed and config_path validation is intentionally skipped.
@@ -69,10 +70,10 @@ def result_analyzer_cmd(results_dir, force, skip_postprocessing, override):
 
     # Run postprocessing before launching GUI (unless skipped)
     if not skip_postprocessing:
-        if override:
-            click.echo(f"Override .vast file: {override}")
+        if vast_override:
+            click.echo(f"Override .vast file: {vast_override}")
 
-        needs_pp = force or is_postprocessing_needed(results_dir, vast_file=override)
+        needs_pp = force or is_postprocessing_needed(results_dir, vast_file=vast_override)
 
         if needs_pp:
             if not click.confirm("Run postprocessing?", default=True):
@@ -83,7 +84,7 @@ def result_analyzer_cmd(results_dir, force, skip_postprocessing, override):
                 results_dir=results_dir,
                 output_callback=click.echo,
                 force=force,
-                vast_file=override,
+                vast_file=vast_override,
             )
 
             if not success:
@@ -112,7 +113,7 @@ def result_analyzer_cmd(results_dir, force, skip_postprocessing, override):
     app.setStyle('Fusion')
 
     try:
-        window = RunResultsAnalyzer(base_dir=results_dir, override_vast=override)
+        window = RunResultsAnalyzer(base_dir=results_dir, override_vast=vast_override)
         window.show()
         exit_code = app.exec_()
         window.deleteLater()

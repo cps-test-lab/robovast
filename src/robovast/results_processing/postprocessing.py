@@ -15,12 +15,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Postprocessing functionality for run result data."""
-import hashlib
 import inspect
 import json
 import os
 import tempfile
-import time
 from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -28,7 +26,6 @@ from typing import Dict, List, Optional, Tuple
 import yaml
 
 from robovast.common.common import load_config
-from robovast.common.execution import is_campaign_dir
 from robovast.results_processing.metadata import generate_campaign_metadata
 from robovast.results_processing.postprocessing_plugins import generate_data_db
 from robovast.common.results_utils import find_campaign_vast_file
@@ -80,6 +77,8 @@ def execute_postprocessing_plugin(
     config_dir: str,
     provenance_file: Optional[str] = None,
     execution_image: Optional[str] = None,
+    debug: bool = False,
+    force: bool = False,
 ) -> Tuple[bool, str, List[dict]]:
     """Execute a postprocessing plugin with parameters.
 
@@ -104,6 +103,10 @@ def execute_postprocessing_plugin(
         kwargs['provenance_file'] = provenance_file
     if execution_image is not None:
         kwargs['execution_image'] = execution_image
+    if debug:
+        kwargs['debug'] = debug
+    if force:
+        kwargs['force'] = force
 
     try:
         result = plugin_func(**kwargs)
@@ -128,6 +131,86 @@ def execute_postprocessing_plugin(
         return False, f"Plugin '{plugin_name}' argument error: {e}", []
     except Exception as e:
         return False, f"Plugin '{plugin_name}' execution error: {e}", []
+
+
+# Plugin names that can be transparently batched into a single rosbags_process call.
+# Maps plugin name → (handler_type, default_bag_dir).
+_ROSBAG_BATCH_MAP: Dict[str, Tuple[str, str]] = {
+    "rosbags_to_csv":        ("to_csv",         "rosbag2"),
+    "rosbags_tf_to_csv":     ("tf_to_csv",       "rosbag2"),
+    "rosbags_bt_to_csv":     ("bt_to_csv",       "rosbag2"),
+    "rosbags_action_to_csv": ("action_to_csv",   "rosbag2"),
+    "rosbags_rosout_to_csv": ("rosout_to_csv",   "logs/rosout_bag"),
+    "rosbags_to_webm":       ("to_webm",         "rosbag2"),
+}
+
+
+def _batch_rosbags_commands(commands: List, skip_rosout: bool = False) -> List:
+    """Replace all batchable rosbags_* plugin calls with rosbags_process calls.
+
+    Groups every command whose plugin name appears in ``_ROSBAG_BATCH_MAP`` by
+    their ``bag_dir`` (the subdirectory name to search for rosbags).  One
+    ``rosbags_process`` command is emitted per distinct ``bag_dir``.  Each batch
+    is inserted at the position of the first batchable command sharing that
+    ``bag_dir``; all other batchable commands are removed.  Non-batchable
+    commands keep their original order.
+
+    ``rosout_to_csv`` is always added unless *skip_rosout* is ``True``.
+
+    Args:
+        commands: Raw list of postprocessing commands from the .vast config.
+        skip_rosout: When ``True``, omit rosout processing entirely (neither
+            auto-injected nor taken from explicit ``rosbags_rosout_to_csv``
+            commands in the config).
+
+    Returns:
+        New command list with batchable commands replaced by rosbags_process calls.
+    """
+    # bag_dir → list of handler dicts for that bag dir
+    bag_dir_plugins: Dict[str, List[dict]] = {}
+    # bag_dir → index in result where the placeholder lives
+    bag_dir_slot: Dict[str, int] = {}
+    result: List = []
+
+    rosout_bag_dir = _ROSBAG_BATCH_MAP["rosbags_rosout_to_csv"][1]
+
+    for cmd in commands:
+        plugin_name = cmd if isinstance(cmd, str) else list(cmd.keys())[0]
+        if plugin_name in _ROSBAG_BATCH_MAP:
+            handler_type, default_bag_dir = _ROSBAG_BATCH_MAP[plugin_name]
+            # Skip rosout if requested
+            if skip_rosout and handler_type == "rosout_to_csv":
+                continue
+            params = {} if isinstance(cmd, str) else (cmd[plugin_name] or {})
+            # Allow per-command bag_dir override; pop it so it's not passed to handler
+            params = dict(params)
+            bag_dir = params.pop("bag_dir", default_bag_dir)
+            bag_dir_plugins.setdefault(bag_dir, []).append({"type": handler_type, **params})
+            if bag_dir not in bag_dir_slot:
+                bag_dir_slot[bag_dir] = len(result)
+                result.append(None)  # reserve slot
+        else:
+            result.append(cmd)
+
+    # Always include rosout unless explicitly skipped
+    if not skip_rosout and not any(
+        p.get("type") == "rosout_to_csv"
+        for plugins in bag_dir_plugins.values()
+        for p in plugins
+    ):
+        bag_dir_plugins.setdefault(rosout_bag_dir, []).append({"type": "rosout_to_csv"})
+        if rosout_bag_dir not in bag_dir_slot:
+            bag_dir_slot[rosout_bag_dir] = len(result)
+            result.append(None)
+
+    # Fill placeholder slots with the batch commands; rosout_to_csv always last
+    for bag_dir, slot_idx in bag_dir_slot.items():
+        plugins = bag_dir_plugins[bag_dir]
+        rosout = [p for p in plugins if p.get("type") == "rosout_to_csv"]
+        others = [p for p in plugins if p.get("type") != "rosout_to_csv"]
+        result[slot_idx] = {"rosbags_process": {"plugins": others + rosout, "bag_dir": bag_dir}}
+
+    return result
 
 
 def validate_postprocessing_command(command: str | dict, plugins: Dict[str, callable]) -> tuple[bool, str]:
@@ -236,113 +319,18 @@ def _write_postprocessing_provenance_yaml(
         pass  # skip if we cannot write
 
 
-def get_project_cache_dir(results_dir: str) -> str:
-    """Return the .cache directory inside results_dir."""
-    cache_dir = os.path.join(os.path.abspath(results_dir), ".cache")
-    os.makedirs(cache_dir, exist_ok=True)
-    return cache_dir
 
-
-def _get_postprocessing_cache_paths(results_dir: str) -> tuple[str, str, str]:
-    """Return (cache_dir, hash_file, outputs_file) for postprocessing.
-
-    All cache files are stored inside ``results_dir/.cache/``.
-    """
-    cache_dir = get_project_cache_dir(results_dir)
-    hash_file = os.path.join(cache_dir, "postprocessing.hash")
-    outputs_file = os.path.join(cache_dir, "postprocessing.outputs")
-    return cache_dir, hash_file, outputs_file
-
-
-def _load_postprocessing_outputs_exclude_set(outputs_file: str) -> set:
-    """Load the set of paths to exclude from hashing (postprocessing outputs).
-
-    Reads the per-results hidden file in .cache that lists all files produced by
-    postprocessing. Paths are normalized to forward slashes, relative to the
-    results directory.
-    """
-    exclude = set()
-    if not os.path.isfile(outputs_file):
-        return exclude
-    try:
-        with open(outputs_file, "r", encoding="utf-8") as f:
-            for line in f:
-                p = line.strip()
-                if not p:
-                    continue
-                # Normalize to forward slashes for consistent comparison
-                if os.sep != "/":
-                    p = str(Path(p))
-                exclude.add(p)
-    except OSError:
-        pass
-    return exclude
-
-
-def _path_should_exclude_from_hash(rel_path: str, exclude_set: set) -> bool:
-    """Return True if rel_path is an output of postprocessing and should be excluded."""
-    if not exclude_set:
-        return False
-    # Normalize to forward slashes
-    if os.sep != "/":
-        rel_path = str(Path(rel_path))
-    if rel_path in exclude_set:
-        return True
-    # Exclude files under a listed path (e.g. output was a directory)
-    for prefix in exclude_set:
-        if prefix and (rel_path == prefix or rel_path.startswith(prefix + "/")):
-            return True
-    return False
-
-
-def compute_dir_hash(dir_path: str, exclude_set: Optional[set] = None) -> str:
-    """Compute a hash for a directory based on modification time and file sizes."""
-    path = Path(dir_path)
-    path_str = str(path)
-    path_len = len(path_str) + 1  # +1 for trailing slash
-
-    # Collect all files recursively except outputs of postprocessing and cache
-    # Skip: hidden, .cache, .pyc, .tar.gz, postprocessing.yaml (written by postprocessing)
-    # Optimized: use tuple for endswith()
-    files_to_check = []
-    for f in path.rglob("*"):
-        if not f.is_file() or f.name.startswith(".") or f.is_symlink():
-            continue
-        if f.name.endswith(('.pyc')):
-            continue
-        if '.cache' in f.parts or f.name == "postprocessing.yaml":
-            continue
-        rel_path = str(f)[path_len:]
-        if _path_should_exclude_from_hash(rel_path, exclude_set):
-            continue
-        files_to_check.append(f)
-
-    # Build all data first, then hash once - fastest approach
-    hash_parts = []
-    for file_path in sorted(files_to_check):
-        stat = file_path.stat()
-        rel_path = str(file_path)[path_len:]  # Fast string slice
-        hash_parts.append(f"{rel_path}|{stat.st_size}|{stat.st_mtime}\n")
-
-    # Single join, encode, and hash operation
-    hash_string = "".join(hash_parts)
-    return hashlib.md5(hash_string.encode()).hexdigest()
-
-
-def is_postprocessing_needed(  # pylint: disable=too-many-return-statements
+def is_postprocessing_needed(
         results_dir: str,
         vast_file: Optional[str] = None,
 ) -> bool:
     """Check whether postprocessing needs to run for *results_dir*.
 
-    Returns ``True`` when:
-    - No hash file exists (postprocessing has never been run), or
-    - The results directory hash differs from the stored hash, or
-    - Postprocessing commands are defined but the hash cannot be determined.
+    Returns ``True`` when postprocessing commands are configured; per-rosbag
+    caching inside ``rosbags_process`` handles skipping already-processed bags.
 
-    Returns ``False`` when:
-    - No postprocessing commands are configured, or
-    - The stored hash matches the current directory hash (cache is valid).
+    Returns ``False`` when no postprocessing commands are configured or the
+    results directory / vast file cannot be found.
 
     Args:
         results_dir: Directory containing run results (parent of campaign-* dirs).
@@ -354,7 +342,6 @@ def is_postprocessing_needed(  # pylint: disable=too-many-return-statements
     if not os.path.exists(results_dir):
         return False
 
-    # Resolve vast file
     if vast_file is not None:
         if not os.path.isfile(vast_file):
             return False
@@ -364,28 +351,8 @@ def is_postprocessing_needed(  # pylint: disable=too-many-return-statements
         if vast_path is None:
             return False
 
-    # If no postprocessing commands are defined, nothing to do
     commands = get_postprocessing_commands(vast_path)
-    if not commands:
-        return False
-
-    # Compare directory hash with stored hash
-    _, hash_file, outputs_file = _get_postprocessing_cache_paths(results_dir)
-    exclude_set = _load_postprocessing_outputs_exclude_set(outputs_file)
-    try:
-        current_hash = compute_dir_hash(results_dir, exclude_set=exclude_set)
-    except Exception:  # pylint: disable=broad-except
-        return True
-
-    if not os.path.exists(hash_file):
-        return True
-
-    try:
-        with open(hash_file, 'r') as f:
-            stored_hash = f.read().strip()
-        return stored_hash != current_hash
-    except Exception:  # pylint: disable=broad-except
-        return True
+    return bool(commands)
 
 
 def run_postprocessing(  # pylint: disable=too-many-return-statements
@@ -394,6 +361,10 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         force: bool = False,
         vast_file: Optional[str] = None,
         debug: bool = False,
+        skip_rosout: bool = False,
+        skip: Optional[List[str]] = None,
+        skip_db: bool = False,
+        skip_metadata: bool = False,
 ):
     """Run postprocessing commands on run results.
 
@@ -404,10 +375,12 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     Args:
         results_dir: Directory containing run results (parent of campaign-* dirs)
         output_callback: Optional callback function for output messages (takes message string)
-        force: If True, bypass caching and force postprocessing even if results are unchanged
+        force: If True, bypass per-rosbag caches and reprocess all bags.
         vast_file: Optional explicit path to a ``.vast`` file.  When given, the
             campaign copy is ignored entirely.
         debug: If True, include full plugin stdout in output; otherwise show only the summary line.
+        skip_rosout: If True, skip rosout processing entirely (shorthand for ``skip=['rosbags_rosout_to_csv']``).
+        skip: List of plugin names to skip entirely (e.g. ``['rosbags_to_webm']``).
 
     Returns:
         Tuple of (success: bool, message: str)
@@ -458,39 +431,32 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     # Get postprocessing commands
     commands = get_postprocessing_commands(vast_path)
 
-    # Determine cache locations inside results_dir/.cache/
-    cache_dir, hash_file, outputs_file = _get_postprocessing_cache_paths(results_dir)
+    if force:
+        output("Force mode: per-rosbag caches will be ignored")
 
-    # Load list of postprocessing outputs (to be excluded from hashing)
-    exclude_set = _load_postprocessing_outputs_exclude_set(outputs_file)
+    # Build unified skip set
+    skip_set: set = set(skip) if skip else set()
+    if skip_rosout:
+        skip_set.add("rosbags_rosout_to_csv")
 
-    # Skip cache check if force is enabled
-    if not force:
-        output(f"Checking if postprocessing is needed...")
-        # Compute hash of results directory
-        start_time = time.time()
-        hash_result = compute_dir_hash(results_dir, exclude_set=exclude_set)
-        elapsed_time = time.time() - start_time
-        output(f"Hashing {results_dir} took {elapsed_time:.4f} seconds")
-
-        # Check if postprocessing is needed by comparing with stored hash
-        if os.path.exists(hash_file):
-            try:
-                with open(hash_file, 'r') as f:
-                    stored_hash = f.read().strip()
-
-                if stored_hash == hash_result:
-                    output("Postprocessing skipped: results directory hash unchanged")
-                    return True, "Postprocessing not needed (hash unchanged)"
-            except Exception as e:
-                output(f"Warning: Could not read hash file: {e}")
-                # Continue with postprocessing if we can't read the hash file
-    else:
-        output("Force mode enabled: skipping cache check")
-        hash_result = compute_dir_hash(results_dir, exclude_set=exclude_set)
+    # Filter out explicitly skipped plugins before batching
+    if skip_set:
+        filtered = []
+        for cmd in commands:
+            name = cmd if isinstance(cmd, str) else list(cmd.keys())[0]
+            if name in skip_set:
+                output(f"Skipping: {name}")
+            else:
+                filtered.append(cmd)
+        commands = filtered
 
     # Load plugins
     plugins = load_postprocessing_plugins()
+
+    # Batch all batchable rosbags_* commands into a single rosbags_process call
+    # (reads each rosbag once instead of once per plugin). rosout_to_csv is always
+    # included unless skipped.
+    commands = _batch_rosbags_commands(commands, skip_rosout="rosbags_rosout_to_csv" in skip_set)
 
     # Validate all commands first
     for command in commands:
@@ -498,7 +464,6 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         if not is_valid:
             return False, error_msg
 
-    results_dir_abs = os.path.abspath(results_dir)
     all_provenance_entries: List[dict] = []
 
     with tempfile.TemporaryDirectory(prefix="robovast_provenance_") as temp_dir:
@@ -542,6 +507,8 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
                 config_dir=config_dir,
                 provenance_file=provenance_file,
                 execution_image=execution_image,
+                debug=debug,
+                force=force,
             )
 
             all_provenance_entries.extend(entries)
@@ -553,87 +520,28 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
             display_message = message if debug else message.splitlines()[0]
             output(f"✓ {display_message}")
 
-    # Always run rosbags_rosout_to_csv after custom plugin execution and database creation
-    if 'rosbags_rosout_to_csv' in plugins:
-        output("Executing rosbags_rosout_to_csv...")
-        with tempfile.TemporaryDirectory(prefix="robovast_provenance_") as rosout_temp_dir:
-            rosout_provenance_file = os.path.join(rosout_temp_dir, "rosbags_rosout_to_csv_provenance.json")
-            rosout_success, rosout_msg, _ = execute_postprocessing_plugin(
-                plugin_name='rosbags_rosout_to_csv',
-                plugin_func=plugins['rosbags_rosout_to_csv'],
-                params={},
-                results_dir=results_dir,
-                config_dir=config_dir,
-                execution_image=execution_image,
-                provenance_file=rosout_provenance_file,
-            )
-        if rosout_success:
-            display_rosout_msg = rosout_msg if debug else rosout_msg.splitlines()[0]
-            output(f"✓ {display_rosout_msg}")
-        else:
-            output(f"Warning: rosbags_rosout_to_csv failed: {rosout_msg}")
-    else:
-        raise RuntimeError("rosbags_rosout_to_csv plugin not available")
-
-    # Store the hash, list of postprocessing outputs, and write postprocessing.yaml
-    output_paths = set()
-    if success:
-        try:
-            os.makedirs(cache_dir, exist_ok=True)
-            with open(hash_file, 'w') as f:
-                f.write(hash_result)
-            output(f"Stored postprocessing hash to {hash_file}")
-
-            # Write hidden file listing all postprocessing output paths (used to exclude from hash)
-            output_paths = set()
-            for ent in all_provenance_entries:
-                out = ent.get("output") or ""
-                if not out:
-                    continue
-                if os.sep != "/":
-                    out = str(Path(out))
-                output_paths.add(out)
-            with open(outputs_file, "w", encoding="utf-8") as f:
-                for p in sorted(output_paths):
-                    f.write(p + "\n")
-        except Exception as e:
-            output(f"Warning: Could not write cache files: {e}")
-
     # Write postprocessing.yaml in campaign/_transient/
     _write_postprocessing_provenance_yaml(campaign_dir, all_provenance_entries)
 
     # Build SQLite data.db for the campaign
-    db_success, db_msg = generate_data_db(campaign_dir, output_callback=output_callback)
-    if db_success:
-        output(f"✓ {db_msg}")
+    if skip_db:
+        output("Skipping data.db creation")
     else:
-        raise RuntimeError(f"data.db generation failed: {db_msg}")
+        db_success, db_msg = generate_data_db(campaign_dir, output_callback=output_callback)
+        if db_success:
+            output(f"✓ {db_msg}")
+        else:
+            raise RuntimeError(f"data.db generation failed: {db_msg}")
 
     # Generate metadata.yaml in each campaign directory
-    meta_success, meta_msg = generate_campaign_metadata(
-        results_dir, vast_file=vast_file, output_callback=output_callback,
-    )
-    if not meta_success:
-        output(f"Warning: Metadata generation failed: {meta_msg}")
-
-    # Add metadata.yaml and data.db to exclude set for future hash computations
-    for campaign_item in Path(results_dir_abs).iterdir():
-        if campaign_item.is_dir() and is_campaign_dir(campaign_item.name):
-            meta_file = campaign_item / "metadata.yaml"
-            if meta_file.exists():
-                rel = str(meta_file.relative_to(Path(results_dir_abs)))
-                output_paths.add(rel)
-            db_file = campaign_item / "_execution" / "data.db"
-            if db_file.exists():
-                rel = str(db_file.relative_to(Path(results_dir_abs)))
-                output_paths.add(rel)
-    # Re-write outputs file with metadata.yaml included
-    try:
-        with open(outputs_file, "w", encoding="utf-8") as f:
-            for p in sorted(output_paths):
-                f.write(p + "\n")
-    except OSError:
-        pass
+    if skip_metadata:
+        output("Skipping metadata generation")
+    else:
+        meta_success, meta_msg = generate_campaign_metadata(
+            results_dir, vast_file=vast_file, output_callback=output_callback,
+        )
+        if not meta_success:
+            output(f"Warning: Metadata generation failed: {meta_msg}")
 
     if success:
         return True, "Postprocessing completed successfully!"

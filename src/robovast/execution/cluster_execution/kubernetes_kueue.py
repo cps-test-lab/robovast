@@ -78,6 +78,11 @@ apiVersion: kueue.x-k8s.io/v1beta2
 kind: ResourceFlavor
 metadata:
   name: default-flavor
+spec:
+  tolerations:
+    - key: "dedicated"
+      value: "batch"
+      effect: "NoSchedule"   
 {node_labels_spec}---
 apiVersion: kueue.x-k8s.io/v1beta2
 kind: ClusterQueue
@@ -351,19 +356,45 @@ def cleanup_kueue_cluster_resources(kube_context=None):
                 )
 
 
-def get_cluster_allocatable_resources(kube_context=None):
-    """Query the cluster for available CPU and memory (allocatable minus requested).
+def get_cluster_allocatable_resources(kube_context=None, cluster_config=None):
+    """Return total allocatable CPU and memory for Kueue quota.
 
-    Sums allocatable from all nodes, subtracts requests from Running/Pending pods,
-    and returns the available capacity for Kueue quotas.
+    Resolution order:
+
+    1. If *cluster_config* is provided, delegate to
+       ``cluster_config.get_cluster_allocatable_resources(kube_context)``.
+       A provider-specific override (e.g. GCP) can query the autoscaler for
+       the true *maximum* capacity, which is correct for autoscaling clusters.
+    2. Fall back to querying the Kubernetes node API: sums the **total
+       allocatable** resources across all current nodes (no subtracting of
+       current pod requests — Kueue manages quota itself).
+    3. If neither succeeds, return ``DEFAULT_*`` constants.
 
     Args:
         kube_context: Kubernetes context to use. None uses the active context.
+        cluster_config: Optional :class:`BaseConfig` instance whose
+            ``get_cluster_allocatable_resources`` override is tried first.
 
     Returns:
-        tuple: (cpu_quota: int, memory_quota: str) e.g. (8, "32Gi").
+        tuple: (cpu_quota: int, memory_quota: str) e.g. (64, "256Gi").
                Uses DEFAULT_* if cluster cannot be queried.
     """
+    # 1. Provider-specific override (e.g. GKE autoscaler max capacity)
+    if cluster_config is not None:
+        try:
+            provider_cpu, provider_mem = cluster_config.get_cluster_allocatable_resources(
+                kube_context=kube_context
+            )
+            if provider_cpu is not None and provider_mem is not None:
+                return provider_cpu, provider_mem
+        except Exception as exc:
+            logger.warning(
+                "cluster_config.get_cluster_allocatable_resources failed: %s. "
+                "Falling back to K8s node query.",
+                exc,
+            )
+
+    # 2. Generic K8s node query — total allocatable (autoscaling-safe)
     try:
         try:
             config.load_incluster_config()
@@ -373,51 +404,28 @@ def get_cluster_allocatable_resources(kube_context=None):
         v1 = client.CoreV1Api()
         total_allocatable_cpu = 0.0
         total_allocatable_mem = 0  # bytes
-        total_requested_cpu = 0.0
-        total_requested_mem = 0  # bytes
 
-        # 1. Sum allocatable from all nodes
         nodes = v1.list_node()
         for node in nodes.items:
             alloc = node.status.allocatable or {}
             total_allocatable_cpu += _parse_resource(alloc.get("cpu"))
             total_allocatable_mem += int(_parse_resource(alloc.get("memory")))
 
-        # 2. Sum resource requests from Running/Pending pods
-        pods = v1.list_pod_for_all_namespaces()
-        for pod in pods.items:
-            if pod.status.phase in ("Running", "Pending") and pod.spec:
-                containers = list(pod.spec.containers or [])
-                containers.extend(pod.spec.init_containers or [])
-                for container in containers:
-                    res = {}
-                    if container.resources and container.resources.requests:
-                        res = container.resources.requests
-                    total_requested_cpu += _parse_resource(res.get("cpu", "0"))
-                    total_requested_mem += int(_parse_resource(res.get("memory", "0")))
-
-        # 3. Calculate availability
-        avail_cpu = total_allocatable_cpu - total_requested_cpu
-        avail_mem = total_allocatable_mem - total_requested_mem
-
-        if avail_cpu <= 0 or avail_mem <= 0:
+        if total_allocatable_cpu <= 0:
             logger.warning(
-                "No available resources (allocatable - requested). Using defaults."
+                "No allocatable CPU found on cluster nodes. Using defaults."
             )
             return DEFAULT_CPU_QUOTA, DEFAULT_MEMORY_QUOTA
 
-        cpu_quota = max(1, int(avail_cpu))
-        memory_gi = max(1, avail_mem // (1024**3))
+        cpu_quota = max(1, int(total_allocatable_cpu))
+        memory_gi = max(1, total_allocatable_mem // (1024**3))
         memory_quota = f"{memory_gi}Gi"
 
         logger.info(
-            "Cluster: allocatable %dcpu/%dGi - requested %dcpu/%dGi = available %dcpu/%s",
-            int(total_allocatable_cpu),
-            total_allocatable_mem // (1024**3),
-            int(total_requested_cpu),
-            total_requested_mem // (1024**3),
+            "Cluster total allocatable: %d CPU(s), %s (from %d node(s))",
             cpu_quota,
             memory_quota,
+            len(nodes.items),
         )
         return cpu_quota, memory_quota
 
@@ -617,7 +625,8 @@ def uninstall_kueue_helm(kube_context=None):
             raise RuntimeError(f"Failed to uninstall Kueue: {err}")
 
 
-def apply_kueue_queues(namespace="default", kube_context=None, node_labels=None):
+def apply_kueue_queues(namespace="default", kube_context=None, node_labels=None,
+                       cluster_config=None):
     """Create ResourceFlavor, ClusterQueue, and LocalQueue for RoboVAST.
 
     Quotas are set from cluster allocatable CPU and memory.
@@ -627,8 +636,13 @@ def apply_kueue_queues(namespace="default", kube_context=None, node_labels=None)
         kube_context: Kubernetes context to use. None uses the active context.
         node_labels: Optional dict of node labels to add to the ResourceFlavor spec
             (e.g. {"node-pool": "primary"}). Jobs will only run on matching nodes.
+        cluster_config: Optional :class:`BaseConfig` instance.  When provided,
+            its ``get_cluster_allocatable_resources`` override is used first so
+            that autoscaling clusters report their maximum possible capacity.
     """
-    cpu_quota, memory_quota = get_cluster_allocatable_resources(kube_context=kube_context)
+    cpu_quota, memory_quota = get_cluster_allocatable_resources(
+        kube_context=kube_context, cluster_config=cluster_config
+    )
     yaml_content = KUEUE_QUEUES_YAML.format(
         namespace=namespace,
         queue_name=KUEUE_QUEUE_NAME,
@@ -674,7 +688,8 @@ def apply_kueue_queues(namespace="default", kube_context=None, node_labels=None)
     )
 
 
-def prepare_kueue_setup(output_dir, namespace="default", kube_context=None, node_labels=None):
+def prepare_kueue_setup(output_dir, namespace="default", kube_context=None, node_labels=None,
+                        cluster_config=None):
     """Write Kueue queue manifests and README to output_dir.
 
     Quotas are set from cluster allocatable CPU and memory when cluster is
@@ -686,8 +701,12 @@ def prepare_kueue_setup(output_dir, namespace="default", kube_context=None, node
         kube_context: Kubernetes context to use. None uses the active context.
         node_labels: Optional dict of node labels to add to the ResourceFlavor spec
             (e.g. {"node-pool": "primary"}). Jobs will only run on matching nodes.
+        cluster_config: Optional :class:`BaseConfig` instance passed through to
+            ``get_cluster_allocatable_resources``.
     """
-    cpu_quota, memory_quota = get_cluster_allocatable_resources(kube_context=kube_context)
+    cpu_quota, memory_quota = get_cluster_allocatable_resources(
+        kube_context=kube_context, cluster_config=cluster_config
+    )
     yaml_content = KUEUE_QUEUES_YAML.format(
         namespace=namespace,
         queue_name=KUEUE_QUEUE_NAME,

@@ -79,12 +79,7 @@ webdav = "robovast.execution.cluster_execution.share_providers.webdav:WebDavShar
 
 [tool.poetry.plugins."robovast.postprocessing_commands"]
 command = "robovast.results_processing.postprocessing_plugins:Command"
-rosbags_tf_to_csv = "robovast.results_processing.postprocessing_plugins:RosbagsTfToCsv"
-rosbags_bt_to_csv = "robovast.results_processing.postprocessing_plugins:RosbagsBtToCsv"
-rosbags_to_csv = "robovast.results_processing.postprocessing_plugins:RosbagsToCsv"
-rosbags_to_webm = "robovast.results_processing.postprocessing_plugins:RosbagsToWebm"
-rosbags_action_to_csv = "robovast.results_processing.postprocessing_plugins:RosbagsActionToCsv"
-rosbags_rosout_to_csv = "robovast.results_processing.postprocessing_plugins:RosbagsRosoutToCsv"
+rosbags_process = "robovast.results_processing.postprocessing_plugins:RosbagsProcess"
 
 [tool.poetry.plugins."robovast.publication_plugins"]
 zip = "robovast.results_processing.publication_plugins.zip:Zip"

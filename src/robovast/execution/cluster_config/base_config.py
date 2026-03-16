@@ -155,6 +155,28 @@ class BaseConfig(object):
         """
         return "s3"
 
+    def get_cluster_allocatable_resources(self, kube_context=None):
+        """Return the total CPU and memory quota for Kueue.
+
+        Called by ``apply_kueue_queues`` to determine the ClusterQueue quota
+        before submitting jobs.  The default implementation returns
+        ``(None, None)``, which instructs the caller to fall back to querying
+        the Kubernetes node API (total allocatable across all current nodes).
+
+        Subclasses should override this when the cluster supports autoscaling so
+        that the quota reflects the *maximum* possible capacity rather than the
+        currently provisioned capacity.
+
+        Args:
+            kube_context: Kubernetes context name.  ``None`` uses the active
+                context.
+
+        Returns:
+            tuple: ``(cpu_quota: int, memory_quota: str)`` e.g. ``(64, "256Gi")``,
+                   or ``(None, None)`` to fall back to the K8s node query.
+        """
+        return None, None
+
     def restore_from_setup_kwargs(self, kwargs: dict) -> None:
         """Restore config state from the kwargs saved during ``setup_cluster``.
 
@@ -168,3 +190,24 @@ class BaseConfig(object):
             kwargs: The ``setup_kwargs`` dict that was persisted to the
                     cluster flag file by :func:`save_cluster_setup_info`.
         """
+
+    @staticmethod
+    def _apply_pod_node_selector(yaml_objects, node_labels):
+        """Inject ``nodeSelector`` into all ``Pod`` objects.
+
+        Args:
+            yaml_objects: Iterable of parsed YAML dicts (from ``yaml.safe_load_all``).
+            node_labels: ``dict`` of ``{label_key: label_value}`` to apply as
+                ``spec.nodeSelector``.  When ``None`` or empty the objects are
+                returned unchanged.
+
+        Returns:
+            list: The (possibly modified) list of YAML dicts.
+        """
+        docs = list(yaml_objects)
+        if not node_labels:
+            return docs
+        for doc in docs:
+            if doc and doc.get('kind') == 'Pod':
+                doc.setdefault('spec', {})['nodeSelector'] = dict(node_labels)
+        return docs

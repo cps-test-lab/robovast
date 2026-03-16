@@ -661,7 +661,6 @@ class JobRunner:
                 'name': sc_name,
                 'image': job_manifest['spec']['template']['spec']['containers'][0]['image'],
                 'command': ['/usr/bin/tini', '--', '/bin/bash', '/config/secondary_entrypoint.sh'],
-                'restartPolicy': 'Always',
                 'env': secondary_env,
                 'resources': {
                     'requests': {},
@@ -677,7 +676,7 @@ class JobRunner:
                 secondary_spec['resources']['limits']['memory'] = sc_resources['memory']
             if self.run_as_user is not None:
                 secondary_spec.setdefault('securityContext', {})['runAsUser'] = self.run_as_user
-            spec['initContainers'].append(secondary_spec)
+            containers.append(secondary_spec)
 
         return job_manifest
 

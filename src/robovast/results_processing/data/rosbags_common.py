@@ -15,9 +15,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import concurrent.futures
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Optional
 
 
@@ -82,37 +82,53 @@ def gen_msg_values(msg, prefix=""):
         yield prefix, msg
 
 
-def find_rosbags(directory):
-    """Find all rosbag directories in subdirectories (parallel directory scan)."""
+def find_rosbags(directory, bag_dir_name="rosbag2"):
+    """Find all rosbag directories using parallel directory scanning (IO-bound).
 
-    def scan_dir(path):
-        """Scan one directory; return (path, is_rosbag, subdirectory_paths)."""
-        subdirs = []
-        is_rosbag = False
+    Uses a BFS with a ThreadPoolExecutor so that large result trees (e.g. 50k
+    run directories on a network filesystem) are scanned concurrently rather
+    than sequentially.
+
+    Args:
+        directory: Root directory to search under.
+        bag_dir_name: Subdirectory name to look for (default: "rosbag2").
+                      May contain a path separator, e.g. "logs/rosout_bag".
+
+    Returns:
+        Sorted list of found rosbag directory paths.
+    """
+    prune_top = bag_dir_name.split("/")[0]
+    found: List[str] = []
+
+    def _scan(path: str):
+        """Return (bag_paths, subdirs_to_recurse) for one directory."""
+        bags: List[str] = []
+        subdirs: List[str] = []
         try:
             with os.scandir(path) as it:
                 for entry in it:
-                    if entry.is_dir(follow_symlinks=False):
+                    if not entry.is_dir(follow_symlinks=False):
+                        continue
+                    if entry.name == prune_top:
+                        candidate = os.path.join(path, bag_dir_name)
+                        if os.path.isdir(candidate):
+                            bags.append(candidate)
+                        # do not recurse into bag dir
+                    else:
                         subdirs.append(entry.path)
-                    elif entry.name.endswith('.mcap') or entry.name == 'metadata.yaml':
-                        is_rosbag = True
-        except PermissionError:
+        except OSError:
             pass
-        return path, is_rosbag, subdirs
+        return bags, subdirs
 
-    rosbag_dirs = []
-    max_workers = min(32, (os.cpu_count() or 1) * 4)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        pending = {executor.submit(scan_dir, directory)}
+    n_workers = min(64, (os.cpu_count() or 4) * 8)
+    pending = [directory]
+    with ThreadPoolExecutor(max_workers=n_workers) as executor:
         while pending:
-            done, pending = concurrent.futures.wait(
-                pending, return_when=concurrent.futures.FIRST_COMPLETED
-            )
-            for future in done:
-                path, is_rosbag, subdirs = future.result()
-                if is_rosbag:
-                    rosbag_dirs.append(path)
-                for subdir in subdirs:
-                    pending.add(executor.submit(scan_dir, subdir))
+            futures = {executor.submit(_scan, p): p for p in pending}
+            pending = []
+            for fut in as_completed(futures):
+                bags, subdirs = fut.result()
+                found.extend(bags)
+                pending.extend(subdirs)
 
-    return rosbag_dirs
+    return sorted(found)

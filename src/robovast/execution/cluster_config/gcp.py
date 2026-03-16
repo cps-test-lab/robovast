@@ -30,8 +30,11 @@ Required ``-o`` options at ``setup`` time::
         [-o storage_size=50Gi] [-o disk_type=pd-ssd]
 """
 import io
+import json
 import logging
 import os
+import re
+import subprocess
 from typing import Optional
 
 import yaml
@@ -39,6 +42,113 @@ from kubernetes import client, config
 
 from ..cluster_execution.kubernetes import apply_manifests, delete_manifests
 from .base_config import BaseConfig
+
+
+def _get_gke_cluster_info(kube_context=None): # pylint: disable=too-many-return-statements
+    """Return ``(project, location, cluster_name)`` for the active GKE cluster.
+
+    Resolution order:
+
+    1. Parse the context name when it follows the ``gke_{project}_{location}
+       _{cluster}`` convention created by ``gcloud container clusters
+       get-credentials``.
+    2. Fall back to reading the ``spec.providerID`` field on a cluster node
+       (format ``gce://PROJECT/ZONE/INSTANCE``), then listing GKE clusters in
+       that project to identify the cluster by zone/region.  This handles
+       custom context names such as ``gcp-c4``.
+
+    Returns ``(None, None, None)`` when the cluster cannot be identified as a
+    GKE cluster or when the required tools are not available.
+    """
+    # 1. Try standard gke_ context name format
+    if kube_context and kube_context.startswith("gke_"):
+        parts = kube_context.split("_", 3)
+        if len(parts) == 4:
+            _, project, location, cluster = parts
+            return project, location, cluster
+
+    # 2. Detect from Kubernetes node metadata
+    try:
+        try:
+            config.load_incluster_config()
+        except config.ConfigException:
+            config.load_kube_config(context=kube_context)
+
+        v1 = client.CoreV1Api()
+        nodes = v1.list_node(limit=1)
+        if not nodes.items:
+            return None, None, None
+
+        node = nodes.items[0]
+        node_labels = node.metadata.labels or {}
+
+        # GKE nodes always carry this label
+        if "cloud.google.com/gke-nodepool" not in node_labels:
+            return None, None, None
+
+        # providerID: "gce://PROJECT/ZONE/INSTANCE-NAME"
+        provider_id = (node.spec.provider_id or "").strip()
+        m = re.match(r"gce://([^/]+)/([^/]+)/", provider_id)
+        if not m:
+            return None, None, None
+
+        project = m.group(1)
+        zone = m.group(2)  # e.g. "us-central1-a"
+        region = "-".join(zone.split("-")[:-1])  # e.g. "us-central1"
+
+        # List all GKE clusters in the project and match by location
+        r = subprocess.run(
+            [
+                "gcloud", "container", "clusters", "list",
+                "--project", project,
+                "--format=json",
+            ],
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+        if r.returncode != 0 or not r.stdout.strip():
+            logging.debug(
+                "gcloud container clusters list failed or returned empty: %s",
+                r.stderr.strip(),
+            )
+            return None, None, None
+
+        clusters = json.loads(r.stdout)
+        # Match clusters whose location is the node's zone or region
+        matching = [
+            c for c in clusters
+            if c.get("location") in (zone, region)
+        ]
+        if len(matching) == 1:
+            return project, matching[0]["location"], matching[0]["name"]
+        if len(matching) > 1:
+            # Multiple clusters in same zone/region — try to match by endpoint
+            # against the kubeconfig server URL
+            try:
+                contexts = subprocess.run(
+                    ["kubectl", "config", "view", "--minify", "-o",
+                     "jsonpath={.clusters[0].cluster.server}"],
+                    capture_output=True, text=True, timeout=5, check=False,
+                )
+                server = contexts.stdout.strip().lstrip("https://")
+                for c in matching:
+                    if c.get("endpoint", "") and c["endpoint"] in server:
+                        return project, c["location"], c["name"]
+            except Exception:
+                pass
+            # Ambiguous – return first match with a warning
+            logging.warning(
+                "Multiple GKE clusters found in %s/%s; using '%s'. "
+                "Pass --context gke_<project>_<location>_<cluster> to be explicit.",
+                project, zone, matching[0]["name"],
+            )
+            return project, matching[0]["location"], matching[0]["name"]
+
+        return None, None, None
+
+    except Exception as exc:
+        logging.debug("GKE cluster detection via node metadata failed: %s", exc)
+        return None, None, None
+
 
 GCS_S3_ENDPOINT = "https://storage.googleapis.com"
 
@@ -279,13 +389,14 @@ class GcpClusterConfig(BaseConfig):
         )
 
         try:
-            yaml_objects = yaml.safe_load_all(io.StringIO(manifest_yaml))
+            yaml_objects = list(yaml.safe_load_all(io.StringIO(manifest_yaml)))
         except yaml.YAMLError as e:
             raise RuntimeError(f"Failed to parse manifest YAML: {str(e)}") from e
 
+        yaml_objects = self._apply_pod_node_selector(yaml_objects, kwargs.pop('control_node_labels', None))
         namespace = kwargs.get('namespace', 'default')
         try:
-            apply_manifests(k8s_client, yaml_objects, namespace=namespace)
+            apply_manifests(k8s_client, iter(yaml_objects), namespace=namespace)
         except Exception as e:
             raise RuntimeError(f"Error applying manifest: {str(e)}") from e
 
@@ -339,6 +450,13 @@ class GcpClusterConfig(BaseConfig):
         manifest_yaml = self._render_manifest(
             storage_size, disk_type, gcs_bucket, gcs_access_key, gcs_secret_key,
         )
+        control_node_labels = kwargs.pop('control_node_labels', None)
+        if control_node_labels:
+            docs = list(yaml.safe_load_all(io.StringIO(manifest_yaml)))
+            docs = self._apply_pod_node_selector(docs, control_node_labels)
+            manifest_yaml = "---\n".join(
+                yaml.dump(d, default_flow_style=False) for d in docs if d is not None
+            )
         with open(f"{output_dir}/robovast-manifest.yaml", "w") as f:
             f.write(manifest_yaml)
 
@@ -423,6 +541,162 @@ The archiver sidecar streams GCS bucket contents to tar.gz in /data.
             "Set ROBOVAST_GCS_KEY_JSON (inline JSON) or ROBOVAST_GCS_KEY_FILE (path) in your .env file, "
             "or pass gcs_key_file via -o."
         )
+
+    # ------------------------------------------------------------------
+    # Autoscaling-aware resource quota
+    # ------------------------------------------------------------------
+
+    def get_cluster_allocatable_resources(self, kube_context=None):
+        """Return GKE autoscaler **max** capacity for Kueue quota.
+
+        Queries ``gcloud container clusters describe`` to obtain each node
+        pool's autoscaling *maxNodeCount* and machine type, then multiplies
+        by the vCPU / memory figures from ``gcloud compute machine-types
+        describe``.  This gives the true upper bound even when the cluster
+        is currently scaled down.
+
+        Falls back to ``(None, None)`` (K8s node API query in
+        ``kubernetes_kueue``) when:
+
+        * *kube_context* is not a GKE context (``gke_…`` prefix),
+        * ``gcloud`` is not installed or returns an error, or
+        * no usable node-pool data can be extracted.
+
+        Args:
+            kube_context: Kubernetes context name.  ``None`` uses the active
+                context (resolved via ``kubectl config current-context``).
+
+        Returns:
+            tuple: ``(cpu_quota: int, memory_quota: str)`` or
+                   ``(None, None)`` to fall back to the K8s node query.
+        """
+        project, location, cluster = _get_gke_cluster_info(kube_context)
+        if not project:
+            logging.debug(
+                "Could not identify a GKE cluster for context '%s'; "
+                "falling back to K8s node query",
+                kube_context,
+            )
+            return None, None
+
+        try:
+            result = subprocess.run(
+                [
+                    "gcloud", "container", "clusters", "describe", cluster,
+                    "--project", project,
+                    "--location", location,
+                    "--format=json",
+                ],
+                capture_output=True, text=True, timeout=60, check=False,
+            )
+            if result.returncode != 0:
+                logging.warning(
+                    "gcloud container clusters describe failed: %s. "
+                    "Falling back to K8s node query.",
+                    result.stderr.strip(),
+                )
+                return None, None
+
+            cluster_info = json.loads(result.stdout)
+        except Exception as exc:
+            logging.warning(
+                "Failed to describe GKE cluster '%s': %s. "
+                "Falling back to K8s node query.",
+                cluster, exc,
+            )
+            return None, None
+
+        # Determine a usable zone for machine-type lookups.
+        # Regional clusters have a 'nodeLocations' list; zonal clusters
+        # expose the zone in 'location' itself.
+        node_locations = cluster_info.get("nodeLocations") or []
+        if location.count("-") >= 2:
+            # 'us-central1-a' style — already a zone
+            zone = location
+        elif node_locations:
+            zone = node_locations[0]
+        else:
+            zone = location + "-a"  # safe first-zone assumption
+
+        machine_type_cache = {}  # {machine_type: (cpu_count, memory_mb)}
+
+        def _get_machine_type_info(machine_type):
+            """Return (cpu_count, memory_mib) for a GCP machine type."""
+            if machine_type in machine_type_cache:
+                return machine_type_cache[machine_type]
+            try:
+                r = subprocess.run(
+                    [
+                        "gcloud", "compute", "machine-types", "describe",
+                        machine_type,
+                        "--zone", zone,
+                        "--project", project,
+                        "--format=value(guestCpus,memoryMb)",
+                    ],
+                    capture_output=True, text=True, timeout=30, check=False,
+                )
+                if r.returncode == 0:
+                    parts = r.stdout.strip().split()
+                    if len(parts) >= 2:
+                        result = int(parts[0]), int(parts[1])
+                        machine_type_cache[machine_type] = result
+                        return result
+            except Exception:
+                pass
+            machine_type_cache[machine_type] = (None, None)
+            return None, None
+
+        total_max_cpu = 0
+        total_max_mem_mib = 0
+        usable_pools = 0
+
+        for pool in cluster_info.get("nodePools", []):
+            machine_type = pool.get("config", {}).get("machineType", "")
+            autoscaling = pool.get("autoscaling", {})
+
+            if autoscaling.get("enabled"):
+                # Prefer totalMaxNodeCount (node-auto-provisioning) over
+                # per-zone maxNodeCount.
+                max_nodes = (
+                    autoscaling.get("totalMaxNodeCount")
+                    or autoscaling.get("maxNodeCount")
+                    or 0
+                )
+            else:
+                max_nodes = pool.get("initialNodeCount", 0)
+
+            if max_nodes <= 0 or not machine_type:
+                continue
+
+            cpu, mem_mib = _get_machine_type_info(machine_type)
+            if cpu is None:
+                logging.warning(
+                    "Could not determine resource info for machine type '%s'; "
+                    "skipping pool '%s'.",
+                    machine_type, pool.get("name", "?"),
+                )
+                continue
+
+            total_max_cpu += max_nodes * cpu
+            total_max_mem_mib += max_nodes * mem_mib
+            usable_pools += 1
+
+        if total_max_cpu <= 0:
+            logging.warning(
+                "Could not determine GKE autoscaler max capacity for cluster '%s'; "
+                "falling back to K8s node query.",
+                cluster,
+            )
+            return None, None
+
+        memory_gib = max(1, total_max_mem_mib // 1024)
+        memory_quota = f"{memory_gib}Gi"
+        logging.info(
+            "GKE autoscaler max capacity for cluster '%s': %d CPU(s), %s "
+            "(from %d node pool(s))",
+            cluster, total_max_cpu, memory_quota, usable_pools,
+        )
+        return total_max_cpu, memory_quota
 
     @staticmethod
     def _validate_gcs_bucket(bucket_name, access_key, secret_key):

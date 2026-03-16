@@ -202,451 +202,123 @@ class Command(BasePostprocessingPlugin):
             return False, f"Error executing command: {e}"
 
 
-class RosbagsTfToCsv(BasePostprocessingPlugin):
-    """Convert ROS TF (transform) data from rosbags to CSV format.
+class RosbagsProcess(BasePostprocessingPlugin):
+    """Unified single-pass rosbag processor with internal plugin system.
 
-    Extracts transformation data from ROS bag files and converts it to CSV
-    format for easier analysis. Useful for analyzing robot poses, sensor
-    positions, and coordinate transformations over time.
+    Reads each rosbag exactly once and dispatches messages to all configured
+    handler plugins. This is significantly more efficient than running separate
+    ``rosbags_*`` scripts when multiple data types are needed from the same bags.
 
-    Example usage in .vast config:
-        postprocessing:
-          - rosbags_tf_to_csv:
-              frames: [base_link, map]
-          - rosbags_tf_to_csv  # Extract all frames
-    """
+    This class is used automatically by the postprocessing orchestrator, which
+    batches all ``rosbags_*`` commands from the ``.vast`` config into a single
+    call. It can also be used directly in ``.vast`` configs.
 
-    def __call__(
-        self,
-        results_dir: str,
-        config_dir: str,
-        frames: Optional[List[str]] = None,
-        provenance_file: Optional[str] = None,
-        execution_image: Optional[str] = None,
-    ) -> Tuple[bool, str]:
-        """Execute rosbags_tf_to_csv plugin.
+    Available handler types: ``to_csv``, ``tf_to_csv``, ``bt_to_csv``,
+    ``action_to_csv``, ``rosout_to_csv``.
 
-        Args:
-            results_dir: Path to the campaign-<id> directory to process
-            config_dir: Directory containing the config file (for resolving relative paths)
-            frames: Optional list of TF frame names to extract
-            provenance_file: Optional path for provenance JSON
-            execution_image: Optional Docker image override (from execution phase)
-
-        Returns:
-            Tuple of (success, message)
-        """
-        # Get docker_exec.sh from package data
-        script_path = str(files('robovast.results_processing.data').joinpath('docker_exec.sh'))
-
-        # Build command: docker_exec [--provenance-file HOST] script.py [--provenance-file /provenance/...] [args] results_dir
-        cmd = [script_path, "--compat-version", str(COMPAT_VERSION)]
-        if execution_image:
-            cmd.extend(["--image", execution_image])
-        if provenance_file:
-            cmd.extend(["--provenance-file", provenance_file])
-        cmd.append("rosbags_tf_to_csv.py")
-        if provenance_file:
-            cmd.extend(["--provenance-file", f"/provenance/{os.path.basename(provenance_file)}"])
-        if frames:
-            for frame in frames:
-                cmd.extend(["--frame", frame])
-        cmd.append(results_dir)
-
-        try:
-            result = subprocess.run(
-                cmd,
-                cwd=os.path.dirname(script_path),
-                check=False,
-                capture_output=True,
-                text=True,
-                env={**os.environ, 'PYTHONUNBUFFERED': '1'}
-            )
-
-            if result.returncode != 0:
-                return False, f"rosbags_tf_to_csv failed with exit code {result.returncode}\n{result.stderr}"
-
-            output = result.stdout.strip()
-            return True, f"TF data converted to CSV successfully\n{output}" if output else "TF data converted to CSV successfully"
-
-        except Exception as e:
-            return False, f"Error executing rosbags_tf_to_csv: {e}"
-
-
-class RosbagsBtToCsv(BasePostprocessingPlugin):
-    """Convert ROS behavior tree data from rosbags to CSV format.
-
-    Extracts behavior tree execution logs from ROS bag files and converts
-    them to CSV format. Useful for analyzing robot decision-making,
-    task execution sequences, and behavior tree node activations.
-
-    Example usage in .vast config:
-        postprocessing:
-          - rosbags_bt_to_csv
-    """
-
-    def __call__(
-        self,
-        results_dir: str,
-        config_dir: str,
-        provenance_file: Optional[str] = None,
-        execution_image: Optional[str] = None,
-    ) -> Tuple[bool, str]:
-        """Execute rosbags_bt_to_csv plugin.
-
-        Args:
-            results_dir: Path to the campaign-<id> directory to process
-            config_dir: Directory containing the config file (for resolving relative paths)
-            provenance_file: Optional path for provenance JSON
-            execution_image: Optional Docker image override (from execution phase)
-
-        Returns:
-            Tuple of (success, message)
-        """
-        # Get docker_exec.sh from package data
-        script_path = str(files('robovast.results_processing.data').joinpath('docker_exec.sh'))
-
-        cmd = [script_path, "--compat-version", str(COMPAT_VERSION)]
-        if execution_image:
-            cmd.extend(["--image", execution_image])
-        if provenance_file:
-            cmd.extend(["--provenance-file", provenance_file])
-        cmd.append("rosbags_bt_to_csv.py")
-        if provenance_file:
-            cmd.extend(["--provenance-file", f"/provenance/{os.path.basename(provenance_file)}"])
-        cmd.append(results_dir)
-
-        try:
-            result = subprocess.run(
-                cmd,
-                cwd=os.path.dirname(script_path),
-                check=False,
-                capture_output=True,
-                text=True,
-                env={**os.environ, 'PYTHONUNBUFFERED': '1'}
-            )
-
-            if result.returncode != 0:
-                return False, f"rosbags_bt_to_csv failed with exit code {result.returncode}\n{result.stderr}"
-
-            output = result.stdout.strip()
-            return True, f"Behavior tree data converted to CSV successfully\n{output}" if output else "Behavior tree data converted to CSV successfully"
-
-        except Exception as e:
-            return False, f"Error executing rosbags_bt_to_csv: {e}"
-
-
-class RosbagsActionToCsv(BasePostprocessingPlugin):
-    """Extract ROS2 action feedback and status from rosbags to CSV format.
-
-    Reads /<action>/_action/feedback and /<action>/_action/status topics from
-    ROS bag files and writes two CSV files: <filename_prefix>_feedback.csv
-    and <filename_prefix>_status.csv with flattened columns.
-
-    Example usage in .vast config:
-        postprocessing:
-          - rosbags_action_to_csv:
-              action: navigate_to_pose
-          - rosbags_action_to_csv:
-              action: navigate_to_pose
-              filename_prefix: nav_action
-    """
-
-    def __call__(
-        self,
-        results_dir: str,
-        config_dir: str,
-        action: str,
-        filename_prefix: Optional[str] = None,
-        provenance_file: Optional[str] = None,
-        execution_image: Optional[str] = None,
-    ) -> Tuple[bool, str]:
-        """Execute rosbags_action_to_csv plugin.
-
-        Args:
-            results_dir: Path to the campaign-<id> directory to process
-            config_dir: Directory containing the config file (for resolving relative paths)
-            action: Action name to extract (e.g. 'navigate_to_pose')
-            filename_prefix: Output filename prefix (default: action_<action>).
-                Produces <prefix>_feedback.csv and <prefix>_status.csv.
-            provenance_file: Optional path for provenance JSON
-            execution_image: Optional Docker image override (from execution phase)
-
-        Returns:
-            Tuple of (success, message)
-        """
-        script_path = str(files('robovast.results_processing.data').joinpath('docker_exec.sh'))
-
-        action_name = action.lstrip('/')
-        effective_prefix = filename_prefix or f"action_{action_name}"
-
-        cmd = [script_path, "--compat-version", str(COMPAT_VERSION)]
-        if execution_image:
-            cmd.extend(["--image", execution_image])
-        if provenance_file:
-            cmd.extend(["--provenance-file", provenance_file])
-        cmd.append("rosbags_action_to_csv.py")
-        if provenance_file:
-            cmd.extend(["--provenance-file", f"/provenance/{os.path.basename(provenance_file)}"])
-        cmd.extend(["--filename-prefix", effective_prefix])
-        cmd.append(action_name)
-        cmd.append(results_dir)
-
-        try:
-            result = subprocess.run(
-                cmd,
-                cwd=os.path.dirname(script_path),
-                check=False,
-                capture_output=True,
-                text=True,
-                env={**os.environ, 'PYTHONUNBUFFERED': '1'}
-            )
-
-            if result.returncode != 0:
-                return False, f"rosbags_action_to_csv failed with exit code {result.returncode}\n{result.stderr}"
-
-            output = result.stdout.strip()
-            return True, f"Action '{action_name}' data extracted to CSV successfully\n{output}" if output else f"Action '{action_name}' data extracted to CSV successfully"
-
-        except Exception as e:
-            return False, f"Error executing rosbags_action_to_csv: {e}"
-
-
-class RosbagsToCsv(BasePostprocessingPlugin):
-    """Extract a specific set of ROS topics from rosbags to separate CSV files.
-
-    For each requested topic one CSV file per bag is written next to the bag
-    file, named ``<bag_name>_<topic_as_filename>.csv`` (topic slashes replaced
-    by underscores, leading slash stripped).  Only the explicitly listed topics
-    are extracted; all other topics are ignored.
-
-    Example usage in .vast config:
-        postprocessing:
-          - rosbags_to_csv:
-              topics: [/cmd_vel, /odom]
-    """
-
-    def __call__(
-        self,
-        results_dir: str,
-        config_dir: str,
-        topics: Optional[List[str]] = None,
-        provenance_file: Optional[str] = None,
-        execution_image: Optional[str] = None,
-    ) -> Tuple[bool, str]:
-        """Execute rosbags_to_csv plugin.
-
-        Args:
-            results_dir: Path to the campaign-<id> directory to process
-            config_dir: Directory containing the config file (for resolving relative paths)
-            topics: List of topic names to extract (required; at least one topic)
-            provenance_file: Optional path for provenance JSON
-            execution_image: Optional Docker image override (from execution phase)
-
-        Returns:
-            Tuple of (success, message)
-        """
-        if not topics:
-            return False, "rosbags_to_csv requires at least one topic via the 'topics' parameter"
-
-        # Get docker_exec.sh from package data
-        script_path = str(files('robovast.results_processing.data').joinpath('docker_exec.sh'))
-
-        cmd = [script_path, "--compat-version", str(COMPAT_VERSION)]
-        if execution_image:
-            cmd.extend(["--image", execution_image])
-        if provenance_file:
-            cmd.extend(["--provenance-file", provenance_file])
-        cmd.append("rosbags_to_csv.py")
-        if provenance_file:
-            cmd.extend(["--provenance-file", f"/provenance/{os.path.basename(provenance_file)}"])
-        for topic in topics:
-            cmd.extend(["--topic", topic])
-        cmd.append(results_dir)
-
-        try:
-            result = subprocess.run(
-                cmd,
-                cwd=os.path.dirname(script_path),
-                check=False,
-                capture_output=True,
-                text=True,
-                env={**os.environ, 'PYTHONUNBUFFERED': '1'}
-            )
-
-            if result.returncode != 0:
-                return False, f"rosbags_to_csv failed with exit code {result.returncode}\n{result.stderr}"
-
-            output = result.stdout.strip()
-            return True, f"ROS messages converted to CSV successfully\n{output}" if output else "ROS messages converted to CSV successfully"
-
-        except Exception as e:
-            return False, f"Error executing rosbags_to_csv: {e}"
-
-
-class RosbagsRosoutToCsv(BasePostprocessingPlugin):
-    """Extract /rosout log messages from rosbags to CSV format.
-
-    Reads ``rcl_interfaces/msg/Log`` messages from the ``/rosout`` topic and
-    writes one row per message to ``rosout.csv`` (or the configured filename)
-    next to each rosbag.  Useful for correlating node-level log output with
-    other bag data during post-mortem analysis.
-
-    Output CSV columns: ``timestamp``, ``stamp``, ``level``, ``level_name``,
-    ``name``, ``msg``, ``file``, ``function``, ``line``.
-
-    Example usage in .vast config:
+    Example direct usage in .vast config:
 
     .. code-block:: yaml
 
         postprocessing:
-          - rosbags_rosout_to_csv                    # all levels
-          - rosbags_rosout_to_csv:
-              min_level: WARN                        # warnings and above only
-          - rosbags_rosout_to_csv:
-              min_level: ERROR
-              csv_filename: rosout_errors.csv
+          - rosbags_process:
+              plugins:
+                - type: tf_to_csv
+                  frames: [base_link]
+                - type: bt_to_csv
+                - type: to_csv
+                  topics: [/cmd_vel, /odom]
+                - type: rosout_to_csv
     """
 
     def __call__(
         self,
         results_dir: str,
         config_dir: str,
-        min_level: Optional[str] = None,
-        csv_filename: Optional[str] = None,
+        plugins: List[dict],
+        workers: Optional[int] = None,
+        bag_dir: Optional[str] = None,
         provenance_file: Optional[str] = None,
         execution_image: Optional[str] = None,
+        debug: bool = False,
+        force: bool = False,
     ) -> Tuple[bool, str]:
-        """Execute rosbags_rosout_to_csv plugin.
+        """Execute rosbags_process plugin.
 
         Args:
             results_dir: Path to the campaign-<id> directory to process.
-            config_dir: Directory containing the config file (for resolving relative paths).
-            min_level: Minimum log level to include: DEBUG, INFO, WARN, ERROR, FATAL
-                (default: DEBUG, i.e. all messages).
-            csv_filename: Output CSV file name written next to each rosbag
-                (default: rosout.csv).
+            config_dir: Directory containing the config file.
+            plugins: List of handler config dicts, each with a ``type`` key.
+            workers: Optional number of parallel workers.
+            bag_dir: Rosbag subdirectory name to search for (default: "rosbag2").
             provenance_file: Optional path for provenance JSON.
-            execution_image: Optional Docker image override (from execution phase).
+            execution_image: Optional Docker image override.
+            debug: If True, print all per-bag output; otherwise show only progress/summary.
 
         Returns:
             Tuple of (success, message).
         """
+        if not plugins:
+            return False, "rosbags_process requires at least one entry under 'plugins'"
+
         script_path = str(files('robovast.results_processing.data').joinpath('docker_exec.sh'))
+        config_json = json.dumps({"plugins": plugins})
 
         cmd = [script_path, "--compat-version", str(COMPAT_VERSION)]
         if execution_image:
             cmd.extend(["--image", execution_image])
         if provenance_file:
             cmd.extend(["--provenance-file", provenance_file])
-        cmd.append("rosbags_rosout_to_csv.py")
+        cmd.append("rosbags_process.py")
         if provenance_file:
             cmd.extend(["--provenance-file", f"/provenance/{os.path.basename(provenance_file)}"])
-        if min_level:
-            cmd.extend(["--min-level", min_level])
-        if csv_filename:
-            cmd.extend(["--csv-filename", csv_filename])
+        cmd.extend(["--config", config_json])
+        if workers is not None:
+            cmd.extend(["--workers", str(workers)])
+        if bag_dir is not None:
+            cmd.extend(["--bag-dir", bag_dir])
+        if debug:
+            cmd.append("--debug")
+        if force:
+            cmd.append("--force")
         cmd.append(results_dir)
 
         try:
-            result = subprocess.run(
+            # Stream output line-by-line so progress is visible in real-time.
+            process = subprocess.Popen(
                 cmd,
                 cwd=os.path.dirname(script_path),
-                check=False,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,  # merge stderr into stdout to avoid deadlock
                 text=True,
-                env={**os.environ, 'PYTHONUNBUFFERED': '1'}
+                env={**os.environ, 'PYTHONUNBUFFERED': '1'},
             )
-
-            if result.returncode != 0:
-                return False, f"rosbags_rosout_to_csv failed with exit code {result.returncode}\n{result.stderr}"
-
-            stdout = result.stdout.strip()
-            # Extract the Summary line as the primary message for concise non-debug output
-            summary_line = next(
-                (line for line in stdout.splitlines() if line.startswith("Summary:")),
-                "rosout log messages extracted to CSV successfully",
+            output_lines: List[str] = []
+            _last_was_progress = False
+            for line in process.stdout:
+                line = line.rstrip("\n")
+                output_lines.append(line)
+                is_progress = line.startswith("Processing rosbags")
+                if is_progress and not debug:
+                    print(f"\r{line}", end="", flush=True)
+                else:
+                    if _last_was_progress and not debug:
+                        print()
+                    print(line, flush=True)
+                _last_was_progress = is_progress
+            if _last_was_progress and not debug:
+                print()
+            returncode = process.wait()
+            output = "\n".join(output_lines)
+            if returncode != 0:
+                return False, f"rosbags_process failed with exit code {returncode}\n{output}"
+            summary = next(
+                (line for line in output_lines if line.startswith("Summary:")),
+                "rosbags processed successfully",
             )
-            full_msg = f"{summary_line}\n{stdout}" if stdout else summary_line
-            return True, full_msg
-
+            return True, summary
         except Exception as e:
-            return False, f"Error executing rosbags_rosout_to_csv: {e}"
-
-
-class RosbagsToWebm(BasePostprocessingPlugin):
-    """Convert a CompressedImage topic from rosbags to WebM video files.
-
-    Extracts compressed image frames from a ROS bag file and encodes them
-    into a WebM video using FFmpeg (VP9 codec). JPEG frames are piped
-    directly to FFmpeg without intermediate decoding for maximum performance.
-
-    Example usage in .vast config:
-        postprocessing:
-          - rosbags_to_webm  # Use default topic
-          - rosbags_to_webm:
-              topic: /front_camera/image_raw/compressed
-              fps: 15
-    """
-
-    def __call__(
-        self,
-        results_dir: str,
-        config_dir: str,
-        topic: Optional[str] = None,
-        fps: Optional[float] = None,
-        provenance_file: Optional[str] = None,
-        execution_image: Optional[str] = None,
-    ) -> Tuple[bool, str]:
-        """Execute rosbags_to_webm plugin.
-
-        Args:
-            results_dir: Path to the <campaign-name>-<timestamp> directory to process
-            config_dir: Directory containing the config file (for resolving relative paths)
-            topic: CompressedImage topic name to convert (default: /camera/image_raw/compressed)
-            fps: Fallback FPS when timestamps are unavailable (default: 30)
-            provenance_file: Optional path for provenance JSON
-            execution_image: Optional Docker image override (from execution phase)
-
-        Returns:
-            Tuple of (success, message)
-        """
-        # Get docker_exec.sh from package data
-        script_path = str(files('robovast.results_processing.data').joinpath('docker_exec.sh'))
-
-        cmd = [script_path, "--compat-version", str(COMPAT_VERSION)]
-        if execution_image:
-            cmd.extend(["--image", execution_image])
-        if provenance_file:
-            cmd.extend(["--provenance-file", provenance_file])
-        cmd.append("rosbags_to_webm.py")
-        if provenance_file:
-            cmd.extend(["--provenance-file", f"/provenance/{os.path.basename(provenance_file)}"])
-        if topic:
-            cmd += ["--topic", topic]
-        if fps is not None:
-            cmd += ["--fps", str(fps)]
-        cmd.append(results_dir)
-
-        try:
-            result = subprocess.run(
-                cmd,
-                cwd=os.path.dirname(script_path),
-                check=False,
-                capture_output=True,
-                text=True,
-                env={**os.environ, 'PYTHONUNBUFFERED': '1'}
-            )
-
-            if result.returncode != 0:
-                details = (result.stdout.strip() or result.stderr.strip())
-                return False, f"rosbags_to_webm failed with exit code {result.returncode}\n{details}"
-
-            output = result.stdout.strip()
-            return True, f"CompressedImage topic converted to WebM successfully\n{output}" if output else "CompressedImage topic converted to WebM successfully"
-
-        except Exception as e:
-            return False, f"Error executing rosbags_to_webm: {e}"
+            return False, f"Error executing rosbags_process: {e}"
 
 
 class Compress(BasePostprocessingPlugin):
@@ -853,13 +525,24 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
             and not d.name.startswith(".")
         )
 
+        # Count total runs upfront for progress reporting
+        all_run_dirs: list = []
+        for config_dir in config_dirs:
+            for d in config_dir.iterdir():
+                if d.is_dir() and d.name.isdigit():
+                    all_run_dirs.append((config_dir.name, d))
+        total_runs = len(all_run_dirs)
+        _log(f"  Building data.db from {total_runs} run(s) across {len(config_dirs)} config(s)...")
+
+        _commit_batch = 500  # commit every N runs to reduce fsync overhead
+        completed_runs = 0
+
         for config_dir in config_dirs:
             config_name = config_dir.name
             run_dirs = sorted(
                 (d for d in config_dir.iterdir() if d.is_dir() and d.name.isdigit()),
                 key=lambda d: int(d.name),
             )
-            _log(f"  config: {config_name} ({len(run_dirs)} run(s))")
             for run_dir in run_dirs:
                 run_id = int(run_dir.name)
                 scenario_ts: float | None = None
@@ -942,11 +625,14 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
                     else:
                         # Add any new columns from this CSV
                         existing = created_tables[sql_name]
+                        altered = False
                         for col in csv_cols:
                             if col not in existing:
                                 conn.execute(f'ALTER TABLE "{sql_name}" ADD COLUMN "{col}" TEXT')
                                 existing.add(col)
-                        conn.commit()
+                                altered = True
+                        if altered:
+                            conn.commit()
 
                     placeholders = ", ".join("?" for _ in all_data_cols)
                     col_list = ", ".join(f'"{c}"' for c in all_data_cols)
@@ -959,7 +645,6 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
                         for row in rows
                     ]
                     conn.executemany(insert_sql, batch)
-                    conn.commit()
                     table_rows[display_name] = table_rows.get(display_name, 0) + len(rows)
 
                 # Record scenario timestamp (even if None)
@@ -968,9 +653,14 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
                     "(config_name, run_id, timestamp, status, message) VALUES (?, ?, ?, ?, ?)",
                     (config_name, run_id, scenario_ts, scenario_status, scenario_msg),
                 )
-                conn.commit()
 
-        # Persist name map
+                completed_runs += 1
+                if completed_runs % _commit_batch == 0:
+                    conn.commit()
+                    pct = completed_runs / total_runs * 100 if total_runs else 100
+                    _log(f"  {completed_runs}/{total_runs} runs ({pct:.0f}%)")
+
+        # Final commit and persist name map
         conn.commit()
         table_count = len(created_tables)
     finally:
