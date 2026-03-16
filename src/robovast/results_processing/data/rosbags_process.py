@@ -46,6 +46,7 @@ import math
 import os
 import sys
 import time
+import yaml
 from abc import ABC, abstractmethod
 from multiprocessing import Pool, cpu_count
 from typing import Any, Dict, List, Optional, Tuple
@@ -659,13 +660,12 @@ def process_rosbag_worker(args: tuple) -> Tuple[str, int, List[Tuple[int, List[s
             return bag_path, -2, []
 
         # Detect storage format from metadata.yaml, fall back to mcap
-        import yaml as _yaml  # noqa: PLC0415
         storage_id = "mcap"
         metadata_path = os.path.join(bag_path, "metadata.yaml")
         if os.path.isfile(metadata_path):
             try:
                 with open(metadata_path, "r", encoding="utf-8") as _f:
-                    _meta = _yaml.safe_load(_f) or {}
+                    _meta = yaml.safe_load(_f) or {}
                 storage_id = (
                     _meta.get("rosbag2_bagfile_information", {}).get("storage_identifier")
                     or "mcap"
