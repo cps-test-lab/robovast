@@ -203,10 +203,12 @@ def _batch_rosbags_commands(commands: List, skip_rosout: bool = False) -> List:
             bag_dir_slot[rosout_bag_dir] = len(result)
             result.append(None)
 
-    # Fill placeholder slots with the batch commands
+    # Fill placeholder slots with the batch commands; rosout_to_csv always last
     for bag_dir, slot_idx in bag_dir_slot.items():
         plugins = bag_dir_plugins[bag_dir]
-        result[slot_idx] = {"rosbags_process": {"plugins": plugins, "bag_dir": bag_dir}}
+        rosout = [p for p in plugins if p.get("type") == "rosout_to_csv"]
+        others = [p for p in plugins if p.get("type") != "rosout_to_csv"]
+        result[slot_idx] = {"rosbags_process": {"plugins": others + rosout, "bag_dir": bag_dir}}
 
     return result
 
