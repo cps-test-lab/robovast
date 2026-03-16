@@ -981,7 +981,7 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
         total_runs = len(all_run_dirs)
         _log(f"  Building data.db from {total_runs} run(s) across {len(config_dirs)} config(s)...")
 
-        _COMMIT_BATCH = 500  # commit every N runs to reduce fsync overhead
+        _commit_batch = 500  # commit every N runs to reduce fsync overhead
         completed_runs = 0
 
         for config_dir in config_dirs:
@@ -1102,7 +1102,7 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
                 )
 
                 completed_runs += 1
-                if completed_runs % _COMMIT_BATCH == 0:
+                if completed_runs % _commit_batch == 0:
                     conn.commit()
                     pct = completed_runs / total_runs * 100 if total_runs else 100
                     _log(f"  {completed_runs}/{total_runs} runs ({pct:.0f}%)")

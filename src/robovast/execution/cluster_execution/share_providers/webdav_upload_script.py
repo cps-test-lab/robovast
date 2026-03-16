@@ -81,7 +81,7 @@ class _ProgressReader:
         self._file_size = file_size   # total file size (for % display)
         self._send_size = file_size - offset  # bytes we will send in this session
         self._campaign = campaign
-        self._sent = 0                # bytes sent in this session
+        self.sent = 0                # bytes sent in this session
         self._display_offset = offset # bytes already on server (resume)
         self._last_pct = -1.0
         self._start = time.monotonic()
@@ -89,13 +89,13 @@ class _ProgressReader:
     def read(self, size: int = -1) -> bytes:
         chunk = self._fh.read(size)
         if chunk:
-            self._sent += len(chunk)
-            displayed = self._display_offset + self._sent
+            self.sent += len(chunk)
+            displayed = self._display_offset + self.sent
             pct = displayed / self._file_size * 100 if self._file_size else 0.0
             if pct - self._last_pct >= 1.0 or displayed >= self._file_size:
                 self._last_pct = pct
                 elapsed = max(time.monotonic() - self._start, 1e-6)
-                rate = self._sent / elapsed
+                rate = self.sent / elapsed
                 filled = int(BAR_WIDTH * displayed / self._file_size) if self._file_size else 0
                 progress_bar = "█" * filled + "░" * (BAR_WIDTH - filled)
                 line = (
@@ -202,11 +202,11 @@ def upload(campaign: str) -> None:
 
     # Verify the connection didn't drop mid-stream (server may return 200 even
     # when it only received partial data if the client closed the socket early).
-    if reader._sent < reader._send_size:
+    if reader.sent < reader._send_size:
         sys.stderr.write(
-            f"\nERROR: Upload incomplete — sent {_fmt_size(reader._sent + offset)} "
+            f"\nERROR: Upload incomplete — sent {_fmt_size(reader.sent + offset)} "
             f"of {_fmt_size(total)} "
-            f"({(reader._sent + offset) / total * 100:.1f}%). "
+            f"({(reader.sent + offset) / total * 100:.1f}%). "
             "Re-run the command to resume.\n"
         )
         sys.exit(1)

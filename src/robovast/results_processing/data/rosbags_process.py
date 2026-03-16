@@ -51,7 +51,11 @@ from multiprocessing import Pool, cpu_count
 from typing import Any, Dict, List, Optional, Tuple
 
 import rosbag2_py
+from tf2_ros import Buffer
 from rclpy.serialization import deserialize_message
+from tf2_py import ConnectivityException, ExtrapolationException, LookupException
+import numpy as np
+
 from rosbags_common import find_rosbags, gen_msg_values, write_provenance_entry
 from rosidl_runtime_py.utilities import get_message
 
@@ -217,7 +221,6 @@ class TfToCsvHandler(RosbagHandler):
 
     def on_begin(self, bag_path: str, topic_type_map: Dict[str, str]) -> None:
         # Import lazily — tf2_ros may not be available in all environments
-        from tf2_ros import Buffer  # noqa: PLC0415
         self._tf_buffer = Buffer()
         self._record_counts = {f: 0 for f in self._frames}
         self._found_tfs = set()
@@ -228,7 +231,6 @@ class TfToCsvHandler(RosbagHandler):
         self._writer = None
 
     def on_message(self, topic: str, msg: Any, timestamp: int) -> None:
-        from tf2_py import ConnectivityException, ExtrapolationException, LookupException  # noqa: PLC0415
         if topic not in ("/tf", "/tf_static"):
             return
         if not hasattr(msg, "transforms"):
@@ -374,7 +376,6 @@ class BtToCsvHandler(RosbagHandler):
 def _msg_to_dict(msg: Any) -> Any:  # pylint: disable=too-many-return-statements
     """Recursively convert a ROS message to a Python dict/list for flattening."""
     try:
-        import numpy as np  # noqa: PLC0415
         if isinstance(msg, np.ndarray):
             return msg.tolist()
     except ImportError:
@@ -852,13 +853,13 @@ def main() -> int:
                 elapsed = max(time.time() - start, 1e-6)
                 rate = completed / elapsed
                 filled = int(20 * completed / n_bags)
-                bar = "█" * filled + "░" * (20 - filled)
+                progressbar = "█" * filled + "░" * (20 - filled)
                 pct = completed / n_bags * 100
                 remaining = (n_bags - completed) / rate
                 eta_m, eta_s = divmod(int(remaining), 60)
                 eta_str = f"{eta_m}m{eta_s:02d}s" if eta_m else f"{eta_s}s"
                 print(
-                    f"Processing rosbags  [{bar}]  {pct:5.1f}%"
+                    f"Processing rosbags  [{progressbar}]  {pct:5.1f}%"
                     f"  {completed}/{n_bags} bag  {rate:.1f} bag/s  ETA {eta_str}",
                     flush=True,
                 )
