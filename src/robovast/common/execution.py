@@ -461,8 +461,8 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
     monitor_resources_dst = os.path.join(campaign_transient_dir, "monitor_resources.py")
     shutil.copy2(monitor_resources_src, monitor_resources_dst)
 
-    # Copy rosout conversion scripts into _transient/ for host-side post-run processing
-    for script_name in ('rosbags_rosout_to_csv.py', 'rosbags_common.py', 'ros2_exec.sh'):
+    # Copy rosbag processing scripts into _transient/ for host-side post-run processing
+    for script_name in ('rosbags_process.py', 'rosbags_common.py', 'ros2_exec.sh'):
         src = str(files('robovast.results_processing.data').joinpath(script_name))
         shutil.copy2(src, os.path.join(campaign_transient_dir, script_name))
     os.chmod(os.path.join(campaign_transient_dir, 'ros2_exec.sh'), 0o755)

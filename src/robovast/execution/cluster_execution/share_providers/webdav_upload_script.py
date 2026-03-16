@@ -79,7 +79,7 @@ class _ProgressReader:
     def __init__(self, fh, file_size: int, campaign: str, offset: int = 0) -> None:
         self._fh = fh
         self._file_size = file_size   # total file size (for % display)
-        self._send_size = file_size - offset  # bytes we will send in this session
+        self.send_size = file_size - offset  # bytes we will send in this session
         self._campaign = campaign
         self.sent = 0                # bytes sent in this session
         self._display_offset = offset # bytes already on server (resume)
@@ -108,7 +108,7 @@ class _ProgressReader:
         return chunk
 
     def __len__(self) -> int:
-        return self._send_size  # tells requests how many bytes to stream
+        return self.send_size  # tells requests how many bytes to stream
 
 
 # ---------------------------------------------------------------------------
@@ -202,7 +202,7 @@ def upload(campaign: str) -> None:
 
     # Verify the connection didn't drop mid-stream (server may return 200 even
     # when it only received partial data if the client closed the socket early).
-    if reader.sent < reader._send_size:
+    if reader.sent < reader.send_size:
         sys.stderr.write(
             f"\nERROR: Upload incomplete — sent {_fmt_size(reader.sent + offset)} "
             f"of {_fmt_size(total)} "

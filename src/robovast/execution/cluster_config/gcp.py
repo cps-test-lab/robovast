@@ -44,7 +44,7 @@ from ..cluster_execution.kubernetes import apply_manifests, delete_manifests
 from .base_config import BaseConfig
 
 
-def _get_gke_cluster_info(kube_context=None):
+def _get_gke_cluster_info(kube_context=None): # pylint: disable=too-many-return-statements
     """Return ``(project, location, cluster_name)`` for the active GKE cluster.
 
     Resolution order:
