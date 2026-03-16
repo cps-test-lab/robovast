@@ -44,6 +44,8 @@ import io
 import json
 import math
 import os
+import re
+import subprocess
 import sys
 import time
 import yaml
@@ -565,6 +567,100 @@ class RosoutToCsvHandler(RosbagHandler):
 
 
 # ---------------------------------------------------------------------------
+# ToWebmHandler
+# ---------------------------------------------------------------------------
+
+def _sanitize_topic(topic: str) -> str:
+    """Convert a topic name like /camera/image_raw/compressed to camera_image_raw_compressed."""
+    return re.sub(r"[^a-zA-Z0-9]+", "_", topic).strip("_")
+
+
+class ToWebmHandler(RosbagHandler):
+    """Convert a CompressedImage topic to a WebM video file via FFmpeg."""
+
+    _DEFAULT_TOPIC = "/camera/image_raw/compressed"
+    _DEFAULT_FPS = 30.0
+
+    def __init__(self, topic: str = _DEFAULT_TOPIC, default_fps: float = _DEFAULT_FPS) -> None:
+        self._topic = topic
+        self._default_fps = default_fps
+        self._frames: List[bytes] = []
+        self._timestamps: List[int] = []
+        self._output_file: str = ""
+
+    def topics(self) -> List[str]:
+        return [self._topic]
+
+    def on_begin(self, bag_path: str, topic_type_map: Dict[str, str]) -> None:
+        self._frames = []
+        self._timestamps = []
+        topic_suffix = _sanitize_topic(self._topic)
+        bag_name = os.path.basename(bag_path)
+        parent_folder = os.path.abspath(os.path.dirname(bag_path))
+        self._output_file = os.path.join(parent_folder, f"{bag_name}_{topic_suffix}.webm")
+        if self._topic not in topic_type_map:
+            print(f"  ✗ {bag_path}: topic '{self._topic}' not in bag")
+
+    def on_message(self, topic: str, msg: Any, timestamp: int) -> None:
+        if topic == self._topic:
+            self._frames.append(bytes(msg.data))
+            self._timestamps.append(timestamp)
+
+    def on_end(self) -> Tuple[int, List[str]]:
+        if not self._frames:
+            print(f"  ✗ {self._output_file}: no frames")
+            return 0, []
+
+        if len(self._frames) > 1:
+            duration_s = (self._timestamps[-1] - self._timestamps[0]) / 1e9
+            fps = (len(self._frames) - 1) / duration_s if duration_s > 0 else self._default_fps
+        else:
+            fps = self._default_fps
+
+        ffmpeg_cmd = [
+            "ffmpeg", "-y",
+            "-f", "image2pipe", "-vcodec", "mjpeg",
+            "-r", f"{fps:.6f}",
+            "-i", "pipe:0",
+            "-c:v", "libvpx-vp9", "-crf", "10", "-b:v", "0",
+            "-deadline", "realtime", "-cpu-used", "8",
+            self._output_file,
+        ]
+        proc = subprocess.Popen(
+            ffmpeg_cmd,
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        )
+        try:
+            for jpeg_bytes in self._frames:
+                proc.stdin.write(jpeg_bytes)
+        except BrokenPipeError:
+            pass
+        finally:
+            if proc.stdin:
+                try:
+                    proc.stdin.close()
+                except OSError:
+                    pass
+                proc.stdin = None
+
+        _, stderr = proc.communicate()
+        if proc.returncode != 0:
+            print(f"  ✗ {self._output_file}: FFmpeg failed: {stderr.decode(errors='replace')}")
+            return -2, []
+
+        n = len(self._frames)
+        print(f"  ✓ {self._output_file}: {n} frames @ {fps:.2f} fps")
+        return n, [self._output_file]
+
+    @classmethod
+    def from_config(cls, config: dict) -> "ToWebmHandler":
+        return cls(
+            topic=config.get("topic", cls._DEFAULT_TOPIC),
+            default_fps=float(config.get("fps", cls._DEFAULT_FPS)),
+        )
+
+
+# ---------------------------------------------------------------------------
 # Handler registry
 # ---------------------------------------------------------------------------
 
@@ -574,6 +670,7 @@ HANDLER_REGISTRY: Dict[str, type] = {
     "bt_to_csv":     BtToCsvHandler,
     "action_to_csv": ActionToCsvHandler,
     "rosout_to_csv": RosoutToCsvHandler,
+    "to_webm":       ToWebmHandler,
 }
 
 

@@ -141,6 +141,7 @@ _ROSBAG_BATCH_MAP: Dict[str, Tuple[str, str]] = {
     "rosbags_bt_to_csv":     ("bt_to_csv",       "rosbag2"),
     "rosbags_action_to_csv": ("action_to_csv",   "rosbag2"),
     "rosbags_rosout_to_csv": ("rosout_to_csv",   "logs/rosout_bag"),
+    "rosbags_to_webm":       ("to_webm",         "rosbag2"),
 }
 
 
