@@ -42,15 +42,26 @@ def _compose_config(config_dir: str, config_name: str, overrides: tuple) -> Dict
     from hydra import compose, initialize_config_dir
     from hydra.core.global_hydra import GlobalHydra
 
+    abs_config_dir = os.path.abspath(config_dir)
+    config_file = os.path.join(abs_config_dir, f"{config_name}.yaml")
+    if not os.path.exists(config_file):
+        raise click.ClickException(
+            f"Config file not found: {config_file}\n"
+            f"Use -d to specify a directory containing {config_name}.yaml, e.g.:\n"
+            f"  vast run -d configs/examples/basic_nav"
+        )
+
     # Clear any previous Hydra state
     GlobalHydra.instance().clear()
 
-    abs_config_dir = os.path.abspath(config_dir)
     with initialize_config_dir(config_dir=abs_config_dir, version_base=None):
         cfg = compose(config_name=config_name, overrides=list(overrides))
 
-    # Inject the config directory so pipeline executor can resolve paths
+    # Inject config dir and file so launcher can resolve paths
     OmegaConf.update(cfg, "_config_dir", abs_config_dir, force_add=True)
+    OmegaConf.update(cfg, "_config_file",
+                     os.path.join(abs_config_dir, f"{config_name}.yaml"),
+                     force_add=True)
 
     return cfg
 
@@ -106,11 +117,11 @@ def _run_single(cfg: DictConfig, local: bool, detached: bool):
     """Execute a single (non-sweep) campaign."""
     metadata = OmegaConf.to_container(cfg.get("metadata", {}), resolve=True)
     campaign_name = metadata.get("name", "campaign")
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H%M%S")
+    timestamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
     campaign_id = f"{campaign_name}-{timestamp}"
 
-    # Create output directory
-    output_dir = Path("results") / campaign_id
+    # Create output directory (absolute path required for Docker volume mounts)
+    output_dir = (Path("results") / campaign_id).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Save resolved config for reproducibility
@@ -176,7 +187,7 @@ def _run_multirun(cfg, config_dir, config_name, overrides, local, detached):
 
     metadata = OmegaConf.to_container(cfg.get("metadata", {}), resolve=True)
     campaign_name = metadata.get("name", "campaign")
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H%M%S")
+    timestamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
     campaign_id = f"{campaign_name}-{timestamp}"
 
     # Run pipeline for each combination and collect configs
@@ -192,7 +203,7 @@ def _run_multirun(cfg, config_dir, config_name, overrides, local, detached):
         all_configs_and_contexts.append((combo_cfg, ctx))
         click.echo(f"  Resolved: {' '.join(f'{k}={v}' for k, v in zip(keys, combo))}")
 
-    output_dir = Path("results") / campaign_id
+    output_dir = (Path("results") / campaign_id).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Save sweep config
@@ -218,6 +229,22 @@ def _run_multirun(cfg, config_dir, config_name, overrides, local, detached):
 def _run_resolved(resolved_path: str, local: bool, detached: bool):
     """Execute a pre-resolved config file."""
     cfg = OmegaConf.load(resolved_path)
+    abs_resolved = os.path.abspath(resolved_path)
+    # Ensure _config_dir is set (resolved YAMLs already carry this from `vast resolve`)
+    if "_config_dir" not in cfg:
+        OmegaConf.update(cfg, "_config_dir", os.path.dirname(abs_resolved), force_add=True)
+    config_dir = cfg.get("_config_dir")
+    # _config_file must point to a file inside _config_dir so that prepare_campaign_configs
+    # can resolve scenario_file and run_files relative to the right directory.
+    # Use metadata.resolved_from (the original config) when available.
+    resolved_from = OmegaConf.to_container(cfg.get("metadata", {}), resolve=True).get("resolved_from")
+    if resolved_from:
+        config_file = resolved_from if os.path.isabs(resolved_from) \
+            else os.path.join(config_dir, resolved_from)
+    else:
+        config_file = os.path.join(config_dir, "config.yaml")
+    OmegaConf.update(cfg, "_config_file", config_file, force_add=True)
+
     if not cfg.get("_resolved", False):
         click.echo("Warning: Config file does not have _resolved: true marker.")
 
@@ -225,10 +252,10 @@ def _run_resolved(resolved_path: str, local: bool, detached: bool):
 
     metadata = OmegaConf.to_container(cfg.get("metadata", {}), resolve=True)
     campaign_name = metadata.get("name", "config")
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H%M%S")
+    timestamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
     campaign_id = f"{campaign_name}-{timestamp}"
 
-    output_dir = Path("results") / campaign_id
+    output_dir = (Path("results") / campaign_id).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # No pipeline needed — config is already resolved

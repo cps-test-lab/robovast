@@ -503,7 +503,8 @@ def _build_compose_yaml(
 
 def generate_compose_run_script(runs, campaign_data, config_path_result, pre_command, post_command,
                                 docker_image, results_dir, output_script_path,
-                                skip_resource_allocation=False, log_tree=False):
+                                skip_resource_allocation=False, log_tree=False,
+                                fixed_results_dir=None):
     """Generate a shell script to run Docker Compose stacks sequentially.
 
     Args:
@@ -551,6 +552,10 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
     secondary_containers = execution_params.get("secondary_containers") or []
     normalized_secondary = normalize_secondary_containers(secondary_containers)
 
+    results_dir_expr = (
+        f'"{fixed_results_dir}"' if fixed_results_dir
+        else f'"{results_dir}/${{RUN_ID}}"'
+    )
     script = RUN_SCRIPT_HEADER.replace(
         'DOCKER_IMAGE="ghcr.io/cps-test-lab/robovast:latest"',
         f'DOCKER_IMAGE="{docker_image}"', 1
@@ -559,7 +564,7 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
         (campaign_data.get('metadata') or {}).get('name', 'campaign'), 1
     ).replace(
         'RESULTS_DIR=',
-        f'RESULTS_DIR="{results_dir}/${{RUN_ID}}"', 1
+        f'RESULTS_DIR={results_dir_expr}', 1
     ).replace(
         '@@COMPAT_VERSION@@', str(COMPAT_VERSION),
     )
