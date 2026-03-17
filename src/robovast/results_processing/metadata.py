@@ -225,6 +225,22 @@ class MetadataGenerator:
                 test_dirs.sort()
                 missing_runs[config_name] = missing
 
+            # Also handle run directories that exist but have no test.xml
+            # (e.g. a run that started but produced no output).
+            if create_missing:
+                empty_runs = [
+                    n for n in test_dirs
+                    if not (config_dir_path / str(n) / "test.xml").exists()
+                ]
+                for run_num in empty_runs:
+                    run_dir = config_dir_path / str(run_num)
+                    _write_missing_run_xml(run_dir)
+                if empty_runs:
+                    existing_missing = set(missing_runs.get(config_name, []))
+                    missing_runs[config_name] = sorted(
+                        existing_missing | set(empty_runs)
+                    )
+
             # Transient files
             transient_dir = config_dir_path / "_transient"
             transient_files = []
