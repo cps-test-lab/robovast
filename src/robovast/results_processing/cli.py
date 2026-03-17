@@ -72,7 +72,8 @@ def results():
               help='Skip data.db creation.')
 @click.option('--skip-metadata', is_flag=True,
               help='Skip metadata.yaml generation.')
-def postprocess_cmd(results_dir, force, override, debug, skip_rosout, skip_plugins, skip_db, skip_metadata):
+@click.pass_context
+def postprocess_cmd(ctx, results_dir, force, override, debug, skip_rosout, skip_plugins, skip_db, skip_metadata):
     """Run postprocessing commands on run results.
 
     Executes postprocessing commands defined in the .vast file found in the
@@ -96,10 +97,15 @@ def postprocess_cmd(results_dir, force, override, debug, skip_rosout, skip_plugi
             )
         results_dir = raw_config.results_dir
 
+    # Respect global -V flag if no --override is provided
+    vast_file = override
+    if vast_file is None and ctx.obj and 'vast_file' in ctx.obj:
+        vast_file = ctx.obj['vast_file']
+
     click.echo("Starting postprocessing...")
     click.echo(f"Results directory: {results_dir}")
-    if override:
-        click.echo(f"Override .vast file: {override}")
+    if vast_file:
+        click.echo(f"Override .vast file: {vast_file}")
     if force:
         click.echo("Force mode enabled: bypassing cache")
     click.echo("-" * 60)
@@ -109,7 +115,7 @@ def postprocess_cmd(results_dir, force, override, debug, skip_rosout, skip_plugi
         results_dir=results_dir,
         output_callback=click.echo,
         force=force,
-        vast_file=override,
+        vast_file=vast_file,
         debug=debug,
         skip_rosout=skip_rosout,
         skip=list(skip_plugins),
@@ -133,7 +139,8 @@ def postprocess_cmd(results_dir, force, override, debug, skip_rosout, skip_plugi
               help='Overwrite existing output files without prompting.')
 @click.option('--skip-postprocessing', is_flag=True,
               help='Skip postprocessing and only run publication plugins.')
-def publish_cmd(results_dir, override, force, skip_postprocessing):
+@click.pass_context
+def publish_cmd(ctx, results_dir, override, force, skip_postprocessing):
     """Publish run results using configured publication plugins.
 
     Executes postprocessing plugins (unless ``--skip-postprocessing`` is used)
@@ -156,10 +163,15 @@ def publish_cmd(results_dir, override, force, skip_postprocessing):
             )
         results_dir = raw_config.results_dir
 
+    # Respect global -V flag if no --override is provided
+    vast_file = override
+    if vast_file is None and ctx.obj and 'vast_file' in ctx.obj:
+        vast_file = ctx.obj['vast_file']
+
     click.echo("Starting publication...")
     click.echo(f"Results directory: {results_dir}")
-    if override:
-        click.echo(f"Override .vast file: {override}")
+    if vast_file:
+        click.echo(f"Override .vast file: {vast_file}")
     click.echo("-" * 60)
 
     # Run postprocessing first (unless skipped)
@@ -168,7 +180,7 @@ def publish_cmd(results_dir, override, force, skip_postprocessing):
         pp_success, pp_message = run_postprocessing(
             results_dir=results_dir,
             output_callback=click.echo,
-            vast_file=override,
+            vast_file=vast_file,
         )
         click.echo()
         if not pp_success:
@@ -181,7 +193,7 @@ def publish_cmd(results_dir, override, force, skip_postprocessing):
     success, message = run_publication(
         results_dir=results_dir,
         output_callback=click.echo,
-        vast_file=override,
+        vast_file=vast_file,
         force=force,
     )
 
