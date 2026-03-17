@@ -323,7 +323,7 @@ class Zip(BasePublicationPlugin):
 
         created = []
         for campaign_item in sorted(results_path.iterdir()):
-            if not campaign_item.is_dir() or not is_campaign_dir(campaign_item.name):
+            if not campaign_item.is_dir() or not is_campaign_dir(campaign_item):
                 continue
 
             if filename:

@@ -116,7 +116,7 @@ def list_campaigns() -> list[Path]:
     results_dir = resolve_results_dir()
     return sorted(
         d for d in results_dir.iterdir()
-        if d.is_dir() and is_campaign_dir(d.name)
+        if d.is_dir() and is_campaign_dir(d)
     )
 
 

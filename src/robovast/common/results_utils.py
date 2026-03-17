@@ -41,9 +41,7 @@ def iter_run_folders(results_dir: str) -> Iterator[Tuple[str, str, str, Path]]:
         return
 
     for campaign_item in sorted(root.iterdir()):
-        if not campaign_item.is_dir() or not is_campaign_dir(campaign_item.name):
-            continue
-        if campaign_item.name == "_config":
+        if not campaign_item.is_dir() or not is_campaign_dir(campaign_item):
             continue
         campaign = campaign_item.name
 
@@ -81,7 +79,7 @@ def find_campaign_vast_file(results_dir: str) -> tuple[Optional[str], Optional[s
 
     # Reverse-sorted so the most recent campaign comes first
     for campaign_item in sorted(root.iterdir(), reverse=True):
-        if not campaign_item.is_dir() or not is_campaign_dir(campaign_item.name):
+        if not campaign_item.is_dir() or not is_campaign_dir(campaign_item):
             continue
         config_dir = campaign_item / "_config"
         if config_dir.is_dir():

@@ -196,12 +196,19 @@ def publish_cmd(results_dir, override, force, skip_postprocessing):
 @click.argument('merged_campaign_dir', type=click.Path())
 @click.option('--results-dir', '-r', default=None,
               help='Source directory containing run-\\* directories (uses project results directory if not specified)')
-def merge_results_cmd(merged_campaign_dir, results_dir):
+@click.option('--move', is_flag=True, default=False,
+              help='Move run folders one by one instead of copying, freeing source disk space incrementally. '
+                   'Source campaign directories are removed after all content has been moved.')
+def merge_results_cmd(merged_campaign_dir, results_dir, move):
     """Merge campaign directories with identical configs into one merged_campaign_dir.
 
     Groups campaign-directory/config-directory by config_identifier from config.yaml.
-    Run folders (0, 1, 2, ...) from all campaigns are renumbered and copied.
-    Original campaign directories are not modified.
+    Run folders (0, 1, 2, ...) from all campaigns are renumbered and copied (or moved
+    with ``--move``).
+
+    Use ``--move`` when disk space is tight: each run folder is moved immediately,
+    freeing source space as the merge progresses. Source campaign directories are
+    deleted once all their content has been transferred.
 
     Requires project initialization with ``vast init`` first (unless ``--results-dir`` is specified).
     """
@@ -211,9 +218,10 @@ def merge_results_cmd(merged_campaign_dir, results_dir):
         project_config = get_project_config()
         source_dir = project_config.results_dir
 
-    click.echo(f"Merging from {source_dir} into {merged_campaign_dir}...")
+    action = "Moving" if move else "Merging"
+    click.echo(f"{action} from {source_dir} into {merged_campaign_dir}...")
     try:
-        success, message = merge_results(source_dir, merged_campaign_dir)
+        success, message = merge_results(source_dir, merged_campaign_dir, move=move)
         if success:
             click.echo(f"\u2713 {message}")
         else:
@@ -257,7 +265,7 @@ def generate_metadata_cmd(results_dir, dot_pdf, create_missing):
 
     campaign_dirs = sorted(
         d for d in results_path.iterdir()
-        if d.is_dir() and is_campaign_dir(d.name)
+        if d.is_dir() and is_campaign_dir(d)
     )
     if not campaign_dirs:
         raise click.ClickException(f"No campaign directories found in {results_dir}")

@@ -136,7 +136,7 @@ class RunResultsAnalyzer(QMainWindow):
                 raise RuntimeError(f"Could not load override config from {self._override_vast}: {e}") from e
 
         for campaign_item in sorted(root.iterdir()):
-            if not campaign_item.is_dir() or not is_campaign_dir(campaign_item.name):
+            if not campaign_item.is_dir() or not is_campaign_dir(campaign_item):
                 continue
 
             if self._override_vast and override_parameters is not None:
@@ -205,7 +205,7 @@ class RunResultsAnalyzer(QMainWindow):
         try:
             rel = Path(path).relative_to(self.base_dir)
             first = rel.parts[0] if rel.parts else None
-            if first and is_campaign_dir(first):
+            if first and is_campaign_dir(Path(self.base_dir) / first):
                 return first
         except Exception:
             pass

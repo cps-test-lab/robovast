@@ -22,6 +22,8 @@ import os
 import re
 import shutil
 import subprocess
+from pathlib import Path
+from typing import Union
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
 from importlib.resources import files
@@ -186,13 +188,22 @@ def _get_cluster_info(context=None):
 _CAMPAIGN_DIR_RE = re.compile(r'^.+-\d{4}-\d{2}-\d{2}-\d{6,8}$')
 
 
-def is_campaign_dir(name: str) -> bool:
+def is_campaign_dir(name: Union[str, Path]) -> bool:
     """Return True if *name* looks like a campaign directory.
 
-    Both the legacy ``campaign-YYYY-MM-DD-HHMMSS`` format and the newer
-    ``<metadata-name>-YYYY-MM-DD-HHMMSScc`` format (with hundredths of a
-    second for concurrent-run disambiguation) are recognised.
+    When a :class:`~pathlib.Path` is given the check is filesystem-based:
+    the directory must contain a ``_config`` sub-directory that holds at
+    least one ``*.vast`` file.  This allows renamed campaign directories to
+    be recognised regardless of their name.
+
+    When a plain string is given (e.g. for remote-storage entries that are
+    never materialised locally) the legacy name-pattern check is used:
+    both ``campaign-YYYY-MM-DD-HHMMSS`` and
+    ``<metadata-name>-YYYY-MM-DD-HHMMSScc`` are recognised.
     """
+    if isinstance(name, Path):
+        config_dir = name / "_config"
+        return config_dir.is_dir() and any(config_dir.glob("*.vast"))
     return bool(_CAMPAIGN_DIR_RE.match(name))
 
 

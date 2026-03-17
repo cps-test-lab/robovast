@@ -42,7 +42,7 @@ def _iter_campaign_configs(results_dir: str) -> Iterator[tuple[str, str, Path, s
         return
 
     for run_item in sorted(root.iterdir()):
-        if not run_item.is_dir() or not is_campaign_dir(run_item.name):
+        if not run_item.is_dir() or not is_campaign_dir(run_item):
             continue
         if run_item.name == "_config":
             continue
@@ -78,10 +78,11 @@ def _merge_campaign_group(
     groups: dict[tuple[str, str], list[tuple[str, Path, list[Path]]]],
     results_dir: str,
     merged_base: Path,
-) -> tuple[str, int]:
+    move: bool = False,
+) -> tuple[str, int, set[str]]:
     """Merge one base-name group into merged_base/<base_name>-<hash>/.
 
-    Returns (pseudo_campaign_dir, total_runs).
+    Returns (pseudo_campaign_dir, total_runs, source_campaign_names).
     """
     all_source_campaigns = sorted({c for sources in groups.values() for c, _, _ in sources})
     pseudo_id = hashlib.sha256("|".join(all_source_campaigns).encode()).hexdigest()[:8]
@@ -96,13 +97,16 @@ def _merge_campaign_group(
     first_campaign = all_source_campaigns[0]
     first_campaign_path = Path(results_dir) / first_campaign
 
-    # Copy run-level _config from first campaign (includes .vast, .osc, etc.)
+    # Copy (or move) run-level _config from first campaign (includes .vast, .osc, etc.)
     src_config = first_campaign_path / "_config"
     if src_config.exists():
         dst_config = merged_path / "_config"
-        shutil.copytree(src_config, dst_config, dirs_exist_ok=True)
+        if move:
+            shutil.move(str(src_config), str(dst_config))
+        else:
+            shutil.copytree(src_config, dst_config, dirs_exist_ok=True)
 
-    # Copy run-level files from first campaign
+    # Copy (or move) run-level files from first campaign
     run_level_files = [
         ("_execution", "execution.yaml"),
         ("_transient", "entrypoint.sh"),
@@ -114,7 +118,10 @@ def _merge_campaign_group(
         if src.exists():
             dst_dir = merged_path / subdir
             dst_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst_dir / fname)
+            if move:
+                shutil.move(str(src), str(dst_dir / fname))
+            else:
+                shutil.copy2(src, dst_dir / fname)
 
     # Merge each config group
     # Disambiguate when the same config_name appears with different config_identifiers
@@ -129,14 +136,17 @@ def _merge_campaign_group(
         merged_config_dir = merged_path / output_dir_name
         merged_config_dir.mkdir(parents=True, exist_ok=True)
 
-        # Copy _config (contains config.yaml, scenario.config) from first source
+        # Copy (or move) _config (contains config.yaml, scenario.config) from first source
         _, first_config_path, _ = sources[0]
         src_cfg = first_config_path / "_config"
         if src_cfg.exists():
             dst_cfg = merged_config_dir / "_config"
-            shutil.copytree(src_cfg, dst_cfg, dirs_exist_ok=True)
+            if move:
+                shutil.move(str(src_cfg), str(dst_cfg))
+            else:
+                shutil.copytree(src_cfg, dst_cfg, dirs_exist_ok=True)
 
-        # Collect and copy run folders, renumbering sequentially
+        # Collect and move/copy run folders one by one, renumbering sequentially
         all_runs: list[tuple[str, str, Path]] = []
         for campaign, _, run_paths in sources:
             for rp in run_paths:
@@ -145,13 +155,16 @@ def _merge_campaign_group(
 
         for idx, (_, _, src_run_path) in enumerate(all_runs):
             dst_run = merged_config_dir / str(idx)
-            shutil.copytree(src_run_path, dst_run, dirs_exist_ok=True)
+            if move:
+                shutil.move(str(src_run_path), str(dst_run))
+            else:
+                shutil.copytree(src_run_path, dst_run, dirs_exist_ok=True)
             total_runs += 1
 
-    return pseudo_campaign_dir, total_runs
+    return pseudo_campaign_dir, total_runs, set(all_source_campaigns)
 
 
-def merge_results(results_dir: str, merged_campaign_dir: str) -> tuple[bool, str]:
+def merge_results(results_dir: str, merged_campaign_dir: str, move: bool = False) -> tuple[bool, str]:
     """Merge campaign-dirs with identical configs into merged_campaign_dir.
 
     Campaigns are grouped by their base name (the part before the timestamp
@@ -161,12 +174,14 @@ def merge_results(results_dir: str, merged_campaign_dir: str) -> tuple[bool, str
 
     Within each base-name group, config-dirs are matched by
     ``(config_identifier, config_name)`` from ``_config/config.yaml``.
-    Run folders (0, 1, 2, ...) are renumbered and copied.  Original
-    campaigns are not modified.
+    Run folders (0, 1, 2, ...) are renumbered and moved/copied one by one.
 
     Args:
         results_dir: Source directory containing campaign-* dirs.
         merged_campaign_dir: Output directory for merged results.
+        move: If True, move run folders instead of copying (frees source space
+              incrementally). Source campaign dirs are removed after all their
+              content has been moved.
 
     Returns:
         Tuple (success, message).
@@ -204,13 +219,24 @@ def merge_results(results_dir: str, merged_campaign_dir: str) -> tuple[bool, str
     total_configs = 0
     total_runs = 0
     output_dirs: list[str] = []
+    all_source_campaigns: set[str] = set()
     for base_name in sorted(by_base):
         groups = by_base[base_name]
-        pseudo_dir, runs = _merge_campaign_group(base_name, groups, results_dir, merged_base)
+        pseudo_dir, runs, src_campaigns = _merge_campaign_group(
+            base_name, groups, results_dir, merged_base, move=move
+        )
         total_configs += len(groups)
         total_runs += runs
         output_dirs.append(pseudo_dir)
+        all_source_campaigns.update(src_campaigns)
         logger.info("Merged %d config(s) for '%s' → %s/%s", len(groups), base_name, merged_campaign_dir, pseudo_dir)
+
+    if move:
+        for campaign in sorted(all_source_campaigns):
+            campaign_path = Path(results_dir) / campaign
+            if campaign_path.exists():
+                shutil.rmtree(campaign_path)
+                logger.info("Removed source campaign dir: %s", campaign_path)
 
     dirs_str = ", ".join(output_dirs)
     return True, (

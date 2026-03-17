@@ -397,7 +397,7 @@ class Compress(BasePostprocessingPlugin):
 
         created = []
         for campaign_item in sorted(root.iterdir()):
-            if not campaign_item.is_dir() or not is_campaign_dir(campaign_item.name):
+            if not campaign_item.is_dir() or not is_campaign_dir(campaign_item):
                 continue
             if campaign_item.name == "_config":
                 continue
