@@ -228,7 +228,10 @@ def merge_results_cmd(merged_campaign_dir, results_dir):
               help='Directory containing run results (uses project results dir if not specified)')
 @click.option('--dot-pdf', is_flag=True, default=False,
               help='Also generate Graphviz DOT and PDF visualizations of the FAIR metadata graph.')
-def generate_metadata_cmd(results_dir, dot_pdf):
+@click.option('--create-missing', is_flag=True, default=False,
+              help='Create empty run directories (with a failed test.xml) for runs that are '
+                   'missing instead of raising an error.')
+def generate_metadata_cmd(results_dir, dot_pdf, create_missing):
     """Generate metadata.yaml and FAIR/PROV-O provenance metadata for all campaigns.
 
     First generates (or regenerates) ``metadata.yaml`` for each campaign via
@@ -268,9 +271,10 @@ def generate_metadata_cmd(results_dir, dot_pdf):
     # Phase 1: generate metadata.yaml for all campaigns
     click.echo("Generating metadata.yaml...")
     try:
-        meta_success, meta_msg = generate_campaign_metadata(
+        meta_success, meta_msg, all_missing_runs = generate_campaign_metadata(
             str(results_dir),
             output_callback=lambda msg: click.echo(f"  {msg}"),
+            create_missing=create_missing,
         )
         if not meta_success:
             raise click.ClickException(f"metadata.yaml generation failed: {meta_msg}")
@@ -312,6 +316,13 @@ def generate_metadata_cmd(results_dir, dot_pdf):
         click.echo(f"✗ Metadata generation failed for: {', '.join(errors)}", err=True)
         sys.exit(1)
     click.echo(f"✓ Metadata generated for {len(campaign_dirs)} campaign(s)")
+
+    if all_missing_runs:
+        click.echo("\nMissing runs created (--create-missing):")
+        for campaign_name, configs in sorted(all_missing_runs.items()):
+            for config_name, run_nums in sorted(configs.items()):
+                runs_str = ", ".join(str(r) for r in run_nums)
+                click.echo(f"  {campaign_name}/{config_name}: runs [{runs_str}]")
 
 
 @results.command(name='postprocess-commands')

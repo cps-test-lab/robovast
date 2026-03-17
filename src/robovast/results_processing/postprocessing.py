@@ -537,7 +537,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     if skip_metadata:
         output("Skipping metadata generation")
     else:
-        meta_success, meta_msg = generate_campaign_metadata(
+        meta_success, meta_msg, _ = generate_campaign_metadata(
             results_dir, vast_file=vast_file, output_callback=output_callback,
         )
         if not meta_success:

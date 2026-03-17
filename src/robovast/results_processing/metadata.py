@@ -98,8 +98,15 @@ class MetadataGenerator:
     def __init__(self, campaign_dir: str | Path):
         self.campaign_dir = Path(campaign_dir)
 
-    def generate_metadata(self) -> Dict[str, Any]:
+    def generate_metadata(self, create_missing: bool = False) -> Dict[str, Any]:
         """Generate structural metadata for the campaign.
+
+        Args:
+            create_missing: When ``True``, missing run directories (runs that
+                were expected but have no output directory) are created as
+                empty directories instead of raising an error.  The returned
+                metadata will include a ``missing_runs`` key mapping config
+                names to lists of missing run numbers.
 
         Returns:
             Dictionary containing configurations, test results, execution
@@ -188,6 +195,7 @@ class MetadataGenerator:
 
         # --- test results per config -----------------------------------
         expected_runs = metadata["execution"].get("runs")
+        missing_runs: Dict[str, List[int]] = {}
         for config_entry in metadata["configurations"]:
             config_name = config_entry.get("name", "")
             config_dir_path = self.campaign_dir / config_name
@@ -201,10 +209,21 @@ class MetadataGenerator:
             test_dirs.sort()
 
             if expected_runs is not None and len(test_dirs) != expected_runs:
-                raise ValueError(
-                    f"Config '{config_name}' has {len(test_dirs)} run directories "
-                    f"but expected {expected_runs} runs"
-                )
+                if not create_missing:
+                    raise ValueError(
+                        f"Config '{config_name}' has {len(test_dirs)} run directories "
+                        f"but expected {expected_runs} runs"
+                    )
+                existing = set(test_dirs)
+                all_expected = set(range(1, expected_runs + 1))
+                missing = sorted(all_expected - existing)
+                for run_num in missing:
+                    run_dir = config_dir_path / str(run_num)
+                    run_dir.mkdir(parents=True, exist_ok=True)
+                    _write_missing_run_xml(run_dir)
+                    test_dirs.append(run_num)
+                test_dirs.sort()
+                missing_runs[config_name] = missing
 
             # Transient files
             transient_dir = config_dir_path / "_transient"
@@ -254,9 +273,12 @@ class MetadataGenerator:
                 try:
                     entry["sysinfo"] = read_sysinfo(run_dir)
                 except FileNotFoundError as exc:
-                    raise FileNotFoundError(
-                        f"sysinfo.yaml not found in {run_dir}"
-                    ) from exc
+                    if test_num in missing_runs.get(config_name, []):
+                        entry["sysinfo"] = None
+                    else:
+                        raise FileNotFoundError(
+                            f"sysinfo.yaml not found in {run_dir}"
+                        ) from exc
 
                 # rosbag2 metadata
                 rosbag2_meta_path = run_dir / "rosbag2" / "metadata.yaml"
@@ -285,6 +307,7 @@ class MetadataGenerator:
 
                 config_entry["test_results"].append(entry)
 
+        metadata["missing_runs"] = missing_runs
         return metadata
 
 
@@ -296,7 +319,8 @@ def generate_campaign_metadata(
     results_dir: str,
     vast_file: Optional[str] = None,
     output_callback=None,
-) -> tuple[bool, str]:
+    create_missing: bool = False,
+) -> tuple[bool, str, Dict[str, Dict[str, List[int]]]]:
     """Run the full metadata generation pipeline for all campaigns.
 
     Pipeline phases:
@@ -312,9 +336,12 @@ def generate_campaign_metadata(
         vast_file: Optional explicit ``.vast`` file path.  When ``None``,
             the ``.vast`` file is discovered from the most recent campaign.
         output_callback: Optional callable for status messages.
+        create_missing: When ``True``, missing run directories are created
+            instead of raising an error.
 
     Returns:
-        Tuple ``(success, message)``.
+        Tuple ``(success, message, missing_runs)`` where ``missing_runs``
+        maps campaign names to dicts of ``{config_name: [missing_run_nums]}``.
     """
     def output(msg):
         if output_callback:
@@ -324,7 +351,7 @@ def generate_campaign_metadata(
 
     results_path = Path(results_dir)
     if not results_path.is_dir():
-        return False, f"Results directory does not exist: {results_dir}"
+        return False, f"Results directory does not exist: {results_dir}", {}
 
     # Find campaign directories
     campaign_dirs = sorted(
@@ -332,7 +359,7 @@ def generate_campaign_metadata(
         if d.is_dir() and is_campaign_dir(d.name)
     )
     if not campaign_dirs:
-        return False, f"No campaign directories found in {results_dir}"
+        return False, f"No campaign directories found in {results_dir}", {}
 
     # Load variation classes (for metadata hooks)
     variation_classes = load_variation_classes()
@@ -345,13 +372,19 @@ def generate_campaign_metadata(
         results_dir, vast_file
     )
 
+    all_missing_runs: Dict[str, Dict[str, List[int]]] = {}
+
     try:
         for campaign_dir in campaign_dirs:
             output(f"Generating metadata for {campaign_dir.name}...")
 
             # Phase 1: Generic metadata
             generator = MetadataGenerator(campaign_dir)
-            metadata = generator.generate_metadata()
+            metadata = generator.generate_metadata(create_missing=create_missing)
+
+            campaign_missing = metadata.get("missing_runs", {})
+            if campaign_missing:
+                all_missing_runs[campaign_dir.name] = campaign_missing
 
             # Phase 2: Variation plugin metadata hooks
             _apply_variation_metadata(metadata, campaign_dir, variation_classes)
@@ -399,14 +432,30 @@ def generate_campaign_metadata(
                 logger.warning("PROV metadata generation failed: %s", prov_exc)
 
     except Exception as e:
-        return False, f"Metadata generation failed: {e}"
+        return False, f"Metadata generation failed: {e}", {}
 
-    return True, f"Metadata generated for {len(campaign_dirs)} campaign(s)"
+    return True, f"Metadata generated for {len(campaign_dirs)} campaign(s)", all_missing_runs
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def _write_missing_run_xml(run_dir: Path) -> None:
+    """Write a JUnit test.xml indicating the run was missing (never executed)."""
+    xml_content = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<testsuite name="missing" tests="1" failures="1" errors="0" time="0">\n'
+        '  <testcase name="run" classname="missing" time="0">\n'
+        '    <failure message="Run directory was missing; created by --create-missing">'
+        "Run did not produce output and was not found in results."
+        "</failure>\n"
+        "  </testcase>\n"
+        "</testsuite>\n"
+    )
+    with open(run_dir / "test.xml", "w", encoding="utf-8") as f:
+        f.write(xml_content)
+
 
 def _replace_file_urls(obj):
     """Recursively replace ``file:///config`` with ``_config`` in strings."""
