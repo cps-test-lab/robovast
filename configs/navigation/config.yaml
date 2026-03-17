@@ -1,0 +1,59 @@
+metadata:
+  name: navigation_variation
+
+scenario:
+  name: navigation
+  laserscan_gaussian_noise_std_deviation: 0.0
+
+# Named callbacks — order = execution order
+# Each parameter is sweepable via Hydra: -m pipeline.floorplan.seed=1,2,3
+pipeline:
+  floorplan:
+    _target_: robovast_nav.callbacks.FloorplanVariationCallback
+    scenario_params: [map_file, mesh_file]
+    variation_files:
+      - floorplans/rooms/rooms.variation
+    seed: 1
+  path:
+    _target_: robovast_nav.callbacks.PathRandomCallback
+    start_pose: start_pose
+    goal_poses: goal_poses
+    num_goal_poses: 3
+    path_length: 10.0
+    path_length_tolerance: 0.5
+    min_distance: 1.0
+    seed: 42
+    robot_diameter: 0.35
+  obstacles:
+    _target_: robovast_nav.callbacks.ObstacleCallback
+    scenario_param: static_objects
+    obstacle_configs:
+      - amount: 1
+        max_distance: 0.1
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: "width:=0.5, length:=0.5, height:=1.0"
+    seed: 42
+    robot_diameter: 0.35
+
+execution:
+  image: ghcr.io/cps-test-lab/robovast:latest
+  resources:
+    cpu: 8
+  runs: 10
+  scenario_file: scenario.osc
+  run_files:
+    - "files/*"
+
+results_processing:
+  postprocessing:
+    - rosbags_to_csv
+    - rosbags_tf_to_csv:
+        frames: [base_link, turtlebot4_base_link_gt]
+    - rosbags_bt_to_csv
+
+evaluation:
+  visualization:
+    - Analysis:
+        run: analysis/analysis_run.ipynb
+        config: analysis/analysis_config.ipynb
+        campaign: analysis/analysis_campaign.ipynb

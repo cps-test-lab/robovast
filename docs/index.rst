@@ -51,9 +51,9 @@ The dataset serves as a comprehensive validation tool for navigation stacks such
 
    setup
    how_to_run
+   hydra
    configuration
    example
-   variation
    cluster_execution
    results_processing
    evaluation

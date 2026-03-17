@@ -1,0 +1,31 @@
+metadata:
+  name: basic_nav
+
+scenario:
+  name: test
+  goal_pose:
+    position:
+      x: 21.0
+      y: 6.0
+
+execution:
+  image: ghcr.io/cps-test-lab/robovast:latest
+  resources:
+    cpu: 6
+  runs: 5
+  scenario_file: scenario.osc
+  run_files:
+    - "files/*"
+
+results_processing:
+  postprocessing:
+    - rosbags_tf_to_csv:
+        frames: [base_link, turtlebot4_base_link_gt]
+    - rosbags_bt_to_csv
+
+evaluation:
+  visualization:
+    - Analysis:
+        run: analysis/analysis_run.ipynb
+        config: analysis/analysis_config.ipynb
+        campaign: analysis/analysis_campaign.ipynb

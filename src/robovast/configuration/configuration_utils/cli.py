@@ -20,15 +20,15 @@
 import fnmatch
 import os
 import sys
-from importlib.metadata import entry_points
 
 import click
 import yaml
+from omegaconf import OmegaConf
 
-from robovast.common import (convert_dataclasses_to_dict, filter_configs,
-                             generate_scenario_variations,
-                             get_scenario_parameters, prepare_campaign_configs)
+from robovast.common import get_scenario_parameters
 from robovast.common.cli import get_project_config, handle_cli_exception
+from robovast.pipeline.callback import load_pipeline_callbacks
+from robovast.pipeline.executor import run_pipeline
 
 
 @click.group()
@@ -68,41 +68,25 @@ def gui(debug):
 @configuration.command(name='list')
 @click.option('--debug', is_flag=True, help='Show internal values starting with _')
 def list_cmd(debug):
-    """List scenario configs without generating files.
+    """Show the resolved scenario configuration.
 
-    This command shows all configs that would be generated from the
-    configuration file without actually creating the output files.
+    Loads and displays the scenario section of the current config.
+    Use ``vast run -m`` with Hydra overrides to enumerate sweep combinations.
 
     Requires project initialization with ``vast init`` first.
     """
-    # Get project configuration
     project_config = get_project_config()
     config = project_config.config_path
 
     try:
-        campaign_data, _ = generate_scenario_variations(
-            variation_file=config,
-            progress_update_callback=None,
-            output_dir=None
-        )
-        configs_data = campaign_data["configs"]
-        configs = convert_dataclasses_to_dict(configs_data)
-        if configs:
-            # Filter out internal values unless --debug is enabled
-            if debug:
-                filtered_documents = configs
-            else:
-                filtered_documents = filter_configs(configs)
+        cfg = OmegaConf.load(config)
+        data = OmegaConf.to_container(cfg, resolve=True)
 
-            # Build output string with document separators
-            output_parts = []
-            for i, doc in enumerate(filtered_documents):
-                if i > 0:
-                    output_parts.append("---")
-                output_parts.append(yaml.dump(doc, default_flow_style=False, sort_keys=False).rstrip())
-
-            output = "\n".join(output_parts)
-            click.echo(output)
+        if debug:
+            click.echo(yaml.dump(data, default_flow_style=False, sort_keys=False).rstrip())
+        else:
+            scenario = data.get("scenario", data)
+            click.echo(yaml.dump(scenario, default_flow_style=False, sort_keys=False).rstrip())
     except Exception as e:
         handle_cli_exception(e)
 
@@ -111,32 +95,31 @@ def list_cmd(debug):
 def info():
     """Show overview of configuration.
 
-    Displays the number of configurations and runs that would be generated
-    from the current project configuration.
+    Displays the scenario name, execution parameters, and pipeline callbacks
+    defined in the current project configuration.
     """
-    # Get project configuration
     project_config = get_project_config()
     config = project_config.config_path
 
     try:
-        campaign_data, _ = generate_scenario_variations(
-            variation_file=config,
-            progress_update_callback=None,
-            output_dir=None
-        )
-        configs = campaign_data["configs"]
-        runs_per_config = campaign_data.get("execution", {}).get("runs", 1)
-        total_runs = len(configs) * runs_per_config
+        cfg = OmegaConf.load(config)
+        data = OmegaConf.to_container(cfg, resolve=True)
+
+        runs = data.get("execution", {}).get("runs", 1)
+        scenario_file = data.get("execution", {}).get("scenario_file", "N/A")
+        name = data.get("metadata", {}).get("name", data.get("scenario", {}).get("name", "N/A"))
+        callbacks = list(data.get("pipeline", {}).keys())
 
         click.echo("Configuration Overview")
         click.echo("======================")
-        click.echo(f"Configurations: {len(configs)}")
-        click.echo(f"Runs per configuration: {runs_per_config}")
-        click.echo(f"Total runs: {total_runs}")
-        click.echo(f"Scenario file: {campaign_data.get('scenario_file', 'N/A')}")
-        click.echo(f"VAST file: {campaign_data.get('vast', 'N/A')}")
-        if "metadata" in campaign_data:
-            click.echo(f"Metadata: {campaign_data['metadata']}")
+        click.echo(f"Name: {name}")
+        click.echo(f"Config file: {config}")
+        click.echo(f"Runs per job: {runs}")
+        click.echo(f"Scenario file: {scenario_file}")
+        if callbacks:
+            click.echo(f"Pipeline callbacks: {', '.join(callbacks)}")
+        if "metadata" in data:
+            click.echo(f"Metadata: {data['metadata']}")
     except Exception as e:
         handle_cli_exception(e)
 
@@ -237,242 +220,56 @@ def export_configs(args, input_file, remove):
         )
 
 
-@configuration.command(name='import-configs')
-@click.argument('source', type=click.Path(exists=True), metavar='SOURCE')
-def import_configs(source):
-    """Import configurations from SOURCE .vast file into the project .vast file.
-
-    Reads all ``configuration`` entries from SOURCE, validates that they
-    produce valid scenario configurations (via a dry-run expansion), and
-    appends the passing entries to the current project's .vast file.
-
-    Configs whose names already exist in the project file are skipped.
-
-    Example::
-
-        vast config import-configs other.vast
-    """
-    import tempfile  # pylint: disable=import-outside-toplevel
-
-    project_config = get_project_config()
-    dest_path = project_config.config_path
-
-    # Load source file
-    try:
-        with open(source, 'r', encoding='utf-8') as f:
-            source_data = yaml.safe_load(f)
-    except Exception as e:
-        handle_cli_exception(e)
-        return
-
-    incoming = source_data.get('configuration', [])
-    if not isinstance(incoming, list) or not incoming:
-        click.echo("Error: No 'configuration' entries found in source file.", err=True)
-        sys.exit(1)
-
-    # Load destination file
-    try:
-        with open(dest_path, 'r', encoding='utf-8') as f:
-            dest_data = yaml.safe_load(f)
-    except Exception as e:
-        handle_cli_exception(e)
-        return
-
-    existing_names = {cfg.get('name') for cfg in dest_data.get('configuration', [])}
-
-    # Raise error if any incoming config names already exist
-    duplicates = [cfg.get('name') for cfg in incoming if cfg.get('name') in existing_names]
-    if duplicates:
-        click.echo(
-            f"Error: The following configuration name(s) already exist in {dest_path}:\n"
-            + "\n".join(f"  - {n}" for n in duplicates),
-            err=True,
-        )
-        sys.exit(1)
-
-    new_configs = incoming
-
-    # Validate new configs by doing a dry-run expansion in a temp file
-    click.echo(f"Validating {len(new_configs)} new configuration(s)...")
-
-    probe_data = dict(dest_data)
-    probe_data['configuration'] = new_configs
-
-    valid_configs = []
-    invalid_configs = []
-
-    for cfg in new_configs:
-        probe_single = dict(dest_data)
-        probe_single['configuration'] = [cfg]
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode='w', suffix='.vast', delete=False, encoding='utf-8'
-            ) as tmp:
-                yaml.dump(probe_single, tmp, default_flow_style=False,
-                          sort_keys=False, allow_unicode=True)
-                tmp_path = tmp.name
-
-            campaign_data, _ = generate_scenario_variations(
-                variation_file=tmp_path,
-                progress_update_callback=None,
-                output_dir=None,
-            )
-            if campaign_data.get('configs'):
-                valid_configs.append(cfg)
-                click.echo(f"  ✓ {cfg.get('name')}")
-            else:
-                invalid_configs.append(cfg.get('name'))
-                click.echo(f"  ✗ {cfg.get('name')} (produced no configs)", err=True)
-        except Exception as exc:
-            invalid_configs.append(cfg.get('name'))
-            click.echo(f"  ✗ {cfg.get('name')}: {exc}", err=True)
-        finally:
-            try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
-
-    if not valid_configs:
-        click.echo("No valid configurations to import.", err=True)
-        sys.exit(1)
-
-    # Append valid configs to destination file
-    dest_data.setdefault('configuration', []).extend(valid_configs)
-
-    try:
-        with open(dest_path, 'w', encoding='utf-8') as f:
-            yaml.dump(dest_data, f, default_flow_style=False,
-                      sort_keys=False, allow_unicode=True)
-    except Exception as e:
-        handle_cli_exception(e)
-        return
-
-    click.echo(
-        f"\n✓ Imported {len(valid_configs)} configuration(s) into {dest_path}."
-    )
-    if invalid_configs:
-        click.echo(
-            f"  {len(invalid_configs)} configuration(s) were skipped due to errors: "
-            f"{', '.join(invalid_configs)}",
-            err=True,
-        )
-
-
 @configuration.command()
 @click.argument('output-dir', type=click.Path())
-@click.option('--keep-transient', is_flag=True, default=False,
-              help='Keep and display temporary folders used during generation (e.g. by FloorplanGeneration).')
-@click.option('--no-cache', is_flag=True, default=False,
-              help='Skip cache lookup and force a fresh generation even if inputs are unchanged.')
-def generate(output_dir, keep_transient, no_cache):
-    """Generate run configurations and output files.
+def generate(output_dir):
+    """Run pipeline callbacks and write generated files to OUTPUT_DIR.
 
-    Creates all configurations and associated files in the
-    configured results directory.
+    Instantiates all pipeline callbacks defined in the config and runs
+    them in order, producing one set of output files (floorplans, paths,
+    obstacle configs, etc.).
 
     Requires project initialization with ``vast init`` first.
     """
-    # Get project configuration
     project_config = get_project_config()
     config = project_config.config_path
 
-    click.echo(f"Generating scenario configurations...")
+    click.echo("Running pipeline callbacks...")
 
     try:
         os.makedirs(output_dir, exist_ok=True)
-
-        campaign_data, _ = generate_scenario_variations(
-            variation_file=config,
-            progress_update_callback=None,
-            output_dir=output_dir,
-            use_cache=not no_cache,
-        )
-        configs = campaign_data["configs"]
-
-        if configs:
-            config_path_result = os.path.join(output_dir, "out_template")
-            prepare_campaign_configs(config_path_result, campaign_data)
-            click.echo(f"✓ Successfully generated {len(configs)} scenario configurations in directory '{output_dir}'.")
-
-            if keep_transient:
-                _print_transient_locations(campaign_data)
-        else:
-            click.echo("✗ Failed to generate scenario configurations", err=True)
-            sys.exit(1)
-
+        cfg = OmegaConf.load(config)
+        from pathlib import Path  # pylint: disable=import-outside-toplevel
+        ctx = run_pipeline(cfg, output_dir=Path(output_dir))
+        click.echo(f"✓ Pipeline complete. Generated files: {list(ctx.generated_files.keys())}")
     except Exception as e:
-        if keep_transient:
-            _print_transient_dirs_from_output(output_dir)
         handle_cli_exception(e)
-
-
-def _print_transient_locations(campaign_data):
-    """Print all transient directories produced during config generation."""
-    transient_dirs = set()
-    _gen_output_dir = campaign_data.get("_output_dir", "")
-
-    for config in campaign_data.get("configs", []):
-        for _rel, path in config.get("_config_transient_files", []):
-            abs_path = path if os.path.isabs(path) else os.path.join(_gen_output_dir, path)
-            transient_dirs.add(os.path.dirname(abs_path))
-
-    for _rel, abs_path in campaign_data.get("_transient_files", []):
-        transient_dirs.add(os.path.dirname(abs_path))
-
-    if transient_dirs:
-        click.echo("\nTransient directories (--keep-transient):")
-        for d in sorted(transient_dirs):
-            click.echo(f"  {d}")
-    else:
-        click.echo("\nNo transient directories were produced.")
-
-
-def _print_transient_dirs_from_output(output_dir):
-    """Scan output_dir for transient working directories left by variations."""
-    if not os.path.isdir(output_dir):
-        return
-    transient_dirs = []
-    for entry in sorted(os.scandir(output_dir), key=lambda e: e.name):
-        if entry.is_dir() and entry.name != "out_template":
-            transient_dirs.append(entry.path)
-    if transient_dirs:
-        click.echo("\nTransient directories (--keep-transient):", err=True)
-        for d in transient_dirs:
-            click.echo(f"  {d}", err=True)
 
 
 @configuration.command(name='variation-types')
 def variation_types():
-    """List available variation types.
+    """List available pipeline callbacks.
 
-    Shows all registered variation type entry points that can be used
-    in the variations section of .vast configuration files.
+    Shows all registered pipeline callback entry points that can be used
+    in the ``pipeline`` section of config files.
     """
-    click.echo("Available variation types:")
+    click.echo("Available pipeline callbacks:")
     click.echo("")
 
     try:
-        eps = entry_points()
-        variation_eps = eps.select(group='robovast.variation_types')
+        callbacks = load_pipeline_callbacks()
 
-        if not variation_eps:
-            click.echo("No variation types found.", err=True)
+        if not callbacks:
+            click.echo("No pipeline callbacks found.", err=True)
             sys.exit(1)
 
-        for ep in variation_eps:
-            try:
-                # Load the class to verify it's accessible
-                variation_class = ep.load()
-                click.echo(f"- {ep.name}")
-                # Try to get docstring if available
-                if variation_class.__doc__:
-                    doc_lines = variation_class.__doc__.strip().split('\n')
-                    if doc_lines:
-                        click.echo(f"  {doc_lines[0].strip()}")
-                click.echo()
-            except Exception as e:
-                click.echo(f"  {ep.name} (Failed to load: {e})", err=True)
-                click.echo()
+        for name, cls in callbacks.items():
+            click.echo(f"- {name}")
+            if cls.__doc__:
+                doc_lines = cls.__doc__.strip().split('\n')
+                if doc_lines:
+                    click.echo(f"  {doc_lines[0].strip()}")
+            click.echo()
 
     except Exception as e:
         handle_cli_exception(e)
@@ -480,60 +277,44 @@ def variation_types():
 
 @configuration.command(name='variation-points')
 def variation_points():
-    """List possible variation points from the scenario files.
+    """List sweepable scenario parameters from the scenario file.
 
-    Shows all available variation points (scenario parameters) that can be
-    varied in the scenarios as defined in the vast configuration file.
+    Shows all scenario parameters that can be swept via Hydra overrides
+    (``vast run -m scenario.param=v1,v2``).
 
     Requires project initialization with ``vast init`` first.
     """
-    # Get project configuration
     project_config = get_project_config()
-    config = project_config.config_path
+    config_path = project_config.config_path
 
     click.echo("Loading scenario parameter template...")
     click.echo("")
 
     try:
-        campaign_data, _ = generate_scenario_variations(
-            variation_file=config,
-            progress_update_callback=None,
-            output_dir=None,
-        )
-        configs = campaign_data["configs"]
-    except Exception as e:
-        handle_cli_exception(e)
-
-    unique_scenarios = set()
-    for config in configs:
-        unique_scenarios.add(config.get('_scenario_file'))
-
-    for scenario_file in unique_scenarios:
-        if not scenario_file:
-            click.echo("Error: No scenario file found in configuration", err=True)
+        cfg = OmegaConf.load(config_path)
+        data = OmegaConf.to_container(cfg, resolve=True)
+        scenario_file_name = data.get("execution", {}).get("scenario_file")
+        if not scenario_file_name:
+            click.echo("Error: No scenario_file defined in execution section", err=True)
             sys.exit(1)
 
-        # Make scenario path absolute relative to config file
-        if not os.path.isabs(scenario_file):
-            scenario_file = os.path.join(os.path.dirname(config), scenario_file)
+        config_dir = os.path.dirname(config_path)
+        scenario_file = scenario_file_name if os.path.isabs(scenario_file_name) \
+            else os.path.join(config_dir, scenario_file_name)
 
         if not os.path.exists(scenario_file):
             click.echo(f"Error: Scenario file does not exist: {scenario_file}", err=True)
             sys.exit(1)
 
-        # Get the scenario parameter template
         scenario_template = get_scenario_parameters(scenario_file)
-
-        if scenario_template:
-            scenario_parameters = next(iter(scenario_template.values()))
-        else:
-            scenario_parameters = None
-
-        if not scenario_parameters:
+        if not scenario_template:
             click.echo("No variation points found in scenario", err=True)
             sys.exit(1)
 
-        # Display the parameters in a readable format
-        print(f"Variation points in scenario file: {scenario_file}")
+        scenario_parameters = next(iter(scenario_template.values()))
+        click.echo(f"Variation points in scenario file: {scenario_file}")
         for param in scenario_parameters:
-            click.echo(f"    {param["name"]}: {param["type"] if not param["is_list"] else f'list[{param["type"]}]'}")
+            param_type = param['type'] if not param['is_list'] else f"list[{param['type']}]"
+            click.echo(f"    {param['name']}: {param_type}")
+    except Exception as e:
+        handle_cli_exception(e)
