@@ -586,7 +586,14 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
         run_num = task['run_number']
         config_files = task['config_files']
 
-        run_path = os.path.join("${RESULTS_DIR}", config_name, str(run_num))
+        # In fixed_results_dir mode (Hydra launcher), each job already has its
+        # own dedicated output directory, so the config_name subdirectory is
+        # redundant. Drop it so runs land at ${RESULTS_DIR}/0 instead of
+        # ${RESULTS_DIR}/test/0.
+        if fixed_results_dir:
+            run_path = os.path.join("${RESULTS_DIR}", str(run_num))
+        else:
+            run_path = os.path.join("${RESULTS_DIR}", config_name, str(run_num))
         compose_file = f"/tmp/robovast_compose_{config_name}_{run_num}.yml"
 
         script += f'\necho ""\n'

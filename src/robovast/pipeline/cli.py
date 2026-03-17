@@ -158,21 +158,121 @@ def _run_single(cfg: DictConfig, local: bool, detached: bool):
     click.echo(f"Campaign {campaign_id} complete.")
 
 
+def _sweep_combo_indices(parsed_overrides, combo_idx: int) -> list[int]:
+    """Return per-sweep-param indices for the given combo index.
+
+    BasicSweeper generates combos as the row-major Cartesian product of sweep
+    values in declaration order. Given combo index ``combo_idx`` and the list
+    of sweep-param lengths, we decompose the index back into per-param indices.
+
+    Example: growth_rate=0.1,0.3 × initial_population=1,2
+      lengths=[2,2], combos: 0→[0,0], 1→[0,1], 2→[1,0], 3→[1,1]
+    """
+    lengths = [
+        len(list(o.sweep_string_iterator()))
+        for o in parsed_overrides
+        if o.is_sweep_override()
+    ]
+    indices = []
+    i = combo_idx
+    for l in reversed(lengths):
+        indices.append(i % l)
+        i //= l
+    return list(reversed(indices))
+
+
+def _params_to_sweep_overrides(params: dict, base_cfg=None) -> list[str]:
+    """Convert hydra.sweeper.params entries to BasicSweeper CLI override strings.
+
+    choice(a, b, c) → key=a,b,c
+    range(stop)     → key=0  (single value when stop==1) or key=range(0,stop)
+    range(start, stop[, step]) → key=range(start,stop[,step])
+
+    Keys absent from base_cfg are prefixed with '+' so Hydra appends them.
+    """
+    import re
+    from omegaconf import OmegaConf
+    _MISSING = object()
+    overrides = []
+    for key, spec in params.items():
+        prefix = ""
+        if base_cfg is not None and OmegaConf.select(base_cfg, key, default=_MISSING) is _MISSING:
+            prefix = "+"
+        spec = str(spec).strip()
+        m = re.match(r'^choice\((.+)\)$', spec)
+        if m:
+            values = [v.strip() for v in m.group(1).split(',')]
+            overrides.append(f"{prefix}{key}={','.join(values)}")
+            continue
+        m = re.match(r'^range\((-?\d+)(?:,\s*(-?\d+))?(?:,\s*(-?\d+))?\)$', spec)
+        if m:
+            args = [g for g in m.groups() if g is not None]
+            if len(args) == 1:
+                stop = int(args[0])
+                overrides.append(f"{prefix}{key}=0" if stop <= 1 else f"{prefix}{key}=range(0,{stop})")
+            elif len(args) == 2:
+                overrides.append(f"{prefix}{key}=range({args[0]},{args[1]})")
+            else:
+                overrides.append(f"{prefix}{key}=range({args[0]},{args[1]},{args[2]})")
+            continue
+        overrides.append(f"{prefix}{key}={spec}")
+    return overrides
+
+
 def _run_multirun(config_dir, config_name, overrides, local, detached):
     """Execute a multirun (sweep) campaign."""
     from hydra._internal.core_plugins.basic_sweeper import BasicSweeper
     from hydra.core.override_parser.overrides_parser import OverridesParser
 
-    # Use Hydra's parser + BasicSweeper to generate all override combinations.
-    # Sweep syntax: key=a,b,c  or  key=range(1,10)
     parsed = OverridesParser.create().parse_overrides(list(overrides))
+    has_cli_sweep = any(o.is_sweep_override() for o in parsed)
 
-    if not any(o.is_sweep_override() for o in parsed):
-        cfg = _compose_config(config_dir, config_name, overrides)
-        click.echo("No sweep parameters found. Running single config.")
-        _run_single(cfg, local, detached)
-        return
+    if not has_cli_sweep:
+        # No CLI sweep overrides — check the config YAML for sweeper type and params.
+        abs_config_dir = os.path.abspath(config_dir)
+        config_file = os.path.join(abs_config_dir, f"{config_name}.yaml")
+        with open(config_file) as f:
+            raw_cfg = yaml.safe_load(f) or {}
+        sweeper_cfg = raw_cfg.get("hydra", {}).get("sweeper", {})
 
+        if sweeper_cfg.get("params"):
+            # Check whether Optuna sweeper is explicitly selected in the defaults list.
+            defaults = raw_cfg.get("defaults", [])
+            uses_optuna = any(
+                isinstance(d, dict)
+                and any("sweeper" in str(k) for k in d)
+                and list(d.values())[0] == "optuna"
+                for d in defaults
+            )
+
+            if uses_optuna:
+                from robovast.pipeline.optuna_sweep import run_optuna_sweep
+                fixed = [o.input_line for o in parsed]
+                run_optuna_sweep(
+                    config_dir, config_name, sweeper_cfg, fixed,
+                    local, detached,
+                    compose_fn=_compose_config,
+                    pipeline_fn=_run_pipeline_for_config,
+                )
+                return
+
+            # BasicSweeper: convert YAML params to CLI sweep overrides and fall through.
+            # Compose a base config first so unknown keys (e.g. 'trial') get '+' prefix.
+            fixed = [o.input_line for o in parsed]
+            base_cfg = _compose_config(config_dir, config_name, tuple(fixed))
+            yaml_sweeps = _params_to_sweep_overrides(sweeper_cfg["params"], base_cfg)
+            overrides = tuple(fixed) + tuple(yaml_sweeps)
+            parsed = OverridesParser.create().parse_overrides(list(overrides))
+            has_cli_sweep = any(o.is_sweep_override() for o in parsed)
+
+        if not has_cli_sweep:
+            cfg = _compose_config(config_dir, config_name, overrides)
+            click.echo("No sweep parameters found. Running single config.")
+            _run_single(cfg, local, detached)
+            return
+
+    # CLI sweep overrides present — use Hydra's BasicSweeper for Cartesian product.
+    # Sweep syntax: key=a,b,c  or  key=range(1,10)
     # Returns List[List[List[str]]]: outer=chunks, middle=combos, inner=override strings.
     # max_batch_size=None → single chunk containing all combos.
     combos = BasicSweeper.split_arguments(parsed, max_batch_size=None)[0]
@@ -187,15 +287,21 @@ def _run_multirun(config_dir, config_name, overrides, local, detached):
     timestamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
     campaign_id = f"{campaign_name}-{timestamp}"
 
-    # Run pipeline for each combination and collect configs
+    # Run pipeline for each combination and collect configs + per-combo subdirs.
+    # Subdir format: {scenario_name}-{idx_per_param0}-{idx_per_param1}-...
     all_configs_and_contexts = []
-    for combo_overrides in combos:
+    subdirs = []
+    for combo_idx, combo_overrides in enumerate(combos):
         combo_cfg = _compose_config(config_dir, config_name, tuple(combo_overrides))
 
         pipeline_output = Path(tempfile.mkdtemp(prefix="robovast_pipeline_"))
         ctx = _run_pipeline_for_config(combo_cfg, pipeline_output)
         all_configs_and_contexts.append((combo_cfg, ctx))
-        click.echo(f"  Resolved: {' '.join(combo_overrides)}")
+
+        indices = _sweep_combo_indices(parsed, combo_idx)
+        subdir = f"{ctx.scenario_name}-{'-'.join(str(i) for i in indices)}"
+        subdirs.append(subdir)
+        click.echo(f"  Resolved: {' '.join(combo_overrides)} → {subdir}")
 
     output_dir = (Path("results") / campaign_id).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -210,12 +316,13 @@ def _run_multirun(config_dir, config_name, overrides, local, detached):
     if local:
         from robovast.hydra_plugins.local_launcher import LocalLauncher
         launcher = LocalLauncher()
-        for combo_cfg, ctx in all_configs_and_contexts:
-            launcher.launch(combo_cfg, ctx, output_dir)
+        for (combo_cfg, ctx), subdir in zip(all_configs_and_contexts, subdirs):
+            launcher.launch(combo_cfg, ctx, output_dir / subdir)
     else:
         from robovast.hydra_plugins.k8s_launcher import K8sLauncher
         launcher = K8sLauncher(cluster_config="default")
-        launcher.launch(all_configs_and_contexts, campaign_id, output_dir, detached=detached)
+        launcher.launch(all_configs_and_contexts, campaign_id, output_dir,
+                        subdirs=subdirs, detached=detached)
 
     click.echo(f"Sweep campaign {campaign_id} complete ({len(combos)} jobs).")
 

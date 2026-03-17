@@ -1,6 +1,19 @@
 defaults:
   - scenario: sweep
+  #- override hydra/sweeper: optuna
+  - override hydra/sweeper: basic
   - _self_
+
+hydra:
+  sweeper:
+    #sampler:
+    #  _target_: optuna.samplers.GridSampler
+    #direction: maximize
+    #n_trials: 2
+    params:
+      scenario.growth_rate: choice(0.1, 0.3)
+      scenario.initial_population: choice(1)
+      trial: range(3)
 
 metadata:
   name: growth_sim
@@ -9,7 +22,6 @@ execution:
   image: ghcr.io/cps-test-lab/robovast:latest
   resources:
     cpu: 1
-  runs: 1
   env:
     - ENABLE_X11: "false"
   scenario_file: scenario.osc

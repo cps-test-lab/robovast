@@ -65,6 +65,7 @@ class K8sLauncher:
         configs_and_contexts: list[tuple[DictConfig, PipelineContext]],
         campaign_id: str,
         output_dir: Path,
+        subdirs: list[str] | None = None,
         detached: bool = False,
     ) -> dict:
         """Submit all configs as ONE K8s batch and wait for completion.
@@ -74,6 +75,7 @@ class K8sLauncher:
                 Each tuple represents one Hydra job = one set of pipeline params.
             campaign_id: Unique campaign identifier.
             output_dir: Directory for campaign output.
+            subdirs: Per-job subdirectory names within output_dir (multirun).
             detached: If True, submit and return without waiting.
 
         Returns:
@@ -94,6 +96,7 @@ class K8sLauncher:
         try:
             results = self._submit_and_wait(
                 configs_and_contexts, campaign_id, output_dir, cluster_cfg, detached,
+                subdirs=subdirs,
             )
             return results
 
@@ -114,6 +117,7 @@ class K8sLauncher:
         output_dir,
         cluster_cfg,
         detached,
+        subdirs=None,
     ):
         """Internal: prepare manifests, submit, wait."""
         # This will integrate with the existing JobRunner infrastructure.
