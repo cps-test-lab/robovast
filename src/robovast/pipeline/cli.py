@@ -54,8 +54,17 @@ def _compose_config(config_dir: str, config_name: str, overrides: tuple) -> Dict
     # Clear any previous Hydra state
     GlobalHydra.instance().clear()
 
+    # Apply robovast defaults that every config should have.
+    # Users can still override these via command-line arguments.
+    default_overrides = [
+        "hydra.run.dir=results/${hydra.job.name}/${now:%Y-%m-%d_%H%M%S}",
+        "hydra.sweep.dir=results/${hydra.job.name}/${now:%Y-%m-%d_%H%M%S}",
+        "hydra.sweep.subdir=${hydra.job.num}",
+    ]
+    all_overrides = default_overrides + list(overrides)
+
     with initialize_config_dir(config_dir=abs_config_dir, version_base=None):
-        cfg = compose(config_name=config_name, overrides=list(overrides))
+        cfg = compose(config_name=config_name, overrides=all_overrides)
 
     # Inject config dir and file so launcher can resolve paths
     OmegaConf.update(cfg, "_config_dir", abs_config_dir, force_add=True)
@@ -94,22 +103,22 @@ def run(config_dir, config_name, multirun, local, resolved, detached, overrides)
 
     \b
     Examples:
-      vast run                                          # single run
-      vast run -m pipeline.floorplan.seed=1,2,3         # sweep
-      vast run -m hydra/sweeper=optuna                  # optimization
-      vast run --local                                  # local Docker
-      vast run --resolved resolved/nav-1.yaml           # pre-resolved config
-      vast run -d configs/examples/basic_nav            # specific config dir
+      vast run                                               # single run
+      vast run --multirun pipeline.floorplan.seed=1,2,3      # sweep 3 seeds
+      vast run --multirun scenario.rate=0.3 pop=1,2,3        # fix+sweep
+      vast run --multirun hydra/sweeper=optuna               # optimization
+      vast run --local                                       # local Docker
+      vast run --resolved resolved/nav-1.yaml                # pre-resolved
+      vast run -d configs/examples/basic_nav                 # specific dir
     """
     if resolved:
         _run_resolved(resolved, local, detached)
         return
 
-    cfg = _compose_config(config_dir, config_name, overrides)
-
     if multirun:
-        _run_multirun(cfg, config_dir, config_name, overrides, local, detached)
+        _run_multirun(config_dir, config_name, overrides, local, detached)
     else:
+        cfg = _compose_config(config_dir, config_name, overrides)
         _run_single(cfg, local, detached)
 
 
@@ -149,42 +158,30 @@ def _run_single(cfg: DictConfig, local: bool, detached: bool):
     click.echo(f"Campaign {campaign_id} complete.")
 
 
-def _run_multirun(cfg, config_dir, config_name, overrides, local, detached):
+def _run_multirun(config_dir, config_name, overrides, local, detached):
     """Execute a multirun (sweep) campaign."""
-    # Parse multirun overrides to generate the parameter matrix
-    # Hydra's sweeper does this natively via its multirun infrastructure.
-    # For now, we implement basic grid sweep by parsing comma-separated values.
-    from hydra import compose, initialize_config_dir
-    from hydra.core.global_hydra import GlobalHydra
-    from hydra._internal.utils import create_config_search_path
-    import itertools
+    from hydra._internal.core_plugins.basic_sweeper import BasicSweeper
+    from hydra.core.override_parser.overrides_parser import OverridesParser
 
-    # Parse sweep overrides: find params with commas
-    sweep_params = {}
-    fixed_overrides = []
-    for override in overrides:
-        if '=' in override:
-            key, value = override.split('=', 1)
-            if ',' in value:
-                sweep_params[key] = value.split(',')
-            else:
-                fixed_overrides.append(override)
-        else:
-            fixed_overrides.append(override)
+    # Use Hydra's parser + BasicSweeper to generate all override combinations.
+    # Sweep syntax: key=a,b,c  or  key=range(1,10)
+    parsed = OverridesParser.create().parse_overrides(list(overrides))
 
-    if not sweep_params:
+    if not any(o.is_sweep_override() for o in parsed):
+        cfg = _compose_config(config_dir, config_name, overrides)
         click.echo("No sweep parameters found. Running single config.")
         _run_single(cfg, local, detached)
         return
 
-    # Generate Cartesian product of sweep parameters
-    keys = list(sweep_params.keys())
-    values = list(sweep_params.values())
-    combinations = list(itertools.product(*values))
+    # Returns List[List[List[str]]]: outer=chunks, middle=combos, inner=override strings.
+    # max_batch_size=None → single chunk containing all combos.
+    combos = BasicSweeper.split_arguments(parsed, max_batch_size=None)[0]
 
-    click.echo(f"Sweep: {' × '.join(f'{k}={len(v)}' for k, v in sweep_params.items())} "
-               f"= {len(combinations)} jobs")
+    click.echo(f"Sweep: {len(combos)} jobs")
 
+    # Compose base config (using only fixed overrides) to get metadata
+    fixed = [o.input_line for o in parsed if not o.is_sweep_override()]
+    cfg = _compose_config(config_dir, config_name, tuple(fixed))
     metadata = OmegaConf.to_container(cfg.get("metadata", {}), resolve=True)
     campaign_name = metadata.get("name", "campaign")
     timestamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
@@ -192,16 +189,13 @@ def _run_multirun(cfg, config_dir, config_name, overrides, local, detached):
 
     # Run pipeline for each combination and collect configs
     all_configs_and_contexts = []
-    for combo in combinations:
-        combo_overrides = list(fixed_overrides) + [
-            f"{k}={v}" for k, v in zip(keys, combo)
-        ]
+    for combo_overrides in combos:
         combo_cfg = _compose_config(config_dir, config_name, tuple(combo_overrides))
 
-        pipeline_output = Path(tempfile.mkdtemp(prefix=f"robovast_pipeline_"))
+        pipeline_output = Path(tempfile.mkdtemp(prefix="robovast_pipeline_"))
         ctx = _run_pipeline_for_config(combo_cfg, pipeline_output)
         all_configs_and_contexts.append((combo_cfg, ctx))
-        click.echo(f"  Resolved: {' '.join(f'{k}={v}' for k, v in zip(keys, combo))}")
+        click.echo(f"  Resolved: {' '.join(combo_overrides)}")
 
     output_dir = (Path("results") / campaign_id).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -223,7 +217,7 @@ def _run_multirun(cfg, config_dir, config_name, overrides, local, detached):
         launcher = K8sLauncher(cluster_config="default")
         launcher.launch(all_configs_and_contexts, campaign_id, output_dir, detached=detached)
 
-    click.echo(f"Sweep campaign {campaign_id} complete ({len(combinations)} jobs).")
+    click.echo(f"Sweep campaign {campaign_id} complete ({len(combos)} jobs).")
 
 
 def _run_resolved(resolved_path: str, local: bool, detached: bool):
@@ -293,40 +287,23 @@ def resolve(config_dir, config_name, output, overrides):
 
     \b
     Examples:
-      vast resolve                                       # resolve default config
-      vast resolve -m pipeline.floorplan.seed=1,2,3      # resolve sweep
-      vast resolve -o my_resolved/                       # custom output dir
+      vast resolve                                            # resolve default config
+      vast resolve pipeline.floorplan.seed=1,2,3             # resolve sweep (Hydra syntax)
+      vast resolve -o my_resolved/                           # custom output dir
     """
-    import itertools
+    from hydra._internal.core_plugins.basic_sweeper import BasicSweeper
+    from hydra.core.override_parser.overrides_parser import OverridesParser
 
-    # Parse sweep overrides
-    sweep_params = {}
-    fixed_overrides = []
-    for override in overrides:
-        if '=' in override:
-            key, value = override.split('=', 1)
-            if ',' in value:
-                sweep_params[key] = value.split(',')
-            else:
-                fixed_overrides.append(override)
-        else:
-            fixed_overrides.append(override)
-
-    if sweep_params:
-        keys = list(sweep_params.keys())
-        values = list(sweep_params.values())
-        combinations = list(itertools.product(*values))
+    parsed = OverridesParser.create().parse_overrides(list(overrides))
+    if any(o.is_sweep_override() for o in parsed):
+        combos = BasicSweeper.split_arguments(parsed, max_batch_size=None)[0]
     else:
-        combinations = [()]
-        keys = []
+        combos = [list(overrides)]
 
     os.makedirs(output, exist_ok=True)
     resolved_files = []
 
-    for i, combo in enumerate(combinations):
-        combo_overrides = list(fixed_overrides) + [
-            f"{k}={v}" for k, v in zip(keys, combo)
-        ]
+    for i, combo_overrides in enumerate(combos):
         cfg = _compose_config(config_dir, config_name, tuple(combo_overrides))
 
         # Run pipeline
@@ -345,7 +322,7 @@ def resolve(config_dir, config_name, output, overrides):
 
         # Write resolved YAML
         scenario_name = ctx.scenario_name
-        filename = f"{scenario_name}-{i}.yaml" if len(combinations) > 1 else f"{scenario_name}.yaml"
+        filename = f"{scenario_name}-{i}.yaml" if len(combos) > 1 else f"{scenario_name}.yaml"
         filepath = os.path.join(output, filename)
         with open(filepath, "w") as f:
             yaml.dump(resolved, f, default_flow_style=False, sort_keys=False, allow_unicode=True)

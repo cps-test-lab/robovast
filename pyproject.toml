@@ -5,10 +5,7 @@ description = "RoboVast project"
 authors = ["Frederik Pasch <fred-labs@mailbox.org>"]
 license = "Apache-2.0"
 readme = "README.md"
-packages = [
-    {include = "robovast", from = "src"},
-    {include = "hydra_plugins", from = "src"},
-]
+packages = [{include = "robovast", from = "src"}]
 
 [tool.poetry.dependencies]
 python = ">=3.12,<3.14"
