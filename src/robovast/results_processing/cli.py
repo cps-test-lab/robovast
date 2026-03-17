@@ -58,9 +58,6 @@ def results():
               help='Directory containing run results (uses project results dir if not specified)')
 @click.option('--force', '-f', is_flag=True,
               help='Force postprocessing even if results directory is unchanged (bypasses caching)')
-@click.option('--override', '-o', default=None, metavar='VAST_FILE',
-              help='Override the .vast file used for postprocessing instead of the one '
-                   'found in <campaign-name>-<timestamp>/_config/')
 @click.option('--debug', is_flag=True,
               help='Show full plugin output (stdout) for each postprocessing step.')
 @click.option('--skip-rosout', is_flag=True,
@@ -73,7 +70,7 @@ def results():
 @click.option('--skip-metadata', is_flag=True,
               help='Skip metadata.yaml generation.')
 @click.pass_context
-def postprocess_cmd(ctx, results_dir, force, override, debug, skip_rosout, skip_plugins, skip_db, skip_metadata):
+def postprocess_cmd(ctx, results_dir, force, debug, skip_rosout, skip_plugins, skip_db, skip_metadata):
     """Run postprocessing commands on run results.
 
     Executes postprocessing commands defined in the .vast file found in the
@@ -81,14 +78,12 @@ def postprocess_cmd(ctx, results_dir, force, override, debug, skip_rosout, skip_
     Postprocessing is skipped if the result-directory is unchanged,
     unless --force is specified.
 
-    Use --override to supply a .vast file explicitly instead of the campaign copy.
+    Use the global -V/--vast-file flag to supply a .vast file explicitly instead of
+    the one found in the campaign copy.
 
     Requires project initialization with ``vast init`` first (unless ``--results-dir`` is specified).
     """
     # Resolve results_dir from project config when not explicitly provided.
-    # postprocess never uses config_path from the project file (it always reads
-    # the .vast from <campaign-name>-<timestamp>/_config/ or --override), so only results_dir
-    # is needed and config_path validation is intentionally skipped.
     if results_dir is None:
         raw_config = ProjectConfig.load()
         if not raw_config or not raw_config.results_dir:
@@ -97,9 +92,9 @@ def postprocess_cmd(ctx, results_dir, force, override, debug, skip_rosout, skip_
             )
         results_dir = raw_config.results_dir
 
-    # Respect global -V flag if no --override is provided
-    vast_file = override
-    if vast_file is None and ctx.obj and 'vast_file' in ctx.obj:
+    # Use global -V flag if provided
+    vast_file = None
+    if ctx.obj and 'vast_file' in ctx.obj:
         vast_file = ctx.obj['vast_file']
 
     click.echo("Starting postprocessing...")
@@ -132,15 +127,12 @@ def postprocess_cmd(ctx, results_dir, force, override, debug, skip_rosout, skip_
 @results.command(name='publish')
 @click.option('--results-dir', '-r', default=None,
               help='Directory containing run results (uses project results dir if not specified)')
-@click.option('--override', '-o', default=None, metavar='VAST_FILE',
-              help='Override the .vast file used for publication instead of the one '
-                   'found in <campaign-name>-<timestamp>/_config/')
 @click.option('--force', '-f', is_flag=True,
               help='Overwrite existing output files without prompting.')
 @click.option('--skip-postprocessing', is_flag=True,
               help='Skip postprocessing and only run publication plugins.')
 @click.pass_context
-def publish_cmd(ctx, results_dir, override, force, skip_postprocessing):
+def publish_cmd(ctx, results_dir, force, skip_postprocessing):
     """Publish run results using configured publication plugins.
 
     Executes postprocessing plugins (unless ``--skip-postprocessing`` is used)
@@ -148,7 +140,8 @@ def publish_cmd(ctx, results_dir, override, force, skip_postprocessing):
     most recent ``<campaign-name>-<timestamp>/_config/`` directory of the results directory.
     Publication plugins handle packaging and distribution of results.
 
-    Use --override to supply a .vast file explicitly instead of the campaign copy.
+    Use the global -V/--vast-file flag to supply a .vast file explicitly instead of
+    the one found in the campaign copy.
     Use --force to overwrite existing output files without prompting.
     Use --skip-postprocessing to only run publication without postprocessing.
 
@@ -163,9 +156,9 @@ def publish_cmd(ctx, results_dir, override, force, skip_postprocessing):
             )
         results_dir = raw_config.results_dir
 
-    # Respect global -V flag if no --override is provided
-    vast_file = override
-    if vast_file is None and ctx.obj and 'vast_file' in ctx.obj:
+    # Use global -V flag if provided
+    vast_file = None
+    if ctx.obj and 'vast_file' in ctx.obj:
         vast_file = ctx.obj['vast_file']
 
     click.echo("Starting publication...")
