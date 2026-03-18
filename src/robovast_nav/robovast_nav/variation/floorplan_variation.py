@@ -288,8 +288,20 @@ class FloorplanGeneration(NavVariation):
         # Retrieve derived_from_files recorded in the _variations entry for this class
         # and prefix each path with <config-name>/_transient/ to make it campaign-relative.
         derived_from_files = []
+        floorplan_file = {}
         for v in config_entry.get("variations", []):
             if v.get("name") == cls.__name__:
+                # Get metadata from the floorplan model
+                fpm_file = v.get("fpm_file", "")[8:]
+                original_fpm_file = os.path.join(campaign_dir, "../..", fpm_file)
+                floorplan_file["file"] = v.get("fpm_file", "")
+                with open(original_fpm_file + ".yaml", "r") as f:
+                    fpm_md = yaml.safe_load(f)
+                    floorplan_file.update(**fpm_md)
+
+                extra["fpm_file"] = floorplan_file
+
+                # Process FloorPlan's JSON-LD models
                 derived_from_files = [
                     f"{config_name}/_transient/{rel}"
                     for rel in v.get("derived_from_files", [])
