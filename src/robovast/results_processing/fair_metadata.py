@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_DATASET_IRI = "https://purl.org/robovast/datasets/default/"
 
-SCENARIOS = Namespace("https://secorolab.github.io/metamodels/scenarios/osc/")
+SCENARIOS = Namespace("https://purl.org/secorolab/metamodels/scenarios/osc/")
 ROBOVAST = Namespace("https://purl.org/robovast/metamodels/")
 
 # JSON-LD context helpers
