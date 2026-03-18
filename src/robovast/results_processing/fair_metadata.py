@@ -84,15 +84,20 @@ def load_graph(file_path: str) -> "rdflib.Graph":
 def _build_iri_context(dataset_iri: str) -> dict:
     """Build the JSON-LD IRI context with the given dataset IRI."""
     return {
-        _CONTEXT: {
-            "agn": "https://secorolab.github.io/metamodels/agent#",
-            "smm": "https://secorolab.github.io/metamodels/scenarios#",
-            "env": "https://secorolab.github.io/metamodels/environment#",
-            "xsd": "http://www.w3.org/2001/XMLSchema#",
-            "prov": "http://www.w3.org/ns/prov#",
-            "dct": "http://purl.org/dc/terms/",
-            "dataset": dataset_iri,
-        }
+        _CONTEXT: [
+            "https://secorolab.github.io/metamodels/prov.json",
+            "https://secorolab.github.io/metamodels/metadata.json",
+            {
+                "agn": "https://purl.org/secorolab/metamodels/agent#",
+                "smm": "https://purl.org/secorolab/metamodels/scenarios/osc/",
+                "env": "https://purl.org/secorolab/metamodels/environment#",
+                "robovast": "https://purl.org/robovast/metamodels/",
+                "xsd": "http://www.w3.org/2001/XMLSchema#",
+                "prov": "http://www.w3.org/ns/prov#",
+                "dcterms": "http://purl.org/dc/terms/",
+                "dataset": dataset_iri,
+            }
+        ]
     }
 
 
