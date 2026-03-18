@@ -97,6 +97,7 @@ def _build_iri_context(dataset_iri: str) -> dict:
                 "prov": "http://www.w3.org/ns/prov#",
                 "dcterms": "http://purl.org/dc/terms/",
                 "dataset": dataset_iri,
+                "variations": {"@id": "robovast:variations", "@type": "@id"}
             }
         ]
     }
@@ -369,8 +370,8 @@ def generate_prov_metadata(
             var_node = {
                 _ID: campaign_ns[config_path + f"variations/{vtype_name}"],
                 _TYPE: [
-                    # PROV["Activity"],
-                    # ROBOVAST["Variation"],
+                    PROV["Activity"],
+                    ROBOVAST["Variation"],
                     ROBOVAST[vtype_name]
                 ],
                 "startedAtTime": vdata.get("started_at"),
@@ -382,7 +383,7 @@ def generate_prov_metadata(
                 continue
 
             scenario_node.update(contribution.scenario_properties)
-            scenario_node.setdefault(ROBOVAST["variations"], []).append(var_node[_ID])
+            scenario_node.setdefault("variations", []).append(var_node[_ID])
             graph.extend(contribution.graph_nodes)
             run_used_iris.extend(contribution.run_used_iris)
 
