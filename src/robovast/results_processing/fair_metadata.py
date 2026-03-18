@@ -408,11 +408,18 @@ def generate_prov_metadata(
             for out_f in run.get("output_files", []):
                 if out_f.endswith("csv") or out_f.startswith(rosbag2_prefix):
                     continue
-                graph.append({
-                    _ID: campaign_ns[out_f],
-                    _TYPE: PROV["Entity"],
-                    "wasGeneratedBy": run_activity[_ID]
-                })
+                art_type = [PROV["Entity"]]
+                if out_f.endswith("log"):
+                    art_type.append(ROBOVAST["LogFile"])
+                elif out_f.endswith("xml"):
+                    art_type.append(ROBOVAST["TestResult"])
+                graph.append(
+                    {
+                        _ID: campaign_ns[out_f],
+                        _TYPE: art_type,
+                        "wasGeneratedBy": run_activity[_ID],
+                    }
+                )
 
             # Rosbag2 entity (combines mcap files and metadata.yaml)
             rosbag2_meta = run.get("rosbag2")
@@ -481,7 +488,7 @@ def generate_prov_metadata(
 
             output_node = {
                 _ID: campaign_ns[output_path],
-                _TYPE: PROV["Entity"],
+                _TYPE: [PROV["Entity"], ROBOVAST["Traces"]],
                 "wasGeneratedBy": pp_activity[_ID],
             }
             if source_iris:
