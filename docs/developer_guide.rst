@@ -596,6 +596,7 @@ Load the metadata graph
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
 .. code-block:: python
+
   from rdflib import Graph
 
   g = Graph()
