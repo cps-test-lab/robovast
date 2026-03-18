@@ -21,7 +21,7 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from rdflib import Namespace, PROV, DCTERMS
+from rdflib import Namespace, PROV, DCTERMS, FOAF
 
 from robovast.common.variation.base_variation import ProvContribution
 
@@ -37,6 +37,7 @@ _ID = "@id"
 _TYPE = "@type"
 MAP_METADATA = Namespace("https://purl.org/secorolab/metamodels/environment#")
 ROBOVAST = Namespace("https://purl.org/robovast/metamodels/")
+ORCID = Namespace("https://orcid.org/")
 
 
 # Custom YAML loader that keeps timestamps as strings
@@ -199,10 +200,39 @@ class FloorplanGeneration(NavVariation):
         contrib.graph_nodes.append(fpm_activity)
 
         if fpm_ref:
-            contrib.graph_nodes.append({
+            fpm_md = config_entry.get("fpm_file", {})
+            fpm_node = {
                 _ID: fpm_ref,
-                _TYPE: [PROV["Entity"], MAP_METADATA["Environment"], MAP_METADATA["FloorPlanModel"]],
-            })
+                _TYPE: [
+                    PROV["Entity"],
+                    MAP_METADATA["Environment"],
+                    MAP_METADATA["FloorPlanModel"],
+                ],
+                "modified": fpm_md.get("updated_at"),
+                "license": fpm_md.get("license"),
+                "description": fpm_md.get("description"),
+                MAP_METADATA["map_location"]: fpm_md.get("map_location"),
+            }
+            agents = []
+            for a in fpm_md.get("authors", []):
+                agent = {
+                    _ID: cls._agent_orcid_id(a),
+                    _TYPE: [PROV["Agent"], PROV["Person"]],
+                    FOAF["name"]: a.get("name"),
+                }
+                agents.append(agent)
+                fpm_node.setdefault("creator", []).append(agent[_ID])
+            for c in fpm_md.get("contributors", []):
+                agent = {
+                    _ID: cls._agent_orcid_id(c),
+                    _TYPE: [PROV["Agent"], PROV["Person"]],
+                    FOAF["name"]: c.get("name"),
+                }
+                agents.append(agent)
+                fpm_node.setdefault("contributor", []).append(agent[_ID])
+
+            contrib.graph_nodes.append(fpm_node)
+            contrib.graph_nodes.extend(agents)
             contrib.graph_nodes.append({
                 _ID: vast_id,
                DCTERMS["references"]: fpm_ref
@@ -267,6 +297,15 @@ class FloorplanGeneration(NavVariation):
             contrib.run_used_iris.append(mesh_iri)
 
         return contrib
+
+    @classmethod
+    def _agent_orcid_id(cls, a):
+        if a.get("orcid"):
+            agent_id = ORCID[a.get("orcid")]
+        else:
+            agent_id = "_a0"
+
+        return agent_id
 
     @classmethod
     def collect_config_metadata(cls, config_entry: dict, config_dir: Path, campaign_dir: Path) -> dict:
