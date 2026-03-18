@@ -40,7 +40,7 @@ def get_scenery_builder_version():
         return None
     try:
         result = subprocess.run(
-            [script_path, '-v'],
+            [script_path, '--version'],
             capture_output=True, text=True, check=True
         )
         version = result.stdout.strip()
