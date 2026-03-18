@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 _ID = "@id"
 _TYPE = "@type"
 MAP_METADATA = Namespace("https://purl.org/secorolab/metamodels/environment#")
+ROBOVAST = Namespace("https://purl.org/robovast/metamodels/")
 
 
 # Custom YAML loader that keeps timestamps as strings
@@ -190,7 +191,7 @@ class FloorplanGeneration(NavVariation):
         fpm_activity_id = campaign_namespace[config_name + "/jsonld_generation/"]
         fpm_activity = {
             _ID: fpm_activity_id,
-            _TYPE: PROV["Activity"],
+            _TYPE: [PROV["Activity"], ROBOVAST["FloorPlanTransformation"]],
             "used": fpm_used,
             "wasAssociatedWith": "https://purl.org/secorolab/scenery_builder/",
             "wasInfluencedBy": gen_activity_id,
@@ -200,7 +201,7 @@ class FloorplanGeneration(NavVariation):
         if fpm_ref:
             contrib.graph_nodes.append({
                 _ID: fpm_ref,
-                _TYPE: PROV["Entity"],
+                _TYPE: [PROV["Entity"], MAP_METADATA["Environment"], MAP_METADATA["FloorPlanModel"]],
             })
 
         # JSON-LD derived files
@@ -214,7 +215,7 @@ class FloorplanGeneration(NavVariation):
         jsonld_activity_id = campaign_namespace[config_name + "/artefact_generation/"]
         jsonld_activity = {
             _ID: jsonld_activity_id,
-            _TYPE: PROV["Activity"],
+            _TYPE: [PROV["Activity"], ROBOVAST["FloorPlanGeneration"]],
             "used": json_files,
             "wasAssociatedWith": "https://purl.org/secorolab/scenery_builder/",
             "wasInfluencedBy": [gen_activity_id, fpm_activity_id],
@@ -224,7 +225,7 @@ class FloorplanGeneration(NavVariation):
         for j in json_files:
             contrib.graph_nodes.append({
                 _ID: j,
-                _TYPE: PROV["Entity"],
+                _TYPE: [PROV["Entity"], MAP_METADATA["Environment"], MAP_METADATA["FloorPlanGraphModel"]],
                 "wasGeneratedBy": fpm_activity_id,
             })
 
@@ -234,13 +235,13 @@ class FloorplanGeneration(NavVariation):
             pgm_iri = campaign_namespace[map_file.replace("yaml", "pgm")]
             contrib.graph_nodes.append({
                 _ID: pgm_iri,
-                _TYPE: PROV["Entity"],
+                _TYPE: [PROV["Entity"], MAP_METADATA["OccupancyGrid"]],
                 "wasGeneratedBy": jsonld_activity_id,
             })
             map_iri = campaign_namespace[map_file]
             contrib.graph_nodes.append({
                 _ID: map_iri,
-                _TYPE: PROV["Entity"],
+                _TYPE: [PROV["Entity"], MAP_METADATA["Metadata"]],
                 "wasGeneratedBy": jsonld_activity_id,
                 MAP_METADATA["resolution"]: map_file_md.get("resolution"),
                 "references": pgm_iri,
@@ -255,7 +256,7 @@ class FloorplanGeneration(NavVariation):
             mesh_iri = campaign_namespace[mesh_file]
             contrib.graph_nodes.append({
                 _ID: mesh_iri,
-                _TYPE: PROV["Entity"],
+                _TYPE: [PROV["Entity"], MAP_METADATA["Mesh3D"]],
                 "wasGeneratedBy": jsonld_activity_id,
                 "generatedAt": mesh_file_md.get("created_at"),
             })

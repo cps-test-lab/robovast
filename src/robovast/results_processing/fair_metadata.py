@@ -246,7 +246,7 @@ def generate_prov_metadata(
     # --- Campaign activity and entity ---
     campaign_activity = {
         _ID: dataset_ns[campaign + "execution/"],
-        _TYPE: [PROV["Activity"], ROBOVAST[metadata["execution"]["execution_type"].capitalize()]],
+        _TYPE: [PROV["Activity"], ROBOVAST["CampaignExecution"], ROBOVAST[metadata["execution"]["execution_type"].capitalize()]],
         "started_at": metadata["execution"]["execution_time"],
         "wasAssociatedWith": "https://purl.org/robovast/",
         ROBOVAST["runs"]: metadata["execution"]["runs"]
@@ -255,7 +255,7 @@ def generate_prov_metadata(
 
     campaign_entity = {
         _ID: dataset_ns[campaign],
-        _TYPE: PROV["Entity"],
+        _TYPE: [PROV["Entity"], ROBOVAST["Campaign"]],
         "wasGeneratedBy": campaign_activity[_ID]
     }
     graph.append(campaign_entity)
@@ -291,7 +291,7 @@ def generate_prov_metadata(
 
     gen_activity = {
         _ID: dataset_ns[campaign + "config_generation"],
-        _TYPE: [PROV["Activity"]],
+        _TYPE: [PROV["Activity"], ROBOVAST["ConfigGeneration"]],
         "used": [vast_config[_ID], abstract_scenario[_ID]],
         "wasInfluencedBy": campaign_activity[_ID]
     }
@@ -377,7 +377,7 @@ def generate_prov_metadata(
 
             run_activity = {
                 _ID: campaign_ns[run["dir"]],
-                _TYPE: PROV["Activity"],
+                _TYPE: [PROV["Activity"], ROBOVAST["TestExecution"]],
                 "used": run_used_iris,
                 ROBOVAST["success"]: run.get("success"),
                 "startedAt": run.get("start_time"),
@@ -426,7 +426,7 @@ def generate_prov_metadata(
 
                 rosbag2_node = {
                     _ID: rosbag2_iri,
-                    _TYPE: PROV["Entity"],
+                    _TYPE: [PROV["Entity"], ROBOVAST["ROSBag"]],
                     "wasGeneratedBy": run_activity[_ID],
                     PROV["hadMember"]: rosbag2_parts,
                 }
@@ -439,7 +439,7 @@ def generate_prov_metadata(
                 for part_iri in rosbag2_parts:
                     graph.append({
                         _ID: part_iri,
-                        _TYPE: PROV["Entity"],
+                        _TYPE: [PROV["Entity"], ROBOVAST["BagFile"]],
                         "wasGeneratedBy": run_activity[_ID],
                     })
 
