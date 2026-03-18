@@ -293,7 +293,8 @@ def generate_prov_metadata(
         _ID: dataset_ns[campaign + "config_generation"],
         _TYPE: [PROV["Activity"], ROBOVAST["ConfigGeneration"]],
         "used": [vast_config[_ID], abstract_scenario[_ID]],
-        "wasInfluencedBy": campaign_activity[_ID]
+        "wasInfluencedBy": campaign_activity[_ID],
+        "wasAssociatedWith": "https://purl.org/robovast/",
     }
     graph.append(gen_activity)
 
