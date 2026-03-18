@@ -54,6 +54,7 @@ _DEFAULT_DATASET_IRI = "https://purl.org/robovast/datasets/default/"
 
 SCENARIOS = Namespace("https://purl.org/secorolab/metamodels/scenarios/osc/")
 ROBOVAST = Namespace("https://purl.org/robovast/metamodels/")
+MAP_METADATA = Namespace("https://purl.org/secorolab/metamodels/environment#")
 
 # JSON-LD context helpers
 _ID = "@id"
@@ -380,6 +381,46 @@ def generate_prov_metadata(
             scenario_node.setdefault(ROBOVAST["variations"], []).append(var_node[_ID])
             graph.extend(contribution.graph_nodes)
             run_used_iris.extend(contribution.run_used_iris)
+
+        for pdata in config_md.get("parameters", []):
+            name = pdata.get("name", "")
+            if name == "map_file":
+                # Map file entity
+                map_file = name
+                pgm_iri = campaign_ns[map_file.replace("yaml", "pgm")]
+                graph.append(
+                    {
+                        _ID: pgm_iri,
+                        _TYPE: [PROV["Entity"], MAP_METADATA["OccupancyGrid"]],
+                    }
+                )
+                map_iri = campaign_ns[map_file]
+                map_file_md = config_md.get("map_file", {})
+                graph.append(
+                    {
+                        _ID: map_iri,
+                        _TYPE: [PROV["Entity"], MAP_METADATA["Metadata"]],
+                        MAP_METADATA["resolution"]: map_file_md.get("resolution"),
+                        "references": pgm_iri,
+                        "generatedAt": map_file_md.get("updated_at"),
+                    }
+                )
+                run_used_iris.append(map_iri)
+                scenario_node.setdefault(ROBOVAST["references"], []).append(map_iri)
+            elif name == "mesh_file":
+                # Mesh file entity
+                mesh_file = name
+                mesh_file_md = config_md.get("mesh_file", {})
+                mesh_iri = campaign_ns[mesh_file]
+                graph.append(
+                    {
+                        _ID: mesh_iri,
+                        _TYPE: [PROV["Entity"], MAP_METADATA["Mesh3D"]],
+                        "generatedAt": mesh_file_md.get("created_at"),
+                    }
+                )
+                run_used_iris.append(mesh_iri)
+                scenario_node.setdefault(ROBOVAST["references"], []).append(mesh_iri)
 
         graph.append(scenario_node)
 
