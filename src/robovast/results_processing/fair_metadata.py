@@ -362,6 +362,7 @@ def generate_prov_metadata(
                 )
                 continue
 
+            end_t = dt.datetime.fromisoformat(vdata.get("started_at")) + dt.timedelta(seconds=vdata.get("duration"))
             var_node = {
                 _ID: campaign_ns[config_path + f"variations/{vtype_name}"],
                 _TYPE: [
@@ -370,7 +371,7 @@ def generate_prov_metadata(
                     ROBOVAST[vtype_name]
                 ],
                 "startedAtTime": vdata.get("started_at"),
-                "endedAtTime": dt.datetime.fromisoformat(vdata.get("started_at")) + dt.timedelta(seconds=vdata.get("duration"))
+                "endedAtTime": end_t.isoformat(),
             }
             graph.append(var_node)
 
