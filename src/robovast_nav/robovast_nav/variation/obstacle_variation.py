@@ -211,7 +211,7 @@ class ObstacleVariation(NavVariation):
     GUI_RENDERER_CLASS = ObstacleVariationGuiRenderer
 
     @classmethod
-    def collect_prov_metadata(cls, config_entry, campaign_namespace, config_namespace, gen_activity_id):
+    def collect_prov_metadata(cls, config_entry, campaign_namespace, config_namespace, gen_activity_id, vast_id):
         """Contribute obstacle count to the PROV scenario node."""
         config_cfg = config_entry.get("config", {})
         objects_parameter_name = config_entry.get("_objects_parameter_name", "")

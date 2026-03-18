@@ -357,6 +357,7 @@ graph.
            campaign_namespace,   # rdflib.Namespace for the campaign
            config_namespace,     # rdflib.Namespace for this config
            gen_activity_id: str, # IRI of the config-generation activity
+           vast_id: str, # IRI of the vast file that contains it
        ):
            """Contribute domain-specific PROV-O nodes."""
            from rdflib import PROV, Namespace

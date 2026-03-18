@@ -337,6 +337,7 @@ def generate_prov_metadata(
                     campaign_namespace=campaign_ns,
                     config_namespace=config_ns,
                     gen_activity_id=gen_activity[_ID],
+                    vast_id=vast_config[_ID]
                 )
             except Exception as e:
                 logger.warning(

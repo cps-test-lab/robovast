@@ -21,7 +21,7 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from rdflib import Namespace, PROV
+from rdflib import Namespace, PROV, DCTERMS
 
 from robovast.common.variation.base_variation import ProvContribution
 
@@ -167,7 +167,7 @@ class FloorplanGeneration(NavVariation):
     CONFIG_CLASS = FloorplanGenerationConfig
 
     @classmethod
-    def collect_prov_metadata(cls, config_entry, campaign_namespace, config_namespace, gen_activity_id):
+    def collect_prov_metadata(cls, config_entry, campaign_namespace, config_namespace, gen_activity_id, vast_id):
         """Contribute floorplan-specific PROV-O nodes (map/mesh entities, generation activities)."""
         contrib = ProvContribution()
         config_cfg = config_entry.get("config", {})
@@ -202,6 +202,10 @@ class FloorplanGeneration(NavVariation):
             contrib.graph_nodes.append({
                 _ID: fpm_ref,
                 _TYPE: [PROV["Entity"], MAP_METADATA["Environment"], MAP_METADATA["FloorPlanModel"]],
+            })
+            contrib.graph_nodes.append({
+                _ID: vast_id,
+               DCTERMS["references"]: fpm_ref
             })
 
         # JSON-LD derived files
