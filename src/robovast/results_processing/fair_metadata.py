@@ -321,7 +321,12 @@ def generate_prov_metadata(
             _TYPE: [PROV["Entity"], SCENARIOS["ConcreteScenario"]],
             "wasGeneratedBy": gen_activity[_ID],
             PROV["specializationOf"]: {_ID: abstract_scenario[_ID]},
+            PROV["atLocation"]: campaign_ns[config_path+"_config/scenario.config"],
         }
+        graph.append({
+            _ID: campaign_ns[config_path+"_config/scenario.config"],
+            _TYPE: [PROV["Location"]]
+        })
 
         # Collect domain-specific PROV contributions from variation plugins
         run_used_iris = [scenario_node[_ID]]
