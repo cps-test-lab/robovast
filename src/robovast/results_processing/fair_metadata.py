@@ -490,7 +490,7 @@ def generate_prov_metadata(
 
                 rosbag2_node = {
                     _ID: rosbag2_iri,
-                    _TYPE: [PROV["Entity"], ROBOVAST["ROSBag"]],
+                    _TYPE: [PROV["Collection"], ROBOVAST["ROSBag"]],
                     "wasGeneratedBy": run_activity[_ID],
                     PROV["hadMember"]: rosbag2_parts,
                 }
@@ -501,9 +501,14 @@ def generate_prov_metadata(
                 graph.append(rosbag2_node)
 
                 for part_iri in rosbag2_parts:
+                    part_type = [PROV["Entity"]]
+                    if part_iri.endswith(".mcap"):
+                        part_type.append(ROBOVAST["MCAPFile"])
+                    elif part_iri.endswith(".yaml"):
+                        part_type.append(ROBOVAST["BagFile#Metadata"])
                     graph.append({
                         _ID: part_iri,
-                        _TYPE: [PROV["Entity"], ROBOVAST["BagFile"]],
+                        _TYPE: part_type,
                         "wasGeneratedBy": run_activity[_ID],
                     })
 
@@ -533,6 +538,9 @@ def generate_prov_metadata(
             source_iris = []
             for src in sources:
                 src_path = src[3:] if src.startswith("../") else src
+                if src_path.endswith("rosbag2"):
+                    # IRIS must end in / to match the rosbag2 collection above
+                    src_path = src_path + "/"
                 source_iris.append(campaign_ns[src_path])
 
             output_node = {
