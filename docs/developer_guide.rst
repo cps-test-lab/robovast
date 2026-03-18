@@ -653,6 +653,7 @@ Generation
 FloorPlan Model-to-Model Transformation:
 
 .. code-block:: sparql
+
     SELECT ?floorplan ?activity ?jsonld_file ?agent
     WHERE {
         ?floorplan rdf:type env:FloorPlanModel .
@@ -665,6 +666,7 @@ FloorPlan Model-to-Model Transformation:
 FloorPlan Artefact Generation:
 
 .. code-block:: sparql
+
     SELECT ?source_files ?activity ?gen_file ?agent
     WHERE {
         ?activity rdf:type robovast:FloorPlanGeneration .
@@ -676,6 +678,7 @@ FloorPlan Artefact Generation:
 Generation of Concrete Scenario
 
 .. code-block:: sparql
+
     SELECT ?vast_file ?ref_file ?activity ?agent ?gen_file
     WHERE {
         ?vast_file rdf:type robovast:VastConfiguration .
@@ -690,6 +693,7 @@ Test Execution
 Test results generated from a test run:
 
 .. code-block:: sparql
+
     SELECT ?scenario ?config_files ?activity ?agent ?gen_file ?start_time ?end_time
     WHERE {
         ?scenario rdf:type smm:ConcreteScenario .
@@ -706,6 +710,7 @@ Postprocessing
 Postprocessing of a bagfile:
 
 .. code-block:: sparql
+
     SELECT ?bag_file ?activity ?agent ?gen_file ?start_time ?end_time
     WHERE {
         ?bag_file rdf:type robovast:ROSBag .
@@ -720,6 +725,7 @@ Postprocessing of a bagfile:
 Metadata and Graph postprocessing:
 
 .. code-block:: sparql
+
     SELECT ?metadata_file ?graph_file ?md_activity ?graph_activity ?agent ?start_time ?end_time
     WHERE {
         ?md_activity rdf:type robovast:PostprocessingMetadata .
@@ -739,7 +745,8 @@ Analysis
 Identifying which variation types were used on each config:
 
 .. code-block:: sparql
-    SELECT DISTINCT ?config ?variation ?variation_type
+
+    SELECT DISTINCT ?config ?variation_type
     WHERE {
         ?config rdf:type smm:ConcreteScenario .
         ?config robovast:variations ?variation .
