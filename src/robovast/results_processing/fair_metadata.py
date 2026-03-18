@@ -29,7 +29,7 @@ hook.
 
 Requires: ``rdflib`` and ``pyld``.
 """
-
+import datetime as dt
 import json
 import logging
 import os
@@ -340,10 +340,23 @@ def generate_prov_metadata(
                 )
                 continue
 
+            var_node = {
+                _ID: campaign_ns[config_path + f"variations/{vtype_name}"],
+                _TYPE: [
+                    # PROV["Activity"],
+                    # ROBOVAST["Variation"],
+                    ROBOVAST[vtype_name]
+                ],
+                "startedAtTime": vdata.get("started_at"),
+                "endedAtTime": dt.datetime.fromisoformat(vdata.get("started_at")) + dt.timedelta(seconds=vdata.get("duration"))
+            }
+            graph.append(var_node)
+
             if contribution is None:
                 continue
 
             scenario_node.update(contribution.scenario_properties)
+            scenario_node.setdefault(ROBOVAST["variations"], []).append(var_node[_ID])
             graph.extend(contribution.graph_nodes)
             run_used_iris.extend(contribution.run_used_iris)
 
