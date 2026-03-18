@@ -471,7 +471,6 @@ def generate_prov_metadata(
             "wasAssociatedWith": "https://purl.org/robovast/",
             "wasInfluencedBy": campaign_activity[_ID],
         }
-        graph.append(pp_activity)
 
         for pp_entry in pp_entries:
             output_path = pp_entry.get("output", "")
@@ -493,10 +492,13 @@ def generate_prov_metadata(
             }
             if source_iris:
                 output_node["wasDerivedFrom"] = source_iris
+                pp_activity.setdefault("used", []).extend(source_iris)
             plugin_name = pp_entry.get("plugin")
             if plugin_name:
                 output_node[ROBOVAST["plugin"]] = plugin_name
             graph.append(output_node)
+
+        graph.append(pp_activity)
 
     # Compact the JSON-LD graph
     document = {"@graph": graph}
