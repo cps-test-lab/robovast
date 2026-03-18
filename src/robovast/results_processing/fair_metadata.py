@@ -220,6 +220,7 @@ def generate_prov_metadata(
     Returns:
         Tuple of ``(success, message)``.
     """
+    start_t = dt.datetime.now().isoformat()
     campaign_dir = Path(campaign_dir)
     campaign = campaign_dir.name + "/"
 
@@ -558,6 +559,39 @@ def generate_prov_metadata(
             graph.append(output_node)
 
         graph.append(pp_activity)
+
+        # --- Postprocessing metadata and provenance activities ---
+        metadata_activity = {
+            _ID: campaign_ns["postprocessing/metadata/"],
+            _TYPE: [PROV["Activity"], ROBOVAST["PostprocessingMetadata"]],
+            "wasAssociatedWith": "https://purl.org/robovast/",
+            "wasInfluencedBy": pp_activity[_ID],
+            "used": campaign_entity[_ID],
+        }
+        metadata_node = {
+            _ID: campaign_ns["metadata.yaml"],
+            _TYPE: [PROV["Entity"], ROBOVAST["Campaign#Metadata"]],
+            "wasGeneratedBy": metadata_activity[_ID],
+        }
+        graph_activity = {
+            _ID: campaign_ns["postprocessing/graph/"],
+            _TYPE: [PROV["Activity"], ROBOVAST["PostprocessingGraph"]],
+            "wasAssociatedWith": "https://purl.org/robovast/",
+            "wasInfluencedBy": metadata_activity[_ID],
+            "used": metadata_node[_ID],
+            "startedAtTime": start_t,
+            "endedAtTime": dt.datetime.now().isoformat(),
+        }
+        graph.append({
+            _ID: campaign_ns["metadata.prov.json"],
+            _TYPE: [PROV["Entity"], ROBOVAST["Campaign#Graph"]],
+            "wasGeneratedBy": graph_activity[_ID],
+            "wasDerivedFrom": metadata_node[_ID],
+        })
+
+        graph.append(metadata_node)
+        graph.append(metadata_activity)
+        graph.append(graph_activity)
 
     # Compact the JSON-LD graph
     document = {"@graph": graph}
