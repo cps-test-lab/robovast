@@ -382,8 +382,8 @@ def generate_prov_metadata(
                 _TYPE: [PROV["Activity"], ROBOVAST["TestExecution"]],
                 "used": run_used_iris,
                 ROBOVAST["success"]: run.get("success"),
-                "startedAt": run.get("start_time"),
-                "endedAt": run.get("end_time"),
+                "startedAtTime": run.get("start_time"),
+                "endedAtTime": run.get("end_time"),
                 "wasAssociatedWith": ["https://purl.org/robovast/"],
                 ROBOVAST["sysinfo"]: {_ID: sys_info[_ID]}
             }
