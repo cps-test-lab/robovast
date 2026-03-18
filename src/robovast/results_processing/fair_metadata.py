@@ -105,7 +105,7 @@ def _build_agents(
     agents_config: List[dict],
     run_files: list,
     campaign_ns: Namespace,
-) -> Tuple[list, list]:
+) -> Tuple[list, list, list]:
     """Build PROV Agent nodes from the agents configuration.
 
     Each agent's ``configuration_files`` (paths relative to the configuration
@@ -136,6 +136,7 @@ def _build_agents(
     ]
 
     agent_nodes: list = []
+    agent_loading: list = []
     plan_nodes: list = []
     for agent_cfg in agents_config:
         agent_cfg = dict(agent_cfg)
@@ -157,25 +158,31 @@ def _build_agents(
 
         agent_node: dict = {
             _ID: campaign_ns[agent_id],
-            _TYPE: PROV["Agent"],
+            _TYPE: PROV["SoftwareAgent"],
+        }
+        agent_load: dict = {
+            _ID: campaign_ns[agent_id+"/load/"],
+            _TYPE: PROV["Activity"],
+            "wasAssociatedWith": agent_node[_ID],
         }
         if agent_plan_iris:
             # One aggregate plan entity per agent: agent → plan → files
-            plan_iri = campaign_ns[f"plans/{agent_id}-plan"]
+            plan_iri = campaign_ns[f"config/{agent_id}-config"]
             plan_node = {
                 _ID: plan_iri,
-                _TYPE: [PROV["Entity"], PROV["Plan"]],
+                _TYPE: [PROV["Entity"], PROV["Collection"]],
                 PROV["hadMember"]: agent_plan_iris,
             }
             plan_nodes.append(plan_node)
-            agent_node[PROV["hadPlan"]] = plan_iri
+            agent_load[PROV["used"]] = plan_iri
+            agent_loading.append(agent_load)
 
         # Remaining keys become properties on the agent node
         for k, v in agent_cfg.items():
             agent_node[ROBOVAST[k]] = v
         agent_nodes.append(agent_node)
 
-    return agent_nodes, location_nodes + plan_nodes
+    return agent_nodes, location_nodes + plan_nodes, agent_loading
 
 
 def generate_prov_metadata(
@@ -261,10 +268,12 @@ def generate_prov_metadata(
     graph.append(campaign_entity)
 
     # --- Agent nodes (robots, manipulators, etc.) ---
-    agent_nodes, location_nodes = _build_agents(
+    agent_nodes, location_nodes, agent_loads = _build_agents(
         agents_config, metadata.get("run_files", []), campaign_ns,
     )
     graph.extend(location_nodes)
+    graph.extend(agent_loads)
+    #TODO TestRun uses robot+simulator config
 
     # --- Scenario and config generation ---
     scenario_file = metadata.get("scenario_file", "scenario.osc")
