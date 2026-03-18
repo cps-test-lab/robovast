@@ -106,7 +106,7 @@ def _build_agents(
     agents_config: List[dict],
     run_files: list,
     campaign_ns: Namespace,
-) -> Tuple[list, list, list]:
+) -> Tuple[list, list, list, list]:
     """Build PROV Agent nodes from the agents configuration.
 
     Each agent's ``configuration_files`` (paths relative to the configuration
@@ -183,7 +183,7 @@ def _build_agents(
             agent_node[ROBOVAST[k]] = v
         agent_nodes.append(agent_node)
 
-    return agent_nodes, location_nodes + plan_nodes, agent_loading
+    return agent_nodes, location_nodes, plan_nodes, agent_loading
 
 
 def generate_prov_metadata(
@@ -270,12 +270,12 @@ def generate_prov_metadata(
     graph.append(campaign_entity)
 
     # --- Agent nodes (robots, manipulators, etc.) ---
-    agent_nodes, location_nodes, agent_loads = _build_agents(
+    agent_nodes, location_nodes, config_collections, agent_loads = _build_agents(
         agents_config, metadata.get("run_files", []), campaign_ns,
     )
+    graph.extend(config_collections)
     graph.extend(location_nodes)
     graph.extend(agent_loads)
-    #TODO TestRun uses robot+simulator config
 
     # --- Scenario and config generation ---
     scenario_file = metadata.get("scenario_file", "scenario.osc")
@@ -341,6 +341,8 @@ def generate_prov_metadata(
 
         # Collect domain-specific PROV contributions from variation plugins
         run_used_iris = [scenario_node[_ID]]
+        for agn_config in config_collections:
+            run_used_iris.append(agn_config[_ID])
 
         for vdata in config_md.get("variations", []):
             vtype_name = vdata.get("name", "")
