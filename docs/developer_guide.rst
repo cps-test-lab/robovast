@@ -585,3 +585,165 @@ Then register the class as an entry point in ``pyproject.toml``:
    my_plugin = "my_package.mcp_plugin:MyMCPPlugin"
 
 The plugin is picked up automatically the next time the server starts.
+
+
+Querying RoboVAST campaigns
+------------------
+
+Using [rdflib](), you can query the generated metadata graph using [SPARQL]().
+
+Load the metadata graph
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. code-block:: python
+  from rdflib import Graph
+
+  g = Graph()
+  g.parse("metadata.prov.json)
+
+
+
+Loading SPARQL queries
+^^^^^^^^^^^^^^^^^^^^^^^
+
+To do so, you can load any of the queries below as text, and use the `query` method for any graph `g`:
+
+.. code-block:: python
+
+  with open("query-file.rq", "r") as f:
+    query_string = f.read()
+
+  qres = g.query(query_string)
+  for row in qres:
+    # Process your results
+    print(row)
+
+Below are a few example queries demonstrating the PROV relationships in the metadata graph.
+
+Scenario inputs
+^^^^^^^^^^^^
+
+FloorPlan models:
+
+.. code-block:: sparql
+
+   SELECT ?floorplan ?creator ?date
+   WHERE {
+        ?floorplan rdf:type env:FloorPlanModel .
+        OPTIONAL {?floorplan prov:wasAttributedTo ?creator .}
+        OPTIONAL {?floorplan dcterms:modified ?date .}
+  }
+
+Vast file:
+
+.. code-block:: sparql
+
+    SELECT ?vast_file ?creator ?date ?abstract_scenario
+    WHERE {
+        ?vast_file rdf:type robovast:VastConfiguration .
+        ?vast_file dcterms:references ?abstract_scenario .
+        ?abstract_scenario rdf:type scenarios:AbstractScenario .
+        OPTIONAL {?vast_file prov:wasAttributedTo ?creator .}
+        OPTIONAL {?vast_file dcterms:modified ?date .}
+    }
+
+Generation
+^^^^^^^^^^^
+
+FloorPlan Model-to-Model Transformation:
+
+.. code-block:: sparql
+    SELECT ?floorplan ?activity ?jsonld_file ?agent
+    WHERE {
+        ?floorplan rdf:type env:FloorPlanModel .
+        ?activity rdf:type robovast:FloorPlanTransformation .
+        ?activity prov:used ?floorplan .
+        ?jsonld_file prov:wasGeneratedBy ?activity .
+        OPTIONAL {?activity prov:wasAssociatedWith ?agent .}
+    }
+
+FloorPlan Artefact Generation:
+
+.. code-block:: sparql
+    SELECT ?source_files ?activity ?gen_file ?agent
+    WHERE {
+        ?activity rdf:type robovast:FloorPlanGeneration .
+        ?activity prov:used ?source_files .
+        ?gen_file prov:wasGeneratedBy ?activity .
+        OPTIONAL {?activity prov:wasAssociatedWith ?agent .}
+    }
+
+Generation of Concrete Scenario
+
+.. code-block:: sparql
+    SELECT ?vast_file ?ref_file ?activity ?agent ?gen_file
+    WHERE {
+        ?vast_file rdf:type robovast:VastConfiguration .
+        ?activity prov:used ?vast_file .
+        ?vast_file dcterms:references ?ref_file .
+        ?gen_file prov:wasGeneratedBy ?activity .
+        OPTIONAL {?activity prov:wasAssociatedWith ?agent .}
+
+Test Execution
+^^^^^^^^^^^^^^
+
+Test results generated from a test run:
+
+.. code-block:: sparql
+    SELECT ?scenario ?config_files ?activity ?agent ?gen_file ?start_time ?end_time
+    WHERE {
+        ?scenario rdf:type smm:ConcreteScenario .
+        ?activity prov:used ?scenario .
+        ?activity prov:used ?config_files .
+        OPTIONAL{?activity prov:startedAtTime ?start_time .}
+        OPTIONAL{ ?activity prov:endedAtTime ?end_time . }
+        ?gen_file prov:wasGeneratedBy ?activity .
+        OPTIONAL {?activity prov:wasAssociatedWith ?agent .}
+
+Postprocessing
+^^^^^^^^^^^^^^^^^
+
+Postprocessing of a bagfile:
+
+.. code-block:: sparql
+    SELECT ?bag_file ?activity ?agent ?gen_file ?start_time ?end_time
+    WHERE {
+        ?bag_file rdf:type robovast:ROSBag .
+        ?activity prov:used ?bag_file .
+        ?gen_file prov:wasGeneratedBy ?activity .
+        OPTIONAL {?activity prov:wasAssociatedWith ?agent .}
+        OPTIONAL{?activity prov:startedAtTime ?start_time .}
+        OPTIONAL{ ?activity prov:endedAtTime ?end_time . }
+    }
+
+
+Metadata and Graph postprocessing:
+
+.. code-block:: sparql
+    SELECT ?metadata_file ?graph_file ?md_activity ?graph_activity ?agent ?start_time ?end_time
+    WHERE {
+        ?md_activity rdf:type robovast:PostprocessingMetadata .
+        ?graph_activity rdf:type robovast:PostprocessingGraph .
+        ?metadata_file prov:wasGeneratedBy ?md_activity .
+        ?graph_file prov:wasGeneratedBy ?graph_activity .
+        ?graph_activity prov:used ?metadata_file
+        OPTIONAL {?md_activity prov:wasAssociatedWith ?agent .
+        ?graph_activity prov:wasAssociatedWith ?agent .}
+        OPTIONAL{?md_activity prov:startedAtTime ?start_time .}
+        OPTIONAL{ ?md_activity prov:endedAtTime ?end_time . }
+    }
+
+Analysis
+^^^^^^^^^^
+
+Identifying which variation types were used on each config:
+
+.. code-block:: sparql
+    SELECT DISTINCT ?config ?variation ?variation_type
+    WHERE {
+        ?config rdf:type smm:ConcreteScenario .
+        ?config robovast:variations ?variation .
+        ?variation rdf:type ?variation_type .
+        FILTER (?variation_type != prov:Activity)
+        FILTER (?variation_type != robovast:Variation)
+    }
