@@ -588,9 +588,9 @@ The plugin is picked up automatically the next time the server starts.
 
 
 Querying RoboVAST campaigns
-------------------
+---------------------------
 
-Using [rdflib](), you can query the generated metadata graph using [SPARQL]().
+Using [rdflib](https://rdflib.readthedocs.io/), you can query the generated metadata graph using [SPARQL](https://www.w3.org/TR/sparql11-query/).
 
 Load the metadata graph
 ^^^^^^^^^^^^^^^^^^^^^^^^
@@ -622,7 +622,7 @@ To do so, you can load any of the queries below as text, and use the `query` met
 Below are a few example queries demonstrating the PROV relationships in the metadata graph.
 
 Scenario inputs
-^^^^^^^^^^^^
+^^^^^^^^^^^^^^^
 
 FloorPlan models:
 
@@ -706,7 +706,7 @@ Test results generated from a test run:
         OPTIONAL {?activity prov:wasAssociatedWith ?agent .}
 
 Postprocessing
-^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^
 
 Postprocessing of a bagfile:
 
@@ -741,7 +741,7 @@ Metadata and Graph postprocessing:
     }
 
 Analysis
-^^^^^^^^^^
+^^^^^^^^
 
 Identifying which variation types were used on each config:
 
