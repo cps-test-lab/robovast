@@ -29,7 +29,7 @@ hook.
 
 Requires: ``rdflib`` and ``pyld``.
 """
-
+import datetime as dt
 import json
 import logging
 import os
@@ -52,8 +52,9 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_DATASET_IRI = "https://purl.org/robovast/datasets/default/"
 
-SCENARIOS = Namespace("https://secorolab.github.io/metamodels/scenarios/osc/")
+SCENARIOS = Namespace("https://purl.org/secorolab/metamodels/scenarios/osc/")
 ROBOVAST = Namespace("https://purl.org/robovast/metamodels/")
+MAP_METADATA = Namespace("https://purl.org/secorolab/metamodels/environment#")
 
 # JSON-LD context helpers
 _ID = "@id"
@@ -84,15 +85,21 @@ def load_graph(file_path: str) -> "rdflib.Graph":
 def _build_iri_context(dataset_iri: str) -> dict:
     """Build the JSON-LD IRI context with the given dataset IRI."""
     return {
-        _CONTEXT: {
-            "agn": "https://secorolab.github.io/metamodels/agent#",
-            "smm": "https://secorolab.github.io/metamodels/scenarios#",
-            "env": "https://secorolab.github.io/metamodels/environment#",
-            "xsd": "http://www.w3.org/2001/XMLSchema#",
-            "prov": "http://www.w3.org/ns/prov#",
-            "dct": "http://purl.org/dc/terms/",
-            "dataset": dataset_iri,
-        }
+        _CONTEXT: [
+            "https://secorolab.github.io/metamodels/prov.json",
+            "https://secorolab.github.io/metamodels/metadata.json",
+            {
+                "agn": "https://purl.org/secorolab/metamodels/agent#",
+                "smm": "https://purl.org/secorolab/metamodels/scenarios/osc/",
+                "env": "https://purl.org/secorolab/metamodels/environment#",
+                "robovast": "https://purl.org/robovast/metamodels/",
+                "xsd": "http://www.w3.org/2001/XMLSchema#",
+                "prov": "http://www.w3.org/ns/prov#",
+                "dcterms": "http://purl.org/dc/terms/",
+                "dataset": dataset_iri,
+                "variations": {"@id": "robovast:variations", "@type": "@id"}
+            }
+        ]
     }
 
 
@@ -100,7 +107,7 @@ def _build_agents(
     agents_config: List[dict],
     run_files: list,
     campaign_ns: Namespace,
-) -> Tuple[list, list]:
+) -> Tuple[list, list, list, list]:
     """Build PROV Agent nodes from the agents configuration.
 
     Each agent's ``configuration_files`` (paths relative to the configuration
@@ -131,6 +138,7 @@ def _build_agents(
     ]
 
     agent_nodes: list = []
+    agent_loading: list = []
     plan_nodes: list = []
     for agent_cfg in agents_config:
         agent_cfg = dict(agent_cfg)
@@ -152,25 +160,31 @@ def _build_agents(
 
         agent_node: dict = {
             _ID: campaign_ns[agent_id],
-            _TYPE: PROV["Agent"],
+            _TYPE: PROV["SoftwareAgent"],
+        }
+        agent_load: dict = {
+            _ID: campaign_ns[agent_id+"/load/"],
+            _TYPE: PROV["Activity"],
+            "wasAssociatedWith": agent_node[_ID],
         }
         if agent_plan_iris:
             # One aggregate plan entity per agent: agent → plan → files
-            plan_iri = campaign_ns[f"plans/{agent_id}-plan"]
+            plan_iri = campaign_ns[f"config/{agent_id}-config"]
             plan_node = {
                 _ID: plan_iri,
-                _TYPE: [PROV["Entity"], PROV["Plan"]],
+                _TYPE: [PROV["Entity"], PROV["Collection"]],
                 PROV["hadMember"]: agent_plan_iris,
             }
             plan_nodes.append(plan_node)
-            agent_node[PROV["hadPlan"]] = plan_iri
+            agent_load[PROV["used"]] = plan_iri
+            agent_loading.append(agent_load)
 
         # Remaining keys become properties on the agent node
         for k, v in agent_cfg.items():
             agent_node[ROBOVAST[k]] = v
         agent_nodes.append(agent_node)
 
-    return agent_nodes, location_nodes + plan_nodes
+    return agent_nodes, location_nodes, plan_nodes, agent_loading
 
 
 def generate_prov_metadata(
@@ -207,6 +221,7 @@ def generate_prov_metadata(
     Returns:
         Tuple of ``(success, message)``.
     """
+    start_t = dt.datetime.now().isoformat()
     campaign_dir = Path(campaign_dir)
     campaign = campaign_dir.name + "/"
 
@@ -241,7 +256,7 @@ def generate_prov_metadata(
     # --- Campaign activity and entity ---
     campaign_activity = {
         _ID: dataset_ns[campaign + "execution/"],
-        _TYPE: [PROV["Activity"], ROBOVAST[metadata["execution"]["execution_type"].capitalize()]],
+        _TYPE: [PROV["Activity"], ROBOVAST["CampaignExecution"], ROBOVAST[metadata["execution"]["execution_type"].capitalize()]],
         "started_at": metadata["execution"]["execution_time"],
         "wasAssociatedWith": "https://purl.org/robovast/",
         ROBOVAST["runs"]: metadata["execution"]["runs"]
@@ -250,16 +265,18 @@ def generate_prov_metadata(
 
     campaign_entity = {
         _ID: dataset_ns[campaign],
-        _TYPE: PROV["Entity"],
+        _TYPE: [PROV["Entity"], ROBOVAST["Campaign"]],
         "wasGeneratedBy": campaign_activity[_ID]
     }
     graph.append(campaign_entity)
 
     # --- Agent nodes (robots, manipulators, etc.) ---
-    agent_nodes, location_nodes = _build_agents(
+    agent_nodes, location_nodes, config_collections, agent_loads = _build_agents(
         agents_config, metadata.get("run_files", []), campaign_ns,
     )
+    graph.extend(config_collections)
     graph.extend(location_nodes)
+    graph.extend(agent_loads)
 
     # --- Scenario and config generation ---
     scenario_file = metadata.get("scenario_file", "scenario.osc")
@@ -286,9 +303,10 @@ def generate_prov_metadata(
 
     gen_activity = {
         _ID: dataset_ns[campaign + "config_generation"],
-        _TYPE: [PROV["Activity"]],
+        _TYPE: [PROV["Activity"], ROBOVAST["ConfigGeneration"]],
         "used": [vast_config[_ID], abstract_scenario[_ID]],
-        "wasInfluencedBy": campaign_activity[_ID]
+        "wasInfluencedBy": campaign_activity[_ID],
+        "wasAssociatedWith": "https://purl.org/robovast/",
     }
     graph.append(gen_activity)
 
@@ -315,10 +333,17 @@ def generate_prov_metadata(
             _TYPE: [PROV["Entity"], SCENARIOS["ConcreteScenario"]],
             "wasGeneratedBy": gen_activity[_ID],
             PROV["specializationOf"]: {_ID: abstract_scenario[_ID]},
+            PROV["atLocation"]: campaign_ns[config_path+"_config/scenario.config"],
         }
+        graph.append({
+            _ID: campaign_ns[config_path+"_config/scenario.config"],
+            _TYPE: [PROV["Location"]]
+        })
 
         # Collect domain-specific PROV contributions from variation plugins
         run_used_iris = [scenario_node[_ID]]
+        for agn_config in config_collections:
+            run_used_iris.append(agn_config[_ID])
 
         for vdata in config_md.get("variations", []):
             vtype_name = vdata.get("name", "")
@@ -332,6 +357,7 @@ def generate_prov_metadata(
                     campaign_namespace=campaign_ns,
                     config_namespace=config_ns,
                     gen_activity_id=gen_activity[_ID],
+                    vast_id=vast_config[_ID]
                 )
             except Exception as e:
                 logger.warning(
@@ -340,12 +366,66 @@ def generate_prov_metadata(
                 )
                 continue
 
+            end_t = dt.datetime.fromisoformat(vdata.get("started_at")) + dt.timedelta(seconds=vdata.get("duration"))
+            var_node = {
+                _ID: campaign_ns[config_path + f"variations/{vtype_name}"],
+                _TYPE: [
+                    PROV["Activity"],
+                    ROBOVAST["Variation"],
+                    ROBOVAST[vtype_name]
+                ],
+                "startedAtTime": vdata.get("started_at"),
+                "endedAtTime": end_t.isoformat(),
+            }
+            graph.append(var_node)
+
             if contribution is None:
                 continue
 
             scenario_node.update(contribution.scenario_properties)
+            scenario_node.setdefault("variations", []).append(var_node[_ID])
             graph.extend(contribution.graph_nodes)
             run_used_iris.extend(contribution.run_used_iris)
+
+        for pdata in config_md.get("parameters", []):
+            name = pdata.get("name", "")
+            if name == "map_file":
+                # Map file entity
+                map_file = name
+                pgm_iri = campaign_ns[map_file.replace("yaml", "pgm")]
+                graph.append(
+                    {
+                        _ID: pgm_iri,
+                        _TYPE: [PROV["Entity"], MAP_METADATA["OccupancyGrid"]],
+                    }
+                )
+                map_iri = campaign_ns[map_file]
+                map_file_md = config_md.get("map_file", {})
+                graph.append(
+                    {
+                        _ID: map_iri,
+                        _TYPE: [PROV["Entity"], MAP_METADATA["Metadata"]],
+                        MAP_METADATA["resolution"]: map_file_md.get("resolution"),
+                        "references": pgm_iri,
+                        "generatedAt": map_file_md.get("updated_at"),
+                    }
+                )
+                run_used_iris.append(map_iri)
+                scenario_node.setdefault(ROBOVAST["references"], []).append(map_iri)
+            elif name == "mesh_file":
+                # Mesh file entity
+                mesh_file = name
+                mesh_file_md = config_md.get("mesh_file", {})
+                mesh_iri = campaign_ns[mesh_file]
+                graph.append(
+                    {
+                        _ID: mesh_iri,
+                        _TYPE: [PROV["Entity"], MAP_METADATA["Mesh3D"]],
+                        "generatedAt": mesh_file_md.get("created_at"),
+                    }
+                )
+                run_used_iris.append(mesh_iri)
+                scenario_node.setdefault(ROBOVAST["references"], []).append(mesh_iri)
 
         graph.append(scenario_node)
 
@@ -359,11 +439,11 @@ def generate_prov_metadata(
 
             run_activity = {
                 _ID: campaign_ns[run["dir"]],
-                _TYPE: PROV["Activity"],
+                _TYPE: [PROV["Activity"], ROBOVAST["TestExecution"]],
                 "used": run_used_iris,
                 ROBOVAST["success"]: run.get("success"),
-                "startedAt": run.get("start_time"),
-                "endedAt": run.get("end_time"),
+                "startedAtTime": run.get("start_time"),
+                "endedAtTime": run.get("end_time"),
                 "wasAssociatedWith": ["https://purl.org/robovast/"],
                 ROBOVAST["sysinfo"]: {_ID: sys_info[_ID]}
             }
@@ -383,11 +463,18 @@ def generate_prov_metadata(
             for out_f in run.get("output_files", []):
                 if out_f.endswith("csv") or out_f.startswith(rosbag2_prefix):
                     continue
-                graph.append({
-                    _ID: campaign_ns[out_f],
-                    _TYPE: PROV["Entity"],
-                    "wasGeneratedBy": run_activity[_ID]
-                })
+                art_type = [PROV["Entity"]]
+                if out_f.endswith("log"):
+                    art_type.append(ROBOVAST["LogFile"])
+                elif out_f.endswith("xml"):
+                    art_type.append(ROBOVAST["TestResult"])
+                graph.append(
+                    {
+                        _ID: campaign_ns[out_f],
+                        _TYPE: art_type,
+                        "wasGeneratedBy": run_activity[_ID],
+                    }
+                )
 
             # Rosbag2 entity (combines mcap files and metadata.yaml)
             rosbag2_meta = run.get("rosbag2")
@@ -408,7 +495,7 @@ def generate_prov_metadata(
 
                 rosbag2_node = {
                     _ID: rosbag2_iri,
-                    _TYPE: PROV["Entity"],
+                    _TYPE: [PROV["Collection"], ROBOVAST["ROSBag"]],
                     "wasGeneratedBy": run_activity[_ID],
                     PROV["hadMember"]: rosbag2_parts,
                 }
@@ -419,9 +506,14 @@ def generate_prov_metadata(
                 graph.append(rosbag2_node)
 
                 for part_iri in rosbag2_parts:
+                    part_type = [PROV["Entity"]]
+                    if part_iri.endswith(".mcap"):
+                        part_type.append(ROBOVAST["MCAPFile"])
+                    elif part_iri.endswith(".yaml"):
+                        part_type.append(ROBOVAST["BagFile#Metadata"])
                     graph.append({
                         _ID: part_iri,
-                        _TYPE: PROV["Entity"],
+                        _TYPE: part_type,
                         "wasGeneratedBy": run_activity[_ID],
                     })
 
@@ -439,7 +531,6 @@ def generate_prov_metadata(
             "wasAssociatedWith": "https://purl.org/robovast/",
             "wasInfluencedBy": campaign_activity[_ID],
         }
-        graph.append(pp_activity)
 
         for pp_entry in pp_entries:
             output_path = pp_entry.get("output", "")
@@ -452,19 +543,58 @@ def generate_prov_metadata(
             source_iris = []
             for src in sources:
                 src_path = src[3:] if src.startswith("../") else src
+                if src_path.endswith("rosbag2"):
+                    # IRIS must end in / to match the rosbag2 collection above
+                    src_path = src_path + "/"
                 source_iris.append(campaign_ns[src_path])
 
             output_node = {
                 _ID: campaign_ns[output_path],
-                _TYPE: PROV["Entity"],
+                _TYPE: [PROV["Entity"], ROBOVAST["Traces"]],
                 "wasGeneratedBy": pp_activity[_ID],
             }
             if source_iris:
                 output_node["wasDerivedFrom"] = source_iris
+                pp_activity.setdefault("used", []).extend(source_iris)
             plugin_name = pp_entry.get("plugin")
             if plugin_name:
                 output_node[ROBOVAST["plugin"]] = plugin_name
             graph.append(output_node)
+
+        graph.append(pp_activity)
+
+        # --- Postprocessing metadata and provenance activities ---
+        metadata_activity = {
+            _ID: campaign_ns["postprocessing/metadata/"],
+            _TYPE: [PROV["Activity"], ROBOVAST["PostprocessingMetadata"]],
+            "wasAssociatedWith": "https://purl.org/robovast/",
+            "wasInfluencedBy": pp_activity[_ID],
+            "used": campaign_entity[_ID],
+        }
+        metadata_node = {
+            _ID: campaign_ns["metadata.yaml"],
+            _TYPE: [PROV["Entity"], ROBOVAST["Campaign#Metadata"]],
+            "wasGeneratedBy": metadata_activity[_ID],
+        }
+        graph_activity = {
+            _ID: campaign_ns["postprocessing/graph/"],
+            _TYPE: [PROV["Activity"], ROBOVAST["PostprocessingGraph"]],
+            "wasAssociatedWith": "https://purl.org/robovast/",
+            "wasInfluencedBy": metadata_activity[_ID],
+            "used": metadata_node[_ID],
+            "startedAtTime": start_t,
+            "endedAtTime": dt.datetime.now().isoformat(),
+        }
+        graph.append({
+            _ID: campaign_ns["metadata.prov.json"],
+            _TYPE: [PROV["Entity"], ROBOVAST["Campaign#Graph"]],
+            "wasGeneratedBy": graph_activity[_ID],
+            "wasDerivedFrom": metadata_node[_ID],
+        })
+
+        graph.append(metadata_node)
+        graph.append(metadata_activity)
+        graph.append(graph_activity)
 
     # Compact the JSON-LD graph
     document = {"@graph": graph}

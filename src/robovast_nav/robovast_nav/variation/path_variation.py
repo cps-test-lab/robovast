@@ -156,7 +156,7 @@ class PathVariationRandom(NavVariation):
     GUI_RENDERER_CLASS = PathVariationGuiRenderer
 
     @classmethod
-    def collect_prov_metadata(cls, config_entry, campaign_namespace, config_namespace, gen_activity_id):
+    def collect_prov_metadata(cls, config_entry, campaign_namespace, config_namespace, gen_activity_id, vast_id):
         """Contribute navigation goal count to the PROV scenario node."""
         config_cfg = config_entry.get("config", {})
         goal_pose = config_cfg.get("goal_pose")

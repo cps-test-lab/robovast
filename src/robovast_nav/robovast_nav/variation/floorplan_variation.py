@@ -21,7 +21,7 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from rdflib import Namespace, PROV
+from rdflib import Namespace, PROV, DCTERMS, FOAF
 
 from robovast.common.variation.base_variation import ProvContribution
 
@@ -36,6 +36,8 @@ logger = logging.getLogger(__name__)
 _ID = "@id"
 _TYPE = "@type"
 MAP_METADATA = Namespace("https://purl.org/secorolab/metamodels/environment#")
+ROBOVAST = Namespace("https://purl.org/robovast/metamodels/")
+ORCID = Namespace("https://orcid.org/")
 
 
 # Custom YAML loader that keeps timestamps as strings
@@ -166,7 +168,7 @@ class FloorplanGeneration(NavVariation):
     CONFIG_CLASS = FloorplanGenerationConfig
 
     @classmethod
-    def collect_prov_metadata(cls, config_entry, campaign_namespace, config_namespace, gen_activity_id):
+    def collect_prov_metadata(cls, config_entry, campaign_namespace, config_namespace, gen_activity_id, vast_id):
         """Contribute floorplan-specific PROV-O nodes (map/mesh entities, generation activities)."""
         contrib = ProvContribution()
         config_cfg = config_entry.get("config", {})
@@ -190,7 +192,7 @@ class FloorplanGeneration(NavVariation):
         fpm_activity_id = campaign_namespace[config_name + "/jsonld_generation/"]
         fpm_activity = {
             _ID: fpm_activity_id,
-            _TYPE: PROV["Activity"],
+            _TYPE: [PROV["Activity"], ROBOVAST["FloorPlanTransformation"]],
             "used": fpm_used,
             "wasAssociatedWith": "https://purl.org/secorolab/scenery_builder/",
             "wasInfluencedBy": gen_activity_id,
@@ -198,9 +200,42 @@ class FloorplanGeneration(NavVariation):
         contrib.graph_nodes.append(fpm_activity)
 
         if fpm_ref:
-            contrib.graph_nodes.append({
+            fpm_md = config_entry.get("fpm_file", {})
+            fpm_node = {
                 _ID: fpm_ref,
-                _TYPE: PROV["Entity"],
+                _TYPE: [
+                    PROV["Entity"],
+                    MAP_METADATA["Environment"],
+                    MAP_METADATA["FloorPlanModel"],
+                ],
+                "modified": fpm_md.get("updated_at"),
+                "license": fpm_md.get("license"),
+                "description": fpm_md.get("description"),
+                MAP_METADATA["map_location"]: fpm_md.get("map_location"),
+            }
+            agents = []
+            for a in fpm_md.get("authors", []):
+                agent = {
+                    _ID: cls._agent_orcid_id(a),
+                    _TYPE: [PROV["Agent"], PROV["Person"]],
+                    FOAF["name"]: a.get("name"),
+                }
+                agents.append(agent)
+                fpm_node.setdefault("creator", []).append(agent[_ID])
+            for c in fpm_md.get("contributors", []):
+                agent = {
+                    _ID: cls._agent_orcid_id(c),
+                    _TYPE: [PROV["Agent"], PROV["Person"]],
+                    FOAF["name"]: c.get("name"),
+                }
+                agents.append(agent)
+                fpm_node.setdefault("contributor", []).append(agent[_ID])
+
+            contrib.graph_nodes.append(fpm_node)
+            contrib.graph_nodes.extend(agents)
+            contrib.graph_nodes.append({
+                _ID: vast_id,
+               DCTERMS["references"]: fpm_ref
             })
 
         # JSON-LD derived files
@@ -214,7 +249,7 @@ class FloorplanGeneration(NavVariation):
         jsonld_activity_id = campaign_namespace[config_name + "/artefact_generation/"]
         jsonld_activity = {
             _ID: jsonld_activity_id,
-            _TYPE: PROV["Activity"],
+            _TYPE: [PROV["Activity"], ROBOVAST["FloorPlanGeneration"]],
             "used": json_files,
             "wasAssociatedWith": "https://purl.org/secorolab/scenery_builder/",
             "wasInfluencedBy": [gen_activity_id, fpm_activity_id],
@@ -224,7 +259,7 @@ class FloorplanGeneration(NavVariation):
         for j in json_files:
             contrib.graph_nodes.append({
                 _ID: j,
-                _TYPE: PROV["Entity"],
+                _TYPE: [PROV["Entity"], MAP_METADATA["Environment"], MAP_METADATA["FloorPlanGraphModel"]],
                 "wasGeneratedBy": fpm_activity_id,
             })
 
@@ -234,13 +269,13 @@ class FloorplanGeneration(NavVariation):
             pgm_iri = campaign_namespace[map_file.replace("yaml", "pgm")]
             contrib.graph_nodes.append({
                 _ID: pgm_iri,
-                _TYPE: PROV["Entity"],
+                _TYPE: [PROV["Entity"], MAP_METADATA["OccupancyGrid"]],
                 "wasGeneratedBy": jsonld_activity_id,
             })
             map_iri = campaign_namespace[map_file]
             contrib.graph_nodes.append({
                 _ID: map_iri,
-                _TYPE: PROV["Entity"],
+                _TYPE: [PROV["Entity"], MAP_METADATA["Metadata"]],
                 "wasGeneratedBy": jsonld_activity_id,
                 MAP_METADATA["resolution"]: map_file_md.get("resolution"),
                 "references": pgm_iri,
@@ -255,13 +290,22 @@ class FloorplanGeneration(NavVariation):
             mesh_iri = campaign_namespace[mesh_file]
             contrib.graph_nodes.append({
                 _ID: mesh_iri,
-                _TYPE: PROV["Entity"],
+                _TYPE: [PROV["Entity"], MAP_METADATA["Mesh3D"]],
                 "wasGeneratedBy": jsonld_activity_id,
                 "generatedAt": mesh_file_md.get("created_at"),
             })
             contrib.run_used_iris.append(mesh_iri)
 
         return contrib
+
+    @classmethod
+    def _agent_orcid_id(cls, a):
+        if a.get("orcid"):
+            agent_id = ORCID[a.get("orcid")]
+        else:
+            agent_id = "_a0"
+
+        return agent_id
 
     @classmethod
     def collect_config_metadata(cls, config_entry: dict, config_dir: Path, campaign_dir: Path) -> dict:
@@ -283,8 +327,20 @@ class FloorplanGeneration(NavVariation):
         # Retrieve derived_from_files recorded in the _variations entry for this class
         # and prefix each path with <config-name>/_transient/ to make it campaign-relative.
         derived_from_files = []
+        floorplan_file = {}
         for v in config_entry.get("variations", []):
             if v.get("name") == cls.__name__:
+                # Get metadata from the floorplan model
+                fpm_file = v.get("fpm_file", "")[8:]
+                original_fpm_file = os.path.join(campaign_dir, "../..", fpm_file)
+                floorplan_file["file"] = v.get("fpm_file", "")
+                with open(original_fpm_file + ".yaml", "r") as f:
+                    fpm_md = yaml.safe_load(f)
+                    floorplan_file.update(**fpm_md)
+
+                extra["fpm_file"] = floorplan_file
+
+                # Process FloorPlan's JSON-LD models
                 derived_from_files = [
                     f"{config_name}/_transient/{rel}"
                     for rel in v.get("derived_from_files", [])
