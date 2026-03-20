@@ -240,6 +240,12 @@ def _build_vast_config(vast_path, config_dir, campaign_ns, abstract_scenario_id,
                                 param_value.extend(params["values"])
                 elif k == "values":
                     continue
+                elif k == "goal_pose" or k == "goal_poses" or k == "start_pose":
+                    if isinstance(v, str):
+                        param_name = var_config.setdefault("param_name", [])
+                        param_name.append(v)
+                    else:
+                        var_config[k] = v
                 elif k == "variations":
                     # TODO Need a better way to handle potentially nested OneOfVariation
                     var_within_var = []
