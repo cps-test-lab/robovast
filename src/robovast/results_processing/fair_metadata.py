@@ -215,6 +215,31 @@ def _build_vast_config(vast_path, config_dir, campaign_ns, abstract_scenario_id,
                         file_path = p["model"][8:]
                         p["model"] = campaign_ns[f"_{file_path}"]
                     var_config[k] = v
+                elif k == "name":
+                    param_name = var_config.setdefault("param_name", [])
+                    if isinstance(v, list):
+                        param_name.extend(v)
+                        if var_type == "ParameterVariationList":
+                            param_value = var_config.setdefault("param_values", [])
+                            for val in params["values"]:
+                                new_vals = []
+                                for n, vv in zip(v, val):
+                                    if n == "map_file" or n == "mesh_file":
+                                        new_vals.append(campaign_ns[vv])
+                                    else:
+                                        new_vals.append(vv)
+                                param_value.append(new_vals)
+                    else:
+                        param_name.append(v)
+                        if var_type == "ParameterVariationList":
+                            param_value = var_config.setdefault("param_values", [])
+                            if v == "map_file" or v == "mesh_file":
+                                for val in params["values"]:
+                                    param_value.append(campaign_ns[val])
+                            else:
+                                param_value.extend(params["values"])
+                elif k == "values":
+                    continue
                 elif k == "variations":
                     # TODO Need a better way to handle potentially nested OneOfVariation
                     var_within_var = []
