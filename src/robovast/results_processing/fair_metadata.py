@@ -194,7 +194,6 @@ def _build_vast_config(vast_path, config_dir, campaign_ns, abstract_scenario_id,
 
     configs = []
     variations = []
-    variables = set()
     for config in vast_config.get("configuration", []):
         logical_scen = {
             _ID: campaign_ns[config.get("name")],
@@ -241,15 +240,9 @@ def _build_vast_config(vast_path, config_dir, campaign_ns, abstract_scenario_id,
 
             logical_scen.setdefault("variations", []).append(var_config[_ID])
             variations.append(var_config)
-            # if params.get("name"):
-            #     if isinstance(params.get("name"), str):
-            #         variables.add(params.get("name"))
-            #     elif isinstance(params, list):
-            #         for n in params.get("name"):
-            #             variables.add(n)
             configs.append(logical_scen)
 
-    return configs, variations, variables
+    return configs, variations
 
 
 def generate_prov_metadata(
@@ -359,7 +352,7 @@ def generate_prov_metadata(
         if vast_files:
             vast_file_name = vast_files[0].name
 
-    logical_scenarios, vast_variations, variables = _build_vast_config(vast_file_name, config_dir, campaign_ns, abstract_scenario[_ID], metadata)
+    logical_scenarios, vast_variations = _build_vast_config(vast_file_name, config_dir, campaign_ns, abstract_scenario[_ID], metadata)
     graph.extend(logical_scenarios)
     graph.extend(vast_variations)
     vast_config = {
@@ -369,7 +362,6 @@ def generate_prov_metadata(
         PROV["hadMember"]: [s[_ID] for s in logical_scenarios]
     }
     graph.append(vast_config)
-    abstract_scenario["param_name"] = list(variables)
 
     gen_activity = {
         _ID: dataset_ns[campaign + "config_generation"],
