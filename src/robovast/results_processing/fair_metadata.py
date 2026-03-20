@@ -411,7 +411,7 @@ def generate_prov_metadata(
                     }
                 )
                 run_used_iris.append(map_iri)
-                scenario_node.setdefault(ROBOVAST["references"], []).append(map_iri)
+                scenario_node.setdefault("references", []).append(map_iri)
             elif name == "mesh_file":
                 # Mesh file entity
                 mesh_file = name
@@ -425,7 +425,7 @@ def generate_prov_metadata(
                     }
                 )
                 run_used_iris.append(mesh_iri)
-                scenario_node.setdefault(ROBOVAST["references"], []).append(mesh_iri)
+                scenario_node.setdefault("references", []).append(mesh_iri)
 
         graph.append(scenario_node)
 
