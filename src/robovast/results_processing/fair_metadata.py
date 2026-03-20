@@ -56,6 +56,8 @@ _DEFAULT_DATASET_IRI = "https://purl.org/robovast/datasets/default/"
 SCENARIOS = Namespace("https://purl.org/secorolab/metamodels/scenarios/osc/")
 ROBOVAST = Namespace("https://purl.org/robovast/metamodels/")
 MAP_METADATA = Namespace("https://purl.org/secorolab/metamodels/environment#")
+QUDT = Namespace("http://qudt.org/schema/qudt/")
+QUDT_UNIT = Namespace("http://qudt.org/vocab/unit/")
 
 # JSON-LD context helpers
 _ID = "@id"
@@ -98,6 +100,8 @@ def _build_iri_context(dataset_iri: str) -> dict:
                 "xsd": "http://www.w3.org/2001/XMLSchema#",
                 "prov": "http://www.w3.org/ns/prov#",
                 "dcterms": "http://purl.org/dc/terms/",
+                "qudt": "http://qudt.org/schema/qudt/",
+                "unit": "http://qudt.org/vocab/unit/",
                 "dataset": dataset_iri,
                 "variations": {"@id": "robovast:variations", "@type": "@id"}
             }
@@ -205,6 +209,8 @@ def _build_vast_config(vast_path, config_dir, campaign_ns, abstract_scenario_id,
                 _ID: campaign_ns[config.get("name")+"/variations/"+var_type+"Config"],
                 _TYPE: [PROV["Entity"], ROBOVAST[f"variations/{var_type}Config"]],
             }
+            if var_type in ["PathVariationRandom", "ObstacleVariation", "ObstacleVariationWithDistanceTrigger", "PathVariationRasterized"]:
+                var_config[QUDT["hasUnit"]] = QUDT_UNIT["M"]
             for k, v in params.items():
                 if k == "map_file" or k == "mesh_file":
                     var_config[k] = campaign_ns[v]
