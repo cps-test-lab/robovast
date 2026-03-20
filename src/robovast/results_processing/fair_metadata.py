@@ -322,7 +322,7 @@ def generate_prov_metadata(
     campaign_activity = {
         _ID: dataset_ns[campaign + "execution/"],
         _TYPE: [PROV["Activity"], ROBOVAST["CampaignExecution"], ROBOVAST[metadata["execution"]["execution_type"].capitalize()]],
-        "started_at": metadata["execution"]["execution_time"],
+        "startedAtTime": metadata["execution"]["execution_time"],
         "wasAssociatedWith": "https://purl.org/robovast/",
         ROBOVAST["runs"]: metadata["execution"]["runs"]
     }
@@ -404,6 +404,7 @@ def generate_prov_metadata(
             "wasGeneratedBy": gen_activity[_ID],
             PROV["specializationOf"]: {_ID: abstract_scenario[_ID]},
             PROV["atLocation"]: campaign_ns[config_path+"_config/scenario.config"],
+            PROV["generatedAtTime"]: config_md.get("created_at"),
         }
         graph.append({
             _ID: campaign_ns[config_path+"_config/scenario.config"],
