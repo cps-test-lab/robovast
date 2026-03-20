@@ -92,6 +92,7 @@ def _build_iri_context(dataset_iri: str) -> dict:
         _CONTEXT: [
             "https://secorolab.github.io/metamodels/prov.json",
             "https://secorolab.github.io/metamodels/metadata.json",
+            "https://raw.githubusercontent.com/cps-test-lab/metamodels/refs/heads/main/robovast.json",
             {
                 "agn": "https://purl.org/secorolab/metamodels/agent#",
                 "smm": "https://purl.org/secorolab/metamodels/scenarios/osc/",
@@ -103,7 +104,6 @@ def _build_iri_context(dataset_iri: str) -> dict:
                 "qudt": "http://qudt.org/schema/qudt/",
                 "unit": "http://qudt.org/vocab/unit/",
                 "dataset": dataset_iri,
-                "variations": {"@id": "robovast:variations", "@type": "@id"}
             }
         ]
     }
