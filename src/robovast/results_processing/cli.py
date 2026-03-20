@@ -126,14 +126,17 @@ def postprocess_cmd(results_dir, force, override, debug, skip_rosout, skip_plugi
 @results.command(name='publish')
 @click.option('--results-dir', '-r', default=None,
               help='Directory containing run results (uses project results dir if not specified)')
-@click.option('--override', '-o', default=None, metavar='VAST_FILE',
-              help='Override the .vast file used for publication instead of the one '
-                   'found in <campaign-name>-<timestamp>/_config/')
 @click.option('--force', '-f', is_flag=True,
               help='Overwrite existing output files without prompting.')
 @click.option('--skip-postprocessing', is_flag=True,
               help='Skip postprocessing and only run publication plugins.')
-def publish_cmd(results_dir, override, force, skip_postprocessing):
+@click.option('--skip-upload', is_flag=True,
+              help='Only run packaging plugins (e.g. zip); skip upload plugins (e.g. zenodo).')
+@click.option('--campaign', '-i', default=None, metavar='CAMPAIGN',
+              help='Only publish a single campaign directory '
+                   '(e.g. navigation-2026-03-20-153630). '
+                   'Without this, all campaigns are published.')
+def publish_cmd(results_dir, force, skip_postprocessing, skip_upload, campaign):
     """Publish run results using configured publication plugins.
 
     Executes postprocessing plugins (unless ``--skip-postprocessing`` is used)
@@ -141,12 +144,22 @@ def publish_cmd(results_dir, override, force, skip_postprocessing):
     most recent ``<campaign-name>-<timestamp>/_config/`` directory of the results directory.
     Publication plugins handle packaging and distribution of results.
 
-    Use --override to supply a .vast file explicitly instead of the campaign copy.
+    Use ``vast -V <file> results publish`` to read metadata from the source
+    .vast file instead of the campaign copy (e.g. after updating description
+    or license).
     Use --force to overwrite existing output files without prompting.
     Use --skip-postprocessing to only run publication without postprocessing.
+    Use --skip-upload to only run packaging plugins and skip upload plugins.
+    Use --campaign / -i to restrict publication to a single campaign directory.
 
     Requires project initialization with ``vast init`` first (unless ``--results-dir`` is specified).
     """
+    # Pick up the .vast file from the global -V / --vast-file option if given
+    vast_file = None
+    _ctx = click.get_current_context(silent=True)
+    if _ctx and _ctx.obj:
+        vast_file = _ctx.obj.get('vast_file')
+
     # Resolve results_dir from project config when not explicitly provided.
     if results_dir is None:
         raw_config = ProjectConfig.load()
@@ -156,10 +169,26 @@ def publish_cmd(results_dir, override, force, skip_postprocessing):
             )
         results_dir = raw_config.results_dir
 
+    # Validate --campaign when provided
+    if campaign is not None:
+        campaign_path = Path(results_dir) / campaign
+        if not campaign_path.is_dir():
+            raise click.UsageError(
+                f"Campaign directory not found: {campaign_path}"
+            )
+        if not is_campaign_dir(campaign):
+            raise click.UsageError(
+                f"'{campaign}' does not look like a campaign directory "
+                "(expected pattern: <name>-YYYY-MM-DD-HHMMSS)."
+            )
+
+    _load_share_dotenv()
     click.echo("Starting publication...")
     click.echo(f"Results directory: {results_dir}")
-    if override:
-        click.echo(f"Override .vast file: {override}")
+    if campaign:
+        click.echo(f"Campaign filter: {campaign}")
+    if vast_file:
+        click.echo(f"Using .vast file: {vast_file}")
     click.echo("-" * 60)
 
     # Run postprocessing first (unless skipped)
@@ -168,7 +197,7 @@ def publish_cmd(results_dir, override, force, skip_postprocessing):
         pp_success, pp_message = run_postprocessing(
             results_dir=results_dir,
             output_callback=click.echo,
-            vast_file=override,
+            vast_file=vast_file,
         )
         click.echo()
         if not pp_success:
@@ -181,8 +210,10 @@ def publish_cmd(results_dir, override, force, skip_postprocessing):
     success, message = run_publication(
         results_dir=results_dir,
         output_callback=click.echo,
-        vast_file=override,
+        vast_file=vast_file,
         force=force,
+        skip_upload=skip_upload,
+        campaign=campaign,
     )
 
     click.echo("\n" + "=" * 60)
