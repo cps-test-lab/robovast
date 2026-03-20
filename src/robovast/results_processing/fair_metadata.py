@@ -405,6 +405,7 @@ def generate_prov_metadata(
             PROV["specializationOf"]: {_ID: abstract_scenario[_ID]},
             PROV["atLocation"]: campaign_ns[config_path+"_config/scenario.config"],
             PROV["generatedAtTime"]: config_md.get("created_at"),
+            PROV["wasDerivedFrom"]: config_md.get("derived_from"),
         }
         graph.append({
             _ID: campaign_ns[config_path+"_config/scenario.config"],

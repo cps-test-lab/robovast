@@ -374,6 +374,9 @@ def generate_campaign_metadata(
                 metadata, campaign_dir, metadata_processing_commands, metadata_plugins
             )
 
+            # Phase 4: Add explicit derivation from scenario family
+            _apply_derivation_metadata(metadata, campaign_dir)
+
             # Write metadata.yaml
             output_path = campaign_dir / "metadata.yaml"
             with open(output_path, "w", encoding="utf-8") as f:
@@ -520,6 +523,15 @@ def _get_metadata_processing_commands(
     data_config = load_config(vast_path, subsection="results_processing", allow_missing=True)
     return data_config.get("metadata_processing", [])
 
+def _apply_derivation_metadata(
+        metadata: dict,
+        campaign_dir: Path,
+) -> None:
+    """Call variation-plugin metadata hooks and merge results."""
+    for config_entry in metadata.get("configurations", []):
+        # Read and consume _config_name, expose as public "derived_from"
+        derivation = config_entry.pop("_config_name", [])
+        config_entry["derived_from"] = derivation
 
 def _apply_variation_metadata(
     metadata: dict,
