@@ -31,6 +31,7 @@ Requires: ``rdflib`` and ``pyld``.
 """
 import datetime as dt
 import json
+import yaml
 import logging
 import os
 import subprocess
@@ -64,7 +65,8 @@ _TYPE = "@type"
 _BASE_CONTEXT = {
     _CONTEXT: [
         "https://secorolab.github.io/metamodels/prov.json",
-        "https://secorolab.github.io/metamodels/metadata.json"
+        "https://secorolab.github.io/metamodels/metadata.json",
+        "https://raw.githubusercontent.com/cps-test-lab/metamodels/refs/heads/main/robovast.json"
     ]
 }
 
@@ -186,6 +188,69 @@ def _build_agents(
 
     return agent_nodes, location_nodes, plan_nodes, agent_loading
 
+def _build_vast_config(vast_path, config_dir, campaign_ns, abstract_scenario_id, metadata):
+    with open(os.path.join(config_dir, vast_path), "r") as f:
+        vast_config = yaml.safe_load(f)
+
+    configs = []
+    variations = []
+    variables = set()
+    for config in vast_config.get("configuration", []):
+        logical_scen = {
+            _ID: campaign_ns[config.get("name")],
+            _TYPE: [PROV["Entity"], SCENARIOS["LogicalScenario"]],
+        }
+        for variation in config.get("variations", []):
+            var_type, params = variation.popitem()
+            var_config = {
+                _ID: campaign_ns[config.get("name")+"/variations/"+var_type+"Config"],
+                _TYPE: [PROV["Entity"], ROBOVAST[f"variations/{var_type}Config"]],
+            }
+            for k, v in params.items():
+                if k == "map_file" or k == "mesh_file":
+                    var_config[k] = campaign_ns[v]
+                elif k == "floorplans":
+                    var_config[k] = [campaign_ns[m] for m in v]
+                elif k == "obstacle_configs":
+                    for p in v:
+                        file_path = p["model"][8:]
+                        p["model"] = campaign_ns[f"_{file_path}"]
+                    var_config[k] = v
+                elif k == "variations":
+                    # TODO Need a better way to handle potentially nested OneOfVariation
+                    var_within_var = []
+                    for vv_conf in v:
+                        vv_type, vv_params = vv_conf.popitem()
+                        _vvar_config = {
+                            _ID: campaign_ns[
+                                config.get("name")
+                                + "/variations/"
+                                + vv_type
+                                + "Config"
+                            ],
+                            _TYPE: [
+                                PROV["Entity"],
+                                ROBOVAST[f"variations/{vv_type}Config"],
+                            ],
+                            **vv_params,
+                        }
+                        var_within_var.append(_vvar_config)
+                    var_config[k] = var_within_var
+                else:
+                    var_config[k] = v
+
+            logical_scen.setdefault("variations", []).append(var_config[_ID])
+            variations.append(var_config)
+            # if params.get("name"):
+            #     if isinstance(params.get("name"), str):
+            #         variables.add(params.get("name"))
+            #     elif isinstance(params, list):
+            #         for n in params.get("name"):
+            #             variables.add(n)
+            configs.append(logical_scen)
+
+    return configs, variations, variables
+
 
 def generate_prov_metadata(
     campaign_dir: Path,
@@ -294,12 +359,17 @@ def generate_prov_metadata(
         if vast_files:
             vast_file_name = vast_files[0].name
 
+    logical_scenarios, vast_variations, variables = _build_vast_config(vast_file_name, config_dir, campaign_ns, abstract_scenario[_ID], metadata)
+    graph.extend(logical_scenarios)
+    graph.extend(vast_variations)
     vast_config = {
         _ID: campaign_ns[f"_config/{vast_file_name or 'config.vast'}"],
-        _TYPE: [PROV["Entity"], ROBOVAST["VastConfiguration"]],
-        "references": abstract_scenario[_ID]
+        _TYPE: [PROV["Entity"], PROV["Collection"], ROBOVAST["VastConfiguration"]],
+        "references": abstract_scenario[_ID],
+        PROV["hadMember"]: [s[_ID] for s in logical_scenarios]
     }
     graph.append(vast_config)
+    abstract_scenario["param_name"] = list(variables)
 
     gen_activity = {
         _ID: dataset_ns[campaign + "config_generation"],
