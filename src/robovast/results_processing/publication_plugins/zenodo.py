@@ -405,7 +405,8 @@ def _update_zenodo_metadata(
     # Start from existing Zenodo metadata so unconfirmed fields are preserved.
     # The InvenioRDM PUT replaces the entire metadata object.
     zenodo_meta: Dict[str, Any] = dict(current_meta)
-    zenodo_meta.setdefault("resource_type", {"id": "dataset"})
+    zenodo_meta["resource_type"] = {"id": "dataset"}
+    zenodo_meta["publication_date"] = time.strftime("%Y-%m-%d")
 
     updated: List[str] = []
 
@@ -740,6 +741,9 @@ class Zenodo(BasePublicationPlugin):
         # ------------------------------------------------------------------ #
         # Build summary
         # ------------------------------------------------------------------ #
+        base_host = "sandbox.zenodo.org" if sandbox else "zenodo.org"
+        zenodo_url = f"https://{base_host}/uploads/{record_id}"
+
         parts: List[str] = []
         if uploaded:
             parts.append(f"uploaded: {', '.join(uploaded)}")
@@ -747,7 +751,8 @@ class Zenodo(BasePublicationPlugin):
             parts.append(f"skipped (already exist): {', '.join(skipped)}")
         if meta_msg:
             parts.append(meta_msg)
-        summary = " | ".join(parts) if parts else "done"
+        parts.append(zenodo_url)
+        summary = " | ".join(parts)
 
         if errors:
             err_detail = "; ".join(errors)

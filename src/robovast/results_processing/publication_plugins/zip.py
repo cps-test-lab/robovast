@@ -369,6 +369,8 @@ class Zip(BasePublicationPlugin):
                         for entry in sorted(campaign_item.rglob("*")):
                             if not entry.is_file():
                                 continue
+                            if any(part.startswith(".") for part in entry.relative_to(campaign_item).parts):
+                                continue
                             rel = entry.relative_to(campaign_item)
                             rel_str = str(rel).replace(os.sep, "/")
                             if not _should_include_file(rel_str, include_filter, exclude_filter):
