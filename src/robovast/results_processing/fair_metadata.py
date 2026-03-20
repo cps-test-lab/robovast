@@ -726,20 +726,3 @@ def generate_prov_metadata(
             logger.debug("Could not generate provenance PDF (dot not available?): %s", e)
 
     return True, f"PROV metadata written to {prov_json_path}"
-
-
-# ---------------------------------------------------------------------------
-# Standalone entry point (legacy usage)
-# ---------------------------------------------------------------------------
-
-if __name__ == '__main__':
-    import glob
-    import yaml
-
-    campaigns = glob.glob("results/*/")
-
-    for _campaign in campaigns:
-        with open(os.path.join(_campaign, "metadata.yaml"), "r") as _f:
-            _metadata = yaml.safe_load(_f)
-        success, msg = generate_prov_metadata(Path(_campaign), _metadata)
-        print(msg)
