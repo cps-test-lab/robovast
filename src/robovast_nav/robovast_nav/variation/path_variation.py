@@ -464,7 +464,7 @@ class PathVariationRasterizedConfig(BaseModel):
     raster_size: float  # Grid spacing for square rasterization in meters
     raster_offset_x: float = 0.0  # Offset for raster grid in x direction (meters)
     raster_offset_y: float = 0.0  # Offset for raster grid in y direction (meters)
-    path_length: float
+    path_length: float | list[float]
     path_length_tolerance: float = 0.5
     robot_diameter: float
 
@@ -517,6 +517,12 @@ class PathVariationRasterized(NavVariation):
         self.progress_update("Running Rasterized Path Variation...")
         results = []
 
+        path_lengths = (
+            self.parameters.path_length
+            if isinstance(self.parameters.path_length, list)
+            else [self.parameters.path_length]
+        )
+
         for config in in_configs:
             # Get the map file and generate raster points
             try:
@@ -565,24 +571,26 @@ class PathVariationRasterized(NavVariation):
                     for x, y in raster_points
                 ]
 
-            # Choose behavior based on num_goal_poses
-            if self.parameters.num_goal_poses == 1:
-                # Original behavior: all points to all other points
-                results.extend(self._generate_single_goal_configs(
-                    config, start_poses, raster_points,
-                    map_file_path
-                ))
-            else:
-                # New behavior: multiple goal poses with search radius algorithm
-                results.extend(self._generate_multi_goal_configs(
-                    config, start_poses, raster_points,
-                    map_file_path
-                ))
+            for target_path_length in path_lengths:
+                self.progress_update(f"Generating paths for path_length={target_path_length}")
+                # Choose behavior based on num_goal_poses
+                if self.parameters.num_goal_poses == 1:
+                    # Original behavior: all points to all other points
+                    results.extend(self._generate_single_goal_configs(
+                        config, start_poses, raster_points,
+                        map_file_path, target_path_length
+                    ))
+                else:
+                    # New behavior: multiple goal poses with search radius algorithm
+                    results.extend(self._generate_multi_goal_configs(
+                        config, start_poses, raster_points,
+                        map_file_path, target_path_length
+                    ))
 
         return results
 
     def _generate_single_goal_configs(self, config, start_poses, raster_points,
-                                      map_file_path):
+                                      map_file_path, path_length: float):
         """Original behavior: generate paths from each start pose to all reachable raster points."""
         results = []
         path_index = 0
@@ -612,13 +620,13 @@ class PathVariationRasterized(NavVariation):
 
                 if path:
                     # Calculate path length
-                    path_length = self._calculate_path_length(path)
+                    actual_path_length = self._calculate_path_length(path)
 
                     # Check if path length is within tolerance
-                    min_length = self.parameters.path_length - self.parameters.path_length_tolerance
-                    max_length = self.parameters.path_length + self.parameters.path_length_tolerance
+                    min_length = path_length - self.parameters.path_length_tolerance
+                    max_length = path_length + self.parameters.path_length_tolerance
 
-                    if min_length <= path_length <= max_length:
+                    if min_length <= actual_path_length <= max_length:
                         # Format goal_poses based on num_goal_poses
                         if self.parameters.num_goal_poses == 1:
                             formatted_goal_poses = goal_pose
@@ -634,12 +642,12 @@ class PathVariationRasterized(NavVariation):
                                 '_path': path,
                                 **({'_map_file': map_file_path} if not config.get('config', {}).get('map_file') else {}),
                                 '_raster_points': raster_points,
-                                '_path_length': path_length
+                                '_path_length': actual_path_length
                         })
                         results.append(new_config)
                     else:
                         self.progress_update(
-                            f'  Path length {path_length:.2f}m outside tolerance '
+                            f'  Path length {actual_path_length:.2f}m outside tolerance '
                             f'[{min_length:.2f}, {max_length:.2f}]'
                         )
                 else:
@@ -650,7 +658,7 @@ class PathVariationRasterized(NavVariation):
         return results
 
     def _generate_multi_goal_configs(self, config, start_poses, raster_points,
-                                     map_file_path):
+                                     map_file_path, path_length: float):
         """New behavior: generate multiple goal poses using search radius algorithm."""
         results = []
         path_generator = PathGenerator(map_file_path)
@@ -659,7 +667,7 @@ class PathVariationRasterized(NavVariation):
             self.progress_update(f"Generating multi-goal path for start pose {start_idx}")
 
             # Calculate optimal search radius and bonus distance
-            search_radius, bonus_distance = self._calculate_search_parameters()
+            search_radius, bonus_distance = self._calculate_search_parameters(path_length)
 
             # Generate goal poses iteratively
             goal_poses_list = []
@@ -690,13 +698,13 @@ class PathVariationRasterized(NavVariation):
 
                 if path:
                     # Calculate path length
-                    path_length = self._calculate_path_length(path)
+                    actual_path_length = self._calculate_path_length(path)
 
                     # Check if path length is within tolerance
-                    min_length = self.parameters.path_length - self.parameters.path_length_tolerance
-                    max_length = self.parameters.path_length + self.parameters.path_length_tolerance
+                    min_length = path_length - self.parameters.path_length_tolerance
+                    max_length = path_length + self.parameters.path_length_tolerance
 
-                    if min_length <= path_length <= max_length:
+                    if min_length <= actual_path_length <= max_length:
                         # Format goal_poses based on num_goal_poses
                         if self.parameters.num_goal_poses == 1:
                             formatted_goal_poses = goal_poses_list[0] if goal_poses_list else None
@@ -712,13 +720,13 @@ class PathVariationRasterized(NavVariation):
                                 '_path': path,
                                 **({'_map_file': map_file_path} if not config.get('config', {}).get('map_file') else {}),
                                 '_raster_points': raster_points,
-                                '_path_length': path_length
+                                '_path_length': actual_path_length
                         })
                         results.append(new_config)
                         self.progress_update(f"  Generated valid multi-goal path with {len(goal_poses_list)} goals")
                     else:
                         self.progress_update(
-                            f'  Path length {path_length:.2f}m outside tolerance '
+                            f'  Path length {actual_path_length:.2f}m outside tolerance '
                             f'[{min_length:.2f}, {max_length:.2f}]'
                         )
                 else:
@@ -728,11 +736,11 @@ class PathVariationRasterized(NavVariation):
 
         return results
 
-    def _calculate_search_parameters(self):
+    def _calculate_search_parameters(self, path_length: float):
         """Calculate optimal search radius and bonus distance."""
         # Calculate with tolerances
-        max_path_length = self.parameters.path_length + self.parameters.path_length_tolerance
-        min_path_length = self.parameters.path_length - self.parameters.path_length_tolerance
+        max_path_length = path_length + self.parameters.path_length_tolerance
+        min_path_length = path_length - self.parameters.path_length_tolerance
 
         max_required_points = max_path_length / self.parameters.raster_size
         min_required_points = min_path_length / self.parameters.raster_size
