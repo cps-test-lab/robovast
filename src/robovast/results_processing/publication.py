@@ -28,13 +28,15 @@ Each publication plugin is a callable with the signature::
         results_dir: str,
         config_dir: str,
         **params,
-    ) -> Tuple[bool, str]:
+    ) -> Tuple[bool, str, List[str]]:
         ...
 
 where *results_dir* is the results directory (parent of campaign-* dirs),
 *config_dir* is the directory containing the .vast file, and *params* are the
 plugin-specific keyword arguments taken from the configuration.  The return
-value is a ``(success, message)`` tuple.
+value is a ``(success, message, artifacts)`` tuple where *artifacts* is a list
+of absolute file paths produced by the plugin.  Returning a 2-tuple
+``(success, message)`` is also accepted for backward compatibility.
 
 Configuration format
 --------------------
@@ -49,6 +51,13 @@ Configuration format
            include_filter:
            - "*.csv"
            destination: archives/
+       - zenodo:
+           ask: true
+           record_id: 1234567
+
+Each entry supports an optional ``ask: true`` parameter (default ``false``).
+When set, the runner pauses and prompts the user to press **y** before
+executing the plugin.
 """
 
 import inspect
@@ -106,7 +115,9 @@ def _execute_plugin(
     config_dir: str,
     vast_path: Optional[str] = None,
     force: bool = False,
-) -> Tuple[bool, str]:
+    artifacts: Optional[List[str]] = None,
+    campaign: Optional[str] = None,
+) -> Tuple[bool, str, List[str]]:
     """Execute a single publication plugin.
 
     Args:
@@ -120,9 +131,11 @@ def _execute_plugin(
         force: When ``True``, inject ``overwrite=True`` into *params* so that
             plugins that support the ``overwrite`` keyword skip any interactive
             prompt and always overwrite existing output files.
+        artifacts: Accumulated artifact paths from preceding plugins; injected
+            as ``_artifacts``.
 
     Returns:
-        Tuple of (success, message).
+        Tuple of (success, message, artifact_paths).
     """
     try:
         effective_params = dict(params)
@@ -130,14 +143,44 @@ def _execute_plugin(
             effective_params.setdefault("overwrite", True)
         if vast_path is not None:
             effective_params.setdefault("_vast_file", vast_path)
+        if artifacts is not None and getattr(plugin_func, "plugin_type", "packaging") == "upload":
+            effective_params.setdefault("_artifacts", artifacts)
+        if campaign is not None and getattr(plugin_func, "plugin_type", "packaging") == "packaging":
+            effective_params.setdefault("_campaign_filter", campaign)
         result = plugin_func(results_dir=results_dir, config_dir=config_dir, **effective_params)
+        if isinstance(result, (list, tuple)) and len(result) >= 3:
+            return result[0], result[1], list(result[2])
         if isinstance(result, (list, tuple)) and len(result) >= 2:
-            return result[0], result[1]
-        return bool(result), ""
+            return result[0], result[1], []
+        return bool(result), "", []
     except TypeError as e:
-        return False, f"Plugin '{plugin_name}' argument error: {e}"
+        return False, f"Plugin '{plugin_name}' argument error: {e}", []
     except Exception as e:
-        return False, f"Plugin '{plugin_name}' execution error: {e}"
+        return False, f"Plugin '{plugin_name}' execution error: {e}", []
+
+
+def _prompt_ask(plugin_name: str, params: dict) -> bool:
+    """Prompt the user to confirm execution of a plugin.
+
+    Args:
+        plugin_name: The plugin name displayed in the prompt.
+        params: Plugin params (displayed for context).
+
+    Returns:
+        ``True`` if the user confirmed, ``False`` to skip.
+    """
+    display = f"{plugin_name} (params: {params})" if params else plugin_name
+    print(f"\nAbout to run: {display}")
+    try:
+        answer = input("Continue? [Y/n] ").strip().lower()
+    except EOFError:
+        answer = "y"
+    return answer in ("", "y", "yes")
+
+
+def _get_plugin_type(plugin_func: Callable) -> str:
+    """Return the plugin_type of a publication plugin (default: 'packaging')."""
+    return getattr(plugin_func, "plugin_type", "packaging")
 
 
 def run_publication(
@@ -145,6 +188,8 @@ def run_publication(
     output_callback=None,
     vast_file: Optional[str] = None,
     force: bool = False,
+    skip_upload: bool = False,
+    campaign: Optional[str] = None,
 ) -> Tuple[bool, str]:
     """Run all publication plugins defined in the .vast configuration.
 
@@ -155,6 +200,9 @@ def run_publication(
             campaign copy is ignored.
         force: When ``True``, pass ``overwrite=True`` to every plugin so that
             existing output files are silently overwritten without prompting.
+        skip_upload: When ``True``, skip all plugins with
+            ``plugin_type == "upload"`` (e.g. zenodo).  Only packaging plugins
+            (e.g. zip) are executed.  Useful for local dry-runs before uploading.
 
     Returns:
         Tuple of (success, message).
@@ -191,6 +239,9 @@ def run_publication(
 
     success = True
     total = len(entries)
+    # Accumulated artifact paths from all completed plugins
+    accumulated_artifacts: List[str] = []
+
     for i, entry in enumerate(entries, 1):
         if isinstance(entry, str):
             plugin_name = entry
@@ -220,18 +271,39 @@ def run_publication(
             success = False
             continue
 
+        # Extract special orchestration parameters before passing to plugin
+        params = dict(params)
+        ask = params.pop("ask", False)
+
+        plugin_func = plugins[plugin_name]
+        ptype = _get_plugin_type(plugin_func)
+
+        if skip_upload and ptype == "upload":
+            output(f"[{i}/{total}] Skipping upload plugin: {plugin_name}")
+            continue
+
         display = f"{plugin_name} (params: {params})" if params else plugin_name
         output(f"[{i}/{total}] Executing: {display}")
 
-        ok, msg = _execute_plugin(
+        # Prompt user if ask=true
+        if ask and not force:
+            if not _prompt_ask(plugin_name, params):
+                output(f"  Skipped by user.")
+                continue
+
+        ok, msg, new_artifacts = _execute_plugin(
             plugin_name=plugin_name,
-            plugin_func=plugins[plugin_name],
+            plugin_func=plugin_func,
             params=params,
             results_dir=results_dir,
             config_dir=config_dir,
             vast_path=vast_path,
             force=force,
+            artifacts=accumulated_artifacts,
+            campaign=campaign,
         )
+        accumulated_artifacts.extend(new_artifacts)
+
         if ok:
             output(f"\u2713 {msg}")
         else:
