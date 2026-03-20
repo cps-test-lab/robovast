@@ -543,7 +543,7 @@ class Zenodo(BasePublicationPlugin):
 
     plugin_type = "upload"
 
-    def __call__(  # type: ignore[override]
+    def __call__(  # pylint: disable=too-many-return-statements
         self,
         results_dir: str,
         config_dir: str,
