@@ -341,7 +341,7 @@ def _build_dataset(dataset_iri, campaign_ns: Namespace, metadata: dict, vast_con
         _TYPE: [PROV["Entity"], DCAT["Dataset"]],
         "title": metadata.get("title"),
         "description": metadata.get("description"),
-        DCAT["version"]: metadata.get("version"),
+        "hasVersion": metadata.get("version"),
         "themeTaxonomy": metadata.get("keywords"),
         "identifier": metadata.get("identifier"),
         DCTERMS["language"]: metadata.get(
