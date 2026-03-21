@@ -41,6 +41,8 @@ Environment variables (optional):
   S3_SECRET_KEY: default minioadmin
 """
 
+import io
+import json
 import os
 import subprocess
 import sys
@@ -88,6 +90,24 @@ def main():
 
     paginator = s3.get_paginator("list_objects_v2")
 
+    # Load symlink manifest if present. Maps archive-relative paths to their
+    # relative symlink targets. Created by prepare_campaign_configs() for
+    # floorplan deduplication. Missing manifest = no symlinks (backward compat).
+    symlink_manifest_key = (
+        f"{prefix}_transient/_symlinks.json" if prefix else "_transient/_symlinks.json"
+    )
+    symlink_map = {}
+    try:
+        resp = s3.get_object(Bucket=bucket_name, Key=symlink_manifest_key)
+        symlink_map = json.loads(resp["Body"].read())
+        sys.stderr.write(
+            f"[s3_to_targz] loaded symlink manifest with {len(symlink_map)} entries\n"
+        )
+    except s3.exceptions.NoSuchKey:
+        pass
+    except Exception as exc:  # noqa: BLE001
+        sys.stderr.write(f"[s3_to_targz] could not load symlink manifest: {exc}\n")
+
     # Stream uncompressed tar into pigz for parallel multi-core compression.
     with open(output_path, "wb") as out_f:
         pigz = subprocess.Popen(
@@ -107,8 +127,18 @@ def main():
                             relative_key = key[len(prefix):]
                             tar_name = f"{archive_label}/{relative_key}"
                         else:
+                            relative_key = key
                             # Use bucket name as top-level folder in the archive.
                             tar_name = f"{bucket_name}/{key}"
+
+                        # If this path is a symlink in the original layout, emit a
+                        # symlink entry rather than duplicating the file content.
+                        if relative_key in symlink_map:
+                            syminfo = tarfile.TarInfo(name=tar_name)
+                            syminfo.type = tarfile.SYMTYPE
+                            syminfo.linkname = symlink_map[relative_key]
+                            tar.addfile(syminfo)
+                            continue
 
                         tarinfo = tarfile.TarInfo(name=tar_name)
                         tarinfo.size = size

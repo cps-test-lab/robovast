@@ -221,6 +221,116 @@ The CI workflow (``image.yml``) validates that all three values are in sync
 before building the image.
 
 
+Floorplan Deduplication
+-----------------------
+
+When multiple configurations share the same floorplan (e.g. ``config1-1-1``
+and ``config1-1-2`` both use the ``hallways`` floorplan), the generated map,
+mesh, and JSON-LD files are identical.  Without deduplication these files would
+be copied into every per-config directory, wasting disk space locally, in S3,
+and in upload-to-share tarballs.
+
+RoboVAST stores shared floorplan artifacts **once** at campaign level and
+creates relative symlinks from per-config directories.
+
+Directory layout
+^^^^^^^^^^^^^^^^
+
+After ``prepare_campaign_configs()`` the output template looks like this::
+
+    out_template/
+      _transient/
+        hallways/                        # shared floorplan artifacts (real files)
+          maps/hallways.yaml
+          maps/hallways.pgm
+          3d-mesh/hallways.stl
+          3d-mesh/hallways.stl.yaml
+          json-ld/floorplan.json
+        _symlinks.json                   # manifest mapping symlink paths → targets
+      config1-1-1/
+        _config/
+          maps/hallways.yaml     → ../../_transient/hallways/maps/hallways.yaml
+          3d-mesh/hallways.stl   → ../../_transient/hallways/3d-mesh/hallways.stl
+          config.yaml            (real file)
+        _transient/
+          json-ld/floorplan.json → ../../_transient/hallways/json-ld/floorplan.json
+      config1-1-2/
+        _config/
+          maps/hallways.yaml     → (same symlink target)
+          ...
+
+How it works
+^^^^^^^^^^^^
+
+The ``_floorplan_name`` key
+"""""""""""""""""""""""""""
+
+The floorplan variation plugin (``FloorplanVariation`` / ``FloorplanGeneration``)
+sets ``_floorplan_name`` in the config data via the ``other_values`` mechanism
+in ``_create_config_for_floorplan()``.  This key propagates through
+``update_config()`` and is available in the config dict during
+``prepare_campaign_configs()``.
+
+Keys starting with ``_`` are automatically stripped from the final
+``metadata.yaml``, so ``_floorplan_name`` is internal-only.
+
+Deduplication in ``prepare_campaign_configs()``
+"""""""""""""""""""""""""""""""""""""""""""""""
+
+When writing per-config files (``_config_files`` and
+``_config_transient_files``), the function checks for ``_floorplan_name``:
+
+- If set and the file path starts with ``maps/``, ``3d-mesh/``, or is a
+  transient file, the real file is copied once to
+  ``_transient/<floorplan_name>/<rel_path>`` and a relative symlink is
+  created in the per-config directory.
+- A ``symlink_map`` dict records all symlinks created.  After all configs
+  are processed, the map is written to ``_transient/_symlinks.json``.
+
+Execution modes
+"""""""""""""""
+
+**Local execution** (``vast exec local run/prepare-run``):
+  Docker bind mounts follow host symlinks transparently.  No special handling
+  is needed.
+
+**Cluster execution** (``vast exec cluster run/prepare-run``):
+  The upload pipeline (``_create_config_targz()``) **skips symlinks** — only
+  real files are included in the tar.gz.  This means floorplan files are
+  uploaded to S3 once under ``_transient/<floorplan>/``, not per config.
+
+  The Kubernetes init container downloads files from S3 into ``/config/``
+  using ``mc mirror``.  When ``_floorplan_name`` is set, an additional
+  mirror step is injected::
+
+      mc mirror mystore/$BUCKET/${PREFIX}_transient/<floorplan>/ /config/
+
+  This copies ``maps/``, ``3d-mesh/``, etc. into ``/config/maps/``,
+  ``/config/3d-mesh/`` where the pod expects them.
+
+**Upload-to-share** (``vast exec cluster upload-to-share``):
+  ``s3_to_targz.py`` reads the ``_symlinks.json`` manifest from S3.  For
+  each path in the manifest, a symlink tar entry is emitted instead of a
+  regular file, so the final tarball contains symlinks rather than
+  duplicated file content.
+
+Multiple floorplans and variations
+""""""""""""""""""""""""""""""""""
+
+Different floorplans produce separate directories under ``_transient/``
+(e.g. ``_transient/hallways/``, ``_transient/rooms/``).
+``FloorplanVariation`` with ``num_variations > 1`` generates unique names
+per variation (e.g. ``hallways_0``, ``hallways_1``), each stored separately.
+
+Backward compatibility
+""""""""""""""""""""""
+
+- Old configs without ``_floorplan_name``: files are copied as before (no
+  symlinks, no dedup).
+- ``_symlinks.json`` missing in S3: ``s3_to_targz.py`` falls back to
+  regular file entries (no symlinks in tarball).
+
+
 Extending RoboVAST
 ------------------
 

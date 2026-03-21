@@ -226,6 +226,8 @@ def _create_config_targz(config_dir: str, targz_path: str) -> int:
             for root, _dirs, files in os.walk(config_dir):
                 for filename in files:
                     local_path = os.path.join(root, filename)
+                    if os.path.islink(local_path):
+                        continue  # skip symlinks; real files live in _transient/<floorplan>/
                     arcname = os.path.relpath(local_path, config_dir)
                     # Always use forward slashes in archive paths
                     arcname = arcname.replace(os.sep, "/")

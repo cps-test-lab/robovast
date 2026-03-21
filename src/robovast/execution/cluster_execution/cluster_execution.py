@@ -555,12 +555,30 @@ class JobRunner:
         #
         # $S3_CAMPAIGN_PREFIX is set to "<campaign>/" for shared-bucket backends (e.g. GCS)
         # and to "" for per-campaign buckets (embedded MinIO).
+        #
+        # When a config uses a shared floorplan, map/mesh files are stored once
+        # under _transient/<floorplan>/ in S3 (not duplicated per config).  An
+        # extra mc mirror copies them into /config/ so the pod sees e.g.
+        # /config/maps/ and /config/3d-mesh/.
+        config_data = next((c for c in self.configs if c.get("name") == config_name), {})
+        floorplan_name = config_data.get("_floorplan_name")
+
+        floorplan_mirror = ""
+        floorplan_s3pfx_extra = ""
+        if floorplan_name:
+            fp_prefix = f"${{S3_CAMPAIGN_PREFIX}}_transient/{floorplan_name}"
+            floorplan_mirror = (
+                f"mc mirror mystore/$S3_BUCKET/{fp_prefix}/ /config/ && "
+            )
+            floorplan_s3pfx_extra = f" {fp_prefix}"
+
         init_cmd = (
             f"mc alias set mystore \"$S3_ENDPOINT\" \"$S3_ACCESS_KEY\" \"$S3_SECRET_KEY\" && "
             f"mc mirror mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}_config/ /config/ && "
             f"mc mirror mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}_transient/ /config/ && "
+            f"{floorplan_mirror}"
             f"(mc mirror mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}{config_name}/_config/ /config/ 2>/dev/null || true); "
-            f"for s3pfx in ${{S3_CAMPAIGN_PREFIX}}_config ${{S3_CAMPAIGN_PREFIX}}_transient ${{S3_CAMPAIGN_PREFIX}}{config_name}/_config; do "
+            f"for s3pfx in ${{S3_CAMPAIGN_PREFIX}}_config ${{S3_CAMPAIGN_PREFIX}}_transient{floorplan_s3pfx_extra} ${{S3_CAMPAIGN_PREFIX}}{config_name}/_config; do "
             f"mc find mystore/$S3_BUCKET/$s3pfx/ 2>/dev/null | while IFS= read -r obj; do "
             f"mc stat --json \"$obj\" 2>/dev/null | grep -qi 'executable.*yes' && "
             f"chmod +x \"/config/${{obj#mystore/$S3_BUCKET/$s3pfx/}}\" 2>/dev/null || true; "

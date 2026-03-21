@@ -99,6 +99,7 @@ def _create_config_for_floorplan(
     ],
         other_values={
             '_map_file': map_file_path,
+            '_floorplan_name': floorplan_name,
     })
     return new_config
 

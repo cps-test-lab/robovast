@@ -560,6 +560,10 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
             elif isinstance(local_config, dict):
                 parameter_overrides = local_config.get("parameter_overrides") or []
 
+    # Maps archive-relative path → relative symlink target, collected across all configs.
+    # Written to _transient/_symlinks.json for use by s3_to_targz.py (upload-to-share).
+    symlink_map = {}
+
     for config_data in campaign_data["configs"]:
         run_config_dir = os.path.join(out_dir, config_data.get("name"), "_config")
 
@@ -589,6 +593,7 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
         # artifact paths may be relative to campaign_data["_output_dir"]; source
         # paths are always absolute.
         _gen_output_dir = campaign_data.get("_output_dir", "")
+        floorplan_name = config_data.get("_floorplan_name")
         if "_config_files" in config_data:
             for config_rel_path, config_path in config_data["_config_files"]:
                 src_path = (
@@ -600,7 +605,21 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
                     raise FileNotFoundError(f"Config file {src_path} does not exist.")
                 dst_path = os.path.join(run_config_dir, config_rel_path)
                 os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-                shutil.copy2(src_path, dst_path)
+                if floorplan_name and config_rel_path.startswith(("maps/", "3d-mesh/")):
+                    # Deduplicate: store once in _transient/<floorplan>/ and symlink
+                    shared_dst = os.path.join(
+                        out_dir, "_transient", floorplan_name, config_rel_path
+                    )
+                    if not os.path.exists(shared_dst):
+                        os.makedirs(os.path.dirname(shared_dst), exist_ok=True)
+                        shutil.copy2(src_path, shared_dst)
+                    rel_link = os.path.relpath(shared_dst, os.path.dirname(dst_path))
+                    os.symlink(rel_link, dst_path)
+                    # Record for symlink manifest (path relative to out_dir)
+                    archive_rel = os.path.relpath(dst_path, out_dir).replace(os.sep, "/")
+                    symlink_map[archive_rel] = rel_link
+                else:
+                    shutil.copy2(src_path, dst_path)
 
         # Copy config-level transient files into <config>/_transient/
         config_name = config_data.get("name", "")
@@ -615,7 +634,28 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
                 continue
             dst_path = os.path.join(out_dir, config_name, "_transient", rel_path)
             os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-            shutil.copy2(abs_path, dst_path)
+            if floorplan_name:
+                # Deduplicate: store once in _transient/<floorplan>/ and symlink
+                shared_dst = os.path.join(
+                    out_dir, "_transient", floorplan_name, rel_path
+                )
+                if not os.path.exists(shared_dst):
+                    os.makedirs(os.path.dirname(shared_dst), exist_ok=True)
+                    shutil.copy2(abs_path, shared_dst)
+                rel_link = os.path.relpath(shared_dst, os.path.dirname(dst_path))
+                os.symlink(rel_link, dst_path)
+                # Record for symlink manifest
+                archive_rel = os.path.relpath(dst_path, out_dir).replace(os.sep, "/")
+                symlink_map[archive_rel] = rel_link
+            else:
+                shutil.copy2(abs_path, dst_path)
+
+    # Write symlink manifest so upload-to-share (s3_to_targz.py) can reconstruct
+    # symlinks in the final tarball instead of duplicating file content.
+    if symlink_map:
+        manifest_path = os.path.join(out_dir, "_transient", "_symlinks.json")
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(symlink_map, f, indent=2)
 
         # Create config file if needed
         if "config" in config_data:
