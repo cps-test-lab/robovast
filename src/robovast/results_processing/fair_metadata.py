@@ -310,8 +310,10 @@ def _build_dataset(dataset_iri, campaign_ns: Namespace, metadata: dict, vast_con
     contributors = get_agents_by_type("contributors")
 
     distributions = []
+    published_date = None
     for d in vast_config.get("results_processing", {}).get("publication", []):
         if d == "zenodo":
+            published_date = dt.datetime.isoformat()
             continue
         for k, v in d.items():
             file_name = v.get("filename")
@@ -326,6 +328,7 @@ def _build_dataset(dataset_iri, campaign_ns: Namespace, metadata: dict, vast_con
                 ),
                 DCAT["compressFormat"]: f"application/{k}",
                 "license": metadata.get("license"),
+                "issued": published_date,
                 **v.get("metadata", {}),
             }
             distributions.append(distr)
@@ -345,6 +348,7 @@ def _build_dataset(dataset_iri, campaign_ns: Namespace, metadata: dict, vast_con
         "funding": metadata.get("funding"),
         "publisher": metadata.get("publisher"),
         "modified": metadata.get("modified", dt.datetime.now().isoformat()),
+        "issued": published_date,
         "creator": creators,
         "contributor": contributors,
         "distribution": distributions,
