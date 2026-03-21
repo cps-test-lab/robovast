@@ -40,7 +40,7 @@ from typing import List, Tuple
 
 import rdflib
 from pyld import jsonld
-from rdflib import Namespace, PROV
+from rdflib import Namespace, PROV, DCAT, DCTERMS, FOAF
 from rdflib.tools.rdf2dot import rdf2dot
 
 from robovast.common.variation.loader import load_variation_classes
@@ -296,6 +296,43 @@ def _build_vast_config(vast_path, config_dir, campaign_ns, abstract_scenario_id,
 
     return configs, variations
 
+def _build_dataset(dataset_iri, campaign_ns: Namespace, metadata: dict) -> dict:
+    ORCID = Namespace("https://orcid.org/")
+    def get_agents_by_type(agn_type):
+        agents = []
+        for a in metadata.get(agn_type, []):
+            agent = {
+                _ID: ORCID[a.get("identifiers")],
+                _TYPE: [PROV["Agent"], PROV["Person"]],
+                FOAF["name"]: a.get("name"),
+            }
+            agents.append(agent)
+        return agents
+
+    creators = get_agents_by_type("creators")
+    contributors = get_agents_by_type("contributors")
+
+    dataset = {
+        _ID: dataset_iri,
+        _TYPE: [PROV["Entity"], DCAT["Dataset"]],
+        "title": metadata.get("title"),
+        "description": metadata.get("description"),
+        DCAT["version"]: metadata.get("version"),
+        "themeTaxonomy": metadata.get("keywords"),
+        "identifier": metadata.get("identifier"),
+        DCTERMS["language"]: metadata.get(
+            "language", "http://id.loc.gov/vocabulary/iso639-1/en"
+        ),
+        "license": metadata.get("license"),
+        "funding": metadata.get("funding"),
+        "publisher": metadata.get("publisher"),
+        "modified": metadata.get("modified", dt.datetime.now().isoformat()),
+        "creator": creators,
+        "contributor": contributors,
+    }
+
+    return dataset
+
 
 def generate_prov_metadata(
     campaign_dir: Path,
@@ -350,6 +387,8 @@ def generate_prov_metadata(
     variation_classes = load_variation_classes()
 
     graph = []
+    dataset_node = _build_dataset(dataset_iri, campaign_ns, md_section)
+    graph.append(dataset_node)
 
     # --- Software agents ---
     graph.append({
