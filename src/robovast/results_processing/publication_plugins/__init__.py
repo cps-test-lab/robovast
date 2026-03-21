@@ -16,5 +16,6 @@
 
 from robovast.results_processing.publication_plugins.base import \
     BasePublicationPlugin
+from robovast.results_processing.publication_plugins.zenodo import Zenodo
 
-__all__ = ["BasePublicationPlugin"]
+__all__ = ["BasePublicationPlugin", "Zenodo"]

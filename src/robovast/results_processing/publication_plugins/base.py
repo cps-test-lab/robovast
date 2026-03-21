@@ -17,11 +17,20 @@
 """Base class for publication plugins."""
 
 from pathlib import PurePosixPath
-from typing import Tuple
+from typing import List, Tuple
 
 
 class BasePublicationPlugin:
     """Base class for class-based publication plugins.
+
+    Publication plugins come in two flavours controlled by :attr:`plugin_type`:
+
+    * ``"packaging"`` – produces output files (e.g. zip archives).  Return their
+      absolute paths as the third element of the return tuple so that subsequent
+      upload plugins can consume them via ``_artifacts``.
+    * ``"upload"`` – consumes artifacts from preceding packaging plugins.  The
+      runner injects those paths via ``_artifacts``.  Upload plugins are skipped
+      when ``--skip-upload`` is passed to ``vast results publish``.
 
     Subclasses must implement :meth:`__call__` with the standard publication
     plugin signature.  The base class also provides :meth:`get_arcname` for
@@ -29,12 +38,15 @@ class BasePublicationPlugin:
     prefixed) directory components when ``omit_hidden`` is enabled.
     """
 
+    #: Plugin role – either ``"packaging"`` or ``"upload"``.
+    plugin_type: str = "packaging"
+
     def __call__(
         self,
         results_dir: str,
         config_dir: str,
         **kwargs,
-    ) -> Tuple[bool, str]:
+    ) -> Tuple[bool, str, List[str]]:
         """Execute the publication plugin.
 
         Args:
@@ -43,7 +55,10 @@ class BasePublicationPlugin:
             **kwargs: Plugin-specific keyword arguments from the config.
 
         Returns:
-            Tuple of (success, message).
+            Tuple of ``(success, message, artifacts)`` where *artifacts* is a list
+            of absolute file paths produced by the plugin (e.g. zip archives).
+            Returning a 2-tuple ``(success, message)`` is also accepted for
+            backward compatibility.
         """
         raise NotImplementedError("Subclasses must implement __call__.")
 

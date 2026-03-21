@@ -83,6 +83,7 @@ rosbags_process = "robovast.results_processing.postprocessing_plugins:RosbagsPro
 
 [tool.poetry.plugins."robovast.publication_plugins"]
 zip = "robovast.results_processing.publication_plugins.zip:Zip"
+zenodo = "robovast.results_processing.publication_plugins.zenodo:Zenodo"
 
 [tool.poetry.plugins."robovast.metadata_processing"]
 

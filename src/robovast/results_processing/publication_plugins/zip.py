@@ -236,7 +236,8 @@ class Zip(BasePublicationPlugin):
         overwrite: Optional[bool] = None,
         omit_hidden: bool = False,
         _vast_file: Optional[str] = None,
-    ) -> Tuple[bool, str]:
+        _campaign_filter: Optional[str] = None,
+    ) -> Tuple[bool, str, List[str]]:
         """Create a zip archive for each campaign directory.
 
         Args:
@@ -321,28 +322,39 @@ class Zip(BasePublicationPlugin):
             _load_vast_metadata(_vast_file) if (filename and _vast_file) else {}
         )
 
-        created = []
+        # Group campaign directories by their resolved zip path so that multiple
+        # campaigns sharing the same filename template (e.g. date-only) are merged
+        # into a single archive rather than repeatedly overwriting each other.
+        groups: Dict[Path, List[Path]] = {}
         for campaign_item in sorted(results_path.iterdir()):
             if not campaign_item.is_dir() or not is_campaign_dir(campaign_item.name):
+                continue
+            if _campaign_filter is not None and campaign_item.name != _campaign_filter:
                 continue
 
             if filename:
                 try:
                     resolved_name = _resolve_filename(filename, campaign_item.name, vast_metadata)
                 except ValueError as exc:
-                    return False, str(exc)
+                    return False, str(exc), []
                 zip_path = dest_dir / resolved_name
             else:
                 zip_path = dest_dir / f"{campaign_item.name}.zip"
 
-            # Handle existing zip file
+            groups.setdefault(zip_path, []).append(campaign_item)
+
+        if not groups:
+            return True, "No campaign directories found (expected pattern: <name>-YYYY-MM-DD-HHMMSS)", []
+
+        created = []
+        for zip_path, campaign_items in groups.items():
+            # Handle existing zip file — prompt at most once per output file
             if zip_path.exists():
                 if overwrite is True:
                     pass  # silently overwrite
                 elif overwrite is False:
                     continue  # silently skip
                 else:
-                    # Prompt the user; default answer is Y (overwrite)
                     try:
                         answer = input(f"File already exists: {zip_path}  Overwrite? [Y/n] ").strip().lower()
                     except EOFError:
@@ -353,32 +365,31 @@ class Zip(BasePublicationPlugin):
             try:
                 dest_dir.mkdir(parents=True, exist_ok=True)
                 with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                    for entry in sorted(campaign_item.rglob("*")):
-                        if not entry.is_file():
-                            continue
-                        rel = entry.relative_to(campaign_item)
-                        rel_str = str(rel).replace(os.sep, "/")
-                        if not _should_include_file(rel_str, include_filter, exclude_filter):
-                            continue
-                        member_path = self.get_arcname(rel_str, omit_hidden)
-                        arcname = f"{campaign_item.name}/{member_path}"
+                    for campaign_item in campaign_items:
+                        for entry in sorted(campaign_item.rglob("*")):
+                            if not entry.is_file():
+                                continue
+                            rel = entry.relative_to(campaign_item)
+                            rel_str = str(rel).replace(os.sep, "/")
+                            if not _should_include_file(rel_str, include_filter, exclude_filter):
+                                continue
+                            member_path = self.get_arcname(rel_str, omit_hidden)
+                            arcname = f"{campaign_item.name}/{member_path}"
 
-                        # Get file modification time and clamp to ZIP-supported range (1980-2107)
-                        mtime = os.path.getmtime(entry)
-                        # Minimum ZIP timestamp: January 1, 1980 00:00:00 (315532800 in epoch time)
-                        min_timestamp = 315532800
-                        clamped_mtime = max(mtime, min_timestamp)
+                            # Get file modification time and clamp to ZIP-supported range (1980-2107)
+                            mtime = os.path.getmtime(entry)
+                            min_timestamp = 315532800  # January 1, 1980 00:00:00
+                            clamped_mtime = max(mtime, min_timestamp)
 
-                        # Create ZipInfo with clamped timestamp
-                        zinfo = zipfile.ZipInfo(filename=arcname, date_time=time.gmtime(clamped_mtime)[:6])
-                        zinfo.external_attr = os.stat(entry).st_mode << 16
+                            zinfo = zipfile.ZipInfo(filename=arcname, date_time=time.gmtime(clamped_mtime)[:6])
+                            zinfo.external_attr = os.stat(entry).st_mode << 16
 
-                        with open(entry, 'rb') as f:
-                            zf.writestr(zinfo, f.read(), compress_type=zipfile.ZIP_DEFLATED)
+                            with open(entry, 'rb') as f:
+                                zf.writestr(zinfo, f.read(), compress_type=zipfile.ZIP_DEFLATED)
                 created.append(zip_path.name)
             except OSError as e:
-                return False, f"Failed to create {zip_path}: {e}"
+                return False, f"Failed to create {zip_path}: {e}", []
 
         if not created:
-            return True, "No campaign directories found (expected pattern: <name>-YYYY-MM-DD-HHMMSS)"
-        return True, f"Created zip archives: {', '.join(created)}"
+            return True, "Skipped all zip archives (already exist).", []
+        return True, f"Created zip archives: {', '.join(created)}", [str(dest_dir / name) for name in created]
