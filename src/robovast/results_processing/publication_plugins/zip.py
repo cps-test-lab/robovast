@@ -137,6 +137,23 @@ def _should_include_file(
     return True
 
 
+def _merge_zip_metadata(campaign_dir: Path, zip_metadata: Dict[str, Any]) -> bytes:
+    """Load ``<campaign_dir>/metadata.yaml``, merge *zip_metadata* into its
+    ``metadata:`` section, and return the result as UTF-8 YAML bytes.
+
+    If ``metadata.yaml`` does not exist an empty base document is used.
+    """
+    yaml_path = campaign_dir / "metadata.yaml"
+    if yaml_path.exists():
+        with open(yaml_path, "r", encoding="utf-8") as fh:
+            data: Dict[str, Any] = yaml.safe_load(fh) or {}
+    else:
+        data = {}
+    data.setdefault("metadata", {})
+    data["metadata"].update(zip_metadata)
+    return yaml.dump(data, default_flow_style=False, allow_unicode=True).encode("utf-8")
+
+
 def _load_vast_metadata(vast_path: str) -> Dict[str, Any]:
     """Return the ``metadata`` section from a .vast file path.
 
@@ -223,6 +240,13 @@ class Zip(BasePublicationPlugin):
                include_filter:
                - "_config/*"
                omit_hidden: true
+           - zip:
+               metadata:
+                 title: "My dataset (CSV)"
+                 description: "CSV traces derived from rosbag files"
+               filename: "{timestamp:%Y-%m-%d}-derived.zip"
+               include_filter:
+               - "*.csv"
     """
 
     def __call__(
@@ -235,6 +259,7 @@ class Zip(BasePublicationPlugin):
         filename: Optional[str] = None,
         overwrite: Optional[bool] = None,
         omit_hidden: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
         _vast_file: Optional[str] = None,
         _campaign_filter: Optional[str] = None,
     ) -> Tuple[bool, str, List[str]]:
@@ -280,6 +305,13 @@ class Zip(BasePublicationPlugin):
                 a file at ``_config/my_file.yaml`` is stored as ``my_file.yaml``
                 inside the zip (relative to the campaign directory).  Defaults
                 to ``False``.
+            metadata: Optional dict of metadata fields to merge into the
+                ``metadata:`` section of the campaign's ``metadata.yaml`` and
+                include it in the archive.  Typical fields are ``title`` and
+                ``description``.  The ``metadata.yaml`` is written regardless
+                of *include_filter* / *exclude_filter*.  If no campaign
+                ``metadata.yaml`` exists the provided dict is used as the sole
+                content of that section.
             _vast_file: Internal – absolute path to the .vast file, injected by
                 the publication runner.  Used to load ``metadata:`` for filename
                 template substitution.  Not intended for manual configuration.
@@ -386,6 +418,10 @@ class Zip(BasePublicationPlugin):
 
                             with open(entry, 'rb') as f:
                                 zf.writestr(zinfo, f.read(), compress_type=zipfile.ZIP_DEFLATED)
+
+                        if metadata:
+                            merged_yaml = _merge_zip_metadata(campaign_item, metadata)
+                            zf.writestr(f"{campaign_item.name}/metadata.yaml", merged_yaml)
                 created.append(zip_path.name)
             except OSError as e:
                 return False, f"Failed to create {zip_path}: {e}", []
