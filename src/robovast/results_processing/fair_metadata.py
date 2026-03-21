@@ -293,7 +293,7 @@ def _build_vast_config(vast_config, campaign_ns):
 
     return configs, variations
 
-def _build_dataset(dataset_iri, campaign_ns: Namespace, metadata: dict) -> dict:
+def _build_dataset(dataset_iri, campaign_ns: Namespace, metadata: dict, vast_config) -> dict:
     ORCID = Namespace("https://orcid.org/")
     def get_agents_by_type(agn_type):
         agents = []
@@ -308,6 +308,27 @@ def _build_dataset(dataset_iri, campaign_ns: Namespace, metadata: dict) -> dict:
 
     creators = get_agents_by_type("creators")
     contributors = get_agents_by_type("contributors")
+
+    distributions = []
+    for d in vast_config.get("results_processing", {}).get("publication", []):
+        if d == "zenodo":
+            continue
+        for k, v in d.items():
+            file_name = v.get("filename")
+            distr = {
+                _ID: campaign_ns[f"distribution/{file_name.format(timestamp=dt.datetime.now())}"],
+                _TYPE: [PROV["Entity"], DCAT["Distribution"]],
+                "creator": creators,
+                "contributor": contributors,
+                "publisher": metadata.get("publisher"),
+                DCTERMS["language"]: metadata.get(
+                    "language", "http://id.loc.gov/vocabulary/iso639-1/en"
+                ),
+                DCAT["compressFormat"]: f"application/{k}",
+                "license": metadata.get("license"),
+                **v.get("metadata", {}),
+            }
+            distributions.append(distr)
 
     dataset = {
         _ID: dataset_iri,
@@ -326,6 +347,7 @@ def _build_dataset(dataset_iri, campaign_ns: Namespace, metadata: dict) -> dict:
         "modified": metadata.get("modified", dt.datetime.now().isoformat()),
         "creator": creators,
         "contributor": contributors,
+        "distribution": distributions,
     }
 
     return dataset
@@ -384,8 +406,6 @@ def generate_prov_metadata(
     variation_classes = load_variation_classes()
 
     graph = []
-    dataset_node = _build_dataset(dataset_iri, campaign_ns, md_section)
-    graph.append(dataset_node)
 
     # --- Software agents ---
     graph.append({
@@ -442,6 +462,9 @@ def generate_prov_metadata(
 
     with open(os.path.join(config_dir, vast_file_name), "r") as f:
         vast_cfg = yaml.safe_load(f)
+
+    dataset_node = _build_dataset(dataset_iri, campaign_ns, md_section, vast_cfg)
+    graph.append(dataset_node)
 
     logical_scenarios, vast_variations = _build_vast_config(vast_cfg, campaign_ns)
     graph.extend(logical_scenarios)
