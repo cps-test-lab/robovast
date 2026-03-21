@@ -458,9 +458,16 @@ def _update_zenodo_metadata(
     kw = meta.get("keywords")
     if kw:
         if isinstance(kw, list):
-            zenodo_meta["keywords"] = [str(k) for k in kw]
+            local_kw = [str(k) for k in kw]
         elif isinstance(kw, str):
-            zenodo_meta["keywords"] = [k.strip() for k in kw.split(",") if k.strip()]
+            local_kw = [k.strip() for k in kw.split(",") if k.strip()]
+        else:
+            local_kw = []
+        if local_kw:
+            zenodo_meta["keywords"] = local_kw
+            remote_kw = sorted(current_meta.get("keywords") or [])
+            if sorted(local_kw) != remote_kw:
+                updated.append("keywords")
 
     # Creators — only prompt when names change; affiliation/role diffs are ignored
     creators = meta.get("creators")
@@ -473,7 +480,7 @@ def _update_zenodo_metadata(
             zenodo_meta["creators"] = mapped
             updated.append("creators")
 
-    if not updated and "keywords" not in meta:
+    if not updated:
         return updated
 
     # PUT the full record body — InvenioRDM requires access + files sections.
