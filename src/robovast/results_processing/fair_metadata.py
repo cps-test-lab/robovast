@@ -31,6 +31,7 @@ Requires: ``rdflib`` and ``pyld``.
 """
 import datetime as dt
 import json
+import yaml
 import logging
 import os
 import subprocess
@@ -39,7 +40,7 @@ from typing import List, Tuple
 
 import rdflib
 from pyld import jsonld
-from rdflib import DCTERMS, Namespace, PROV
+from rdflib import Namespace, PROV, DCAT, DCTERMS, FOAF
 from rdflib.tools.rdf2dot import rdf2dot
 
 from robovast.common.variation.loader import load_variation_classes
@@ -55,6 +56,8 @@ _DEFAULT_DATASET_IRI = "https://purl.org/robovast/datasets/default/"
 SCENARIOS = Namespace("https://purl.org/secorolab/metamodels/scenarios/osc/")
 ROBOVAST = Namespace("https://purl.org/robovast/metamodels/")
 MAP_METADATA = Namespace("https://purl.org/secorolab/metamodels/environment#")
+QUDT = Namespace("http://qudt.org/schema/qudt/")
+QUDT_UNIT = Namespace("http://qudt.org/vocab/unit/")
 
 # JSON-LD context helpers
 _ID = "@id"
@@ -64,7 +67,8 @@ _TYPE = "@type"
 _BASE_CONTEXT = {
     _CONTEXT: [
         "https://secorolab.github.io/metamodels/prov.json",
-        "https://secorolab.github.io/metamodels/metadata.json"
+        "https://secorolab.github.io/metamodels/metadata.json",
+        "https://raw.githubusercontent.com/cps-test-lab/metamodels/refs/heads/main/robovast.json"
     ]
 }
 
@@ -88,6 +92,7 @@ def _build_iri_context(dataset_iri: str) -> dict:
         _CONTEXT: [
             "https://secorolab.github.io/metamodels/prov.json",
             "https://secorolab.github.io/metamodels/metadata.json",
+            "https://raw.githubusercontent.com/cps-test-lab/metamodels/refs/heads/main/robovast.json",
             {
                 "agn": "https://purl.org/secorolab/metamodels/agent#",
                 "smm": "https://purl.org/secorolab/metamodels/scenarios/osc/",
@@ -96,8 +101,9 @@ def _build_iri_context(dataset_iri: str) -> dict:
                 "xsd": "http://www.w3.org/2001/XMLSchema#",
                 "prov": "http://www.w3.org/ns/prov#",
                 "dcterms": "http://purl.org/dc/terms/",
+                "qudt": "http://qudt.org/schema/qudt/",
+                "unit": "http://qudt.org/vocab/unit/",
                 "dataset": dataset_iri,
-                "variations": {"@id": "robovast:variations", "@type": "@id"}
             }
         ]
     }
@@ -158,9 +164,24 @@ def _build_agents(
                     agent_id, cf,
                 )
 
+        # Build derived_from entity nodes from "source" key
+        derived_from_raw = agent_cfg.pop("derived_from", [])
+        derived_from_iris = []
+        for df in derived_from_raw:
+            iri = df.get("source")
+            if not iri:
+                continue
+            derived_from_iris.append(iri)
+            df_node = {_ID: iri, _TYPE: PROV["Entity"]}
+            if "version" in df:
+                df_node["hasVersion"] = df["version"]
+            location_nodes.append(df_node)
+
         agent_node: dict = {
             _ID: campaign_ns[agent_id],
             _TYPE: PROV["SoftwareAgent"],
+            "wasDerivedFrom": derived_from_iris,
+            "hasVersion": agent_cfg.pop("version", None),
         }
         agent_load: dict = {
             _ID: campaign_ns[agent_id+"/load/"],
@@ -173,10 +194,10 @@ def _build_agents(
             plan_node = {
                 _ID: plan_iri,
                 _TYPE: [PROV["Entity"], PROV["Collection"]],
-                PROV["hadMember"]: agent_plan_iris,
+                "hadMember": agent_plan_iris,
             }
             plan_nodes.append(plan_node)
-            agent_load[PROV["used"]] = plan_iri
+            agent_load["used"] = plan_iri
             agent_loading.append(agent_load)
 
         # Remaining keys become properties on the agent node
@@ -185,6 +206,158 @@ def _build_agents(
         agent_nodes.append(agent_node)
 
     return agent_nodes, location_nodes, plan_nodes, agent_loading
+
+def _build_vast_config(vast_config, campaign_ns):
+    configs = []
+    variations = []
+    for config in vast_config.get("configuration", []):
+        logical_scen = {
+            _ID: campaign_ns[config.get("name")],
+            _TYPE: [PROV["Entity"], SCENARIOS["LogicalScenario"]],
+        }
+        for variation in config.get("variations", []):
+            var_type, params = variation.popitem()
+            var_config = {
+                _ID: campaign_ns[config.get("name")+"/variations/"+var_type+"Config"],
+                _TYPE: [PROV["Entity"], ROBOVAST[f"variations/{var_type}Config"]],
+            }
+            if var_type in ["PathVariationRandom", "ObstacleVariation", "ObstacleVariationWithDistanceTrigger", "PathVariationRasterized"]:
+                var_config["hasUnit"] = QUDT_UNIT["M"]
+            for k, v in params.items():
+                if k == "map_file" or k == "mesh_file":
+                    var_config[k] = campaign_ns[v]
+                elif k == "floorplans":
+                    var_config[k] = [campaign_ns[m] for m in v]
+                elif k == "obstacle_configs":
+                    for p in v:
+                        file_path = p["model"][8:]
+                        p["model"] = campaign_ns[f"_{file_path}"]
+                    var_config[k] = v
+                elif k == "name":
+                    param_name = var_config.setdefault("param_name", [])
+                    if isinstance(v, list):
+                        param_name.extend(v)
+                        if var_type == "ParameterVariationList":
+                            param_value = var_config.setdefault("param_values", [])
+                            for val in params["values"]:
+                                new_vals = []
+                                for n, vv in zip(v, val):
+                                    if n == "map_file" or n == "mesh_file":
+                                        new_vals.append(campaign_ns[vv])
+                                    else:
+                                        new_vals.append(vv)
+                                param_value.append(new_vals)
+                    else:
+                        param_name.append(v)
+                        if var_type == "ParameterVariationList":
+                            param_value = var_config.setdefault("param_values", [])
+                            if v == "map_file" or v == "mesh_file":
+                                for val in params["values"]:
+                                    param_value.append(campaign_ns[val])
+                            else:
+                                param_value.extend(params["values"])
+                elif k == "values":
+                    continue
+                elif k == "goal_pose" or k == "goal_poses" or k == "start_pose":
+                    if isinstance(v, str):
+                        param_name = var_config.setdefault("param_name", [])
+                        param_name.append(v)
+                    else:
+                        var_config[k] = v
+                elif k == "variations":
+                    # TODO Need a better way to handle potentially nested OneOfVariation
+                    var_within_var = []
+                    for vv_conf in v:
+                        vv_type, vv_params = vv_conf.popitem()
+                        _vvar_config = {
+                            _ID: campaign_ns[
+                                config.get("name")
+                                + "/variations/"
+                                + vv_type
+                                + "Config"
+                            ],
+                            _TYPE: [
+                                PROV["Entity"],
+                                ROBOVAST[f"variations/{vv_type}Config"],
+                            ],
+                            **vv_params,
+                        }
+                        var_within_var.append(_vvar_config)
+                    var_config[k] = var_within_var
+                else:
+                    var_config[k] = v
+
+            logical_scen.setdefault("variations", []).append(var_config[_ID])
+            variations.append(var_config)
+            configs.append(logical_scen)
+
+    return configs, variations
+
+def _build_dataset(dataset_iri, campaign_ns: Namespace, metadata: dict, vast_config) -> dict:
+    ORCID = Namespace("https://orcid.org/")
+    def get_agents_by_type(agn_type):
+        agents = []
+        for a in metadata.get(agn_type, []):
+            agent = {
+                _ID: ORCID[a.get("identifiers")],
+                _TYPE: [PROV["Agent"], PROV["Person"]],
+                FOAF["name"]: a.get("name"),
+            }
+            agents.append(agent)
+        return agents
+
+    creators = get_agents_by_type("creators")
+    contributors = get_agents_by_type("contributors")
+
+    distributions = []
+    published_date = None
+    for d in vast_config.get("results_processing", {}).get("publication", []):
+        if d == "zenodo":
+            published_date = dt.datetime.now().isoformat()
+            continue
+        license = metadata.get("license", "").lower()
+        license_iri = f"http://purl.org/NET/rdflicense/{license}"
+        for k, v in d.items():
+            file_name = v.get("filename")
+            v["metadata"]["license"] = license_iri
+            distr = {
+                _ID: campaign_ns[f"distribution/{file_name.format(timestamp=dt.datetime.now())}"],
+                _TYPE: [PROV["Entity"], DCAT["Distribution"]],
+                "creator": creators,
+                "contributor": contributors,
+                "publisher": metadata.get("publisher"),
+                DCTERMS["language"]: metadata.get(
+                    "language", "http://id.loc.gov/vocabulary/iso639-1/en"
+                ),
+                DCAT["compressFormat"]: f"application/{k}",
+                "license": metadata.get("license"),
+                "issued": published_date,
+                **v.get("metadata", {}),
+            }
+            distributions.append(distr)
+
+    dataset = {
+        _ID: dataset_iri,
+        _TYPE: [PROV["Entity"], DCAT["Dataset"]],
+        "title": metadata.get("title"),
+        "description": metadata.get("description"),
+        "hasVersion": metadata.get("version"),
+        "themeTaxonomy": metadata.get("keywords"),
+        "identifier": metadata.get("identifier"),
+        DCTERMS["language"]: metadata.get(
+            "language", "http://id.loc.gov/vocabulary/iso639-1/en"
+        ),
+        "license": license_iri,
+        "funding": metadata.get("funding"),
+        "publisher": metadata.get("publisher"),
+        "modified": metadata.get("modified", dt.datetime.now().isoformat()),
+        "issued": published_date,
+        "creator": creators,
+        "contributor": contributors,
+        "distribution": distributions,
+    }
+
+    return dataset
 
 
 def generate_prov_metadata(
@@ -245,21 +418,21 @@ def generate_prov_metadata(
     graph.append({
         _ID: "https://purl.org/robovast/",
         _TYPE: PROV["SoftwareAgent"],
-        DCTERMS["hasVersion"]: metadata["execution"]["robovast_version"]
+        "hasVersion": metadata["execution"]["robovast_version"]
     })
     graph.append({
         _ID: "https://purl.org/secorolab/scenery_builder/",
         _TYPE: PROV["SoftwareAgent"],
-        DCTERMS["hasVersion"]: metadata["execution"].get("scenery_builder_version")
+        "hasVersion": metadata["execution"].get("scenery_builder_version")
     })
 
     # --- Campaign activity and entity ---
     campaign_activity = {
         _ID: dataset_ns[campaign + "execution/"],
         _TYPE: [PROV["Activity"], ROBOVAST["CampaignExecution"], ROBOVAST[metadata["execution"]["execution_type"].capitalize()]],
-        "started_at": metadata["execution"]["execution_time"],
+        "startedAtTime": metadata["execution"]["execution_time"],
         "wasAssociatedWith": "https://purl.org/robovast/",
-        ROBOVAST["runs"]: metadata["execution"]["runs"]
+        "runs": metadata["execution"]["runs"]
     }
     graph.append(campaign_activity)
 
@@ -294,10 +467,20 @@ def generate_prov_metadata(
         if vast_files:
             vast_file_name = vast_files[0].name
 
+    with open(os.path.join(config_dir, vast_file_name), "r") as f:
+        vast_cfg = yaml.safe_load(f)
+
+    dataset_node = _build_dataset(dataset_iri, campaign_ns, md_section, vast_cfg)
+    graph.append(dataset_node)
+
+    logical_scenarios, vast_variations = _build_vast_config(vast_cfg, campaign_ns)
+    graph.extend(logical_scenarios)
+    graph.extend(vast_variations)
     vast_config = {
         _ID: campaign_ns[f"_config/{vast_file_name or 'config.vast'}"],
-        _TYPE: [PROV["Entity"], ROBOVAST["VastConfiguration"]],
-        "references": abstract_scenario[_ID]
+        _TYPE: [PROV["Entity"], PROV["Collection"], ROBOVAST["VastConfiguration"]],
+        "references": abstract_scenario[_ID],
+        "hadMember": [s[_ID] for s in logical_scenarios]
     }
     graph.append(vast_config)
 
@@ -332,8 +515,10 @@ def generate_prov_metadata(
             _ID: campaign_ns[config_path],
             _TYPE: [PROV["Entity"], SCENARIOS["ConcreteScenario"]],
             "wasGeneratedBy": gen_activity[_ID],
-            PROV["specializationOf"]: {_ID: abstract_scenario[_ID]},
-            PROV["atLocation"]: campaign_ns[config_path+"_config/scenario.config"],
+            "specializationOf": {_ID: abstract_scenario[_ID]},
+            "atLocation": campaign_ns[config_path+"_config/scenario.config"],
+            "generatedAtTime": config_md.get("created_at"),
+            "wasDerivedFrom": config_md.get("derived_from"),
         }
         graph.append({
             _ID: campaign_ns[config_path+"_config/scenario.config"],
@@ -441,11 +626,11 @@ def generate_prov_metadata(
                 _ID: campaign_ns[run["dir"]],
                 _TYPE: [PROV["Activity"], ROBOVAST["TestExecution"]],
                 "used": run_used_iris,
-                ROBOVAST["success"]: run.get("success"),
+                "success": run.get("success"),
                 "startedAtTime": run.get("start_time"),
                 "endedAtTime": run.get("end_time"),
                 "wasAssociatedWith": ["https://purl.org/robovast/"],
-                ROBOVAST["sysinfo"]: {_ID: sys_info[_ID]}
+                "sysinfo": {_ID: sys_info[_ID]}
             }
             for agent_node in agent_nodes:
                 run_activity["wasAssociatedWith"].append(agent_node[_ID])
@@ -497,12 +682,12 @@ def generate_prov_metadata(
                     _ID: rosbag2_iri,
                     _TYPE: [PROV["Collection"], ROBOVAST["ROSBag"]],
                     "wasGeneratedBy": run_activity[_ID],
-                    PROV["hadMember"]: rosbag2_parts,
+                    "hadMember": rosbag2_parts,
                 }
                 if ros_distro:
-                    rosbag2_node[DCTERMS["hasVersion"]] = ros_distro
+                    rosbag2_node["hasVersion"] = ros_distro
                 if ros_msg_iris:
-                    rosbag2_node[ROBOVAST["ros/messages"]] = ros_msg_iris
+                    rosbag2_node["message_types"] = ros_msg_iris
                 graph.append(rosbag2_node)
 
                 for part_iri in rosbag2_parts:
@@ -558,7 +743,7 @@ def generate_prov_metadata(
                 pp_activity.setdefault("used", []).extend(source_iris)
             plugin_name = pp_entry.get("plugin")
             if plugin_name:
-                output_node[ROBOVAST["plugin"]] = plugin_name
+                output_node["plugin"] = plugin_name
             graph.append(output_node)
 
         graph.append(pp_activity)
@@ -625,20 +810,3 @@ def generate_prov_metadata(
             logger.debug("Could not generate provenance PDF (dot not available?): %s", e)
 
     return True, f"PROV metadata written to {prov_json_path}"
-
-
-# ---------------------------------------------------------------------------
-# Standalone entry point (legacy usage)
-# ---------------------------------------------------------------------------
-
-if __name__ == '__main__':
-    import glob
-    import yaml
-
-    campaigns = glob.glob("results/*/")
-
-    for _campaign in campaigns:
-        with open(os.path.join(_campaign, "metadata.yaml"), "r") as _f:
-            _metadata = yaml.safe_load(_f)
-        success, msg = generate_prov_metadata(Path(_campaign), _metadata)
-        print(msg)

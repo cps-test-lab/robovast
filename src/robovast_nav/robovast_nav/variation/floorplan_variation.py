@@ -21,7 +21,7 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from rdflib import Namespace, PROV, DCTERMS, FOAF
+from rdflib import Namespace, PROV, FOAF
 
 from robovast.common.variation.base_variation import ProvContribution
 
@@ -235,7 +235,7 @@ class FloorplanGeneration(NavVariation):
             contrib.graph_nodes.extend(agents)
             contrib.graph_nodes.append({
                 _ID: vast_id,
-               DCTERMS["references"]: fpm_ref
+               "references": fpm_ref
             })
 
         # JSON-LD derived files
