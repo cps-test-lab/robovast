@@ -168,7 +168,7 @@ def _build_agents(
             _ID: campaign_ns[agent_id],
             _TYPE: PROV["SoftwareAgent"],
             "wasDerivedFrom": agent_cfg.pop("derived_from"),
-            "hasVersion": agent_cfg.pop("ros_distro"),
+            "hasVersion": agent_cfg.pop("version"),
         }
         agent_load: dict = {
             _ID: campaign_ns[agent_id+"/load/"],
