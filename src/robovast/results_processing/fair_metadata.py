@@ -207,10 +207,7 @@ def _build_agents(
 
     return agent_nodes, location_nodes, plan_nodes, agent_loading
 
-def _build_vast_config(vast_path, config_dir, campaign_ns, abstract_scenario_id, metadata):
-    with open(os.path.join(config_dir, vast_path), "r") as f:
-        vast_config = yaml.safe_load(f)
-
+def _build_vast_config(vast_config, campaign_ns):
     configs = []
     variations = []
     for config in vast_config.get("configuration", []):
@@ -443,7 +440,10 @@ def generate_prov_metadata(
         if vast_files:
             vast_file_name = vast_files[0].name
 
-    logical_scenarios, vast_variations = _build_vast_config(vast_file_name, config_dir, campaign_ns, abstract_scenario[_ID], metadata)
+    with open(os.path.join(config_dir, vast_file_name), "r") as f:
+        vast_cfg = yaml.safe_load(f)
+
+    logical_scenarios, vast_variations = _build_vast_config(vast_cfg, campaign_ns)
     graph.extend(logical_scenarios)
     graph.extend(vast_variations)
     vast_config = {
