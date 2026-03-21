@@ -40,7 +40,7 @@ from typing import List, Tuple
 
 import rdflib
 from pyld import jsonld
-from rdflib import DCTERMS, Namespace, PROV
+from rdflib import Namespace, PROV
 from rdflib.tools.rdf2dot import rdf2dot
 
 from robovast.common.variation.loader import load_variation_classes
@@ -179,10 +179,10 @@ def _build_agents(
             plan_node = {
                 _ID: plan_iri,
                 _TYPE: [PROV["Entity"], PROV["Collection"]],
-                PROV["hadMember"]: agent_plan_iris,
+                "hadMember": agent_plan_iris,
             }
             plan_nodes.append(plan_node)
-            agent_load[PROV["used"]] = plan_iri
+            agent_load["used"] = plan_iri
             agent_loading.append(agent_load)
 
         # Remaining keys become properties on the agent node
@@ -210,7 +210,7 @@ def _build_vast_config(vast_path, config_dir, campaign_ns, abstract_scenario_id,
                 _TYPE: [PROV["Entity"], ROBOVAST[f"variations/{var_type}Config"]],
             }
             if var_type in ["PathVariationRandom", "ObstacleVariation", "ObstacleVariationWithDistanceTrigger", "PathVariationRasterized"]:
-                var_config[QUDT["hasUnit"]] = QUDT_UNIT["M"]
+                var_config["hasUnit"] = QUDT_UNIT["M"]
             for k, v in params.items():
                 if k == "map_file" or k == "mesh_file":
                     var_config[k] = campaign_ns[v]
@@ -340,12 +340,12 @@ def generate_prov_metadata(
     graph.append({
         _ID: "https://purl.org/robovast/",
         _TYPE: PROV["SoftwareAgent"],
-        DCTERMS["hasVersion"]: metadata["execution"]["robovast_version"]
+        "hasVersion": metadata["execution"]["robovast_version"]
     })
     graph.append({
         _ID: "https://purl.org/secorolab/scenery_builder/",
         _TYPE: PROV["SoftwareAgent"],
-        DCTERMS["hasVersion"]: metadata["execution"].get("scenery_builder_version")
+        "hasVersion": metadata["execution"].get("scenery_builder_version")
     })
 
     # --- Campaign activity and entity ---
@@ -354,7 +354,7 @@ def generate_prov_metadata(
         _TYPE: [PROV["Activity"], ROBOVAST["CampaignExecution"], ROBOVAST[metadata["execution"]["execution_type"].capitalize()]],
         "startedAtTime": metadata["execution"]["execution_time"],
         "wasAssociatedWith": "https://purl.org/robovast/",
-        ROBOVAST["runs"]: metadata["execution"]["runs"]
+        "runs": metadata["execution"]["runs"]
     }
     graph.append(campaign_activity)
 
@@ -396,7 +396,7 @@ def generate_prov_metadata(
         _ID: campaign_ns[f"_config/{vast_file_name or 'config.vast'}"],
         _TYPE: [PROV["Entity"], PROV["Collection"], ROBOVAST["VastConfiguration"]],
         "references": abstract_scenario[_ID],
-        PROV["hadMember"]: [s[_ID] for s in logical_scenarios]
+        "hadMember": [s[_ID] for s in logical_scenarios]
     }
     graph.append(vast_config)
 
@@ -431,10 +431,10 @@ def generate_prov_metadata(
             _ID: campaign_ns[config_path],
             _TYPE: [PROV["Entity"], SCENARIOS["ConcreteScenario"]],
             "wasGeneratedBy": gen_activity[_ID],
-            PROV["specializationOf"]: {_ID: abstract_scenario[_ID]},
-            PROV["atLocation"]: campaign_ns[config_path+"_config/scenario.config"],
-            PROV["generatedAtTime"]: config_md.get("created_at"),
-            PROV["wasDerivedFrom"]: config_md.get("derived_from"),
+            "specializationOf": {_ID: abstract_scenario[_ID]},
+            "atLocation": campaign_ns[config_path+"_config/scenario.config"],
+            "generatedAtTime": config_md.get("created_at"),
+            "wasDerivedFrom": config_md.get("derived_from"),
         }
         graph.append({
             _ID: campaign_ns[config_path+"_config/scenario.config"],
@@ -542,11 +542,11 @@ def generate_prov_metadata(
                 _ID: campaign_ns[run["dir"]],
                 _TYPE: [PROV["Activity"], ROBOVAST["TestExecution"]],
                 "used": run_used_iris,
-                ROBOVAST["success"]: run.get("success"),
+                "success": run.get("success"),
                 "startedAtTime": run.get("start_time"),
                 "endedAtTime": run.get("end_time"),
                 "wasAssociatedWith": ["https://purl.org/robovast/"],
-                ROBOVAST["sysinfo"]: {_ID: sys_info[_ID]}
+                "sysinfo": {_ID: sys_info[_ID]}
             }
             for agent_node in agent_nodes:
                 run_activity["wasAssociatedWith"].append(agent_node[_ID])
@@ -598,12 +598,12 @@ def generate_prov_metadata(
                     _ID: rosbag2_iri,
                     _TYPE: [PROV["Collection"], ROBOVAST["ROSBag"]],
                     "wasGeneratedBy": run_activity[_ID],
-                    PROV["hadMember"]: rosbag2_parts,
+                    "hadMember": rosbag2_parts,
                 }
                 if ros_distro:
-                    rosbag2_node[DCTERMS["hasVersion"]] = ros_distro
+                    rosbag2_node["hasVersion"] = ros_distro
                 if ros_msg_iris:
-                    rosbag2_node[ROBOVAST["ros/messages"]] = ros_msg_iris
+                    rosbag2_node["message_types"] = ros_msg_iris
                 graph.append(rosbag2_node)
 
                 for part_iri in rosbag2_parts:
@@ -659,7 +659,7 @@ def generate_prov_metadata(
                 pp_activity.setdefault("used", []).extend(source_iris)
             plugin_name = pp_entry.get("plugin")
             if plugin_name:
-                output_node[ROBOVAST["plugin"]] = plugin_name
+                output_node["plugin"] = plugin_name
             graph.append(output_node)
 
         graph.append(pp_activity)
