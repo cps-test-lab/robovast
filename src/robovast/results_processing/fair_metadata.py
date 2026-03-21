@@ -164,11 +164,24 @@ def _build_agents(
                     agent_id, cf,
                 )
 
-        derivation = [{_ID: source.get("source"), _TYPE: PROV["Entity"], "hasVersion": source.get("version", None)} for source in agent_cfg.pop("derived_from", [])]
+        # Build derived_from entity nodes from "source" key
+        derived_from_raw = agent_cfg.pop("derived_from", [])
+        derived_from_iris = []
+        for df in derived_from_raw:
+            iri = df.get("source")
+            if not iri:
+                continue
+            derived_from_iris.append(iri)
+            df_node = {_ID: iri, _TYPE: PROV["Entity"]}
+            if "version" in df:
+                df_node["hasVersion"] = df["version"]
+            location_nodes.append(df_node)
+
         agent_node: dict = {
             _ID: campaign_ns[agent_id],
             _TYPE: PROV["SoftwareAgent"],
-            "wasDerivedFrom": derivation,
+            "wasDerivedFrom": derived_from_iris,
+            "hasVersion": agent_cfg.pop("version", None),
         }
         agent_load: dict = {
             _ID: campaign_ns[agent_id+"/load/"],
