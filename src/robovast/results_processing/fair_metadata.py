@@ -164,11 +164,11 @@ def _build_agents(
                     agent_id, cf,
                 )
 
+        derivation = [{_ID: source.get("source"), _TYPE: PROV["Entity"], "hasVersion": source.get("version", None)} for source in agent_cfg.pop("derived_from", [])]
         agent_node: dict = {
             _ID: campaign_ns[agent_id],
             _TYPE: PROV["SoftwareAgent"],
-            "wasDerivedFrom": agent_cfg.pop("derived_from", []),
-            "hasVersion": agent_cfg.pop("version", None),
+            "wasDerivedFrom": derivation,
         }
         agent_load: dict = {
             _ID: campaign_ns[agent_id+"/load/"],
