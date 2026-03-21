@@ -315,8 +315,11 @@ def _build_dataset(dataset_iri, campaign_ns: Namespace, metadata: dict, vast_con
         if d == "zenodo":
             published_date = dt.datetime.now().isoformat()
             continue
+        license = metadata.get("license", "").lower()
+        license_iri = f"http://purl.org/NET/rdflicense/{license}"
         for k, v in d.items():
             file_name = v.get("filename")
+            v["metadata"]["license"] = license_iri
             distr = {
                 _ID: campaign_ns[f"distribution/{file_name.format(timestamp=dt.datetime.now())}"],
                 _TYPE: [PROV["Entity"], DCAT["Distribution"]],
@@ -344,7 +347,7 @@ def _build_dataset(dataset_iri, campaign_ns: Namespace, metadata: dict, vast_con
         DCTERMS["language"]: metadata.get(
             "language", "http://id.loc.gov/vocabulary/iso639-1/en"
         ),
-        "license": metadata.get("license"),
+        "license": license_iri,
         "funding": metadata.get("funding"),
         "publisher": metadata.get("publisher"),
         "modified": metadata.get("modified", dt.datetime.now().isoformat()),
