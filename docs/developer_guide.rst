@@ -747,10 +747,10 @@ Identifying which variation types were used on each config:
 
 .. code-block:: sparql
 
-    SELECT DISTINCT ?config ?variation_type
+    SELECT ?config ?variation_type
     WHERE {
         ?config rdf:type smm:ConcreteScenario .
-        ?config robovast:variations ?variation .
+        ?config robovast:variations/rdf:rest*/rdf:first ?variation .
         ?variation rdf:type ?variation_type .
         FILTER (?variation_type != prov:Activity)
         FILTER (?variation_type != robovast:Variation)
