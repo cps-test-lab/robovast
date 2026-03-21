@@ -313,7 +313,7 @@ def _build_dataset(dataset_iri, campaign_ns: Namespace, metadata: dict, vast_con
     published_date = None
     for d in vast_config.get("results_processing", {}).get("publication", []):
         if d == "zenodo":
-            published_date = dt.datetime.isoformat()
+            published_date = dt.datetime.now().isoformat()
             continue
         for k, v in d.items():
             file_name = v.get("filename")
