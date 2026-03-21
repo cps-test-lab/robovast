@@ -755,3 +755,18 @@ Identifying which variation types were used on each config:
         FILTER (?variation_type != prov:Activity)
         FILTER (?variation_type != robovast:Variation)
     }
+
+Getting the failure rate by environment:
+
+.. code-block:: sparql
+
+    SELECT  ?env_model (SUM(?failures)/COUNT (?activity) * 100 AS ?result) (COUNT (?activity) AS ?total)
+    WHERE {
+        ?conf rdf:type smm:ConcreteScenario .
+        ?activity prov:used ?conf .
+        ?activity rdf:type robovast:TestExecution .
+        ?activity robovast:success ?success .
+        BIND(IF(?success=true, 0, 1) AS ?failures) .
+        ?conf dcterms:references ?env_model .
+        ?env_model rdf:type env:FloorPlanModel .
+    } GROUP BY ?env_model
