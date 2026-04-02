@@ -1,0 +1,11 @@
+scenario magbot_dummy:
+    timeout(60s)
+    
+    # MagBotSim environment parameters
+    num_movers: int
+    table_height: float
+    render_mode: string
+    initial_mover_zpos: float = 0.002
+    
+    do serial:
+        emit end

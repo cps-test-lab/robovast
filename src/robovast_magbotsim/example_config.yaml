@@ -1,0 +1,57 @@
+# Example RoboVAST configuration for testing MagBotSim environment layout variation
+# 
+# This configuration demonstrates how to use MagBotSimEnvVariation to generate
+# different tile layout variations for the BasicMagBotEnv environment.
+#
+# To test in the RoboVAST GUI:
+# 1. Copy this file to your RoboVAST configs directory
+# 2. Open RoboVAST GUI
+# 3. Load this configuration
+# 4. Select a generated configuration to see the tile layout visualization
+
+version: 1
+
+configuration:
+- name: magbot-base-config
+  config:
+    num_movers: 2                    # Number of movers in the environment
+    table_height: 0.4                # Height of the table in meters
+    render_mode: "rgb_array"         # Rendering mode
+    initial_mover_zpos: 0.002        # Initial Z position for movers
+    
+  variations:
+  # Generate different connected tile layouts
+  - MagBotSimEnvVariation:
+      num_variations: 4              # Generate 4 different layouts
+      grid_width: 7                  # Grid width in tiles
+      grid_height: 7                 # Grid height in tiles
+      num_tiles: 30                  # Target ~61% coverage
+      seed: 42                       # Random seed for reproducibility
+      strategy: random_walk          # Use random walk strategy for dense layouts
+
+# Optional: Add more variations using different strategies
+# Uncomment to create additional layout variations
+# - OneOfVariation:
+#     variations:
+#     - MagBotSimEnvVariation:
+#         num_variations: 2
+#         grid_width: 5
+#         grid_height: 5
+#         num_tiles: 12
+#         seed: 100
+#         strategy: random_walk
+#     - MagBotSimEnvVariation:
+#         num_variations: 2
+#         grid_width: 8
+#         grid_height: 8
+#         num_tiles: 35
+#         seed: 200
+#         strategy: sparse
+
+# Execution config (required for RoboVAST)
+execution:
+  image: ghcr.io/cps-test-lab/robovast:latest  # Docker image
+  scenario_file: "dummy.osc"                    # Placeholder scenario
+  runs: 1                                        # Number of simulation runs per config
+  resources:
+    cpu: 2                                       # CPU resource request

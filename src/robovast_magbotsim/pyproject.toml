@@ -1,0 +1,20 @@
+[tool.poetry]
+name = "robovast-magbotsim"
+version = "1.0.0"
+description = "MagBotSim environment variation types for RoboVAST"
+authors = ["RoboVAST Contributors"]
+license = "Apache-2.0"
+packages = [{include = "robovast_magbotsim"}]
+
+[tool.poetry.dependencies]
+python = ">=3.12,<3.14"
+robovast = "^1.0.0"
+numpy = "^1.26"
+pydantic = "^2.12"
+
+[tool.poetry.plugins."robovast.variation_types"]
+"MagBotSimEnvVariation" = "robovast_magbotsim.magbotsim_env_variation:MagBotSimEnvVariation"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

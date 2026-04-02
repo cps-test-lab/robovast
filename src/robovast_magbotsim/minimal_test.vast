@@ -1,0 +1,28 @@
+version: 1
+
+# Minimal test configuration for MagBotSim tile layout variation
+# 
+# This is the absolute simplest configuration to verify that:
+# 1. The MagBotSimEnvVariation class works
+# 2. The GUI visualization renders correctly
+# 3. Tile layouts are generated and displayed
+
+configuration:
+- name: test
+  config:
+    num_movers: 1
+  variations:
+  - MagBotSimEnvVariation:
+      num_variations: 2
+      grid_width: 5
+      grid_height: 5
+      num_tiles: 12
+      seed: 42
+      strategy: random_walk
+
+execution:
+  image: ghcr.io/cps-test-lab/robovast:latest
+  scenario_file: dummy.osc
+  runs: 1
+  resources:
+    cpu: 2
