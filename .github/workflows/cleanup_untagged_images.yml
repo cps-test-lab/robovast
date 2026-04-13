@@ -15,7 +15,7 @@ jobs:
         package:
           - ${{ github.event.repository.name }}
           - ${{ github.event.repository.name }}-sidecar
-          - robovast-archiver
+          - ${{ github.event.repository.name }}-archiver
     steps:
       - name: Delete untagged images for ${{ matrix.package }}
         uses: actions/delete-package-versions@v5
