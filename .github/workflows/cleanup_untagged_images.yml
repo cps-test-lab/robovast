@@ -1,0 +1,27 @@
+---
+name: Cleanup Untagged GHCR Images
+on:
+  schedule:
+    - cron: '0 0 * * 0' # Runs every Sunday at midnight
+  workflow_dispatch: # Allows manual trigger
+permissions: read-all
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    strategy:
+      matrix:
+        package:
+          - ${{ github.event.repository.name }}
+          - ${{ github.event.repository.name }}-sidecar
+          - ${{ github.event.repository.name }}-archiver
+    steps:
+      - name: Delete untagged images for ${{ matrix.package }}
+        uses: actions/delete-package-versions@v5
+        with:
+          owner: ${{ github.repository_owner }}
+          package-name: ${{ matrix.package }}
+          package-type: container
+          delete-only-untagged-versions: true
+          token: ${{ secrets.GITHUB_TOKEN }}

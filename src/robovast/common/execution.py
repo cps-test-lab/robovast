@@ -252,7 +252,7 @@ def get_execution_env_variables(run_num, config_name, additional_env=None):
     return env_vars
 
 
-_LOCAL_INIT_BLOCK = "eval $(fixuid -q)"
+_LOCAL_INIT_BLOCK = "command -v fixuid > /dev/null 2>&1 || { echo 'ERROR: fixuid not found in container image. Please rebuild the image.' >&2; exit 1; }; eval $(fixuid -q)"
 
 _CLUSTER_INIT_BLOCK = ""
 
