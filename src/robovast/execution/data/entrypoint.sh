@@ -26,10 +26,14 @@ INSTANCE_TYPE=""
 SYSINFO_FILE="${OUTPUT_DIR}/sysinfo.yaml"
 python3 /config/collect_sysinfo.py --output "${SYSINFO_FILE}" --external "instance_type=${INSTANCE_TYPE}" --external "available_cpus=${AVAILABLE_CPUS}" --external "available_mem=${AVAILABLE_MEM}"
 
-# setup ros2 environment
-log "Setting up ROS2 environment..."
-source "/opt/ros/$ROS_DISTRO/setup.bash" --
-source "/ws/install/setup.bash" --
+# setup ros2 environment (optional — skipped when ROS is not present)
+if [ -n "$ROS_DISTRO" ] && [ -f "/opt/ros/$ROS_DISTRO/setup.bash" ]; then
+    log "Setting up ROS2 environment..."
+    source "/opt/ros/$ROS_DISTRO/setup.bash" --
+    if [ -f "/ws/install/setup.bash" ]; then
+        source "/ws/install/setup.bash" --
+    fi
+fi
 
 # Check if X11 is enabled (default: true for backward compatibility)
 if [ "${ENABLE_X11}" != "false" ]; then
@@ -98,19 +102,32 @@ else
         --startas /usr/bin/python3 -- /config/monitor_resources.py "${OUTPUT_DIR}/resource_usage_main.csv"
     log "Started resource monitor (PID=$(cat /tmp/monitor.pid)) -> ${OUTPUT_DIR}/resource_usage_main.csv"
 
-    start-stop-daemon --start --background --make-pidfile --pidfile /tmp/rosbag.pid \
-        --startas /bin/bash -- -c "exec ros2 bag record -o ${OUTPUT_DIR}/logs/rosout_bag --storage mcap --topics /rosout"
-    log "Started rosbag recording /rosout (PID=$(cat /tmp/rosbag.pid)) -> ${OUTPUT_DIR}/logs/rosout_bag"
+    if command -v ros2 > /dev/null 2>&1; then
+        start-stop-daemon --start --background --make-pidfile --pidfile /tmp/rosbag.pid \
+            --startas /bin/bash -- -c "exec ros2 bag record -o ${OUTPUT_DIR}/logs/rosout_bag --storage mcap --topics /rosout"
+        log "Started rosbag recording /rosout (PID=$(cat /tmp/rosbag.pid)) -> ${OUTPUT_DIR}/logs/rosout_bag"
+    fi
 
     # @@POST_RUN_BLOCK@@
 
     SCENARIO_FILE="${SCENARIO_FILE:-scenario.osc}"
-    if [ -e /config/scenario.config ]; then
-        log "Starting scenario execution with config file..."
-        log "Commandline: ros2 run scenario_execution_ros scenario_execution_ros -o ${OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file /config/scenario.config ${SCENARIO_EXECUTION_PARAMETERS}"
-        exec ros2 run scenario_execution_ros scenario_execution_ros -o ${OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file /config/scenario.config ${SCENARIO_EXECUTION_PARAMETERS}
+    if command -v ros2 > /dev/null 2>&1; then
+        if [ -e /config/scenario.config ]; then
+            log "Starting scenario execution (ROS2) with config file..."
+            log "Commandline: ros2 run scenario_execution_ros scenario_execution_ros -o ${OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file /config/scenario.config ${SCENARIO_EXECUTION_PARAMETERS}"
+            exec ros2 run scenario_execution_ros scenario_execution_ros -o ${OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file /config/scenario.config ${SCENARIO_EXECUTION_PARAMETERS}
+        else
+            log "Starting scenario execution (ROS2) without config file..."
+            exec ros2 run scenario_execution_ros scenario_execution_ros -o ${OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
+        fi
     else
-        log "Starting scenario execution without config file..."
-        exec ros2 run scenario_execution_ros scenario_execution_ros -o ${OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
+        if [ -e /config/scenario.config ]; then
+            log "Starting scenario execution with config file..."
+            log "Commandline: scenario_execution -o ${OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file /config/scenario.config ${SCENARIO_EXECUTION_PARAMETERS}"
+            exec scenario_execution -o ${OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file /config/scenario.config ${SCENARIO_EXECUTION_PARAMETERS}
+        else
+            log "Starting scenario execution without config file..."
+            exec scenario_execution -o ${OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
+        fi
     fi
 fi

@@ -19,9 +19,13 @@ log() {
 log "Secondary container starting ($(hostname))..."
 log "Running as UID: $(id -u), GID: $(id -g)..."
 
-log "Setting up ROS2 environment..."
-source "/opt/ros/$ROS_DISTRO/setup.bash"
-source "/ws/install/setup.bash"
+if [ -n "$ROS_DISTRO" ] && [ -f "/opt/ros/$ROS_DISTRO/setup.bash" ]; then
+    log "Setting up ROS2 environment..."
+    source "/opt/ros/$ROS_DISTRO/setup.bash"
+    if [ -f "/ws/install/setup.bash" ]; then
+        source "/ws/install/setup.bash"
+    fi
+fi
 
 exec > >(stdbuf -oL tee -a "${LOG_FILE}")
 exec 2>&1
@@ -32,5 +36,10 @@ SOCKET="/ipc/${CONTAINER_NAME}"
 python3 /config/monitor_resources.py "${OUTPUT_DIR}/resource_usage_${CONTAINER_NAME}.csv" &
 log "Started resource monitor (PID=$!) -> ${OUTPUT_DIR}/resource_usage_${CONTAINER_NAME}.csv"
 
-log "Starting scenario-execution-server-ros on socket '${SOCKET}'..."
-exec ros2 run scenario_execution_server_ros scenario_execution_server_ros --watchdog ${WATCHDOG_TIMEOUT} --connect-timeout ${CONNECT_TIMEOUT} --socket "${SOCKET}"
+if command -v ros2 > /dev/null 2>&1; then
+    log "Starting scenario-execution-server-ros on socket '${SOCKET}'..."
+    exec ros2 run scenario_execution_server_ros scenario_execution_server_ros --watchdog ${WATCHDOG_TIMEOUT} --connect-timeout ${CONNECT_TIMEOUT} --socket "${SOCKET}"
+else
+    log "Starting scenario-execution-server on socket '${SOCKET}'..."
+    exec scenario_execution_server --watchdog ${WATCHDOG_TIMEOUT} --connect-timeout ${CONNECT_TIMEOUT} --socket "${SOCKET}"
+fi
