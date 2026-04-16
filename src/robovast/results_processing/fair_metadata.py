@@ -87,25 +87,37 @@ def load_graph(file_path: str) -> "rdflib.Graph":
     return g
 
 
-def _build_iri_context(dataset_iri: str) -> dict:
-    """Build the JSON-LD IRI context with the given dataset IRI."""
+def _build_iri_context(dataset_iri: str, extra_namespaces: dict = None) -> dict:
+    """Build the JSON-LD IRI context with the given dataset IRI.
+
+    Args:
+        dataset_iri: The dataset IRI for the ``dataset`` prefix.
+        extra_namespaces: Optional prefix→IRI dict contributed by variation
+            plugins via their ``prov_namespaces()`` classmethod.  These are
+            merged into the local context block so domain-specific IRIs
+            compact correctly without hardcoding them here.
+    """
+    local_block = {
+        "agn": "https://purl.org/secorolab/metamodels/agent#",
+        "smm": "https://purl.org/secorolab/metamodels/scenarios/osc/",
+        "env": "https://purl.org/secorolab/metamodels/environment#",
+        "robovast": "https://purl.org/robovast/metamodels/",
+        "xsd": "http://www.w3.org/2001/XMLSchema#",
+        "prov": "http://www.w3.org/ns/prov#",
+        "dcterms": "http://purl.org/dc/terms/",
+        "qudt": "http://qudt.org/schema/qudt/",
+        "unit": "http://qudt.org/vocab/unit/",
+        "dataset": dataset_iri,
+        "variations": {"@id": "robovast:variations", "@type": "@id"}
+    }
+    if extra_namespaces:
+        local_block.update(extra_namespaces)
     return {
         _CONTEXT: [
             "https://secorolab.github.io/metamodels/prov.json",
             "https://secorolab.github.io/metamodels/metadata.json",
             "https://raw.githubusercontent.com/cps-test-lab/metamodels/refs/heads/main/robovast.json",
-            {
-                "agn": "https://purl.org/secorolab/metamodels/agent#",
-                "smm": "https://purl.org/secorolab/metamodels/scenarios/osc/",
-                "env": "https://purl.org/secorolab/metamodels/environment#",
-                "robovast": "https://purl.org/robovast/metamodels/",
-                "xsd": "http://www.w3.org/2001/XMLSchema#",
-                "prov": "http://www.w3.org/ns/prov#",
-                "dcterms": "http://purl.org/dc/terms/",
-                "qudt": "http://qudt.org/schema/qudt/",
-                "unit": "http://qudt.org/vocab/unit/",
-                "dataset": dataset_iri,
-            }
+            local_block,
         ]
     }
 
@@ -408,10 +420,15 @@ def generate_prov_metadata(
 
     dataset_ns = Namespace(dataset_iri)
     campaign_ns = Namespace(f"{dataset_iri}{campaign}")
-    iri_context = _build_iri_context(dataset_iri)
 
-    # Load variation plugin classes for PROV hooks
+    # Load variation plugin classes for PROV hooks.
+    # Collect any namespace prefixes they declare so the context stays generic.
     variation_classes = load_variation_classes()
+    plugin_namespaces: dict = {}
+    for cls in variation_classes.values():
+        if hasattr(cls, "prov_namespaces"):
+            plugin_namespaces.update(cls.prov_namespaces())
+    iri_context = _build_iri_context(dataset_iri, extra_namespaces=plugin_namespaces)
 
     graph = []
 
@@ -523,7 +540,7 @@ def generate_prov_metadata(
         }
         graph.append({
             _ID: campaign_ns[config_path+"_config/scenario.config"],
-            _TYPE: [PROV["Location"]]
+            _TYPE: [PROV["Entity"]]
         })
 
         # Collect domain-specific PROV contributions from variation plugins
@@ -543,7 +560,8 @@ def generate_prov_metadata(
                     campaign_namespace=campaign_ns,
                     config_namespace=config_ns,
                     gen_activity_id=gen_activity[_ID],
-                    vast_id=vast_config[_ID]
+                    vast_id=vast_config[_ID],
+                    campaign_dir=campaign_dir,
                 )
             except Exception as e:
                 logger.warning(
