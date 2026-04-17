@@ -58,6 +58,7 @@ ROBOVAST = Namespace("https://purl.org/robovast/metamodels/")
 MAP_METADATA = Namespace("https://purl.org/secorolab/metamodels/environment#")
 QUDT = Namespace("http://qudt.org/schema/qudt/")
 QUDT_UNIT = Namespace("http://qudt.org/vocab/unit/")
+ORCID = Namespace("https://orcid.org/")
 
 # JSON-LD context helpers
 _ID = "@id"
@@ -294,7 +295,6 @@ def _build_vast_config(vast_config, campaign_ns):
     return configs, variations
 
 def _build_dataset(dataset_iri, campaign_ns: Namespace, metadata: dict, vast_config) -> dict:
-    ORCID = Namespace("https://orcid.org/")
     def get_agents_by_type(agn_type):
         agents = []
         for a in metadata.get(agn_type, []):
@@ -315,8 +315,8 @@ def _build_dataset(dataset_iri, campaign_ns: Namespace, metadata: dict, vast_con
         if d == "zenodo":
             published_date = dt.datetime.now().isoformat()
             continue
-        license = metadata.get("license", "").lower()
-        license_iri = f"http://purl.org/NET/rdflicense/{license}"
+        license_ = metadata.get("license", "").lower()
+        license_iri = f"http://purl.org/NET/rdflicense/{license_}"
         for k, v in d.items():
             file_name = v.get("filename")
             v["metadata"]["license"] = license_iri
