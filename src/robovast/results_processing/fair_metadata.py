@@ -224,7 +224,7 @@ def _build_vast_config(vast_config, campaign_ns):
             if var_type in ["PathVariationRandom", "ObstacleVariation", "ObstacleVariationWithDistanceTrigger", "PathVariationRasterized"]:
                 var_config["hasUnit"] = QUDT_UNIT["M"]
             for k, v in params.items():
-                if k == "map_file" or k == "mesh_file":
+                if k in ("map_file", "mesh_file"):
                     var_config[k] = campaign_ns[v]
                 elif k == "floorplans":
                     var_config[k] = [campaign_ns[m] for m in v]
@@ -242,7 +242,7 @@ def _build_vast_config(vast_config, campaign_ns):
                             for val in params["values"]:
                                 new_vals = []
                                 for n, vv in zip(v, val):
-                                    if n == "map_file" or n == "mesh_file":
+                                    if n in ("map_file", "mesh_file"):
                                         new_vals.append(campaign_ns[vv])
                                     else:
                                         new_vals.append(vv)
@@ -251,14 +251,14 @@ def _build_vast_config(vast_config, campaign_ns):
                         param_name.append(v)
                         if var_type == "ParameterVariationList":
                             param_value = var_config.setdefault("param_values", [])
-                            if v == "map_file" or v == "mesh_file":
+                            if v in ("map_file", "mesh_file"):
                                 for val in params["values"]:
                                     param_value.append(campaign_ns[val])
                             else:
                                 param_value.extend(params["values"])
                 elif k == "values":
                     continue
-                elif k == "goal_pose" or k == "goal_poses" or k == "start_pose":
+                elif k in ("goal_pose", "goal_poses", "start_pose"):
                     if isinstance(v, str):
                         param_name = var_config.setdefault("param_name", [])
                         param_name.append(v)
