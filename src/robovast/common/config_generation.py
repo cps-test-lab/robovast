@@ -619,6 +619,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
             current_configs = result
 
         for c in current_configs:
+            c["_config_name"] = config.get("name")
             c["_config_block"] = config
 
         configs.extend(current_configs)

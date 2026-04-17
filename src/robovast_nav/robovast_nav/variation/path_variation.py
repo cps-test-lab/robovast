@@ -169,7 +169,7 @@ class PathVariationRandom(NavVariation):
         else:
             return None
 
-        return ProvContribution(scenario_properties={ROBOVAST["goals"]: count})
+        return ProvContribution(scenario_properties={ROBOVAST["n_goals"]: count})
 
     def variation(self, in_configs):
         self.progress_update("Running Path Variation...")

@@ -217,7 +217,7 @@ class ObstacleVariation(NavVariation):
         objects_parameter_name = config_entry.get("_objects_parameter_name", "")
         objects_list = config_cfg.get(objects_parameter_name, [])
         return ProvContribution(
-            scenario_properties={ROBOVAST["obstacles"]: len(objects_list)}
+            scenario_properties={ROBOVAST["n_obstacles"]: len(objects_list)}
         )
 
     @staticmethod
