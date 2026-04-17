@@ -222,6 +222,7 @@ def _build_vast_config(vast_config, campaign_ns):
                 _ID: campaign_ns[config.get("name")+"/variations/"+var_type+"Config"],
                 _TYPE: [PROV["Entity"], ROBOVAST[f"variations/{var_type}Config"]],
             }
+            # TODO: map related is idealy handled in robovast_nav
             if var_type in ["PathVariationRandom", "ObstacleVariation", "ObstacleVariationWithDistanceTrigger", "PathVariationRasterized"]:
                 var_config["hasUnit"] = QUDT_UNIT["M"]
             for k, v in params.items():
