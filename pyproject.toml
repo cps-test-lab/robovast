@@ -81,6 +81,7 @@ webdav = "robovast.execution.cluster_execution.share_providers.webdav:WebDavShar
 [tool.poetry.plugins."robovast.postprocessing_commands"]
 command = "robovast.results_processing.postprocessing_plugins:Command"
 rosbags_process = "robovast.results_processing.postprocessing_plugins:RosbagsProcess"
+manipulation_process_results = "robovast_manipulation.manipulation_postprocessing:ManipulationProcessResults"
 
 [tool.poetry.plugins."robovast.publication_plugins"]
 zip = "robovast.results_processing.publication_plugins.zip:Zip"
