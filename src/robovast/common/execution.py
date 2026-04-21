@@ -700,6 +700,99 @@ def _get_image_revision(image: str) -> str:
     return 'unknown'
 
 
+def prepare_fixed_jobs_config_files(out_dir, campaign_data, runs, n_jobs, cluster=False):
+    """Write per-job multi-document scenario parameter files for the ``fixed_jobs`` execution mode.
+
+    For each job index ``0 .. n_jobs-1`` this writes::
+
+        <out_dir>/_transient/job{job_id}_scenario.configs
+
+    as a multi-document YAML file (documents separated by ``---``).  Each
+    document represents one (config × run) variant.  Variants are distributed
+    round-robin across jobs so that each job receives a roughly equal number of
+    variants.
+
+    Every document has the ``_output_dir`` meta-key set to
+    ``<config_name>/<run_num>`` so that scenario-execution writes outputs to
+    the correct subdirectory of the campaign root (``/out``), preserving the
+    same directory layout as ``one_job_per_run`` mode.
+
+    Args:
+        out_dir: Campaign output directory (the ``out_template`` path).
+        campaign_data: Campaign data dict as returned by
+            :func:`~robovast.common.config_generation.generate_scenario_variations`.
+        runs: Number of runs per config (0-based: 0 .. runs-1).
+        n_jobs: Number of jobs to distribute variants across.
+        cluster: When ``True``, local parameter overrides are not applied
+            (same semantics as :func:`prepare_campaign_configs`).
+    """
+    campaign_transient_dir = os.path.join(out_dir, "_transient")
+    os.makedirs(campaign_transient_dir, exist_ok=True)
+
+    vast_file_path = os.path.dirname(campaign_data["vast"])
+    original_scenario_path = os.path.join(vast_file_path, campaign_data.get("scenario_file"))
+
+    try:
+        scenario_params = get_scenario_parameters(original_scenario_path)
+        scenario_name = next(iter(scenario_params.keys()))
+        if scenario_name is None:
+            raise ValueError(f"Scenario name not found in {original_scenario_path}")
+    except Exception as e:
+        raise RuntimeError(f"Could not get scenario name from {original_scenario_path}: {e}") from e
+
+    existing_scenario_parameters = next(iter(scenario_params.values())) if scenario_params else []
+    valid_param_names = [
+        p.get('name') for p in existing_scenario_parameters
+        if isinstance(p, dict) and 'name' in p
+    ]
+
+    parameter_overrides = []
+    if not cluster:
+        local_config = campaign_data.get("execution", {}).get("local")
+        if local_config is not None:
+            if hasattr(local_config, 'parameter_overrides'):
+                parameter_overrides = local_config.parameter_overrides or []
+            elif isinstance(local_config, dict):
+                parameter_overrides = local_config.get("parameter_overrides") or []
+
+    # Enumerate all (config, run) variants in the same order as one_job_per_run:
+    # outer loop = runs, inner loop = configs (matching generate_compose_run_script).
+    variants = []
+    for run_num in range(runs):
+        for config_data in campaign_data["configs"]:
+            config_name = config_data.get("name")
+            config = config_data.get("config")
+            config_dict = convert_dataclasses_to_dict(copy.deepcopy(config)) if config else {}
+            if parameter_overrides:
+                _apply_local_parameter_overrides(
+                    config_dict, parameter_overrides, valid_param_names,
+                    scenario_name, original_scenario_path
+                )
+            variants.append((config_name, run_num, config_dict))
+
+    n_jobs = max(1, n_jobs)
+
+    for job_id in range(n_jobs):
+        job_variants = variants[job_id::n_jobs]
+        if not job_variants:
+            continue
+
+        docs = []
+        for config_name, run_num, config_dict in job_variants:
+            doc = {scenario_name: {"_output_dir": f"{config_name}/{run_num}", **config_dict}}
+            docs.append(doc)
+
+        dst_path = os.path.join(campaign_transient_dir, f"job{job_id}_scenario.configs")
+        with open(dst_path, 'w') as f:
+            yaml.dump_all(docs, f, default_flow_style=False, sort_keys=False,
+                          explicit_start=True)
+
+    logger.debug(
+        "Written %d job scenario config file(s) in %s (n_jobs=%d, total_variants=%d)",
+        n_jobs, campaign_transient_dir, n_jobs, len(variants),
+    )
+
+
 def create_execution_yaml(runs, output_dir, execution_params=None, context=None):
     """Create execution.yaml file with ISO formatted timestamp.
 

@@ -18,6 +18,27 @@
 from typing import Optional
 
 
+def _parse_cpu_quantity(raw: str) -> int:
+    """Parse a Kubernetes CPU quantity string into a whole-CPU integer.
+
+    Supports:
+    - Plain integers (``"8"``) → ``8``
+    - Millicpu (``"500m"``) → ``0`` (rounds down; ``"1000m"`` → ``1``)
+
+    Returns 0 on parse failure.
+    """
+    raw = raw.strip()
+    if raw.endswith('m'):
+        try:
+            return int(raw[:-1]) // 1000
+        except ValueError:
+            return 0
+    try:
+        return int(float(raw))
+    except ValueError:
+        return 0
+
+
 class BaseConfig(object):
     """Base class for cluster configurations.
 
@@ -211,3 +232,53 @@ class BaseConfig(object):
             if doc and doc.get('kind') == 'Pod':
                 doc.setdefault('spec', {})['nodeSelector'] = dict(node_labels)
         return docs
+
+    def get_kueue_cpu_capacity(self, kube_context=None) -> Optional[int]:
+        """Return the nominal CPU quota of the ``robovast`` Kueue ClusterQueue.
+
+        Queries the Kueue ``kueue.x-k8s.io/v1beta1`` ``ClusterQueue`` API for
+        the queue named ``"robovast"`` and sums the ``nominalQuota`` values for
+        all ``cpu`` resource entries across all resource groups and flavors.
+
+        Args:
+            kube_context: Kubernetes context name.  ``None`` uses the active
+                context.
+
+        Returns:
+            int: Total nominal CPU quota as an integer, or ``None`` if the
+                query fails (Kueue not installed, queue not found, parse
+                error, etc.).
+        """
+        try:
+            from kubernetes import client as k8s_client  # pylint: disable=import-outside-toplevel
+            from kubernetes import config as k8s_config  # pylint: disable=import-outside-toplevel
+
+            try:
+                k8s_config.load_incluster_config()
+            except k8s_config.ConfigException:
+                k8s_config.load_kube_config(context=kube_context)
+
+            custom_api = k8s_client.CustomObjectsApi()
+            cq = custom_api.get_cluster_custom_object(
+                group="kueue.x-k8s.io",
+                version="v1beta1",
+                plural="clusterqueues",
+                name="robovast",
+            )
+
+            total_cpu = 0
+            for rg in cq.get("spec", {}).get("resourceGroups", []):
+                for flavor in rg.get("flavors", []):
+                    for resource in flavor.get("resources", []):
+                        if resource.get("name") == "cpu":
+                            raw = resource.get("nominalQuota", "0")
+                            total_cpu += _parse_cpu_quantity(str(raw))
+
+            return total_cpu if total_cpu > 0 else None
+
+        except Exception as exc:  # pylint: disable=broad-except
+            import logging  # pylint: disable=import-outside-toplevel
+            logging.getLogger(__name__).warning(
+                "Could not query Kueue ClusterQueue CPU capacity: %s", exc
+            )
+            return None

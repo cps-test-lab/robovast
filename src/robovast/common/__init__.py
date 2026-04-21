@@ -9,7 +9,8 @@ from .config_generation import execute_variation, generate_scenario_variations
 from .execution import (COMPAT_VERSION, create_execution_yaml,
                         generate_execution_yaml_script, get_campaign,
                         get_campaign_timestamp, get_execution_env_variables,
-                        is_campaign_dir, prepare_campaign_configs)
+                        is_campaign_dir, prepare_campaign_configs,
+                        prepare_fixed_jobs_config_files)
 from .file_cache import FileCache
 from .progress import ProgressBar, fmt_size, make_download_progress_callback
 
@@ -23,6 +24,7 @@ __all__ = [
     'execute_variation',
     'convert_dataclasses_to_dict',
     'prepare_campaign_configs',
+    'prepare_fixed_jobs_config_files',
     'get_execution_env_variables',
     'VariationConfig',
     'get_validated_config',

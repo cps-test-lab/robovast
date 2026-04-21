@@ -15,7 +15,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
-from typing import Any, Optional, Union
+from typing import Any, Literal, Optional, Union
 
 from pydantic import (BaseModel, ConfigDict, ValidationError, field_validator,
                       model_validator)
@@ -130,6 +130,8 @@ class ExecutionConfig(BaseModel):
     scenario_file: Optional[str] = None
     run_files: Optional[list[str]] = None
     timeout: Optional[int] = None  # Maximum execution time in seconds per run
+    mode: Literal["one_job_per_run", "fixed_jobs"] = "one_job_per_run"
+    simulation: Optional[str] = None
 
     @field_validator('env')
     @classmethod
@@ -158,6 +160,14 @@ class ExecutionConfig(BaseModel):
             )
 
         return v
+
+    @model_validator(mode='after')
+    def validate_fixed_jobs_requires_simulation(self) -> 'ExecutionConfig':
+        if self.mode == 'fixed_jobs' and not self.simulation:
+            raise ValueError(
+                "execution.mode 'fixed_jobs' requires execution.simulation to be set"
+            )
+        return self
 
 
 class ResultsConfig(BaseModel):

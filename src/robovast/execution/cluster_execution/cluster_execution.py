@@ -33,7 +33,8 @@ from kubernetes import config as kube_config
 
 from robovast.common import (COMPAT_VERSION, ProgressBar, get_campaign,
                              get_execution_env_variables, load_config,
-                             normalize_secondary_containers)
+                             normalize_secondary_containers,
+                             prepare_fixed_jobs_config_files)
 from robovast.common.cluster_context import resolve_resources
 from robovast.common.config_generation import generate_scenario_variations
 from robovast.execution.cluster_execution.kubernetes import check_pod_running
@@ -423,6 +424,7 @@ class JobRunner:
         # Get execution parameters from campaign_data
         execution_params = self.campaign_data.get("execution", {})
         self.run_as_user = execution_params.get("run_as_user", 1000)
+        self.mode = execution_params.get("mode", "one_job_per_run")
 
         # Create manifest with env vars from config
         self.manifest = self.get_job_manifest(parameters["image"],
@@ -888,6 +890,13 @@ class JobRunner:
             self.cleanup_pods()
             self.cleanup_jobs()
 
+        if self.mode == "fixed_jobs":
+            self._run_fixed_jobs(detached=detached)
+        else:
+            self._run_one_job_per_run(detached=detached)
+
+    def _run_one_job_per_run(self, detached=False):
+        """Submit one Kubernetes job per (config × run) combination."""
         # upload all config files to S3 bucket
         logger.debug(f"Uploading task config files for {len(self.configs)} scenarios to S3...")
         self.upload_campaigns_to_s3()
@@ -998,6 +1007,170 @@ class JobRunner:
 
         logger.debug(f"MinIO S3 pod is left running for reuse")
 
+    def _run_fixed_jobs(self, detached=False):
+        """Submit N Kubernetes jobs, each processing a round-robin slice of all variants."""
+        execution_params = self.campaign_data.get("execution", {})
+        resources = execution_params.get("resources") or {}
+        cpu_per_job_str = str(resources.get("cpu", "1"))
+
+        # Determine number of jobs from Kueue ClusterQueue capacity
+        try:
+            from robovast.execution.cluster_config.base_config import _parse_cpu_quantity  # pylint: disable=import-outside-toplevel
+            cpu_per_job = _parse_cpu_quantity(cpu_per_job_str)
+            total_cpu = self.cluster_config.get_kueue_cpu_capacity(kube_context=self.kube_context)
+            if total_cpu and cpu_per_job > 0:
+                n_jobs = max(1, total_cpu // cpu_per_job)
+            else:
+                logger.warning(
+                    "Could not determine Kueue CPU capacity; defaulting to 1 job."
+                )
+                n_jobs = 1
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("Failed to compute n_jobs from Kueue capacity: %s. Using 1.", exc)
+            n_jobs = 1
+
+        total_variants = self.num_runs * len(self.configs)
+        logger.info(
+            "fixed_jobs mode: %d variant(s) across %d job(s) (ID: %s)...",
+            total_variants, n_jobs, self.campaign,
+        )
+
+        # Upload config files + per-job scenario.configs to S3
+        self.upload_campaigns_to_s3(n_jobs=n_jobs)
+
+        # Build and submit one job manifest per job slot
+        job_manifests = []
+        for job_id in range(n_jobs):
+            job_manifest = self._create_fixed_job_manifest(job_id, n_jobs)
+            job_manifests.append((job_manifest['metadata']['name'], job_manifest))
+
+        all_jobs = [jn for jn, _ in job_manifests]
+
+        _retry_wait_cap = 30
+        with ProgressBar(total=n_jobs, desc=f"Creating {n_jobs} fixed job(s)", unit="job") as pbar:
+            for job_name, job_manifest in job_manifests:
+                attempt = 0
+                while True:
+                    try:
+                        self.k8s_batch_client.create_namespaced_job(
+                            namespace=self.namespace, body=job_manifest
+                        )
+                        break
+                    except client.exceptions.ApiException as exc:
+                        if exc.status == 409:
+                            logger.debug(
+                                f"[{self.campaign}] Job '{job_name}' already exists, skipping."
+                            )
+                            break
+                        elif exc.status is not None and exc.status < 500:
+                            raise
+                        else:
+                            attempt += 1
+                            wait = min(2 ** attempt, _retry_wait_cap)
+                            logger.warning(
+                                "Server error creating job '%s' (attempt %d, status %s), "
+                                "retrying in %ds: %s",
+                                job_name, attempt, exc.status, wait, exc,
+                            )
+                            time.sleep(wait)
+                            kube_config.load_kube_config(context=self.kube_context)
+                            self.k8s_batch_client = client.BatchV1Api()
+                    except Exception as exc:
+                        attempt += 1
+                        wait = min(2 ** attempt, _retry_wait_cap)
+                        logger.warning(
+                            "Connection error creating job '%s' (attempt %d), "
+                            "retrying in %ds: %s",
+                            job_name, attempt, wait, exc,
+                        )
+                        time.sleep(wait)
+                        kube_config.load_kube_config(context=self.kube_context)
+                        self.k8s_batch_client = client.BatchV1Api()
+                pbar.update(1)
+
+        logger.info(f"All {n_jobs} fixed job(s) created. Starting execution...")
+
+        if detached:
+            logger.info("Running in detached mode. Jobs will continue running in the background.")
+            return
+
+        self.campaign_start_time = datetime.datetime.now(datetime.timezone.utc)
+        try:
+            while True:
+                job_status = self.get_remaining_jobs(all_jobs)
+                if job_status:
+                    logger.info(f"Waiting for {len(job_status)} out of {n_jobs} job(s) to finish...")
+                    time.sleep(1)
+                else:
+                    break
+            logger.info("All fixed jobs finished.")
+        except KeyboardInterrupt:
+            logger.info("\nKeyboard interrupt received, cleaning up...")
+
+        self.campaign_end_time = datetime.datetime.now(datetime.timezone.utc)
+        logger.info("Collecting job statistics...")
+        self.collect_job_statistics(all_jobs)
+
+        self.cleanup_pods(campaign=self.campaign)
+        self.cleanup_jobs(campaign=self.campaign)
+        logger.info("Cleaned up jobs.")
+        self.print_campaign_statistics()
+        logger.debug("MinIO S3 pod is left running for reuse")
+
+    def _create_fixed_job_manifest(self, job_id: int, n_jobs: int) -> dict:
+        """Build a Kubernetes Job manifest for one fixed_jobs slot.
+
+        Uses :meth:`create_job_manifest_for_configuration` as the base
+        (``config_name="fixed"``, ``run_number=job_id``) to inherit all
+        S3 / Kueue / resource boilerplate, then patches:
+
+        * ``SCENARIO_EXECUTION_PARAMETERS`` — uses the per-job multi-doc
+          parameter file and ``--output-result-per-scenario``.
+        * ``S3_PREFIX`` — set to the campaign root so the post-run uploader
+          mirrors the whole ``/out`` tree (which contains per-scenario
+          subdirectories written by scenario-execution's ``_output_dir``
+          meta-key).
+        """
+        execution_params = self.campaign_data.get("execution", {})
+        simulation = (execution_params or {}).get("simulation") or ""
+
+        # Use the shared helper to get a fully-wired manifest (volumes, init
+        # containers, S3 credentials, resource limits, Kueue labels, …).
+        job_manifest = self.create_job_manifest_for_configuration("fixed", job_id)
+
+        # --- Override SCENARIO_EXECUTION_PARAMETERS ---
+        sep_parts = [
+            f"--scenario-parameter-file /config/job{job_id}_scenario.configs",
+            "--output-result-per-scenario",
+        ]
+        if simulation:
+            sep_parts.append(f"--simulation {simulation}")
+        if self.log_tree:
+            sep_parts.append("-t")
+        scenario_exec_params = " ".join(sep_parts)
+
+        # --- Override S3_PREFIX to campaign root ---
+        shared_bucket = self.cluster_config.get_s3_bucket()
+        campaign_bucket_name = self._bucket_name_for_campaign(self.campaign)
+        campaign_prefix = f"{campaign_bucket_name}/" if shared_bucket else ""
+
+        containers = job_manifest['spec']['template']['spec']['containers']
+        env_list = containers[0].get('env', [])
+        for env_entry in env_list:
+            if env_entry['name'] == 'SCENARIO_EXECUTION_PARAMETERS':
+                env_entry['value'] = scenario_exec_params
+                break
+        else:
+            env_list.append({'name': 'SCENARIO_EXECUTION_PARAMETERS', 'value': scenario_exec_params})
+
+        for env_entry in env_list:
+            if env_entry['name'] == 'S3_PREFIX':
+                env_entry['value'] = campaign_prefix.rstrip("/")
+                break
+
+        containers[0]['env'] = env_list
+        return job_manifest
+
     def cleanup_pods(self, campaign=None):
         """Delete pods. If campaign is given, only delete pods with that campaign-id label."""
         label_selector = "jobgroup=scenario-runs"
@@ -1017,12 +1190,17 @@ class JobRunner:
         except client.rest.ApiException as e:
             logger.error(f"Error deleting pods with label selector: {e}")
 
-    def upload_campaigns_to_s3(self):
+    def upload_campaigns_to_s3(self, n_jobs: int = 0):
         """Prepare and upload run config files to the storage backend.
 
         Uses :mod:`.archiver` and :mod:`.bucket_ops` to upload via the
         archiver sidecar.  Raises :class:`RuntimeError` if the campaign
         already exists in storage.
+
+        Args:
+            n_jobs: Number of fixed-job slots (only used when mode is
+                ``fixed_jobs``).  The per-job ``job{id}_scenario.configs``
+                files are written into ``_transient/`` before uploading.
         """
         from robovast.common import (  # pylint: disable=import-outside-toplevel
             create_execution_yaml, prepare_campaign_configs)
@@ -1044,6 +1222,11 @@ class JobRunner:
         with tempfile.TemporaryDirectory() as temp_dir:
             out_dir = os.path.join(temp_dir, "out_template")
             prepare_campaign_configs(out_dir, self.campaign_data, cluster=True)
+
+            if self.mode == "fixed_jobs" and n_jobs > 0:
+                prepare_fixed_jobs_config_files(
+                    out_dir, self.campaign_data, self.num_runs, n_jobs=n_jobs, cluster=True
+                )
 
             # Inject instance-type detection command when supported.
             entrypoint_path = os.path.join(out_dir, "_transient", "entrypoint.sh")

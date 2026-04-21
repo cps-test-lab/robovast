@@ -23,7 +23,8 @@ import tempfile
 from robovast.common import (COMPAT_VERSION, generate_execution_yaml_script,
                              get_execution_env_variables, load_config,
                              normalize_secondary_containers,
-                             prepare_campaign_configs)
+                             prepare_campaign_configs,
+                             prepare_fixed_jobs_config_files)
 from robovast.common.cli import get_project_config
 from robovast.common.config_generation import generate_scenario_variations
 
@@ -491,6 +492,310 @@ def _build_compose_yaml(
     return "\n".join(lines)
 
 
+def _build_fixed_jobs_compose_yaml(
+    docker_image,
+    results_dir_var,
+    run_files,
+    env_vars,
+    pre_command,
+    post_command,
+    uid,
+    gid,
+    main_cpu,
+    main_memory,
+    main_gpu,
+    secondary_containers,
+    use_gui_block,
+    skip_resource_allocation=True,
+    scenario_execution_params='',
+    scenario_file_name='scenario.osc',
+):
+    """Build the docker-compose YAML for a fixed_jobs run as a shell heredoc string.
+
+    Unlike :func:`_build_compose_yaml`, this variant:
+
+    * Mounts the **campaign root** (``${RESULTS_DIR}``) to ``/out`` so
+      scenario-execution can write per-scenario subdirectories there.
+    * Does **not** mount a per-config ``scenario.config`` (the entrypoint
+      falls through to the ``else`` branch and uses
+      ``SCENARIO_EXECUTION_PARAMETERS`` to supply the multi-doc parameter
+      file instead).
+    * Mounts ``${RESULTS_DIR}/_transient/job0_scenario.configs`` to
+      ``/config/job0_scenario.configs:ro``.
+    """
+
+    def quote(s):
+        return s.replace('"', '\\"')
+
+    has_secondaries = bool(secondary_containers)
+
+    def _config_volume_mounts():
+        yield f'      - "{quote(results_dir_var)}/_config/{scenario_file_name}:/config/{scenario_file_name}:ro"'
+        yield f'      - "{quote(results_dir_var)}/_transient/job0_scenario.configs:/config/job0_scenario.configs:ro"'
+        for run_file in run_files:
+            yield f'      - "{quote(results_dir_var)}/_config/{run_file}:/config/{run_file}:ro"'
+        if has_secondaries:
+            yield '      - shared_tmp:/tmp'
+            yield '      - shared_ipc:/ipc'
+
+    lines = []
+    lines.append("services:")
+    lines.append("  robovast:")
+    lines.append(f"    image: ${{DOCKER_IMAGE}}")
+    lines.append(f"    container_name: robovast")
+    lines.append(f"    init: true")
+    if main_gpu:
+        lines.append("    runtime: nvidia")
+    if has_secondaries:
+        lines.append("    ipc: shareable")
+
+    lines.append("    volumes:")
+    # Mount the full campaign dir as /out so per-scenario _output_dir paths resolve correctly
+    lines.append(f'      - "{quote(results_dir_var)}:/out"')
+    lines.append(f'      - "{quote(results_dir_var)}/_transient/entrypoint.sh:/config/entrypoint.sh:ro"')
+    lines.append(f'      - "{quote(results_dir_var)}/_transient/collect_sysinfo.py:/config/collect_sysinfo.py:ro"')
+    lines.append(f'      - "{quote(results_dir_var)}/_transient/monitor_resources.py:/config/monitor_resources.py:ro"')
+    lines.extend(_config_volume_mounts())
+    if use_gui_block:
+        lines.append("      - /tmp/.X11-unix:/tmp/.X11-unix:rw")
+        lines.append("      - /dev/dri:/dev/dri")
+
+    lines.append("    environment:")
+    for key, value in env_vars.items():
+        lines.append(f"      - {key}={value}")
+    if pre_command:
+        lines.append(f'      - PRE_COMMAND={pre_command}')
+    if post_command:
+        lines.append(f'      - POST_COMMAND={post_command}')
+    lines.append("      - AVAILABLE_CPUS=${AVAILABLE_CPUS}")
+    lines.append("      - AVAILABLE_MEM=${AVAILABLE_MEM}")
+    lines.append(f"      - SCENARIO_FILE={scenario_file_name}")
+    if scenario_execution_params:
+        lines.append(f"      - SCENARIO_EXECUTION_PARAMETERS={scenario_execution_params}")
+    if use_gui_block:
+        lines.append("      - DISPLAY=${DISPLAY:-:0}")
+        lines.append("      - LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-0}")
+    if main_gpu:
+        lines.append("      - QT_X11_NO_MITSHM=1")
+        lines.append("      - NVIDIA_VISIBLE_DEVICES=all")
+        lines.append("      - NVIDIA_DRIVER_CAPABILITIES=all")
+
+    if not skip_resource_allocation:
+        res = _compose_resources_block(main_cpu, main_memory)
+        if res:
+            lines.append(res)
+
+    lines.append(f"    user: \"{uid}:{gid}\"")
+    lines.append("    stop_grace_period: 60s")
+    lines.append("    command: ${ROBOVAST_COMMAND}")
+    lines.append("    tty: ${ROBOVAST_TTY}")
+    lines.append("    stdin_open: ${ROBOVAST_STDIN_OPEN}")
+
+    for sc in secondary_containers:
+        sc_name = sc['name']
+        sc_cpu = sc['resources'].get('cpu')
+        sc_memory = sc['resources'].get('memory')
+        sc_gpu = sc['resources'].get('gpu')
+
+        lines.append(f"  {sc_name}:")
+        lines.append(f"    image: ${{DOCKER_IMAGE}}")
+        lines.append(f"    container_name: {sc_name}")
+        if sc_gpu:
+            lines.append("    runtime: nvidia")
+        lines.append(f"    network_mode: service:robovast")
+        lines.append(f"    ipc: service:robovast")
+        lines.append(f"    depends_on:")
+        lines.append(f"      - robovast")
+        lines.append("    volumes:")
+        lines.append(f'      - "{quote(results_dir_var)}:/out"')
+        lines.append(f'      - "{quote(results_dir_var)}/_transient/secondary_entrypoint.sh:/config/secondary_entrypoint.sh:ro"')
+        lines.append(f'      - "{quote(results_dir_var)}/_transient/collect_sysinfo.py:/config/collect_sysinfo.py:ro"')
+        lines.append(f'      - "{quote(results_dir_var)}/_transient/monitor_resources.py:/config/monitor_resources.py:ro"')
+        lines.extend(_config_volume_mounts())
+        if use_gui_block:
+            lines.append("      - /tmp/.X11-unix:/tmp/.X11-unix:rw")
+            lines.append("      - /dev/dri:/dev/dri")
+        lines.append("    environment:")
+        lines.append(f"      - CONTAINER_NAME={sc_name}")
+        lines.append(f"      - SCENARIO_FILE={scenario_file_name}")
+        for key, value in env_vars.items():
+            lines.append(f"      - {key}={value}")
+        if use_gui_block:
+            lines.append("      - DISPLAY=${DISPLAY:-:0}")
+            lines.append("      - LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-0}")
+        if sc_gpu:
+            lines.append("      - QT_X11_NO_MITSHM=1")
+            lines.append("      - NVIDIA_VISIBLE_DEVICES=all")
+            lines.append("      - NVIDIA_DRIVER_CAPABILITIES=all")
+        if not skip_resource_allocation:
+            sc_res = _compose_resources_block(sc_cpu, sc_memory)
+            if sc_res:
+                lines.append(sc_res)
+        lines.append(f"    user: \"{uid}:{gid}\"")
+        lines.append("    stop_signal: SIGINT")
+        lines.append("    stop_grace_period: 5s")
+        lines.append("    command: ${SECONDARY_COMMAND}")
+        lines.append("    tty: ${ROBOVAST_TTY}")
+        lines.append("    stdin_open: ${ROBOVAST_STDIN_OPEN}")
+
+    if has_secondaries:
+        lines.append("")
+        lines.append("volumes:")
+        lines.append("  shared_tmp:")
+        lines.append("  shared_ipc:")
+        lines.append("    driver: local")
+        lines.append("    driver_opts:")
+        lines.append("      type: tmpfs")
+        lines.append("      device: tmpfs")
+        lines.append('      o: "mode=0777"')
+
+    return "\n".join(lines)
+
+
+def _generate_fixed_jobs_run_script_block(
+    runs, campaign_data, config_path_result, pre_command, post_command,
+    docker_image, uid, gid, main_cpu, main_memory, main_gpu,
+    normalized_secondary, skip_resource_allocation, log_tree,
+):
+    """Return the shell script block that runs a single fixed_jobs container.
+
+    Writes ``_transient/job0_scenario.configs`` into the campaign template
+    directory and generates a single docker-compose invocation that mounts
+    the whole campaign dir as ``/out``.  scenario-execution's
+    ``--output-result-per-scenario`` flag ensures that each variant lands in
+    the correct ``<config>/<run>`` subdirectory.
+    """
+    # Write job0_scenario.configs into the out_template/_transient/ dir
+    prepare_fixed_jobs_config_files(config_path_result, campaign_data, runs, n_jobs=1)
+
+    run_files = campaign_data.get("_run_files", [])
+    execution_params = campaign_data.get("execution", {})
+    simulation = (execution_params or {}).get('simulation') or ""
+    scenario_file_name = os.path.basename(campaign_data.get("scenario_file", "scenario.osc"))
+
+    # Build SCENARIO_EXECUTION_PARAMETERS
+    sep_parts = [
+        "--scenario-parameter-file /config/job0_scenario.configs",
+        "--output-result-per-scenario",
+    ]
+    if simulation:
+        sep_parts.append(f"--simulation {simulation}")
+    if log_tree:
+        sep_parts.append("-t")
+    else:
+        sep_parts.append("${SCENARIO_EXECUTION_PARAMS}")
+    scenario_execution_params = " ".join(sep_parts)
+
+    env_vars = get_execution_env_variables(0, "fixed_jobs", execution_params.get('env'))
+
+    compose_yaml = _build_fixed_jobs_compose_yaml(
+        docker_image=docker_image,
+        results_dir_var="${RESULTS_DIR}",
+        run_files=run_files,
+        env_vars=env_vars,
+        pre_command=pre_command,
+        post_command=post_command,
+        uid=uid,
+        gid=gid,
+        main_cpu=main_cpu,
+        main_memory=main_memory,
+        main_gpu=main_gpu,
+        secondary_containers=normalized_secondary,
+        use_gui_block=True,
+        skip_resource_allocation=skip_resource_allocation,
+        scenario_execution_params=scenario_execution_params,
+        scenario_file_name=scenario_file_name,
+    )
+
+    total_variants = runs * len(campaign_data.get("configs", []))
+    compose_file = "/tmp/robovast_compose_fixed_jobs.yml"
+
+    script = ''
+    script += f'\necho ""\n'
+    script += f'echo "{"=" * 60}"\n'
+    script += f'echo "Running fixed_jobs mode: {total_variants} variant(s) in a single container"\n'
+    script += f'echo "{"=" * 60}"\n'
+    script += f'echo ""\n\n'
+
+    script += f'AVAILABLE_CPUS="{main_cpu}"\n'
+    if main_memory:
+        script += f'AVAILABLE_MEM="{main_memory}"\n'
+    else:
+        script += "AVAILABLE_MEM=\"$(awk '/MemTotal/ {print $2 * 1024}' /proc/meminfo)\"\n"
+
+    script += '\n# Determine command and interactive settings based on START_ONLY\n'
+    script += 'if [ "$START_ONLY" = true ]; then\n'
+    script += '    ROBOVAST_COMMAND="/bin/bash"\n'
+    script += '    SECONDARY_COMMAND="/bin/bash"\n'
+    script += '    ROBOVAST_TTY="true"\n'
+    script += '    ROBOVAST_STDIN_OPEN="true"\n'
+    script += 'else\n'
+    script += '    ROBOVAST_COMMAND="/bin/bash /config/entrypoint.sh"\n'
+    script += '    SECONDARY_COMMAND="/bin/bash /config/secondary_entrypoint.sh"\n'
+    script += '    ROBOVAST_TTY="false"\n'
+    script += '    ROBOVAST_STDIN_OPEN="false"\n'
+    script += 'fi\n\n'
+
+    script += f'CURRENT_COMPOSE_FILE="{compose_file}"\n'
+    script += 'export DOCKER_IMAGE RESULTS_DIR AVAILABLE_CPUS AVAILABLE_MEM LIBGL_ALWAYS_SOFTWARE ROBOVAST_COMMAND SECONDARY_COMMAND ROBOVAST_TTY ROBOVAST_STDIN_OPEN SCENARIO_EXECUTION_PARAMS\n'
+    script += f'cat > "{compose_file}" << \'COMPOSE_EOF\'\n'
+    script += compose_yaml + '\n'
+    script += 'COMPOSE_EOF\n\n'
+
+    # Build the run block (same signal/wait logic as one_job_per_run)
+    compose_bg = (
+        f'( trap \'\' SIGINT; export COMPOSE_MENU=false;'
+        f' docker compose -f "{compose_file}" up'
+        f' --abort-on-container-exit'
+        f' --exit-code-from robovast'
+        f' 2> >(grep -v "Aborting on container exit" >&2)'
+        f') &\n'
+    )
+    compose_wait = (
+        'COMPOSE_PID=$!\n'
+        'wait "$COMPOSE_PID" 2>/dev/null\n'
+        'WAIT_CODE=$?\n'
+        'while [ "$WAIT_CODE" -ge 128 ] && kill -0 "$COMPOSE_PID" 2>/dev/null; do\n'
+        '    wait "$COMPOSE_PID" 2>/dev/null\n'
+        '    WAIT_CODE=$?\n'
+        'done\n'
+        'COMPOSE_PID=\n'
+        'EXIT_CODE=$WAIT_CODE\n'
+        'if [ "$SIGINT_COUNT" -gt 0 ]; then\n'
+        '    cleanup\n'
+        '    exit 130\n'
+        'fi\n'
+    )
+
+    if normalized_secondary:
+        script += compose_bg
+        script += compose_wait
+    else:
+        script += 'if [ "$START_ONLY" = true ]; then\n'
+        script += f'    docker compose -f "{compose_file}" run --rm --entrypoint /bin/bash robovast\n'
+        script += '    EXIT_CODE=$?\n'
+        script += 'else\n'
+        for line in compose_bg.splitlines(keepends=True):
+            script += f'    {line}'
+        for line in compose_wait.splitlines(keepends=True):
+            script += f'    {line}'
+        script += 'fi\n'
+
+    script += f'docker compose -f "{compose_file}" down --volumes --timeout 5 2>/dev/null || true\n'
+    script += 'if [ $EXIT_CODE -eq 0 ]; then\n'
+    script += f'    echo ""\n'
+    script += f'    echo "{"=" * 60}"\n'
+    script += f'    echo "fixed_jobs run completed successfully ({total_variants} variant(s))"\n'
+    script += f'    echo "{"=" * 60}"\n'
+    script += 'else\n'
+    script += f'    echo "Error: fixed_jobs run failed with exit code $EXIT_CODE"\n'
+    script += 'fi\n'
+    script += 'cleanup\n'
+    script += 'exit $EXIT_CODE\n'
+
+    return script
+
+
 def generate_compose_run_script(runs, campaign_data, config_path_result, pre_command, post_command,
                                 docker_image, results_dir, output_script_path,
                                 skip_resource_allocation=False, log_tree=False):
@@ -565,6 +870,23 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
     script += f'echo ""\n\n'
 
     script += generate_execution_yaml_script(runs, execution_params=campaign_data.get("execution", {}))
+
+    execution_mode = execution_params.get("mode", "one_job_per_run")
+    if execution_mode == "fixed_jobs":
+        script += _generate_fixed_jobs_run_script_block(
+            runs, campaign_data, config_path_result, pre_command, post_command,
+            docker_image, uid, gid, main_cpu, main_memory, main_gpu,
+            normalized_secondary, skip_resource_allocation, log_tree,
+        )
+        try:
+            with open(output_script_path, 'w') as f:
+                f.write(script)
+            os.chmod(output_script_path, 0o755)
+            logger.debug(f"Generated Docker Compose run script (fixed_jobs): {output_script_path}")
+        except Exception as e:  # pylint: disable=broad-except
+            logger.error(f"Error writing Docker Compose run script: {e}")
+            raise
+        return
 
     for idx, task in enumerate(execution_tasks, 1):
         config_name = task['config_name']

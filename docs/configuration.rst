@@ -206,6 +206,41 @@ If omitted (or ``null``), there is no time limit.
    execution:
      timeout: 3600   # 1 hour per run
 
+mode
+^^^^
+
+**Type:** String (``"one_job_per_run"`` or ``"fixed_jobs"``)
+
+**Default:** ``"one_job_per_run"``
+
+**Required:** No
+
+Execution mode that controls how (config × run) combinations are distributed across containers or cluster jobs.
+
+- **``one_job_per_run``** *(default)* — One container or Kubernetes Job is launched per (config, run) pair.  This is the standard mode and requires no additional parameters.
+- **``fixed_jobs``** — All variants are batched into a fixed number of containers.  Each container is given a multi-document scenario parameter file that covers its round-robin slice of the full variant matrix.  On cluster, the number of jobs is derived automatically from the Kueue ``robovast`` ClusterQueue CPU quota divided by the per-job CPU request.  This mode requires ``execution.simulation`` to be set.
+
+.. code-block:: yaml
+
+   execution:
+     mode: fixed_jobs
+     simulation: gz-headless
+
+simulation
+^^^^^^^^^^
+
+**Type:** String
+
+**Required:** When ``mode: fixed_jobs``
+
+Simulator backend passed to scenario-execution as ``--simulation <value>``.  Required when using ``fixed_jobs`` mode because the container must receive the simulation flag through ``SCENARIO_EXECUTION_PARAMETERS`` rather than via a per-run scenario parameter file.
+
+.. code-block:: yaml
+
+   execution:
+     mode: fixed_jobs
+     simulation: gz-headless
+
 scenario_file
 ^^^^^^^^^^^^^
 

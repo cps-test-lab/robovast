@@ -657,6 +657,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         "secondary_containers": execution_section.get('secondary_containers'),
         "local": execution_section.get('local'),
         "simulation": execution_section.get('simulation'),
+        "mode": execution_section.get('mode', 'one_job_per_run'),
     }
 
     # Build result dictionary
