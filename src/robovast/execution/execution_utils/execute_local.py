@@ -604,7 +604,14 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
         script += 'fi\n\n'
 
         env_vars = get_execution_env_variables(run_num, config_name, campaign_data.get('execution', {}).get('env'))
-        scenario_execution_params = "-t" if log_tree else "${SCENARIO_EXECUTION_PARAMS}"
+        simulation = (campaign_data.get('execution') or {}).get('simulation') or ""
+        simulation_param = f"--simulation {simulation}" if simulation else ""
+        if log_tree:
+            scenario_execution_params = f"-t {simulation_param}".strip() if simulation_param else "-t"
+        elif simulation_param:
+            scenario_execution_params = f"${{SCENARIO_EXECUTION_PARAMS}} {simulation_param}"
+        else:
+            scenario_execution_params = "${SCENARIO_EXECUTION_PARAMS}"
         scenario_file_name = os.path.basename(campaign_data.get("scenario_file", "scenario.osc"))
 
         compose_yaml = _build_compose_yaml(

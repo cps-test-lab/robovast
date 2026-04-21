@@ -632,10 +632,16 @@ class JobRunner:
                     'name': 'POST_COMMAND',
                     'value': str(self.post_command)
                 })
+            scenario_exec_parts = []
             if self.log_tree:
+                scenario_exec_parts.append('-t')
+            simulation = (self.campaign_data.get('execution') or {}).get('simulation') or ""
+            if simulation:
+                scenario_exec_parts.append(f'--simulation {simulation}')
+            if scenario_exec_parts:
                 containers[0]['env'].append({
                     'name': 'SCENARIO_EXECUTION_PARAMETERS',
-                    'value': '-t'
+                    'value': ' '.join(scenario_exec_parts)
                 })
 
             containers[0]['env'].append({
