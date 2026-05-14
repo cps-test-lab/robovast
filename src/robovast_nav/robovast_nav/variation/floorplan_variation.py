@@ -334,7 +334,7 @@ class FloorplanGeneration(NavVariation):
                 fpm_file = v.get("fpm_file", "")
                 original_fpm_file = campaign_dir / fpm_file
                 floorplan_file["file"] = fpm_file
-                with open(original_fpm_file + ".yaml", "r") as f:
+                with open(str(original_fpm_file) + ".yaml", "r") as f:
                     fpm_md = yaml.safe_load(f)
                     floorplan_file.update(**fpm_md)
 
