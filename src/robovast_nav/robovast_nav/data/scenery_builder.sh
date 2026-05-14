@@ -120,10 +120,15 @@ if [ -n "$OUTPUT_PATH" ]; then
       insert_param_after_keyword "generate" "-o" "$TARGET" || OTHER_ARGS+=(-o "$TARGET")
   fi
 fi
+# Only allocate a pseudo-TTY when running interactively
+TTY_FLAG=()
+if [ -t 1 ]; then
+    TTY_FLAG=(-t)
+fi
 echo docker run "${DOCKER_ARGS[@]}" \
            --user "$(id -u):$(id -g)" \
-           --rm --network host -it ghcr.io/secorolab/scenery_builder "${OTHER_ARGS[@]}"
+           --rm --network host -i "${TTY_FLAG[@]}" ghcr.io/secorolab/scenery_builder "${OTHER_ARGS[@]}"
 docker run "${DOCKER_ARGS[@]}" \
            --user "$(id -u):$(id -g)" \
-           --rm --network host -it ghcr.io/secorolab/scenery_builder "${OTHER_ARGS[@]}"
+           --rm --network host -i "${TTY_FLAG[@]}" ghcr.io/secorolab/scenery_builder "${OTHER_ARGS[@]}"
 

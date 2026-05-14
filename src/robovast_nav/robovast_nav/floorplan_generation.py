@@ -14,6 +14,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
 import os
 import shutil
 import subprocess
@@ -22,6 +23,24 @@ import tempfile
 from importlib.resources import files
 
 from robovast.common import FileCache
+
+logger = logging.getLogger(__name__)
+
+
+def _run_with_live_output(cmd, progress_update_callback):
+    """Run a command and stream its output live via progress_update_callback."""
+    logger.debug("Executing: %s", ' '.join(cmd))
+    with subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    ) as proc:
+        for line in proc.stdout:
+            progress_update_callback(line.rstrip('\n'))
+        proc.wait()
+        if proc.returncode != 0:
+            raise subprocess.CalledProcessError(proc.returncode, cmd)
 
 
 def get_scenery_builder_version():
@@ -40,12 +59,12 @@ def get_scenery_builder_version():
         return None
     try:
         result = subprocess.run(
-            [script_path, '--version'],
-            capture_output=True, text=True, check=True
+            [script_path, '-v'],
+            capture_output=True, text=True, check=True, timeout=10
         )
         version = result.stdout.strip()
         return version if version else None
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return None
 
 
@@ -158,19 +177,9 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
             ]
             progress_update_callback(f"Command: {' '.join(cmd1)}")
             try:
-                result1 = subprocess.run(
-                    cmd1, capture_output=True, text=True, check=True
-                )
-                if result1.stdout:
-                    progress_update_callback(result1.stdout)
-                if result1.stderr:
-                    progress_update_callback(result1.stderr)
+                _run_with_live_output(cmd1, progress_update_callback)
             except subprocess.CalledProcessError as e:
                 error_msg = f"Command failed with exit code {e.returncode}"
-                if e.stdout:
-                    error_msg += f"\nStdout: {e.stdout}"
-                if e.stderr:
-                    error_msg += f"\nStderr: {e.stderr}"
                 progress_update_callback(error_msg)
                 raise ValueError(f"Variation step failed: {error_msg}") from e
 
@@ -203,19 +212,9 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
                 ]
                 progress_update_callback(f"Command: {' '.join(cmd2)}")
                 try:
-                    result2 = subprocess.run(
-                        cmd2, capture_output=True, text=True, check=True
-                    )
-                    if result2.stdout:
-                        progress_update_callback(result2.stdout)
-                    if result2.stderr:
-                        progress_update_callback(result2.stderr)
+                    _run_with_live_output(cmd2, progress_update_callback)
                 except subprocess.CalledProcessError as e:
                     error_msg = f"Transform command failed with exit code {e.returncode}"
-                    if e.stdout:
-                        error_msg += f"\nStdout: {e.stdout}"
-                    if e.stderr:
-                        error_msg += f"\nStderr: {e.stderr}"
                     progress_update_callback(error_msg)
                     raise ValueError(f"Transform step failed: {error_msg}") from e
 
@@ -239,19 +238,9 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
                 ]
                 progress_update_callback(f"Command: {' '.join(cmd3)}")
                 try:
-                    result3 = subprocess.run(
-                        cmd3, capture_output=True, text=True, check=True
-                    )
-                    if result3.stdout:
-                        progress_update_callback(result3.stdout)
-                    if result3.stderr:
-                        progress_update_callback(result3.stderr)
+                    _run_with_live_output(cmd3, progress_update_callback)
                 except subprocess.CalledProcessError as e:
                     error_msg = f"Generate command failed with exit code {e.returncode}"
-                    if e.stdout:
-                        error_msg += f"\nStdout: {e.stdout}"
-                    if e.stderr:
-                        error_msg += f"\nStderr: {e.stderr}"
                     progress_update_callback(error_msg)
                     raise ValueError(f"Generate step failed: {error_msg}") from e
 
@@ -363,19 +352,9 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
             ]
             progress_update_callback(f"Command: {' '.join(cmd_transform)}")
             try:
-                result = subprocess.run(
-                    cmd_transform, capture_output=True, text=True, check=True
-                )
-                if result.stdout:
-                    progress_update_callback(result.stdout)
-                if result.stderr:
-                    progress_update_callback(result.stderr)
+                _run_with_live_output(cmd_transform, progress_update_callback)
             except subprocess.CalledProcessError as e:
                 error_msg = f"Transform command failed with exit code {e.returncode}"
-                if e.stdout:
-                    error_msg += f"\nStdout: {e.stdout}"
-                if e.stderr:
-                    error_msg += f"\nStderr: {e.stderr}"
                 progress_update_callback(error_msg)
                 raise ValueError(f"Transform step failed: {error_msg}") from e
 
@@ -398,19 +377,9 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
             progress_update_callback(f"Command: {' '.join(cmd_generate)}")
             progress_update_callback("Generating floorplan. This may take a while...")
             try:
-                result = subprocess.run(
-                    cmd_generate, capture_output=True, text=True, check=True
-                )
-                if result.stdout:
-                    progress_update_callback(result.stdout)
-                if result.stderr:
-                    progress_update_callback(result.stderr)
+                _run_with_live_output(cmd_generate, progress_update_callback)
             except subprocess.CalledProcessError as e:
                 error_msg = f"Generate command failed with exit code {e.returncode}"
-                if e.stdout:
-                    error_msg += f"\nStdout: {e.stdout}"
-                if e.stderr:
-                    error_msg += f"\nStderr: {e.stderr}"
                 progress_update_callback(error_msg)
                 raise ValueError(f"Generate step failed: {error_msg}") from e
 
