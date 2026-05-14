@@ -13,7 +13,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
       - name: Install jupyter-nbconvert
-        run: sudo apt install -y python3-nbconvert
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-nbconvert
       - name: Run cleanup script
         run: python3 tools/cleanup_notebooks.py
       - name: Check for uncommitted changes
