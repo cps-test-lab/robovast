@@ -92,16 +92,6 @@ RUN  git clone --depth=1 "https://github.com/cps-test-lab/scenario-execution.git
      . "/opt/ros/${ROS_DISTRO}/setup.bash" && \
      colcon build
 
-# Needed while WorldStatistics is not released for ROS 2 Jazzy
-# hadolint ignore=DL3003
-RUN git clone "https://github.com/gazebosim/ros_gz.git" /ws/src/ros_gz && \
-     cd /ws/src/ros_gz && \
-     git checkout 78957e5292d986ef74e3f0151187e8d5d1faebe2 && \
-     cd /ws && \
-     . "/opt/ros/${ROS_DISTRO}/setup.bash" && \
-     . "/ws/install/setup.bash" && \
-     colcon build --packages-select ros_gz_bridge ros_gz_interfaces
-
 # Environment variables
 ENV DISPLAY=:0
 ENV XDG_RUNTIME_DIR=/tmp/runtime-user
