@@ -300,6 +300,13 @@ fi
 
 mkdir -p "${RESULTS_DIR}"
 
+# Pull image if not available locally
+if ! docker image inspect "$DOCKER_IMAGE" > /dev/null 2>&1; then
+    echo "Docker image '$DOCKER_IMAGE' not found locally. Downloading..."
+    docker pull "$DOCKER_IMAGE"
+    echo ""
+fi
+
 # Compatibility version check (reads /etc/robovast_compat_version inside the container)
 IMAGE_COMPAT=$(docker run --rm "$DOCKER_IMAGE" cat /etc/robovast_compat_version 2>/dev/null || echo "")
 if [ -z "$IMAGE_COMPAT" ] || [ "$IMAGE_COMPAT" != "@@COMPAT_VERSION@@" ]; then
