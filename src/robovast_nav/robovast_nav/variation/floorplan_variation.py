@@ -331,9 +331,9 @@ class FloorplanGeneration(NavVariation):
         for v in config_entry.get("variations", []):
             if v.get("name") == cls.__name__:
                 # Get metadata from the floorplan model
-                fpm_file = v.get("fpm_file", "")[8:]
-                original_fpm_file = os.path.join(campaign_dir, "../..", fpm_file)
-                floorplan_file["file"] = v.get("fpm_file", "")
+                fpm_file = v.get("fpm_file", "")
+                original_fpm_file = campaign_dir / fpm_file
+                floorplan_file["file"] = fpm_file
                 with open(original_fpm_file + ".yaml", "r") as f:
                     fpm_md = yaml.safe_load(f)
                     floorplan_file.update(**fpm_md)
