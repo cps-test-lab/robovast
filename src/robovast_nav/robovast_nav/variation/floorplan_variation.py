@@ -345,7 +345,6 @@ class FloorplanGeneration(NavVariation):
                     f"{config_name}/_transient/{rel}"
                     for rel in v.get("derived_from_files", [])
                 ]
-                v.pop("derived_from_files", None)
                 break
 
         # Overwrite derived_from with the recorded transient file paths
