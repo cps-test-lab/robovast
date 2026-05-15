@@ -428,10 +428,13 @@ def generate_prov_metadata(
     })
 
     # --- Campaign activity and entity ---
+    execution_time = metadata["execution"]["execution_time"]
+    if isinstance(execution_time, dt.datetime):
+        execution_time = execution_time.isoformat()
     campaign_activity = {
         _ID: dataset_ns[campaign + "execution/"],
         _TYPE: [PROV["Activity"], ROBOVAST["CampaignExecution"], ROBOVAST[metadata["execution"]["execution_type"].capitalize()]],
-        "startedAtTime": metadata["execution"]["execution_time"],
+        "startedAtTime": execution_time,
         "wasAssociatedWith": "https://purl.org/robovast/",
         "runs": metadata["execution"]["runs"]
     }
