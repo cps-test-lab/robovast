@@ -653,7 +653,7 @@ def generate_execution_yaml_script(runs, execution_params=None, output_dir_var="
     script += f'IMAGE_REVISION=$(docker inspect --format=\'{{{{.Id}}}}\' "${{DOCKER_IMAGE}}" 2>/dev/null || echo "unknown")\n'
     script += f'mkdir -p "{output_dir_var}/_execution"\n'
     script += f'cat > "{output_dir_var}/_execution/execution.yaml" << EOF\n'
-    script += 'execution_time: ${EXECUTION_TIME}\n'
+    script += "execution_time: '${EXECUTION_TIME}'\n"
     script += f'robovast_version: {get_app_version()}\n'
     script += f'runs: {runs}\n'
     script += f'execution_type: local\n'

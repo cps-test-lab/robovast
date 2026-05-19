@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 def _run_with_live_output(cmd, progress_update_callback):
     """Run a command and stream its output live via progress_update_callback."""
     logger.debug("Executing: %s", ' '.join(cmd))
+    output_lines = []
     with subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -37,9 +38,17 @@ def _run_with_live_output(cmd, progress_update_callback):
         text=True,
     ) as proc:
         for line in proc.stdout:
-            progress_update_callback(line.rstrip('\n'))
+            stripped = line.rstrip('\n')
+            progress_update_callback(stripped)
+            output_lines.append(stripped)
         proc.wait()
         if proc.returncode != 0:
+            # Log the full output at ERROR level so it's visible even when
+            # progress_update_callback is logger.debug (e.g. during local exec).
+            logger.error(
+                "Command failed (exit %d): %s\nOutput:\n%s",
+                proc.returncode, ' '.join(cmd), '\n'.join(output_lines)
+            )
             raise subprocess.CalledProcessError(proc.returncode, cmd)
 
 
@@ -122,7 +131,7 @@ def _create_config_for_floorplan(
     return new_config
 
 
-def generate_floorplan_variations(base_path, variation_files, num_variations, seed_value, output_dir, progress_update_callback):
+def generate_floorplan_variations(base_path, variation_files, num_variations, seed_value, output_dir, progress_update_callback, scenery_builder_version=None):
     if not os.path.exists(base_path):
         progress_update_callback(f"✗ Path not found: {base_path}")
         return None
@@ -257,6 +266,13 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
                 if os.path.isdir(jsonld_src):
                     shutil.copytree(jsonld_src, jsonld_dst, dirs_exist_ok=True)
 
+                # Write scenery_builder version into each config subfolder so it
+                # is preserved inside the cache tar and recoverable on cache hits.
+                if scenery_builder_version:
+                    version_file = os.path.join(artifacts_path, config_name, "scenery_builder_version.txt")
+                    with open(version_file, "w", encoding="utf-8") as vf:
+                        vf.write(scenery_builder_version)
+
             cache_target_file_name = file_cache.get_cache_filename()
             progress_update_callback(f"\nCreating tar archive {cache_target_file_name}...")
             with tarfile.open(cache_target_file_name, "w:gz") as tar:
@@ -268,6 +284,7 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
 
     progress_update_callback(f"Preparing map directory: {output_dir}")
 
+    floorplan_versions = {}
     for map_tar in all_map_dirs:
         try:
             with tarfile.open(map_tar, "r:*") as tf:
@@ -282,15 +299,20 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
                 if not subfolders:
                     raise ValueError("No subfolders found in extracted tar file")
                 floorplan_names.extend(subfolders)
+                for subfolder in subfolders:
+                    version_path = os.path.join(output_dir, subfolder, "scenery_builder_version.txt")
+                    if os.path.exists(version_path):
+                        with open(version_path, encoding="utf-8") as vf:
+                            floorplan_versions[subfolder] = vf.read().strip()
         except Exception as exc:
             print(f"Failed to extract {map_tar}: {exc}")
             raise ValueError("Failed to extract map tar file") from exc
 
     floorplan_names.sort()
-    return floorplan_names
+    return floorplan_names, floorplan_versions
 
 
-def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progress_update_callback):
+def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progress_update_callback, scenery_builder_version=None):
     """Generate artifacts (maps and meshes) from existing floorplan files.
 
     Args:
@@ -298,9 +320,13 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
         floorplan_files: List of floorplan (.fpm) file paths
         output_dir: Directory where artifacts will be generated
         progress_update_callback: Callback function for progress updates
+        scenery_builder_version: Optional version string for the scenery_builder image.
+            Written into the cache tar so it survives cache hits.
 
     Returns:
-        List of floorplan names (subdirectory names) that were generated
+        Tuple of (floorplan_names, versions) where floorplan_names is a list of
+        subdirectory names that were generated and versions is a dict mapping
+        floorplan_name to the scenery_builder version string (or None).
     """
     if not os.path.exists(base_path):
         progress_update_callback(f"✗ Path not found: {base_path}")
@@ -388,6 +414,13 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
             if os.path.isdir(temp_transform_path):
                 shutil.copytree(temp_transform_path, jsonld_dst, dirs_exist_ok=True)
 
+            # Write scenery_builder version into the artifact directory so it
+            # is preserved inside the cache tar and recoverable on cache hits.
+            if scenery_builder_version:
+                version_file = os.path.join(artifacts_path, floorplan_basename, "scenery_builder_version.txt")
+                with open(version_file, "w", encoding="utf-8") as vf:
+                    vf.write(scenery_builder_version)
+
             # Create tar archive for caching
             cache_target_file_name = file_cache.get_cache_filename()
             progress_update_callback(f"Creating tar archive {cache_target_file_name}...")
@@ -400,6 +433,7 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
 
     progress_update_callback(f"Preparing artifact directory: {output_dir}")
 
+    floorplan_versions = {}
     for artifacts_tar in all_artifacts_dirs:
         try:
             with tarfile.open(artifacts_tar, "r:*") as tf:
@@ -414,9 +448,14 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
                 if not subfolders:
                     raise ValueError("No subfolders found in extracted tar file")
                 floorplan_names.extend(subfolders)
+                for subfolder in subfolders:
+                    version_path = os.path.join(output_dir, subfolder, "scenery_builder_version.txt")
+                    if os.path.exists(version_path):
+                        with open(version_path, encoding="utf-8") as vf:
+                            floorplan_versions[subfolder] = vf.read().strip()
         except Exception as exc:
             progress_update_callback(f"Failed to extract {artifacts_tar}: {exc}")
             raise ValueError("Failed to extract artifacts tar file") from exc
 
     floorplan_names.sort()
-    return floorplan_names
+    return floorplan_names, floorplan_versions
