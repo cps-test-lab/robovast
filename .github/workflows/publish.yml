@@ -1,0 +1,81 @@
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  publish-robovast:
+    name: Build and publish robovast to PyPI
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/robovast
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Poetry
+        run: curl -sSL https://install.python-poetry.org | python3 -
+
+      - name: Add Poetry to PATH
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Set version from tag
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          poetry version "$TAG"
+
+      - name: Build package
+        run: poetry build
+
+      - name: Publish to PyPI
+        env:
+          POETRY_PYPI_TOKEN_PYPI: ${{ secrets.PYPI_API_TOKEN }}
+        run: poetry publish
+
+  publish-robovast-nav:
+    name: Build and publish robovast-nav to PyPI
+    runs-on: ubuntu-latest
+    needs: publish-robovast
+    environment:
+      name: pypi
+      url: https://pypi.org/p/robovast-nav
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Poetry
+        run: curl -sSL https://install.python-poetry.org | python3 -
+
+      - name: Add Poetry to PATH
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Set version from tag
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          cd src/robovast_nav && poetry version "$TAG"
+
+      - name: Build package
+        run: cd src/robovast_nav && poetry build
+
+      - name: Publish to PyPI
+        env:
+          POETRY_PYPI_TOKEN_PYPI: ${{ secrets.PYPI_API_TOKEN }}
+        run: cd src/robovast_nav && poetry publish
