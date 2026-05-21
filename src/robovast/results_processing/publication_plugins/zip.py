@@ -52,6 +52,12 @@ from robovast.common.execution import get_campaign_timestamp, is_campaign_dir
 from robovast.results_processing.publication_plugins.base import \
     BasePublicationPlugin
 
+# Internal robovast flag/cache files that are never meaningful outside the
+# execution environment and should always be excluded from zip archives.
+_ALWAYS_EXCLUDE: List[str] = [
+    ".robovast*",
+]
+
 
 class _FormattableTimestamp(str):
     """A ``str`` subclass that supports datetime format specs.
@@ -124,6 +130,10 @@ def _should_include_file(
     Returns:
         True if the file should be included.
     """
+    # Always exclude internal robovast flag/cache files.
+    if any(_file_matches_pattern(rel_path, p) for p in _ALWAYS_EXCLUDE):
+        return False
+
     # Check include filter first
     if include_filter:
         if not any(_file_matches_pattern(rel_path, p) for p in include_filter):

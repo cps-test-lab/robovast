@@ -678,7 +678,7 @@ HANDLER_REGISTRY: Dict[str, type] = {
 # Per-bag cache helpers
 # ---------------------------------------------------------------------------
 
-_CACHE_FILENAME = ".rosbags_process_cache"
+_CACHE_FILENAME = ".robovast_rosbags_process_cache"
 
 
 def _bag_fingerprint(bag_path: str, plugin_configs_hash: str) -> str:
