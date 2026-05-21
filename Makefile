@@ -70,3 +70,30 @@ poetry_reinstall:
 	rm poetry.lock || true >/dev/null 2>&1 
 	poetry install
 	@echo "✅ Done!"
+
+.PHONY: build
+build:
+	poetry build
+	cd src/robovast_nav && poetry build
+
+.PHONY: publish-test
+publish-test: build
+	@echo "Publishing robovast to TestPyPI..."
+	@echo "💡 If this fails with 403, run: poetry config pypi-token.testpypi pypi-<your-token>"
+	poetry publish --repository testpypi
+	@echo "Publishing robovast-nav to TestPyPI..."
+	cd src/robovast_nav && poetry publish --repository testpypi
+
+
+.PHONY: publish-test-venv
+publish-test-venv:
+	@echo "Testing install from TestPyPI in a fresh venv..."
+	rm -rf /tmp/robovast-test-venv
+	python3 -m venv /tmp/robovast-test-venv
+	/tmp/robovast-test-venv/bin/pip install \
+		--index-url https://test.pypi.org/simple/ \
+		--extra-index-url https://pypi.org/simple/ \
+		robovast robovast-nav
+	@echo "Testing vast CLI..."
+	/tmp/robovast-test-venv/bin/vast --help
+	@echo "✅ Install from TestPyPI succeeded!"
