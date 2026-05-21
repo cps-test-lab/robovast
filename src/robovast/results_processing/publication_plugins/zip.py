@@ -56,6 +56,7 @@ from robovast.results_processing.publication_plugins.base import \
 # execution environment and should always be excluded from zip archives.
 _ALWAYS_EXCLUDE: List[str] = [
     ".robovast*",
+    ".DS_Store"
 ]
 
 
