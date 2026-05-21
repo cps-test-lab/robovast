@@ -7,7 +7,7 @@
 
 FROM python:3.12-alpine
 
-RUN apk add --no-cache pigz==2.8-r1 curl==8.17.0-r1 \
+RUN apk add --no-cache pigz==2.8-r1 curl==8.19.0-r0 \
  && pip install --no-cache-dir \
         boto3==1.42 google-auth==2.49.0 requests==2.32.5 paramiko==4.0.0
 
