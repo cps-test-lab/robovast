@@ -414,14 +414,8 @@ def compress_args_for_config(cluster_config, campaign_id: str) -> tuple:
         env_vars = {
             "S3_ACCESS_KEY": access_key,
             "S3_SECRET_KEY": secret_key,
+            "S3_ENDPOINT": cluster_config.get_s3_endpoint(),
         }
-        endpoint = (
-            cluster_config.get_s3_endpoint()
-            if not cluster_config.uses_embedded_s3()
-            else None
-        )
-        if endpoint:
-            env_vars["S3_ENDPOINT"] = endpoint
         shared_bucket = cluster_config.get_s3_bucket()
         if shared_bucket:
             script_args = [
@@ -461,14 +455,8 @@ def upload_args_for_config(cluster_config, campaign_id: str) -> tuple:
             "S3_ACCESS_KEY": access_key,
             "S3_SECRET_KEY": secret_key,
             "S3_REGION": s3_region,
+            "S3_ENDPOINT": cluster_config.get_s3_endpoint(),
         }
-        endpoint = (
-            cluster_config.get_s3_endpoint()
-            if not cluster_config.uses_embedded_s3()
-            else None
-        )
-        if endpoint:
-            env_vars["S3_ENDPOINT"] = endpoint
         shared_bucket = cluster_config.get_s3_bucket()
         bucket = shared_bucket if shared_bucket else bucket_name
         prefix = bucket_name if shared_bucket else None

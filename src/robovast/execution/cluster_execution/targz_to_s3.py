@@ -50,6 +50,7 @@ import tarfile
 
 import boto3
 from botocore.config import Config
+from botocore.exceptions import ClientError
 
 S3_ENDPOINT = os.environ.get("S3_ENDPOINT", "http://localhost:9000")
 S3_ACCESS_KEY = os.environ.get("S3_ACCESS_KEY", "minioadmin")
@@ -107,11 +108,21 @@ def main():
     sys.stderr.flush()
 
     # Pre-flight check: a lightweight request that will time out quickly if
-    # storage.googleapis.com is not reachable from inside the pod.
+    # the S3 endpoint is not reachable from inside the pod.
     try:
         s3.head_bucket(Bucket=bucket_name)
         sys.stderr.write(f"[targz_to_s3] bucket reachable: {bucket_name!r}\n")
-    except s3.exceptions.NoSuchBucket:
+    except (s3.exceptions.NoSuchBucket, ClientError) as exc:
+        # MinIO returns a 404 ClientError for missing buckets; AWS/GCS raise
+        # NoSuchBucket.  Treat both as "bucket absent — create it".
+        if isinstance(exc, ClientError):
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code not in ("404", "NoSuchBucket"):
+                sys.stderr.write(
+                    f"[targz_to_s3] PRE-FLIGHT FAILED — cannot reach {S3_ENDPOINT!r}: {exc}\n"
+                )
+                sys.stderr.flush()
+                sys.exit(1)
         sys.stderr.write(f"[targz_to_s3] bucket absent — creating {bucket_name!r}\n")
         sys.stderr.flush()
         s3.create_bucket(Bucket=bucket_name)
@@ -119,7 +130,6 @@ def main():
     except Exception as exc:
         sys.stderr.write(
             f"[targz_to_s3] PRE-FLIGHT FAILED — cannot reach {S3_ENDPOINT!r}: {exc}\n"
-            f"[targz_to_s3] Check that the pod has egress access to storage.googleapis.com\n"
         )
         sys.stderr.flush()
         sys.exit(1)
