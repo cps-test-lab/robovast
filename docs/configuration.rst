@@ -601,6 +601,7 @@ full results directory (parent of campaign directories).
            - "/_config/*"
            exclude_filter:
            - "*.pyc"
+           omit_hidden: true
            destination: archives/
 
 **Built-in Publication Plugins:**
@@ -629,6 +630,21 @@ full results directory (parent of campaign directories).
     Omit (or leave unset) to be prompted interactively — the default answer is
     *yes* (overwrite).  Passing ``--force`` / ``-f`` on the CLI is equivalent
     to setting ``overwrite: true`` for every plugin.
+  - ``omit_hidden``: When ``true``, directory components whose names start
+    with ``_`` are stripped from the file paths *inside* the archive.
+    The files are still selected by ``include_filter`` / ``exclude_filter``
+    using their original on-disk paths; only the stored archive member path
+    is affected.
+
+    For example, a file stored on disk as
+    ``campaign-2026-03-05-163338/_config/my_file.yaml`` is placed in the
+    zip as ``campaign-2026-03-05-163338/my_file.yaml``.
+    Defaults to ``false``.
+  - ``metadata``: Optional dict of metadata fields to merge into the
+    ``metadata:`` section of the campaign's ``metadata.yaml`` before
+    including it in the archive.  Typical fields are ``title`` and
+    ``description``.  The merged ``metadata.yaml`` is always written
+    regardless of ``include_filter`` / ``exclude_filter``.
 
 Multiple ``zip`` entries may be defined to produce different archives from the
 same campaign:
