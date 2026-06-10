@@ -1118,7 +1118,7 @@ class JobRunner:
                                        compat_version=COMPAT_VERSION)
         manifest = yaml.safe_load(yaml_str)
 
-        manifest.setdefault("metadata", {}).setdefault("labels", {})[
+        manifest.setdefault("metadata", {}).setdefault("annotations", {})[
             "kueue.x-k8s.io/queue-name"
         ] = "robovast"
 
