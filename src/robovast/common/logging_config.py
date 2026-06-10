@@ -38,8 +38,10 @@ def setup_logging(log_level: str = "INFO") -> None:
         debug_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         # Format for INFO level (clean)
         info_format = '%(message)s'
-        # Format for WARNING and above (show level)
-        warning_format = '%(levelname)s: %(message)s'
+        # Format for WARNING / ERROR / CRITICAL (show level with icon)
+        warning_format  = '⚠️  %(levelname)s: %(message)s'
+        error_format    = '🔴 %(levelname)s: %(message)s'
+        critical_format = '💀 %(levelname)s: %(message)s'
 
         def __init__(self):
             super().__init__()
@@ -50,8 +52,12 @@ def setup_logging(log_level: str = "INFO") -> None:
                 formatter = logging.Formatter(self.debug_format, datefmt='%Y-%m-%d %H:%M:%S')
             elif record.levelno == logging.INFO:
                 formatter = logging.Formatter(self.info_format)
-            else:
+            elif record.levelno == logging.WARNING:
                 formatter = logging.Formatter(self.warning_format)
+            elif record.levelno == logging.ERROR:
+                formatter = logging.Formatter(self.error_format)
+            else:  # CRITICAL and above
+                formatter = logging.Formatter(self.critical_format)
             return formatter.format(record)
 
     # Configure root logger
