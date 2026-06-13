@@ -19,11 +19,76 @@ jobs:
           - ${{ github.event.repository.name }}-sidecar
           - ${{ github.event.repository.name }}-archiver
     steps:
-      - name: Delete untagged images for ${{ matrix.package }}
-        uses: actions/delete-package-versions@v5
-        with:
-          owner: ${{ github.repository_owner }}
-          package-name: ${{ matrix.package }}
-          package-type: container
-          delete-only-untagged-versions: true
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Delete untagged images not referenced by tagged manifests for ${{ matrix.package }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ORG: ${{ github.repository_owner }}
+          PACKAGE: ${{ matrix.package }}
+        run: |
+          set -euo pipefail
+
+          # Obtain a registry token to read manifests
+          REGISTRY_TOKEN=$(curl -sf \
+            -u "token:${GH_TOKEN}" \
+            "https://ghcr.io/token?scope=repository:${ORG}/${PACKAGE}:pull&service=ghcr.io" \
+            | jq -r '.token')
+
+          # Collect all digests referenced by tagged index manifests
+          declare -A REFERENCED
+          PAGE=1
+          while true; do
+            VERSIONS=$(curl -sf -L \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/orgs/${ORG}/packages/container/${PACKAGE}/versions?per_page=100&page=${PAGE}")
+            COUNT=$(echo "$VERSIONS" | jq 'length')
+            [ "$COUNT" -eq 0 ] && break
+
+            while IFS= read -r digest; do
+              MANIFEST=$(curl -sf \
+                -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json" \
+                -H "Authorization: Bearer ${REGISTRY_TOKEN}" \
+                "https://ghcr.io/v2/${ORG}/${PACKAGE}/manifests/${digest}" || true)
+              while IFS= read -r ref; do
+                REFERENCED["$ref"]=1
+                echo "  Keeping referenced sub-manifest: $ref"
+              done < <(echo "$MANIFEST" | jq -r '.manifests[]?.digest // empty')
+            done < <(echo "$VERSIONS" | jq -r '.[] | select(.metadata.container.tags | length > 0) | .name')
+
+            PAGE=$((PAGE + 1))
+          done
+
+          echo "Total referenced sub-manifests: ${#REFERENCED[@]}"
+
+          # Delete untagged versions that are not referenced by any tagged manifest
+          PAGE=1
+          DELETED=0
+          while true; do
+            VERSIONS=$(curl -sf -L \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/orgs/${ORG}/packages/container/${PACKAGE}/versions?per_page=100&page=${PAGE}")
+            COUNT=$(echo "$VERSIONS" | jq 'length')
+            [ "$COUNT" -eq 0 ] && break
+
+            while IFS= read -r item; do
+              VERSION_ID=$(echo "$item" | jq -r '.id')
+              DIGEST=$(echo "$item" | jq -r '.name')
+              if [[ -z "${REFERENCED[$DIGEST]+_}" ]]; then
+                echo "Deleting untagged+unreferenced: $VERSION_ID ($DIGEST)"
+                curl -sf -L -X DELETE \
+                  -H "Accept: application/vnd.github+json" \
+                  -H "Authorization: Bearer ${GH_TOKEN}" \
+                  -H "X-GitHub-Api-Version: 2022-11-28" \
+                  "https://api.github.com/orgs/${ORG}/packages/container/${PACKAGE}/versions/${VERSION_ID}"
+                DELETED=$((DELETED + 1))
+              else
+                echo "Keeping referenced: $VERSION_ID ($DIGEST)"
+              fi
+            done < <(echo "$VERSIONS" | jq -c '.[] | select(.metadata.container.tags | length == 0)')
+
+            PAGE=$((PAGE + 1))
+          done
+          echo "Done. Deleted $DELETED untagged unreferenced versions."

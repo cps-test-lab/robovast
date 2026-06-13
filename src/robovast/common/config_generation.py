@@ -431,6 +431,13 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     if run_files_patterns:
         additional_run_files = collect_filtered_files(run_files_patterns, os.path.dirname(variation_file))
         progress_update_callback(f"Loaded {len(run_files_patterns)} run_files patterns (found {len(additional_run_files)} files).")
+        for pattern in run_files_patterns:
+            if not collect_filtered_files([pattern], os.path.dirname(variation_file)):
+                logger.warning(
+                    "execution.run_files pattern '%s' did not match any files. "
+                    "Check the pattern or whether the files exist.",
+                    pattern,
+                )
         run_files.extend(additional_run_files)
 
     vast_dir = os.path.abspath(os.path.dirname(variation_file))
