@@ -6,7 +6,15 @@ set -e
 SCENARIO_EXECUTION_PARAMETERS="${SCENARIO_EXECUTION_PARAMETERS:-}"
 
 # Setup
-OUTPUT_DIR="/out"
+# OUTPUT_DIR holds this job's job-level artifacts (sysinfo, resource monitor,
+# logs, rosbag). SCENARIO_OUTPUT_DIR is scenario_execution's -o; per-config
+# results land under it via each parameter document's _output_dir.
+# In single-config jobs both default to /out (the run directory). In packed
+# multi-config jobs /out is the campaign root, so the launcher points OUTPUT_DIR
+# at a per-unit subdir (avoiding cross-unit collisions) while SCENARIO_OUTPUT_DIR
+# stays /out so per-config results are written to /out/<config>/<run>.
+OUTPUT_DIR="${OUTPUT_DIR:-/out}"
+SCENARIO_OUTPUT_DIR="${SCENARIO_OUTPUT_DIR:-${OUTPUT_DIR}}"
 LOG_DIR="${OUTPUT_DIR}/logs"
 mkdir -p "${LOG_DIR}"
 
@@ -111,23 +119,33 @@ else
     # @@POST_RUN_BLOCK@@
 
     SCENARIO_FILE="${SCENARIO_FILE:-scenario.osc}"
+    # Parameter file is a single-config scenario.config by default. In
+    # multi-config-per-job mode robovast supplies a multi-document parameter
+    # file (one document per packed configuration) and sets
+    # OUTPUT_RESULT_PER_SCENARIO=true so scenario_execution writes a separate
+    # test.xml into each configuration's _output_dir subdirectory.
+    SCENARIO_PARAMETER_FILE="${SCENARIO_PARAMETER_FILE:-/config/scenario.config}"
+    PER_SCENARIO_PARAM=""
+    if [ "${OUTPUT_RESULT_PER_SCENARIO}" = "true" ]; then
+        PER_SCENARIO_PARAM="--output-result-per-scenario"
+    fi
     if command -v ros2 > /dev/null 2>&1; then
-        if [ -e /config/scenario.config ]; then
+        if [ -e "${SCENARIO_PARAMETER_FILE}" ]; then
             log "Starting scenario execution (ROS2) with config file..."
-            log "Commandline: ros2 run scenario_execution_ros scenario_execution_ros -o ${OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file /config/scenario.config ${SCENARIO_EXECUTION_PARAMETERS}"
-            exec ros2 run scenario_execution_ros scenario_execution_ros -o ${OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file /config/scenario.config ${SCENARIO_EXECUTION_PARAMETERS}
+            log "Commandline: ros2 run scenario_execution_ros scenario_execution_ros -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}"
+            exec ros2 run scenario_execution_ros scenario_execution_ros -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
         else
             log "Starting scenario execution (ROS2) without config file..."
-            exec ros2 run scenario_execution_ros scenario_execution_ros -o ${OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
+            exec ros2 run scenario_execution_ros scenario_execution_ros -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
         fi
     else
-        if [ -e /config/scenario.config ]; then
+        if [ -e "${SCENARIO_PARAMETER_FILE}" ]; then
             log "Starting scenario execution with config file..."
-            log "Commandline: scenario_execution -o ${OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file /config/scenario.config ${SCENARIO_EXECUTION_PARAMETERS}"
-            exec scenario_execution -o ${OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file /config/scenario.config ${SCENARIO_EXECUTION_PARAMETERS}
+            log "Commandline: scenario_execution -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}"
+            exec scenario_execution -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
         else
             log "Starting scenario execution without config file..."
-            exec scenario_execution -o ${OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
+            exec scenario_execution -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
         fi
     fi
 fi

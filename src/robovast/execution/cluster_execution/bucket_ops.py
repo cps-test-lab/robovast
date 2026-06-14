@@ -148,6 +148,18 @@ def _is_gcs(cluster_config) -> bool:
     return cluster_config.get_storage_backend() == "gcs"
 
 
+def _bucket_name(campaign_id: str) -> str:
+    """Sanitize a campaign ID into a valid S3 bucket name.
+
+    Per-bucket mode (embedded MinIO) names the bucket after the campaign, but
+    bucket names must be lowercase with no underscores.  The bucket is created
+    with this sanitized name (see ``archiver.upload_args_for_config``), so all
+    per-bucket operations must sanitize identically — otherwise MinIO rejects
+    an underscore-containing name with HTTP 400, not a 404.
+    """
+    return campaign_id.lower().replace("_", "-")
+
+
 def _delete_s3_prefix(s3, bucket: str, prefix: str) -> None:
     """Delete all objects in *bucket* whose key starts with *prefix*.
 
@@ -253,7 +265,7 @@ def campaign_exists(
             return response.get("KeyCount", 0) > 0
         else:
             try:
-                s3.head_bucket(Bucket=campaign_id)
+                s3.head_bucket(Bucket=_bucket_name(campaign_id))
                 return True
             except ClientError as exc:
                 code = exc.response["Error"]["Code"]
@@ -313,13 +325,14 @@ def delete_campaign(
                 "Deleted prefix '%s/' from shared S3 bucket '%s'", campaign_id, shared_bucket
             )
         else:
+            bucket_name = _bucket_name(campaign_id)
             paginator = s3.get_paginator("list_objects_v2")
-            for page in paginator.paginate(Bucket=campaign_id):
+            for page in paginator.paginate(Bucket=bucket_name):
                 objects = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
                 if objects:
-                    s3.delete_objects(Bucket=campaign_id, Delete={"Objects": objects})
-            s3.delete_bucket(Bucket=campaign_id)
-            logger.debug("Deleted S3 bucket '%s'", campaign_id)
+                    s3.delete_objects(Bucket=bucket_name, Delete={"Objects": objects})
+            s3.delete_bucket(Bucket=bucket_name)
+            logger.debug("Deleted S3 bucket '%s'", bucket_name)
 
 
 def cleanup_campaigns(
@@ -355,7 +368,10 @@ def cleanup_campaigns(
 
     all_campaigns = list_campaigns(cluster_config, namespace, context)
     if campaign_id:
-        to_remove = [c for c in all_campaigns if c == campaign_id]
+        # In per-bucket mode list_campaigns returns sanitized bucket names, so
+        # match either the raw ID (shared-bucket/GCS) or its sanitized form.
+        wanted = {campaign_id, _bucket_name(campaign_id)}
+        to_remove = [c for c in all_campaigns if c in wanted]
         if not to_remove:
             logger.info("No campaign matching '%s' found in storage.", campaign_id)
             return 0

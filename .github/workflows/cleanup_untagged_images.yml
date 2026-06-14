@@ -17,7 +17,6 @@ jobs:
         package:
           - ${{ github.event.repository.name }}
           - ${{ github.event.repository.name }}-sidecar
-          - ${{ github.event.repository.name }}-archiver
     steps:
       - name: Delete untagged images not referenced by tagged manifests for ${{ matrix.package }}
         env:

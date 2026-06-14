@@ -1090,30 +1090,30 @@ def prepare_run(output, config, runs, cluster_config, options, log_tree, kube_co
             job_runner.campaign_data,
             cluster=True
         )
+        # Per-job multi-document parameter files + job-link manifest (matches
+        # what upload writes for a real run).
+        job_runner._write_job_param_files(out_dir)  # pylint: disable=protected-access
 
         # Create jobs directory
         jobs_dir = os.path.join(output, "jobs")
         os.makedirs(jobs_dir, exist_ok=True)
 
-        # Generate all job manifests
+        # Generate all job manifests — one K8s Job per packed job
+        # (configs_per_job=1 → one job per config/run).
         logging.debug("Generating job manifests...")
         all_jobs = []
-        job_count = 0
+        jobs = job_runner._build_jobs()  # pylint: disable=protected-access
+        for job in jobs:
+            job_manifest = job_runner.create_job_manifest(job, len(jobs))
 
-        for run_number in range(job_runner.num_runs):
-            for cfg in job_runner.configs:
-                config_name = cfg.get("name")
-                # Use the centralized function to create the job manifest
-                job_manifest = job_runner.create_job_manifest_for_configuration(config_name, run_number)
+            # Save individual job manifest
+            job_name = job_manifest['metadata']['name']
+            job_file = os.path.join(jobs_dir, f"{job_name}.yaml")
+            with open(job_file, 'w') as f:
+                yaml.dump(job_manifest, f, default_flow_style=False)
 
-                # Save individual job manifest
-                job_name = job_manifest['metadata']['name']
-                job_file = os.path.join(jobs_dir, f"{job_name}.yaml")
-                with open(job_file, 'w') as f:
-                    yaml.dump(job_manifest, f, default_flow_style=False)
-
-                all_jobs.append(job_manifest)
-                job_count += 1
+            all_jobs.append(job_manifest)
+        job_count = len(all_jobs)
 
         # Save combined manifest
         combined_file = os.path.join(output, "all-jobs.yaml")
