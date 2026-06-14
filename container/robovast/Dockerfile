@@ -83,7 +83,7 @@ RUN mkdir -p /ws/src
 # hadolint ignore=DL3003
 RUN  git clone --depth=1 "https://github.com/cps-test-lab/scenario-execution.git" /ws/src/scenario-execution && \
      cd /ws/src/scenario-execution && \
-     git checkout 7d15ecedf77afe086d85aa9db115ce6f23606206 && \
+     git checkout aa381bb23d5c839b5f705d3ca2d77ac8f5f056c4 && \
      cd /ws && \
      git clone --depth=1 "https://github.com/cps-test-lab/scenario-execution-server.git" /ws/src/scenario-execution-server && \
      cd /ws/src/scenario-execution-server && \

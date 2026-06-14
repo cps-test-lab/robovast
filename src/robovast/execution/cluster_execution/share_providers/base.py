@@ -44,9 +44,9 @@ class BaseShareProvider(ABC):
     are read from ``os.environ`` (which is already populated by
     ``python-dotenv`` before the provider is instantiated).
 
-    Pod-side scripts run inside the ``robovast-archiver`` image
-    (``python:3.12-alpine`` + ``pigz``, ``boto3``, ``google-auth``,
-    ``google-api-python-client``).  No additional packages need to be
+    Pod-side scripts run inside the ``robovast-sidecar`` image
+    (``python:3.12-alpine`` + ``pigz``, ``mc``, ``boto3``, ``google-auth``,
+    ``requests``, ``paramiko``, ``pyyaml``).  No additional packages need to be
     pip-installed at runtime for the built-in providers.
 
     To add a **new provider**:
@@ -103,9 +103,9 @@ class BaseShareProvider(ABC):
         """Return the absolute path to the pod-side Python upload script.
 
         The script is piped via stdin to ``python -`` inside the archiver
-        container (``robovast-archiver`` image).  It must be self-contained
+        container (``robovast-sidecar`` image).  It must be self-contained
         and only use packages available in that image: standard library,
-        ``boto3``, ``google-auth``, ``google-api-python-client``.
+        ``boto3``, ``google-auth``, ``requests``, ``paramiko``, ``pyyaml``.
 
         The script receives the run ID as ``sys.argv[1]``.
         Environment variables from :meth:`build_pod_env` are available via

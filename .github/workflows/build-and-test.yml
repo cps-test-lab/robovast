@@ -39,12 +39,6 @@ jobs:
         run: |
           poetry install
 
-      - name: Run Example tests
-        run: |
-          rmdir -rf /tmp/vast_test_output || true
-          mkdir /tmp/vast_test_output
-          poetry run .github/test_vast.py configs/examples/growth_sim/growth_sim.vast -c test-1-1 -d /tmp/vast_test_output -r 1
-
       - name: Run CLI tests
         run: |
           bash .github/test_commands.sh

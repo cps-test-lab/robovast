@@ -130,6 +130,17 @@ class ExecutionConfig(BaseModel):
     scenario_file: Optional[str] = None
     run_files: Optional[list[str]] = None
     timeout: Optional[int] = None  # Maximum execution time in seconds per run
+    # Multi-config-per-job packing. ``configs_per_job`` is how many
+    # configurations (parameter sets) run inside a single job:
+    #   1 (default): each job runs exactly one configuration. Right for
+    #     simulators where job dominates the execution time, one job == one 
+    #     scenario (e.g. Gazebo).
+    #   >1: up to N configurations are packed into one job and run sequentially
+    #     inside a single simulator setup (the simulator is reset between them),
+    #     amortising setup for simulators with cheap per-run cost (e.g. MuJoCo).
+    # Results stay keyed by configuration name regardless, so packing is
+    # invisible to downstream processing.
+    configs_per_job: int = 1
 
     @field_validator('env')
     @classmethod
@@ -157,6 +168,13 @@ class ExecutionConfig(BaseModel):
                 f"Reserved names are: {', '.join(sorted(reserved_keys))}"
             )
 
+        return v
+
+    @field_validator('configs_per_job')
+    @classmethod
+    def validate_configs_per_job(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError(f"execution.configs_per_job must be >= 1, got {v}")
         return v
 
 

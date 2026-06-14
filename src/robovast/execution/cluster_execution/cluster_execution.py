@@ -35,7 +35,12 @@ from robovast.common import (COMPAT_VERSION, ProgressBar, get_campaign,
                              get_execution_env_variables, load_config,
                              normalize_secondary_containers)
 from robovast.common.cluster_context import resolve_resources
+from robovast.common.common import get_scenario_parameters
 from robovast.common.config_generation import generate_scenario_variations
+from robovast.common.execution import (build_job_parameter_documents,
+                                       dump_multi_document_yaml,
+                                       write_job_links_manifest)
+from robovast.execution.packer import build_jobs
 from robovast.execution.cluster_execution.kubernetes import check_pod_running
 from . import archiver, bucket_ops
 
@@ -498,44 +503,39 @@ class JobRunner:
             elem = elem.replace(tmpl, str(idx))
         return elem
 
-    def create_job_manifest_for_configuration(self, config_name: str, run_number: int) -> dict:
-        """Create a complete job manifest for a specific configuration and run number.
+    def _s3_settings(self):
+        """Return (endpoint, access_key, secret_key, bucket_name, campaign_prefix).
 
-        Args:
-            config_name: The configuration identifier
-            run_number: The run number for this configuration
-
-        Returns:
-            A complete Kubernetes job manifest dictionary
+        ``campaign_prefix`` is ``"<campaign>/"`` for shared-bucket backends
+        (e.g. GCS) and ``""`` for per-campaign buckets (embedded MinIO).
         """
-        # Create a deep copy of the base manifest
-        job_manifest = copy.deepcopy(self.manifest)
-
-        # Replace template variables
-        label_safe_campaign = _label_safe_campaign(self.campaign)
-        self.replace_template(job_manifest, "$CAMPAIGN_ID", label_safe_campaign)
-        self.replace_template(job_manifest, "$JOB_NAME",
-                              _short_job_name(self.campaign, config_name, run_number))
-        self.replace_template(job_manifest, "$JOB_FULL_NAME",
-                              _full_job_name(self.campaign, config_name, run_number))
-        self.replace_template(job_manifest, "$ITEM",
-                              f"{config_name.replace('/', '-').replace('_', '-')}-{run_number}")
-        self.replace_template(job_manifest, "$CAMPAIGN_ID",
-                              f"{config_name}-{run_number}")
-
-        # Stamp total job count so the cluster monitor can always show the run total
-        total_jobs = len(self.configs) * self.num_runs
-        self.replace_template(job_manifest, "$TOTAL_JOB_NUM", str(total_jobs))
-
-        # S3 connection details from cluster config
         s3_endpoint = self.cluster_config.get_s3_endpoint()
         s3_access_key, s3_secret_key = self.cluster_config.get_s3_credentials()
         shared_bucket = self.cluster_config.get_s3_bucket()
         campaign_bucket_name = self._bucket_name_for_campaign(self.campaign)
-
         bucket_name = shared_bucket if shared_bucket else campaign_bucket_name
         campaign_prefix = f"{campaign_bucket_name}/" if shared_bucket else ""
-        s3_prefix = f"{campaign_prefix}{config_name}/{run_number}"
+        return s3_endpoint, s3_access_key, s3_secret_key, bucket_name, campaign_prefix
+
+    def _build_job_manifest(self, *, job_short_name, job_full_name, item_tag,
+                            total_jobs, s3_prefix, init_cmd, extra_main_env=()):
+        """Assemble a job manifest shared by single-config and packed jobs.
+
+        The two paths differ only in job naming, the S3 output prefix, the
+        initContainer mirror command, and a few extra env vars
+        (``extra_main_env``); everything else (volumes, the init container, the
+        main container env, secondary containers) is identical and lives here.
+        """
+        job_manifest = copy.deepcopy(self.manifest)
+
+        label_safe_campaign = _label_safe_campaign(self.campaign)
+        self.replace_template(job_manifest, "$CAMPAIGN_ID", label_safe_campaign)
+        self.replace_template(job_manifest, "$JOB_NAME", job_short_name)
+        self.replace_template(job_manifest, "$JOB_FULL_NAME", job_full_name)
+        self.replace_template(job_manifest, "$ITEM", item_tag)
+        self.replace_template(job_manifest, "$TOTAL_JOB_NUM", str(total_jobs))
+
+        s3_endpoint, s3_access_key, s3_secret_key, bucket_name, campaign_prefix = self._s3_settings()
 
         spec = job_manifest['spec']['template']['spec']
 
@@ -549,24 +549,6 @@ class JobRunner:
             {'name': 'tmp', 'emptyDir': {}},
         ]
 
-        # Build the initContainer that downloads all needed files from S3 into /config/.
-        # After mirroring, restore the executable bit on any file whose S3 object carries
-        # the x-amz-meta-executable=yes metadata header (set during upload).
-        #
-        # $S3_CAMPAIGN_PREFIX is set to "<campaign>/" for shared-bucket backends (e.g. GCS)
-        # and to "" for per-campaign buckets (embedded MinIO).
-        init_cmd = (
-            f"mc alias set mystore \"$S3_ENDPOINT\" \"$S3_ACCESS_KEY\" \"$S3_SECRET_KEY\" && "
-            f"mc mirror mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}_config/ /config/ && "
-            f"mc mirror mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}_transient/ /config/ && "
-            f"(mc mirror mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}{config_name}/_config/ /config/ 2>/dev/null || true); "
-            f"for s3pfx in ${{S3_CAMPAIGN_PREFIX}}_config ${{S3_CAMPAIGN_PREFIX}}_transient ${{S3_CAMPAIGN_PREFIX}}{config_name}/_config; do "
-            f"mc find mystore/$S3_BUCKET/$s3pfx/ 2>/dev/null | while IFS= read -r obj; do "
-            f"mc stat --json \"$obj\" 2>/dev/null | grep -qi 'executable.*yes' && "
-            f"chmod +x \"/config/${{obj#mystore/$S3_BUCKET/$s3pfx/}}\" 2>/dev/null || true; "
-            f"done; done; true"
-        )
-
         init_env = [
             {'name': 'S3_ENDPOINT', 'value': s3_endpoint},
             {'name': 'S3_BUCKET', 'value': bucket_name},
@@ -574,7 +556,6 @@ class JobRunner:
             {'name': 'S3_SECRET_KEY', 'value': s3_secret_key},
             {'name': 'S3_CAMPAIGN_PREFIX', 'value': campaign_prefix},
         ]
-
         spec['initContainers'] = [
             {
                 'name': 's3-init',
@@ -604,7 +585,7 @@ class JobRunner:
             if 'env' not in containers[0]:
                 containers[0]['env'] = []
 
-            env_vars = get_execution_env_variables(run_number, config_name)
+            env_vars = get_execution_env_variables(0, item_tag)
             for name, val in env_vars.items():
                 containers[0]['env'].append({
                     'name': str(name),
@@ -623,29 +604,21 @@ class JobRunner:
 
             # Add PRE_COMMAND and POST_COMMAND if specified
             if self.pre_command:
-                containers[0]['env'].append({
-                    'name': 'PRE_COMMAND',
-                    'value': str(self.pre_command)
-                })
+                containers[0]['env'].append({'name': 'PRE_COMMAND', 'value': str(self.pre_command)})
             if self.post_command:
-                containers[0]['env'].append({
-                    'name': 'POST_COMMAND',
-                    'value': str(self.post_command)
-                })
+                containers[0]['env'].append({'name': 'POST_COMMAND', 'value': str(self.post_command)})
             if self.log_tree:
-                containers[0]['env'].append({
-                    'name': 'SCENARIO_EXECUTION_PARAMETERS',
-                    'value': '-t'
-                })
+                containers[0]['env'].append({'name': 'SCENARIO_EXECUTION_PARAMETERS', 'value': '-t'})
 
-            containers[0]['env'].append({
-                'name': 'SCENARIO_FILE',
-                'value': scenario_file_name
-            })
+            containers[0]['env'].append({'name': 'SCENARIO_FILE', 'value': scenario_file_name})
+
+            for k, v in extra_main_env:
+                containers[0]['env'].append({'name': k, 'value': v})
 
             containers[0]['volumeMounts'] = shared_volume_mounts
 
-        # Add secondary containers
+        # Add secondary containers (they receive the same packed env so a
+        # sim/SUT server resolves file-valued reset parameters identically).
         for sc in self.secondary_containers:
             sc_name = sc['name']
             sc_resources = resolve_resources(sc['resources'], self.kube_context)
@@ -653,6 +626,8 @@ class JobRunner:
                 {'name': 'CONTAINER_NAME', 'value': sc_name},
                 {'name': 'SCENARIO_FILE', 'value': scenario_file_name},
             ]
+            for k, v in extra_main_env:
+                secondary_env.append({'name': k, 'value': v})
             for env_var in self.env:
                 if isinstance(env_var, dict):
                     for key, value in env_var.items():
@@ -679,6 +654,81 @@ class JobRunner:
             containers.append(secondary_spec)
 
         return job_manifest
+
+    def create_job_manifest(self, job, total_jobs: int) -> dict:
+        """Create a manifest for one job (1..K configs).
+
+        One K8s Job runs all the job's configs via a multi-document param file
+        (the simulator is reset between them). ``/out`` is this pod's emptyDir shaped
+        as the campaign root, uploaded to the campaign prefix, so per-config
+        results land at ``<campaign>/<config>/<run>/`` via each document's
+        ``_output_dir``. Job-level artifacts go to a per-job subdir, and each
+        config's files are mirrored under ``/config/<config-name>/`` to avoid
+        collisions. The job's multi-document param file ships in ``_transient/``
+        and so lands at ``/config/<job-tag>.params.yaml``.
+        """
+        _, _, _, _, campaign_prefix = self._s3_settings()
+        job_tag = f"job-{job.index}"
+        per_config_mirror = "".join(
+            f"(mc mirror mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}{cn}/_config/ /config/{cn}/ 2>/dev/null || true); "
+            for cn in job.config_names
+        )
+        init_cmd = (
+            f"mc alias set mystore \"$S3_ENDPOINT\" \"$S3_ACCESS_KEY\" \"$S3_SECRET_KEY\" && "
+            f"mc mirror mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}_config/ /config/ && "
+            f"mc mirror mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}_transient/ /config/ && "
+            f"{per_config_mirror}"
+            f"for s3pfx in ${{S3_CAMPAIGN_PREFIX}}_config ${{S3_CAMPAIGN_PREFIX}}_transient; do "
+            f"mc find mystore/$S3_BUCKET/$s3pfx/ 2>/dev/null | while IFS= read -r obj; do "
+            f"mc stat --json \"$obj\" 2>/dev/null | grep -qi 'executable.*yes' && "
+            f"chmod +x \"/config/${{obj#mystore/$S3_BUCKET/$s3pfx/}}\" 2>/dev/null || true; "
+            f"done; done; true"
+        )
+        extra_env = (
+            ('SCENARIO_PARAMETER_FILE', f"/config/{job_tag}.params.yaml"),
+            ('OUTPUT_RESULT_PER_SCENARIO', 'true'),
+            ('OUTPUT_DIR', f"/out/_jobs/{job_tag}"),
+            ('SCENARIO_OUTPUT_DIR', '/out'),
+        )
+        return self._build_job_manifest(
+            job_short_name=_short_job_name(self.campaign, job_tag, job.index),
+            job_full_name=f"{self.campaign}-{job_tag}",
+            item_tag=job_tag,
+            total_jobs=total_jobs,
+            s3_prefix=campaign_prefix.rstrip("/"),
+            init_cmd=init_cmd,
+            extra_main_env=extra_env,
+        )
+
+    def _configs_per_job(self) -> int:
+        """How many configurations to pack into one job (1 = one per job)."""
+        return int((self.campaign_data.get("execution") or {}).get("configs_per_job") or 1)
+
+    def _build_jobs(self):
+        """Group (config, run) work items into jobs per configs_per_job.
+
+        Deterministic, so the jobs used to write per-job param files match the
+        jobs used to create job manifests.
+        """
+        return build_jobs(self.configs, self.num_runs, self.campaign_data.get("execution") or {})
+
+    def _write_job_param_files(self, out_dir):
+        """Write one multi-document scenario-parameter file per packed job into
+        ``out_dir/_transient/`` so they upload with the campaign and are mirrored
+        into each packed job's ``/config`` as ``job-<idx>.params.yaml``."""
+        vast_dir = os.path.dirname(self.campaign_data["vast"])
+        scenario_path = os.path.join(vast_dir, self.campaign_data["scenario_file"])
+        scenario_name = next(iter(get_scenario_parameters(scenario_path).keys()))
+        transient_dir = os.path.join(out_dir, "_transient")
+        os.makedirs(transient_dir, exist_ok=True)
+        jobs = self._build_jobs()
+        for job in jobs:
+            docs = build_job_parameter_documents(job, scenario_name)
+            with open(os.path.join(transient_dir, f"job-{job.index}.params.yaml"), "w") as f:
+                f.write(dump_multi_document_yaml(docs))
+        # Canonical link manifest, consumed by the share archiver (s3/gcs_to_targz)
+        # to materialise <config>/<run>/job symlinks into the shared tar.gz.
+        write_job_links_manifest(transient_dir, jobs)
 
     @staticmethod
     def _bucket_name_for_campaign(campaign: str) -> str:
@@ -886,17 +936,19 @@ class JobRunner:
         logger.debug(f"Uploading task config files for {len(self.configs)} scenarios to S3...")
         self.upload_campaigns_to_s3()
 
-        # Create all jobs for all campaigns before executing any
-        total_jobs = self.num_runs * len(self.configs)
-        logger.info(f"Creating {len(self.configs)} config(s) with {self.num_runs} runs each (ID: {self.campaign})...")
-
-        # Build all manifests first, then submit one by one.
+        # Build all manifests first, then submit one by one. With
+        # configs_per_job > 1, configs (and their runs) are packed into units —
+        # one K8s Job per packed job; otherwise one K8s Job per (config, run).
         job_manifests = []
-        for run_number in range(self.num_runs):
-            for config in self.configs:
-                config_name = config.get("name")
-                job_manifest = self.create_job_manifest_for_configuration(config_name, run_number)
-                job_manifests.append((job_manifest['metadata']['name'], job_manifest, run_number))
+        jobs = self._build_jobs()
+        total_jobs = len(jobs)
+        logger.info(
+            f"Creating {total_jobs} job(s) for {len(self.configs)} config(s) x "
+            f"{self.num_runs} run(s), {self._configs_per_job()} config(s) per job (ID: {self.campaign})..."
+        )
+        for job in jobs:
+            job_manifest = self.create_job_manifest(job, total_jobs)
+            job_manifests.append((job_manifest['metadata']['name'], job_manifest, job.index))
 
         all_jobs = [job_name for job_name, _, _ in job_manifests]
 
@@ -1038,6 +1090,10 @@ class JobRunner:
         with tempfile.TemporaryDirectory() as temp_dir:
             out_dir = os.path.join(temp_dir, "out_template")
             prepare_campaign_configs(out_dir, self.campaign_data, cluster=True)
+
+            # Add the per-job multi-document parameter files + job-link manifest
+            # so each job can run its configs in one container.
+            self._write_job_param_files(out_dir)
 
             # Inject instance-type detection command when supported.
             entrypoint_path = os.path.join(out_dir, "_transient", "entrypoint.sh")

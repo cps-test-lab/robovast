@@ -27,6 +27,7 @@ Top-Level Layout
        ├── _config/                          # Campaign-level configuration snapshot
        ├── _execution/                       # Execution metadata
        ├── _transient/                       # Intermediate/preprocessed data
+       ├── _jobs/                            # Per-job artifacts (sysinfo, resource usage, logs)
        └── <config-name-1>/                  # One directory per configuration variant
        └── <config-name-2>/
 
@@ -123,22 +124,29 @@ configuration, wrapped in a single key matching the scenario name:
 Run Directory
 ^^^^^^^^^^^^^
 
-Each run directory contains all output from a single execution:
+Each run directory holds the **scenario output** for one configuration at one run
+number, plus a ``job`` symlink to that run's job-level artifacts:
 
 .. code-block:: text
 
    <run-number>/
    ├── test.xml                              # JUnit test result (pass/fail, duration)
-   ├── sysinfo.yaml                          # Hardware info (platform, CPU, memory)
-   ├── logs/                                 # Log files
-   │   ├── system.log                        # Main system log
-   │   ├── system_<secondary>.log            # Secondary container log [if multi-container]
-   │   └── <ros log files>.log               # ROS log files [if ROS-based]
-   ├── resource_usage_*.csv                  # Per-container CPU/memory [if multi-container]
-   ├── rosbag2/                              # ROS bag data [if ROS-based]
-   │   ├── metadata.yaml                     # Topics, message counts, duration
-   │   └── *.mcap                            # Binary bag files (MCAP format)
-   └── <test-specific files>                 # Domain-specific output (e.g. out.csv)
+   ├── job -> ../../_jobs/job-N              # symlink to this run's job artifacts (see below)
+   └── <test-specific files>                 # Domain-specific scenario output, e.g. out.csv,
+                                             #   or a scenario-recorded rosbag2/ bag directory
+
+Anything the *scenario* itself produces (``test.xml``, scenario-recorded
+``rosbag2/``, domain output) stays in the run directory. Infrastructure and
+monitoring artifacts (``sysinfo.yaml``, ``resource_usage_*.csv``, the system
+log, and the entrypoint's ``/rosout`` recording) belong to the **job** and live
+under ``_jobs/job-N/`` — reachable via the ``job`` link, e.g.
+``<run>/job/sysinfo.yaml`` (see :ref:`job-directory`).
+
+A common example of test-specific output is a scenario-recorded ``rosbag2/``
+directory (standard ROS 2 bag in MCAP storage, with a ``metadata.yaml`` listing
+recorded topics and message counts). It is present only when the scenario
+records a bag, and is distinct from the separate, job-level ``/rosout``
+recording under ``_jobs/job-N/logs/``.
 
 ``test.xml`` — JUnit Test Result
 """""""""""""""""""""""""""""""""
@@ -155,21 +163,32 @@ Standard JUnit XML format with scenario execution results:
      </testcase>
    </testsuite>
 
-``resource_usage_*.csv`` — Resource Usage
-""""""""""""""""""""""""""""""""""""""""""
+.. _job-directory:
 
-Per-container CSV files with columns: ``timestamp``, ``pid``, ``name``,
-``cpu_usage``, ``mem_usage``.  One file per container (e.g.
-``resource_usage_nav.csv``, ``resource_usage_simulation.csv``,
-``resource_usage_robovast.csv``).  Only present when secondary containers
-are configured.
+Job Directory
+^^^^^^^^^^^^^
 
-``rosbag2/`` — ROS Bag Data
-"""""""""""""""""""""""""""""
+``_jobs/job-N/`` holds the artifacts of one *job* — the unit of dispatch (one
+Kubernetes Job, or one local ``docker compose`` run). With the default
+``configs_per_job: 1`` there is one job per run; with ``configs_per_job > 1``
+several configurations share a job (and therefore share these artifacts). Each
+run links to its job via ``<run>/job`` (e.g. ``<run>/job/sysinfo.yaml``).
 
-Standard ROS 2 bag format (MCAP storage).  The ``metadata.yaml`` file
-lists all recorded topics with message types and counts.  Only present
-in ROS-based campaigns.
+.. code-block:: text
+
+   _jobs/job-N/
+   ├── sysinfo.yaml                          # Hardware info (platform, CPU, memory) — stable
+   ├── resource_usage_main.csv               # Main container CPU/memory over the job
+   ├── resource_usage_<secondary>.csv        # Per secondary container [if multi-container]
+   └── logs/
+       ├── system.log                        # Main container system log
+       ├── system_<secondary>.log            # Secondary container log [if multi-container]
+       └── rosout_bag/                       # /rosout recording [ROS mode]
+
+``resource_usage_*.csv`` files have columns ``timestamp``, ``pid``, ``name``,
+``cpu_usage``, ``mem_usage`` (one per container). For a packed job these dynamic
+artifacts span the whole job; slicing them to a single configuration's active
+time window is a planned post-processing step.
 
 
 .. _results-metadata:

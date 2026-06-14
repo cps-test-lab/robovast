@@ -142,6 +142,35 @@ def _download_blob(bucket: str, blob_name: str, dest_path: str, token: str) -> N
 # Main
 # ---------------------------------------------------------------------------
 
+def _create_job_links(campaign_dir):
+    """Materialise ``<config>/<run>/job`` symlinks from the link manifest.
+
+    Reads ``<campaign_dir>/_transient/job_links.yaml`` (a ``{link: target}`` map
+    written by robovast for packed campaigns) and creates each relative symlink
+    so the archived tree is navigable (``cd <config>/<run>/job`` → that job's
+    artifact dir). No-op when the manifest is absent (single-config campaigns).
+    Self-contained — no robovast import; requires PyYAML in the archiver image.
+    """
+    import yaml  # pylint: disable=import-outside-toplevel
+    manifest = os.path.join(campaign_dir, "_transient", "job_links.yaml")
+    if not os.path.isfile(manifest):
+        return
+    with open(manifest) as fh:
+        links = yaml.safe_load(fh) or {}
+    for link_rel, target in links.items():
+        link_path = os.path.join(campaign_dir, link_rel)
+        os.makedirs(os.path.dirname(link_path), exist_ok=True)
+        if os.path.islink(link_path) or os.path.exists(link_path):
+            try:
+                os.remove(link_path)
+            except OSError:
+                pass
+        try:
+            os.symlink(target, link_path)
+        except OSError as exc:
+            sys.stderr.write(f"WARNING: could not create job link {link_rel}: {exc}\n")
+
+
 def main():
     import argparse  # pylint: disable=import-outside-toplevel
 
@@ -224,6 +253,10 @@ def main():
             f"\r{campaign}  downloaded {total} file(s), compressing...\n"
         )
         sys.stdout.flush()
+
+        # Materialise per-job artifact symlinks before archiving so the tar.gz
+        # carries them (tar stores symlinks as links — no -h/--dereference).
+        _create_job_links(campaign_dir)
 
         # ------------------------------------------------------------------
         # Phase 2: tar + pigz running in parallel via OS pipe

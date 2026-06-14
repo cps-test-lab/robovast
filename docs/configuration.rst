@@ -185,6 +185,35 @@ Number of times to execute each run configuration. Multiple runs allow for stati
    execution:
      runs: 20
 
+configs_per_job
+^^^^^^^^^^^^^^^
+
+**Type:** Integer
+
+**Required:** No (default: ``1``)
+
+How many configurations (parameter sets) run inside a single job. A *job* is one
+unit of dispatch — one Kubernetes Job on the cluster, or one ``docker compose``
+run locally.
+
+- ``1`` (default): each job runs exactly one configuration. Right for simulators
+  where setup dominates and one job should be one scenario (e.g. Gazebo).
+- ``> 1``: up to N configurations are packed into one job and run sequentially
+  inside a **single simulator setup**, with the simulator reset between them.
+  This pays the simulator setup cost once per job instead of once per
+  configuration — a big win for simulators with cheap per-run cost (e.g. MuJoCo,
+  where a costly setup would otherwise repeat for every parameter set).
+
+Packing is invisible to results: every configuration's output is always written
+to ``<config>/<run>/`` regardless of how configs were grouped into jobs (see
+:ref:`results-output-structure`). The number of jobs is
+``ceil(num_configs * runs / configs_per_job)``.
+
+.. code-block:: yaml
+
+   execution:
+     configs_per_job: 200   # pack 200 parameter sets per job (one sim setup)
+
 timeout
 ^^^^^^^
 

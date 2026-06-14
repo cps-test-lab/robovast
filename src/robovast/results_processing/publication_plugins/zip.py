@@ -41,6 +41,7 @@ import datetime
 import fnmatch
 import os
 import re
+import stat
 import time
 import zipfile
 from pathlib import Path
@@ -220,6 +221,74 @@ def _resolve_filename(template: str, campaign_name: str, vast_metadata: Dict[str
         )
 
     return template.format_map(substitutions)
+
+
+def _plan_campaign_members(
+    campaign_item: Path,
+    include_filter: Optional[List[str]],
+    exclude_filter: Optional[List[str]],
+) -> Tuple[List[Tuple[Path, str]], List[Tuple[Path, str, str]], List[str]]:
+    """Plan and validate the archive members for one campaign directory.
+
+    Regular files and symlinks are collected separately. A symlink is considered
+    only when it passes the include/exclude filters (i.e. the user requested that
+    path). For every such symlink the target must (1) resolve to a location
+    *inside* the campaign directory and (2) actually be present in the archive —
+    either the target file is an included member, or, for a link to a directory,
+    at least one included member lives under it. A symlink whose target is not
+    reachable in the archive would extract as a dangling link, so it is reported
+    as an error instead of being silently shipped.
+
+    Returns:
+        ``(files, symlinks, errors)`` where ``files`` is a list of
+        ``(path, rel_str)`` regular files, ``symlinks`` is a list of
+        ``(path, rel_str, target_rel_str)`` validated symlinks, and ``errors`` is
+        a list of human-readable problems (empty when everything is reachable).
+    """
+    campaign_root = campaign_item.resolve()
+    files: List[Tuple[Path, str]] = []
+    rel_set: set = set()
+    raw_symlinks: List[Tuple[Path, str]] = []
+
+    for entry in sorted(campaign_item.rglob("*")):
+        rel_str = str(entry.relative_to(campaign_item)).replace(os.sep, "/")
+        if entry.is_symlink():
+            # rglob does not descend into symlinked directories, so a link is
+            # always a leaf entry here (no target-content duplication).
+            if _should_include_file(rel_str, include_filter, exclude_filter):
+                raw_symlinks.append((entry, rel_str))
+            continue
+        if not entry.is_file():
+            continue
+        if not _should_include_file(rel_str, include_filter, exclude_filter):
+            continue
+        files.append((entry, rel_str))
+        rel_set.add(rel_str)
+
+    symlinks: List[Tuple[Path, str, str]] = []
+    errors: List[str] = []
+    for entry, rel_str in raw_symlinks:
+        link_target = os.readlink(entry)
+        resolved = Path(os.path.realpath(entry))
+        try:
+            target_rel_str = str(resolved.relative_to(campaign_root)).replace(os.sep, "/")
+        except ValueError:
+            errors.append(
+                f"{rel_str} -> {link_target}: symlink target is outside the campaign directory"
+            )
+            continue
+        reachable = target_rel_str in rel_set or any(
+            member.startswith(target_rel_str + "/") for member in rel_set
+        )
+        if not reachable:
+            errors.append(
+                f"{rel_str} -> {target_rel_str}: symlink target is not included in the archive "
+                f"(include it via include_filter / stop excluding it, or drop the symlink)"
+            )
+            continue
+        symlinks.append((entry, rel_str, target_rel_str))
+
+    return files, symlinks, errors
 
 
 class Zip(BasePublicationPlugin):
@@ -406,29 +475,50 @@ class Zip(BasePublicationPlugin):
                         continue
 
             try:
+                # Plan and validate every campaign's members before opening the
+                # archive, so a failed symlink check never leaves a partial zip.
+                plan: List[Tuple[Path, List[Tuple[Path, str]], List[Tuple[Path, str, str]]]] = []
+                for campaign_item in campaign_items:
+                    files, symlinks, errors = _plan_campaign_members(
+                        campaign_item, include_filter, exclude_filter)
+                    if errors:
+                        return False, (
+                            f"Symlink validation failed for '{campaign_item.name}': "
+                            + "; ".join(errors)
+                        ), []
+                    plan.append((campaign_item, files, symlinks))
+
+                min_timestamp = 315532800  # January 1, 1980 00:00:00 (ZIP epoch floor)
                 dest_dir.mkdir(parents=True, exist_ok=True)
                 with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                    for campaign_item in campaign_items:
-                        for entry in sorted(campaign_item.rglob("*")):
-                            if not entry.is_file():
-                                continue
-                            rel = entry.relative_to(campaign_item)
-                            rel_str = str(rel).replace(os.sep, "/")
-                            if not _should_include_file(rel_str, include_filter, exclude_filter):
-                                continue
+                    for campaign_item, files, symlinks in plan:
+                        for entry, rel_str in files:
                             member_path = self.get_arcname(rel_str, omit_hidden)
                             arcname = f"{campaign_item.name}/{member_path}"
 
-                            # Get file modification time and clamp to ZIP-supported range (1980-2107)
-                            mtime = os.path.getmtime(entry)
-                            min_timestamp = 315532800  # January 1, 1980 00:00:00
-                            clamped_mtime = max(mtime, min_timestamp)
+                            # Clamp mtime to the ZIP-supported range (1980-2107)
+                            clamped_mtime = max(os.path.getmtime(entry), min_timestamp)
 
                             zinfo = zipfile.ZipInfo(filename=arcname, date_time=time.gmtime(clamped_mtime)[:6])
                             zinfo.external_attr = os.stat(entry).st_mode << 16
 
                             with open(entry, 'rb') as f:
                                 zf.writestr(zinfo, f.read(), compress_type=zipfile.ZIP_DEFLATED)
+
+                        # Store validated symlinks as real symlink entries. The
+                        # stored target is recomputed relative to the link's
+                        # in-archive location so it stays valid under omit_hidden
+                        # (which can shift where the target lands in the archive).
+                        for entry, rel_str, target_rel_str in symlinks:
+                            link_arc = f"{campaign_item.name}/{self.get_arcname(rel_str, omit_hidden)}"
+                            target_arc = f"{campaign_item.name}/{self.get_arcname(target_rel_str, omit_hidden)}"
+                            link_value = os.path.relpath(target_arc, os.path.dirname(link_arc))
+
+                            clamped_mtime = max(os.lstat(entry).st_mtime, min_timestamp)
+                            zinfo = zipfile.ZipInfo(filename=link_arc, date_time=time.gmtime(clamped_mtime)[:6])
+                            zinfo.external_attr = (stat.S_IFLNK | 0o777) << 16
+                            zinfo.create_system = 3  # Unix — so extractors restore the symlink bit
+                            zf.writestr(zinfo, link_value)
 
                         if metadata:
                             merged_yaml = _merge_zip_metadata(campaign_item, metadata)

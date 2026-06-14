@@ -2,6 +2,7 @@
 """Generic test script for VAST files - tests execution and postprocessing."""
 
 import argparse
+import math
 import os
 import subprocess
 import sys
@@ -125,8 +126,12 @@ def check_results_dir_structure(results_dir):  # pylint: disable=too-many-return
     
     print("  ✓ _config directory exists")
     
-    # Check structure of first scenario directory (exclude _config; it has its own layout)
-    scenario_dirs = [d for d in config_dirs if d.name not in ('_config', '_transient', '_execution')]
+    # Check structure of first scenario directory (exclude _config; it has its own
+    # layout, and exclude the job-level artifact tree _jobs/).
+    scenario_dirs = [
+        d for d in config_dirs
+        if d.name not in ('_config', '_transient', '_execution', '_jobs')
+    ]
     if not scenario_dirs:
         print("  ✗ No scenario directory found in run")
         return False
@@ -169,10 +174,60 @@ def check_results_dir_structure(results_dir):  # pylint: disable=too-many-return
                 if not test_xml:
                     print(f"    ✗ test.xml file not found in {name} directory")
                     return False
-    
+
+                # Every run links to its job's artifact directory via a `job`
+                # symlink pointing into the campaign-level _jobs/ tree.
+                job_link = item / 'job'
+                if not job_link.is_symlink():
+                    print(f"    ✗ 'job' symlink not found in {name} directory")
+                    return False
+                target = os.readlink(job_link)
+                if '_jobs' not in target:
+                    print(
+                        f"    ✗ 'job' symlink in {name} does not point into _jobs/ "
+                        f"(target: {target})"
+                    )
+                    return False
+
     print("    ✓ Directory names are valid (numeric run indices)")
     print("    ✓ test.xml files exist in numeric directories")
-    
+    print("    ✓ each run has a 'job' symlink into _jobs/")
+
+    # Job-level artifact directories live under <campaign>/_jobs/job-N/.
+    if not check_job_directories(first_run):
+        return False
+
+    return True
+
+
+def check_job_directories(campaign_dir):
+    """Check the campaign's job-level artifact directories (``_jobs/job-N/``).
+
+    Regardless of ``configs_per_job`` every run is dispatched through a job, so
+    the campaign always has a ``_jobs/`` directory with one ``job-N`` subdir per
+    job, each holding that job's job-level artifacts (at minimum ``sysinfo.yaml``).
+    """
+    jobs_dir = campaign_dir / '_jobs'
+    if not jobs_dir.is_dir():
+        print("  ✗ _jobs directory not found in campaign")
+        return False
+
+    job_dirs = [
+        d for d in jobs_dir.iterdir()
+        if d.is_dir() and d.name.startswith('job-')
+    ]
+    if not job_dirs:
+        print("  ✗ No job-* directories found in _jobs/")
+        return False
+
+    print(f"  ✓ Found {len(job_dirs)} job director(y/ies) in _jobs/")
+
+    for job_dir in job_dirs:
+        if not (job_dir / 'sysinfo.yaml').exists():
+            print(f"    ✗ sysinfo.yaml not found in _jobs/{job_dir.name}/")
+            return False
+
+    print("    ✓ sysinfo.yaml exists in each job directory")
     return True
 
 
@@ -272,6 +327,199 @@ def test_vast_workflow(vast_file_path, test_directory, config=None, runs=None): 
         traceback.print_exc()
         return False
 
+
+def _find_campaign_dir(results_dir):
+    """Return the (single) campaign directory inside a results directory."""
+    output_path = Path(results_dir)
+    if not output_path.exists():
+        return None
+    for d in sorted(output_path.iterdir()):
+        if d.is_dir() and (
+            d.name.startswith('campaign-') or d.name.startswith('growth_sim-')
+        ):
+            return d
+    return None
+
+
+def _count_job_dirs(campaign_dir):
+    """Count ``_jobs/job-N`` directories in a campaign."""
+    jobs_dir = campaign_dir / '_jobs'
+    if not jobs_dir.is_dir():
+        return 0
+    return len([
+        d for d in jobs_dir.iterdir()
+        if d.is_dir() and d.name.startswith('job-')
+    ])
+
+
+def _collect_non_job_files(campaign_dir):
+    """Collect campaign-relative file paths, excluding all job-specific artifacts.
+
+    The job *packing* (``configs_per_job``) only changes how runs are grouped
+    into jobs; the per-config/per-run scenario output must be identical. This
+    returns the set of files that should match regardless of packing by skipping:
+
+    - the ``_jobs/`` artifact tree,
+    - the per-run ``job`` symlinks,
+    - the ``_transient/`` job bookkeeping (``job_links.yaml``, ``job-N.params.yaml``).
+    """
+    result = set()
+    for root, dirs, files in os.walk(campaign_dir, followlinks=False):
+        # Prune the job artifact tree and any symlinked dirs (the `job` links).
+        dirs[:] = [
+            d for d in dirs
+            if d != '_jobs' and not os.path.islink(os.path.join(root, d))
+        ]
+        for fn in files:
+            rel = os.path.relpath(os.path.join(root, fn), campaign_dir)
+            parts = rel.split(os.sep)
+            # Skip per-job transient bookkeeping (job_links.yaml, job-N.params.yaml).
+            if parts[0] == '_transient' and fn.startswith('job'):
+                continue
+            result.add(rel)
+    return result
+
+
+def _set_image(text, image):
+    """Return *text* with ``execution.image`` replaced by *image*."""
+    out = []
+    in_execution = False
+    replaced = False
+    for line in text.splitlines(keepends=True):
+        stripped = line.rstrip('\n')
+        if stripped == 'execution:':
+            in_execution = True
+            out.append(line)
+            continue
+        if in_execution and stripped.startswith('  image:'):
+            out.append(f"  image: {image}\n")
+            replaced = True
+            continue
+        if in_execution and line[:1].strip() and stripped.endswith(':'):
+            in_execution = False
+        out.append(line)
+    if not replaced:
+        raise ValueError("Could not find 'image:' in the execution block")
+    return ''.join(out)
+
+
+def _set_configs_per_job(text, value):
+    """Return *text* with ``configs_per_job: <value>`` set in the execution block."""
+    out = []
+    in_execution = False
+    inserted = False
+    for line in text.splitlines(keepends=True):
+        stripped = line.rstrip('\n')
+        if stripped == 'execution:':
+            out.append(line)
+            out.append(f"  configs_per_job: {value}\n")
+            in_execution = True
+            inserted = True
+            continue
+        # Drop any pre-existing configs_per_job entry so ours is authoritative.
+        if in_execution and stripped.startswith('  configs_per_job:'):
+            continue
+        # A new top-level (unindented) key ends the execution block.
+        if in_execution and line[:1].strip() and stripped.endswith(':'):
+            in_execution = False
+        out.append(line)
+    if not inserted:
+        raise ValueError("Could not find an 'execution:' block in the VAST file")
+    return ''.join(out)
+
+
+def test_configs_per_job_packing(vast_file_path, test_directory, config=None, runs=None):  # pylint: disable=too-many-return-statements
+    """Verify configs_per_job>1 packs runs into fewer jobs but keeps output identical.
+
+    Runs the same campaign twice — once with the default packing
+    (``configs_per_job=1``, one job per run) and once with
+    ``configs_per_job: 10`` temporarily injected into the VAST file — then
+    asserts that:
+
+    - the packed run produces fewer jobs (``ceil(N/10)`` instead of ``N``), and
+    - every non-job output file is byte-for-byte present in both layouts.
+    """
+    print("\n" + "=" * 60)
+    print("Testing: configs_per_job packing equivalence")
+    print("=" * 60)
+
+    repo_root = Path(__file__).parent.parent
+    config_path = Path(vast_file_path)
+    if not config_path.is_absolute():
+        config_path = repo_root / config_path
+    if not config_path.exists():
+        print(f"✗ Config file not found: {config_path}")
+        return False
+
+    # Packing only differs when a job holds more than one work item, so force at
+    # least two runs (each run of the selected config is one work item).
+    run_count = runs if (runs and runs >= 2) else 2
+
+    base_dir = os.path.join(test_directory, "cpj_base")
+    packed_dir = os.path.join(test_directory, "cpj_packed")
+    os.makedirs(base_dir, exist_ok=True)
+    os.makedirs(packed_dir, exist_ok=True)
+
+    # 1. Baseline: default packing (configs_per_job=1 → one job per run).
+    print("\n--- Baseline run (configs_per_job=1) ---")
+    if not test_vast_workflow(vast_file_path, base_dir, config, run_count):
+        print("✗ Baseline (configs_per_job=1) workflow failed")
+        return False
+
+    # 2. Packed: temporarily inject configs_per_job: 10 and re-run.
+    print("\n--- Packed run (configs_per_job=10) ---")
+    original_text = config_path.read_text(encoding="utf-8")
+    try:
+        config_path.write_text(
+            _set_configs_per_job(original_text, 10), encoding="utf-8"
+        )
+        if not test_vast_workflow(vast_file_path, packed_dir, config, run_count):
+            print("✗ Packed (configs_per_job=10) workflow failed")
+            return False
+    finally:
+        # Always restore the original VAST file, even on failure.
+        config_path.write_text(original_text, encoding="utf-8")
+
+    # 3. Compare the two campaign outputs.
+    print("\n--- Comparing outputs ---")
+    base_campaign = _find_campaign_dir(os.path.join(base_dir, "results"))
+    packed_campaign = _find_campaign_dir(os.path.join(packed_dir, "results"))
+    if base_campaign is None or packed_campaign is None:
+        print("✗ Could not locate campaign directories for comparison")
+        return False
+
+    base_jobs = _count_job_dirs(base_campaign)
+    packed_jobs = _count_job_dirs(packed_campaign)
+    expected_packed = math.ceil(base_jobs / 10) if base_jobs else 0
+    print(
+        f"  Baseline jobs: {base_jobs}, packed jobs: {packed_jobs} "
+        f"(expected {expected_packed})"
+    )
+    if base_jobs <= packed_jobs:
+        print("  ✗ configs_per_job=10 did not reduce the number of jobs")
+        return False
+    if packed_jobs != expected_packed:
+        print(f"  ✗ Unexpected packed job count: {packed_jobs} != {expected_packed}")
+        return False
+    print("  ✓ Job packing reduced the job count as expected")
+
+    base_files = _collect_non_job_files(base_campaign)
+    packed_files = _collect_non_job_files(packed_campaign)
+    only_base = base_files - packed_files
+    only_packed = packed_files - base_files
+    if only_base or only_packed:
+        print("  ✗ Non-job output differs between configs_per_job=1 and =10")
+        if only_base:
+            print(f"    Only in baseline: {sorted(only_base)}")
+        if only_packed:
+            print(f"    Only in packed:   {sorted(only_packed)}")
+        return False
+
+    print(f"  ✓ Non-job output identical ({len(base_files)} files) across packings")
+    print("\n✓ configs_per_job packing test succeeded!")
+    return True
+
+
 def main():
     """Run all tests."""
     parser = argparse.ArgumentParser(
@@ -300,9 +548,26 @@ def main():
         default=None,
         help='Number of runs (will be passed as -r <runs> to vast exec)'
     )
-    
+    parser.add_argument(
+        '--no-packing-test',
+        action='store_true',
+        help='Skip the configs_per_job packing-equivalence test (it runs the '
+             'campaign twice and is more expensive)'
+    )
+    parser.add_argument(
+        '--image',
+        type=str,
+        default=None,
+        help='Override the container image in the VAST file (e.g. a PR-built image)'
+    )
+
     args = parser.parse_args()
-    
+
+    repo_root = Path(__file__).parent.parent
+    config_path = Path(args.vast_file)
+    if not config_path.is_absolute():
+        config_path = repo_root / config_path
+
     print("="*60)
     print("VAST Workflow Tests")
     print("="*60)
@@ -311,37 +576,52 @@ def main():
         print(f"Configuration: {args.config}")
     if args.test_directory:
         print(f"Test directory: {args.test_directory}")
-    
-    tests = [
-        ("Complete workflow: init -> execution -> postprocess", test_vast_workflow, args.vast_file, args.test_directory, args.config, args.runs),
-    ]
-    
-    results = []
-    for name, test_func, *test_args in tests:
-        try:
-            result = test_func(*test_args)
-            results.append((name, result))
-        except Exception as e:
-            print(f"✗ Test '{name}' raised exception: {e}")
-            traceback.print_exc()
-            results.append((name, False))
-    
-    # Print summary
-    print("\n" + "="*60)
-    print("Test Results Summary")
-    print("="*60)
-    for name, result in results:
-        status = "✓ PASS" if result else "✗ FAIL"
-        print(f"{status}: {name}")
-    
-    all_passed = all(result for _, result in results)
-    print("="*60)
-    if all_passed:
-        print("✓ All tests passed!")
-        return 0
-    else:
-        print("✗ Some tests failed!")
-        return 1
+    if args.image:
+        print(f"Image override: {args.image}")
+
+    original_text = None
+    if args.image:
+        original_text = config_path.read_text(encoding='utf-8')
+        config_path.write_text(_set_image(original_text, args.image), encoding='utf-8')
+
+    try:
+        tests = [
+            ("Complete workflow: init -> execution -> postprocess", test_vast_workflow, args.vast_file, args.test_directory, args.config, args.runs),
+        ]
+        if not args.no_packing_test:
+            tests.append(
+                ("configs_per_job packing equivalence", test_configs_per_job_packing,
+                 args.vast_file, args.test_directory, args.config, args.runs)
+            )
+
+        results = []
+        for name, test_func, *test_args in tests:
+            try:
+                result = test_func(*test_args)
+                results.append((name, result))
+            except Exception as e:
+                print(f"✗ Test '{name}' raised exception: {e}")
+                traceback.print_exc()
+                results.append((name, False))
+
+        print("\n" + "="*60)
+        print("Test Results Summary")
+        print("="*60)
+        for name, result in results:
+            status = "✓ PASS" if result else "✗ FAIL"
+            print(f"{status}: {name}")
+
+        all_passed = all(result for _, result in results)
+        print("="*60)
+        if all_passed:
+            print("✓ All tests passed!")
+            return 0
+        else:
+            print("✗ Some tests failed!")
+            return 1
+    finally:
+        if original_text is not None:
+            config_path.write_text(original_text, encoding='utf-8')
 
 
 if __name__ == '__main__':

@@ -25,7 +25,12 @@ from robovast.common import (COMPAT_VERSION, generate_execution_yaml_script,
                              normalize_secondary_containers,
                              prepare_campaign_configs)
 from robovast.common.cli import get_project_config
+from robovast.common.common import get_scenario_parameters
 from robovast.common.config_generation import generate_scenario_variations
+from robovast.common.execution import (build_job_parameter_documents,
+                                       dump_multi_document_yaml,
+                                       write_job_links_manifest)
+from robovast.execution.packer import build_jobs
 
 logger = logging.getLogger(__name__)
 
@@ -338,14 +343,13 @@ def _compose_resources_block(cpu, memory, indent="    "):
     return "\n".join(lines)
 
 
-def _build_compose_yaml(
+def _build_packed_compose_yaml(
     docker_image,
-    run_path,
+    out_path,
     results_dir_var,
-    config_name,
-    run_num,
+    job,
+    param_file_rel,
     run_files,
-    config_files,
     env_vars,
     pre_command,
     post_command,
@@ -360,43 +364,74 @@ def _build_compose_yaml(
     scenario_execution_params='',
     scenario_file_name='scenario.osc',
 ):
-    """Build the docker-compose YAML content for one run as a shell heredoc string."""
+    """Build docker-compose YAML for one job.
+
+    ``/out`` is the campaign root (scenario_execution writes per-config
+    ``_output_dir`` subdirs), a single multi-document parameter file is mounted
+    at ``/config/scenario.params.yaml``, and each config's generated files are
+    mounted under ``/config/<config-name>/`` to avoid collisions. Used for both
+    single-config (one config per job) and packed (several configs per job) runs.
+
+    Secondary containers (e.g. a ``scenario_execution_server`` simulation server)
+    are started once and span the whole job: the main ``scenario_execution``
+    drives a per-config ``reset(params)`` over the ``/ipc`` socket between the
+    job's configs. They receive the same packed param file and namespaced
+    per-config file mounts as the main container so file-valued reset parameters
+    resolve identically.
+    """
 
     def quote(s):
         return s.replace('"', '\\"')
 
     has_secondaries = bool(secondary_containers)
 
-    def _config_volume_mounts():
-        """Yield volume mount lines shared by main and secondary containers."""
+    def _packed_config_mounts():
+        """Volume mount lines shared by the main and secondary containers."""
+        yield f'      - "{quote(results_dir_var)}/{param_file_rel}:/config/scenario.params.yaml:ro"'
         yield f'      - "{quote(results_dir_var)}/_config/{scenario_file_name}:/config/{scenario_file_name}:ro"'
-        yield f'      - "{quote(results_dir_var)}/{config_name}/_config/scenario.config:/config/scenario.config:ro"'
         for run_file in run_files:
             yield f'      - "{quote(results_dir_var)}/_config/{run_file}:/config/{run_file}:ro"'
-        for config_file in config_files:
-            yield f'      - "{quote(results_dir_var)}/{config_name}/_config/{config_file[0]}:/config/{config_file[0]}:ro"'
+        # Per-config generated files, namespaced under /config/<config-name>/
+        for config_data in (it.config for it in job.items):
+            config_name = config_data.get("name", "")
+            for deploy_rel, _src in config_data.get("_config_files", []):
+                yield (
+                    f'      - "{quote(results_dir_var)}/{config_name}/_config/{deploy_rel}'
+                    f':/config/{config_name}/{deploy_rel}:ro"'
+                )
         if has_secondaries:
             yield '      - shared_tmp:/tmp'
             yield '      - shared_ipc:/ipc'
+
+    # Environment selecting the packed parameter file + per-scenario output.
+    # /out is the campaign root; per-config results go to /out/<config>/<run> via
+    # each document's _output_dir (SCENARIO_OUTPUT_DIR), while this job's job-level
+    # artifacts (sysinfo, resource monitor, logs) go to a per-job subdir so they
+    # don't collide across jobs.
+    packed_env_lines = [
+        "      - SCENARIO_PARAMETER_FILE=/config/scenario.params.yaml",
+        "      - OUTPUT_RESULT_PER_SCENARIO=true",
+        f"      - OUTPUT_DIR=/out/_jobs/job-{job.index}",
+        "      - SCENARIO_OUTPUT_DIR=/out",
+    ]
 
     lines = []
     lines.append("services:")
     lines.append("  robovast:")
     lines.append(f"    image: ${{DOCKER_IMAGE}}")
     lines.append(f"    container_name: robovast")
-    lines.append(f"    init: true") # to cleanup zombie processes and ensure signals are delivered to all processes
+    lines.append(f"    init: true")
     if main_gpu:
         lines.append("    runtime: nvidia")
-
     if has_secondaries:
         lines.append("    ipc: shareable")
 
     lines.append("    volumes:")
-    lines.append(f'      - "{quote(run_path)}:/out"')
+    lines.append(f'      - "{quote(out_path)}:/out"')
     lines.append(f'      - "{quote(results_dir_var)}/_transient/entrypoint.sh:/config/entrypoint.sh:ro"')
     lines.append(f'      - "{quote(results_dir_var)}/_transient/collect_sysinfo.py:/config/collect_sysinfo.py:ro"')
     lines.append(f'      - "{quote(results_dir_var)}/_transient/monitor_resources.py:/config/monitor_resources.py:ro"')
-    lines.extend(_config_volume_mounts())
+    lines.extend(_packed_config_mounts())
     if use_gui_block:
         lines.append("      - /tmp/.X11-unix:/tmp/.X11-unix:rw")
         lines.append("      - /dev/dri:/dev/dri")
@@ -411,6 +446,7 @@ def _build_compose_yaml(
     lines.append("      - AVAILABLE_CPUS=${AVAILABLE_CPUS}")
     lines.append("      - AVAILABLE_MEM=${AVAILABLE_MEM}")
     lines.append(f"      - SCENARIO_FILE={scenario_file_name}")
+    lines.extend(packed_env_lines)
     if scenario_execution_params:
         lines.append(f"      - SCENARIO_EXECUTION_PARAMETERS={scenario_execution_params}")
     if use_gui_block:
@@ -421,7 +457,6 @@ def _build_compose_yaml(
         lines.append("      - NVIDIA_VISIBLE_DEVICES=all")
         lines.append("      - NVIDIA_DRIVER_CAPABILITIES=all")
 
-    # Resource limits for main container
     if not skip_resource_allocation:
         res = _compose_resources_block(main_cpu, main_memory)
         if res:
@@ -449,17 +484,18 @@ def _build_compose_yaml(
         lines.append(f"    depends_on:")
         lines.append(f"      - robovast")
         lines.append("    volumes:")
-        lines.append(f'      - "{quote(run_path)}:/out"')
+        lines.append(f'      - "{quote(out_path)}:/out"')
         lines.append(f'      - "{quote(results_dir_var)}/_transient/secondary_entrypoint.sh:/config/secondary_entrypoint.sh:ro"')
         lines.append(f'      - "{quote(results_dir_var)}/_transient/collect_sysinfo.py:/config/collect_sysinfo.py:ro"')
         lines.append(f'      - "{quote(results_dir_var)}/_transient/monitor_resources.py:/config/monitor_resources.py:ro"')
-        lines.extend(_config_volume_mounts())
+        lines.extend(_packed_config_mounts())
         if use_gui_block:
             lines.append("      - /tmp/.X11-unix:/tmp/.X11-unix:rw")
             lines.append("      - /dev/dri:/dev/dri")
         lines.append("    environment:")
         lines.append(f"      - CONTAINER_NAME={sc_name}")
         lines.append(f"      - SCENARIO_FILE={scenario_file_name}")
+        lines.extend(packed_env_lines)
         for key, value in env_vars.items():
             lines.append(f"      - {key}={value}")
         if use_gui_block:
@@ -476,8 +512,6 @@ def _build_compose_yaml(
                 lines.append(sc_res)
 
         lines.append(f"    user: \"{uid}:{gid}\"")
-        # ROS2 nodes respond to SIGINT for graceful shutdown; docker compose
-        # sends SIGTERM by default, causing non-clean exits and corrupted exit codes
         lines.append("    stop_signal: SIGINT")
         lines.append("    stop_grace_period: 5s")
         lines.append("    command: ${SECONDARY_COMMAND}")
@@ -498,6 +532,101 @@ def _build_compose_yaml(
     return "\n".join(lines)
 
 
+def _emit_compose_step(compose_file, compose_yaml, idx, total, label, has_secondaries, noun,
+                       post_down=""):
+    """Return the shell text that writes, runs, waits on and tears down one compose stack.
+
+    Shared by the single-config and packed (multi-config) code paths. ``idx`` is
+    1-based; the final step (``idx == total``) emits the overall summary/exit.
+    Each call corresponds to exactly one ``docker compose up``/``down`` cycle:
+    every container in the stack starts once and stays up until the step
+    completes (no per-parameter-set restarts).
+
+    ``post_down`` is shell injected right after this step's ``docker compose
+    down`` and before the failure/summary handling — so it runs for every step,
+    including the last (whose summary block ends in ``exit``). The packed path
+    uses it to create this job's artifact links per job (Ctrl+C-safe).
+    """
+    s = f'CURRENT_COMPOSE_FILE="{compose_file}"\n'
+    s += 'export DOCKER_IMAGE RESULTS_DIR AVAILABLE_CPUS AVAILABLE_MEM LIBGL_ALWAYS_SOFTWARE ROBOVAST_COMMAND SECONDARY_COMMAND ROBOVAST_TTY ROBOVAST_STDIN_OPEN SCENARIO_EXECUTION_PARAMS\n'
+    s += f'cat > "{compose_file}" << \'COMPOSE_EOF\'\n'
+    s += compose_yaml + '\n'
+    s += 'COMPOSE_EOF\n\n'
+
+    # Run compose in background with SIGINT ignored in the child before exec.
+    # Go programs (docker compose) preserve SIG_IGN across exec, so Ctrl+C
+    # from the terminal does not reach docker compose directly. The compose
+    # process stays in the same session so it keeps its controlling terminal,
+    # which is required for proper container stop output and graceful shutdown.
+    # Explicit signals (SIGTERM/SIGKILL) are sent by handle_sigint as needed.
+    compose_bg = (
+        f'( trap \'\' SIGINT; export COMPOSE_MENU=false;'
+        f' docker compose -f "{compose_file}" up'
+        f' --abort-on-container-exit'
+        f' --exit-code-from robovast'
+        f' 2> >(grep -v "Aborting on container exit" >&2)'
+        f') &\n'
+    )
+    compose_wait = 'COMPOSE_PID=$!\n'
+    compose_wait += (
+        'wait "$COMPOSE_PID" 2>/dev/null\n'
+        'WAIT_CODE=$?\n'
+        'while [ "$WAIT_CODE" -ge 128 ] && kill -0 "$COMPOSE_PID" 2>/dev/null; do\n'
+        '    wait "$COMPOSE_PID" 2>/dev/null\n'
+        '    WAIT_CODE=$?\n'
+        'done\n'
+        'COMPOSE_PID=\n'
+    )
+    compose_wait += (
+        'EXIT_CODE=$WAIT_CODE\n'
+        'if [ "$SIGINT_COUNT" -gt 0 ]; then\n'
+        '    cleanup\n'
+        '    exit 130\n'
+        'fi\n'
+    )
+    if has_secondaries:
+        s += compose_bg
+        s += compose_wait
+    else:
+        s += f'if [ "$START_ONLY" = true ]; then\n'
+        s += f'    docker compose -f "{compose_file}" run --rm --entrypoint /bin/bash robovast\n'
+        s += '    EXIT_CODE=$?\n'
+        s += f'else\n'
+        for line in compose_bg.splitlines(keepends=True):
+            s += f'    {line}'
+        for line in compose_wait.splitlines(keepends=True):
+            s += f'    {line}'
+        s += f'fi\n'
+
+    s += f'docker compose -f "{compose_file}" down --volumes --timeout 5 2>/dev/null || true\n'
+    if post_down:
+        s += post_down
+    if idx < total:
+        s += 'if [ $EXIT_CODE -ne 0 ]; then\n'
+        s += f'    echo "Warning: {label} failed with exit code $EXIT_CODE"\n'
+        s += '    OVERALL_EXIT_CODE=$EXIT_CODE\n'
+        s += '    if [ "$ABORT_ON_FAILURE" = true ]; then\n'
+        s += '        cleanup\n'
+        s += '        exit $EXIT_CODE\n'
+        s += '    fi\n'
+        s += 'fi\n\n'
+    else:
+        s += 'if [ $EXIT_CODE -ne 0 ]; then\n'
+        s += '    OVERALL_EXIT_CODE=$EXIT_CODE\n'
+        s += 'fi\n'
+        s += 'if [ $OVERALL_EXIT_CODE -eq 0 ]; then\n'
+        s += f'    echo ""\n'
+        s += f'    echo "{"=" * 60}"\n'
+        s += f'    echo "All {total} {noun} completed successfully!"\n'
+        s += f'    echo "{"=" * 60}"\n'
+        s += 'else\n'
+        s += f'    echo "Error: One or more of {total} {noun} failed (last exit code: $OVERALL_EXIT_CODE)"\n'
+        s += 'fi\n'
+        s += 'cleanup\n'
+        s += 'exit $OVERALL_EXIT_CODE\n'
+    return s
+
+
 def generate_compose_run_script(runs, campaign_data, config_path_result, pre_command, post_command,
                                 docker_image, results_dir, output_script_path,
                                 skip_resource_allocation=False, log_tree=False):
@@ -514,18 +643,8 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
         output_script_path: Path where the script should be written
     """
     run_files = campaign_data.get("_run_files", [])
-    execution_tasks = []
 
-    for run_number in range(runs):
-        for config_entry in campaign_data["configs"]:
-            execution_tasks.append({
-                'config_name': config_entry['name'],
-                'config_path': os.path.abspath(os.path.join(config_path_result, config_entry["name"])),
-                'config_files': config_entry.get("_config_files", []),
-                'run_number': run_number,
-            })
-
-    if not execution_tasks:
+    if not campaign_data["configs"]:
         raise ValueError("At least one config configuration is required")
 
     execution_params = campaign_data.get("execution", {})
@@ -573,147 +692,96 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
 
     script += generate_execution_yaml_script(runs, execution_params=campaign_data.get("execution", {}))
 
-    for idx, task in enumerate(execution_tasks, 1):
-        config_name = task['config_name']
-        run_num = task['run_number']
-        config_files = task['config_files']
+    scenario_file_name = os.path.basename(campaign_data.get("scenario_file", "scenario.osc"))
+    scenario_execution_params = "-t" if log_tree else "${SCENARIO_EXECUTION_PARAMS}"
 
-        run_path = os.path.join("${RESULTS_DIR}", config_name, str(run_num))
-        compose_file = f"/tmp/robovast_compose_{config_name}_{run_num}.yml"
-
-        script += f'\necho ""\n'
-        script += f'echo "{"=" * 60}"\n'
-        script += f'echo "{idx}/{len(execution_tasks)} Executing config {config_name}, run {run_num}"\n'
-        script += f'echo "{"=" * 60}"\n'
-        script += f'echo ""\n\n'
-        script += f'mkdir -p "{run_path}/logs"\n'
-        script += f'chmod -R 777 "{run_path}"\n'
-
+    def _emit_preamble(banner, mkdir_dirs):
+        """Per-step banner, output-dir creation, resource vars and command selection."""
+        s = f'\necho ""\n'
+        s += f'echo "{"=" * 60}"\n'
+        s += f'echo "{banner}"\n'
+        s += f'echo "{"=" * 60}"\n'
+        s += f'echo ""\n\n'
+        for d in mkdir_dirs:
+            s += f'mkdir -p "{d}/logs"\n'
+            s += f'chmod -R 777 "{d}"\n'
         # Set AVAILABLE_CPUS/MEM from configured resources
-        script += f'AVAILABLE_CPUS="{main_cpu}"\n'
+        s += f'AVAILABLE_CPUS="{main_cpu}"\n'
         if main_memory:
-            script += f'AVAILABLE_MEM="{main_memory}"\n'
+            s += f'AVAILABLE_MEM="{main_memory}"\n'
         else:
-            script += "AVAILABLE_MEM=\"$(awk '/MemTotal/ {print $2 * 1024}' /proc/meminfo)\"\n"
+            s += "AVAILABLE_MEM=\"$(awk '/MemTotal/ {print $2 * 1024}' /proc/meminfo)\"\n"
+        s += '\n# Determine command and interactive settings based on START_ONLY\n'
+        s += 'if [ "$START_ONLY" = true ]; then\n'
+        s += '    ROBOVAST_COMMAND="/bin/bash"\n'
+        s += '    SECONDARY_COMMAND="/bin/bash"\n'
+        s += '    ROBOVAST_TTY="true"\n'
+        s += '    ROBOVAST_STDIN_OPEN="true"\n'
+        s += 'else\n'
+        s += '    # Use string format for command to be consistent with variable substitution\n'
+        s += '    ROBOVAST_COMMAND="/bin/bash /config/entrypoint.sh"\n'
+        s += '    SECONDARY_COMMAND="/bin/bash /config/secondary_entrypoint.sh"\n'
+        s += '    ROBOVAST_TTY="false"\n'
+        s += '    ROBOVAST_STDIN_OPEN="false"\n'
+        s += 'fi\n\n'
+        return s
 
-        script += '\n# Determine command and interactive settings based on START_ONLY\n'
-        script += 'if [ "$START_ONLY" = true ]; then\n'
-        script += '    ROBOVAST_COMMAND="/bin/bash"\n'
-        script += '    SECONDARY_COMMAND="/bin/bash"\n'
-        script += '    ROBOVAST_TTY="true"\n'
-        script += '    ROBOVAST_STDIN_OPEN="true"\n'
-        script += 'else\n'
-        script += '    # Use string format for command to be consistent with variable substitution\n'
-        script += '    ROBOVAST_COMMAND="/bin/bash /config/entrypoint.sh"\n'
-        script += '    SECONDARY_COMMAND="/bin/bash /config/secondary_entrypoint.sh"\n'
-        script += '    ROBOVAST_TTY="false"\n'
-        script += '    ROBOVAST_STDIN_OPEN="false"\n'
-        script += 'fi\n\n'
+    has_secondaries = bool(normalized_secondary)
 
-        env_vars = get_execution_env_variables(run_num, config_name, campaign_data.get('execution', {}).get('env'))
-        scenario_execution_params = "-t" if log_tree else "${SCENARIO_EXECUTION_PARAMS}"
-        scenario_file_name = os.path.basename(campaign_data.get("scenario_file", "scenario.osc"))
+    # Every run goes through the job mechanism: configs_per_job=1 yields one job
+    # per (config, run), >1 packs several configs per job. Both produce the same
+    # layout — results in <config>/<run>/ and job artifacts in _jobs/job-N/ with
+    # a <config>/<run>/job symlink.
+    scenario_path = os.path.join(
+        os.path.dirname(campaign_data["vast"]), campaign_data["scenario_file"])
+    scenario_name = next(iter(get_scenario_parameters(scenario_path).keys()))
 
-        compose_yaml = _build_compose_yaml(
-            docker_image=docker_image,
-            run_path=run_path,
-            results_dir_var="${RESULTS_DIR}",
-            config_name=config_name,
-            run_num=run_num,
-            run_files=run_files,
-            config_files=config_files,
-            env_vars=env_vars,
-            pre_command=pre_command,
-            post_command=post_command,
-            uid=uid,
-            gid=gid,
-            main_cpu=main_cpu,
-            main_memory=main_memory,
-            main_gpu=main_gpu,
-            secondary_containers=normalized_secondary,
-            use_gui_block=True,
+    jobs = build_jobs(campaign_data["configs"], runs, execution_params)
+    os.makedirs(os.path.join(config_path_result, "_transient"), exist_ok=True)
+    # Canonical record of the per-job artifact links (also used by the cluster
+    # share archiver). Local runs create the links inline per job below so a
+    # Ctrl+C only loses the job active at cancel time.
+    write_job_links_manifest(os.path.join(config_path_result, "_transient"), jobs)
+    total = len(jobs)
+    for idx, job in enumerate(jobs, 1):
+        documents = build_job_parameter_documents(job, scenario_name)
+        param_rel = f"_transient/job-{job.index}.params.yaml"
+        with open(os.path.join(config_path_result, param_rel), 'w') as f:
+            f.write(dump_multi_document_yaml(documents))
+
+        compose_file = f"/tmp/robovast_compose_job-{job.index}.yml"
+        mkdir_dirs = [
+            os.path.join("${RESULTS_DIR}", it.config_name, str(it.run_number))
+            for it in job.items
+        ]
+        names = ", ".join(job.config_names)
+        script += _emit_preamble(
+            f"{idx}/{total} Executing job {job.index} "
+            f"({len(job.items)} parameter set(s): {names})", mkdir_dirs)
+        env_vars = get_execution_env_variables(
+            0, "", campaign_data.get('execution', {}).get('env'))
+        compose_yaml = _build_packed_compose_yaml(
+            docker_image=docker_image, out_path="${RESULTS_DIR}", results_dir_var="${RESULTS_DIR}",
+            job=job, param_file_rel=param_rel, run_files=run_files, env_vars=env_vars,
+            pre_command=pre_command, post_command=post_command, uid=uid, gid=gid,
+            main_cpu=main_cpu, main_memory=main_memory, main_gpu=main_gpu,
+            secondary_containers=normalized_secondary, use_gui_block=True,
             skip_resource_allocation=skip_resource_allocation,
             scenario_execution_params=scenario_execution_params,
             scenario_file_name=scenario_file_name,
         )
-
-        script += f'CURRENT_COMPOSE_FILE="{compose_file}"\n'
-        script += 'export DOCKER_IMAGE RESULTS_DIR AVAILABLE_CPUS AVAILABLE_MEM LIBGL_ALWAYS_SOFTWARE ROBOVAST_COMMAND SECONDARY_COMMAND ROBOVAST_TTY ROBOVAST_STDIN_OPEN SCENARIO_EXECUTION_PARAMS\n'
-        script += f'cat > "{compose_file}" << \'COMPOSE_EOF\'\n'
-        script += compose_yaml + '\n'
-        script += 'COMPOSE_EOF\n\n'
-
-        # Run compose in background with SIGINT ignored in the child before exec.
-        # Go programs (docker compose) preserve SIG_IGN across exec, so Ctrl+C
-        # from the terminal does not reach docker compose directly. The compose
-        # process stays in the same session so it keeps its controlling terminal,
-        # which is required for proper container stop output and graceful shutdown.
-        # Explicit signals (SIGTERM/SIGKILL) are sent by handle_sigint as needed.
-        compose_bg = (
-            f'( trap \'\' SIGINT; export COMPOSE_MENU=false;'
-            f' docker compose -f "{compose_file}" up'
-            f' --abort-on-container-exit'
-            f' --exit-code-from robovast'
-            f' 2> >(grep -v "Aborting on container exit" >&2)'
-            f') &\n'
+        # Create this job's artifact links right after it finishes (injected
+        # after the compose `down`, before the step's summary/exit), so a
+        # Ctrl+C only loses the links for the job active at cancel time.
+        # Each <config>/<run>/job points at this job's _jobs/job-N dir.
+        link_cmds = "".join(
+            f'ln -sfn "../../_jobs/job-{job.index}" '
+            f'"{os.path.join("${RESULTS_DIR}", it.config_name, str(it.run_number))}/job"\n'
+            for it in job.items
         )
-        compose_wait = 'COMPOSE_PID=$!\n'
-        compose_wait += (
-            'wait "$COMPOSE_PID" 2>/dev/null\n'
-            'WAIT_CODE=$?\n'
-            'while [ "$WAIT_CODE" -ge 128 ] && kill -0 "$COMPOSE_PID" 2>/dev/null; do\n'
-            '    wait "$COMPOSE_PID" 2>/dev/null\n'
-            '    WAIT_CODE=$?\n'
-            'done\n'
-            'COMPOSE_PID=\n'
-        )
-        compose_wait += (
-            'EXIT_CODE=$WAIT_CODE\n'
-            'if [ "$SIGINT_COUNT" -gt 0 ]; then\n'
-            '    cleanup\n'
-            '    exit 130\n'
-            'fi\n'
-        )
-        if normalized_secondary:
-            script += compose_bg
-            script += compose_wait
-        else:
-            script += f'if [ "$START_ONLY" = true ]; then\n'
-            script += f'    docker compose -f "{compose_file}" run --rm --entrypoint /bin/bash robovast\n'
-            script += '    EXIT_CODE=$?\n'
-            script += f'else\n'
-            # Indent the wait-loop lines for readability inside the else block
-            for line in compose_bg.splitlines(keepends=True):
-                script += f'    {line}'
-            for line in compose_wait.splitlines(keepends=True):
-                script += f'    {line}'
-            script += f'fi\n'
-
-        if idx < len(execution_tasks):
-            script += f'docker compose -f "{compose_file}" down --volumes --timeout 5 2>/dev/null || true\n'
-            script += 'if [ $EXIT_CODE -ne 0 ]; then\n'
-            script += f'    echo "Warning: Config {idx}/{len(execution_tasks)} ({config_name}) failed with exit code $EXIT_CODE"\n'
-            script += '    OVERALL_EXIT_CODE=$EXIT_CODE\n'
-            script += '    if [ "$ABORT_ON_FAILURE" = true ]; then\n'
-            script += '        cleanup\n'
-            script += '        exit $EXIT_CODE\n'
-            script += '    fi\n'
-            script += 'fi\n\n'
-        else:
-            script += f'docker compose -f "{compose_file}" down --volumes --timeout 5 2>/dev/null || true\n'
-            script += 'if [ $EXIT_CODE -ne 0 ]; then\n'
-            script += '    OVERALL_EXIT_CODE=$EXIT_CODE\n'
-            script += 'fi\n'
-            script += 'if [ $OVERALL_EXIT_CODE -eq 0 ]; then\n'
-            script += f'    echo ""\n'
-            script += f'    echo "{"=" * 60}"\n'
-            script += f'    echo "All {len(execution_tasks)} config(s) completed successfully!"\n'
-            script += f'    echo "{"=" * 60}"\n'
-            script += 'else\n'
-            script += f'    echo "Error: One or more of {len(execution_tasks)} config(s) failed (last exit code: $OVERALL_EXIT_CODE)"\n'
-            script += 'fi\n'
-            script += 'cleanup\n'
-            script += 'exit $OVERALL_EXIT_CODE\n'
+        script += _emit_compose_step(
+            compose_file, compose_yaml, idx, total,
+            f"Job {idx}/{total}", has_secondaries, "job(s)", post_down=link_cmds)
 
     try:
         with open(output_script_path, 'w') as f:
