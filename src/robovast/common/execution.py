@@ -38,7 +38,7 @@ from .config_identifier import (compute_config_identifier, hash_file_content,
 # changes (e.g. new required package, ROS distro change, script interface
 # change).  The same value must appear in the Dockerfile as
 # /etc/robovast_compat_version.
-COMPAT_VERSION = 1
+COMPAT_VERSION = 2
 
 
 def get_app_version() -> str:
