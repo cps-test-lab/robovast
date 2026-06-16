@@ -92,8 +92,10 @@ def local():
               help='Add CPU/memory reservations to docker compose run (default: skip for local)')
 @click.option('--log-tree', '-t', is_flag=True,
               help='Log scenario execution live tree')
+@click.option('--debug', '-d', is_flag=True,
+              help='Enable scenario execution debug output')
 def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_failure,
-        use_resource_allocation, log_tree):
+        use_resource_allocation, log_tree, debug):
     """Execute scenario configurations locally using Docker.
 
     Runs scenario configurations in Docker containers with bind mounts for configuration
@@ -114,7 +116,7 @@ def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_
         run_script_path = initialize_local_execution(
             config, None, runs, feedback_callback=click.echo,
             skip_resource_allocation=not use_resource_allocation,
-            log_tree=log_tree
+            log_tree=log_tree, debug=debug
         )
 
         # Build command with options
@@ -134,6 +136,8 @@ def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_
             cmd.append("--abort-on-failure")
         if log_tree:
             cmd.append("-t")
+        if debug:
+            cmd.append("-d")
 
         logging.debug(f"Executing run script: {run_script_path}")
 
@@ -154,7 +158,9 @@ def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_
               help='Add CPU/memory reservations to docker compose run (default: skip for local)')
 @click.option('--log-tree', '-t', is_flag=True,
               help='Log scenario execution live tree')
-def prepare_run(output_dir, config, runs, use_resource_allocation, log_tree):
+@click.option('--debug', '-d', is_flag=True,
+              help='Enable scenario execution debug output')
+def prepare_run(output_dir, config, runs, use_resource_allocation, log_tree, debug):
     """Prepare run without executing.
 
     Generates all necessary configuration files and a ``run.sh`` script for
@@ -176,13 +182,13 @@ def prepare_run(output_dir, config, runs, use_resource_allocation, log_tree):
 
     The run.sh script supports the same options as ``vast execution local run``
     (--start-only, --no-gui, --network-host, --output, --image, --abort-on-failure,
-    --log-tree).
+    --log-tree, --debug).
     """
     try:
         initialize_local_execution(
             config, output_dir, runs, feedback_callback=click.echo,
             skip_resource_allocation=not use_resource_allocation,
-            log_tree=log_tree
+            log_tree=log_tree, debug=debug
         )
 
         click.echo(f"\nFor local execution, run: \n\n{os.path.join(output_dir, 'run.sh')}\n")

@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 
 def initialize_local_execution(config, output_dir, runs, feedback_callback=logging.debug,
-                               skip_resource_allocation=True, log_tree=False):
+                               skip_resource_allocation=True, log_tree=False, debug=False):
     """Initialize common setup for local execution commands.
 
     Performs all common setup steps including:
@@ -147,7 +147,7 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
     generate_compose_run_script(runs, campaign_data, config_path_result, pre_command, post_command,
                                 docker_image, results_dir, os.path.join(config_dir, "run.sh"),
                                 skip_resource_allocation=skip_resource_allocation,
-                                log_tree=log_tree)
+                                log_tree=log_tree, debug=debug)
     return os.path.join(config_dir, "run.sh")
 
 
@@ -240,7 +240,8 @@ OPTIONS:
     --results-dir DIR   Override the results output directory
     --start-only        Start the robovast container with a shell, skipping the entrypoint script
     --abort-on-failure  Stop execution after the first failed run config
-    --log-tree, -t      Pass --log-tree to scenario execution
+    --log-tree, -t      Pass --live-tree to scenario execution
+    --debug, -d         Pass --debug to scenario execution
     -h, --help          Show this help message
 EOF
 }
@@ -269,7 +270,11 @@ while [ $# -gt 0 ]; do
             shift
             ;;
         --log-tree | -t)
-            SCENARIO_EXECUTION_PARAMS="-t"
+            SCENARIO_EXECUTION_PARAMS="$SCENARIO_EXECUTION_PARAMS -t"
+            shift
+            ;;
+        --debug | -d)
+            SCENARIO_EXECUTION_PARAMS="$SCENARIO_EXECUTION_PARAMS -d"
             shift
             ;;
         --results-dir)
@@ -629,7 +634,7 @@ def _emit_compose_step(compose_file, compose_yaml, idx, total, label, has_second
 
 def generate_compose_run_script(runs, campaign_data, config_path_result, pre_command, post_command,
                                 docker_image, results_dir, output_script_path,
-                                skip_resource_allocation=False, log_tree=False):
+                                skip_resource_allocation=False, log_tree=False, debug=False):
     """Generate a shell script to run Docker Compose stacks sequentially.
 
     Args:
@@ -693,7 +698,8 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
     script += generate_execution_yaml_script(runs, execution_params=campaign_data.get("execution", {}))
 
     scenario_file_name = os.path.basename(campaign_data.get("scenario_file", "scenario.osc"))
-    scenario_execution_params = "-t" if log_tree else "${SCENARIO_EXECUTION_PARAMS}"
+    _static_params = " ".join(p for p, enabled in [("-t", log_tree), ("-d", debug)] if enabled)
+    scenario_execution_params = _static_params if _static_params else "${SCENARIO_EXECUTION_PARAMS}"
 
     def _emit_preamble(banner, mkdir_dirs):
         """Per-step banner, output-dir creation, resource vars and command selection."""
