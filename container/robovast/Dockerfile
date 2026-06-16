@@ -81,9 +81,9 @@ RUN curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/
 RUN mkdir -p /ws/src
 
 # hadolint ignore=DL3003
-RUN  git clone --depth=1 "https://github.com/cps-test-lab/scenario-execution.git" /ws/src/scenario-execution && \
+RUN  git clone "https://github.com/cps-test-lab/scenario-execution.git" /ws/src/scenario-execution && \
      cd /ws/src/scenario-execution && \
-     git checkout aa381bb23d5c839b5f705d3ca2d77ac8f5f056c4 && \
+     git checkout d9fec8c9f40ee77c1399168e0cfabcdf35b863f2 && \
      cd /ws && \
      git clone --depth=1 "https://github.com/cps-test-lab/scenario-execution-server.git" /ws/src/scenario-execution-server && \
      cd /ws/src/scenario-execution-server && \
@@ -106,7 +106,7 @@ RUN mkdir -p /out && chmod 777 /out
 # Compatibility version — must match COMPAT_VERSION in
 # src/robovast/common/execution.py.  Read by all execution contexts
 # (local, cluster, postprocessing) to detect host/container mismatches.
-RUN echo "1" > /etc/robovast_compat_version
+RUN echo "2" > /etc/robovast_compat_version
 
 RUN USER=ubuntu && \
     GROUP=ubuntu && \

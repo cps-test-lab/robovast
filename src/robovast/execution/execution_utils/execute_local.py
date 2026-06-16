@@ -757,7 +757,8 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
         names = ", ".join(job.config_names)
         script += _emit_preamble(
             f"{idx}/{total} Executing job {job.index} "
-            f"({len(job.items)} parameter set(s): {names})", mkdir_dirs)
+            f"({len(job.config_names)} parameter set(s), {len(job.items)} run(s): {names})",
+            mkdir_dirs)
         env_vars = get_execution_env_variables(
             0, "", campaign_data.get('execution', {}).get('env'))
         compose_yaml = _build_packed_compose_yaml(

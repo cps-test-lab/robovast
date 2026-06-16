@@ -15,10 +15,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
-from typing import Any, Optional, Union
+from typing import Annotated, Any, Literal, Optional, Union
 
-from pydantic import (BaseModel, ConfigDict, ValidationError, field_validator,
-                      model_validator)
+from pydantic import (BaseModel, ConfigDict, Field, ValidationError,
+                      field_validator, model_validator)
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +188,139 @@ class EvaluationConfig(BaseModel):
     visualization: Optional[list[dict[str, Any]]] = None
 
 
+class FloatDim(BaseModel):
+    """A continuous search dimension sampled from ``[low, high]``."""
+    model_config = ConfigDict(extra='forbid')
+    type: Literal['float']
+    low: float
+    high: float
+    log: bool = False
+
+    @model_validator(mode='after')
+    def _check_bounds(self):
+        if self.high < self.low:
+            raise ValueError(f"float dim requires high >= low, got low={self.low}, high={self.high}")
+        if self.log and self.low <= 0:
+            raise ValueError("log-scaled float dim requires low > 0")
+        return self
+
+
+class IntDim(BaseModel):
+    """A discrete integer search dimension sampled from ``[low, high]``."""
+    model_config = ConfigDict(extra='forbid')
+    type: Literal['int']
+    low: int
+    high: int
+    log: bool = False
+    step: Optional[int] = None
+
+    @model_validator(mode='after')
+    def _check_bounds(self):
+        if self.high < self.low:
+            raise ValueError(f"int dim requires high >= low, got low={self.low}, high={self.high}")
+        if self.step is not None and self.step < 1:
+            raise ValueError(f"int dim step must be >= 1, got {self.step}")
+        if self.log and self.low <= 0:
+            raise ValueError("log-scaled int dim requires low > 0")
+        return self
+
+
+class ChoiceDim(BaseModel):
+    """A categorical search dimension sampled uniformly from ``values``."""
+    model_config = ConfigDict(extra='forbid')
+    type: Literal['choice']
+    values: list[Any]
+
+    @field_validator('values')
+    @classmethod
+    def _non_empty(cls, v: list[Any]) -> list[Any]:
+        if not v:
+            raise ValueError("choice dim requires a non-empty 'values' list")
+        return v
+
+
+# Typed search-space dimension; discriminated on the ``type`` tag so that a
+# malformed domain is rejected by Pydantic rather than failing at sample time.
+SearchDim = Annotated[Union[FloatDim, IntDim, ChoiceDim], Field(discriminator='type')]
+
+
+class BudgetConfig(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    generations: int = 1
+
+    @field_validator('generations')
+    @classmethod
+    def _positive(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError(f"search.budget.generations must be >= 1, got {v}")
+        return v
+
+
+class ExtractConfig(BaseModel):
+    """The one scoring step: a plugin (entry-point name or ``path.py:Class``
+    file ref relative to the ``.vast``) plus params passed to it."""
+    model_config = ConfigDict(extra='forbid')
+    plugin: str
+    params: dict[str, Any] = {}
+
+
+class ObjectiveSpec(BaseModel):
+    """One optimized objective and its direction. ``name`` must match a key the
+    extractor returns in ``ExtractResult.objectives``."""
+    model_config = ConfigDict(extra='forbid')
+    name: str
+    direction: Literal['maximize', 'minimize'] = 'maximize'
+
+
+class SearchConfig(BaseModel):
+    """Closed-loop search over a typed parameter space.
+
+    When present, execution runs as an iterative search: a strategy proposes
+    parameter sets, an extractor scores them into objectives (+ measures), and
+    the strategy is told the results to propose the next generation. Absent ⇒
+    single batch (today's behaviour).
+
+    Universal core (every strategy): ``strategy``, ``search_space``, ``extract``,
+    ``objectives``, ``per_step``, ``budget``, ``seed``, ``postprocessing``.
+    Algorithm-specific tuning lives in ``strategy_parameters``, whose schema is
+    owned and validated by the chosen strategy plugin (e.g. the QD archive).
+    ``strategy``, ``extract.plugin`` and ``postprocessing`` entries may be
+    entry-point names or local files relative to the ``.vast``.
+    """
+    model_config = ConfigDict(extra='forbid')
+    strategy: str
+    search_space: dict[str, SearchDim]
+    extract: ExtractConfig
+    objectives: list[ObjectiveSpec]
+    per_step: int
+    budget: BudgetConfig = BudgetConfig()
+    seed: Optional[int] = None
+    postprocessing: Optional[list[str]] = None  # search-only; NOT results_processing
+    # Free-form; validated by the strategy plugin's own params model at load.
+    strategy_parameters: dict[str, Any] = {}
+
+    @field_validator('search_space')
+    @classmethod
+    def _non_empty_space(cls, v: dict) -> dict:
+        if not v:
+            raise ValueError("search.search_space must declare at least one dimension")
+        return v
+
+    @field_validator('objectives')
+    @classmethod
+    def _non_empty_objectives(cls, v: list) -> list:
+        if not v:
+            raise ValueError("search.objectives must declare at least one objective")
+        return v
+
+    @field_validator('per_step')
+    @classmethod
+    def _positive_per_step(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError(f"search.per_step must be >= 1, got {v}")
+        return v
+
+
 class ConfigV1(BaseModel):
     model_config = ConfigDict(extra='forbid')
     version: int = 1
@@ -195,8 +328,22 @@ class ConfigV1(BaseModel):
     general: Optional[GeneralConfig] = None
     configuration: Optional[list[ConfigurationConfig]] = None
     execution: ExecutionConfig
+    search: Optional[SearchConfig] = None
     results_processing: Optional[ResultsConfig] = None
     evaluation: Optional[EvaluationConfig] = None
+
+    @model_validator(mode='after')
+    def _search_xor_configuration(self):
+        # Batch and search are mutually exclusive modes of the same `run`
+        # command. A `search:` section synthesizes its configurations from
+        # `search_space`, so it must not be paired with an explicit
+        # `configuration:` block (whose entries may also carry `variations:`).
+        if self.search is not None and self.configuration:
+            raise ValueError(
+                "'search' and 'configuration' are mutually exclusive: a search: "
+                "section synthesizes its configurations from search_space, so the "
+                "configuration: block (and its variations) must be empty/omitted.")
+        return self
 
 
 def validate_config(config: dict):

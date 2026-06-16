@@ -1,0 +1,40 @@
+version: 1
+metadata:
+  name: quadrotor_landing_random
+# Iterative random search. Run with:  vast execution local run
+# A toy 2D quadrotor must hover-and-land on a pad in wind; the search explores
+# the parameter space for the regions that make it fail. Random is the baseline
+# (coverage); see quadrotor_landing_qd.vast (diversity) and
+# quadrotor_landing_optuna.vast (efficient optimum).
+# A search: section is self-contained — its configurations are synthesized from
+# search_space.
+execution:
+  image: ghcr.io/cps-test-lab/robovast:latest
+  runs: 5
+  scenario_file: scenario.osc
+  run_files:
+  - "files/*.py"
+  configs_per_job: 100
+search:
+  # ---- universal core (same shape for every strategy) ----
+  strategy: random
+  search_space:
+    thrust_gain:   {type: float, low: 0.3, high: 3.0}
+    mass:          {type: float, low: 0.5, high: 3.0}
+    wind_strength: {type: float, low: 0.0, high: 5.0}
+    descent_rate:  {type: float, low: 0.1, high: 2.5}
+  # The one scoring step (local module): results -> objectives (+ measures).
+  extract:
+    plugin: ./search/extract.py:QuadExtract
+  objectives:
+  - {name: failure_rate, direction: maximize}
+  per_step: 8
+  budget:
+    generations: 4
+  seed: 0
+  # random takes no strategy_parameters
+evaluation:
+  visualization:
+  - Analysis:
+      run: analysis/analysis_run.ipynb
+      campaign: analysis/analysis_qd.ipynb

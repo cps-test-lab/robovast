@@ -1,0 +1,49 @@
+version: 1
+metadata:
+  name: quadrotor_landing_qd
+# Quality-diversity (pyribs MAP-Elites) search. Run with:
+#   vast execution local run        (needs the 'qd' extra: pip install 'robovast[qd]')
+# Fills an ARCHIVE of behaviorally distinct failure-prone configs — a map of the
+# *different kinds* of failures across the behavior space. Same scenario/sim/
+# extract as the random and optuna variants; only strategy + strategy_parameters
+# differ. Configurations are synthesized from search_space.
+execution:
+  image: ghcr.io/cps-test-lab/robovast:latest
+  runs: 3
+  scenario_file: scenario.osc
+  run_files:
+  - "files/*.py"
+  configs_per_job: 1
+search:
+  strategy: qd
+  search_space:
+    thrust_gain:   {type: float, low: 0.3, high: 3.0}
+    mass:          {type: float, low: 0.5, high: 3.0}
+    wind_strength: {type: float, low: 0.0, high: 5.0}
+    descent_rate:  {type: float, low: 0.1, high: 2.5}
+  extract:
+    plugin: ./search/extract.py:QuadExtract
+  objectives:
+  - {name: failure_rate, direction: maximize}
+  per_step: 16
+  budget:
+    generations: 20
+  seed: 0
+  strategy_parameters:
+    # All four behavior measures on a CVT archive (a grid would be too sparse in
+    # 4-D). For a single, legible 2-D heatmap, switch to type: grid with just
+    # max_tilt + drift_dist.
+    archive:
+      type: cvt
+      cells: 512
+      measures:
+        max_tilt:       {low: 0.0, high: 0.75}
+        drift_dist:     {low: 0.0, high: 3.5}
+        landing_speed:  {low: 0.0, high: 5.0}
+        control_effort: {low: 0.0, high: 20.0}
+    sigma: 0.15
+evaluation:
+  visualization:
+  - Analysis:
+      run: analysis/analysis_run.ipynb
+      campaign: analysis/analysis_qd.ipynb

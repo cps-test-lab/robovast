@@ -1,0 +1,17 @@
+import osc.helpers
+
+scenario test_scenario:
+    timeout(30s)
+
+    thrust_gain: string
+    mass: string
+    wind_strength: string
+    descent_rate: string
+
+    do serial:
+        run_process(common.get_scenario_file_directory() + '/files/quadrotor_sim.py' +
+            ' --thrust-gain ' + thrust_gain +
+            ' --mass ' + mass +
+            ' --wind-strength ' + wind_strength +
+            ' --descent-rate ' + descent_rate +
+            ' --output ' + common.get_output_directory())

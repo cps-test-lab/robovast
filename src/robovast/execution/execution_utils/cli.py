@@ -94,12 +94,18 @@ def local():
               help='Log scenario execution live tree')
 def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_failure,
         use_resource_allocation, log_tree):
-    """Execute scenario configurations locally using Docker.
+    """Execute the project locally using Docker.
 
-    Runs scenario configurations in Docker containers with bind mounts for configuration
-    and output data. By default, runs all configurations from the project configuration
-    and continues past failures. Use ``--abort-on-failure`` to stop at the first failure.
-    GUI support is enabled by default (requires X11 server on host).
+    Behaviour is selected by the project ``.vast``:
+
+    - If it defines a ``search:`` block, this runs an iterative **search loop**:
+      each generation proposes parameter sets, executes them locally, scores the
+      results, and feeds them back to the strategy. Results and a live-queryable
+      ``search.sqlite`` are written under the output directory. (A ``search:``
+      block is mutually exclusive with a ``configuration:`` block.)
+    - Otherwise it runs every configuration once as a **batch** in Docker
+      containers, continuing past failures (use ``--abort-on-failure`` to stop at
+      the first failure). GUI support is enabled by default.
 
     Prerequisites:
     - Docker must be installed and running
@@ -111,6 +117,25 @@ def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_
         or to a custom directory specified with ``--output``.
     """
     try:
+        from robovast.common.common import load_config
+        from robovast.common.config import validate_config
+
+        project_config = get_project_config()
+        campaign_config = validate_config(load_config(project_config.config_path))
+        if campaign_config.search is not None:
+            ignored = [name for name, set_ in (
+                ("--config", config), ("--start-only", start_only),
+                ("--no-gui", no_gui), ("--network-host", network_host),
+                ("--image", image != 'ghcr.io/cps-test-lab/robovast:latest'),
+                ("--abort-on-failure", abort_on_failure),
+                ("--use-resource-allocation", use_resource_allocation),
+                ("--log-tree", log_tree),
+            ) if set_]
+            if ignored:
+                click.echo(f"Note: {', '.join(ignored)} ignored in search mode.")
+            _run_local_search(project_config, campaign_config, output, runs)
+            return
+
         run_script_path = initialize_local_execution(
             config, None, runs, feedback_callback=click.echo,
             skip_resource_allocation=not use_resource_allocation,
@@ -189,6 +214,36 @@ def prepare_run(output_dir, config, runs, use_resource_allocation, log_tree):
 
     except Exception as e:
         handle_cli_exception(e)
+
+
+def _run_local_search(project_config, campaign_config, output, runs):
+    """Run an iterative search loop locally (the ``search:`` branch of ``run``).
+
+    Each generation proposes parameter sets, executes them locally, scores the
+    results, and feeds them back to the strategy. Results and a live-queryable
+    ``search.sqlite`` are written under the output directory.
+    """
+    from robovast.search.loop import run_search
+
+    config_path = project_config.config_path
+    if runs is None:
+        runs = campaign_config.execution.runs
+    output_dir = output or os.path.join(
+        project_config.results_dir,
+        f"search-{datetime.datetime.now().strftime('%Y-%m-%d-%H%M%S')}")
+
+    report = run_search(config_path, campaign_config, output_dir, runs)
+    click.echo(
+        f"\nSearch complete: {len(report.evaluations)} evaluation(s) in "
+        f"{output_dir}.")
+    if report.best is not None:
+        objs = ", ".join(f"{k}={v:.4g}" for k, v in report.best.objectives.items())
+        click.echo(f"Most interesting: {report.best.params.values} ({objs})")
+    if report.extra.get("num_elites") is not None:
+        click.echo(
+            f"Archive: {report.extra['num_elites']} elite(s), "
+            f"coverage={report.extra.get('coverage', 0):.2f}, "
+            f"qd_score={report.extra.get('qd_score', 0):.4g}")
 
 
 @execution.group()

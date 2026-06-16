@@ -1,0 +1,37 @@
+version: 1
+metadata:
+  name: quadrotor_landing_optuna
+# Optuna TPE search. Run with:
+#   vast execution local run    (needs the 'optuna' extra: pip install 'robovast[optuna]')
+# Sample-efficiently drives toward the SINGLE most failure-prone configuration
+# (exploitation) — the complement to random (coverage) and qd (diversity). Same
+# scenario/sim/extract; only strategy + strategy_parameters differ. Configurations
+# are synthesized from search_space.
+execution:
+  image: ghcr.io/cps-test-lab/robovast:latest
+  runs: 3
+  scenario_file: scenario.osc
+  run_files:
+  - "files/*.py"
+  configs_per_job: 1
+search:
+  strategy: optuna
+  search_space:
+    thrust_gain:   {type: float, low: 0.3, high: 3.0}
+    mass:          {type: float, low: 0.5, high: 3.0}
+    wind_strength: {type: float, low: 0.0, high: 5.0}
+    descent_rate:  {type: float, low: 0.1, high: 2.5}
+  extract:
+    plugin: ./search/extract.py:QuadExtract
+  objectives:
+  - {name: failure_rate, direction: maximize}
+  per_step: 8
+  budget:
+    generations: 15
+  seed: 0
+  strategy_parameters:
+    sampler: tpe
+evaluation:
+  visualization:
+  - Analysis:
+      run: analysis/analysis_run.ipynb

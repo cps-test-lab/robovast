@@ -120,14 +120,16 @@ class FixedK(Packer):
 def build_work_items(configs: list[dict], runs: int) -> list[WorkItem]:
     """Enumerate work items for a campaign.
 
-    Items are grouped by run number then by config (matching the historical
-    ``for run_number: for config`` ordering), so that with :class:`OnePerJob`
-    the resulting job order is identical to the previous per-(config, run) job
-    order.
+    Items are grouped **by config, then by run** (``for config: for run``), so a
+    config's repeated runs stay adjacent. With multi-config packing this keeps all
+    runs of one configuration together within a job (prioritised over interleaving
+    different configs), so a packed job runs ``config A`` runs 0..N before moving
+    on to ``config B`` and a config's results land contiguously. (Packing remains
+    invisible to result reading, which is keyed by config name / run number.)
     """
     items = []
-    for run_number in range(runs):
-        for config in configs:
+    for config in configs:
+        for run_number in range(runs):
             items.append(WorkItem(config=config, run_number=run_number))
     return items
 
