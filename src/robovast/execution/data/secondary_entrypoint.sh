@@ -6,7 +6,10 @@ set -e
 WATCHDOG_TIMEOUT=3
 CONNECT_TIMEOUT=15
 
-OUTPUT_DIR="/out"
+# OUTPUT_DIR holds this job's job-level artifacts; in packed multi-config jobs
+# the launcher points it at a per-unit subdir of /out to avoid cross-unit
+# collisions (defaults to /out for single-config jobs).
+OUTPUT_DIR="${OUTPUT_DIR:-/out}"
 LOG_DIR="${OUTPUT_DIR}/logs"
 mkdir -p "${LOG_DIR}"
 

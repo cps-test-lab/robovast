@@ -79,6 +79,63 @@ jobs:
           build-args: |
             ROS_DISTRO=jazzy
 
+  integration-test:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install Poetry
+        run: |
+          curl -sSL https://install.python-poetry.org | python3 -
+
+      - name: Add Poetry to PATH
+        run: |
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install dependencies with Poetry
+        run: |
+          poetry install --no-root
+          poetry install
+
+      - name: Compute image tag
+        id: image
+        run: |
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            echo "tag=ghcr.io/${{ github.repository }}:pr-${{ github.event.number }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=ghcr.io/${{ github.repository }}:${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run Example tests
+        run: |
+          rm -rf /tmp/vast_test_output
+          mkdir /tmp/vast_test_output
+          poetry run .github/test_vast.py configs/examples/growth_sim/growth_sim.vast \
+            -c test-1-1 -d /tmp/vast_test_output -r 1 \
+            --image "${{ steps.image.outputs.tag }}"
+
   build-and-push-sidecar:
     runs-on: ubuntu-latest
     permissions:

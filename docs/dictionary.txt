@@ -71,3 +71,8 @@ Graphviz
 cyber
 stdout
 gcs
+MuJoCo
+rosout
+mcap
+symlink
+symlinks

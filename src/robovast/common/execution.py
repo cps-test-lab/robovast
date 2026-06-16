@@ -361,14 +361,19 @@ set -e
 echo "[s3-upload] Starting S3 upload..."
 echo "[s3-upload] Setting up mc alias for S3 endpoint..."
 mc alias set mystore "${S3_ENDPOINT}" "${S3_ACCESS_KEY}" "${S3_SECRET_KEY}" --quiet
-echo "[s3-upload] Mirroring /out/ to mystore/${S3_BUCKET}/${S3_PREFIX}/..."
-mc mirror /out/ "mystore/${S3_BUCKET}/${S3_PREFIX}/"
+# Normalize the destination: S3_PREFIX may be empty (packed jobs on per-campaign
+# buckets mirror to the bucket root) or carry a trailing slash; strip it so we
+# never produce a "bucket//" double slash (which S3 treats as a leading-slash key).
+S3_DEST="mystore/${S3_BUCKET}/${S3_PREFIX}"
+S3_DEST="${S3_DEST%/}"
+echo "[s3-upload] Mirroring /out/ to ${S3_DEST}/..."
+mc mirror /out/ "${S3_DEST}/"
 echo "[s3-upload] Mirror complete. Re-tagging executable files..."
 # Re-tag executable files with x-amz-meta-executable metadata
 _exec_count=0
 find /out/ -type f -executable | while IFS= read -r f; do
     rel="${f#/out/}"
-    mc cp --attr "x-amz-meta-executable=yes" "mystore/${S3_BUCKET}/${S3_PREFIX}/${rel}" "mystore/${S3_BUCKET}/${S3_PREFIX}/${rel}" --quiet
+    mc cp --attr "x-amz-meta-executable=yes" "${S3_DEST}/${rel}" "${S3_DEST}/${rel}" --quiet
     _exec_count=$((_exec_count + 1))
 done
 echo "[s3-upload] S3 upload finished."
@@ -632,6 +637,151 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
                 os.makedirs(run_config_dir, exist_ok=True)
                 with open(dst_path, 'w') as f:
                     yaml.dump(wrapped_config_data, f, default_flow_style=False, sort_keys=False)
+
+
+def _namespace_file_params(value, deploy_paths, namespace_prefix):
+    """Recursively rewrite file-valued scenario parameters to a namespaced path.
+
+    When several configurations are packed into one job, each config's generated
+    files are mounted under a per-config directory (``<namespace_prefix>/...``)
+    to avoid name collisions. Any string parameter whose value equals one of the
+    config's ``_config_files`` deploy paths is rewritten to
+    ``<namespace_prefix>/<deploy_path>`` so it resolves unambiguously regardless
+    of the working directory. All other values are left untouched.
+
+    Args:
+        value: A scenario-parameter value (scalar, list or dict) to walk.
+        deploy_paths: Set of deploy-relative paths (e.g. ``maps/hallways.yaml``)
+            for this config's generated files.
+        namespace_prefix: Absolute mount prefix for this config's files
+            (e.g. ``/config/<config-name>``).
+
+    Returns:
+        The value with file paths rewritten.
+    """
+    if isinstance(value, dict):
+        return {k: _namespace_file_params(v, deploy_paths, namespace_prefix) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_namespace_file_params(v, deploy_paths, namespace_prefix) for v in value]
+    if isinstance(value, str) and value in deploy_paths:
+        return f"{namespace_prefix}/{value}"
+    return value
+
+
+def build_job_parameter_documents(job, scenario_name, config_mount_root="/config"):
+    """Build scenario-parameter override documents for a packed job.
+
+    Produces one YAML document per work item in the job. Each document
+    overrides ``scenario_name``'s parameters for that config and sets the special
+    ``_output_dir`` key to ``<config-name>/<run_number>`` so scenario_execution
+    writes the item's results into robovast's per-config/run layout. File-valued
+    parameters are namespaced under ``<config_mount_root>/<config-name>`` to
+    keep multiple configs' files from colliding in a single job.
+
+    Args:
+        job: A :class:`~robovast.execution.packer.JobSpec`.
+        scenario_name: The scenario name to override (top-level key, matching
+            the single-config ``scenario.config`` wrapping).
+        config_mount_root: Mount root inside the container where per-config files
+            live (default ``/config``).
+
+    Returns:
+        list[dict]: One override document per work item, ready to dump as a
+        multi-document YAML for ``--scenario-parameter-file``.
+    """
+    documents = []
+    for item in job.items:
+        config_data = item.config
+        config_name = config_data.get("name", "")
+        config = config_data.get("config") or {}
+        config_dict = convert_dataclasses_to_dict(copy.deepcopy(config))
+
+        deploy_paths = {rel for rel, _ in config_data.get("_config_files", [])}
+        namespace_prefix = f"{config_mount_root}/{config_name}"
+        namespaced = _namespace_file_params(config_dict, deploy_paths, namespace_prefix)
+
+        # _output_dir is consumed by scenario_execution to place this item's
+        # results; relative paths resolve under -o/--output-dir.
+        namespaced["_output_dir"] = f"{config_name}/{item.run_number}"
+        documents.append({scenario_name: namespaced})
+    return documents
+
+
+def dump_multi_document_yaml(documents) -> str:
+    """Serialise a list of dicts as a multi-document YAML string (``---`` separated)."""
+    return yaml.dump_all(documents, default_flow_style=False, sort_keys=False)
+
+
+# Filename of the per-campaign job-link manifest written into ``_transient/``.
+JOB_LINKS_MANIFEST = "job_links.yaml"
+
+
+def build_job_links(jobs) -> dict:
+    """Map each work item's ``job`` link to its job's artifact directory.
+
+    For a packed job ``N`` running config ``C`` at run ``R``, the work item's
+    result dir is ``C/R`` and the job-level artifacts (sysinfo, logs, resource
+    monitor) live in ``_jobs/job-N``. This returns a ``{link: target}`` mapping
+    where the link is ``C/R/job`` and the target is the path to ``_jobs/job-N``
+    relative to the link's directory (``../../_jobs/job-N``), so a user can
+    ``cd C/R/job`` to reach that job's artifacts.
+
+    Args:
+        jobs: An iterable of :class:`~robovast.execution.packer.JobSpec`.
+
+    Returns:
+        dict[str, str]: ``{"<config>/<run>/job": "../../_jobs/job-<idx>"}``.
+    """
+    links = {}
+    for job in jobs:
+        target = f"../../_jobs/job-{job.index}"
+        for item in job.items:
+            links[f"{item.config_name}/{item.run_number}/job"] = target
+    return links
+
+
+def write_job_links_manifest(transient_dir, jobs) -> None:
+    """Write the ``job_links.yaml`` manifest (link → relative target) for *jobs*.
+
+    No-op when there are no links (e.g. single-config jobs have no ``_jobs``
+    split). The manifest is plain data, so it survives an S3 round-trip and is
+    consumed where results are materialised (locally and in the share archiver).
+    """
+    links = build_job_links(jobs)
+    if not links:
+        return
+    os.makedirs(transient_dir, exist_ok=True)
+    with open(os.path.join(transient_dir, JOB_LINKS_MANIFEST), "w") as f:
+        yaml.dump(links, f, default_flow_style=False, sort_keys=True)
+
+
+def create_job_links(campaign_dir) -> int:
+    """Create the ``job`` symlinks described by a campaign's link manifest.
+
+    Reads ``<campaign_dir>/_transient/job_links.yaml`` and creates each
+    ``<config>/<run>/job`` relative symlink pointing at its job's artifact dir.
+    Idempotent: an existing ``job`` entry is replaced. Missing manifest is a
+    no-op (single-config campaigns have none). Returns the number of links
+    created.
+    """
+    manifest = os.path.join(campaign_dir, "_transient", JOB_LINKS_MANIFEST)
+    if not os.path.isfile(manifest):
+        return 0
+    with open(manifest) as f:
+        links = yaml.safe_load(f) or {}
+    created = 0
+    for link_rel, target in links.items():
+        link_path = os.path.join(campaign_dir, link_rel)
+        os.makedirs(os.path.dirname(link_path), exist_ok=True)
+        # Replace any existing entry so re-runs are idempotent.
+        if os.path.islink(link_path) or os.path.exists(link_path):
+            try:
+                os.remove(link_path)
+            except OSError:
+                pass
+        os.symlink(target, link_path)
+        created += 1
+    return created
 
 
 def generate_execution_yaml_script(runs, execution_params=None, output_dir_var="${RESULTS_DIR}"):

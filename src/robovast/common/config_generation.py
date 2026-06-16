@@ -323,7 +323,7 @@ def _collect_analysis_input_files(parameters, base_dir=None):
 
 
 # Bump this whenever the cache storage format changes, to auto-invalidate stale entries.
-_CACHE_FORMAT_VERSION = 5
+_CACHE_FORMAT_VERSION = 6
 
 
 def _build_generate_cache_key(
@@ -663,6 +663,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         "resources": execution_section.get('resources'),
         "secondary_containers": execution_section.get('secondary_containers'),
         "local": execution_section.get('local'),
+        "configs_per_job": execution_section.get('configs_per_job', 1),
     }
 
     # Build result dictionary

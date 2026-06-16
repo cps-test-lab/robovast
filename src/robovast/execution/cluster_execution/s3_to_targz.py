@@ -54,6 +54,29 @@ S3_ACCESS_KEY = os.environ.get("S3_ACCESS_KEY", "minioadmin")
 S3_SECRET_KEY = os.environ.get("S3_SECRET_KEY", "minioadmin")
 
 
+def _add_job_link_entries(tar, s3, bucket_name, prefix, archive_label):
+    """Add ``<config>/<run>/job`` symlink members to the streaming tar.
+
+    Reads the ``_transient/job_links.yaml`` manifest object (written by robovast
+    for packed campaigns) and adds one real symlink member (``SYMTYPE``) per
+    entry, so the resulting tar.gz is navigable. No-op when the manifest object
+    is absent (single-config campaigns). Requires PyYAML in the archiver image.
+    """
+    import yaml  # pylint: disable=import-outside-toplevel
+    manifest_key = (prefix or "") + "_transient/job_links.yaml"
+    try:
+        resp = s3.get_object(Bucket=bucket_name, Key=manifest_key)
+    except Exception:  # pylint: disable=broad-except
+        return  # no manifest → nothing to link
+    links = yaml.safe_load(resp["Body"].read()) or {}
+    for link_rel, target in links.items():
+        tarinfo = tarfile.TarInfo(name=f"{archive_label}/{link_rel}")
+        tarinfo.type = tarfile.SYMTYPE
+        tarinfo.linkname = target
+        tarinfo.mode = 0o777
+        tar.addfile(tarinfo)
+
+
 def main():
     import argparse  # pylint: disable=import-outside-toplevel
     parser = argparse.ArgumentParser(description="Stream S3 bucket to tar.gz")
@@ -118,6 +141,10 @@ def main():
                         else:
                             tarinfo.mode = 0o644
                         tar.addfile(tarinfo, response["Body"])
+
+                # Add per-job artifact symlinks (packed campaigns) as real tar
+                # symlink members so the archive is navigable.
+                _add_job_link_entries(tar, s3, bucket_name, prefix, archive_label)
         finally:
             pigz.stdin.close()
             pigz.wait()
