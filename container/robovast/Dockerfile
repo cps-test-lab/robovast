@@ -106,7 +106,7 @@ RUN mkdir -p /out && chmod 777 /out
 # Compatibility version — must match COMPAT_VERSION in
 # src/robovast/common/execution.py.  Read by all execution contexts
 # (local, cluster, postprocessing) to detect host/container mismatches.
-RUN echo "1" > /etc/robovast_compat_version
+RUN echo "2" > /etc/robovast_compat_version
 
 RUN USER=ubuntu && \
     GROUP=ubuntu && \
