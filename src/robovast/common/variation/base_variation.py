@@ -210,6 +210,7 @@ class Variation():
         config_namespace,
         gen_activity_id: str,
         vast_id: str,
+        campaign_dir=None,
     ) -> Optional["ProvContribution"]:
         """Return domain-specific PROV-O graph contributions.
 

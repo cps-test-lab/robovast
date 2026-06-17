@@ -1,0 +1,43 @@
+version: 1
+metadata:
+  name: manipulation
+  dataset_iri: "https://example.org/campaigns/manipulation/"
+
+configuration:
+  - name: manipulation
+    variations:
+      - ParameterVariationList:
+          name: arm_joint_goal
+          values:
+            - [1.57, 0.0, 0.0]
+            - [0.5, 0.5, 0.0]
+            - [-1.0, 0.3, 0.2]
+      - ParameterVariationList:
+          name:
+            - velocity_scaling_requested
+            - acceleration_scaling_requested
+          values:
+            - [0.1, 0.1]
+            - [0.5, 0.5]
+            - [1.0, 1.0]
+      - ParameterVariationList:
+          name: gripper_joint_goal
+          values:
+            - [-0.7]
+      - ManipulationVariation:
+          planners:
+            - "RRTConnect"
+            - "PTP"
+            - "KPIECE1"
+
+execution:
+  image: "local"
+  runs: 5
+  scenario_file: scenario.osc
+  run_files:
+    - "launch/*.py"
+    - "config/*.yaml"
+
+results_processing:
+  postprocessing:
+    - manipulation_process_results: {}
