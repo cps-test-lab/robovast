@@ -60,7 +60,7 @@ truth, no duplicated metric logic.
 
 - `analysis_run.ipynb` — x–z descent path + tilt, **plus an animated GIF**
   (reads `trajectory.csv`).
-- `analysis_qd.ipynb` — reads `search.sqlite`: objective distribution and 2-D
+- `analysis_qd.ipynb` — reads `campaign.sqlite`: objective distribution and 2-D
   projections of the behavior space coloured by objective (the discovered failure
   landscape; works for random/QD/Optuna runs).
 - `analysis_campaign.ipynb` / `analysis_config.ipynb` — per-config metrics for

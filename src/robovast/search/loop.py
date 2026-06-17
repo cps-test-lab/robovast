@@ -76,7 +76,10 @@ class SearchLoop:
 
     def run(self, campaign_name: str, campaign_config: dict) -> SearchReport:
         os.makedirs(self.output_dir, exist_ok=True)
-        campaign_id = self.store.create_campaign(campaign_name, campaign_config)
+        # config_dir is the .vast directory: the base against which this campaign's
+        # evaluation.visualization notebooks (analysis/*.ipynb) resolve in the GUI.
+        campaign_id = self.store.create_campaign(
+            campaign_name, campaign_config, mode="search", config_dir=self.vast_dir)
         gen_idx = 0
         while not self.strategy.is_done():
             param_sets = self.strategy.ask(self.per_step)
@@ -150,7 +153,7 @@ def run_search(vast_file, campaign_config, output_dir, runs, launcher: Launcher 
     ``campaign_config`` is the validated :class:`ConfigV1` (as a model). Requires
     ``campaign_config.search`` to be set.
     """
-    from robovast.common.store import CampaignStore
+    from robovast.common.store import STORE_FILENAME, CampaignStore
 
     search_cfg = campaign_config.search
     if search_cfg is None:
@@ -161,7 +164,7 @@ def run_search(vast_file, campaign_config, output_dir, runs, launcher: Launcher 
     evaluator = Evaluator(search_cfg, vast_dir)
     compose = Compose(vast_file)
     launcher = launcher or LocalLauncher()
-    store = CampaignStore(os.path.join(output_dir, "search.sqlite"))
+    store = CampaignStore(os.path.join(output_dir, STORE_FILENAME))
 
     loop = SearchLoop(
         vast_file=vast_file, output_dir=output_dir, runs=runs, store=store,

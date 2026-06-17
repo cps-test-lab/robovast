@@ -14,17 +14,27 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Persistent sqlite store for search campaigns.
+"""Persistent sqlite store for campaigns (search and batch).
 
-A single writer (the search loop) records every generation, so status is
-live-queryable while a campaign runs and the schema is the seam an in-cluster
-controller / web UI can later read. The schema is intentionally simple:
+A single writer records the campaign, so status is live-queryable while it runs
+and the schema is the seam an in-cluster controller / web UI can later read. It
+is the single source of truth the results GUI reads. The schema is intentionally
+simple:
 
-    campaign (1) --< generation (1) --< unit (one per param set evaluated)
+    campaign (1) --< generation (1) --< unit (one per param set / config)
 
-``unit`` holds the sampled params (JSON), the objective, the descriptor (JSON),
-a status and the result path. ``campaign.strategy_state`` carries an opaque blob
-so a strategy can persist enough to resume.
+``campaign.mode`` is ``'search'`` or ``'batch'``; ``campaign.config_dir`` is the
+base directory against which ``evaluation.visualization`` notebooks (carried in
+``config_json``) resolve. Batch campaigns use a single synthetic generation
+(``idx=0``) with one unit per configuration; search campaigns use one generation
+per ask/tell round with one unit per evaluated parameter set.
+
+``unit`` holds the sampled params (JSON), the objective(s)/measures (JSON), a
+status and the result path. ``campaign.strategy_state`` carries an opaque blob so
+a strategy can persist enough to resume.
+
+The canonical on-disk filename is :data:`STORE_FILENAME` (``campaign.sqlite``),
+written at each campaign's root directory.
 """
 
 import json
@@ -36,10 +46,16 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
+# Canonical store filename, written at the root of every campaign directory
+# (a batch ``campaign-<id>/`` or a ``search-<ts>/`` root).
+STORE_FILENAME = "campaign.sqlite"
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS campaign (
     id            INTEGER PRIMARY KEY,
     name          TEXT,
+    mode          TEXT,
+    config_dir    TEXT,
     config_json   TEXT,
     created_at    REAL,
     strategy_state BLOB
@@ -88,10 +104,12 @@ class CampaignStore:
     def __exit__(self, *exc) -> None:
         self.close()
 
-    def create_campaign(self, name: str, config: dict) -> int:
+    def create_campaign(self, name: str, config: dict, mode: str = "search",
+                        config_dir: str = "") -> int:
         cur = self._conn.execute(
-            "INSERT INTO campaign (name, config_json, created_at) VALUES (?, ?, ?)",
-            (name, json.dumps(config, default=str), time.time()),
+            "INSERT INTO campaign (name, mode, config_dir, config_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (name, mode, config_dir, json.dumps(config, default=str), time.time()),
         )
         self._conn.commit()
         return cur.lastrowid
@@ -146,3 +164,23 @@ class CampaignStore:
             "SELECT strategy_state FROM campaign WHERE id = ?", (campaign_id,)
         ).fetchone()
         return row["strategy_state"] if row else None
+
+    # -- read helpers (used by the results GUI / readers) --------------------
+
+    def list_campaigns(self) -> list[sqlite3.Row]:
+        """All campaigns in this store, newest first."""
+        return list(self._conn.execute(
+            "SELECT * FROM campaign ORDER BY created_at DESC"
+        ).fetchall())
+
+    def generations(self, campaign_id: int) -> list[sqlite3.Row]:
+        """Generations of a campaign, in ask/tell order (idx ascending)."""
+        return list(self._conn.execute(
+            "SELECT * FROM generation WHERE campaign_id = ? ORDER BY idx", (campaign_id,)
+        ).fetchall())
+
+    def units(self, generation_id: int) -> list[sqlite3.Row]:
+        """Units (param sets / configs) of a generation, in insertion order."""
+        return list(self._conn.execute(
+            "SELECT * FROM unit WHERE generation_id = ? ORDER BY id", (generation_id,)
+        ).fetchall())

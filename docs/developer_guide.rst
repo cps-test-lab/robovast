@@ -169,6 +169,24 @@ Afterwards you can start the GUI:
     vast results postprocess --force
     vast evaluation gui
 
+.. note::
+
+   The GUI discovers campaigns **exclusively from a per-campaign
+   ``campaign.sqlite`` store** — it does not walk the results filesystem. Search
+   campaigns write this store live; batch campaigns are indexed post-hoc from
+   their results tree. ``vast evaluation gui`` indexes any missing batch stores
+   automatically before launching, but you can also (re)build them explicitly:
+
+   .. code-block:: bash
+
+       vast evaluation index            # build/refresh campaign stores
+       vast evaluation index --force    # rebuild even if up to date
+
+   The store also carries the campaign **mode** (``batch``/``search``), so the
+   GUI renders the search ``generation`` level and resolves the
+   ``evaluation.visualization`` notebooks from the recorded ``config_dir``. See
+   :ref:`campaign-store` for the schema and internals.
+
 
 Container Image Compatibility Version
 -------------------------------------
@@ -585,6 +603,166 @@ Then register the class as an entry point in ``pyproject.toml``:
    my_plugin = "my_package.mcp_plugin:MyMCPPlugin"
 
 The plugin is picked up automatically the next time the server starts.
+
+
+.. _extending-search-strategy:
+
+Add Search Strategy Plugin
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+A search strategy drives the closed-loop search (see :doc:`search`): it proposes
+parameter sets, is told their evaluations, and produces a final report. Strategies
+are algorithm-agnostic and share one config schema; only the per-strategy
+``strategy_parameters`` block differs.
+
+Subclass ``robovast.search.strategy.SearchStrategy`` and implement the four
+abstract methods. Optionally set ``PARAMS_MODEL`` to a Pydantic model — the
+framework validates ``search.strategy_parameters`` against it and passes the
+parsed object as ``params``:
+
+.. code-block:: python
+
+   from pydantic import BaseModel
+   from robovast.search.strategy import SearchStrategy
+   from robovast.search.types import ParamSet, SearchReport
+
+   class MyParams(BaseModel):
+       step: float = 0.1
+
+   class MyStrategy(SearchStrategy):
+       PARAMS_MODEL = MyParams  # optional; omit (None) for no parameters
+
+       def ask(self, n: int) -> list[ParamSet]:
+           """Propose n parameter sets (keys match search_space dims)."""
+           ...
+
+       def tell(self, evaluations) -> None:
+           """Ingest the evaluations of the generation just run."""
+           ...
+
+       def is_done(self) -> bool:
+           """True when the budget is exhausted / converged."""
+           ...
+
+       def report(self) -> SearchReport:
+           """Return the deliverable (ranked best, archive, Pareto front)."""
+           ...
+
+``self.search_space``, ``self.objectives`` and the validated ``self.params`` are
+available on the instance. For single-objective strategies, ``self.objective_value(ev)``
+returns the sole objective sign-oriented so that **higher is always better**.
+
+Register the class under ``robovast.search_strategies``; the key is the
+``search.strategy`` name:
+
+.. code-block:: toml
+
+   [tool.poetry.plugins."robovast.search_strategies"]
+   my_strategy = "your_package.strategies:MyStrategy"
+
+A strategy can also be loaded from a **local file relative to the .vast** without
+packaging, using ``strategy: ./search/my_strategy.py:MyStrategy`` (the same
+``load_ref`` mechanism used for extractors and search postprocessing).
+
+
+.. _extending-extractor:
+
+Add Extractor Plugin
+^^^^^^^^^^^^^^^^^^^^^
+
+The *extractor* is the single, SUT-specific scoring step: it reads a parameter
+set's per-config result directory and returns named **objectives** (optimized)
+and **measures** (quality-diversity behavior axes; ignored by non-QD strategies).
+This is the one place system-under-test logic lives.
+
+Subclass ``robovast.search.extractor.Extractor``. It is constructed with the
+``extract.params`` from the ``.vast`` (so thresholds / column names can be swept
+without editing code), and aggregation over the config's runs is its
+responsibility:
+
+.. code-block:: python
+
+   from pathlib import Path
+   from robovast.search.extractor import (Extractor, ExtractResult,
+                                          completed_run_dirs)
+
+   class MyExtract(Extractor):
+       # __init__(self, **params) is inherited; params land on self.params
+
+       def extract(self, config_dir: Path) -> ExtractResult:
+           runs = completed_run_dirs(config_dir)        # helper: finished runs
+           failures = sum(1 for r in runs if _failed(r))
+           return ExtractResult(
+               objectives={"failure_rate": failures / max(len(runs), 1)},
+               measures={},                              # {} when unused
+           )
+
+``objectives`` and ``measures`` are named dicts, so single- and multi-objective
+use the same shape. The framework records how many runs backed each result.
+
+Register under ``robovast.extractors`` (referenced by ``search.extract.plugin``),
+or load from a local file with ``extract.plugin: ./search/extract.py:MyExtract``:
+
+.. code-block:: toml
+
+   [tool.poetry.plugins."robovast.extractors"]
+   my_extract = "your_package.extractors:MyExtract"
+
+The built-in ``extract_to_csv`` postprocessing command runs an extractor over a
+batch campaign and writes its objectives+measures to a per-config CSV, so the
+*same* extractor can feed both the search loop and the analysis notebooks.
+
+
+.. _campaign-store:
+
+Campaign Store and Results Indexing
+-----------------------------------
+
+Every campaign — batch or search — is described by a single sqlite store,
+``campaign.sqlite`` (``robovast.common.store.STORE_FILENAME``), written at the
+root of the campaign directory. It is the **single source of truth** the results
+GUI reads, and the seam an in-cluster controller or web UI can later read/stream.
+
+Schema
+^^^^^^
+
+``robovast.common.store.CampaignStore`` is a thin wrapper over three tables::
+
+    campaign (1) --< generation (1) --< unit (one per param set / config)
+
+* **campaign** — ``mode`` (``batch``/``search``), ``config_dir`` (base directory
+  against which ``evaluation.visualization`` notebooks resolve), ``config_json``
+  (the full config), and an opaque ``strategy_state`` blob for resumable
+  strategies.
+* **generation** — one ask/tell round (search), or a single synthetic generation
+  (``idx=0``) for a batch campaign.
+* **unit** — one evaluated parameter set (search) or one configuration (batch):
+  the sampled ``params``, ``objectives``/``measures`` (JSON; ``{}`` for batch),
+  ``n_samples``, an aggregate ``status`` and the ``result_dir``.
+
+Who writes it
+^^^^^^^^^^^^^
+
+* **Search** — the loop (``robovast.search.loop``) writes the store *live* as each
+  generation is evaluated, so progress is queryable while a search runs.
+* **Batch** — local batch creates its campaign directory inside the generated run
+  script (Python ``os.execv``\ s away), so the store cannot be written live.
+  Instead ``robovast.common.campaign_index.build_campaign_store(campaign_dir)``
+  scans the finished results tree post-hoc (reusing the ``campaign_data`` readers)
+  and writes the same schema. It is idempotent (mtime-guarded; ``force=True`` to
+  rebuild) and is invoked by ``vast evaluation index`` and automatically on
+  ``vast evaluation gui`` launch. Search stores are never clobbered by the
+  indexer.
+
+Store-driven GUI
+^^^^^^^^^^^^^^^^^
+
+The results GUI (``RunResultsAnalyzer``) discovers campaigns by scanning
+``<results_dir>/*/campaign.sqlite`` — there is no filesystem-walk or depth-based
+heuristic. It reads the campaign/generation/unit rows to build the tree
+(campaign → *generation*, search only → config), resolves notebook workloads from
+``config_json`` against ``config_dir``, and enumerates only the run-level leaves
+from each unit's ``result_dir``.
 
 
 Querying RoboVAST campaigns

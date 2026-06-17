@@ -101,7 +101,7 @@ def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_
     - If it defines a ``search:`` block, this runs an iterative **search loop**:
       each generation proposes parameter sets, executes them locally, scores the
       results, and feeds them back to the strategy. Results and a live-queryable
-      ``search.sqlite`` are written under the output directory. (A ``search:``
+      ``campaign.sqlite`` are written under the output directory. (A ``search:``
       block is mutually exclusive with a ``configuration:`` block.)
     - Otherwise it runs every configuration once as a **batch** in Docker
       containers, continuing past failures (use ``--abort-on-failure`` to stop at
@@ -221,7 +221,7 @@ def _run_local_search(project_config, campaign_config, output, runs):
 
     Each generation proposes parameter sets, executes them locally, scores the
     results, and feeds them back to the strategy. Results and a live-queryable
-    ``search.sqlite`` are written under the output directory.
+    ``campaign.sqlite`` are written under the output directory.
     """
     from robovast.search.loop import run_search
 

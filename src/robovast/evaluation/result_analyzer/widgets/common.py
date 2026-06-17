@@ -22,6 +22,7 @@ class RunType(Enum):
     RUN = 0
     CONFIG = 1
     CAMPAIGN = 2
+    GENERATION = 3  # search-only grouping level (campaign -> generation -> config)
 
 
 def check_preferred_log_file(file_path):

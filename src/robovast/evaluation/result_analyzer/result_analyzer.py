@@ -15,6 +15,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import json
 import math
 import os
 import subprocess
@@ -30,7 +31,7 @@ from PySide6.QtWidgets import (QApplication, QGroupBox, QHBoxLayout, QLabel,
 from robovast.common import load_config
 from robovast.common.analysis import get_run_status
 from robovast.common.execution import is_campaign_dir
-from robovast.common.results_utils import iter_run_folders
+from robovast.common.store import STORE_FILENAME, CampaignStore
 
 from .widgets.common import RunType
 from .widgets.jupyter_widget import DataAnalysisWidget, JupyterNotebookRunner
@@ -49,9 +50,13 @@ class RunResultsAnalyzer(QMainWindow):
         # Resolve override_vast to an absolute path once so it can be compared/logged consistently
         self._override_vast = str(Path(override_vast).resolve()) if override_vast else None
 
-        # Discover notebooks from every campaign under base_dir.
+        # Discover campaigns from every campaign.sqlite under base_dir.
         # self.campaign_notebooks maps campaign_name -> {"workloads": [...], "config_file": str|None}
+        # self._campaign_index maps campaign_name -> full store-derived structure
+        # (mode, config_dir, generations -> units) used to build the tree.
         self.campaign_notebooks = {}
+        self._campaign_index = {}
+        self._node_types = {}  # path str -> RunType, set while populating the tree
         self._current_campaign = None  # name of the campaign currently shown in the UI
 
         if base_dir:
@@ -109,96 +114,120 @@ class RunResultsAnalyzer(QMainWindow):
     # ------------------------------------------------------------------
 
     def _discover_all_campaign_notebooks(self, base_dir):
-        """Scan all campaigns under *base_dir* and return per-campaign notebook info.
+        """Scan ``base_dir/*/campaign.sqlite`` and return per-campaign notebook info.
 
-        When ``self._override_vast`` is set the override file (and its parent
-        directory) is used for *every* campaign instead of each campaign's own
-        ``_config/*.vast``.
+        The campaign store is the single source of truth: it carries the mode,
+        the full config (``evaluation.visualization``) and the base ``config_dir``
+        against which notebooks resolve, plus the generation/unit structure used
+        to build the tree (cached in ``self._campaign_index``). When
+        ``self._override_vast`` is set the override file (and its parent) is used
+        for *every* campaign's notebook discovery instead of the stored config.
 
         Returns:
             dict: ``{campaign_name: {"workloads": [...], "config_file": str|None}}``
         """
         root = Path(base_dir)
         result = {}
+        self._campaign_index = {}
 
         # When an override is given, load it once and reuse for all campaigns.
-        override_parameters = None
-        override_config_dir = None
+        override_eval = None
+        override_dir = None
         if self._override_vast:
-            override_vast_path = Path(self._override_vast)
-            override_config_dir = str(override_vast_path.parent)
+            override_dir = str(Path(self._override_vast).parent)
             try:
-                override_parameters = load_config(
-                    str(override_vast_path), "evaluation", allow_missing=True
-                )
+                override_eval = load_config(
+                    self._override_vast, "evaluation", allow_missing=True)
                 print(f"Using override .vast for notebook discovery: {self._override_vast}")
             except Exception as e:
-                raise RuntimeError(f"Could not load override config from {self._override_vast}: {e}") from e
+                raise RuntimeError(
+                    f"Could not load override config from {self._override_vast}: {e}") from e
 
-        for campaign_item in sorted(root.iterdir()):
-            if not campaign_item.is_dir() or not is_campaign_dir(campaign_item.name):
+        for store_path in sorted(root.glob(f"*/{STORE_FILENAME}")):
+            campaign_dir = store_path.parent
+            try:
+                entry = self._read_campaign_store(campaign_dir, store_path)
+            except Exception as e:  # pylint: disable=broad-except
+                print(f"Warning: could not read campaign store {store_path}: {e}")
                 continue
 
-            if self._override_vast and override_parameters is not None:
-                # Use the override file for this campaign
-                parameters = override_parameters
-                cd = override_config_dir
-                vast_path_str = self._override_vast
+            # Resolve the evaluation block + notebook base dir (override wins).
+            if override_eval is not None:
+                eval_block, nb_base = override_eval, override_dir
+                config_file = self._override_vast
             else:
-                # Normal path: look for a .vast file inside campaign-<id>/_config/
-                config_dir = campaign_item / "_config"
-                if not config_dir.is_dir():
-                    continue
-                vast_files = [
-                    f for f in sorted(config_dir.iterdir())
-                    if f.is_file() and f.suffix == ".vast"
-                ]
-                if not vast_files:
-                    continue
-                if len(vast_files) > 1:
-                    names = ", ".join(f.name for f in vast_files)
-                    print(f"Warning: multiple .vast files in {config_dir}: {names}. "
-                          f"Using {vast_files[0].name}.")
-                vast_path_str = str(vast_files[0])
-                cd = str(config_dir)
-                try:
-                    parameters = load_config(vast_path_str, "evaluation", allow_missing=True)
-                except Exception as e:
-                    print(f"Warning: could not load config from {vast_path_str}: {e}")
-                    continue
+                config_json = entry["config_json"]
+                eval_block = config_json.get("evaluation") or {}
+                nb_base = entry["config_dir"]
+                config_file = entry["config_file"]
 
-            workloads = []
-            if "visualization" in parameters:
-                for view in parameters["visualization"]:
-                    for name, values in view.items():
-                        try:
-                            if not isinstance(values, dict):
-                                continue
-                            run_val = values.get("run")
-                            run_nb = os.path.join(cd, run_val) if run_val else None
-                            config_val = values.get("config")
-                            config_nb = os.path.join(cd, config_val) if config_val else None
-                            campaign_val = values.get("campaign")
-                            campaign_nb = os.path.join(cd, campaign_val) if campaign_val else None
-                            workloads.append(
-                                JupyterNotebookRunner(
-                                    name,
-                                    run_nb=run_nb,
-                                    config_nb=config_nb,
-                                    campaign_nb=campaign_nb,
-                                )
-                            )
-                        except Exception as e:
-                            print(f"Warning: could not add notebook workload '{name}' "
-                                  f"for {campaign_item.name}: {e}")
-
-            result[campaign_item.name] = {
-                "workloads": workloads,
-                "config_file": vast_path_str,
+            entry["workloads"] = self._build_workloads(
+                eval_block, nb_base, entry["name"])
+            entry["config_file"] = config_file
+            self._campaign_index[entry["name"]] = entry
+            result[entry["name"]] = {
+                "workloads": entry["workloads"],
+                "config_file": config_file,
             }
-            print(f"Discovered campaign {campaign_item.name}: {len(workloads)} workload(s)")
+            print(f"Discovered campaign {entry['name']}: "
+                  f"{len(entry['workloads'])} workload(s), mode={entry['mode']}")
 
         return result
+
+    def _read_campaign_store(self, campaign_dir, store_path):
+        """Read one campaign store into a plain dict (mode, config, generations)."""
+        with CampaignStore(store_path) as store:
+            campaigns = store.list_campaigns()
+            if not campaigns:
+                raise ValueError("empty campaign store")
+            row = campaigns[0]
+            generations = []
+            for gen in store.generations(row["id"]):
+                units = [
+                    {
+                        "config_name": u["config_name"],
+                        "status": u["status"],
+                        "n_samples": u["n_samples"],
+                        "objective": u["objective"],
+                        "result_dir": u["result_dir"],
+                    }
+                    for u in store.units(gen["id"])
+                ]
+                generations.append({"idx": gen["idx"], "dir": gen["dir"], "units": units})
+        config_json = json.loads(row["config_json"]) if row["config_json"] else {}
+        config_dir = row["config_dir"] or str(campaign_dir / "_config")
+        # The vast for the local-execution widget: the copy in config_dir if any.
+        vast_files = sorted(Path(config_dir).glob("*.vast")) if Path(config_dir).is_dir() else []
+        return {
+            "name": campaign_dir.name,
+            "root": str(campaign_dir),
+            "mode": row["mode"] or "batch",
+            "config_dir": config_dir,
+            "config_json": config_json,
+            "config_file": str(vast_files[0]) if vast_files else None,
+            "generations": generations,
+        }
+
+    def _build_workloads(self, eval_block, nb_base, campaign_name):
+        """Build notebook workloads from an evaluation block resolved against nb_base."""
+        workloads = []
+        for view in (eval_block.get("visualization") or []):
+            if not isinstance(view, dict):
+                continue
+            for name, values in view.items():
+                if not isinstance(values, dict):
+                    continue
+                try:
+                    def _nb(key):
+                        val = values.get(key)
+                        return os.path.join(nb_base, val) if val and nb_base else None
+                    workloads.append(JupyterNotebookRunner(
+                        name, run_nb=_nb("run"), config_nb=_nb("config"),
+                        campaign_nb=_nb("campaign")))
+                except Exception as e:  # pylint: disable=broad-except
+                    print(f"Warning: could not add notebook workload '{name}' "
+                          f"for {campaign_name}: {e}")
+        return workloads
 
     def _get_campaign_for_path(self, path):
         """Return the campaign folder name that contains *path*, or ``None``."""
@@ -567,92 +596,120 @@ class RunResultsAnalyzer(QMainWindow):
         self.tree.expandAll()
 
     def populate_directory(self, parent_item, directory_path, max_depth=2, current_depth=0):
-        """Populate tree from common run-folder discovery (campaign-<id>/<config>/<run-number>)."""
-        try:
-            base_dir = Path(directory_path)
-            # Build structure from shared iterator: campaign -> config_name -> [(run_number, folder_path)]
-            structure = {}
-            for campaign, config_name, run_number, folder_path in iter_run_folders(str(base_dir)):
-                if campaign not in structure:
-                    structure[campaign] = {}
-                if config_name not in structure[campaign]:
-                    structure[campaign][config_name] = []
-                structure[campaign][config_name].append((run_number, folder_path))
+        """Populate the tree from the campaign stores (store-driven, no FS-walk).
 
-            for campaign in sorted(structure.keys()):
-                campaign_path = base_dir / campaign
+        Structure comes entirely from ``self._campaign_index`` (campaign ->
+        [generation, search only] -> config/unit); only the run-level leaves are
+        enumerated from disk, via each unit's recorded ``result_dir``. Each node's
+        :class:`RunType` is recorded in ``self._node_types`` so selection no longer
+        needs to guess the level from tree depth.
+        """
+        self._node_types = {}
+        try:
+            for name in sorted(self._campaign_index.keys(), reverse=True):
+                entry = self._campaign_index[name]
+                campaign_path = entry["root"]
                 campaign_item = QTreeWidgetItem(parent_item)
-                campaign_item.setData(0, Qt.UserRole, str(campaign_path))
-                stats = self.calculate_run_statistics(campaign_path)
-                display_text = campaign
-                if stats['total'] > 0:
-                    unknown_str = f" ?{stats['unknown']}" if stats['unknown'] > 0 else ""
-                    display_text = f"{campaign} (✓{stats['passed']} ✗{stats['failed']}{unknown_str})"
+                campaign_item.setData(0, Qt.UserRole, campaign_path)
+                self._node_types[campaign_path] = RunType.CAMPAIGN
+                stats = self._campaign_stats(entry)
+                display_text = name
+                if stats["total"] > 0:
+                    mixed_str = f" ~{stats['mixed']}" if stats["mixed"] > 0 else ""
+                    display_text = (f"{name} (✓{stats['passed']} "
+                                    f"✗{stats['failed']}{mixed_str})")
                 campaign_item.setText(0, display_text)
 
-                if max_depth < 1:
-                    continue
-                for config_name in sorted(structure[campaign].keys()):
-                    config_path = campaign_path / config_name
-                    config_item = QTreeWidgetItem(campaign_item)
-                    config_item.setData(0, Qt.UserRole, str(config_path))
-                    config_item.setText(0, config_name)
+                is_search = entry["mode"] == "search"
+                for gen in entry["generations"]:
+                    container = campaign_item
+                    if is_search:
+                        gen_path = gen["dir"] or campaign_path
+                        gen_item = QTreeWidgetItem(campaign_item)
+                        gen_item.setData(0, Qt.UserRole, gen_path)
+                        self._node_types[gen_path] = RunType.GENERATION
+                        gen_item.setText(0, f"generation-{gen['idx']}")
+                        container = gen_item
+                    for unit in gen["units"]:
+                        result_dir = unit["result_dir"]
+                        config_item = QTreeWidgetItem(container)
+                        config_item.setData(0, Qt.UserRole, result_dir)
+                        self._node_types[result_dir] = RunType.CONFIG
+                        label = unit["config_name"]
+                        if unit.get("objective") is not None:
+                            label = f"{label}  [{unit['objective']:.4g}]"
+                        config_item.setText(0, self._decorate_status(label, unit["status"]))
+                        self._apply_status_color(config_item, unit["status"])
+                        for run_dir in self._list_run_dirs(result_dir):
+                            self._add_run_item(config_item, run_dir)
 
-                    if max_depth < 2:
-                        continue
-                    for run_number, folder_path in sorted(structure[campaign][config_name], key=lambda x: x[0]):
-                        tree_item = QTreeWidgetItem(config_item)
-                        tree_item.setData(0, Qt.UserRole, str(folder_path))
-                        display_text = run_number
-                        if self.is_run_directory(folder_path):
-                            run_status, summary = get_run_status(folder_path)
-                            passed_bg, passed_fg = self.get_theme_colors("passed")
-                            failed_bg, failed_fg = self.get_theme_colors("failed")
-                            unknown_bg, unknown_fg = self.get_theme_colors("unknown")
-                            suffix = f" – {summary}" if summary else ""
-                            if run_status == "passed":
-                                tree_item.setData(0, Qt.UserRole + 1, "passed")
-                                display_text = f"✓ {run_number}{suffix}"
-                                tree_item.setBackground(0, QBrush(QColor(passed_bg)))
-                                tree_item.setForeground(0, QBrush(QColor(passed_fg)))
-                            elif run_status == "failed":
-                                tree_item.setData(0, Qt.UserRole + 1, "failed")
-                                display_text = f"✗ {run_number}{suffix}"
-                                tree_item.setBackground(0, QBrush(QColor(failed_bg)))
-                                tree_item.setForeground(0, QBrush(QColor(failed_fg)))
-                            else:
-                                tree_item.setData(0, Qt.UserRole + 1, "unknown")
-                                display_text = f"? {run_number}{suffix}"
-                                tree_item.setBackground(0, QBrush(QColor(unknown_bg)))
-                                tree_item.setForeground(0, QBrush(QColor(unknown_fg)))
-                        tree_item.setText(0, display_text)
-
-        except PermissionError:
-            error_item = QTreeWidgetItem(parent_item)
-            error_item.setText(0, "[Permission Denied]")
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-except
             error_item = QTreeWidgetItem(parent_item)
             error_item.setText(0, f"[Error: {str(e)}]")
 
-    def get_run_type(self, data_path):
-        """Determine analysis type based on directory structure"""
+    @staticmethod
+    def _list_run_dirs(result_dir):
+        """Numeric run subdirectories of a unit's result dir, ascending."""
         try:
-            # Check for test.xml files in different locations to determine analysis type
+            return sorted(
+                (d for d in Path(result_dir).iterdir() if d.is_dir() and d.name.isdigit()),
+                key=lambda d: int(d.name))
+        except (OSError, ValueError):
+            return []
 
-            # 1. Check if test.xml exists directly in the path (single run)
-            if os.path.exists(data_path / "test.xml"):
+    def _add_run_item(self, config_item, run_dir):
+        """Add one run leaf under a config node, colored by its status."""
+        tree_item = QTreeWidgetItem(config_item)
+        tree_item.setData(0, Qt.UserRole, str(run_dir))
+        self._node_types[str(run_dir)] = RunType.RUN
+        run_number = run_dir.name
+        display_text = run_number
+        if self.is_run_directory(run_dir):
+            run_status, summary = get_run_status(run_dir)
+            suffix = f" – {summary}" if summary else ""
+            mark = {"passed": "✓", "failed": "✗"}.get(run_status, "?")
+            status_key = run_status if run_status in ("passed", "failed") else "unknown"
+            tree_item.setData(0, Qt.UserRole + 1, status_key)
+            display_text = f"{mark} {run_number}{suffix}"
+            self._apply_status_color(tree_item, status_key)
+        tree_item.setText(0, display_text)
+
+    def _apply_status_color(self, item, status):
+        """Color a tree item by a passed/failed/other status."""
+        key = {"passed": "passed", "failed": "failed"}.get(status, "unknown")
+        bg, fg = self.get_theme_colors(key)
+        item.setBackground(0, QBrush(QColor(bg)))
+        item.setForeground(0, QBrush(QColor(fg)))
+
+    @staticmethod
+    def _decorate_status(label, status):
+        mark = {"passed": "✓", "failed": "✗", "mixed": "~"}.get(status, "?")
+        return f"{mark} {label}"
+
+    @staticmethod
+    def _campaign_stats(entry):
+        """Count a campaign's units by aggregate status (config-level)."""
+        stats = {"passed": 0, "failed": 0, "mixed": 0, "total": 0}
+        for gen in entry["generations"]:
+            for unit in gen["units"]:
+                stats["total"] += 1
+                status = unit["status"]
+                if status in ("passed", "failed", "mixed"):
+                    stats[status] += 1
+        return stats
+
+    def get_run_type(self, data_path):
+        """Analysis level for a tree node, from the store-built node-type map.
+
+        Falls back to a run-level check (a ``test.xml`` directly present) so a
+        stale path still resolves sensibly.
+        """
+        node_type = self._node_types.get(str(data_path))
+        if node_type is not None:
+            return node_type
+        try:
+            if os.path.exists(Path(data_path) / "test.xml"):
                 return RunType.RUN
-
-            # 2. Check if test.xml exist in subfolders (config level)
-            run_files = list(data_path.glob("*/test.xml"))
-            if run_files:
-                return RunType.CONFIG
-
-            # 3. Check if test.xml files exist in subfolders of subfolders (campaign level)
-            run_files = list(data_path.glob("*/*/test.xml"))
-            if run_files:
-                return RunType.CAMPAIGN
-
         except Exception:
             return None
 
@@ -785,26 +842,6 @@ class RunResultsAnalyzer(QMainWindow):
             self.status_label.setText(f"Error processing results from {workload_name}: {e}")
             # self.worker_progress_bar.setFormat(f"Error: {workload_name}")
             QTimer.singleShot(3000, self._reset_status_to_ready)
-
-    def calculate_run_statistics(self, base_path):
-        """Calculate run statistics for a campaign directory using common run-folder discovery."""
-        stats = {'passed': 0, 'failed': 0, 'unknown': 0, 'total': 0}
-        base_path = Path(base_path)
-        results_dir = base_path.parent
-        campaign = base_path.name
-
-        try:
-            for rid, _config, _num, folder_path in iter_run_folders(str(results_dir)):
-                if rid != campaign:
-                    continue
-                if self.is_run_directory(folder_path):
-                    run_status, _ = get_run_status(folder_path)
-                    stats[run_status] = stats.get(run_status, 0) + 1
-                    stats['total'] += 1
-        except Exception as e:
-            print(f"Error calculating run statistics: {e}")
-
-        return stats
 
     def is_run_directory(self, directory_path):
         """Check if directory is a run directory"""

@@ -9,7 +9,7 @@ import os
 import sqlite3
 
 from robovast.common.config import SearchConfig
-from robovast.common.store import CampaignStore
+from robovast.common.store import STORE_FILENAME, CampaignStore
 from robovast.search.evaluator import Evaluator
 from robovast.search.launcher import Launcher
 from robovast.search.loop import SearchLoop
@@ -58,7 +58,7 @@ class FakeLauncher(Launcher):
 
 
 def _loop(cfg, tmp_path, strategy=None, runs=2):
-    store = CampaignStore(tmp_path / "search.sqlite")
+    store = CampaignStore(tmp_path / STORE_FILENAME)
     launcher = FakeLauncher()
     loop = SearchLoop(
         vast_file="x.vast", output_dir=str(tmp_path / "out"), runs=runs, store=store,
@@ -80,6 +80,7 @@ def test_loop_runs_generations_and_records(tmp_path):
     assert all(e.n_samples == 2 for e in report.evaluations)
 
     conn = sqlite3.connect(store.db_path)
+    assert conn.execute("SELECT mode FROM campaign").fetchone()[0] == "search"
     assert conn.execute("SELECT COUNT(*) FROM unit").fetchone()[0] == 6
     assert conn.execute("SELECT COUNT(*) FROM generation").fetchone()[0] == 2
     assert conn.execute("SELECT DISTINCT n_samples FROM unit").fetchall() == [(2,)]

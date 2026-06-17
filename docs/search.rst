@@ -99,7 +99,9 @@ Strategies
 
 Custom strategies/extractors are file-loadable too — the same
 ``./path.py:Class`` reference works for ``strategy``, ``extract`` and search
-``postprocessing``.
+``postprocessing``. To write and register one, see
+:ref:`extending-search-strategy` and :ref:`extending-extractor` in the developer
+guide.
 
 Repetitions and noisy systems
 -----------------------------
@@ -130,7 +132,7 @@ Running a search
 
 ``vast execution local run`` is the single entry point: when the project ``.vast``
 has a ``search:`` block it drives the search loop, otherwise it runs a batch.
-Results, per-generation outputs and a live-queryable ``search.sqlite`` are written
+Results, per-generation outputs and a live-queryable ``campaign.sqlite`` are written
 under a timestamped directory in the project results dir (override with
 ``--output``). See ``configs/examples/quadrotor_landing/`` for runnable random,
 QD and Optuna variants over one shared scenario, sim and extract.
