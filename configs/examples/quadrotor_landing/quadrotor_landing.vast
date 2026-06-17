@@ -27,17 +27,18 @@ configuration:
       values: [1.5, 2.5]
 execution:
   image: ghcr.io/cps-test-lab/robovast:latest
-  runs: 1
+  runs: 5
   scenario_file: scenario.osc
   run_files:
   - "files/*.py"
-  configs_per_job: 16
+  runs_per_job: 100
 results_processing:
-  # Derive metrics.csv from the same extract module the search uses, so the
-  # analysis notebooks have per-config metrics (the sim writes only trajectory.csv).
+  # Derive per-run metrics.csv from the raw trajectory.csv the sim writes, via a
+  # local-file postprocessing plugin (the same one the search uses), so the
+  # analysis notebooks have per-run metrics.
   postprocessing:
-  - extract_to_csv:
-      plugin: ./search/extract.py:QuadExtract
+  - search/metrics.py:QuadMetrics       # per-run metrics.csv (analysis + extract)
+  - analysis/render.py:DescentVideo     # per-run descent.gif for the run notebook
 evaluation:
   visualization:
   - Analysis:

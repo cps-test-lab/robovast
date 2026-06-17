@@ -17,7 +17,7 @@
 """Optuna single-objective search (TPE by default).
 
 Sample-efficiently drives toward the single best (e.g. most failure-prone)
-parameter set. Uses Optuna's ask/tell: each generation asks ``per_step`` trials,
+parameter set. Uses Optuna's ask/tell: each batch asks ``per_batch`` trials,
 mapping the typed ``search_space`` directly to ``trial.suggest_*`` (no codec
 needed). Optuna is imported lazily; install the ``optuna`` extra to use it.
 Multi-objective (NSGA-II) is a future addition (the objectives list already
@@ -41,7 +41,7 @@ class OptunaParams(BaseModel):
     """``strategy_parameters`` schema for the Optuna strategy."""
     model_config = ConfigDict(extra='forbid')
     sampler: Literal['tpe', 'cmaes', 'random'] = 'tpe'
-    constant_liar: bool = True          # better batched (per-generation) asks for TPE
+    constant_liar: bool = True          # better batched (per-batch) asks for TPE
     n_startup_trials: Optional[int] = None
 
 
@@ -84,8 +84,8 @@ class OptunaStrategy(SearchStrategy):
 
         self._study = optuna.create_study(direction=spec.direction, sampler=sampler)
         self._objective_name = spec.name
-        self._generations_done = 0
-        self._trials: dict[str, object] = {}     # ParamSet.id -> Trial (current generation)
+        self._batches_done = 0
+        self._trials: dict[str, object] = {}     # ParamSet.id -> Trial (current batch)
         self._history: list[Evaluation] = []
 
     def ask(self, n: int) -> list[ParamSet]:
@@ -108,15 +108,15 @@ class OptunaStrategy(SearchStrategy):
                 continue
             self._study.tell(trial, float(ev.objectives[self._objective_name]))
         self._history.extend(evaluations)
-        self._generations_done += 1
+        self._batches_done += 1
 
     def is_done(self) -> bool:
-        return self._generations_done >= self.cfg.budget.generations
+        return self._batches_done >= self.cfg.budget.batches
 
     def report(self) -> SearchReport:
         ranked = sorted(self._history, key=self.objective_value, reverse=True)
         best = ranked[0] if ranked else None
-        extra = {"generations": self._generations_done, "n_trials": len(self._history)}
+        extra = {"batches": self._batches_done, "n_trials": len(self._history)}
         if self._study.best_trials:
             bt = self._study.best_trials[0]
             extra["optuna_best"] = {"value": bt.value, "params": bt.params}

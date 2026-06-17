@@ -39,6 +39,13 @@ from .widgets.local_execution_widget import LocalExecutionWidget
 from .widgets.log_viewer_widget import LogViewerWidget
 from .widgets.worker_thread import LatestOnlyWorker
 
+# Per-tree-item data roles. Qt.UserRole holds the node's filesystem path and
+# Qt.UserRole+1 its run status; the node's RunType and (for batch nodes) the
+# batch index are stored on the item itself — the flat layout makes batch and
+# campaign nodes share the same path, so the level can't be keyed by path.
+_RUN_TYPE_ROLE = Qt.UserRole + 2
+_BATCH_IDX_ROLE = Qt.UserRole + 3
+
 
 class RunResultsAnalyzer(QMainWindow):
     def __init__(self, base_dir=None, override_vast=None):
@@ -53,10 +60,9 @@ class RunResultsAnalyzer(QMainWindow):
         # Discover campaigns from every campaign.sqlite under base_dir.
         # self.campaign_notebooks maps campaign_name -> {"workloads": [...], "config_file": str|None}
         # self._campaign_index maps campaign_name -> full store-derived structure
-        # (mode, config_dir, generations -> units) used to build the tree.
+        # (mode, config_dir, batches -> units) used to build the tree.
         self.campaign_notebooks = {}
         self._campaign_index = {}
-        self._node_types = {}  # path str -> RunType, set while populating the tree
         self._current_campaign = None  # name of the campaign currently shown in the UI
 
         if base_dir:
@@ -175,14 +181,14 @@ class RunResultsAnalyzer(QMainWindow):
         return result
 
     def _read_campaign_store(self, campaign_dir, store_path):
-        """Read one campaign store into a plain dict (mode, config, generations)."""
+        """Read one campaign store into a plain dict (mode, config, batches)."""
         with CampaignStore(store_path) as store:
             campaigns = store.list_campaigns()
             if not campaigns:
                 raise ValueError("empty campaign store")
             row = campaigns[0]
-            generations = []
-            for gen in store.generations(row["id"]):
+            batches = []
+            for b in store.batches(row["id"]):
                 units = [
                     {
                         "config_name": u["config_name"],
@@ -191,9 +197,9 @@ class RunResultsAnalyzer(QMainWindow):
                         "objective": u["objective"],
                         "result_dir": u["result_dir"],
                     }
-                    for u in store.units(gen["id"])
+                    for u in store.units(b["id"])
                 ]
-                generations.append({"idx": gen["idx"], "dir": gen["dir"], "units": units})
+                batches.append({"idx": b["idx"], "dir": b["dir"], "units": units})
         config_json = json.loads(row["config_json"]) if row["config_json"] else {}
         config_dir = row["config_dir"] or str(campaign_dir / "_config")
         # The vast for the local-execution widget: the copy in config_dir if any.
@@ -205,7 +211,7 @@ class RunResultsAnalyzer(QMainWindow):
             "config_dir": config_dir,
             "config_json": config_json,
             "config_file": str(vast_files[0]) if vast_files else None,
-            "generations": generations,
+            "batches": batches,
         }
 
     def _build_workloads(self, eval_block, nb_base, campaign_name):
@@ -223,7 +229,7 @@ class RunResultsAnalyzer(QMainWindow):
                         return os.path.join(nb_base, val) if val and nb_base else None
                     workloads.append(JupyterNotebookRunner(
                         name, run_nb=_nb("run"), config_nb=_nb("config"),
-                        campaign_nb=_nb("campaign")))
+                        campaign_nb=_nb("campaign"), batch_nb=_nb("batch")))
                 except Exception as e:  # pylint: disable=broad-except
                     print(f"Warning: could not add notebook workload '{name}' "
                           f"for {campaign_name}: {e}")
@@ -400,7 +406,7 @@ class RunResultsAnalyzer(QMainWindow):
             return
 
         directory_path = Path(item_path)
-        run_type = self.get_run_type(directory_path) if directory_path.is_dir() else None
+        run_type = self._item_run_type(item)
 
         # Create context menu
         menu = QMenu(self)
@@ -447,13 +453,14 @@ class RunResultsAnalyzer(QMainWindow):
             vast_flag = f" -V {vast_file}" if vast_file else ""
             clipboard.setText(f"vast{vast_flag} exec local run -c {config_name}")
         elif action == open_notebook_action:
-            self.open_notebook_in_vscode(directory_path)
+            self.open_notebook_in_vscode(directory_path, run_type)
 
-    def open_notebook_in_vscode(self, directory_path):
+    def open_notebook_in_vscode(self, directory_path, run_type=None):
         """Open the corresponding Jupyter notebook in VS Code"""
 
-        # Determine the run type
-        run_type = self.get_run_type(directory_path)
+        # Level is taken from the clicked item; fall back to the path-based guess.
+        if run_type is None:
+            run_type = self.get_run_type(directory_path)
         if run_type is None:
             self.status_label.setText("No notebook found for this directory")
             QTimer.singleShot(2000, lambda: self.status_label.setText("Ready"))
@@ -468,6 +475,9 @@ class RunResultsAnalyzer(QMainWindow):
                 break
             elif run_type == RunType.CONFIG and workload.config_nb:
                 notebook_path = workload.config_nb
+                break
+            elif run_type == RunType.BATCH and workload.batch_nb:
+                notebook_path = workload.batch_nb
                 break
             elif run_type == RunType.CAMPAIGN and workload.campaign_nb:
                 notebook_path = workload.campaign_nb
@@ -599,19 +609,19 @@ class RunResultsAnalyzer(QMainWindow):
         """Populate the tree from the campaign stores (store-driven, no FS-walk).
 
         Structure comes entirely from ``self._campaign_index`` (campaign ->
-        [generation, search only] -> config/unit); only the run-level leaves are
+        [batch, search only] -> config/unit); only the run-level leaves are
         enumerated from disk, via each unit's recorded ``result_dir``. Each node's
-        :class:`RunType` is recorded in ``self._node_types`` so selection no longer
-        needs to guess the level from tree depth.
+        :class:`RunType` (and the batch index, for batch nodes) is stored on the
+        item, so selection resolves the level from the clicked node — not from its
+        path, which the flat layout shares between the campaign and batch nodes.
         """
-        self._node_types = {}
         try:
             for name in sorted(self._campaign_index.keys(), reverse=True):
                 entry = self._campaign_index[name]
                 campaign_path = entry["root"]
                 campaign_item = QTreeWidgetItem(parent_item)
                 campaign_item.setData(0, Qt.UserRole, campaign_path)
-                self._node_types[campaign_path] = RunType.CAMPAIGN
+                campaign_item.setData(0, _RUN_TYPE_ROLE, RunType.CAMPAIGN)
                 stats = self._campaign_stats(entry)
                 display_text = name
                 if stats["total"] > 0:
@@ -621,20 +631,21 @@ class RunResultsAnalyzer(QMainWindow):
                 campaign_item.setText(0, display_text)
 
                 is_search = entry["mode"] == "search"
-                for gen in entry["generations"]:
+                for batch in entry["batches"]:
                     container = campaign_item
                     if is_search:
-                        gen_path = gen["dir"] or campaign_path
-                        gen_item = QTreeWidgetItem(campaign_item)
-                        gen_item.setData(0, Qt.UserRole, gen_path)
-                        self._node_types[gen_path] = RunType.GENERATION
-                        gen_item.setText(0, f"generation-{gen['idx']}")
-                        container = gen_item
-                    for unit in gen["units"]:
+                        batch_path = batch["dir"] or campaign_path
+                        batch_item = QTreeWidgetItem(campaign_item)
+                        batch_item.setData(0, Qt.UserRole, batch_path)
+                        batch_item.setData(0, _RUN_TYPE_ROLE, RunType.BATCH)
+                        batch_item.setData(0, _BATCH_IDX_ROLE, batch["idx"])
+                        batch_item.setText(0, f"batch-{batch['idx']}")
+                        container = batch_item
+                    for unit in batch["units"]:
                         result_dir = unit["result_dir"]
                         config_item = QTreeWidgetItem(container)
                         config_item.setData(0, Qt.UserRole, result_dir)
-                        self._node_types[result_dir] = RunType.CONFIG
+                        config_item.setData(0, _RUN_TYPE_ROLE, RunType.CONFIG)
                         label = unit["config_name"]
                         if unit.get("objective") is not None:
                             label = f"{label}  [{unit['objective']:.4g}]"
@@ -661,7 +672,7 @@ class RunResultsAnalyzer(QMainWindow):
         """Add one run leaf under a config node, colored by its status."""
         tree_item = QTreeWidgetItem(config_item)
         tree_item.setData(0, Qt.UserRole, str(run_dir))
-        self._node_types[str(run_dir)] = RunType.RUN
+        tree_item.setData(0, _RUN_TYPE_ROLE, RunType.RUN)
         run_number = run_dir.name
         display_text = run_number
         if self.is_run_directory(run_dir):
@@ -690,29 +701,30 @@ class RunResultsAnalyzer(QMainWindow):
     def _campaign_stats(entry):
         """Count a campaign's units by aggregate status (config-level)."""
         stats = {"passed": 0, "failed": 0, "mixed": 0, "total": 0}
-        for gen in entry["generations"]:
-            for unit in gen["units"]:
+        for batch in entry["batches"]:
+            for unit in batch["units"]:
                 stats["total"] += 1
                 status = unit["status"]
                 if status in ("passed", "failed", "mixed"):
                     stats[status] += 1
         return stats
 
-    def get_run_type(self, data_path):
-        """Analysis level for a tree node, from the store-built node-type map.
+    @staticmethod
+    def _item_run_type(item):
+        """The :class:`RunType` stored on a tree item (None if absent)."""
+        return item.data(0, _RUN_TYPE_ROLE) if item is not None else None
 
-        Falls back to a run-level check (a ``test.xml`` directly present) so a
-        stale path still resolves sensibly.
+    def get_run_type(self, data_path):
+        """Fallback run-level check from a path (a ``test.xml`` directly present).
+
+        Node levels are read from the item via :meth:`_item_run_type`; this is only
+        a fallback for callers that have a path but no item.
         """
-        node_type = self._node_types.get(str(data_path))
-        if node_type is not None:
-            return node_type
         try:
             if os.path.exists(Path(data_path) / "test.xml"):
                 return RunType.RUN
         except Exception:
             return None
-
         return None
 
     def on_tree_selection_changed(self):
@@ -748,10 +760,22 @@ class RunResultsAnalyzer(QMainWindow):
             widget.clear_output()
             widget.show_execution_no_progress("Waiting for data...")
 
-        # Add task to worker (this will discard any pending tasks)
-        self.worker.add_task(data=directory_path, run_type=self.get_run_type(directory_path))
+        # Level comes from the clicked item (campaign and batch nodes share a path).
+        # Note RunType.RUN == 0 is falsy, so compare against None explicitly.
+        run_type = self._item_run_type(current_item)
+        if run_type is None:
+            run_type = self.get_run_type(directory_path)
 
-        run_type = self.get_run_type(directory_path)
+        # For a batch node, tell the notebook which batch it is (configs are flat
+        # under the campaign root, so DATA_DIR alone can't identify the batch).
+        inject = None
+        if run_type == RunType.BATCH:
+            batch_idx = current_item.data(0, _BATCH_IDX_ROLE)
+            if batch_idx is not None:
+                inject = {"BATCH": batch_idx}
+
+        # Add task to worker (this will discard any pending tasks)
+        self.worker.add_task(data=directory_path, run_type=run_type, inject=inject)
 
         # Update local execution widget
         self.local_execution_widget.setDisabled(run_type != RunType.RUN)

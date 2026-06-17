@@ -170,8 +170,8 @@ Job Directory
 
 ``_jobs/job-N/`` holds the artifacts of one *job* — the unit of dispatch (one
 Kubernetes Job, or one local ``docker compose`` run). With the default
-``configs_per_job: 1`` there is one job per run; with ``configs_per_job > 1``
-several configurations share a job (and therefore share these artifacts). Each
+``runs_per_job: 1`` there is one job per run; with ``runs_per_job > 1``
+several runs share a job (and therefore share these artifacts). Each
 run links to its job via ``<run>/job`` (e.g. ``<run>/job/sysinfo.yaml``).
 
 .. code-block:: text

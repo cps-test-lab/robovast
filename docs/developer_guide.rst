@@ -186,7 +186,7 @@ Afterwards you can start the GUI:
        vast evaluation index --force    # rebuild even if up to date
 
    The store also carries the campaign **mode** (``batch``/``search``), so the
-   GUI renders the search ``generation`` level and resolves the
+   GUI renders the search ``batch`` level and resolves the
    ``evaluation.visualization`` notebooks from the recorded ``config_dir``. See
    :ref:`campaign-store` for the schema and internals.
 
@@ -640,7 +640,7 @@ parsed object as ``params``:
            ...
 
        def tell(self, evaluations) -> None:
-           """Ingest the evaluations of the generation just run."""
+           """Ingest the evaluations of the batch just run."""
            ...
 
        def is_done(self) -> bool:
@@ -711,9 +711,13 @@ or load from a local file with ``extract.plugin: ./search/extract.py:MyExtract``
    [tool.poetry.plugins."robovast.extractors"]
    my_extract = "your_package.extractors:MyExtract"
 
-The built-in ``extract_to_csv`` postprocessing command runs an extractor over a
-batch campaign and writes its objectives+measures to a per-config CSV, so the
-*same* extractor can feed both the search loop and the analysis notebooks.
+The extractor **reads** what a postprocessing plugin produced (e.g. per-run
+``metrics.csv``) — it no longer computes raw metrics itself. Pair it with a
+postprocessing plugin (below) that writes ``metrics.csv`` from raw artifacts:
+list that plugin in ``search.postprocessing`` (run before extract) and/or in
+``results_processing.postprocessing`` (analysis), so search and the analysis
+notebooks read the same metrics. Postprocessing plugins load identically in both
+lists — by entry-point name or a local ``./path.py:Class`` file reference.
 
 
 .. _campaign-store:
@@ -726,19 +730,23 @@ Every campaign — batch or search — is described by a single sqlite store,
 root of the campaign directory. It is the **single source of truth** the results
 GUI reads, and the seam an in-cluster controller or web UI can later read/stream.
 
+A campaign runs one or more **batches**: a batch-mode campaign (no ``search:``
+block) has exactly one batch of the enumerated configs; a search campaign has one
+batch per ask/tell round.
+
 Schema
 ^^^^^^
 
 ``robovast.common.store.CampaignStore`` is a thin wrapper over three tables::
 
-    campaign (1) --< generation (1) --< unit (one per param set / config)
+    campaign (1) --< batch (1) --< unit (one per param set / config)
 
 * **campaign** — ``mode`` (``batch``/``search``), ``config_dir`` (base directory
   against which ``evaluation.visualization`` notebooks resolve), ``config_json``
   (the full config), and an opaque ``strategy_state`` blob for resumable
   strategies.
-* **generation** — one ask/tell round (search), or a single synthetic generation
-  (``idx=0``) for a batch campaign.
+* **batch** — one ask/tell round (search), or the single batch (``idx=0``) of a
+  batch-mode campaign.
 * **unit** — one evaluated parameter set (search) or one configuration (batch):
   the sampled ``params``, ``objectives``/``measures`` (JSON; ``{}`` for batch),
   ``n_samples``, an aggregate ``status`` and the ``result_dir``.
@@ -746,24 +754,27 @@ Schema
 Who writes it
 ^^^^^^^^^^^^^
 
-* **Search** — the loop (``robovast.search.loop``) writes the store *live* as each
-  generation is evaluated, so progress is queryable while a search runs.
-* **Batch** — local batch creates its campaign directory inside the generated run
-  script (Python ``os.execv``\ s away), so the store cannot be written live.
-  Instead ``robovast.common.campaign_index.build_campaign_store(campaign_dir)``
-  scans the finished results tree post-hoc (reusing the ``campaign_data`` readers)
-  and writes the same schema. It is idempotent (mtime-guarded; ``force=True`` to
-  rebuild) and is invoked by ``vast evaluation index`` and automatically on
-  ``vast evaluation gui`` launch. Search stores are never clobbered by the
-  indexer.
+* **The controller** (``robovast.execution.controller.CampaignController``) writes
+  the store *live* for both modes as each batch is evaluated, so progress is
+  queryable while a campaign runs. It owns the campaign id, the flat results
+  layout (``<campaign>/<config>/<run>/``) and the batch loop; an
+  :class:`~robovast.execution.backends.ExecutionBackend` (``DockerBackend``
+  locally) only dispatches one batch's jobs.
+* **The post-hoc indexer** ``robovast.common.campaign_index.build_campaign_store(campaign_dir)``
+  reconstructs the same store by scanning a finished results tree (reusing the
+  ``campaign_data`` readers). It is used for campaign dirs not produced by the
+  controller — e.g. cluster results downloaded from S3 — and is idempotent
+  (mtime-guarded; ``force=True`` to rebuild), invoked by ``vast evaluation index``
+  and automatically on ``vast evaluation gui`` launch. Controller-written stores
+  are left untouched.
 
 Store-driven GUI
 ^^^^^^^^^^^^^^^^^
 
 The results GUI (``RunResultsAnalyzer``) discovers campaigns by scanning
 ``<results_dir>/*/campaign.sqlite`` — there is no filesystem-walk or depth-based
-heuristic. It reads the campaign/generation/unit rows to build the tree
-(campaign → *generation*, search only → config), resolves notebook workloads from
+heuristic. It reads the campaign/batch/unit rows to build the tree
+(campaign → *batch*, search only → config), resolves notebook workloads from
 ``config_json`` against ``config_dir``, and enumerates only the run-level leaves
 from each unit's ``result_dir``.
 

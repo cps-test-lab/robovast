@@ -53,8 +53,8 @@ def test_read_campaign_store_and_workloads(tmp_path):
     entry = R._read_campaign_store(None, campaign, campaign / STORE_FILENAME)
     assert entry["mode"] == "batch"
     assert entry["config_file"].endswith("q.vast")
-    assert len(entry["generations"]) == 1
-    units = entry["generations"][0]["units"]
+    assert len(entry["batches"]) == 1
+    units = entry["batches"][0]["units"]
     assert [(u["config_name"], u["status"], u["n_samples"]) for u in units] == [("ca", "passed", 2)]
 
     workloads = R._build_workloads(

@@ -21,13 +21,14 @@ and the schema is the seam an in-cluster controller / web UI can later read. It
 is the single source of truth the results GUI reads. The schema is intentionally
 simple:
 
-    campaign (1) --< generation (1) --< unit (one per param set / config)
+    campaign (1) --< batch (1) --< unit (one per param set / config)
 
-``campaign.mode`` is ``'search'`` or ``'batch'``; ``campaign.config_dir`` is the
-base directory against which ``evaluation.visualization`` notebooks (carried in
-``config_json``) resolve. Batch campaigns use a single synthetic generation
-(``idx=0``) with one unit per configuration; search campaigns use one generation
-per ask/tell round with one unit per evaluated parameter set.
+A campaign runs one or more *batches*. ``campaign.mode`` is ``'search'`` or
+``'batch'``; ``campaign.config_dir`` is the base directory against which
+``evaluation.visualization`` notebooks (carried in ``config_json``) resolve.
+Batch-mode campaigns have a single batch (``idx=0``) with one unit per
+configuration; search campaigns have one batch per ask/tell round with one unit
+per evaluated parameter set.
 
 ``unit`` holds the sampled params (JSON), the objective(s)/measures (JSON), a
 status and the result path. ``campaign.strategy_state`` carries an opaque blob so
@@ -60,7 +61,7 @@ CREATE TABLE IF NOT EXISTS campaign (
     created_at    REAL,
     strategy_state BLOB
 );
-CREATE TABLE IF NOT EXISTS generation (
+CREATE TABLE IF NOT EXISTS batch (
     id          INTEGER PRIMARY KEY,
     campaign_id INTEGER NOT NULL REFERENCES campaign(id),
     idx         INTEGER NOT NULL,
@@ -69,7 +70,7 @@ CREATE TABLE IF NOT EXISTS generation (
 );
 CREATE TABLE IF NOT EXISTS unit (
     id            INTEGER PRIMARY KEY,
-    generation_id INTEGER NOT NULL REFERENCES generation(id),
+    batch_id      INTEGER NOT NULL REFERENCES batch(id),
     paramset_id   TEXT NOT NULL,
     config_name   TEXT,
     params_json   TEXT,
@@ -114,17 +115,17 @@ class CampaignStore:
         self._conn.commit()
         return cur.lastrowid
 
-    def open_generation(self, campaign_id: int, idx: int, gen_dir: str) -> int:
+    def open_batch(self, campaign_id: int, idx: int, batch_dir: str) -> int:
         cur = self._conn.execute(
-            "INSERT INTO generation (campaign_id, idx, dir, created_at) VALUES (?, ?, ?, ?)",
-            (campaign_id, idx, gen_dir, time.time()),
+            "INSERT INTO batch (campaign_id, idx, dir, created_at) VALUES (?, ?, ?, ?)",
+            (campaign_id, idx, batch_dir, time.time()),
         )
         self._conn.commit()
         return cur.lastrowid
 
     def record_unit(
         self,
-        generation_id: int,
+        batch_id: int,
         paramset_id: str,
         config_name: str,
         params: dict,
@@ -138,11 +139,11 @@ class CampaignStore:
         # single-objective case; keep the full dict in JSON regardless.
         objective_scalar = next(iter(objectives.values())) if len(objectives) == 1 else None
         self._conn.execute(
-            "INSERT INTO unit (generation_id, paramset_id, config_name, params_json, "
+            "INSERT INTO unit (batch_id, paramset_id, config_name, params_json, "
             "objective, objectives_json, measures_json, n_samples, status, result_dir, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                generation_id, paramset_id, config_name,
+                batch_id, paramset_id, config_name,
                 json.dumps(params, default=str),
                 objective_scalar,
                 json.dumps(objectives, default=str),
@@ -173,14 +174,14 @@ class CampaignStore:
             "SELECT * FROM campaign ORDER BY created_at DESC"
         ).fetchall())
 
-    def generations(self, campaign_id: int) -> list[sqlite3.Row]:
-        """Generations of a campaign, in ask/tell order (idx ascending)."""
+    def batches(self, campaign_id: int) -> list[sqlite3.Row]:
+        """Batches of a campaign, in execution order (idx ascending)."""
         return list(self._conn.execute(
-            "SELECT * FROM generation WHERE campaign_id = ? ORDER BY idx", (campaign_id,)
+            "SELECT * FROM batch WHERE campaign_id = ? ORDER BY idx", (campaign_id,)
         ).fetchall())
 
-    def units(self, generation_id: int) -> list[sqlite3.Row]:
-        """Units (param sets / configs) of a generation, in insertion order."""
+    def units(self, batch_id: int) -> list[sqlite3.Row]:
+        """Units (param sets / configs) of a batch, in insertion order."""
         return list(self._conn.execute(
-            "SELECT * FROM unit WHERE generation_id = ? ORDER BY id", (generation_id,)
+            "SELECT * FROM unit WHERE batch_id = ? ORDER BY id", (batch_id,)
         ).fetchall())

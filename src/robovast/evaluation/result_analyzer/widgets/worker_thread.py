@@ -47,7 +47,7 @@ class CancellableWorkload(ABC):
         self.cancel_event.clear()
 
     @abstractmethod
-    def run(self, data_path, run_type):
+    def run(self, data_path, run_type, inject=None):
         """Perform the actual calculation. Must check is_cancelled() regularly!"""
 
 
@@ -71,7 +71,7 @@ class LatestOnlyWorker(QObject):
         else:
             self._workloads = [workloads]
 
-    def add_task(self, data, run_type):
+    def add_task(self, data, run_type, inject=None):
         """Add a new task, clearing any pending tasks and cancelling current workload set"""
         # Cancel all currently running calculations immediately
         for workload in self._workloads:
@@ -95,6 +95,7 @@ class LatestOnlyWorker(QObject):
         task_item = {
             'data': data,
             'run_type': run_type,
+            'inject': inject,
             'task_id': task_id,
             'timestamp': time.time()
         }
@@ -155,7 +156,9 @@ class LatestOnlyWorker(QObject):
                         try:
                             print(f"Starting workload: {workload.name}")
                             start_time = time.time()
-                            result, data = workload.run(latest_task['data'], latest_task['run_type'])
+                            result, data = workload.run(
+                                latest_task['data'], latest_task['run_type'],
+                                inject=latest_task.get('inject'))
                             end_time = time.time()
                             duration = end_time - start_time
 

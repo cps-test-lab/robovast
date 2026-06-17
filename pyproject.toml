@@ -96,7 +96,6 @@ failure_rate = "robovast.search.extractors.failure_rate:FailureRate"
 [tool.poetry.plugins."robovast.postprocessing_commands"]
 command = "robovast.results_processing.postprocessing_plugins:Command"
 rosbags_process = "robovast.results_processing.postprocessing_plugins:RosbagsProcess"
-extract_to_csv = "robovast.results_processing.extract_plugins:ExtractToCsv"
 
 [tool.poetry.plugins."robovast.publication_plugins"]
 zip = "robovast.results_processing.publication_plugins.zip:Zip"

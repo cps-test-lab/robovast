@@ -18,11 +18,11 @@ from robovast.search.types import Evaluation
 
 
 def _cfg(strategy, search_space, objectives, strategy_parameters=None,
-         generations=4, per_step=8):
+         batches=4, per_batch=8):
     return SearchConfig(
         strategy=strategy, search_space=search_space,
         extract={"plugin": "failure_rate"}, objectives=objectives,
-        per_step=per_step, budget={"generations": generations}, seed=0,
+        per_batch=per_batch, budget={"batches": batches}, seed=0,
         strategy_parameters=strategy_parameters or {},
     )
 
@@ -37,7 +37,7 @@ QUAD_SPACE = {
 def _drive(strategy, gens, value_fn, measure_fn=None):
     rng = random.Random(0)
     for _ in range(gens):
-        ps = strategy.ask(strategy.cfg.per_step)
+        ps = strategy.ask(strategy.cfg.per_batch)
         evs = []
         for p in ps:
             measures = measure_fn(p, rng) if measure_fn else {}
@@ -96,7 +96,7 @@ def test_qd_grid_archive():
 def test_optuna_tpe_improves_toward_optimum():
     pytest.importorskip("optuna")
     cfg = _cfg("optuna", QUAD_SPACE, [{"name": "obj", "direction": "maximize"}],
-               strategy_parameters={"sampler": "tpe"}, generations=5)
+               strategy_parameters={"sampler": "tpe"}, batches=5)
     s = build_strategy(cfg)
     # objective rewards high thrust; TPE should push the best thrust up.
     _drive(s, 5, lambda p, r: p.values["thrust"] / 3.0 + r.random() * 0.02)
@@ -128,7 +128,7 @@ def test_file_extractor_via_evaluator(tmp_path):
         strategy="random", search_space={"x": {"type": "float", "low": 0, "high": 1}},
         extract={"plugin": "myext.py:E"},
         objectives=[{"name": "obj", "direction": "maximize"}],
-        per_step=1, budget={"generations": 1}, seed=0)
+        per_batch=1, budget={"batches": 1}, seed=0)
     from robovast.search.types import ParamSet
     config_dir = tmp_path / "c0"
     (config_dir / "0").mkdir(parents=True)

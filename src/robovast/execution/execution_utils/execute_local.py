@@ -159,7 +159,7 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
 DOCKER_IMAGE="ghcr.io/cps-test-lab/robovast:latest"
 USE_GUI=true
 START_ONLY=false
-RUN_ID="CAMPAIGN_NAME_PLACEHOLDER-$(date +%Y-%m-%d-%H%M%S%N | cut -c1-19)"
+CAMPAIGN_ID="CAMPAIGN_NAME_PLACEHOLDER-$(date +%Y-%m-%d-%H%M%S%N | cut -c1-19)"
 RESULTS_DIR=
 
 # Variables to track cleanup and interrupt state
@@ -237,7 +237,8 @@ Run the robovast Docker containers.
 OPTIONS:
     --image IMAGE       Use a custom Docker image (default: ghcr.io/cps-test-lab/robovast:latest)
     --no-gui            Disable host GUI support
-    --results-dir DIR   Override the results output directory
+    --results-dir DIR   Override the results parent dir (a campaign-id subdir is created under it)
+    --campaign-dir DIR  Use DIR verbatim as the campaign root (no campaign-id subdir; used by the controller)
     --start-only        Start the robovast container with a shell, skipping the entrypoint script
     --abort-on-failure  Stop execution after the first failed run config
     --log-tree, -t      Pass --live-tree to scenario execution
@@ -283,7 +284,16 @@ while [ $# -gt 0 ]; do
                 exit 1
             fi
             echo "Overriding results directory to: $2"
-            RESULTS_DIR="$2/${RUN_ID}"
+            RESULTS_DIR="$2/${CAMPAIGN_ID}"
+            shift 2
+            ;;
+        --campaign-dir)
+            if [[ "$2" != /* ]]; then
+                echo "Error: --campaign-dir must be an absolute path (starting with /)"
+                exit 1
+            fi
+            echo "Using campaign directory: $2"
+            RESULTS_DIR="$2"
             shift 2
             ;;
         *)
@@ -368,6 +378,7 @@ def _build_packed_compose_yaml(
     skip_resource_allocation=True,
     scenario_execution_params='',
     scenario_file_name='scenario.osc',
+    job_prefix='',
 ):
     """Build docker-compose YAML for one job.
 
@@ -412,11 +423,14 @@ def _build_packed_compose_yaml(
     # /out is the campaign root; per-config results go to /out/<config>/<run> via
     # each document's _output_dir (SCENARIO_OUTPUT_DIR), while this job's job-level
     # artifacts (sysinfo, resource monitor, logs) go to a per-job subdir so they
-    # don't collide across jobs.
+    # don't collide across jobs. ``job_prefix`` (e.g. "batch-3") namespaces those
+    # job dirs so multiple batches sharing one campaign root don't collide.
+    job_artifact_dir = f"/out/_jobs/{job_prefix}/job-{job.index}" if job_prefix \
+        else f"/out/_jobs/job-{job.index}"
     packed_env_lines = [
         "      - SCENARIO_PARAMETER_FILE=/config/scenario.params.yaml",
         "      - OUTPUT_RESULT_PER_SCENARIO=true",
-        f"      - OUTPUT_DIR=/out/_jobs/job-{job.index}",
+        f"      - OUTPUT_DIR={job_artifact_dir}",
         "      - SCENARIO_OUTPUT_DIR=/out",
     ]
 
@@ -634,7 +648,8 @@ def _emit_compose_step(compose_file, compose_yaml, idx, total, label, has_second
 
 def generate_compose_run_script(runs, campaign_data, config_path_result, pre_command, post_command,
                                 docker_image, results_dir, output_script_path,
-                                skip_resource_allocation=False, log_tree=False, debug=False):
+                                skip_resource_allocation=False, log_tree=False, debug=False,
+                                job_prefix=''):
     """Generate a shell script to run Docker Compose stacks sequentially.
 
     Args:
@@ -680,7 +695,7 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
         (campaign_data.get('metadata') or {}).get('name', 'campaign'), 1
     ).replace(
         'RESULTS_DIR=',
-        f'RESULTS_DIR="{results_dir}/${{RUN_ID}}"', 1
+        f'RESULTS_DIR="{results_dir}/${{CAMPAIGN_ID}}"', 1
     ).replace(
         '@@COMPAT_VERSION@@', str(COMPAT_VERSION),
     )
@@ -734,7 +749,7 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
 
     has_secondaries = bool(normalized_secondary)
 
-    # Every run goes through the job mechanism: configs_per_job=1 yields one job
+    # Every run goes through the job mechanism: runs_per_job=1 yields one job
     # per (config, run), >1 packs several configs per job. Both produce the same
     # layout — results in <config>/<run>/ and job artifacts in _jobs/job-N/ with
     # a <config>/<run>/job symlink.
@@ -775,13 +790,15 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
             skip_resource_allocation=skip_resource_allocation,
             scenario_execution_params=scenario_execution_params,
             scenario_file_name=scenario_file_name,
+            job_prefix=job_prefix,
         )
         # Create this job's artifact links right after it finishes (injected
         # after the compose `down`, before the step's summary/exit), so a
         # Ctrl+C only loses the links for the job active at cancel time.
-        # Each <config>/<run>/job points at this job's _jobs/job-N dir.
+        # Each <config>/<run>/job points at this job's _jobs[/<prefix>]/job-N dir.
+        job_rel = f"_jobs/{job_prefix}/job-{job.index}" if job_prefix else f"_jobs/job-{job.index}"
         link_cmds = "".join(
-            f'ln -sfn "../../_jobs/job-{job.index}" '
+            f'ln -sfn "{os.path.relpath("/" + job_rel, "/" + os.path.join(it.config_name, str(it.run_number)))}" '
             f'"{os.path.join("${RESULTS_DIR}", it.config_name, str(it.run_number))}/job"\n'
             for it in job.items
         )

@@ -137,13 +137,13 @@ def build_work_items(configs: list[dict], runs: int) -> list[WorkItem]:
 def select_packer(execution_cfg: dict) -> Packer:
     """Select a packer from an execution config dict.
 
-    ``configs_per_job`` (default 1) drives the choice: 1 selects
-    :class:`OnePerJob` (one config per job — the historical behaviour); a value
+    ``runs_per_job`` (default 1) drives the choice: 1 selects
+    :class:`OnePerJob` (one run per job — the historical behaviour); a value
     >1 selects :class:`FixedK`.
     """
-    k = int(execution_cfg.get("configs_per_job") or 1)
+    k = int(execution_cfg.get("runs_per_job") or 1)
     if k < 1:
-        raise ValueError(f"execution.configs_per_job must be >= 1, got {k}")
+        raise ValueError(f"execution.runs_per_job must be >= 1, got {k}")
     return FixedK(k) if k > 1 else OnePerJob()
 
 

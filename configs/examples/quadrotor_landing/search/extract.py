@@ -2,62 +2,52 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Quadrotor search extract — the one SUT-specific scoring module.
+"""Quadrotor search extract — selects the values the search optimizes.
 
-Referenced from the ``.vast`` as ``./search/extract.py:QuadExtract``. Derives,
-per parameter set, the search **objective** and **measures** from the raw
-``trajectory.csv`` the sim writes (and ``test.xml`` for pass/fail), aggregated
-over the config's runs. No ``metrics.csv`` is produced by the sim — this is the
-single place those values are computed, reused for both search and (via
-``extract_to_csv``) the analysis notebooks.
+Referenced from the ``.vast`` as ``./search/extract.py:QuadExtract``. Reads the
+per-run ``metrics.csv`` produced by the ``QuadMetrics`` postprocessing plugin
+(``./search/metrics.py``) plus ``test.xml`` for pass/fail, and aggregates over a
+config's runs into the search **objective** (``failure_rate``) and **measures**
+(the mean of the metric columns). Metric *computation* lives in QuadMetrics; this
+just reads, aggregates, and names — so search and the analysis notebooks share
+one source of truth (``metrics.csv``).
 
 Parameterizable from the ``.vast`` (``extract.params``):
-    trajectory   filename to read (default ``trajectory.csv``)
+    metrics   per-run CSV filename to read (default ``metrics.csv``)
 """
 
 import csv
 from pathlib import Path
 
 from robovast.common.campaign_data import read_test_result
-from robovast.search.extractor import Extractor, ExtractResult, completed_run_dirs
+from robovast.search.extractor import (Extractor, ExtractResult,
+                                       completed_run_dirs)
 
 
-def _measures_for_run(run_dir: Path, trajectory: str) -> dict | None:
-    path = run_dir / trajectory
+def _metrics_row(run_dir: Path, metrics_file: str) -> dict | None:
+    path = run_dir / metrics_file
     if not path.exists():
         return None
-    ts, xs, vzs, tilts = [], [], [], []
     with open(path, newline="") as f:
-        for row in csv.DictReader(f):
-            ts.append(float(row["t"]))
-            xs.append(float(row["x"]))
-            vzs.append(float(row["vz"]))
-            tilts.append(abs(float(row["tilt"])))
-    if not ts:
+        rows = list(csv.DictReader(f))
+    if not rows:
         return None
-    # Integrate |tilt| over time for control effort.
-    effort = sum(abs(tilts[i]) * (ts[i] - ts[i - 1]) for i in range(1, len(ts)))
-    return {
-        "max_tilt": max(tilts),
-        "drift_dist": abs(xs[-1]),
-        "landing_speed": abs(vzs[-1]),
-        "control_effort": effort,
-    }
+    return {k: float(v) for k, v in rows[0].items()}
 
 
 class QuadExtract(Extractor):
     def extract(self, config_dir: Path) -> ExtractResult:
-        trajectory = self.params.get("trajectory", "trajectory.csv")
+        metrics_file = self.params.get("metrics", "metrics.csv")
         runs = completed_run_dirs(config_dir)
 
         failures = sum(1 for r in runs if not read_test_result(r)["success"])
-        objective = failures / len(runs) if runs else 0.0
+        failure_rate = failures / len(runs) if runs else 0.0
 
-        per_run = [m for m in (_measures_for_run(r, trajectory) for r in runs) if m]
+        per_run = [m for m in (_metrics_row(r, metrics_file) for r in runs) if m]
         if per_run:
             keys = per_run[0].keys()
             measures = {k: sum(m[k] for m in per_run) / len(per_run) for k in keys}
         else:
             measures = {"max_tilt": 0.0, "drift_dist": 0.0,
                         "landing_speed": 0.0, "control_effort": 0.0}
-        return ExtractResult(objectives={"failure_rate": objective}, measures=measures)
+        return ExtractResult(objectives={"failure_rate": failure_rate}, measures=measures)

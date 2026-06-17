@@ -22,13 +22,13 @@ SPACE = {
 }
 
 
-def _cfg(strategy="random", direction="maximize", generations=2, per_step=8, space=None):
+def _cfg(strategy="random", direction="maximize", batches=2, per_batch=8, space=None):
     return SearchConfig(
         strategy=strategy,
         search_space=space or SPACE,
         extract={"plugin": "failure_rate"},
         objectives=[{"name": "fr", "direction": direction}],
-        per_step=per_step, budget={"generations": generations}, seed=0,
+        per_batch=per_batch, budget={"batches": batches}, seed=0,
     )
 
 
@@ -53,7 +53,7 @@ def test_random_reproducible_with_seed():
 
 
 def test_random_budget_and_ranking_maximize():
-    s = build_strategy(_cfg(generations=2))
+    s = build_strategy(_cfg(batches=2))
     assert not s.is_done()
     g = s.ask(3)
     s.tell([Evaluation(params=g[0], objectives={"fr": 0.2}),
@@ -65,7 +65,7 @@ def test_random_budget_and_ranking_maximize():
 
 
 def test_direction_minimize_flips_best():
-    s = build_strategy(_cfg(direction="minimize", generations=1))
+    s = build_strategy(_cfg(direction="minimize", batches=1))
     g = s.ask(3)
     s.tell([Evaluation(params=g[0], objectives={"fr": 0.2}),
             Evaluation(params=g[1], objectives={"fr": 0.9}),

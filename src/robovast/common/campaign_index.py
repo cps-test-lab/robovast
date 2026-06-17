@@ -27,50 +27,12 @@ their own store and are not indexed here.
 import logging
 from pathlib import Path
 
-from .campaign_data import read_scenario_config, read_test_result
+from .campaign_data import (aggregate_run_status, list_config_dirs,
+                            list_run_dirs, read_scenario_config)
 from .common import load_config
 from .store import STORE_FILENAME, CampaignStore
 
 logger = logging.getLogger(__name__)
-
-# Campaign-level directories that are not configuration directories.
-_RESERVED = {"_config", "_execution", "_transient"}
-
-
-def _list_config_dirs(campaign_dir: Path) -> list[Path]:
-    return sorted(
-        d for d in campaign_dir.iterdir()
-        if d.is_dir() and d.name not in _RESERVED and not d.name.startswith(".")
-    )
-
-
-def _list_run_dirs(config_dir: Path) -> list[Path]:
-    return sorted(
-        (d for d in config_dir.iterdir() if d.is_dir() and d.name.isdigit()),
-        key=lambda d: int(d.name),
-    )
-
-
-def _aggregate_status(run_dirs: list[Path]) -> str:
-    """Aggregate per-run pass/fail into one config-level status."""
-    passed = failed = 0
-    for run_dir in run_dirs:
-        try:
-            result = read_test_result(run_dir)
-        except FileNotFoundError:
-            failed += 1  # an incomplete run counts against the config
-            continue
-        if result["success"]:
-            passed += 1
-        else:
-            failed += 1
-    if not run_dirs:
-        return "no_runs"
-    if failed == 0:
-        return "passed"
-    if passed == 0:
-        return "failed"
-    return "mixed"
 
 
 def _newest_mtime(campaign_dir: Path) -> float:
@@ -108,21 +70,21 @@ def build_campaign_store(campaign_dir, *, force: bool = False) -> Path:
     with CampaignStore(store_path) as store:
         campaign_id = store.create_campaign(
             campaign_dir.name, config_json, mode="batch", config_dir=str(config_dir))
-        generation_id = store.open_generation(campaign_id, 0, str(campaign_dir))
-        for cfg_dir in _list_config_dirs(campaign_dir):
-            run_dirs = _list_run_dirs(cfg_dir)
+        batch_id = store.open_batch(campaign_id, 0, str(campaign_dir))
+        for cfg_dir in list_config_dirs(campaign_dir):
+            run_dirs = list_run_dirs(cfg_dir)
             try:
                 params = read_scenario_config(cfg_dir)
             except FileNotFoundError:
                 params = {}
             store.record_unit(
-                generation_id=generation_id,
+                batch_id=batch_id,
                 paramset_id=cfg_dir.name,
                 config_name=cfg_dir.name,
                 params=params,
                 objectives={},
                 measures={},
-                status=_aggregate_status(run_dirs),
+                status=aggregate_run_status(run_dirs),
                 result_dir=str(cfg_dir),
                 n_samples=len(run_dirs),
             )

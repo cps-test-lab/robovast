@@ -185,34 +185,35 @@ Number of times to execute each run configuration. Multiple runs allow for stati
    execution:
      runs: 20
 
-configs_per_job
-^^^^^^^^^^^^^^^
+runs_per_job
+^^^^^^^^^^^^
 
 **Type:** Integer
 
 **Required:** No (default: ``1``)
 
-How many configurations (parameter sets) run inside a single job. A *job* is one
-unit of dispatch — one Kubernetes Job on the cluster, or one ``docker compose``
-run locally.
+How many *runs* are packed into a single job. A **run** is one configuration
+executed at one run-number (one scenario execution); a **job** is one unit of
+dispatch — one Kubernetes Job on the cluster, or one ``docker compose`` run
+locally.
 
-- ``1`` (default): each job runs exactly one configuration. Right for simulators
-  where setup dominates and one job should be one scenario (e.g. Gazebo).
-- ``> 1``: up to N configurations are packed into one job and run sequentially
-  inside a **single simulator setup**, with the simulator reset between them.
-  This pays the simulator setup cost once per job instead of once per
-  configuration — a big win for simulators with cheap per-run cost (e.g. MuJoCo,
-  where a costly setup would otherwise repeat for every parameter set).
+- ``1`` (default): each job runs exactly one run. Right for simulators where
+  setup dominates and one job should be one scenario (e.g. Gazebo).
+- ``> 1``: up to N runs are packed into one job and run sequentially inside a
+  **single simulator setup**, with the simulator reset between them. This pays the
+  simulator setup cost once per job instead of once per run — a big win for
+  simulators with cheap per-run cost (e.g. MuJoCo). Runs are packed config-major,
+  so a configuration's repeated runs stay together within a job.
 
-Packing is invisible to results: every configuration's output is always written
-to ``<config>/<run>/`` regardless of how configs were grouped into jobs (see
+Packing is invisible to results: every run's output is always written to
+``<config>/<run>/`` regardless of how runs were grouped into jobs (see
 :ref:`results-output-structure`). The number of jobs is
-``ceil(num_configs * runs / configs_per_job)``.
+``ceil(num_configs * runs / runs_per_job)``.
 
 .. code-block:: yaml
 
    execution:
-     configs_per_job: 200   # pack 200 parameter sets per job (one sim setup)
+     runs_per_job: 200   # pack up to 200 runs per job (one sim setup)
 
 timeout
 ^^^^^^^
@@ -726,10 +727,12 @@ visualization
 
 Defines evaluation notebooks for visualization in the evaluation GUI. Each entry creates a tab in the GUI.
 
-Each dictionary can have a custom name and three reserved keys for different evaluation scopes:
+Each dictionary can have a custom name and four reserved keys for different evaluation scopes:
 
 - ``run``: Path to Jupyter notebook for analyzing a single run
 - ``config``: Path to Jupyter notebook for analyzing all runs of a configuration
+- ``batch``: Path to Jupyter notebook for analyzing one batch of a search (the
+  configurations a strategy proposed in a single ask/tell round)
 - ``campaign``: Path to Jupyter notebook for analyzing all runs in a campaign
 
 .. code-block:: yaml
@@ -739,6 +742,7 @@ Each dictionary can have a custom name and three reserved keys for different eva
      - Analysis:
          run: analysis/analysis_run.ipynb
          config: analysis/analysis_config.ipynb
+         batch: analysis/analysis_batch.ipynb
          campaign: analysis/analysis_campaign.ipynb
      - Performance:
          run: analysis/performance_run.ipynb
@@ -752,7 +756,20 @@ Each notebook must include the following placeholder line:
 
    DATA_DIR = ''
 
-The RoboVAST GUI automatically replaces this with the path to the selected run directory when executing the notebook.
+The RoboVAST GUI automatically replaces this with the path to the selected run
+directory when executing the notebook.
+
+``batch`` notebooks only appear for searches (a batch tree node exists only in
+search mode). Because the search results layout is flat — every batch's
+configurations live directly under the campaign root — ``DATA_DIR`` alone cannot
+identify the batch, so a batch notebook also receives an injected ``BATCH``
+variable (the batch index) and selects its configurations from
+``campaign.sqlite``:
+
+.. code-block:: python
+
+   DATA_DIR = ''
+   BATCH = None    # injected: the index of the selected batch
 
 
 Complete Example

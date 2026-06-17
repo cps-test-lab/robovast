@@ -94,7 +94,7 @@ class QDStrategy(SearchStrategy):
         x0 = (0.5 * np.ones(self.codec.dim))     # centre of the unit cube
         sigma0 = float(params.sigma)             # scalar step (fraction of unit range)
         n_emitters = max(1, params.emitters)
-        batch = max(1, math.ceil(cfg.per_step / n_emitters))
+        batch = max(1, math.ceil(cfg.per_batch / n_emitters))
         seed = cfg.seed
         emitters = [
             EvolutionStrategyEmitter(self.archive, x0=x0, sigma0=sigma0, bounds=bounds,
@@ -103,7 +103,7 @@ class QDStrategy(SearchStrategy):
             for i in range(n_emitters)
         ]
         self.scheduler = Scheduler(self.archive, emitters)
-        self._generations_done = 0
+        self._batches_done = 0
         self._ask: list[tuple[str, np.ndarray]] = []   # (ParamSet.id, solution) in ask order
         self._direction = self.single_objective.direction
 
@@ -129,10 +129,10 @@ class QDStrategy(SearchStrategy):
             obj_batch.append(-value if self._direction == 'minimize' else value)
             meas_batch.append([float(ev.measures[m]) for m in self.measure_names])
         self.scheduler.tell(np.array(obj_batch), np.array(meas_batch))
-        self._generations_done += 1
+        self._batches_done += 1
 
     def is_done(self) -> bool:
-        return self._generations_done >= self.cfg.budget.generations
+        return self._batches_done >= self.cfg.budget.batches
 
     def report(self) -> SearchReport:
         data = self.archive.data(return_type="dict")
@@ -150,7 +150,7 @@ class QDStrategy(SearchStrategy):
             })
         stats = self.archive.stats
         extra = {
-            "generations": self._generations_done,
+            "batches": self._batches_done,
             "num_elites": int(getattr(stats, "num_elites", len(elites))),
             "coverage": float(getattr(stats, "coverage", 0.0)),
             "qd_score": float(getattr(stats, "qd_score", 0.0)),

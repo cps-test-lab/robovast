@@ -19,7 +19,7 @@ def _with_search(**search):
         "strategy": "random",
         "extract": {"plugin": "failure_rate"},
         "objectives": [{"name": "failure_rate", "direction": "maximize"}],
-        "per_step": 4,
+        "per_batch": 4,
         "search_space": {"x": {"type": "float", "low": 0, "high": 1}},
         **search,
     }
@@ -49,6 +49,17 @@ def test_extract_and_objectives():
     assert [(o.name, o.direction) for o in m.search.objectives] == [("failure_rate", "maximize")]
 
 
+def test_postprocessing_accepts_names_refs_and_params():
+    m = ConfigV1(**_with_search(postprocessing=[
+        "rosbags_process",                       # entry-point name
+        "./search/metrics.py:QuadMetrics",       # local file ref
+        {"command": {"script": "x.sh"}},         # name + params
+    ]))
+    assert m.search.postprocessing == [
+        "rosbags_process", "./search/metrics.py:QuadMetrics",
+        {"command": {"script": "x.sh"}}]
+
+
 def test_strategy_parameters_free_form():
     m = ConfigV1(**_with_search(
         strategy="qd",
@@ -72,9 +83,9 @@ def test_bad_search_space_rejected(space):
 
 def test_required_fields_and_bounds():
     with pytest.raises(ValidationError):
-        ConfigV1(**_with_search(per_step=0))
+        ConfigV1(**_with_search(per_batch=0))
     with pytest.raises(ValidationError):
-        ConfigV1(**_with_search(budget={"generations": 0}))
+        ConfigV1(**_with_search(budget={"batches": 0}))
     with pytest.raises(ValidationError):
         ConfigV1(**_with_search(search_space={}))
     with pytest.raises(ValidationError):

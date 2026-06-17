@@ -16,7 +16,7 @@
 
 """Random search — the basic, dependency-free strategy.
 
-Uniformly samples the declared ``search_space`` each generation. ``tell`` only
+Uniformly samples the declared ``search_space`` each batch. ``tell`` only
 records results (random is memoryless), but every evaluation feeds the report so
 failures are captured. A legitimate failure-finding baseline that exercises the
 full ask/tell/report loop. Single-objective; no ``strategy_parameters``.
@@ -62,7 +62,7 @@ class RandomSearch(SearchStrategy):
     def __init__(self, cfg, params):
         super().__init__(cfg, params)
         self._rng = random.Random(cfg.seed)
-        self._generations_done = 0
+        self._batches_done = 0
         self._history: list[Evaluation] = []
 
     def ask(self, n: int) -> list[ParamSet]:
@@ -76,15 +76,15 @@ class RandomSearch(SearchStrategy):
 
     def tell(self, evaluations: list[Evaluation]) -> None:
         self._history.extend(evaluations)
-        self._generations_done += 1
+        self._batches_done += 1
 
     def is_done(self) -> bool:
-        return self._generations_done >= self.cfg.budget.generations
+        return self._batches_done >= self.cfg.budget.batches
 
     def report(self) -> SearchReport:
         ranked = sorted(self._history, key=self.objective_value, reverse=True)
         return SearchReport(
             evaluations=list(self._history),
             best=ranked[0] if ranked else None,
-            extra={"generations": self._generations_done},
+            extra={"batches": self._batches_done},
         )

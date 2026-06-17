@@ -700,12 +700,12 @@ class JobRunner:
             extra_main_env=extra_env,
         )
 
-    def _configs_per_job(self) -> int:
-        """How many configurations to pack into one job (1 = one per job)."""
-        return int((self.campaign_data.get("execution") or {}).get("configs_per_job") or 1)
+    def _runs_per_job(self) -> int:
+        """How many runs (config × run-number work items) to pack into one job."""
+        return int((self.campaign_data.get("execution") or {}).get("runs_per_job") or 1)
 
     def _build_jobs(self):
-        """Group (config, run) work items into jobs per configs_per_job.
+        """Group (config, run) work items into jobs per runs_per_job.
 
         Deterministic, so the jobs used to write per-job param files match the
         jobs used to create job manifests.
@@ -937,14 +937,14 @@ class JobRunner:
         self.upload_campaigns_to_s3()
 
         # Build all manifests first, then submit one by one. With
-        # configs_per_job > 1, configs (and their runs) are packed into units —
-        # one K8s Job per packed job; otherwise one K8s Job per (config, run).
+        # runs_per_job > 1, runs are packed into units — one K8s Job per packed
+        # job; otherwise one K8s Job per (config, run).
         job_manifests = []
         jobs = self._build_jobs()
         total_jobs = len(jobs)
         logger.info(
             f"Creating {total_jobs} job(s) for {len(self.configs)} config(s) x "
-            f"{self.num_runs} run(s), {self._configs_per_job()} config(s) per job (ID: {self.campaign})..."
+            f"{self.num_runs} run(s), {self._runs_per_job()} run(s) per job (ID: {self.campaign})..."
         )
         for job in jobs:
             job_manifest = self.create_job_manifest(job, total_jobs)

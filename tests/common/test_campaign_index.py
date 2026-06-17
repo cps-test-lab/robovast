@@ -67,10 +67,10 @@ def test_build_campaign_store_batch(tmp_path):
         assert row["mode"] == "batch"
         assert row["config_dir"] == str(campaign / "_config")
 
-        gens = store.generations(row["id"])
-        assert len(gens) == 1 and gens[0]["idx"] == 0
+        batches = store.batches(row["id"])
+        assert len(batches) == 1 and batches[0]["idx"] == 0
 
-        units = {u["config_name"]: u for u in store.units(gens[0]["id"])}
+        units = {u["config_name"]: u for u in store.units(batches[0]["id"])}
         assert set(units) == {"ca", "cb", "cc"}
         assert units["ca"]["status"] == "passed"
         assert units["cb"]["status"] == "failed"

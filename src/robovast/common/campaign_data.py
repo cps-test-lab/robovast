@@ -308,3 +308,53 @@ def get_vast_configuration_info(
         },
         "configs": configs_info,
     }
+
+
+# Campaign-level directories that are not configuration directories.
+RESERVED_CAMPAIGN_DIRS = {"_config", "_execution", "_transient", "_jobs"}
+
+
+def list_config_dirs(campaign_dir: Path) -> list[Path]:
+    """Configuration directories directly under a campaign dir (sorted)."""
+    return sorted(
+        d for d in Path(campaign_dir).iterdir()
+        if d.is_dir() and d.name not in RESERVED_CAMPAIGN_DIRS and not d.name.startswith(".")
+    )
+
+
+def list_run_dirs(config_dir: Path) -> list[Path]:
+    """Numeric run directories under a config dir, ascending."""
+    try:
+        return sorted(
+            (d for d in Path(config_dir).iterdir() if d.is_dir() and d.name.isdigit()),
+            key=lambda d: int(d.name),
+        )
+    except (OSError, ValueError):
+        return []
+
+
+def aggregate_run_status(run_dirs: list[Path]) -> str:
+    """Aggregate per-run pass/fail (from each run's ``test.xml``) into one status.
+
+    Returns ``passed`` (all runs passed), ``failed`` (none passed), ``mixed``
+    (some of each), or ``no_runs`` (no runs present). A run missing ``test.xml``
+    counts against the config.
+    """
+    passed = failed = 0
+    for run_dir in run_dirs:
+        try:
+            result = read_test_result(run_dir)
+        except FileNotFoundError:
+            failed += 1
+            continue
+        if result["success"]:
+            passed += 1
+        else:
+            failed += 1
+    if not run_dirs:
+        return "no_runs"
+    if failed == 0:
+        return "passed"
+    if passed == 0:
+        return "failed"
+    return "mixed"

@@ -130,17 +130,17 @@ class ExecutionConfig(BaseModel):
     scenario_file: Optional[str] = None
     run_files: Optional[list[str]] = None
     timeout: Optional[int] = None  # Maximum execution time in seconds per run
-    # Multi-config-per-job packing. ``configs_per_job`` is how many
-    # configurations (parameter sets) run inside a single job:
-    #   1 (default): each job runs exactly one configuration. Right for
-    #     simulators where job dominates the execution time, one job == one 
-    #     scenario (e.g. Gazebo).
-    #   >1: up to N configurations are packed into one job and run sequentially
-    #     inside a single simulator setup (the simulator is reset between them),
-    #     amortising setup for simulators with cheap per-run cost (e.g. MuJoCo).
-    # Results stay keyed by configuration name regardless, so packing is
-    # invisible to downstream processing.
-    configs_per_job: int = 1
+    # Job packing. ``runs_per_job`` is how many runs (a run = one configuration
+    # at one run-number) are packed into a single job:
+    #   1 (default): each job runs exactly one run. Right for simulators where
+    #     setup dominates the execution time, one job == one scenario (e.g. Gazebo).
+    #   >1: up to N runs are packed into one job and run sequentially inside a
+    #     single simulator setup (the simulator is reset between them), amortising
+    #     setup for simulators with cheap per-run cost (e.g. MuJoCo). Runs are
+    #     packed config-major, so a config's repeated runs stay together in a job.
+    # Results stay keyed by configuration name / run number regardless, so packing
+    # is invisible to downstream processing.
+    runs_per_job: int = 1
 
     @field_validator('env')
     @classmethod
@@ -170,11 +170,11 @@ class ExecutionConfig(BaseModel):
 
         return v
 
-    @field_validator('configs_per_job')
+    @field_validator('runs_per_job')
     @classmethod
-    def validate_configs_per_job(cls, v: int) -> int:
+    def validate_runs_per_job(cls, v: int) -> int:
         if v < 1:
-            raise ValueError(f"execution.configs_per_job must be >= 1, got {v}")
+            raise ValueError(f"execution.runs_per_job must be >= 1, got {v}")
         return v
 
 
@@ -246,13 +246,13 @@ SearchDim = Annotated[Union[FloatDim, IntDim, ChoiceDim], Field(discriminator='t
 
 class BudgetConfig(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    generations: int = 1
+    batches: int = 1
 
-    @field_validator('generations')
+    @field_validator('batches')
     @classmethod
     def _positive(cls, v: int) -> int:
         if v < 1:
-            raise ValueError(f"search.budget.generations must be >= 1, got {v}")
+            raise ValueError(f"search.budget.batches must be >= 1, got {v}")
         return v
 
 
@@ -281,7 +281,7 @@ class SearchConfig(BaseModel):
     single batch (today's behaviour).
 
     Universal core (every strategy): ``strategy``, ``search_space``, ``extract``,
-    ``objectives``, ``per_step``, ``budget``, ``seed``, ``postprocessing``.
+    ``objectives``, ``per_batch``, ``budget``, ``seed``, ``postprocessing``.
     Algorithm-specific tuning lives in ``strategy_parameters``, whose schema is
     owned and validated by the chosen strategy plugin (e.g. the QD archive).
     ``strategy``, ``extract.plugin`` and ``postprocessing`` entries may be
@@ -292,10 +292,13 @@ class SearchConfig(BaseModel):
     search_space: dict[str, SearchDim]
     extract: ExtractConfig
     objectives: list[ObjectiveSpec]
-    per_step: int
+    per_batch: int
     budget: BudgetConfig = BudgetConfig()
     seed: Optional[int] = None
-    postprocessing: Optional[list[str]] = None  # search-only; NOT results_processing
+    # Postprocessing run over each batch's results before extract (e.g. to write
+    # metrics.csv). Same format/loader as results_processing.postprocessing:
+    # entry-point name, ``./path.py:Class`` file ref, or ``{name: {params}}``.
+    postprocessing: Optional[list[Union[str, dict[str, Any]]]] = None
     # Free-form; validated by the strategy plugin's own params model at load.
     strategy_parameters: dict[str, Any] = {}
 
@@ -313,11 +316,11 @@ class SearchConfig(BaseModel):
             raise ValueError("search.objectives must declare at least one objective")
         return v
 
-    @field_validator('per_step')
+    @field_validator('per_batch')
     @classmethod
-    def _positive_per_step(cls, v: int) -> int:
+    def _positive_per_batch(cls, v: int) -> int:
         if v < 1:
-            raise ValueError(f"search.per_step must be >= 1, got {v}")
+            raise ValueError(f"search.per_batch must be >= 1, got {v}")
         return v
 
 

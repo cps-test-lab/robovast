@@ -312,6 +312,17 @@ def _collect_analysis_input_files(parameters, base_dir=None):
     else:
         postprocessing = []
 
+    # The search section also carries postprocessing entries and an extract
+    # plugin, all of which may be local file refs that must be bundled.
+    search = parameters.get('search')
+    search_postprocessing = []
+    search_extract_plugin = None
+    if isinstance(search, dict):
+        search_postprocessing = search.get('postprocessing') or []
+        extract = search.get('extract')
+        if isinstance(extract, dict):
+            search_extract_plugin = extract.get('plugin')
+
     for viz_entry in visualizations:
         if isinstance(viz_entry, dict):
             for _plugin_name, plugin_config in viz_entry.items():
@@ -320,20 +331,34 @@ def _collect_analysis_input_files(parameters, base_dir=None):
                         if isinstance(path, str) and (path.endswith('.ipynb') or path.endswith('.py')):
                             analysis_files.append(path)
 
-    # Collect any postprocessing plugin parameter value that refers to an existing file
-    for pp_entry in postprocessing:
-        if not isinstance(pp_entry, dict):
-            continue
-        for _plugin_name, plugin_params in pp_entry.items():
-            if not isinstance(plugin_params, dict):
-                continue
-            for _key, value in plugin_params.items():
-                if not isinstance(value, str) or os.path.isabs(value):
-                    continue
-                # Only collect if the path actually resolves to an existing file
-                candidate = os.path.join(base_dir, value) if base_dir else value
-                if os.path.isfile(candidate):
-                    analysis_files.append(value)
+    from robovast.common.plugin_ref import \
+        is_file_ref  # pylint: disable=import-outside-toplevel
+
+    def _collect_ref(value):
+        """Collect a local module path from an entry-point/file ref or file value."""
+        if not isinstance(value, str) or os.path.isabs(value):
+            return
+        path_part = value.rsplit(".py:", 1)[0] + ".py" if is_file_ref(value) else value
+        candidate = os.path.join(base_dir, path_part) if base_dir else path_part
+        if os.path.isfile(candidate):
+            analysis_files.append(path_part)
+
+    # A postprocessing plugin is referenced by its command *name* (an entry-point
+    # name or a ``./path.py:Class`` file ref, e.g. ``./search/metrics.py:QuadMetrics``)
+    # and may carry file-ref params. Collect local modules from both, across the
+    # results_processing and search postprocessing lists.
+    for pp_entry in [*postprocessing, *search_postprocessing]:
+        if isinstance(pp_entry, str):
+            _collect_ref(pp_entry)
+        elif isinstance(pp_entry, dict):
+            for plugin_name, plugin_params in pp_entry.items():
+                _collect_ref(plugin_name)
+                if isinstance(plugin_params, dict):
+                    for _key, value in plugin_params.items():
+                        _collect_ref(value)
+
+    # The search extract plugin itself may be a local file ref.
+    _collect_ref(search_extract_plugin)
 
     # Collect files declared by class-based postprocessing plugins via
     # get_files_to_copy().  This is how e.g. the ``command`` plugin ensures
@@ -705,7 +730,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         "resources": execution_section.get('resources'),
         "secondary_containers": execution_section.get('secondary_containers'),
         "local": execution_section.get('local'),
-        "configs_per_job": execution_section.get('configs_per_job', 1),
+        "runs_per_job": execution_section.get('runs_per_job', 1),
     }
 
     # Build result dictionary

@@ -14,7 +14,7 @@ execution:
   scenario_file: scenario.osc
   run_files:
   - "files/*.py"
-  configs_per_job: 100
+  runs_per_job: 100
 search:
   # ---- universal core (same shape for every strategy) ----
   strategy: random
@@ -23,18 +23,26 @@ search:
     mass:          {type: float, low: 0.5, high: 3.0}
     wind_strength: {type: float, low: 0.0, high: 5.0}
     descent_rate:  {type: float, low: 0.1, high: 2.5}
-  # The one scoring step (local module): results -> objectives (+ measures).
+  # Postprocessing writes per-run metrics.csv (raw trajectory.csv -> metrics);
+  # the extract step then reads those metrics into objectives (+ measures).
+  postprocessing:
+  - search/metrics.py:QuadMetrics
   extract:
-    plugin: ./search/extract.py:QuadExtract
+    plugin: search/extract.py:QuadExtract
   objectives:
   - {name: failure_rate, direction: maximize}
-  per_step: 8
+  per_batch: 8
   budget:
-    generations: 4
+    batches: 4
   seed: 0
   # random takes no strategy_parameters
 evaluation:
   visualization:
   - Analysis:
       run: analysis/analysis_run.ipynb
+      config: analysis/analysis_config.ipynb
+      batch: analysis/analysis_batch.ipynb
       campaign: analysis/analysis_qd.ipynb
+results_processing:
+  postprocessing:
+  - analysis/render.py:DescentVideo
