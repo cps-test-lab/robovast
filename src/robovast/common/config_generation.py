@@ -19,9 +19,11 @@ import fnmatch
 import logging
 import os
 import re
+import ssl
 import tarfile
 import tempfile
 import time
+import urllib.request
 from datetime import datetime, timezone
 from importlib.metadata import entry_points
 from pprint import pformat
@@ -31,6 +33,44 @@ from .config_identifier import collect_paths_from_config, hash_variation_entrypo
 from .file_cache2 import CacheKey, FileCache2
 
 logger = logging.getLogger(__name__)
+
+_ssl_state = {"configured": False}
+
+
+def _maybe_disable_ssl_verification():
+    """Optionally skip TLS certificate verification for remote fetches.
+
+    Some variations (e.g. ``SemanticGeneration``) parse JSON-LD whose
+    ``@context`` URLs are dereferenced over HTTPS. When such a host serves a
+    certificate that does not match its hostname, the fetch fails with
+    ``CERTIFICATE_VERIFY_FAILED``. Setting ``ROBOVAST_INSECURE_SSL=1`` installs
+    an HTTPS opener that skips certificate verification so generation can
+    continue despite a broken certificate on the (trusted) data host.
+    """
+    if _ssl_state["configured"]:
+        return
+    if os.environ.get("ROBOVAST_INSECURE_SSL", "").strip().lower() not in (
+        "1", "true", "yes", "on",
+    ):
+        return
+
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    # ``urllib.request.urlopen`` caches a module-global opener on its first
+    # no-context call, so a verifying request that already ran cannot be
+    # overridden by patching the default context factory. Installing an opener
+    # forces the unverified context for all subsequent fetches (rdflib's
+    # JSON-LD loader goes through this same ``urlopen``).
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPSHandler(context=context)
+    )
+    urllib.request.install_opener(opener)
+    _ssl_state["configured"] = True
+    logger.warning(
+        "ROBOVAST_INSECURE_SSL is set: TLS certificate verification is "
+        "DISABLED for remote fetches. Use only with trusted hosts."
+    )
 
 
 def progress_update(msg):
@@ -419,6 +459,8 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     if not progress_update_callback:
         progress_update_callback = logger.debug
     progress_update_callback("Start generating configs.")
+
+    _maybe_disable_ssl_verification()
 
     parameters = load_config(variation_file)
 

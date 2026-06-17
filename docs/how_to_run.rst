@@ -23,3 +23,10 @@ How to run
    :commands: gui
 
 
+Environment variables
+---------------------
+
+``ROBOVAST_INSECURE_SSL``
+    Set to ``1`` to disable TLS certificate verification for remote fetches.
+    This allows the CLI to continue when a remote host presents an invalid
+    certificate. Use only with hosts you trust.

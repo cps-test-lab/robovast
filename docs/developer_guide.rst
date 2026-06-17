@@ -28,7 +28,7 @@ To test your scenario locally, you can run:
 
 .. code-block:: bash
 
-    ros2 run scenario_execution_ros scenario_execution <scenario-file> -t
+    ros2 run scenario_execution_ros scenario_execution_ros <scenario-file> -t -d
 
 3. Create Initial RoboVAST Configuration
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -59,6 +59,9 @@ Afterwards you can verify the scenario, the RoboVAST-configuration and the docke
 
     # check that a standalone non-GUI environment (like in Kubernetes) works
     ./test_run/run.sh --no-gui
+
+    # enable extra scenario-execution output: live py-tree (-t) and debug log (-d)
+    ./test_run/run.sh -t -d
 
 To enable GUI visualization (e.g. RViz) for local runs while keeping cluster runs headless, add ``execution.local.parameter_overrides`` in your ``.vast`` file (see :doc:`configuration`).
 
