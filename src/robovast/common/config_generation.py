@@ -23,6 +23,7 @@ import ssl
 import tarfile
 import tempfile
 import time
+import urllib.request
 from datetime import datetime, timezone
 from importlib.metadata import entry_points
 from pprint import pformat
@@ -33,7 +34,7 @@ from .file_cache2 import CacheKey, FileCache2
 
 logger = logging.getLogger(__name__)
 
-_ssl_verification_disabled = False
+_ssl_state = {"configured": False}
 
 
 def _maybe_disable_ssl_verification():
@@ -43,32 +44,29 @@ def _maybe_disable_ssl_verification():
     ``@context`` URLs are dereferenced over HTTPS. When such a host serves a
     certificate that does not match its hostname, the fetch fails with
     ``CERTIFICATE_VERIFY_FAILED``. Setting ``ROBOVAST_INSECURE_SSL=1`` installs
-    an unverified default HTTPS context so generation can continue despite a
-    broken certificate on the (trusted) data host.
+    an HTTPS opener that skips certificate verification so generation can
+    continue despite a broken certificate on the (trusted) data host.
     """
-    global _ssl_verification_disabled
-    if _ssl_verification_disabled:
+    if _ssl_state["configured"]:
         return
     if os.environ.get("ROBOVAST_INSECURE_SSL", "").strip().lower() not in (
         "1", "true", "yes", "on",
     ):
         return
 
-    unverified_ctx = ssl._create_unverified_context()
-    # Patch the default context factory for any code that builds its own
-    # context lazily.
-    ssl._create_default_https_context = ssl._create_unverified_context
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
     # ``urllib.request.urlopen`` caches a module-global opener on its first
-    # no-context call, so patching the factory alone is not enough if a
-    # verifying request already ran. Install an opener that forces the
-    # unverified context for all subsequent fetches (rdflib's JSON-LD loader
-    # goes through this same ``urlopen``).
-    import urllib.request  # pylint: disable=import-outside-toplevel
+    # no-context call, so a verifying request that already ran cannot be
+    # overridden by patching the default context factory. Installing an opener
+    # forces the unverified context for all subsequent fetches (rdflib's
+    # JSON-LD loader goes through this same ``urlopen``).
     opener = urllib.request.build_opener(
-        urllib.request.HTTPSHandler(context=unverified_ctx)
+        urllib.request.HTTPSHandler(context=context)
     )
     urllib.request.install_opener(opener)
-    _ssl_verification_disabled = True
+    _ssl_state["configured"] = True
     logger.warning(
         "ROBOVAST_INSECURE_SSL is set: TLS certificate verification is "
         "DISABLED for remote fetches. Use only with trusted hosts."
