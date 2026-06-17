@@ -26,6 +26,53 @@ logger = logging.getLogger(__name__)
 
 class NavVariation(Variation):
 
+    def resolve_input_paths(self, paths) -> list:
+        """Resolve relative input paths against ``base_path``.
+
+        Paths in the ``.vast`` configuration are relative to the configuration
+        file's directory, not the current working directory.  Resolving them
+        against ``self.base_path`` ensures variations work regardless of where
+        the ``vast`` command is invoked from.  Absolute paths are returned
+        unchanged.
+        """
+        return [
+            p if os.path.isabs(p) else os.path.join(self.base_path, p)
+            for p in paths
+        ]
+
+    def collect_input_files(self, paths) -> list:
+        """Expand input ``paths`` into individual files relative to ``base_path``.
+
+        Accepts files and directories (resolved via :meth:`resolve_input_paths`)
+        and returns the contained files as paths relative to ``base_path``,
+        suitable for :meth:`get_input_files` so they are copied into the
+        campaign ``_config/`` directory for self-contained cluster runs.
+        Files outside ``base_path`` are skipped, since they cannot be packaged
+        relative to the campaign.
+        """
+        collected = []
+        for resolved in self.resolve_input_paths(paths):
+            if os.path.isdir(resolved):
+                file_paths = (
+                    os.path.join(root, name)
+                    for root, _, names in os.walk(resolved)
+                    for name in names
+                )
+            elif os.path.isfile(resolved):
+                file_paths = [resolved]
+            else:
+                logger.warning("Input path not found, skipping: %s", resolved)
+                continue
+            for file_path in file_paths:
+                rel = os.path.relpath(file_path, self.base_path)
+                if rel.startswith(".."):
+                    logger.warning(
+                        "Input file outside base directory, skipping: %s", file_path
+                    )
+                    continue
+                collected.append(rel)
+        return collected
+
     def get_map_file(self, map_file_parameter, config) -> Optional[str]:
         """Determine the map file path to use for this config.
 
