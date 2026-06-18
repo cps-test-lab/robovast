@@ -9,11 +9,11 @@ metadata:
 # differ. Configurations are synthesized from search_space.
 execution:
   image: ghcr.io/cps-test-lab/robovast:latest
-  runs: 3
+  runs: 5
   scenario_file: scenario.osc
   run_files:
   - "files/*.py"
-  runs_per_job: 1
+  runs_per_job: 100
 search:
   strategy: qd
   search_space:
