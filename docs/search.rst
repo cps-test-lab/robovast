@@ -38,7 +38,7 @@ A ``search:`` section is self-contained: its configurations are synthesized from
    search:
      # ---- universal core (every strategy) ----
      strategy: qd               # plugin: entry-point name OR ./search/s.py:Cls
-     search_space:              # typed dims: float / int / choice
+     search_space:              # typed dims: float / int / choice / bool
        thrust_gain:   {type: float, low: 0.3, high: 3.0}
        mass:          {type: int,   low: 1,   high: 3}
        mode:          {type: choice, values: [a, b, c]}
@@ -62,9 +62,12 @@ A ``search:`` section is self-contained: its configurations are synthesized from
 Concepts
 --------
 
-**search_space** — a *typed* mapping of parameter path to domain
-(``float{low,high,log}`` / ``int{low,high,log,step}`` / ``choice{values}``).
-Malformed domains are rejected at config-validation time.
+**search_space** — a *typed* mapping of variable name to domain. Four dimension
+types: ``float {low, high, log}``, ``int {low, high, log, step}``,
+``choice {values}`` (categorical) and ``bool`` (sugar for a two-value
+categorical). Malformed domains are rejected at config-validation time. A
+variable either maps directly to a scenario parameter (the simple-sweep case) or
+feeds a ``variations:`` template — see `Searching complex variations`_.
 
 **postprocessing** — a list of postprocessing plugins run over each batch's
 results *before* scoring (e.g. to write per-run ``metrics.csv`` from raw
@@ -89,6 +92,78 @@ objectives are already a named list).
 **strategy_parameters** — algorithm-specific tuning, owned and validated by the
 chosen strategy plugin (so a new algorithm adds nothing to the core schema). See
 each strategy below for its parameters.
+
+Searching complex variations
+-----------------------------
+
+Mapping a ``search_space`` dimension straight onto a scenario parameter only
+covers simple sweeps (the quadrotor example: ``thrust_gain`` → scenario param).
+The **complex** variation plugins (``PathVariationRandom``, ``ObstacleVariation``,
+``FloorplanVariation``, …) instead *calculate* scenario content from many
+parameters — most of which should stay **fixed** while only a few are
+**searched**. For that, a ``search:`` block may carry a ``variations:`` template
+(and an optional fixed ``parameters:`` block), **identical in shape** to a batch
+``configuration`` block. Fixed parameters are written inline; searched ones are
+referenced with a ``$name`` (or ``${name}``) marker naming a ``search_space``
+dimension:
+
+.. code-block:: yaml
+
+   search:
+     strategy: random
+     search_space:
+       path_length:  {type: float, low: 5.0, high: 15.0}
+       obstacle_amt: {type: int,   low: 0,   high: 5}
+       path_seed:    {type: int,   low: 0,   high: 100000}
+     variations:
+     - PathVariationRandom:
+         start_pose: "@start_pose"     # @name = scenario-param reference (in-plugin)
+         goal_poses: "@goal_poses"
+         num_goal_poses: 3
+         path_length: $path_length     # $name = searched variable (substituted)
+         num_paths: 1                  # FIXED scalar -> exactly one config
+         seed: $path_seed
+     - ObstacleVariation:
+         name: static_objects
+         count: 1
+         obstacle_configs:
+         - amount: $obstacle_amt        # searched
+           max_distance: 0.1
+         seed: $path_seed
+     extract: {plugin: ...}
+     objectives: [{name: ..., direction: maximize}]
+     per_batch: 8
+     budget: {batches: 5}
+
+For each proposed parameter set the framework deep-copies the template and
+substitutes every marker with the sampled value, then runs the **same**
+generation chain as batch mode — no change to the variation plugins. A
+``search_space`` dimension *not* referenced anywhere in the template falls back
+to a direct scenario parameter (so the quadrotor example, which has no
+``variations:`` block, behaves exactly as before).
+
+Marker rules:
+
+* A marker matches only when the **entire** value is ``$name`` or ``${name}``;
+  the sampled value is substituted **verbatim**, preserving its type (an ``int``
+  dim stays an ``int``). There is no mid-string interpolation.
+* ``$$`` is an escaped literal ``$`` (a leading ``$$`` collapses to one ``$``).
+* This is **disjoint** from the ``@name`` convention, which references a
+  *scenario-file parameter* and is resolved **inside** the variation plugin —
+  ``$name`` is substituted by the search framework *before* the plugin runs.
+* Every ``$name`` must name a declared ``search_space`` dimension (checked at
+  config-validation time).
+
+.. important::
+
+   **One parameter set must produce exactly one config.** A search proposes a
+   point, evaluates it, and tells the strategy the result, so the mapping is
+   1:1. A variation that expands combinatorially breaks this. Make every
+   expanding parameter **scalar**: ``PathVariationRandom`` ``num_paths: 1`` with a
+   scalar ``path_length``/``num_goal_poses_per_m``; ``ObstacleVariation``
+   ``count: 1`` with a single ``amount``/``max_distance`` per ``obstacle_configs``
+   entry; ``FloorplanVariation`` ``num_variations: 1``. The framework raises a
+   clear error naming the offending parameter set if a variation expands.
 
 Strategies
 ----------

@@ -257,6 +257,22 @@ To your `pyproject.toml`, add an entry under `[tool.poetry.plugins."robovast.var
     [tool.poetry.plugins."robovast.variation_types"]
     "YourVariation" = "robovast_<yourplugin>.your_variation:YourVariation"
 
+A variation can also be loaded from a **local file relative to the .vast**
+without packaging it — reference it as ``<path>.py:<Class>`` wherever a variation
+name is expected (in a ``configuration[].variations`` list or a ``search.variations``
+template). This is the same ``./path.py:Class`` convention used by search
+strategies, extractors and postprocessing plugins:
+
+.. code-block:: yaml
+
+    variations:
+    - variations/wind.py:WindFieldVariation:
+        wind_speed: 5.0
+
+See ``configs/examples/quadrotor_landing/variations/wind.py`` for a runnable
+example (a wind model that derives the simulator's ``wind_strength``), wired into
+the quadrotor search vasts.
+
 
 Add Command-line Plugin
 ^^^^^^^^^^^^^^^^^^^^^^^

@@ -27,7 +27,8 @@ import math
 import random
 from typing import Any
 
-from robovast.common.config import ChoiceDim, FloatDim, IntDim, SearchDim
+from robovast.common.config import (BoolDim, ChoiceDim, FloatDim, IntDim,
+                                     SearchDim)
 
 from ..strategy import SearchStrategy
 from ..types import Evaluation, ParamSet, SearchReport
@@ -36,6 +37,8 @@ logger = logging.getLogger(__name__)
 
 
 def _sample_dim(dim: SearchDim, rng: random.Random) -> Any:
+    if isinstance(dim, BoolDim):
+        return rng.choice([False, True])
     if isinstance(dim, ChoiceDim):
         return rng.choice(dim.values)
     if isinstance(dim, FloatDim):

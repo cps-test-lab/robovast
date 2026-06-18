@@ -17,30 +17,40 @@
 """Compose sampled parameter sets into runnable configs.
 
 This is the bridge from search to the existing generation/packing/execution
-path: each :class:`ParamSet` is turned into one ``configuration`` block by
-*overriding* a base block with the sampled values, then the existing
-``generate_scenario_variations`` chain runs to produce
+path: each :class:`ParamSet` is turned into one ``configuration`` block, then the
+existing ``generate_scenario_variations`` chain runs to produce
 ``campaign_data["configs"]`` — exactly the structure the packer and launchers
-already consume. No rewrite of the variation plugins is required: a search dim
-that drives a list-style variation simply collapses it to one concrete value,
-yielding one config per param set.
+already consume. No rewrite of the variation plugins is required.
 
-Override key convention (a ``search_space`` key is a dotted path):
+How a sampled value reaches a config:
 
-* ``variations.<ClassName>.<param>[.<sub>...]`` -> set ``param`` inside the
-  variation whose single key is ``<ClassName>`` (creating it if absent).
-* ``parameters.<name>`` or a bare ``<name>`` -> set scenario parameter ``name``.
+* **Variation template** — the ``search:`` block may carry a ``variations:`` (and
+  ``parameters:``) template, identical in shape to a batch ``configuration``
+  block. It fixes most variation parameters inline and references the *searched*
+  ones with a ``$name`` / ``${name}`` marker naming a ``search_space`` dimension.
+  Compose deep-copies the template per param set and substitutes each marker with
+  the sampled value (preserving its native type). This is disjoint from the
+  ``@name`` *scenario-parameter* reference resolved inside the variation plugins.
+* **Direct scenario parameter (fallback)** — any ``search_space`` dimension *not*
+  referenced anywhere in the template is set directly as a scenario parameter
+  (the simple-sweep case: no ``variations:`` ⇒ every dim is a scenario param).
+
+A variation in the template must collapse to **exactly one** config per param set
+(search relies on a 1:1 paramset→config mapping); Compose enforces this and
+reports a clear error if a variation expands combinatorially.
 """
 
 import copy
 import logging
 import os
 import tempfile
+from collections import defaultdict
 from typing import Any
 
 import yaml
 
 from robovast.common.common import load_config
+from robovast.common.config import match_var_marker
 from robovast.common.config_generation import generate_scenario_variations
 
 from .types import ParamSet
@@ -66,48 +76,32 @@ def _set_scenario_param(params: list, name: str, value: Any) -> None:
     params.append({name: value})
 
 
-def _deep_set(d: dict, path: list[str], value: Any) -> None:
-    for key in path[:-1]:
-        nxt = d.get(key)
-        if not isinstance(nxt, dict):
-            nxt = {}
-            d[key] = nxt
-        d = nxt
-    d[path[-1]] = value
+def _substitute_vars(node: Any, values: dict[str, Any], used: set[str]) -> Any:
+    """Deep-copy ``node`` replacing every ``$name`` / ``${name}`` marker leaf with
+    ``values[name]`` (verbatim, so the value keeps its native type).
 
-
-def _find_variation(variations: list, class_name: str) -> dict | None:
-    for entry in variations:
-        if isinstance(entry, dict) and class_name in entry:
-            return entry
-    return None
-
-
-def apply_override(block: dict, key: str, value: Any) -> None:
-    """Apply one ``search_space`` override into a configuration block in place."""
-    parts = key.split(".")
-    head = parts[0]
-
-    if head == "variations":
-        if len(parts) < 3:
-            raise ValueError(
-                f"search_space key '{key}' must be 'variations.<ClassName>.<param>'"
-            )
-        class_name, nested = parts[1], parts[2:]
-        variations = block.setdefault("variations", [])
-        entry = _find_variation(variations, class_name)
-        if entry is None:
-            entry = {class_name: {}}
-            variations.append(entry)
-        if entry[class_name] is None:
-            entry[class_name] = {}
-        _deep_set(entry[class_name], nested, value)
-        return
-
-    name = parts[1] if head == "parameters" else key
-    if head == "parameters" and len(parts) != 2:
-        raise ValueError(f"search_space key '{key}' must be 'parameters.<name>'")
-    _set_scenario_param(block.setdefault("parameters", []), name, value)
+    Records each consumed variable name in ``used``. A leading ``$$`` is an
+    escaped literal ``$``. Strings that are not whole-value markers (including
+    ``@name`` references and file paths) pass through unchanged. Raises
+    ``ValueError`` for a marker that names no declared variable.
+    """
+    if isinstance(node, dict):
+        return {k: _substitute_vars(v, values, used) for k, v in node.items()}
+    if isinstance(node, (list, tuple)):
+        return [_substitute_vars(v, values, used) for v in node]
+    if isinstance(node, str):
+        name = match_var_marker(node)
+        if name is not None:
+            if name not in values:
+                raise ValueError(
+                    f"variations template references '{node}', which is not a "
+                    f"search_space variable; declared: {sorted(values)}")
+            used.add(name)
+            return copy.deepcopy(values[name])
+        if node.startswith("$$"):
+            return node[1:]  # collapse leading $$ to a literal $
+        return node
+    return node
 
 
 class Compose:
@@ -117,10 +111,11 @@ class Compose:
         self.vast_file = os.path.abspath(vast_file)
         self.vast_dir = os.path.dirname(self.vast_file)
         self.base = load_config(self.vast_file)
-        # Search synthesizes its configurations from the search space; there is no
-        # override template. Config validation enforces that a `search:` section
-        # is not paired with a `configuration:` block, so the base is always empty.
-        self.base_block: dict = {}
+        # The variation/parameter template lives in the search: block. Each param
+        # set fills it in; unreferenced search dims fall back to scenario params.
+        search = self.base.get("search") or {}
+        self.variations_template = search.get("variations")
+        self.fixed_parameters = search.get("parameters")
 
     def compose(self, param_sets: list[ParamSet], output_dir: str) -> tuple[dict, dict]:
         """Generate configs for ``param_sets``.
@@ -129,14 +124,24 @@ class Compose:
         ``ParamSet.id`` to its config (result-dir) name.
         """
         blocks = []
-        name_by_id = {}
+        id_by_block = {}
         for ps in param_sets:
-            block = copy.deepcopy(self.base_block)
-            block["name"] = config_name_for(ps)
+            used: set[str] = set()
+            block_name = config_name_for(ps)
+            block: dict = {"name": block_name}
+            if self.fixed_parameters is not None:
+                block["parameters"] = _substitute_vars(
+                    self.fixed_parameters, ps.values, used)
+            if self.variations_template is not None:
+                block["variations"] = _substitute_vars(
+                    self.variations_template, ps.values, used)
+            # Any search dim not consumed by the template is a direct scenario
+            # parameter (the simple-sweep case, e.g. the quadrotor example).
             for key, value in ps.values.items():
-                apply_override(block, key, value)
+                if key not in used:
+                    _set_scenario_param(block.setdefault("parameters", []), key, value)
             blocks.append(block)
-            name_by_id[ps.id] = block["name"]
+            id_by_block[block_name] = ps.id
 
         params = copy.deepcopy(self.base)
         params["configuration"] = blocks
@@ -168,6 +173,45 @@ class Compose:
             except OSError:
                 pass
 
+        name_by_id = self._resolve_names(campaign_data, id_by_block)
+
         logger.debug("Composed %d param set(s) into %d config(s)",
                      len(param_sets), len(campaign_data.get("configs", [])))
         return campaign_data, name_by_id
+
+    @staticmethod
+    def _resolve_names(campaign_data: dict, id_by_block: dict) -> dict:
+        """Map each ``ParamSet.id`` to its single produced config name, enforcing
+        the search 1:1 contract.
+
+        A variation in ``search.variations`` renames its output (``c<id>-1``) and
+        may expand a block combinatorially (e.g. ``num_paths > 1`` or a
+        list-valued ``path_length``) while ``_config_name`` stays the parent
+        block name. Search looks up results by the produced config name, so each
+        block must yield exactly one config; an expansion (or an empty result) is
+        a configuration error — fail early and clearly.
+        """
+        produced: dict[str, list] = defaultdict(list)
+        for c in campaign_data.get("configs", []):
+            produced[c.get("_config_name")].append(c.get("name"))
+        name_by_id = {}
+        for block_name, ps_id in id_by_block.items():
+            got = produced.get(block_name, [])
+            if len(got) == 1:
+                name_by_id[ps_id] = got[0]
+                continue
+            if not got:
+                raise ValueError(
+                    f"Search variation produced no config for param set "
+                    f"'{block_name}'. A variation in search.variations filtered "
+                    f"everything out — check its parameters (e.g. an impossible "
+                    f"path/obstacle constraint).")
+            raise ValueError(
+                f"Search variation expanded param set '{block_name}' into "
+                f"{len(got)} configs ({got}). Each search param set must map to "
+                f"exactly one config. Make every expanding parameter scalar: "
+                f"PathVariationRandom num_paths=1 and scalar path_length/"
+                f"num_goal_poses_per_m; ObstacleVariation count=1 and one amount/"
+                f"max_distance per obstacle_configs entry; FloorplanVariation "
+                f"num_variations=1.")
+        return name_by_id

@@ -29,7 +29,7 @@ from typing import Any
 
 import numpy as np
 
-from robovast.common.config import ChoiceDim, FloatDim, IntDim
+from robovast.common.config import BoolDim, ChoiceDim, FloatDim, IntDim
 
 
 class SearchSpaceCodec:
@@ -54,6 +54,8 @@ class SearchSpaceCodec:
 
     @staticmethod
     def _encode_dim(dim, v) -> float:
+        if isinstance(dim, BoolDim):
+            return (int(bool(v)) + 0.5) / 2
         if isinstance(dim, ChoiceDim):
             return (dim.values.index(v) + 0.5) / len(dim.values)
         lo, hi = SearchSpaceCodec._span(dim)
@@ -63,6 +65,8 @@ class SearchSpaceCodec:
     @staticmethod
     def _decode_dim(dim, u: float):
         u = min(max(u, 0.0), 1.0)
+        if isinstance(dim, BoolDim):
+            return u >= 0.5
         if isinstance(dim, ChoiceDim):
             idx = min(int(math.floor(u * len(dim.values))), len(dim.values) - 1)
             return dim.values[idx]

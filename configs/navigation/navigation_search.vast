@@ -1,0 +1,79 @@
+version: 1
+metadata:
+  name: navigation_search
+# Iterative search over COMPLEX variations. Run with:  vast execution local run
+#
+# Unlike a simple parameter sweep, the searched quantities here drive the
+# navigation variation plugins: PathVariationRandom synthesizes a path of a
+# searched length, ObstacleVariation places a searched number of obstacles on it.
+# The variations: template below is identical in shape to a batch configuration
+# block — most parameters are fixed inline, and the searched ones reference a
+# search_space variable with a $name marker (see docs/search.rst).
+execution:
+  image: ghcr.io/cps-test-lab/robovast:latest
+  resources:
+    cpu: 8
+  runs: 5
+  scenario_file: scenario.osc
+  run_files:
+  - "**/files/*"
+search:
+  strategy: random
+  # The searched VARIABLES (not direct scenario params): they feed the template.
+  search_space:
+    path_length:  {type: float, low: 5.0, high: 15.0}
+    obstacle_amt: {type: int,   low: 0,   high: 5}
+    path_seed:    {type: int,   low: 0,   high: 100000}
+    # A choice dim NOT referenced in the template -> falls back to a direct
+    # scenario parameter (same name), exactly like a simple sweep.
+    laserscan_gaussian_noise_std_deviation: {type: choice, values: [0.0, 0.1]}
+  # Variation template: fixed params inline, searched ones via $name / ${name}.
+  # Every expanding parameter is scalar so each param set yields exactly one
+  # config (num_paths: 1, count: 1, one obstacle_configs entry, num_variations: 1).
+  variations:
+  - FloorplanVariation:
+      name: [map_file, mesh_file]
+      variation_files: [floorplans/rooms/rooms.variation]
+      num_variations: 1
+      seed: 1
+  - PathVariationRandom:
+      start_pose: "@start_pose"     # @name = scenario-param reference (in-plugin)
+      goal_poses: "@goal_poses"
+      num_goal_poses: 3
+      path_length: $path_length     # $name = searched variable (substituted)
+      num_paths: 1
+      path_length_tolerance: 0.5
+      min_distance: 1.0
+      seed: $path_seed
+      robot_diameter: 0.35
+  - ObstacleVariation:
+      name: static_objects
+      count: 1
+      obstacle_configs:
+      - amount: $obstacle_amt
+        max_distance: 0.1
+        model: file:///config/files/models/box.sdf.xacro
+        xacro_arguments: width:=0.5, length:=0.5, height:=1.0
+      seed: $path_seed
+      robot_diameter: 0.35
+  # failure_rate scores each config from its runs' test.xml (navigation failed?).
+  extract:
+    plugin: failure_rate
+  objectives:
+  - {name: failure_rate, direction: maximize}
+  per_batch: 8
+  budget:
+    batches: 5
+  seed: 0
+results_processing:
+  postprocessing:
+  - rosbags_to_csv
+  - rosbags_tf_to_csv:
+      frames: [base_link, turtlebot4_base_link_gt]
+  - rosbags_bt_to_csv
+evaluation:
+  visualization:
+  - Analysis:
+      run: analysis/analysis_run.ipynb
+      config: analysis/analysis_config.ipynb
+      campaign: analysis/analysis_campaign.ipynb

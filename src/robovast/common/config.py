@@ -15,12 +15,44 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
+import re
 from typing import Annotated, Any, Literal, Optional, Union
 
 from pydantic import (BaseModel, ConfigDict, Field, ValidationError,
                       field_validator, model_validator)
 
 logger = logging.getLogger(__name__)
+
+# A search-variable marker: a string whose *entire* value is ``$name`` or
+# ``${name}``. Only a standalone token is a reference (no mid-string interp), so
+# the substituted value keeps its native type. Disjoint from the ``@name``
+# scenario-parameter reference resolved inside variation plugins.
+_VAR_RE = re.compile(r'^\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))$')
+
+
+def match_var_marker(value: Any) -> Optional[str]:
+    """Return the referenced variable name if ``value`` is a ``$name``/``${name}``
+    marker string, else ``None``. A leading ``$$`` is an escaped literal ``$``."""
+    if not isinstance(value, str):
+        return None
+    m = _VAR_RE.match(value)
+    if not m:
+        return None
+    return m.group(1) or m.group(2)
+
+
+def _collect_var_refs(node: Any, refs: set) -> None:
+    """Walk plain data (dicts/lists/scalars) collecting every ``$name`` marker."""
+    if isinstance(node, dict):
+        for v in node.values():
+            _collect_var_refs(v, refs)
+    elif isinstance(node, (list, tuple)):
+        for v in node:
+            _collect_var_refs(v, refs)
+    else:
+        name = match_var_marker(node)
+        if name is not None:
+            refs.add(name)
 
 
 class GeneralConfig(BaseModel):
@@ -239,9 +271,16 @@ class ChoiceDim(BaseModel):
         return v
 
 
+class BoolDim(BaseModel):
+    """A boolean search dimension — sugar for a two-value categorical."""
+    model_config = ConfigDict(extra='forbid')
+    type: Literal['bool']
+
+
 # Typed search-space dimension; discriminated on the ``type`` tag so that a
 # malformed domain is rejected by Pydantic rather than failing at sample time.
-SearchDim = Annotated[Union[FloatDim, IntDim, ChoiceDim], Field(discriminator='type')]
+SearchDim = Annotated[Union[FloatDim, IntDim, ChoiceDim, BoolDim],
+                      Field(discriminator='type')]
 
 
 class BudgetConfig(BaseModel):
@@ -295,6 +334,16 @@ class SearchConfig(BaseModel):
     per_batch: int
     budget: BudgetConfig = BudgetConfig()
     seed: Optional[int] = None
+    # Optional variation template + fixed scenario params, identical in shape to a
+    # batch ``configuration:`` block. The template fixes most variation params and
+    # references searched ones with a ``$name`` / ``${name}`` marker resolving to a
+    # search_space dimension; Compose substitutes per proposed parameter set. Any
+    # search_space dim not referenced here falls back to a direct scenario param.
+    # Kept as raw mappings (not VariationConfig/ScenarioParameterConfig, which drop
+    # unknown keys) so the marker references survive for the validator below and
+    # the substitution in Compose; the plugin params are validated at generation.
+    variations: Optional[list[dict[str, Any]]] = None
+    parameters: Optional[list[dict[str, Any]]] = None
     # Postprocessing run over each batch's results before extract (e.g. to write
     # metrics.csv). Same format/loader as results_processing.postprocessing:
     # entry-point name, ``./path.py:Class`` file ref, or ``{name: {params}}``.
@@ -308,6 +357,24 @@ class SearchConfig(BaseModel):
         if not v:
             raise ValueError("search.search_space must declare at least one dimension")
         return v
+
+    @model_validator(mode='after')
+    def _validate_var_references(self):
+        # Every ``$name`` / ``${name}`` marker in the variations/parameters
+        # template must resolve to a declared search_space dimension. This is a
+        # pure string/tree walk on plain data — it must NOT instantiate variation
+        # CONFIG_CLASS models (they would reject the marker strings).
+        declared = set(self.search_space)
+        refs: set[str] = set()
+        for tmpl in (self.variations, self.parameters):
+            if tmpl is not None:
+                _collect_var_refs(tmpl, refs)
+        unknown = sorted(refs - declared)
+        if unknown:
+            raise ValueError(
+                f"search.variations/parameters reference unknown search_space "
+                f"variable(s) {unknown}; declared dimensions: {sorted(declared)}")
+        return self
 
     @field_validator('objectives')
     @classmethod

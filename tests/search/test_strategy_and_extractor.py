@@ -8,7 +8,7 @@ import numpy as np
 
 from robovast.common.config import SearchConfig
 from robovast.common.plugin_ref import load_ref
-from robovast.search.compose import apply_override, config_name_for
+from robovast.search.compose import _substitute_vars, config_name_for
 from robovast.search.extractors.failure_rate import FailureRate
 from robovast.search.plugins import EXTRACTOR_GROUP
 from robovast.search.space import SearchSpaceCodec
@@ -125,12 +125,28 @@ def test_load_ref_file(tmp_path):
 
 # ---- compose helpers ----
 
-def test_apply_override_routes():
-    block = {"name": "base", "variations": [{"Path": {"seed": 41}}]}
-    apply_override(block, "variations.Path.seed", 7)
-    apply_override(block, "noise", 0.3)
-    assert block["variations"][0]["Path"]["seed"] == 7
-    assert {"noise": 0.3} in block["parameters"]
+def test_substitute_vars_typed_and_marker_forms():
+    template = [{"Path": {"seed": "$seed", "length": "${path_len}",
+                          "map": "office.yaml", "start": "@start_pose"}}]
+    used = set()
+    out = _substitute_vars(template, {"seed": 7, "path_len": 12.5}, used)
+    path = out[0]["Path"]
+    assert path["seed"] == 7 and isinstance(path["seed"], int)       # typed, $name
+    assert path["length"] == 12.5                                    # ${name}
+    assert path["map"] == "office.yaml"                              # plain string
+    assert path["start"] == "@start_pose"                            # @ ref untouched
+    assert used == {"seed", "path_len"}
+
+
+def test_substitute_vars_escape_and_unknown():
+    used = set()
+    assert _substitute_vars("$$literal", {}, used) == "$literal"     # $$ escape
+    try:
+        _substitute_vars("$missing", {"seed": 1}, set())
+    except ValueError as e:
+        assert "search_space variable" in str(e)
+    else:
+        raise AssertionError("expected ValueError for unknown marker")
 
 
 def test_config_name_schema_valid():

@@ -29,7 +29,7 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict
 
-from robovast.common.config import ChoiceDim, FloatDim, IntDim
+from robovast.common.config import BoolDim, ChoiceDim, FloatDim, IntDim
 
 from ..strategy import SearchStrategy
 from ..types import Evaluation, ParamSet, SearchReport
@@ -46,6 +46,8 @@ class OptunaParams(BaseModel):
 
 
 def _suggest(trial, path, dim):
+    if isinstance(dim, BoolDim):
+        return trial.suggest_categorical(path, [False, True])
     if isinstance(dim, ChoiceDim):
         return trial.suggest_categorical(path, dim.values)
     if isinstance(dim, FloatDim):

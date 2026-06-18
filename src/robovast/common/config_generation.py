@@ -221,10 +221,14 @@ def _match_recursive_pattern(path, pattern):
         return fnmatch.fnmatch(path, pattern)
 
 
-def _get_variation_classes(scenario_config):
+def _get_variation_classes(scenario_config, vast_dir=""):
     """
     Read variation class names scenario
 
+    A variation is named either by an installed ``robovast.variation_types``
+    entry point or by a local ``<path>.py:<Class>`` file reference resolved
+    relative to ``vast_dir`` (parity with search strategies/extractors and
+    results postprocessing).
     """
 
     # Get the variation list from settings
@@ -260,6 +264,9 @@ def _get_variation_classes(scenario_config):
         print(f"Warning: Failed to load variation types from entry points: {e}")
 
     # Extract variation class names from the list
+    from robovast.common.plugin_ref import is_file_ref, load_ref
+    from robovast.common.variation.loader import _validate_variation_class
+
     variation_classes = []
     for item in variation_list:
         if isinstance(item, dict):
@@ -267,6 +274,14 @@ def _get_variation_classes(scenario_config):
             for class_name in item.keys():
                 if class_name in available_classes:
                     variation_classes.append((available_classes[class_name], item[class_name]))
+                elif is_file_ref(class_name):
+                    # Local '<path>.py:<Class>' reference relative to the .vast dir.
+                    variation_class = load_ref(class_name, 'robovast.variation_types', vast_dir)
+                    errors = _validate_variation_class(class_name, variation_class)
+                    if errors:
+                        raise ValueError(
+                            f"Invalid variation plugin '{class_name}': {'; '.join(errors)}")
+                    variation_classes.append((variation_class, item[class_name]))
                 else:
                     error_msg = f"Unknown variation class '{class_name}' found in variation file.\n"
                     if not available_classes:
@@ -274,7 +289,8 @@ def _get_variation_classes(scenario_config):
                         error_msg += "To fix this, run: poetry install\n"
                         error_msg += "If you're in a CI environment, ensure 'poetry install' (without --no-root) has been executed."
                     else:
-                        error_msg += f"Available variation types: {', '.join(available_classes.keys())}"
+                        error_msg += f"Available variation types: {', '.join(available_classes.keys())}. "
+                        error_msg += "Use a '<path>.py:<Class>' file reference for a local module."
                     raise ValueError(error_msg)
 
     return variation_classes
@@ -451,11 +467,11 @@ def _build_generate_cache_key(
     return key
 
 
-def _rebuild_variation_gui_classes(configurations: list) -> dict:
+def _rebuild_variation_gui_classes(configurations: list, vast_dir="") -> dict:
     """Cheaply reconstruct variation_gui_classes from config blocks without running variations."""
     gui_classes = {}
     for config_block in configurations:
-        for variation_class, _ in _get_variation_classes(config_block):
+        for variation_class, _ in _get_variation_classes(config_block, vast_dir):
             gui_class = getattr(variation_class, 'GUI_CLASS', None)
             renderer_class = getattr(variation_class, 'GUI_RENDERER_CLASS', None)
             if gui_class:
@@ -577,7 +593,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
             if output_dir is not None:
                 _cached["_output_dir"] = os.path.abspath(output_dir)
             progress_update_callback("Loaded configurations from cache (no changes detected).")
-            return _cached, _rebuild_variation_gui_classes(configurations)
+            return _cached, _rebuild_variation_gui_classes(configurations, vast_dir)
         logger.info("Cache MISS for generate_scenario_variations (%s)", variation_file)
     else:
         _cache_meta = None
@@ -605,7 +621,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     for config in configurations:
         if variation_classes is None:
             # Read variation classes from the variation file
-            variation_classes_and_parameters = _get_variation_classes(config)
+            variation_classes_and_parameters = _get_variation_classes(config, vast_dir)
         else:
             raise NotImplementedError("Passing variation_classes is not implemented yet")
 
