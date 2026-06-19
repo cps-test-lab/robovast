@@ -13,8 +13,12 @@ click = "^8.1"
 pyyaml = "^6.0"
 numpy = "^1.26"
 pandas = "^2.2"
-pyside6-essentials = "^6.6"
-pyside6-addons = "^6.6"
+# Qt desktop GUI (config editor / result analyzer). Optional: headless installs
+# (the in-cluster controller, CI) skip it, and PySide6 ships no linux-aarch64
+# wheels. Install with the ``gui`` extra for the desktop tools. GUI imports are
+# already lazy / guarded, so the rest of robovast runs without it.
+pyside6-essentials = {version = "^6.6", optional = true}
+pyside6-addons = {version = "^6.6", optional = true}
 matplotlib = "^3.10"
 nbformat = "^5.9"
 nbconvert = "^7.16"
@@ -55,6 +59,7 @@ sphinx-click = "^5.0.0"
 
 [tool.poetry.extras]
 nav = ["robovast-nav"]
+gui = ["pyside6-essentials", "pyside6-addons"]
 docs = ["sphinx", "sphinx-rtd-theme", "sphinxcontrib-spelling", "sphinx-click"]
 qd = ["ribs", "shapely"]
 optuna = ["optuna"]

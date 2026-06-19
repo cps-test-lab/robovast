@@ -40,37 +40,54 @@ from .config_identifier import (compute_config_identifier, hash_file_content,
 # /etc/robovast_compat_version.
 COMPAT_VERSION = 2
 
-# Default robovast container image, used when no image is configured anywhere.
-# ``ROBOVAST_IMAGE`` overrides *this* hard-coded default only; an explicit
-# ``--image`` flag or an ``execution.image`` value in the ``.vast`` file always
-# take precedence over it.
+# Default container images, used when nothing is configured anywhere. The
+# matching ``ROBOVAST_*_IMAGE`` env var overrides *this* hard-coded default only;
+# an explicit value (``--image`` / an ``execution.image`` entry in the ``.vast``
+# file) always takes precedence over the env var.
 DEFAULT_ROBOVAST_IMAGE = "ghcr.io/cps-test-lab/robovast:latest"
+# robovast-controller hosts the in-cluster CampaignController for cluster runs.
+DEFAULT_ROBOVAST_CONTROLLER_IMAGE = "ghcr.io/cps-test-lab/robovast-controller:latest"
 
 
-def resolve_robovast_image(explicit: str | None = None,
-                           config_image: str | None = None) -> str:
-    """Resolve the robovast container image to use.
+def _resolve_image(default: str, env_var: str, *, explicit: str | None = None,
+                   config_image: str | None = None) -> str:
+    """Resolve a container image with a fixed precedence.
 
-    Precedence (highest first):
-
-    1. *explicit* — a value passed on the command line (e.g. ``--image``).
-    2. *config_image* — the ``execution.image`` value from the ``.vast`` file.
-    3. ``ROBOVAST_IMAGE`` environment variable — a replacement for the built-in
-       default only, handy for testing a dev image (e.g. one pushed to Docker
-       Hub) before the canonical image is built and published by CI.
-    4. :data:`DEFAULT_ROBOVAST_IMAGE`.
-
-    The same resolver is used for the controller pod, the job pods and local
-    runs, so a single ``ROBOVAST_IMAGE`` points the whole run at one image.
+    Precedence (highest first): *explicit* (e.g. a ``--image`` flag) →
+    *config_image* (a value from the ``.vast`` file) → the *env_var* environment
+    variable (a replacement for the built-in default only, handy for testing a
+    dev image pushed to e.g. Docker Hub) → *default*.
     """
     if explicit:
         return explicit
     if config_image:
         return config_image
-    env_image = os.environ.get("ROBOVAST_IMAGE", "").strip()
+    env_image = os.environ.get(env_var, "").strip()
     if env_image:
         return env_image
-    return DEFAULT_ROBOVAST_IMAGE
+    return default
+
+
+def resolve_robovast_image(explicit: str | None = None,
+                           config_image: str | None = None) -> str:
+    """Resolve the robovast (job / local) container image.
+
+    Overridable via ``ROBOVAST_IMAGE``. Used for the job pods and local runs.
+    """
+    return _resolve_image(DEFAULT_ROBOVAST_IMAGE, "ROBOVAST_IMAGE",
+                          explicit=explicit, config_image=config_image)
+
+
+def resolve_controller_image(explicit: str | None = None,
+                             config_image: str | None = None) -> str:
+    """Resolve the robovast-controller container image (the in-cluster controller pod).
+
+    Overridable via ``ROBOVAST_CONTROLLER_IMAGE`` — point this at a dev image
+    (e.g. pushed to Docker Hub) to test controller changes before CI publishes
+    the canonical image.
+    """
+    return _resolve_image(DEFAULT_ROBOVAST_CONTROLLER_IMAGE, "ROBOVAST_CONTROLLER_IMAGE",
+                          explicit=explicit, config_image=config_image)
 
 
 def get_app_version() -> str:

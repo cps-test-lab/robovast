@@ -432,6 +432,34 @@ def run(config, runs, follow, cleanup, log_tree, kube_context):  # pylint: disab
         sys.exit(1)
     logging.debug(pod_msg)
 
+    # Search campaigns run an in-cluster controller pod (it drives the ask/tell
+    # loop and launches per-batch jobs from inside the cluster); batch campaigns
+    # create scenario jobs directly via JobRunner.
+    from robovast.common.common import load_config as _load_config
+    from robovast.common.config import validate_config as _validate_config
+    _campaign_config = _validate_config(_load_config(project_config.config_path))
+    if _campaign_config.search is not None:
+        from robovast.execution.cluster_execution.cluster_setup import (
+            get_kubernetes_node_labels_from_config, load_cluster_setup_info)
+        from robovast.execution.cluster_execution.controller_launcher import \
+            launch_search_controller
+
+        if config or follow or cleanup:
+            click.echo("Note: --config, --follow and --cleanup are ignored for search campaigns.")
+        cfg_name, setup_kwargs = load_cluster_setup_info(context_key)
+        _, control_node_labels = get_kubernetes_node_labels_from_config(project_config.config_path)
+        try:
+            launch_search_controller(
+                config_path=project_config.config_path, config_name=cfg_name,
+                setup_kwargs=setup_kwargs, namespace=namespace, runs=runs,
+                kube_context=kube_context,
+                log_tree=log_tree, control_node_labels=control_node_labels)
+            click.echo("Cluster search campaign finished.")
+        except Exception as e:  # pylint: disable=broad-except
+            click.echo(f"✗ Error: {e}", err=True)
+            sys.exit(1)
+        return
+
     try:
         job_runner = JobRunner(
             project_config.config_path, config, runs, cluster_config,

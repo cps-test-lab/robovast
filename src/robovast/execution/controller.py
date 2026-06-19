@@ -48,8 +48,13 @@ _BAR = "=" * 60
 
 
 def campaign_id_for(campaign_config) -> str:
-    """``<metadata.name>-<timestamp>`` — the campaign directory id (both modes)."""
-    name = (campaign_config.metadata or {}).get("name", "campaign")
+    """``<metadata.name>-<timestamp>`` — the campaign directory id (both modes).
+
+    Underscores in the name are normalised to hyphens so a local campaign id
+    matches the cluster's: storage bucket names disallow underscores, so the
+    cluster sanitises the name to hyphens — doing it here keeps both identical.
+    """
+    name = (campaign_config.metadata or {}).get("name", "campaign").replace("_", "-")
     return f"{name}-{datetime.now().strftime('%Y-%m-%d-%H%M%S')}"
 
 
@@ -239,6 +244,17 @@ class CampaignController:
 
 # -- builders ---------------------------------------------------------------
 
+def _finalize(backend: ExecutionBackend, campaign_root: str) -> None:
+    """Run the backend's campaign finalize hook, best-effort.
+
+    Called from the builders' ``finally`` after the store is closed (so
+    ``campaign.db`` is fully flushed). Never masks an in-flight exception.
+    """
+    try:
+        backend.finalize_campaign(campaign_root)
+    except Exception:  # pylint: disable=broad-except
+        logger.warning("Campaign finalize hook failed", exc_info=True)
+
 def run_search_campaign(vast_file, campaign_config, results_dir, runs,
                         backend: ExecutionBackend | None = None,
                         options: RunOptions | None = None):
@@ -255,10 +271,11 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
     vast_dir = os.path.dirname(os.path.abspath(vast_file))
     runs = runs if runs is not None else campaign_config.execution.runs
     campaign_id = campaign_id_for(campaign_config)
+    be = backend or DockerBackend()
     store = CampaignStore(os.path.join(results_dir, campaign_id, STORE_FILENAME))
     controller = CampaignController(
         campaign_id=campaign_id, results_dir=results_dir, runs=runs,
-        backend=backend or DockerBackend(), options=options or RunOptions(),
+        backend=be, options=options or RunOptions(),
         store=store, campaign_config_dump=campaign_config.model_dump(),
         vast_dir=vast_dir, strategy=build_strategy(search_cfg, vast_dir),
         evaluator=Evaluator(search_cfg, vast_dir), compose=Compose(vast_file),
@@ -268,6 +285,7 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
         return controller.run()
     finally:
         store.close()
+        _finalize(be, os.path.join(results_dir, campaign_id))
 
 
 def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_filter=None,
@@ -294,13 +312,103 @@ def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_fil
                 raise ValueError(f"No configs matched pattern '{config_filter}'")
             campaign_data["configs"] = matched
 
+        be = backend or DockerBackend()
         store = CampaignStore(os.path.join(results_dir, campaign_id, STORE_FILENAME))
         controller = CampaignController(
             campaign_id=campaign_id, results_dir=results_dir, runs=runs,
-            backend=backend or DockerBackend(), options=options or RunOptions(),
+            backend=be, options=options or RunOptions(),
             store=store, campaign_config_dump=campaign_config.model_dump(),
             vast_dir=vast_dir, batch_campaign_data=campaign_data)
         try:
             return controller.run()
         finally:
             store.close()
+            _finalize(be, os.path.join(results_dir, campaign_id))
+
+
+# -- in-pod entrypoint ------------------------------------------------------
+
+def _build_cluster_backend(namespace, kube_context, log_tree):
+    """Reconstruct the cluster config from the env and build a KubernetesBackend.
+
+    The host injects ``ROBOVAST_CLUSTER_CONFIG_NAME`` and (optionally)
+    ``ROBOVAST_CLUSTER_CONFIG_KWARGS`` (JSON) when launching the controller pod,
+    so the in-pod controller reuses the very same cluster config object the host
+    uses for storage and scheduling (its ``get_s3_endpoint()`` is the
+    cluster-internal endpoint, so all storage traffic stays in-cluster).
+    """
+    import json
+
+    from robovast.execution.cluster_execution.cluster_setup import \
+        get_cluster_config
+    from robovast.execution.cluster_execution.kubernetes_backend import \
+        KubernetesBackend
+
+    name = os.environ.get("ROBOVAST_CLUSTER_CONFIG_NAME")
+    if not name:
+        raise RuntimeError(
+            "ROBOVAST_CLUSTER_CONFIG_NAME is not set. The controller is meant to be "
+            "launched by 'vast exec cluster run', which injects the cluster config."
+        )
+    cluster_config = get_cluster_config(name)
+    kwargs_json = os.environ.get("ROBOVAST_CLUSTER_CONFIG_KWARGS")
+    if kwargs_json:
+        cluster_config.restore_from_setup_kwargs(json.loads(kwargs_json))
+    return KubernetesBackend(
+        cluster_config=cluster_config, namespace=namespace,
+        kube_context=kube_context, log_tree=log_tree)
+
+
+def main(argv=None):
+    """Run a campaign controller inside the cluster controller pod.
+
+    ``vast exec cluster run`` copies the campaign inputs + the dev wheel into the
+    controller pod and invokes ``python -m robovast.execution.controller`` here.
+    The backend is always :class:`KubernetesBackend` — this entrypoint only runs
+    in the controller pod (which has no Docker); local execution uses the separate
+    ``vast exec local run`` path.
+    """
+    import argparse
+
+    from robovast.common.common import load_config
+    from robovast.common.config import validate_config
+
+    parser = argparse.ArgumentParser(
+        prog="python -m robovast.execution.controller",
+        description="Run a robovast campaign controller (batch or search) in-cluster.",
+    )
+    parser.add_argument("--vast", required=True, help="Path to the .vast campaign file.")
+    parser.add_argument("--results-dir", required=True,
+                        help="Directory where the campaign (results + campaign.db) is written.")
+    parser.add_argument("--runs", type=int, default=None,
+                        help="Override the number of runs from the config.")
+    parser.add_argument("--namespace", default=os.environ.get("ROBOVAST_NAMESPACE", "default"),
+                        help="Kubernetes namespace for the jobs.")
+    parser.add_argument("--kube-context", default=os.environ.get("ROBOVAST_KUBE_CONTEXT"),
+                        help="Host context name, used only to resolve per-cluster resources.")
+    parser.add_argument("--config", default=None,
+                        help="Batch mode only: run configurations matching this glob.")
+    parser.add_argument("--log-tree", action="store_true", help="Forward the live scenario tree.")
+    args = parser.parse_args(argv)
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+    campaign_config = validate_config(load_config(args.vast))
+    backend = _build_cluster_backend(args.namespace, args.kube_context, args.log_tree)
+    options = RunOptions(log_tree=args.log_tree)
+
+    if campaign_config.search is not None:
+        report = run_search_campaign(args.vast, campaign_config, args.results_dir, args.runs,
+                                     backend=backend, options=options)
+        logger.info("Search campaign finished: %s", report)
+    else:
+        report = run_batch_campaign(args.vast, campaign_config, args.results_dir, args.runs,
+                                    config_filter=args.config, backend=backend, options=options)
+        logger.info("Batch campaign finished: %s", report)
+
+
+if __name__ == "__main__":
+    main()

@@ -43,6 +43,8 @@ from robovast.common.execution import (build_job_parameter_documents,
                                        write_job_links_manifest)
 from robovast.execution.packer import build_jobs
 from robovast.execution.cluster_execution.kubernetes import check_pod_running
+from robovast.execution.cluster_execution.in_pod_storage import \
+    campaign_storage_location
 from . import archiver, bucket_ops
 
 from .kubernetes_kueue import (cleanup_kueue_workloads,
@@ -266,6 +268,16 @@ def cleanup_cluster_campaign(namespace="default", campaign=None, context=None):
     logger.info("Restoring ClusterQueue stopPolicy to None after cleanup")
     set_cluster_queue_stop_policy(None, kube_context=context)
 
+    # Step 9: On a full cleanup, also reap any leftover search controller pods
+    # (they are per-run and not campaign-labelled).
+    if campaign is None:
+        try:
+            from .controller_launcher import \
+                cleanup_controller_pods  # pylint: disable=import-outside-toplevel
+            cleanup_controller_pods(namespace=namespace, kube_context=context)
+        except Exception as exc:  # pragma: no cover - best-effort
+            logger.warning("Failed to clean up controller pods: %s", exc)
+
 
 def get_cluster_campaign_job_counts(namespace="default", context=None):
     """Get aggregate status counts for scenario run jobs.
@@ -460,6 +472,12 @@ class JobRunner:
             self.campaign_data["configs"] = matched_configs
             self.configs = matched_configs
 
+        # Per-batch storage/job namespacing. ``None`` ⇒ single-batch behaviour
+        # (the classic ``vast exec cluster run``). The in-pod KubernetesBackend
+        # sets this per search batch so jobs, param files and the storage prefix
+        # don't collide across batches of one campaign.
+        self._batch_tag = None
+
         # Initialize k8s clients to None - will be initialized lazily when needed
         self.k8s_client = None
         self.k8s_batch_client = None
@@ -508,15 +526,31 @@ class JobRunner:
         """Return (endpoint, access_key, secret_key, bucket_name, campaign_prefix).
 
         ``campaign_prefix`` is ``"<campaign>/"`` for shared-bucket backends
-        (e.g. GCS) and ``""`` for per-campaign buckets (embedded MinIO).
+        (e.g. GCS) and ``""`` for per-campaign buckets (embedded MinIO). It is the
+        flat campaign prefix — batches share it (no ``_batches/`` component); cross-
+        batch collisions are prevented by the batch-namespaced ``_job_tag`` (job
+        names, ``<tag>.params.yaml``, ``_jobs/<tag>``), so the layout matches local.
         """
         s3_endpoint = self.cluster_config.get_s3_endpoint()
         s3_access_key, s3_secret_key = self.cluster_config.get_s3_credentials()
-        shared_bucket = self.cluster_config.get_s3_bucket()
-        campaign_bucket_name = self._bucket_name_for_campaign(self.campaign)
-        bucket_name = shared_bucket if shared_bucket else campaign_bucket_name
-        campaign_prefix = f"{campaign_bucket_name}/" if shared_bucket else ""
+        bucket_name, campaign_prefix = campaign_storage_location(self.cluster_config, self.campaign)
         return s3_endpoint, s3_access_key, s3_secret_key, bucket_name, campaign_prefix
+
+    def _job_tag(self, index: int) -> str:
+        """Flat, slash-free job tag for job *index*, namespaced by the batch when set.
+
+        Used for the (globally unique, K8s-safe) job name and the
+        ``<tag>.params.yaml`` file, so these never collide across batches.
+        """
+        return f"{self._batch_tag}-job-{index}" if self._batch_tag else f"job-{index}"
+
+    def _job_artifact_path(self, index: int) -> str:
+        """Path of the job's artifact dir under ``_jobs/`` (no leading ``_jobs/``).
+
+        Nested ``<batch>/job-<idx>`` when batched (matching the local layout), else
+        flat ``job-<idx>``. This is the symlink target base used by ``job_links``.
+        """
+        return f"{self._batch_tag}/job-{index}" if self._batch_tag else f"job-{index}"
 
     def _build_job_manifest(self, *, job_short_name, job_full_name, item_tag,
                             total_jobs, s3_prefix, init_cmd, extra_main_env=()):
@@ -669,7 +703,7 @@ class JobRunner:
         and so lands at ``/config/<job-tag>.params.yaml``.
         """
         _, _, _, _, campaign_prefix = self._s3_settings()
-        job_tag = f"job-{job.index}"
+        job_tag = self._job_tag(job.index)
         per_config_mirror = "".join(
             f"(mc mirror mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}{cn}/_config/ /config/{cn}/ 2>/dev/null || true); "
             for cn in job.config_names
@@ -688,7 +722,10 @@ class JobRunner:
         extra_env = (
             ('SCENARIO_PARAMETER_FILE', f"/config/{job_tag}.params.yaml"),
             ('OUTPUT_RESULT_PER_SCENARIO', 'true'),
-            ('OUTPUT_DIR', f"/out/_jobs/{job_tag}"),
+            # Job artifacts land in the nested _jobs/<batch>/job-<idx> layout
+            # (matching local), while the K8s job name / param file stay flat
+            # (slash-free, globally unique). See _job_artifact_path / _job_tag.
+            ('OUTPUT_DIR', f"/out/_jobs/{self._job_artifact_path(job.index)}"),
             ('SCENARIO_OUTPUT_DIR', '/out'),
         )
         return self._build_job_manifest(
@@ -725,11 +762,14 @@ class JobRunner:
         jobs = self._build_jobs()
         for job in jobs:
             docs = build_job_parameter_documents(job, scenario_name)
-            with open(os.path.join(transient_dir, f"job-{job.index}.params.yaml"), "w") as f:
+            with open(os.path.join(transient_dir, f"{self._job_tag(job.index)}.params.yaml"), "w") as f:
                 f.write(dump_multi_document_yaml(docs))
         # Canonical link manifest, consumed by the share archiver (s3/gcs_to_targz)
         # to materialise <config>/<run>/job symlinks into the shared tar.gz.
-        write_job_links_manifest(transient_dir, jobs)
+        # Skipped in per-batch mode: build_job_links assumes the single-batch
+        # ``_jobs/job-<idx>`` layout, which the batch-namespaced job tag breaks.
+        if not self._batch_tag:
+            write_job_links_manifest(transient_dir, jobs)
 
     @staticmethod
     def _bucket_name_for_campaign(campaign: str) -> str:

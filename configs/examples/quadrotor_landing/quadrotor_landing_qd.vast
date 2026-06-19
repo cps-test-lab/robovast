@@ -13,7 +13,7 @@ execution:
   scenario_file: scenario.osc
   run_files:
   - "files/*.py"
-  runs_per_job: 100
+  runs_per_job: 40
 search:
   strategy: qd
   search_space:
@@ -37,9 +37,9 @@ search:
     plugin: search/extract.py:QuadExtract
   objectives:
   - {name: failure_rate, direction: maximize}
-  per_batch: 20
+  per_batch: 10
   budget:
-  - batches: 200
+  - batches: 2
   stopping:
   - metric:
       name: coverage

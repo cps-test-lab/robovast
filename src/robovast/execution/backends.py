@@ -78,6 +78,15 @@ class ExecutionBackend(ABC):
         multiple batches sharing one campaign root do not collide.
         """
 
+    def finalize_campaign(self, campaign_root: str) -> None:
+        """Hook called once after the whole campaign completes (store closed).
+
+        Default no-op: the local :class:`DockerBackend` already materialises the
+        full campaign on disk. The :class:`KubernetesBackend` overrides this to
+        publish campaign-level artifacts (``campaign.db``, ``_execution/``) to
+        storage, so the bucket holds a complete, local-equivalent campaign.
+        """
+
 
 def _sanitize(tag: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", tag)
