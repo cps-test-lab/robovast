@@ -80,8 +80,8 @@ Available cluster configs (``--list``):
 
 The setup command:
 
-* Deploys a ``robovast`` pod containing MinIO, an nginx HTTP server, and a
-  Python/boto3 archiver sidecar.
+* Deploys a ``robovast`` pod containing MinIO and a Python/boto3 archiver
+  sidecar.
 * Installs `Kueue <https://kueue.sigs.k8s.io/>`_ via Helm and creates a
   ``ClusterQueue`` and ``LocalQueue`` sized to the cluster's available
   CPU/memory.
@@ -392,9 +392,9 @@ and local integration tests.
 
 **Notes:**
 
-* No HTTP result server — the nginx sidecar and archiver are not included in
-  the minikube manifest.  Use ``vast execution cluster download-cleanup`` to
-  remove S3 buckets after processing results via ``kubectl port-forward``.
+* No archiver sidecar — it is not included in the minikube manifest.  Use
+  ``vast execution cluster download-cleanup`` to remove S3 buckets after
+  processing results via ``kubectl port-forward``.
 * ``emptyDir`` storage means all data is lost if the pod restarts.
 
 

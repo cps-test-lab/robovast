@@ -18,8 +18,8 @@
 
 Instead of running an embedded MinIO server, this config uses a user-provided
 GCS bucket via the S3-compatible ``https://storage.googleapis.com`` endpoint
-with HMAC credentials.  A ``robovast`` helper pod (nginx + archiver sidecar)
-is still deployed for archive/download workflows.
+with HMAC credentials.  A ``robovast`` helper pod (archiver sidecar)
+is still deployed for archive workflows.
 
 Required ``-o`` options at ``setup`` time::
 
@@ -155,7 +155,7 @@ GCS_S3_ENDPOINT = "https://storage.googleapis.com"
 # ---------------------------------------------------------------------------
 # Kubernetes manifest for the ``robovast`` helper pod on GCP.
 #
-# No MinIO container — the archiver and HTTP server connect to GCS directly.
+# No MinIO container — the archiver connects to GCS directly.
 # The archiver sidecar receives GCS credentials via environment variables so
 # that ``s3_to_targz.py`` / ``targz_to_s3.py`` can reach the external bucket.
 # ---------------------------------------------------------------------------
@@ -178,19 +178,6 @@ metadata:
     role: robovast
 spec:
   containers:
-  - name: http-server
-    image: nginx:alpine
-    ports:
-      - name: http
-        containerPort: 80
-    volumeMounts:
-      - mountPath: /usr/share/nginx/html
-        name: robovast-storage
-        readOnly: true
-    resources:
-      limits:
-        cpu: "500m"
-        memory: "1Gi"
   - name: archiver
     image: ghcr.io/cps-test-lab/robovast-sidecar:latest
     command: ["sleep", "infinity"]
@@ -220,19 +207,6 @@ spec:
           resources:
             requests:
               storage: {storage_size}
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: robovast
-spec:
-  ports:
-  - name: http
-    port: 9998
-    targetPort: 80
-    protocol: TCP
-  selector:
-    role: robovast
 """
 
 
@@ -357,7 +331,7 @@ class GcpClusterConfig(BaseConfig):
     # ------------------------------------------------------------------
 
     def setup_cluster(self, storage_size="10Gi", disk_type="pd-standard", **kwargs):
-        """Deploy the robovast helper pod (archiver + nginx) for GCP.
+        """Deploy the robovast helper pod (archiver) for GCP.
 
         The GCS bucket must already exist.  This method validates that the
         bucket is reachable with the provided HMAC credentials.
@@ -467,7 +441,7 @@ No embedded MinIO server is deployed.
 
 - **GCS bucket:** `{gcs_bucket}`
 - **S3 endpoint:** `{GCS_S3_ENDPOINT}`
-- **Storage PVC:** {storage_size}, type `{disk_type}` (for archiver/nginx scratch space)
+- **Storage PVC:** {storage_size}, type `{disk_type}` (for archiver scratch space)
 
 ## Setup Steps
 
@@ -483,7 +457,6 @@ kubectl apply -f robovast-manifest.yaml
 kubectl wait --for=condition=ready pod/robovast --timeout=120s
 ```
 
-The HTTP server (nginx) serves archive downloads on port 9998.
 The archiver sidecar streams GCS bucket contents to tar.gz in /data.
 """
         with open(f"{output_dir}/README_gcp.md", "w") as f:
