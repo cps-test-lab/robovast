@@ -112,9 +112,6 @@ class OptunaStrategy(SearchStrategy):
         self._history.extend(evaluations)
         self._batches_done += 1
 
-    def is_done(self) -> bool:
-        return self._batches_done >= self.cfg.budget.batches
-
     def report(self) -> SearchReport:
         ranked = sorted(self._history, key=self.objective_value, reverse=True)
         best = ranked[0] if ranked else None

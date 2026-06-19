@@ -19,7 +19,7 @@
 One controller drives **both** batch and search locally through one
 :class:`~robovast.execution.backends.ExecutionBackend`, producing a single
 uniform layout (``<results>/<CAMPAIGN_ID>/<config>/<run>/``) plus a live
-``campaign.sqlite`` for every run:
+``campaign.db`` for every run:
 
 * **batch mode** (no ``search:`` block) — a strategy-less campaign with exactly
   one *batch* of the enumerated configurations.
@@ -33,6 +33,7 @@ in the store, not a directory level, so batch and search share the flat layout.
 import logging
 import os
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -58,7 +59,8 @@ class CampaignController:
     def __init__(self, *, campaign_id, results_dir, runs, backend: ExecutionBackend,
                  options: RunOptions, store: CampaignStore, campaign_config_dump: dict,
                  vast_dir: str, strategy=None, evaluator=None, compose=None,
-                 per_batch: int = 1, postprocessing=None, batch_campaign_data=None):
+                 per_batch: int = 1, postprocessing=None, batch_campaign_data=None,
+                 stop_conditions=None):
         self.campaign_id = campaign_id
         self.campaign_root = os.path.join(results_dir, campaign_id)
         self.runs = runs
@@ -74,6 +76,9 @@ class CampaignController:
         self.batch_campaign_data = batch_campaign_data
         self.mode = "search" if strategy is not None else "batch"
         self.postprocessing = postprocessing or []
+        # Combined budget + stopping evaluator (search mode); drives loop end and
+        # the per-batch progress line. None in batch mode.
+        self.stop_conditions = stop_conditions
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -115,8 +120,17 @@ class CampaignController:
     # -- search mode --------------------------------------------------------
 
     def _run_search(self, campaign_id: int):
+        from robovast.search.stopping import StopSnapshot
+        stop = self.stop_conditions
+        obj_name = self.strategy.single_objective.name
+        if not stop.has_budget:
+            logger.warning("No 'budget' cap configured — this search is bounded "
+                           "only by its 'stopping' criteria; it may run a long time.")
         batch_idx = 0
-        while not self.strategy.is_done():
+        start = time.monotonic()
+        best_objective = None          # best-so-far, in raw objective units
+        result = None
+        while True:
             param_sets = self.strategy.ask(self.per_batch)
             batch_id = self.store.open_batch(campaign_id, batch_idx, self.campaign_root)
             logger.info("\n%s\n🔁  Batch %d  —  %d parameter set(s)\n%s",
@@ -124,11 +138,50 @@ class CampaignController:
             evaluations = self._run_search_batch(param_sets, batch_idx, batch_id)
             self.strategy.tell(evaluations)
             batch_idx += 1
+            best_objective = self._update_best(best_objective, evaluations, obj_name)
 
+            snap = StopSnapshot(batch=batch_idx,
+                                elapsed=time.monotonic() - start,
+                                best_objective=best_objective,
+                                metrics=self.strategy.report().extra if stop.needs_metrics else {})
+            # Live progress toward every budget/stopping criterion.
+            logger.info("📊  %s", " | ".join(
+                f"{p.label} {self._fmt(p.current)}/{self._fmt(p.limit)}"
+                for p in stop.progress(snap)))
+            result = stop.should_stop(snap)
+            if result:
+                logger.info("\n%s\n⏹  Stopping — %s\n%s", _BAR, result.reason, _BAR)
+                break
+
+        elapsed_s = time.monotonic() - start
+        self.store.record_outcome(
+            campaign_id, stop_kind=result.kind, stop_reason=result.reason,
+            batches=batch_idx, elapsed_s=elapsed_s)
         report = self.strategy.report()
-        logger.info("\n%s\n✅  Search complete  —  %d batch(es), %d evaluation(s)\n%s",
-                    _BAR, batch_idx, len(report.evaluations), _BAR)
+        report.extra['stop'] = {"kind": result.kind, "reason": result.reason,
+                                "batches": batch_idx, "elapsed_s": elapsed_s}
+        logger.info("\n%s\n✅  Search complete  —  %d batch(es), %d evaluation(s) "
+                    "(%s)\n%s", _BAR, batch_idx, len(report.evaluations), result.reason, _BAR)
         return report
+
+    @staticmethod
+    def _fmt(v):
+        return f"{v:.4g}" if isinstance(v, float) else str(v)
+
+    def _update_best(self, best, evaluations, obj_name):
+        """Fold this batch's objective values into the best-so-far (raw units,
+        direction-aware via the strategy's objective spec)."""
+        spec = self.strategy.single_objective
+        for ev in evaluations:
+            v = ev.objectives.get(obj_name)
+            if v is None:
+                continue
+            v = float(v)
+            if best is None:
+                best = v
+            elif (v < best if spec.direction == 'minimize' else v > best):
+                best = v
+        return best
 
     def _run_search_batch(self, param_sets, batch_idx, batch_id):
         """Compose, execute and score one batch.
@@ -192,6 +245,7 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
     """Build and run a search campaign. Requires ``campaign_config.search``."""
     from robovast.search.compose import Compose
     from robovast.search.evaluator import Evaluator
+    from robovast.search.stopping import build_stop_conditions
     from robovast.search.strategy import build_strategy
 
     search_cfg = campaign_config.search
@@ -208,7 +262,8 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
         store=store, campaign_config_dump=campaign_config.model_dump(),
         vast_dir=vast_dir, strategy=build_strategy(search_cfg, vast_dir),
         evaluator=Evaluator(search_cfg, vast_dir), compose=Compose(vast_file),
-        per_batch=search_cfg.per_batch, postprocessing=search_cfg.postprocessing)
+        per_batch=search_cfg.per_batch, postprocessing=search_cfg.postprocessing,
+        stop_conditions=build_stop_conditions(search_cfg))
     try:
         return controller.run()
     finally:

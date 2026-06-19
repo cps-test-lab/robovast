@@ -103,7 +103,7 @@ def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_
     - If it defines a ``search:`` block, this runs an iterative **search loop**:
       each generation proposes parameter sets, executes them locally, scores the
       results, and feeds them back to the strategy. Results and a live-queryable
-      ``campaign.sqlite`` are written under the output directory. (A ``search:``
+      ``campaign.db`` are written under the output directory. (A ``search:``
       block is mutually exclusive with a ``configuration:`` block.)
     - Otherwise it runs every configuration once as a **batch** in Docker
       containers, continuing past failures (use ``--abort-on-failure`` to stop at
@@ -245,7 +245,7 @@ def prepare_run(output_dir, config, runs, use_resource_allocation, log_tree, deb
     - **batch** (no ``search:`` block): the full enumerated config tree
       ``out_template/`` + a docker-compose ``run.sh`` (the classic prepare-run).
       Inspect/tweak the configs and run ``cd OUTPUT-DIR && ./run.sh``. (This runs
-      the containers only — postprocessing/``campaign.sqlite`` come from
+      the containers only — postprocessing/``campaign.db`` come from
       ``vast results postprocess`` or ``vast execution local run``.) ``run.sh``
       supports the same flags as ``run`` (``--no-gui``, ``--abort-on-failure``, …).
     - **search**: an editable ``run.py`` only — search configs are composed per

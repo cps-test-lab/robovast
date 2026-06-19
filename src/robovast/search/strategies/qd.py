@@ -131,9 +131,6 @@ class QDStrategy(SearchStrategy):
         self.scheduler.tell(np.array(obj_batch), np.array(meas_batch))
         self._batches_done += 1
 
-    def is_done(self) -> bool:
-        return self._batches_done >= self.cfg.budget.batches
-
     def report(self) -> SearchReport:
         data = self.archive.data(return_type="dict")
         solutions = data.get("solution", [])

@@ -37,9 +37,14 @@ search:
     plugin: search/extract.py:QuadExtract
   objectives:
   - {name: failure_rate, direction: maximize}
-  per_batch: 16
+  per_batch: 20
   budget:
-    batches: 20
+  - batches: 200
+  stopping:
+  - metric:
+      name: coverage
+      op: '>='
+      value: 0.3
   seed: 0
   strategy_parameters:
     # All four behavior measures on a CVT archive (a grid would be too sparse in

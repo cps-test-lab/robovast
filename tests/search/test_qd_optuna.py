@@ -22,7 +22,7 @@ def _cfg(strategy, search_space, objectives, strategy_parameters=None,
     return SearchConfig(
         strategy=strategy, search_space=search_space,
         extract={"plugin": "failure_rate"}, objectives=objectives,
-        per_batch=per_batch, budget={"batches": batches}, seed=0,
+        per_batch=per_batch, budget=[{"batches": batches}], seed=0,
         strategy_parameters=strategy_parameters or {},
     )
 
@@ -56,7 +56,6 @@ def test_qd_fills_archive():
     s = build_strategy(cfg)
     _drive(s, 4, lambda p, r: r.random(),
            lambda p, r: {"m1": r.random(), "m2": r.random() * 4})
-    assert s.is_done()
     rep = s.report()
     assert rep.extra["num_elites"] > 0
     assert 0.0 <= rep.extra["coverage"] <= 1.0
@@ -128,7 +127,7 @@ def test_file_extractor_via_evaluator(tmp_path):
         strategy="random", search_space={"x": {"type": "float", "low": 0, "high": 1}},
         extract={"plugin": "myext.py:E"},
         objectives=[{"name": "obj", "direction": "maximize"}],
-        per_batch=1, budget={"batches": 1}, seed=0)
+        per_batch=1, budget=[{"batches": 1}], seed=0)
     from robovast.search.types import ParamSet
     config_dir = tmp_path / "c0"
     (config_dir / "0").mkdir(parents=True)

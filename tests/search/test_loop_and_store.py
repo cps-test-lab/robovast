@@ -22,13 +22,14 @@ from robovast.search.strategy import SearchStrategy, build_strategy
 from robovast.search.types import ParamSet, SearchReport
 
 
-def _cfg(batches=2, per_batch=3):
+def _cfg(batches=2, per_batch=3, stopping=None):
+    budget = [{"batches": batches}]
     return SearchConfig(
         strategy="random",
         search_space={"x": {"type": "float", "low": 0, "high": 1}},
         extract={"plugin": "failure_rate"},
         objectives=[{"name": "failure_rate", "direction": "maximize"}],
-        per_batch=per_batch, budget={"batches": batches}, seed=1,
+        per_batch=per_batch, budget=budget, seed=1, stopping=stopping,
     )
 
 
@@ -62,6 +63,7 @@ class FakeCompose:
 
 
 def _search_controller(cfg, tmp_path, strategy=None, runs=2):
+    from robovast.search.stopping import build_stop_conditions
     store = CampaignStore(tmp_path / "camp" / STORE_FILENAME)
     backend = FakeBackend()
     controller = CampaignController(
@@ -69,7 +71,7 @@ def _search_controller(cfg, tmp_path, strategy=None, runs=2):
         options=RunOptions(), store=store, campaign_config_dump={"version": 1},
         vast_dir=str(tmp_path), strategy=strategy or build_strategy(cfg),
         evaluator=Evaluator(cfg, str(tmp_path)), compose=FakeCompose(),
-        per_batch=cfg.per_batch)
+        per_batch=cfg.per_batch, stop_conditions=build_stop_conditions(cfg))
     return controller, store, backend
 
 
@@ -116,11 +118,36 @@ class _Fixed(SearchStrategy):
         self.told = evaluations
         self._done = True
 
-    def is_done(self):
-        return self._done
-
     def report(self):
         return SearchReport(evaluations=self.told)
+
+
+def test_stopping_target_objective_halts_early(tmp_path):
+    # FakeBackend makes config #1 fail -> failure_rate 1.0 in batch 0, so a
+    # target of 1.0 stops after the first batch despite the batches budget of 5.
+    cfg = _cfg(batches=5, per_batch=3,
+               stopping=[{"target_objective": 1.0}])
+    controller, store, backend = _search_controller(cfg, tmp_path)
+    report = controller.run()
+    assert len(backend.batch_runs) == 1            # stopped after batch 0
+    # Outcome persisted (parseable) on the campaign row + in the report.
+    conn = sqlite3.connect(store.db_path)
+    assert conn.execute("SELECT COUNT(*) FROM batch").fetchone()[0] == 1
+    row = conn.execute("SELECT stop_kind, batches FROM campaign").fetchone()
+    assert row == ("target_objective", 1)
+    conn.close(); store.close()
+    assert report.extra["stop"]["kind"] == "target_objective"
+
+
+def test_no_stopping_runs_full_budget(tmp_path):
+    cfg = _cfg(batches=3, per_batch=2)             # only the batches budget
+    controller, store, backend = _search_controller(cfg, tmp_path)
+    report = controller.run()
+    assert len(backend.batch_runs) == 3            # full batches budget
+    assert report.extra["stop"]["kind"] == "batches"
+    conn = sqlite3.connect(store.db_path)
+    assert conn.execute("SELECT stop_kind FROM campaign").fetchone()[0] == "batches"
+    conn.close(); store.close()
 
 
 def test_n_reps_override_groups_runs(tmp_path):
@@ -163,8 +190,53 @@ def test_batch_mode_records_one_batch(tmp_path):
 
 
 def test_store_strategy_state_roundtrip(tmp_path):
-    store = CampaignStore(tmp_path / "s.sqlite")
+    store = CampaignStore(tmp_path / "s.db")
     cid = store.create_campaign("c", {"version": 1})
     store.save_strategy_state(cid, b"opaque-blob")
     assert store.load_strategy_state(cid) == b"opaque-blob"
     store.close()
+
+
+def test_fresh_store_stamps_schema_version(tmp_path):
+    from robovast.common.store import SCHEMA_VERSION
+    store = CampaignStore(tmp_path / "camp.db")
+    assert store._conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    store.close()
+
+
+def test_pre_versioning_store_migrates_forward(tmp_path):
+    """A store created before schema versioning (tables present, user_version 0)
+    is adopted at the current version and stays readable."""
+    from robovast.common.store import SCHEMA_VERSION, _SCHEMA
+    db = tmp_path / "legacy.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(_SCHEMA)  # pre-versioning: tables but no user_version bump
+    conn.execute(
+        "INSERT INTO campaign (id, name, mode, created_at) VALUES (1, 'old', 'search', 0)")
+    conn.commit()
+    conn.close()
+    assert sqlite3.connect(db).execute("PRAGMA user_version").fetchone()[0] == 0
+
+    with CampaignStore(db) as store:
+        assert store._conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert [c["name"] for c in store.list_campaigns()] == ["old"]
+
+
+def test_newer_store_is_read_best_effort(tmp_path):
+    """A store written by a newer robovast (higher user_version, extra column) is
+    not downgraded and remains readable through existing columns."""
+    from robovast.common.store import SCHEMA_VERSION, _SCHEMA
+    db = tmp_path / "future.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(_SCHEMA)
+    conn.execute("ALTER TABLE campaign ADD COLUMN future_col TEXT")
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
+    conn.execute(
+        "INSERT INTO campaign (id, name, mode, created_at) VALUES (1, 'newer', 'search', 0)")
+    conn.commit()
+    conn.close()
+
+    with CampaignStore(db) as store:
+        # Untouched: still at the newer version, not migrated down.
+        assert store._conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION + 1
+        assert [c["name"] for c in store.list_campaigns()] == ["newer"]

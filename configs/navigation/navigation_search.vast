@@ -63,7 +63,7 @@ search:
   - {name: failure_rate, direction: maximize}
   per_batch: 8
   budget:
-    batches: 5
+  - batches: 5
   seed: 0
 results_processing:
   postprocessing:

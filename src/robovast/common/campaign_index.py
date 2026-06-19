@@ -42,7 +42,7 @@ def _newest_mtime(campaign_dir: Path) -> float:
 
 
 def build_campaign_store(campaign_dir, *, force: bool = False) -> Path:
-    """Build (or refresh) ``campaign.sqlite`` for a batch campaign directory.
+    """Build (or refresh) ``campaign.db`` for a batch campaign directory.
 
     Idempotent: if the store already exists and is newer than the results tree,
     it is left untouched unless ``force`` is set. Returns the store path.

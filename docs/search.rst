@@ -50,7 +50,8 @@ A ``search:`` section is self-contained: its configurations are synthesized from
      objectives:                # what to optimize (>=1 entries)
      - {name: failure_rate, direction: maximize}
      per_batch: 16              # parameter sets proposed per batch
-     budget: {batches: 20}
+     budget:                    # resource caps (see "When does a search stop?")
+     - batches: 20
      seed: 0
      # ---- strategy-specific (one block; the strategy validates it) ----
      strategy_parameters:
@@ -133,7 +134,8 @@ dimension:
      extract: {plugin: ...}
      objectives: [{name: ..., direction: maximize}]
      per_batch: 8
-     budget: {batches: 5}
+     budget:
+     - batches: 5
 
 For each proposed parameter set the framework deep-copies the template and
 substitutes every marker with the sampled value, then runs the **same**
@@ -257,6 +259,62 @@ Custom strategies/extractors are file-loadable too — the same
 :ref:`extending-search-strategy` and :ref:`extending-extractor` in the developer
 guide.
 
+When does a search stop?
+------------------------
+
+Two parallel lists of typed criteria decide when a search ends — **``budget``**
+(resource caps) and **``stopping``** (convergence / quality). All entries are
+**OR-combined**: the search stops as soon as *any* one fires. At least one
+criterion (across the two) is **required** — a search needs a way to end.
+Everything is evaluated centrally by the controller after each batch against a
+uniform progress snapshot, so the **same criteria work for every strategy**
+(``random``, ``qd``, ``optuna``) with no per-strategy code.
+
+.. code-block:: yaml
+
+   search:
+     budget:                 # resource caps — "how much will I spend?"
+     - batches: 50
+     - time: 3600
+     stopping:               # convergence / quality — "stop early on results"
+     - target_objective: 0.9
+     - no_improvement: {patience: 5, min_delta: 0.01}
+     - metric: {name: coverage, op: '>=', value: 0.8}
+
+Each entry is a single-key mapping (like ``variations``): the key is the criterion
+name; a scalar is shorthand for its main field (``- batches: 50``), and
+multi-field criteria use a nested mapping (``- metric: {name: ..., value: ...}``).
+
+**budget** — progress-independent resource caps:
+
+* ``batches`` — stop after this many ask/tell batches (with fixed ``per_batch``
+  and ``execution.runs`` this already bounds total evaluations and executions).
+* ``time`` — stop after this many seconds of wall-clock time since the search started.
+
+**stopping** — result-dependent early-exits:
+
+* ``target_objective`` — stop when the best objective reaches ``value``
+  (direction-aware: ``>=`` for ``maximize``, ``<=`` for ``minimize``).
+* ``no_improvement`` — stop when the best objective has not improved by more than
+  ``min_delta`` (default ``0``) for ``patience`` consecutive batches.
+* ``metric`` — stop when a strategy-reported metric (anything in
+  ``SearchReport.extra``, e.g. QD ``coverage`` / ``qd_score``) satisfies
+  ``op value`` (``op`` ∈ ``>= <= > <``, default ``>=``); a metric the strategy does
+  not report never fires.
+
+A budget cap is recommended so runtime is bounded; with only ``stopping`` the run
+is bounded solely by convergence (the controller logs a warning).
+``target_objective`` / ``no_improvement`` require a single objective (validated).
+
+**Progress + outcome.** On ``vast execution local run`` the controller logs a
+progress line after each batch showing every criterion's current value vs its
+limit, e.g.
+``📊 batches 3/50 | coverage 0.21/0.30 | failure_rate 0.97/0.9``.
+When the search ends, the fired criterion is **persisted** on the ``campaign`` row
+of ``campaign.db`` (``stop_kind``, ``stop_reason``, ``batches``,
+``elapsed_s`` — directly SQL-queryable) and mirrored in
+``SearchReport.extra['stop']``; the campaign analysis notebook prints it.
+
 Repetitions and noisy systems
 -----------------------------
 
@@ -293,7 +351,7 @@ Running a search
 
 ``vast execution local run`` is the single entry point: when the project ``.vast``
 has a ``search:`` block it drives the search loop, otherwise it runs a batch.
-Results, per-batch outputs and a live-queryable ``campaign.sqlite`` are written
+Results, per-batch outputs and a live-queryable ``campaign.db`` are written
 under a timestamped campaign directory in the project results dir (override the
 parent with ``--output``). See ``configs/examples/quadrotor_landing/`` for runnable random,
 QD and Optuna variants over one shared scenario, sim and extract.

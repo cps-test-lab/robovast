@@ -91,6 +91,8 @@ TEMPLATE_VAST = textwrap.dedent("""\
       extract: {plugin: failure_rate}
       objectives: [{name: failure_rate}]
       per_batch: 2
+      budget:
+      - batches: 1
     """)
 
 

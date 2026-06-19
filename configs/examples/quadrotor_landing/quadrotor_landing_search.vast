@@ -43,7 +43,7 @@ search:
   - {name: failure_rate, direction: maximize}
   per_batch: 8
   budget:
-    batches: 4
+  - batches: 4
   seed: 0
   # random takes no strategy_parameters
 evaluation:

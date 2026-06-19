@@ -28,7 +28,7 @@ def _cfg(strategy="random", direction="maximize", batches=2, per_batch=8, space=
         search_space=space or SPACE,
         extract={"plugin": "failure_rate"},
         objectives=[{"name": "fr", "direction": direction}],
-        per_batch=per_batch, budget={"batches": batches}, seed=0,
+        per_batch=per_batch, budget=[{"batches": batches}], seed=0,
     )
 
 
@@ -52,15 +52,14 @@ def test_random_reproducible_with_seed():
     assert a == b
 
 
-def test_random_budget_and_ranking_maximize():
+def test_random_ranking_maximize():
+    # Batches/budget are enforced by the controller now, not the strategy; here we
+    # only check that report() ranks by the objective.
     s = build_strategy(_cfg(batches=2))
-    assert not s.is_done()
     g = s.ask(3)
     s.tell([Evaluation(params=g[0], objectives={"fr": 0.2}),
             Evaluation(params=g[1], objectives={"fr": 0.9}),
             Evaluation(params=g[2], objectives={"fr": 0.5})])
-    s.tell([])
-    assert s.is_done()
     assert s.report().best.objectives["fr"] == 0.9
 
 

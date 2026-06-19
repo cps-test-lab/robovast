@@ -39,7 +39,7 @@ search:
   - {name: failure_rate, direction: maximize}
   per_batch: 8
   budget:
-    batches: 15
+  - batches: 15
   seed: 0
   strategy_parameters:
     sampler: tpe

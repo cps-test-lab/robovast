@@ -57,7 +57,7 @@ class RunResultsAnalyzer(QMainWindow):
         # Resolve override_vast to an absolute path once so it can be compared/logged consistently
         self._override_vast = str(Path(override_vast).resolve()) if override_vast else None
 
-        # Discover campaigns from every campaign.sqlite under base_dir.
+        # Discover campaigns from every campaign.db under base_dir.
         # self.campaign_notebooks maps campaign_name -> {"workloads": [...], "config_file": str|None}
         # self._campaign_index maps campaign_name -> full store-derived structure
         # (mode, config_dir, batches -> units) used to build the tree.
@@ -120,7 +120,7 @@ class RunResultsAnalyzer(QMainWindow):
     # ------------------------------------------------------------------
 
     def _discover_all_campaign_notebooks(self, base_dir):
-        """Scan ``base_dir/*/campaign.sqlite`` and return per-campaign notebook info.
+        """Scan ``base_dir/*/campaign.db`` and return per-campaign notebook info.
 
         The campaign store is the single source of truth: it carries the mode,
         the full config (``evaluation.visualization``) and the base ``config_dir``

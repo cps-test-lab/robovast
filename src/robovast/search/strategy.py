@@ -73,10 +73,6 @@ class SearchStrategy(ABC):
         """Ingest the evaluations of a previously proposed generation."""
 
     @abstractmethod
-    def is_done(self) -> bool:
-        """Whether the search has exhausted its budget / converged."""
-
-    @abstractmethod
     def report(self) -> SearchReport:
         """Return the current deliverable (ranked best, archive, Pareto front)."""
 

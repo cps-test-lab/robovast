@@ -175,7 +175,7 @@ Afterwards you can start the GUI:
 .. note::
 
    The GUI discovers campaigns **exclusively from a per-campaign
-   ``campaign.sqlite`` store** — it does not walk the results filesystem. Search
+   ``campaign.db`` store** — it does not walk the results filesystem. Search
    campaigns write this store live; batch campaigns are indexed post-hoc from
    their results tree. ``vast evaluation gui`` indexes any missing batch stores
    automatically before launching, but you can also (re)build them explicitly:
@@ -742,7 +742,7 @@ Campaign Store and Results Indexing
 -----------------------------------
 
 Every campaign — batch or search — is described by a single sqlite store,
-``campaign.sqlite`` (``robovast.common.store.STORE_FILENAME``), written at the
+``campaign.db`` (``robovast.common.store.STORE_FILENAME``), written at the
 root of the campaign directory. It is the **single source of truth** the results
 GUI reads, and the seam an in-cluster controller or web UI can later read/stream.
 
@@ -788,7 +788,7 @@ Store-driven GUI
 ^^^^^^^^^^^^^^^^^
 
 The results GUI (``RunResultsAnalyzer``) discovers campaigns by scanning
-``<results_dir>/*/campaign.sqlite`` — there is no filesystem-walk or depth-based
+``<results_dir>/*/campaign.db`` — there is no filesystem-walk or depth-based
 heuristic. It reads the campaign/batch/unit rows to build the tree
 (campaign → *batch*, search only → config), resolves notebook workloads from
 ``config_json`` against ``config_dir``, and enumerates only the run-level leaves

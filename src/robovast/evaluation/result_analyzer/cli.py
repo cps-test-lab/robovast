@@ -38,7 +38,7 @@ def evaluation():
 def _index_campaigns(results_dir, force=False, feedback=None):
     """Ensure every batch campaign under ``results_dir`` has a campaign store.
 
-    The results GUI reads campaigns exclusively from ``campaign.sqlite``. Search
+    The results GUI reads campaigns exclusively from ``campaign.db``. Search
     campaigns write their store live (and are skipped here); batch campaigns are
     indexed post-hoc from their results tree. Idempotent.
     """
@@ -79,7 +79,7 @@ def _index_campaigns(results_dir, force=False, feedback=None):
 @click.option('--force', '-f', is_flag=True,
               help='Rebuild campaign stores even if they appear up to date')
 def index_cmd(results_dir, force):
-    """Build/refresh the ``campaign.sqlite`` store for batch campaigns.
+    """Build/refresh the ``campaign.db`` store for batch campaigns.
 
     The results GUI reads exclusively from these stores. Search campaigns write
     their own store during execution and are skipped.
@@ -153,7 +153,7 @@ def result_analyzer_cmd(ctx, results_dir, force, skip_postprocessing):
                 ):
                     sys.exit(1)
 
-    # The GUI reads campaigns exclusively from campaign.sqlite; make sure every
+    # The GUI reads campaigns exclusively from campaign.db; make sure every
     # batch campaign is indexed (search campaigns already have their store).
     _index_campaigns(results_dir, force=force, feedback=click.echo)
 

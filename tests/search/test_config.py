@@ -21,6 +21,7 @@ def _with_search(**search):
         "objectives": [{"name": "failure_rate", "direction": "maximize"}],
         "per_batch": 4,
         "search_space": {"x": {"type": "float", "low": 0, "high": 1}},
+        "budget": [{"batches": 2}],
         **search,
     }
     return cfg
@@ -85,7 +86,7 @@ def test_required_fields_and_bounds():
     with pytest.raises(ValidationError):
         ConfigV1(**_with_search(per_batch=0))
     with pytest.raises(ValidationError):
-        ConfigV1(**_with_search(budget={"batches": 0}))
+        ConfigV1(**_with_search(budget=[{"batches": 0}]))
     with pytest.raises(ValidationError):
         ConfigV1(**_with_search(search_space={}))
     with pytest.raises(ValidationError):

@@ -283,16 +283,101 @@ SearchDim = Annotated[Union[FloatDim, IntDim, ChoiceDim, BoolDim],
                       Field(discriminator='type')]
 
 
-class BudgetConfig(BaseModel):
+class BatchesBudget(BaseModel):
+    """Resource cap: stop after this many ask/tell batches."""
     model_config = ConfigDict(extra='forbid')
-    batches: int = 1
+    type: Literal['batches']
+    value: int
 
-    @field_validator('batches')
+    @field_validator('value')
     @classmethod
     def _positive(cls, v: int) -> int:
         if v < 1:
-            raise ValueError(f"search.budget.batches must be >= 1, got {v}")
+            raise ValueError(f"budget batches value must be >= 1, got {v}")
         return v
+
+
+class TimeBudget(BaseModel):
+    """Resource cap: stop after this many seconds of wall-clock time."""
+    model_config = ConfigDict(extra='forbid')
+    type: Literal['time']
+    seconds: float
+
+    @field_validator('seconds')
+    @classmethod
+    def _positive(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError(f"budget time seconds must be > 0, got {v}")
+        return v
+
+
+# A resource cap; the search stops when ANY budget criterion is hit.
+BudgetCriterion = Annotated[
+    Union[BatchesBudget, TimeBudget],
+    Field(discriminator='type')]
+
+
+class TargetObjectiveStop(BaseModel):
+    """Stop when the best objective reaches ``value`` (direction-aware)."""
+    model_config = ConfigDict(extra='forbid')
+    type: Literal['target_objective']
+    value: float
+
+
+class NoImprovementStop(BaseModel):
+    """Stop when the best objective has not improved by >= ``min_delta`` for
+    ``patience`` consecutive batches (early-stopping / convergence)."""
+    model_config = ConfigDict(extra='forbid')
+    type: Literal['no_improvement']
+    patience: int
+    min_delta: float = 0.0
+
+    @field_validator('patience')
+    @classmethod
+    def _positive(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError(f"no_improvement.patience must be >= 1, got {v}")
+        return v
+
+
+class MetricStop(BaseModel):
+    """Stop when a strategy-reported metric (``report().extra[name]``, e.g. the
+    QD ``coverage`` / ``qd_score``) satisfies ``op value``."""
+    model_config = ConfigDict(extra='forbid')
+    type: Literal['metric']
+    name: str
+    op: Literal['>=', '<=', '>', '<'] = '>='
+    value: float
+
+
+# A convergence / quality early-exit; the search stops when ANY fires (resource
+# caps live in the parallel ``budget`` list).
+StopCriterion = Annotated[
+    Union[TargetObjectiveStop, NoImprovementStop, MetricStop],
+    Field(discriminator='type')]
+
+
+# Each budget/stopping entry is written as a single-key mapping (like variations):
+# ``- batches: 200`` or ``- metric: {name: coverage, op: '>=', value: 0.3}``. The
+# key is the criterion name; a scalar value is shorthand for the field named below
+# (criteria with several required fields must use a mapping). The ``type``
+# discriminator is injected from the key so the unions above still validate.
+_BUDGET_SCALAR = {'batches': 'value', 'time': 'seconds'}
+_STOPPING_SCALAR = {'target_objective': 'value', 'no_improvement': 'patience'}
+
+
+def _normalize_criterion(entry: Any, scalar_fields: dict, kind: str) -> dict:
+    if not isinstance(entry, dict) or len(entry) != 1:
+        raise ValueError(
+            f"each search.{kind} entry must be a single-key mapping, e.g. "
+            f"'- batches: 200' or '- metric: {{name: coverage, value: 0.3}}'; got {entry!r}")
+    key, val = next(iter(entry.items()))
+    if isinstance(val, dict):
+        return {'type': key, **val}
+    if key not in scalar_fields:
+        raise ValueError(
+            f"search.{kind} '{key}' needs a mapping of parameters, not a scalar")
+    return {'type': key, scalar_fields[key]: val}
 
 
 class ExtractConfig(BaseModel):
@@ -332,7 +417,11 @@ class SearchConfig(BaseModel):
     extract: ExtractConfig
     objectives: list[ObjectiveSpec]
     per_batch: int
-    budget: BudgetConfig = BudgetConfig()
+    # Resource caps and convergence early-exits: two parallel typed-criteria
+    # lists, all OR-combined and evaluated by the controller after each batch. At
+    # least one criterion across the two is required (a search needs a way to end).
+    budget: Optional[list[BudgetCriterion]] = None
+    stopping: Optional[list[StopCriterion]] = None
     seed: Optional[int] = None
     # Optional variation template + fixed scenario params, identical in shape to a
     # batch ``configuration:`` block. The template fixes most variation params and
@@ -350,6 +439,24 @@ class SearchConfig(BaseModel):
     postprocessing: Optional[list[Union[str, dict[str, Any]]]] = None
     # Free-form; validated by the strategy plugin's own params model at load.
     strategy_parameters: dict[str, Any] = {}
+
+    @field_validator('budget', mode='before')
+    @classmethod
+    def _norm_budget(cls, v):
+        if v is None:
+            return v
+        if not isinstance(v, list):
+            raise ValueError("search.budget must be a list of single-key mappings")
+        return [_normalize_criterion(e, _BUDGET_SCALAR, 'budget') for e in v]
+
+    @field_validator('stopping', mode='before')
+    @classmethod
+    def _norm_stopping(cls, v):
+        if v is None:
+            return v
+        if not isinstance(v, list):
+            raise ValueError("search.stopping must be a list of single-key mappings")
+        return [_normalize_criterion(e, _STOPPING_SCALAR, 'stopping') for e in v]
 
     @field_validator('search_space')
     @classmethod
@@ -389,6 +496,24 @@ class SearchConfig(BaseModel):
         if v < 1:
             raise ValueError(f"search.per_batch must be >= 1, got {v}")
         return v
+
+    @model_validator(mode='after')
+    def _validate_stopping(self):
+        # A search needs at least one way to end: a budget cap or a stopping
+        # criterion. Without either it would run forever.
+        if not self.budget and not self.stopping:
+            raise ValueError(
+                "a search must define at least one 'budget' or 'stopping' "
+                "criterion (e.g. budget: [{type: batches, value: 20}])")
+        # target_objective / no_improvement compare the single objective, so they
+        # require a single-objective search (matches SearchStrategy.single_objective).
+        single_only = {'target_objective', 'no_improvement'}
+        for crit in (self.stopping or []):
+            if crit.type in single_only and len(self.objectives) != 1:
+                raise ValueError(
+                    f"search.stopping '{crit.type}' requires a single objective, "
+                    f"but {len(self.objectives)} are configured")
+        return self
 
 
 class ConfigV1(BaseModel):

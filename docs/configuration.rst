@@ -764,7 +764,7 @@ search mode). Because the search results layout is flat — every batch's
 configurations live directly under the campaign root — ``DATA_DIR`` alone cannot
 identify the batch, so a batch notebook also receives an injected ``BATCH``
 variable (the batch index) and selects its configurations from
-``campaign.sqlite``:
+``campaign.db``:
 
 .. code-block:: python
 
