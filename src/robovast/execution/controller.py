@@ -257,7 +257,7 @@ def _finalize(backend: ExecutionBackend, campaign_root: str) -> None:
 
 def run_search_campaign(vast_file, campaign_config, results_dir, runs,
                         backend: ExecutionBackend | None = None,
-                        options: RunOptions | None = None):
+                        options: RunOptions | None = None, campaign_id=None):
     """Build and run a search campaign. Requires ``campaign_config.search``."""
     from robovast.search.compose import Compose
     from robovast.search.evaluator import Evaluator
@@ -270,7 +270,7 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
 
     vast_dir = os.path.dirname(os.path.abspath(vast_file))
     runs = runs if runs is not None else campaign_config.execution.runs
-    campaign_id = campaign_id_for(campaign_config)
+    campaign_id = campaign_id or campaign_id_for(campaign_config)
     be = backend or DockerBackend()
     store = CampaignStore(os.path.join(results_dir, campaign_id, STORE_FILENAME))
     controller = CampaignController(
@@ -290,7 +290,7 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
 
 def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_filter=None,
                        backend: ExecutionBackend | None = None,
-                       options: RunOptions | None = None):
+                       options: RunOptions | None = None, campaign_id=None):
     """Build and run a batch campaign (no ``search:`` block)."""
     import fnmatch
 
@@ -298,7 +298,7 @@ def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_fil
 
     vast_dir = os.path.dirname(os.path.abspath(vast_file))
     runs = runs if runs is not None else campaign_config.execution.runs
-    campaign_id = campaign_id_for(campaign_config)
+    campaign_id = campaign_id or campaign_id_for(campaign_config)
 
     with tempfile.TemporaryDirectory(prefix="robovast_batch_") as tmp:
         campaign_data, _ = generate_scenario_variations(
@@ -388,6 +388,9 @@ def main(argv=None):
                         help="Host context name, used only to resolve per-cluster resources.")
     parser.add_argument("--config", default=None,
                         help="Batch mode only: run configurations matching this glob.")
+    parser.add_argument("--campaign-id", default=None,
+                        help="Campaign id to use (host-generated so it matches the "
+                             "controller pod label). Defaults to a fresh timestamped id.")
     parser.add_argument("--log-tree", action="store_true", help="Forward the live scenario tree.")
     args = parser.parse_args(argv)
 
@@ -402,11 +405,13 @@ def main(argv=None):
 
     if campaign_config.search is not None:
         report = run_search_campaign(args.vast, campaign_config, args.results_dir, args.runs,
-                                     backend=backend, options=options)
+                                     backend=backend, options=options,
+                                     campaign_id=args.campaign_id)
         logger.info("Search campaign finished: %s", report)
     else:
         report = run_batch_campaign(args.vast, campaign_config, args.results_dir, args.runs,
-                                    config_filter=args.config, backend=backend, options=options)
+                                    config_filter=args.config, backend=backend, options=options,
+                                    campaign_id=args.campaign_id)
         logger.info("Batch campaign finished: %s", report)
 
 

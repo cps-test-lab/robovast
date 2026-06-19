@@ -21,6 +21,7 @@ import datetime
 import logging
 import os
 import sys
+import tempfile
 import time
 
 import click
@@ -33,7 +34,7 @@ from robovast.common.cluster_context import (get_active_kube_context,
                                              get_config_context_names,
                                              require_context_for_multi_cluster)
 from robovast.execution.cluster_execution.cluster_execution import (
-    JobRunner, _label_safe_campaign, cleanup_cluster_campaign,
+    _label_safe_campaign, cleanup_cluster_campaign,
     get_cluster_job_counts_per_campaign)
 from robovast.execution.cluster_execution.cluster_setup import (
     delete_server, get_cluster_config, get_cluster_config_for_context,
@@ -337,25 +338,20 @@ def cluster():
               help='Run only configurations matching this name or glob pattern (e.g. hall*)')
 @click.option('--runs', '-r', type=int, default=None,
               help='Override the number of runs specified in the config')
-@click.option('--follow', '-f', is_flag=True, default=False,
-              help='Follow job execution and wait for completion (default: exit immediately after creating jobs)')
-@click.option('--cleanup', is_flag=True,
-              help='Clean up previous runs before starting (default: do not cleanup; allows multiple parallel runs)')
 @click.option('--log-tree', '-t', is_flag=True,
               help='Log scenario execution live tree')
 @click.option('--context', '-x', 'kube_context', default=None,
               help='Kubernetes context to use (default: active context in kubeconfig)')
-def run(config, runs, follow, cleanup, log_tree, kube_context):  # pylint: disable=function-redefined,redefined-outer-name
-    """Execute scenarios on a Kubernetes cluster.
+def run(config, runs, log_tree, kube_context):  # pylint: disable=function-redefined,redefined-outer-name
+    """Execute a campaign (batch or search) on a Kubernetes cluster.
 
-    Deploys all run configurations (or a specific one) as Kubernetes jobs
-    for distributed parallel execution.
+    Launches an in-cluster controller pod that drives the whole campaign and
+    creates the per-batch scenario jobs from inside the cluster. The command is
+    fire-and-forget: it returns immediately after starting the controller.
 
-    By default, exits immediately after creating jobs.
-    Use --follow to wait for all jobs to complete before returning.
-    Use --cleanup to remove previous runs before starting (by default,
-    previous runs are left intact so multiple runs can run in parallel).
-    Use 'vast execution cluster run-cleanup' to clean up jobs afterwards.
+    Track progress with 'vast execution cluster monitor', then retrieve results
+    with 'vast execution cluster upload-to-share' and 'vast results download'.
+    Use --config to run only matching configurations (batch campaigns).
     Use --context to target a specific Kubernetes cluster.
 
     Requires project initialization with ``vast init`` first.
@@ -432,56 +428,21 @@ def run(config, runs, follow, cleanup, log_tree, kube_context):  # pylint: disab
         sys.exit(1)
     logging.debug(pod_msg)
 
-    # Search campaigns run an in-cluster controller pod (it drives the ask/tell
-    # loop and launches per-batch jobs from inside the cluster); batch campaigns
-    # create scenario jobs directly via JobRunner.
-    from robovast.common.common import load_config as _load_config
-    from robovast.common.config import validate_config as _validate_config
-    _campaign_config = _validate_config(_load_config(project_config.config_path))
-    if _campaign_config.search is not None:
-        from robovast.execution.cluster_execution.cluster_setup import (
-            get_kubernetes_node_labels_from_config, load_cluster_setup_info)
-        from robovast.execution.cluster_execution.controller_launcher import \
-            launch_search_controller
+    # Both batch and search campaigns run via an in-cluster controller pod
+    # (fire-and-forget): the controller drives the campaign and launches the
+    # per-batch scenario jobs from inside the cluster, then publishes the
+    # canonical campaign to storage. The host returns immediately.
+    from robovast.execution.cluster_execution.controller_launcher import \
+        launch_controller  # pylint: disable=import-outside-toplevel
 
-        if config or follow or cleanup:
-            click.echo("Note: --config, --follow and --cleanup are ignored for search campaigns.")
-        cfg_name, setup_kwargs = load_cluster_setup_info(context_key)
-        _, control_node_labels = get_kubernetes_node_labels_from_config(project_config.config_path)
-        try:
-            launch_search_controller(
-                config_path=project_config.config_path, config_name=cfg_name,
-                setup_kwargs=setup_kwargs, namespace=namespace, runs=runs,
-                kube_context=kube_context,
-                log_tree=log_tree, control_node_labels=control_node_labels)
-            click.echo("Cluster search campaign finished.")
-        except Exception as e:  # pylint: disable=broad-except
-            click.echo(f"✗ Error: {e}", err=True)
-            sys.exit(1)
-        return
-
+    cfg_name, setup_kwargs = load_cluster_setup_info(context_key)
+    _, control_node_labels = get_kubernetes_node_labels_from_config(project_config.config_path)
     try:
-        job_runner = JobRunner(
-            project_config.config_path, config, runs, cluster_config,
-            namespace=namespace, cleanup_before_run=cleanup, log_tree=log_tree,
-            kube_context=kube_context)
-        job_runner.run(detached=not follow)
-
-        if not follow:
-            click.echo(f"✓ Jobs created successfully (Campaign ID: {job_runner.campaign})")
-            click.echo()
-            click.echo("Jobs are now running in detached mode.")
-            click.echo()
-            click.echo("To check job status, use: vast execution cluster monitor")
-            click.echo("To clean up jobs, use: vast execution cluster run-cleanup")
-            click.echo()
-        else:
-            click.echo("Cluster execution finished.")
-            click.echo()
-            click.echo("You can now upload results to a share using:")
-            click.echo()
-            click.echo("  vast execution cluster upload-to-share")
-            click.echo()
+        launch_controller(
+            config_path=project_config.config_path, config_name=cfg_name,
+            setup_kwargs=setup_kwargs, namespace=namespace, runs=runs,
+            config_filter=config, kube_context=kube_context,
+            log_tree=log_tree, control_node_labels=control_node_labels)
     except Exception as e:
         handle_cli_exception(e)
 
@@ -1230,48 +1191,81 @@ def prepare_run(output, config, runs, cluster_config, options, log_tree, kube_co
 
         namespace = cluster_kwargs.get("namespace", get_cluster_namespace(context_key))
 
-        # Initialize job runner (this prepares all scenarios)
-        job_runner = JobRunner(
-            config_path, config, runs, cluster_config,
-            namespace=namespace, log_tree=log_tree,
-            kube_context=kube_context)
+        # Compose the batch campaign data on the host (the same path the
+        # controller uses for batch), then build the manifests with the very
+        # builder the controller submits with. This command is offline — only
+        # manifest generation, no Kubernetes API calls.
+        import fnmatch  # pylint: disable=import-outside-toplevel
+        from robovast.common.common import \
+            load_config as _load_config  # pylint: disable=import-outside-toplevel
+        from robovast.common.config import \
+            validate_config as _validate_config  # pylint: disable=import-outside-toplevel
+        from robovast.common.config_generation import \
+            generate_scenario_variations  # pylint: disable=import-outside-toplevel
+        from robovast.common.execution import \
+            resolve_robovast_image  # pylint: disable=import-outside-toplevel
+        from robovast.execution.cluster_execution.kubernetes_backend import \
+            BatchJobRunner  # pylint: disable=import-outside-toplevel
+        from robovast.execution.controller import \
+            campaign_id_for  # pylint: disable=import-outside-toplevel
 
-        click.echo(f"Preparing run configuration 'ID: {job_runner.campaign}', run configs: {
-                   len(job_runner.configs)}, runs per run config: {job_runner.num_runs}...")
+        campaign_config = _validate_config(_load_config(config_path))
+        if campaign_config.search is not None:
+            raise click.ClickException(
+                "'cluster prepare-run' is a batch-only debugging aid, but the given "
+                ".vast defines a 'search:' block. Use 'vast exec cluster run' instead."
+            )
+        campaign_id = campaign_id_for(campaign_config)
+        num_runs = runs if runs is not None else campaign_config.execution.runs
 
-        # Prepare config files
-        logging.debug("Preparing configuration files...")
+        # generate_scenario_variations writes resolved inputs into a working dir
+        # that campaign_data references; keep it alive until the manifests + the
+        # config tree have been written.
+        with tempfile.TemporaryDirectory(prefix="robovast_prepare_") as _work:
+            campaign_data, _ = generate_scenario_variations(
+                variation_file=config_path, progress_update_callback=None,
+                output_dir=_work)
+            if not campaign_data["configs"]:
+                raise click.ClickException("No configs found in vast-file")
+            if config:
+                matched = [c for c in campaign_data["configs"]
+                           if fnmatch.fnmatch(c["name"], config)]
+                if not matched:
+                    raise click.ClickException(f"No configs matched pattern '{config}'")
+                campaign_data["configs"] = matched
 
-        out_dir = os.path.join(output, "out_template")
-        prepare_campaign_configs(
-            out_dir,
-            job_runner.campaign_data,
-            cluster=True
-        )
-        # Per-job multi-document parameter files + job-link manifest (matches
-        # what upload writes for a real run).
-        job_runner._write_job_param_files(out_dir)  # pylint: disable=protected-access
+            image = resolve_robovast_image(
+                config_image=(campaign_data.get("execution") or {}).get("image"))
+            job_runner = BatchJobRunner.for_batch(
+                campaign_data=campaign_data, campaign_id=campaign_id, batch_tag=None,
+                runs=num_runs, cluster_config=cluster_config, namespace=namespace,
+                image=image, kube_context=kube_context, log_tree=log_tree)
 
-        # Create jobs directory
-        jobs_dir = os.path.join(output, "jobs")
-        os.makedirs(jobs_dir, exist_ok=True)
+            click.echo(f"Preparing run configuration 'ID: {campaign_id}', run configs: "
+                       f"{len(campaign_data['configs'])}, runs per run config: {num_runs}...")
 
-        # Generate all job manifests — one K8s Job per packed job
-        # (runs_per_job=1 → one job per config/run).
-        logging.debug("Generating job manifests...")
-        all_jobs = []
-        jobs = job_runner._build_jobs()  # pylint: disable=protected-access
-        for job in jobs:
-            job_manifest = job_runner.create_job_manifest(job, len(jobs))
+            # Prepare config files
+            logging.debug("Preparing configuration files...")
+            out_dir = os.path.join(output, "out_template")
+            prepare_campaign_configs(out_dir, campaign_data, cluster=True)
+            # Per-job multi-document parameter files + job-link manifest (matches
+            # what upload writes for a real run).
+            job_runner._write_job_param_files(out_dir)  # pylint: disable=protected-access
 
-            # Save individual job manifest
-            job_name = job_manifest['metadata']['name']
-            job_file = os.path.join(jobs_dir, f"{job_name}.yaml")
-            with open(job_file, 'w') as f:
-                yaml.dump(job_manifest, f, default_flow_style=False)
-
-            all_jobs.append(job_manifest)
-        job_count = len(all_jobs)
+            # Generate all job manifests — one K8s Job per packed job
+            # (runs_per_job=1 → one job per config/run).
+            logging.debug("Generating job manifests...")
+            jobs_dir = os.path.join(output, "jobs")
+            os.makedirs(jobs_dir, exist_ok=True)
+            all_jobs = []
+            jobs = job_runner._build_jobs()  # pylint: disable=protected-access
+            for job in jobs:
+                job_manifest = job_runner.create_job_manifest(job, len(jobs))
+                job_name = job_manifest['metadata']['name']
+                with open(os.path.join(jobs_dir, f"{job_name}.yaml"), 'w') as f:
+                    yaml.dump(job_manifest, f, default_flow_style=False)
+                all_jobs.append(job_manifest)
+            job_count = len(all_jobs)
 
         # Save combined manifest
         combined_file = os.path.join(output, "all-jobs.yaml")
@@ -1288,9 +1282,7 @@ def prepare_run(output, config, runs, cluster_config, options, log_tree, kube_co
         prepare_kueue_setup(output, namespace=namespace, kube_context=kube_context,
                             node_labels=_jobs_node_labels)
 
-        generate_upload_script(
-            output, job_runner.campaign, namespace, cluster_config,
-        )
+        generate_upload_script(output, campaign_id, namespace, cluster_config)
 
         click.echo(f"✓ Successfully prepared {job_count} job manifests in directory'{
                    output}'.\n\nFollow README files to set up and execute.\n")

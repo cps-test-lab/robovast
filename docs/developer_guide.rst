@@ -110,16 +110,15 @@ A good practice is, to first run a single configuration to verify that everythin
     # Results can then be retrieved with: vast results download
     # Files are organized as: <results-dir>/<campaign-name>-<timestamp>/<config-name>/<run_number>/
 
-For long-running tests, you can use detached mode to run jobs in the background:
+``vast exec cluster run`` is fire-and-forget: it launches an in-cluster
+controller pod that drives the campaign and returns immediately. The campaign
+runs in the background in the cluster:
 
 .. code-block:: bash
 
-    # Run in detached mode (command exits after creating jobs)
-    vast exec cluster run --detach
-    
     # Monitor job status (shows progress per run when multiple runs are active)
     vast exec cluster monitor
-    
+
     # Clean up after jobs complete (all campaigns, or use --campaign for a specific campaign)
     vast exec cluster run-cleanup
 

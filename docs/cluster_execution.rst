@@ -12,25 +12,31 @@ configuration.
 Overview
 --------
 
-When a cluster run is triggered, RoboVAST performs the following steps
-internally:
+Every cluster run — batch **and** search — is driven by an **in-cluster
+controller pod**. ``vast execution cluster run`` is *fire-and-forget*: it
+launches the controller and returns immediately; the campaign then runs entirely
+inside the cluster. Internally:
 
-1. **Config upload** — All scenario configurations (entrypoints, scenario
-   files, parameter files) are uploaded to a MinIO S3 bucket inside the
-   cluster.
-2. **Job creation** — For each configuration × run number, a Kubernetes
-   ``Job`` is created from a manifest template.  Each job runs an ``initContainer``
-   that pulls its config files from S3 and a main ``robovast`` container that
+1. **Controller launch** — The host creates a short ``robovast-controller`` pod
+   (bound to the controller ServiceAccount), copies the campaign inputs into it,
+   and starts the :class:`CampaignController` in-cluster. The host then detaches.
+2. **Config upload + job creation** — The controller composes each batch,
+   uploads the scenario configurations to the storage bucket, and creates one
+   Kubernetes ``Job`` per packed job. Each job runs an ``initContainer`` that
+   pulls its config files from storage and a main ``robovast`` container that
    executes the scenario.
 3. **Queueing (Kueue)** — Jobs are submitted to a dedicated Kueue
    ``LocalQueue`` (``robovast``).  Kueue's gang-scheduling and resource quotas
    ensure that jobs are admitted only when sufficient CPU/memory is available,
    preventing cluster oversubscription.
-4. **Result collection** — After each job, the scenario container uploads
-   result files back to the S3 bucket.  ``vast execution cluster upload-to-share``
-   compresses and transfers the archives from inside the pod to a configured
-   share service (Nextcloud, GCS, …), or ``vast execution cluster download-cleanup``
-   removes the buckets once results have been handled.
+4. **Result collection** — Jobs upload result files back to the storage bucket,
+   and the controller publishes the **canonical campaign** (``campaign.db`` +
+   ``_execution`` + results) there. Track progress with ``vast execution cluster
+   monitor``; once finished, ``vast execution cluster upload-to-share`` compresses
+   and transfers the archives from inside the cluster to a configured share
+   service (Nextcloud, GCS, …) and ``vast results download`` retrieves them.
+   ``vast execution cluster download-cleanup`` removes the buckets once results
+   have been handled.
 
 
 Prerequisites
@@ -104,8 +110,12 @@ Running Scenarios
    # Override the number of runs from the CLI
    vast execution cluster run --runs 5
 
-   # Run only one specific config by name
+   # Run only one specific config by name (batch campaigns)
    vast execution cluster run --config my-config
+
+``run`` is fire-and-forget: it starts the in-cluster controller and returns
+immediately, printing the campaign id and controller pod name. The campaign
+continues in the cluster — watch it with ``vast execution cluster monitor``.
 
 
 Monitoring and Results
@@ -140,12 +150,17 @@ Remove result archives from S3 (after uploading or when no longer needed):
 Manual Deployment (prepare-run)
 ---------------------------------
 
-To generate all necessary manifests and scripts **without running them**
-(e.g. for airgapped clusters or CI pipelines):
+A **batch-only** debugging aid: generate all manifests and scripts **without
+running them** (e.g. for airgapped clusters, CI pipelines, or to inspect exactly
+what the in-cluster controller would submit):
 
 .. code-block:: bash
 
    vast execution cluster prepare-run ./output-dir
+
+The generated Job manifests are produced by the same builder the controller uses
+at run time, so they match what a real run submits. (For search campaigns, use
+``vast execution cluster run``.)
 
 The output directory contains:
 

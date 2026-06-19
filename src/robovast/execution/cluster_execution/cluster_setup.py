@@ -40,13 +40,26 @@ CLUSTER_CONFIG_FLAG_FILE = ".robovast_cluster_config"
 CONTROLLER_SERVICE_ACCOUNT = "robovast-controller"
 
 
+def _controller_cluster_role_name(namespace):
+    """Name for the cluster-scoped controller RBAC objects.
+
+    ClusterRole/ClusterRoleBinding are not namespaced, so the namespace is
+    folded into the name to let controller setups in different namespaces
+    coexist without clobbering each other.
+    """
+    return f"robovast-controller-nodes-{namespace}"
+
+
 def _controller_rbac_manifests(namespace):
-    """ServiceAccount + Role + RoleBinding letting the controller pod manage jobs.
+    """ServiceAccount + (Cluster)Role + (Cluster)RoleBinding for the controller pod.
 
     The in-cluster controller (search) creates/monitors/deletes scenario Jobs and
-    reads their pods/logs in its own namespace.
+    reads their pods/logs in its own namespace (namespaced Role).  It also reads
+    node metadata (count/labels/CPU-manager policy) to enrich ``execution.yaml``;
+    nodes are cluster-scoped, so that needs a read-only ClusterRole.
     """
     role_name = "robovast-controller"
+    cluster_role_name = _controller_cluster_role_name(namespace)
     return [
         {
             "apiVersion": "v1",
@@ -77,6 +90,28 @@ def _controller_rbac_manifests(namespace):
             "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role",
                         "name": role_name},
         },
+        {
+            "apiVersion": "rbac.authorization.k8s.io/v1",
+            "kind": "ClusterRole",
+            "metadata": {"name": cluster_role_name},
+            "rules": [
+                {"apiGroups": [""], "resources": ["nodes"],
+                 "verbs": ["get", "list"]},
+                # connect_get_node_proxy_with_path("configz") reads the kubelet
+                # config via the nodes/proxy subresource.
+                {"apiGroups": [""], "resources": ["nodes/proxy"],
+                 "verbs": ["get"]},
+            ],
+        },
+        {
+            "apiVersion": "rbac.authorization.k8s.io/v1",
+            "kind": "ClusterRoleBinding",
+            "metadata": {"name": cluster_role_name},
+            "subjects": [{"kind": "ServiceAccount", "name": CONTROLLER_SERVICE_ACCOUNT,
+                          "namespace": namespace}],
+            "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole",
+                        "name": cluster_role_name},
+        },
     ]
 
 
@@ -92,7 +127,7 @@ def apply_controller_rbac(namespace="default", kube_context=None):
     config.load_kube_config(context=kube_context)
     core = client.CoreV1Api()
     rbac = client.RbacAuthorizationV1Api()
-    sa, role, binding = _controller_rbac_manifests(namespace)
+    sa, role, binding, cluster_role, cluster_binding = _controller_rbac_manifests(namespace)
 
     # ServiceAccount — create, tolerate existing.
     try:
@@ -115,6 +150,21 @@ def apply_controller_rbac(namespace="default", kube_context=None):
     except ApiException as exc:
         if exc.status != 409:
             raise
+
+    # ClusterRole (read-only node access) — create, or replace its rules.
+    try:
+        rbac.create_cluster_role(cluster_role)
+    except ApiException as exc:
+        if exc.status != 409:
+            raise
+        rbac.patch_cluster_role(cluster_role["metadata"]["name"], {"rules": cluster_role["rules"]})
+
+    # ClusterRoleBinding — create, tolerate existing.
+    try:
+        rbac.create_cluster_role_binding(cluster_binding)
+    except ApiException as exc:
+        if exc.status != 409:
+            raise
     logger.debug("Applied controller RBAC (ServiceAccount %s) in namespace %s",
                  CONTROLLER_SERVICE_ACCOUNT, namespace)
 
@@ -132,7 +182,10 @@ def delete_controller_rbac(namespace="default", kube_context=None):
         return
     core = client.CoreV1Api()
     rbac = client.RbacAuthorizationV1Api()
+    cluster_role_name = _controller_cluster_role_name(namespace)
     deletions = [
+        ("ClusterRoleBinding", lambda: rbac.delete_cluster_role_binding(cluster_role_name)),
+        ("ClusterRole", lambda: rbac.delete_cluster_role(cluster_role_name)),
         ("RoleBinding", lambda: rbac.delete_namespaced_role_binding(_CONTROLLER_RBAC_NAME, namespace)),
         ("Role", lambda: rbac.delete_namespaced_role(_CONTROLLER_RBAC_NAME, namespace)),
         ("ServiceAccount", lambda: core.delete_namespaced_service_account(CONTROLLER_SERVICE_ACCOUNT, namespace)),
