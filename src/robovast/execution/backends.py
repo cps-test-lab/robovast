@@ -38,6 +38,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 from robovast.common import prepare_campaign_configs
+from robovast.common.execution import (DEFAULT_ROBOVAST_IMAGE,
+                                       resolve_robovast_image)
 from robovast.execution.execution_utils.execute_local import \
     generate_compose_run_script
 
@@ -51,7 +53,9 @@ class RunOptions:
     start_only: bool = False
     network_host: bool = False
     abort_on_failure: bool = False
-    image: str = "ghcr.io/cps-test-lab/robovast:latest"
+    # None ⇒ resolve via resolve_robovast_image() (config / ROBOVAST_IMAGE / default);
+    # a non-None value is an explicit ``--image`` and wins over everything.
+    image: str | None = None
     log_tree: bool = False
     debug: bool = False
     skip_resource_allocation: bool = True
@@ -91,7 +95,8 @@ def stage_run_script(campaign_data: dict, work_dir: str, runs: int,
     ``prepare-run`` (staging into a persistent, inspectable directory).
     """
     execution = campaign_data.get("execution", {})
-    image = execution.get("image", options.image)
+    image = resolve_robovast_image(explicit=options.image,
+                                   config_image=execution.get("image"))
     config_path_result = os.path.join(work_dir, "out_template")
     prepare_campaign_configs(config_path_result, campaign_data)
 
@@ -117,7 +122,9 @@ class DockerBackend(ExecutionBackend):
     def run_batch(self, campaign_data: dict, *, campaign_root: str, batch_tag: str,
                   runs: int, options: RunOptions) -> None:
         os.makedirs(campaign_root, exist_ok=True)
-        image = campaign_data.get("execution", {}).get("image", options.image)
+        image = resolve_robovast_image(
+            explicit=options.image,
+            config_image=campaign_data.get("execution", {}).get("image"))
 
         # Stage the prepared configs + run.sh in a temp dir (not the results dir);
         # run.sh copies out_template into the campaign root, so only results +
@@ -136,7 +143,7 @@ class DockerBackend(ExecutionBackend):
                 cmd.append("--network-host")
             if options.abort_on_failure:
                 cmd.append("--abort-on-failure")
-            if image != "ghcr.io/cps-test-lab/robovast:latest":
+            if image != DEFAULT_ROBOVAST_IMAGE:
                 cmd.extend(["--image", image])
 
             logger.info("Launching batch %s: %s", batch_tag, " ".join(cmd))

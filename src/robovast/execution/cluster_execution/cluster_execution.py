@@ -39,6 +39,7 @@ from robovast.common.common import get_scenario_parameters
 from robovast.common.config_generation import generate_scenario_variations
 from robovast.common.execution import (build_job_parameter_documents,
                                        dump_multi_document_yaml,
+                                       resolve_robovast_image,
                                        write_job_links_manifest)
 from robovast.execution.packer import build_jobs
 from robovast.execution.cluster_execution.kubernetes import check_pod_running
@@ -430,7 +431,7 @@ class JobRunner:
         self.run_as_user = execution_params.get("run_as_user", 1000)
 
         # Create manifest with env vars from config
-        self.manifest = self.get_job_manifest(parameters["image"],
+        self.manifest = self.get_job_manifest(resolve_robovast_image(config_image=parameters.get("image")),
                                               parameters.get("resources") or {},
                                               execution_params.get("env", []),
                                               self.run_as_user,

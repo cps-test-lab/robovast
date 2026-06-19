@@ -40,6 +40,38 @@ from .config_identifier import (compute_config_identifier, hash_file_content,
 # /etc/robovast_compat_version.
 COMPAT_VERSION = 2
 
+# Default robovast container image, used when no image is configured anywhere.
+# ``ROBOVAST_IMAGE`` overrides *this* hard-coded default only; an explicit
+# ``--image`` flag or an ``execution.image`` value in the ``.vast`` file always
+# take precedence over it.
+DEFAULT_ROBOVAST_IMAGE = "ghcr.io/cps-test-lab/robovast:latest"
+
+
+def resolve_robovast_image(explicit: str | None = None,
+                           config_image: str | None = None) -> str:
+    """Resolve the robovast container image to use.
+
+    Precedence (highest first):
+
+    1. *explicit* — a value passed on the command line (e.g. ``--image``).
+    2. *config_image* — the ``execution.image`` value from the ``.vast`` file.
+    3. ``ROBOVAST_IMAGE`` environment variable — a replacement for the built-in
+       default only, handy for testing a dev image (e.g. one pushed to Docker
+       Hub) before the canonical image is built and published by CI.
+    4. :data:`DEFAULT_ROBOVAST_IMAGE`.
+
+    The same resolver is used for the controller pod, the job pods and local
+    runs, so a single ``ROBOVAST_IMAGE`` points the whole run at one image.
+    """
+    if explicit:
+        return explicit
+    if config_image:
+        return config_image
+    env_image = os.environ.get("ROBOVAST_IMAGE", "").strip()
+    if env_image:
+        return env_image
+    return DEFAULT_ROBOVAST_IMAGE
+
 
 def get_app_version() -> str:
     """Return a short version string for the robovast package.

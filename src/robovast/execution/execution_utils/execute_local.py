@@ -29,6 +29,7 @@ from robovast.common.common import get_scenario_parameters
 from robovast.common.config_generation import generate_scenario_variations
 from robovast.common.execution import (build_job_parameter_documents,
                                        dump_multi_document_yaml,
+                                       resolve_robovast_image,
                                        write_job_links_manifest)
 from robovast.execution.packer import build_jobs
 
@@ -64,7 +65,7 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
     config_path = project_config.config_path
     logger.debug(f"Loading config from: {config_path}")
     execution_parameters = load_config(config_path, "execution")
-    docker_image = execution_parameters.get("image", "ghcr.io/cps-test-lab/robovast:latest")
+    docker_image = resolve_robovast_image(config_image=execution_parameters.get("image"))
     pre_command = execution_parameters.get("pre_command")
     post_command = execution_parameters.get("post_command")
     results_dir = project_config.results_dir

@@ -84,8 +84,9 @@ def local():
               help='Disable host GUI support')
 @click.option('--network-host',  is_flag=True,
               help='Use host network mode')
-@click.option('--image', '-i', default='ghcr.io/cps-test-lab/robovast:latest',
-              help='Use a custom Docker image')
+@click.option('--image', '-i', default=None,
+              help='Use a custom Docker image (overrides execution.image, ROBOVAST_IMAGE '
+                   'and the built-in default)')
 @click.option('--abort-on-failure', is_flag=True,
               help='Stop execution after the first failed run config (default: continue)')
 @click.option('--use-resource-allocation', is_flag=True,
@@ -125,7 +126,6 @@ def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_
         from robovast.execution.controller import (run_batch_campaign,
                                                    run_search_campaign)
 
-        default_image = 'ghcr.io/cps-test-lab/robovast:latest'
         project_config = get_project_config()
         campaign_config = validate_config(load_config(project_config.config_path))
         results_dir = output or project_config.results_dir
@@ -142,7 +142,9 @@ def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_
                 cmd.append("--no-gui")
             if network_host:
                 cmd.append("--network-host")
-            if image != default_image:
+            # Only an explicit --image is forwarded; otherwise the generated
+            # run.sh already bakes in the resolved image (config/ROBOVAST_IMAGE/default).
+            if image:
                 cmd.extend(["--image", image])
             os.execv(run_script_path, cmd)  # replaces this process
             return
