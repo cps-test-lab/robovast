@@ -610,8 +610,11 @@ Share providers are discovered as **entry-point plugins** under the
 
    .. code-block:: python
 
+      import os
+
       from robovast.execution.cluster_execution.share_providers.base import (
           BaseShareProvider,
+          UploadProgressReader,
       )
 
       class MyShareProvider(BaseShareProvider):
@@ -623,23 +626,26 @@ Share providers are discovered as **entry-point plugins** under the
                   "MY_SHARE_TOKEN":     "API token for the share service",
               }
 
-          def get_upload_script_path(self) -> str:
-              import os
-              return os.path.join(os.path.dirname(__file__), "myshare_upload_script.py")
-
           def build_pod_env(self) -> dict[str, str]:
-              import os
               return {
                   "MY_SHARE_URL":   os.environ["ROBOVAST_SHARE_URL"],
                   "MY_SHARE_TOKEN": os.environ["MY_SHARE_TOKEN"],
               }
 
-2. **Create an upload script** (``myshare_upload_script.py``).  It runs as a
-   subprocess inside the **controller pod** (the ``robovast-controller`` image,
-   which has robovast's dependencies plus ``pigz``).  It receives the campaign id
-   as ``sys.argv[1]`` and finds the archive at
-   ``${ROBOVAST_ARCHIVE_DIR}/{campaign}.tar.gz``.  Env vars from
-   ``build_pod_env()`` are available via ``os.environ``.
+          def upload_archive(self, archive_path, object_name, progress_callback=None):
+              total = os.path.getsize(archive_path)
+              with open(archive_path, "rb") as fh:
+                  body = UploadProgressReader(
+                      fh, total, progress_callback=progress_callback)
+                  ...  # PUT/stream `body` to the share, raising on failure
+
+2. **Implement** :meth:`~robovast.execution.cluster_execution.share_providers.base.BaseShareProvider.upload_archive`.
+   It runs **in-process** in the controller pod (no sidecar, no subprocess), reads
+   credentials from ``os.environ`` (populated by ``build_pod_env()``), and uploads
+   the local ``archive_path``. Wrap the request body in
+   :class:`~robovast.execution.cluster_execution.share_providers.base.UploadProgressReader`
+   so the ``(bytes_sent, total_bytes)`` ``progress_callback`` drives the live
+   upload bar in ``vast exec cluster monitor``.
 
    Optionally override
    :meth:`~robovast.execution.cluster_execution.share_providers.base.BaseShareProvider.verify_access`

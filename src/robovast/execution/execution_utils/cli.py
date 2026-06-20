@@ -450,6 +450,20 @@ def _progress_bar(done, total, width=20):
     return "█" * filled + "░" * (width - filled), 100.0 * frac
 
 
+def _fmt_size(n):
+    """Format a byte count as MiB (matches the upload progress display)."""
+    return f"{n / 1024 / 1024:.1f} MiB"
+
+
+def _fmt_rate(bps):
+    """Format a transfer rate (bytes/s) with an adaptive unit."""
+    if bps >= 1024 * 1024:
+        return f"{bps / 1024 / 1024:.1f} MiB/s"
+    if bps >= 1024:
+        return f"{bps / 1024:.1f} KiB/s"
+    return f"{bps:.0f} B/s"
+
+
 def _monitor_via_controller(namespace, kube_context, interval, once):
     """Monitor campaigns through their controllers' control channels.
 
@@ -511,6 +525,14 @@ def _monitor_via_controller(namespace, kube_context, interval, once):
         if c:
             run_line += f"   Running: {c.get('running', 0)}  Pending: {c.get('pending', 0)}"
         lines.append(run_line)
+        up = (status.get("extra") or {}).get("upload")
+        if status.get("phase") == "uploading" and up:
+            u_bar, u_pct = _progress_bar(up.get("sent", 0), up.get("total", 0))
+            up_line = (f"  Upload: [{u_bar}] {u_pct:5.1f}%  "
+                       f"{_fmt_size(up.get('sent', 0))}/{_fmt_size(up.get('total', 0))}")
+            if up.get("rate") is not None:
+                up_line += f"   {_fmt_rate(up['rate'])}"
+            lines.append(up_line)
         if status.get("stop"):
             lines.append(f"  Stop: {status['stop'].get('reason', '')}")
         return lines

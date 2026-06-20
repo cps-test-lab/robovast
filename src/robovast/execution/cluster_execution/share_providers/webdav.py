@@ -27,7 +27,7 @@ import requests
 
 from robovast.common.execution import is_campaign_dir
 
-from .base import BaseShareProvider
+from .base import BaseShareProvider, UploadProgressReader
 
 __all__ = ["WebDavShareProvider"]
 
@@ -73,18 +73,70 @@ class WebDavShareProvider(BaseShareProvider):
             "ROBOVAST_WEBDAV_PASSWORD": "WebDAV password",
         }
 
-    def get_upload_script_path(self) -> str:
-        return os.path.join(
-            os.path.dirname(__file__),
-            "webdav_upload_script.py",
-        )
-
     def build_pod_env(self) -> dict[str, str]:
         return {
             "ROBOVAST_WEBDAV_URL": os.environ["ROBOVAST_WEBDAV_URL"],
             "ROBOVAST_WEBDAV_USER": os.environ["ROBOVAST_WEBDAV_USER"],
             "ROBOVAST_WEBDAV_PASSWORD": os.environ["ROBOVAST_WEBDAV_PASSWORD"],
         }
+
+    def upload_archive(
+        self,
+        archive_path: str,
+        object_name: str,
+        progress_callback=None,
+    ) -> None:
+        """Upload *archive_path* to the WebDAV collection via HTTP ``PUT``.
+
+        Resumes an interrupted upload when the server reports a partial file: a
+        ``HEAD`` gives the bytes already stored, and the ``PUT`` continues from
+        there with a ``Content-Range`` header.
+        """
+        if not os.path.isfile(archive_path):
+            raise click.UsageError(f"archive not found: {archive_path}")
+
+        url = self._file_url(object_name)
+        total = os.path.getsize(archive_path)
+
+        remote_size = self._remote_size(url)
+        if remote_size == total:
+            if progress_callback is not None and total > 0:
+                progress_callback(total, total)
+            return
+        offset = remote_size if 0 < remote_size < total else 0
+
+        headers = {"Content-Length": str(total - offset)}
+        if offset > 0:
+            headers["Content-Range"] = f"bytes {offset}-{total - 1}/{total}"
+
+        with open(archive_path, "rb") as fh:
+            if offset > 0:
+                fh.seek(offset)
+            reader = UploadProgressReader(
+                fh, total, progress_callback=progress_callback, start_offset=offset)
+            try:
+                with self._session() as session:
+                    resp = session.put(
+                        url, data=reader, headers=headers, timeout=None)
+            except requests.RequestException as exc:
+                raise click.UsageError(
+                    f"Upload to WebDAV failed for '{object_name}': {exc}") from exc
+
+        if resp.status_code not in (200, 201, 204):
+            raise click.UsageError(
+                f"WebDAV PUT of '{object_name}' returned HTTP {resp.status_code}: "
+                f"{resp.text[:200]}")
+
+    def _remote_size(self, url: str) -> int:
+        """Return the size of the remote file in bytes, or 0 if absent/unknown."""
+        try:
+            with self._session() as session:
+                resp = session.head(url, timeout=30, allow_redirects=True)
+            if resp.status_code in (200, 204):
+                return int(resp.headers.get("Content-Length", 0))
+        except (requests.RequestException, ValueError):
+            pass
+        return 0
 
     def verify_access(self) -> None:
         """Confirm the WebDAV collection is reachable and the credentials work.

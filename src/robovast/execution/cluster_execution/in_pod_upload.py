@@ -31,8 +31,6 @@ overrides supplied by a retrigger command).
 
 import logging
 import os
-import subprocess
-import sys
 
 logger = logging.getLogger(__name__)
 
@@ -98,27 +96,21 @@ def verify_share_access(provider) -> None:
     logger.info("Share credentials OK.")
 
 
-def _run_script(script_path: str, args: list, env: dict, what: str) -> bool:
-    """Run a self-contained script as a local subprocess, streaming its output."""
-    logger.info("Running %s (%s)...", what, os.path.basename(script_path))
-    proc = subprocess.run(  # nosec B603 - fixed interpreter + repo-local script
-        [sys.executable, script_path, *args],
-        env=env, check=False,
-    )
-    if proc.returncode != 0:
-        logger.error("%s failed (exit code %d).", what, proc.returncode)
-        return False
-    return True
-
-
-def upload_campaign(cluster_config, campaign_id: str, provider) -> bool:
+def upload_campaign(cluster_config, campaign_id: str, provider,
+                    progress_cb=None) -> bool:
     """Compress *campaign_id* from storage and upload it via *provider*.
 
     1. Compress: ``cluster_config.compress_campaign`` (storage-specific — S3 vs
        GCS lives in the cluster config) writes
        ``$ROBOVAST_ARCHIVE_DIR/<campaign>.tar.gz``.
-    2. Upload: run the provider's upload script against that archive.
+    2. Upload: call the provider's in-process ``upload_archive``. The provider's
+       resolved env (URLs, tokens, key JSON/PEM) is already in ``os.environ`` —
+       injected at launch (and possibly overridden by a retrigger).
     3. Remove the local archive on success.
+
+    Args:
+        progress_cb: Optional ``(bytes_sent, total_bytes)`` callable forwarded to
+            the provider so the controller can publish upload progress.
 
     Returns ``True`` on success; logs and returns ``False`` on any failure (so
     the controller can keep the pod alive for a retrigger).
@@ -135,20 +127,22 @@ def upload_campaign(cluster_config, campaign_id: str, provider) -> bool:
         logger.exception("Campaign compression failed.")
         return False
 
-    # 2. Upload the archive via the configured share provider. The provider's
-    #    resolved env (URLs, tokens, key JSON) is already in os.environ — injected
-    #    at launch (and possibly overridden by a retrigger). The script reads the
-    #    archive from ROBOVAST_ARCHIVE_DIR.
-    upload_env = dict(os.environ)
-    upload_env["ROBOVAST_ARCHIVE_DIR"] = archive_dir
-    ok = _run_script(provider.get_upload_script_path(), [campaign_id], upload_env,
-                     f"upload to {provider.SHARE_TYPE}")
+    # 2. Upload the archive in-process via the configured share provider.
+    object_name = os.path.basename(archive_path)
+    logger.info("Uploading %s to %s...", object_name, provider.SHARE_TYPE)
+    ok = True
+    try:
+        provider.upload_archive(archive_path, object_name, progress_callback=progress_cb)
+    except Exception:  # pylint: disable=broad-except
+        logger.exception("Upload to %s failed.", provider.SHARE_TYPE)
+        ok = False
 
     # 3. Best-effort cleanup of the local archive (storage keeps the canonical copy).
-    try:
-        if os.path.isfile(archive_path):
-            os.remove(archive_path)
-    except OSError:
-        logger.debug("Could not remove local archive %s", archive_path, exc_info=True)
+    if ok:
+        try:
+            if os.path.isfile(archive_path):
+                os.remove(archive_path)
+        except OSError:
+            logger.debug("Could not remove local archive %s", archive_path, exc_info=True)
 
     return ok

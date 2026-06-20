@@ -401,6 +401,36 @@ def _finalize(backend: ExecutionBackend, campaign_root: str) -> None:
     except Exception:  # pylint: disable=broad-except
         logger.warning("Campaign finalize hook failed", exc_info=True)
 
+def _make_upload_progress_cb(state):
+    """Return a ``(bytes_sent, total_bytes)`` callback that publishes throttled
+    upload progress into ``Status.extra['upload']``, or ``None`` if there is no
+    control channel.
+
+    The callback derives transfer *rate* from the gap between published samples
+    (the providers report only sent/total) and throttles writes to ≥1% advance or
+    ≥0.5 s elapsed (plus the final 100% sample) to keep lock churn low. A fresh
+    callback is created per upload attempt so its rate baseline resets on retry.
+    """
+    if state is None:
+        return None
+    last = {"t": None, "sent": 0, "pushed_pct": -1.0}
+
+    def _cb(sent, total):
+        now = time.time()
+        pct = (sent / total * 100.0) if total else 0.0
+        if (last["t"] is not None and pct - last["pushed_pct"] < 1.0
+                and now - last["t"] < 0.5 and sent < total):
+            return
+        rate = None
+        if last["t"] is not None and now > last["t"]:
+            rate = (sent - last["sent"]) / (now - last["t"])
+        last.update(t=now, sent=sent, pushed_pct=pct)
+        state.update(extra={"upload": {"sent": sent, "total": total,
+                                       "rate": rate, "updated_at": now}})
+
+    return _cb
+
+
 def _upload_to_share_with_retrigger(cluster_config, campaign_id: str, provider,
                                     state, notifier=None) -> int:
     """Run upload-to-share after a finished campaign; on failure stay alive.
@@ -423,8 +453,10 @@ def _upload_to_share_with_retrigger(cluster_config, campaign_id: str, provider,
         state.update(share_provider=provider.SHARE_TYPE)
         state.set_phase("uploading", stage="upload-to-share")
 
-    if in_pod_upload.upload_campaign(cluster_config, campaign_id, provider):
+    if in_pod_upload.upload_campaign(cluster_config, campaign_id, provider,
+                                     progress_cb=_make_upload_progress_cb(state)):
         if state is not None:
+            state.update(extra={})  # clear the upload progress bar
             state.set_phase("finished", stage="uploaded")
         logger.info("Campaign uploaded to share (%s).", provider.SHARE_TYPE)
         notifier.uploaded(provider.SHARE_TYPE)
@@ -438,6 +470,7 @@ def _upload_to_share_with_retrigger(cluster_config, campaign_id: str, provider,
     if state is None:
         notifier.failed("upload-to-share failed (no control channel to retry)")
         return 1  # no control channel → nothing could retrigger
+    state.update(extra={})  # drop any stale progress bar from the failed attempt
     state.set_phase("uploading", stage="upload-failed")
 
     while True:
@@ -469,12 +502,16 @@ def _upload_to_share_with_retrigger(cluster_config, campaign_id: str, provider,
                          retry_provider.SHARE_TYPE, exc)
             state.set_phase("uploading", stage="upload-failed")
             continue
-        if in_pod_upload.upload_campaign(cluster_config, campaign_id, retry_provider):
+        if in_pod_upload.upload_campaign(
+                cluster_config, campaign_id, retry_provider,
+                progress_cb=_make_upload_progress_cb(state)):
+            state.update(extra={})  # clear the upload progress bar
             state.set_phase("finished", stage="uploaded")
             logger.info("Campaign uploaded to share (%s, retry).",
                         retry_provider.SHARE_TYPE)
             notifier.uploaded(retry_provider.SHARE_TYPE)
             return 0
+        state.update(extra={})  # drop stale progress bar from the failed retry
         state.set_phase("uploading", stage="upload-failed")
 
 
