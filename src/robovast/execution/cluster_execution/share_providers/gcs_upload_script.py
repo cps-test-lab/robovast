@@ -148,7 +148,8 @@ def _get_access_token(key_json: dict) -> str:
 # ---------------------------------------------------------------------------
 
 def _session_file(campaign: str) -> str:
-    return f"/data/{campaign}.gcs_session"
+    archive_dir = os.environ.get("ROBOVAST_ARCHIVE_DIR", "/data")
+    return f"{archive_dir}/{campaign}.gcs_session"
 
 
 def _save_session(campaign: str, session_uri: str) -> None:
@@ -280,7 +281,8 @@ def _get_session(campaign: str, bucket: str, object_name: str, total: int, token
 # ---------------------------------------------------------------------------
 
 def upload(campaign: str, bucket: str, key_json: dict, prefix: str = "") -> None:
-    archive_path = f"/data/{campaign}.tar.gz"
+    archive_dir = os.environ.get("ROBOVAST_ARCHIVE_DIR", "/data")
+    archive_path = f"{archive_dir}/{campaign}.tar.gz"
 
     if not os.path.isfile(archive_path):
         sys.stderr.write(f"ERROR: archive not found: {archive_path}\n")

@@ -32,7 +32,9 @@ in the store, not a directory level, so batch and search share the flat layout.
 
 import logging
 import os
+import sys
 import tempfile
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -65,7 +67,7 @@ class CampaignController:
                  options: RunOptions, store: CampaignStore, campaign_config_dump: dict,
                  vast_dir: str, strategy=None, evaluator=None, compose=None,
                  per_batch: int = 1, postprocessing=None, batch_campaign_data=None,
-                 stop_conditions=None):
+                 stop_conditions=None, state=None):
         self.campaign_id = campaign_id
         self.campaign_root = os.path.join(results_dir, campaign_id)
         self.runs = runs
@@ -84,6 +86,17 @@ class CampaignController:
         # Combined budget + stopping evaluator (search mode); drives loop end and
         # the per-batch progress line. None in batch mode.
         self.stop_conditions = stop_conditions
+        # Optional control-channel state (cluster mode). When set, the controller
+        # publishes loop phase/progress and honours the cooperative `stop` command.
+        self.state = state
+        self._history: list[dict] = []        # per-batch summaries for /status
+        # Run-level progress poller plumbing (set up only when `state` is present
+        # and the backend can introspect storage).
+        self._poller = None
+        self._poller_stop = threading.Event()
+        self._batch_active = threading.Event()
+        self._batch_baseline = 0
+        self._batch_total = 0
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -94,9 +107,82 @@ class CampaignController:
         campaign_id = self.store.create_campaign(
             self.campaign_id, self.campaign_config_dump, mode=self.mode,
             config_dir=self.vast_dir)
-        if self.strategy is None:
-            return self._run_batch_mode(campaign_id)
-        return self._run_search(campaign_id)
+        if self.state is not None:
+            self.state.update(mode=self.mode, campaign_id=self.campaign_id)
+            self.state.set_phase("running")
+        self._start_progress_poller()
+        try:
+            if self.strategy is None:
+                result = self._run_batch_mode(campaign_id)
+            else:
+                result = self._run_search(campaign_id)
+            if self.state is not None:
+                self.state.set_phase("finished")
+            return result
+        except BaseException:
+            if self.state is not None:
+                self.state.set_phase("failed")
+            raise
+        finally:
+            self._stop_progress_poller()
+
+    # -- run-level progress poller ------------------------------------------
+
+    _POLL_INTERVAL = 3.0
+
+    def _start_progress_poller(self) -> None:
+        """Start a daemon thread that publishes current-batch run progress.
+
+        Skipped when there is no control channel, or the backend can't introspect
+        storage (returns ``None`` — e.g. the local backend). ``backend.run_batch``
+        blocks for a whole batch, so this runs the count concurrently.
+        """
+        if self.state is None:
+            return
+        try:
+            if self.backend.count_run_artifacts(self.campaign_id) is None:
+                return
+        except Exception:  # pylint: disable=broad-except
+            return
+
+        def _poll() -> None:
+            while not self._poller_stop.is_set():
+                if self._batch_active.is_set():
+                    try:
+                        done = self.backend.count_run_artifacts(self.campaign_id)
+                        if done is not None:
+                            completed = min(max(0, done - self._batch_baseline), self._batch_total)
+                            self.state.update(
+                                runs={"completed": completed, "total": self._batch_total})
+                    except Exception:  # pylint: disable=broad-except
+                        pass
+                self._poller_stop.wait(self._POLL_INTERVAL)
+
+        self._poller = threading.Thread(target=_poll, name="robovast-progress-poller",
+                                        daemon=True)
+        self._poller.start()
+
+    def _stop_progress_poller(self) -> None:
+        if self._poller is not None:
+            self._poller_stop.set()
+
+    def _begin_batch_progress(self, total: int) -> None:
+        """Capture the cumulative-run baseline before a batch's jobs upload."""
+        if self.state is None or self._poller is None:
+            return
+        try:
+            self._batch_baseline = self.backend.count_run_artifacts(self.campaign_id) or 0
+        except Exception:  # pylint: disable=broad-except
+            self._batch_baseline = 0
+        self._batch_total = total
+        self.state.update(runs={"completed": 0, "total": total})
+        self._batch_active.set()
+
+    def _end_batch_progress(self) -> None:
+        if self.state is None or self._poller is None:
+            return
+        self._batch_active.clear()
+        self.state.update(runs={"completed": self._batch_total, "total": self._batch_total})
 
     # -- batch mode ---------------------------------------------------------
 
@@ -105,9 +191,15 @@ class CampaignController:
         logger.info("\n%s\n📦  Batch run  —  %d configuration(s) × %d run(s)\n%s",
                     _BAR, len(configs), self.runs, _BAR)
         batch_id = self.store.open_batch(campaign_id, 0, self.campaign_root)
-        self.backend.run_batch(
-            self.batch_campaign_data, campaign_root=self.campaign_root,
-            batch_tag="batch-0", runs=self.runs, options=self.options)
+        if self.state is not None:
+            self.state.update(batch=0)
+        self._begin_batch_progress(len(configs) * self.runs)
+        try:
+            self.backend.run_batch(
+                self.batch_campaign_data, campaign_root=self.campaign_root,
+                batch_tag="batch-0", runs=self.runs, options=self.options)
+        finally:
+            self._end_batch_progress()
 
         for cfg in configs:
             name = cfg["name"]
@@ -118,6 +210,9 @@ class CampaignController:
                 params=cfg.get("config", {}) or {}, objectives={}, measures={},
                 n_samples=len(run_dirs), status=aggregate_run_status(run_dirs),
                 result_dir=cdir)
+        if self.state is not None:
+            self.state.update(batches_done=1,
+                              batch_history=[{"idx": 0, "n_units": len(configs)}])
         logger.info("\n%s\n✅  Batch run complete  —  %d configuration(s) in %s\n%s",
                     _BAR, len(configs), self.campaign_root, _BAR)
         return {"mode": "batch", "configs": len(configs), "campaign_root": self.campaign_root}
@@ -125,7 +220,7 @@ class CampaignController:
     # -- search mode --------------------------------------------------------
 
     def _run_search(self, campaign_id: int):
-        from robovast.search.stopping import StopSnapshot
+        from robovast.search.stopping import StopResult, StopSnapshot
         stop = self.stop_conditions
         obj_name = self.strategy.single_objective.name
         if not stop.has_budget:
@@ -138,6 +233,8 @@ class CampaignController:
         while True:
             param_sets = self.strategy.ask(self.per_batch)
             batch_id = self.store.open_batch(campaign_id, batch_idx, self.campaign_root)
+            if self.state is not None:
+                self.state.update(batch=batch_idx)
             logger.info("\n%s\n🔁  Batch %d  —  %d parameter set(s)\n%s",
                         _BAR, batch_idx, len(param_sets), _BAR)
             evaluations = self._run_search_batch(param_sets, batch_idx, batch_id)
@@ -149,12 +246,23 @@ class CampaignController:
                                 elapsed=time.monotonic() - start,
                                 best_objective=best_objective,
                                 metrics=self.strategy.report().extra if stop.needs_metrics else {})
+            progress = stop.progress(snap)
             # Live progress toward every budget/stopping criterion.
             logger.info("📊  %s", " | ".join(
-                f"{p.label} {self._fmt(p.current)}/{self._fmt(p.limit)}"
-                for p in stop.progress(snap)))
+                f"{p.label} {self._fmt(p.current)}/{self._fmt(p.limit)}" for p in progress))
+            if self.state is not None:
+                self._history.append({"idx": batch_idx - 1, "n_units": len(evaluations)})
+                self.state.update(batches_done=batch_idx, best_objective=best_objective,
+                                  budget=[self._budget_item(p) for p in progress],
+                                  batch_history=list(self._history))
             result = stop.should_stop(snap)
+            if not result and self.state is not None and self.state.stop_requested:
+                result = StopResult(kind="external",
+                                    reason="stop requested via control API")
             if result:
+                if self.state is not None:
+                    self.state.set_phase("finishing")
+                    self.state.update(stop={"kind": result.kind, "reason": result.reason})
                 logger.info("\n%s\n⏹  Stopping — %s\n%s", _BAR, result.reason, _BAR)
                 break
 
@@ -172,6 +280,19 @@ class CampaignController:
     @staticmethod
     def _fmt(v):
         return f"{v:.4g}" if isinstance(v, float) else str(v)
+
+    @staticmethod
+    def _budget_item(p) -> dict:
+        """Convert a CriterionProgress to a JSON-safe /status budget item.
+
+        ``current`` may be NaN (e.g. target_objective before any result); NaN is
+        not valid JSON, so it is reported as ``None``.
+        """
+        import math
+        cur = float(p.current)
+        return {"label": p.label,
+                "current": None if math.isnan(cur) else cur,
+                "limit": float(p.limit), "done": bool(p.done)}
 
     def _update_best(self, best, evaluations, obj_name):
         """Fold this batch's objective values into the best-so-far (raw units,
@@ -201,27 +322,32 @@ class CampaignController:
             groups.setdefault(ps.n_reps or self.runs, []).append(ps)
         multi = len(groups) > 1
 
+        # Expected runs across the whole batch (all reps-groups), for run progress.
+        self._begin_batch_progress(sum((ps.n_reps or self.runs) for ps in param_sets))
         evaluations = []
-        for reps, group in sorted(groups.items()):
-            tag = f"batch-{batch_idx}" + (f"/reps-{reps}" if multi else "")
-            # Compose into a temp dir (intermediate config artifacts); the backend
-            # stages from it and only results land under the campaign root.
-            with tempfile.TemporaryDirectory(prefix="robovast_compose_") as artifacts:
-                campaign_data, name_by_id = self.compose.compose(group, artifacts)
-                self.backend.run_batch(
-                    campaign_data, campaign_root=self.campaign_root, batch_tag=tag,
-                    runs=reps, options=self.options)
-            self._run_postprocessing()
+        try:
+            for reps, group in sorted(groups.items()):
+                tag = f"batch-{batch_idx}" + (f"/reps-{reps}" if multi else "")
+                # Compose into a temp dir (intermediate config artifacts); the backend
+                # stages from it and only results land under the campaign root.
+                with tempfile.TemporaryDirectory(prefix="robovast_compose_") as artifacts:
+                    campaign_data, name_by_id = self.compose.compose(group, artifacts)
+                    self.backend.run_batch(
+                        campaign_data, campaign_root=self.campaign_root, batch_tag=tag,
+                        runs=reps, options=self.options)
+                self._run_postprocessing()
 
-            for ps in group:
-                config_name = name_by_id[ps.id]
-                config_dir = Path(self.campaign_root) / config_name
-                ev = self.evaluator.evaluate(config_dir, ps)
-                evaluations.append(ev)
-                self.store.record_unit(
-                    batch_id=batch_id, paramset_id=ps.id, config_name=config_name,
-                    params=ps.values, objectives=ev.objectives, measures=ev.measures,
-                    n_samples=ev.n_samples, status="evaluated", result_dir=str(config_dir))
+                for ps in group:
+                    config_name = name_by_id[ps.id]
+                    config_dir = Path(self.campaign_root) / config_name
+                    ev = self.evaluator.evaluate(config_dir, ps)
+                    evaluations.append(ev)
+                    self.store.record_unit(
+                        batch_id=batch_id, paramset_id=ps.id, config_name=config_name,
+                        params=ps.values, objectives=ev.objectives, measures=ev.measures,
+                        n_samples=ev.n_samples, status="evaluated", result_dir=str(config_dir))
+        finally:
+            self._end_batch_progress()
         return evaluations
 
     def _run_postprocessing(self) -> None:
@@ -255,9 +381,68 @@ def _finalize(backend: ExecutionBackend, campaign_root: str) -> None:
     except Exception:  # pylint: disable=broad-except
         logger.warning("Campaign finalize hook failed", exc_info=True)
 
+def _upload_to_share_with_retrigger(cluster_config, campaign_id: str, provider,
+                                    state) -> int:
+    """Run upload-to-share after a finished campaign; on failure stay alive.
+
+    The campaign is already published to storage (``finalize_campaign``). This
+    compresses it and uploads it to the share. On success the function returns 0
+    (the controller then exits, pod ``Succeeded``). On failure it keeps the
+    controller alive — parking the main thread on the control channel — so the
+    user can retry with ``vast exec cluster upload-to-share`` (optionally with
+    corrected credentials) or abandon with ``stop``.
+
+    Returns a process exit code.
+    """
+    from robovast.execution.cluster_execution import \
+        in_pod_upload  # pylint: disable=import-outside-toplevel
+
+    if state is not None:
+        state.set_phase("uploading", stage="upload-to-share")
+
+    if in_pod_upload.upload_campaign(cluster_config, campaign_id, provider):
+        if state is not None:
+            state.set_phase("finished", stage="uploaded")
+        logger.info("Campaign uploaded to share (%s).", provider.SHARE_TYPE)
+        return 0
+
+    logger.error(
+        "upload-to-share failed. The campaign is safe in storage. The controller "
+        "will stay alive — retry with 'vast exec cluster upload-to-share' (it "
+        "reuses the injected credentials, or pass corrected ones), or 'vast exec "
+        "cluster stop' to give up.")
+    if state is None:
+        return 1  # no control channel → nothing could retrigger
+    state.set_phase("uploading", stage="upload-failed")
+
+    while True:
+        action, overrides = state.wait_for_retrigger()
+        if action == "abandon":
+            logger.warning("Upload abandoned via stop; terminating "
+                           "(campaign already published to storage).")
+            return 1
+        logger.info("Retrying upload-to-share...")
+        state.set_phase("uploading", stage="upload-to-share")
+        try:
+            retry_provider = in_pod_upload.load_provider_from_env(overrides)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.error("Cannot build share provider for retry: %s", exc)
+            retry_provider = None
+        if retry_provider is None:
+            logger.error("No usable share provider for retry; waiting again.")
+            state.set_phase("uploading", stage="upload-failed")
+            continue
+        if in_pod_upload.upload_campaign(cluster_config, campaign_id, retry_provider):
+            state.set_phase("finished", stage="uploaded")
+            logger.info("Campaign uploaded to share (%s, retry).",
+                        retry_provider.SHARE_TYPE)
+            return 0
+        state.set_phase("uploading", stage="upload-failed")
+
+
 def run_search_campaign(vast_file, campaign_config, results_dir, runs,
                         backend: ExecutionBackend | None = None,
-                        options: RunOptions | None = None, campaign_id=None):
+                        options: RunOptions | None = None, campaign_id=None, state=None):
     """Build and run a search campaign. Requires ``campaign_config.search``."""
     from robovast.search.compose import Compose
     from robovast.search.evaluator import Evaluator
@@ -280,7 +465,7 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
         vast_dir=vast_dir, strategy=build_strategy(search_cfg, vast_dir),
         evaluator=Evaluator(search_cfg, vast_dir), compose=Compose(vast_file),
         per_batch=search_cfg.per_batch, postprocessing=search_cfg.postprocessing,
-        stop_conditions=build_stop_conditions(search_cfg))
+        stop_conditions=build_stop_conditions(search_cfg), state=state)
     try:
         return controller.run()
     finally:
@@ -290,7 +475,7 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
 
 def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_filter=None,
                        backend: ExecutionBackend | None = None,
-                       options: RunOptions | None = None, campaign_id=None):
+                       options: RunOptions | None = None, campaign_id=None, state=None):
     """Build and run a batch campaign (no ``search:`` block)."""
     import fnmatch
 
@@ -318,7 +503,7 @@ def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_fil
             campaign_id=campaign_id, results_dir=results_dir, runs=runs,
             backend=be, options=options or RunOptions(),
             store=store, campaign_config_dump=campaign_config.model_dump(),
-            vast_dir=vast_dir, batch_campaign_data=campaign_data)
+            vast_dir=vast_dir, batch_campaign_data=campaign_data, state=state)
         try:
             return controller.run()
         finally:
@@ -402,17 +587,68 @@ def main(argv=None):
     campaign_config = validate_config(load_config(args.vast))
     backend = _build_cluster_backend(args.namespace, args.kube_context, args.log_tree)
     options = RunOptions(log_tree=args.log_tree)
+    # The host launcher passes --campaign-id; resolve it here too so we know which
+    # campaign to upload after the run (and so the id is stable for both paths).
+    campaign_id = args.campaign_id or campaign_id_for(campaign_config)
+
+    # Start the in-pod control channel (state + RPC) so the host can monitor loop
+    # progress and issue commands. Best-effort: a failure leaves the campaign
+    # running with the monitor falling back to its Kubernetes-only view.
+    state = None
+    try:
+        from robovast.execution.control_server import ControllerState, serve_in_thread
+        port = int(os.environ.get("ROBOVAST_CONTROL_PORT", "0")) or None
+        state = ControllerState()
+        serve_in_thread(state, **({"port": port} if port else {}))
+    except Exception:  # pylint: disable=broad-except
+        logger.warning("Could not start the control channel; continuing without it.",
+                       exc_info=True)
+        state = None
+
+    # Pre-flight: verify the share credentials work *before* burning compute on a
+    # campaign that could never be delivered. The launcher injects the share env
+    # (ROBOVAST_SHARE_TYPE + provider vars) from the host .env.
+    from robovast.execution.cluster_execution import \
+        in_pod_upload  # pylint: disable=import-outside-toplevel
+    try:
+        share_provider = in_pod_upload.load_provider_from_env()
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.error("Share provider misconfigured: %s", exc)
+        if state is not None:
+            state.set_phase("failed", stage="share-config-error")
+        sys.exit(2)
+    if share_provider is None:
+        # The launcher refuses to start a run without a share destination; guard
+        # here too for standalone/manual invocations.
+        logger.error("No share destination configured (ROBOVAST_SHARE_TYPE unset); "
+                     "refusing to run a campaign whose results have nowhere to go.")
+        if state is not None:
+            state.set_phase("failed", stage="share-config-error")
+        sys.exit(2)
+    try:
+        in_pod_upload.verify_share_access(share_provider)
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.error("Pre-flight share credential check failed; aborting "
+                     "before starting any batches: %s", exc)
+        if state is not None:
+            state.set_phase("failed", stage="share-verify-failed")
+        sys.exit(3)
 
     if campaign_config.search is not None:
         report = run_search_campaign(args.vast, campaign_config, args.results_dir, args.runs,
                                      backend=backend, options=options,
-                                     campaign_id=args.campaign_id)
+                                     campaign_id=campaign_id, state=state)
         logger.info("Search campaign finished: %s", report)
     else:
         report = run_batch_campaign(args.vast, campaign_config, args.results_dir, args.runs,
                                     config_filter=args.config, backend=backend, options=options,
-                                    campaign_id=args.campaign_id)
+                                    campaign_id=campaign_id, state=state)
         logger.info("Batch campaign finished: %s", report)
+
+    # The campaign is now published to storage. Deliver it to the share; stay
+    # alive for a manual retrigger if the upload fails.
+    sys.exit(_upload_to_share_with_retrigger(
+        backend.cluster_config, campaign_id, share_provider, state))
 
 
 if __name__ == "__main__":

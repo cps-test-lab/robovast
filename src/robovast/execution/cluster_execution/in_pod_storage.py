@@ -16,9 +16,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Direct (in-pod) storage I/O for the in-cluster campaign controller.
 
-Unlike :mod:`.archiver` / :mod:`.s3_client` (host-side, ``kubectl cp`` + port-
-forward), this module talks to the storage backend **directly from inside the
-cluster**, where the S3/GCS endpoint is reachable with full bandwidth. It is
+Unlike the host-side ``kubectl cp`` + port-forward tooling, this module talks to
+the storage backend **directly from inside the cluster**, where the S3/GCS
+endpoint is reachable with full bandwidth. It is
 used by :class:`~robovast.execution.cluster_execution.kubernetes_backend.KubernetesBackend`
 running in the controller pod to:
 
@@ -38,8 +38,9 @@ import socket
 
 logger = logging.getLogger(__name__)
 
-# Object metadata flag marking a file as executable, matching the convention in
-# targz_to_s3.py / ClusterS3Client so the executable bit survives a round-trip.
+# Object metadata flag marking a file as executable, matching the convention used
+# by the upload-to-share compression and the job init containers so the bit
+# survives a round-trip.
 _EXECUTABLE_META = {"executable": "yes"}
 
 
@@ -66,6 +67,15 @@ class StorageClient:
         raise NotImplementedError
 
     def download_prefix(self, bucket: str, prefix: str, local_dir: str) -> int:
+        raise NotImplementedError
+
+    def list_keys(self, bucket: str, prefix: str = "") -> list[str]:
+        """Return object keys under *prefix* (no trailing-slash pseudo-dirs).
+
+        Used by the controller to count completed per-run artifacts in the live
+        batch prefix (run-level progress), so it must not raise on a
+        not-yet-created bucket — implementations return ``[]`` in that case.
+        """
         raise NotImplementedError
 
 
@@ -143,6 +153,24 @@ class _S3StorageClient(StorageClient):
         logger.debug("Downloaded %d files from s3://%s/%s", count, bucket, prefix)
         return count
 
+    def list_keys(self, bucket: str, prefix: str = "") -> list[str]:
+        from botocore.exceptions import ClientError  # pylint: disable=import-outside-toplevel
+        prefix = prefix.rstrip("/")
+        key_prefix = f"{prefix}/" if prefix else ""
+        paginator = self._s3.get_paginator("list_objects_v2")
+        keys = []
+        try:
+            for page in paginator.paginate(Bucket=bucket, Prefix=key_prefix):
+                for obj in page.get("Contents", []) or []:
+                    if not obj["Key"].endswith("/"):
+                        keys.append(obj["Key"])
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code in ("404", "NoSuchBucket"):
+                return []
+            raise
+        return keys
+
 
 class _GcsStorageClient(StorageClient):
     """google-cloud-storage client for a shared GCS bucket (prefix per campaign)."""
@@ -195,6 +223,17 @@ class _GcsStorageClient(StorageClient):
             count += 1
         logger.debug("Downloaded %d files from gs://%s/%s", count, bucket, prefix)
         return count
+
+    def list_keys(self, bucket: str, prefix: str = "") -> list[str]:
+        from google.cloud.exceptions import NotFound  # pylint: disable=import-outside-toplevel
+        gbucket = self._client.bucket(bucket)
+        prefix = prefix.rstrip("/")
+        key_prefix = f"{prefix}/" if prefix else ""
+        try:
+            return [b.name for b in self._client.list_blobs(gbucket, prefix=key_prefix)
+                    if not b.name.endswith("/")]
+        except NotFound:
+            return []
 
 
 def campaign_storage_location(cluster_config, campaign_id: str) -> tuple[str, str]:

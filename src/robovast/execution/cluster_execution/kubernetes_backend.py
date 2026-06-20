@@ -430,8 +430,8 @@ class BatchJobRunner:
             docs = build_job_parameter_documents(job, scenario_name)
             with open(os.path.join(transient_dir, f"{self._job_tag(job.index)}.params.yaml"), "w") as f:
                 f.write(dump_multi_document_yaml(docs))
-        # Canonical link manifest, consumed by the share archiver (s3/gcs_to_targz)
-        # to materialise <config>/<run>/job symlinks into the shared tar.gz.
+        # Canonical link manifest, consumed by the controller's upload-to-share
+        # compression to materialise <config>/<run>/job symlinks into the tar.gz.
         # Skipped in per-batch mode: build_job_links assumes the single-batch
         # ``_jobs/job-<idx>`` layout, which the batch-namespaced job tag breaks.
         if not self._batch_tag:
@@ -622,8 +622,8 @@ class BatchJobRunner:
 
         ``<config>/<run>/job`` -> ``../../_jobs/<batch>/job-<idx>``. Accumulated
         across batches (the manifest is shared), uploaded by ``finalize_campaign``,
-        and turned into real symlinks by ``s3_to_targz`` / ``gcs_to_targz`` during
-        ``upload-to-share``.
+        and turned into real symlinks by the controller's upload-to-share
+        compression.
         """
         from robovast.common.execution import \
             JOB_LINKS_MANIFEST  # pylint: disable=import-outside-toplevel
@@ -663,6 +663,9 @@ class KubernetesBackend(ExecutionBackend):
         # Captured from run_batch for finalize_campaign (execution.yaml metadata).
         self._execution_params: dict = {}
         self._runs = None
+        # Lazily-built read-only storage client for count_run_artifacts (the
+        # controller's progress poller); separate from the write path.
+        self._progress_storage = None
 
     def run_batch(self, campaign_data: dict, *, campaign_root: str, batch_tag: str,
                   runs: int, options: RunOptions) -> None:
@@ -714,3 +717,15 @@ class KubernetesBackend(ExecutionBackend):
         n = storage.upload_dir(campaign_root, bucket, prefix)
         logger.info("Published canonical campaign (%d file(s), incl. campaign.db / "
                     "_execution / metrics) to %s/%s", n, bucket, prefix)
+
+    # Per-run JUnit report each scenario run uploads on completion; counting these
+    # under the (flat, campaign-wide) prefix gives cumulative finished runs.
+    _RUN_SENTINEL = "/test.xml"
+
+    def count_run_artifacts(self, campaign_id: str) -> int | None:
+        bucket, prefix = in_pod_storage.campaign_storage_location(
+            self.cluster_config, campaign_id)
+        if self._progress_storage is None:
+            self._progress_storage = in_pod_storage.storage_client_for(self.cluster_config)
+        keys = self._progress_storage.list_keys(bucket, prefix)
+        return sum(1 for k in keys if k.endswith(self._RUN_SENTINEL))

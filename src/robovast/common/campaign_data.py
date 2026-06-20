@@ -171,24 +171,6 @@ def read_resolved_configurations(campaign_dir: Path) -> dict[str, Any]:
         return yaml.safe_load(f)
 
 
-def list_output_files(run_dir: Path) -> list[str]:
-    """List all files in a run directory as relative paths.
-
-    Args:
-        run_dir: Path to the run directory.
-
-    Returns:
-        Sorted list of file paths relative to run_dir.
-    """
-    if not run_dir.is_dir():
-        return []
-    files = []
-    for f in run_dir.rglob("*"):
-        if f.is_file():
-            files.append(str(f.relative_to(run_dir)))
-    return sorted(files)
-
-
 def get_vast_configuration_info(
     campaign_dir: Path,
     config_dirs: list[Path] | None = None,

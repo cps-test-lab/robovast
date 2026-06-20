@@ -17,10 +17,13 @@
 
 """Abstract base class for share providers."""
 
+import logging
 import os
 from abc import ABC, abstractmethod
 
 import click
+
+logger = logging.getLogger(__name__)
 
 __all__ = ["BaseShareProvider"]
 
@@ -126,6 +129,27 @@ class BaseShareProvider(ABC):
         Returns:
             dict[str, str]: Mapping of variable name to value.
         """
+
+    # ------------------------------------------------------------------
+    # Pre-flight credential check (used by the controller before a campaign)
+    # ------------------------------------------------------------------
+
+    def verify_access(self) -> None:
+        """Verify the share is reachable with the configured credentials.
+
+        Called by the in-cluster controller **before** any batches start, so a
+        campaign that could never be delivered fails fast instead of wasting
+        compute. Implementations should perform the cheapest authenticated
+        operation that proves write access (a HEAD/PROPFIND, a token exchange,
+        an SFTP ``stat``) and raise on failure.
+
+        The default is a non-blocking warning: providers that cannot cheaply
+        check access do not gate the campaign.
+        """
+        logger.warning(
+            "Share provider '%s' does not implement a pre-flight credential "
+            "check; skipping verification.", self.SHARE_TYPE,
+        )
 
     # ------------------------------------------------------------------
     # Optional download interface (used by ``results download``)

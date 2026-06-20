@@ -794,6 +794,114 @@ heuristic. It reads the campaign/batch/unit rows to build the tree
 from each unit's ``result_dir``.
 
 
+.. _controller-control-interface:
+
+Controller Control Interface
+----------------------------
+
+Every cluster campaign is driven by a fire-and-forget **controller pod**. While
+it runs (and after it finishes) the host talks to it through a small in-pod
+**HTTP/JSON control channel** — the live seam for monitoring and for issuing
+commands such as a graceful stop or an upload retry.
+
+Server
+^^^^^^
+
+``robovast.execution.control_server`` runs a **FastAPI + uvicorn** server on a
+daemon thread beside the synchronous controller loop (default port ``8099``,
+``ROBOVAST_CONTROL_PORT``). Startup is **best-effort**: if it fails (e.g.
+``uvicorn`` missing) the campaign continues and the monitor falls back to its
+Kubernetes-only view. FastAPI also serves the live OpenAPI schema at ``/docs``,
+so the same contract serves the CLI now and a web UI later.
+
+Endpoints
+^^^^^^^^^
+
+* ``GET /status`` — the controller's live :class:`~robovast.execution.control_server.Status`
+  (loop phase, current batch, budget/run progress, history). The CLI ``monitor``
+  polls this; ``phase`` is the authoritative "done" signal.
+* ``POST /command`` — an extensible RPC: a JSON body ``{name, args}`` is dispatched
+  through the handler registry and returns a
+  :class:`~robovast.execution.control_server.CommandResult` (``{ok, result, error}``).
+  An unknown command returns HTTP 400.
+* ``GET /healthz`` — liveness (``{"ok": true}``).
+
+Status: phase and stage
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``phase`` is an **open** string advanced through a documented vocabulary, with
+``stage`` carrying finer markers so new states slot in without a schema change:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 80
+
+   * - ``phase``
+     - Meaning
+   * - ``starting`` → ``running``
+     - Campaign created; batch loop executing.
+   * - ``finishing``
+     - Search stop condition met (or a ``stop`` was requested); winding down.
+   * - ``uploading``
+     - Campaign published to storage; compressing/uploading to the share. The
+       ``stage`` refines this: ``upload-to-share`` (in progress),
+       ``upload-failed`` (waiting for a retrigger), ``uploaded`` (done).
+   * - ``finished``
+     - Done (``stage=uploaded``) — the controller process exits 0.
+   * - ``failed``
+     - Aborted. ``stage`` says why for the new pre-flight gates:
+       ``share-config-error`` (no/invalid share configured) or
+       ``share-verify-failed`` (credentials rejected before any batch ran).
+
+Commands
+^^^^^^^^
+
+Handlers are registered in the :data:`~robovast.execution.control_server.HANDLERS`
+registry via the ``@register("name")`` decorator and receive
+``(state, **args)``. Built-in commands:
+
+* ``stop`` — cooperative graceful stop. During the batch loop it ends the search
+  after the current batch; while the controller is parked waiting to retry a
+  failed upload it **abandons** that wait and terminates.
+* ``upload-to-share`` — (re)run the post-campaign upload. ``args`` may carry
+  credential overrides (e.g. a corrected password); with no args the
+  launch-time credentials are reused. The handler only *signals* — the actual
+  upload runs on the controller's main thread (see below) — so callers poll
+  ``GET /status`` for the ``stage`` transition.
+
+State ownership and the retrigger handshake
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+:class:`~robovast.execution.control_server.ControllerState` is the thread-safe
+holder the **controller writes** and the **server reads**. The controller calls
+``update`` / ``set_phase`` at each batch boundary; the server thread reads a
+consistent ``snapshot``. Long-running work never executes on a request thread:
+``upload-to-share`` calls ``request_upload(overrides)`` (and ``stop`` calls
+``request_stop()``), which wake the controller's main thread blocked in
+``wait_for_retrigger()`` — it returns ``("retrigger", overrides)`` to retry or
+``("abandon", {})`` when a stop was requested.
+
+Host-side client
+^^^^^^^^^^^^^^^^^
+
+``robovast.execution.cluster_execution.control_client`` reaches the server over
+``kubectl port-forward`` (the same transport the launcher uses, so it needs only
+the user's kubeconfig — no extra RBAC): ``find_controller_pod`` locates the pod
+by label, ``port_forward`` opens the tunnel, and ``get_status`` / ``send_command``
+call the endpoints. The CLI ``monitor``, ``stop`` and ``upload-to-share`` are
+thin wrappers over these.
+
+API reference
+^^^^^^^^^^^^^
+
+.. automodule:: robovast.execution.control_server
+   :members: Status, Command, CommandResult, ControllerState, register, dispatch
+   :undoc-members:
+
+.. automodule:: robovast.execution.cluster_execution.control_client
+   :members: find_controller_pod, port_forward, get_status, send_command
+
+
 Querying RoboVAST campaigns
 ---------------------------
 

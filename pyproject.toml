@@ -38,6 +38,8 @@ python-dotenv = "^1.0"
 fastmcp = "3.1.0"
 paramiko = "^4.0"
 requests = "^2.32"
+fastapi = "^0.115"
+uvicorn = ">=0.35,<1.0"  # aligned with fastmcp's uvicorn>=0.35
 # Optional documentation dependencies
 sphinx = {version = "^7.0.0", optional = true}
 sphinx-rtd-theme = {version = "^3.0.2", optional = true}

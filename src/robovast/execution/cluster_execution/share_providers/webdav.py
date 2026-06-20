@@ -86,6 +86,35 @@ class WebDavShareProvider(BaseShareProvider):
             "ROBOVAST_WEBDAV_PASSWORD": os.environ["ROBOVAST_WEBDAV_PASSWORD"],
         }
 
+    def verify_access(self) -> None:
+        """Confirm the WebDAV collection is reachable and the credentials work.
+
+        Issues an authenticated ``PROPFIND Depth: 0`` on the base collection;
+        treats 207/200/204 as success and 401/403 (or transport errors) as a
+        failure the campaign should not start with.
+        """
+        try:
+            with self._session() as session:
+                resp = session.request(
+                    "PROPFIND", self._base_url(),
+                    headers={"Depth": "0"}, timeout=30,
+                )
+        except requests.RequestException as exc:
+            raise click.UsageError(
+                f"Cannot reach WebDAV server at {self._base_url()!r}: {exc}\n"
+                "Check network connectivity and the ROBOVAST_WEBDAV_* settings."
+            ) from exc
+        if resp.status_code in (401, 403):
+            raise click.UsageError(
+                f"WebDAV authentication failed (HTTP {resp.status_code}) for "
+                f"{self._base_url()!r}. Check ROBOVAST_WEBDAV_USER / _PASSWORD."
+            )
+        if resp.status_code not in (200, 204, 207):
+            raise click.UsageError(
+                f"WebDAV collection {self._base_url()!r} is not accessible "
+                f"(HTTP {resp.status_code}). Check ROBOVAST_WEBDAV_URL."
+            )
+
     def archive_exists_on_share(self, object_name: str) -> bool:
         """Return ``True`` if *object_name* already exists on the WebDAV share.
 

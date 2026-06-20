@@ -44,10 +44,8 @@ from robovast.execution.cluster_execution.cluster_setup import (
 from robovast.execution.cluster_execution import bucket_ops
 from robovast.execution.cluster_execution.share_providers import \
     load_share_provider_plugins
-from robovast.execution.cluster_execution.upload_to_share import ShareUploader
 
 from ..cluster_execution.kubernetes import (check_kubernetes_access,
-                                            check_pod_running,
                                             get_kubernetes_client)
 from .execute_local import initialize_local_execution
 
@@ -400,33 +398,31 @@ def run(config, runs, log_tree, kube_context):  # pylint: disable=function-redef
         sys.exit(1)
     logging.debug(k8s_msg)
 
-    # Check if transfer pod is running
-    click.echo("Checking robovast pod status...")
-    pod_ok, pod_msg = check_pod_running(k8s_client, "robovast", namespace)
-    cluster_config = None
-
-    if pod_ok:
-        try:
-            cluster_config = get_cluster_config_for_context(context_key)
-            if cluster_config:
-                logging.debug("Auto-detected cluster config (credentials restored from flag file)")
-            else:
-                raise ValueError(
-                    "No cluster config specified and no saved config found. "
-                    "Use --config <name> to select a config, or run setup first."
-                )
-        except Exception as e:
-            pod_msg = f"Failed to get cluster config: {e}"
-            pod_ok = False
-
-    if not pod_ok:
-        click.echo(f"✗ Error: {pod_msg}", err=True)
-        click.echo("To set up the cluster.", err=True)
+    # Resolve the cluster config from the saved flag file (no pod needed).
+    try:
+        cluster_config = get_cluster_config_for_context(context_key)
+        if not cluster_config:
+            raise ValueError(
+                "No cluster config specified and no saved config found. "
+                "Use --config <name> to select a config, or run setup first."
+            )
+        logging.debug("Auto-detected cluster config (credentials restored from flag file)")
+    except Exception as e:
+        click.echo(f"✗ Error: Failed to get cluster config: {e}", err=True)
+        click.echo("To set up the cluster:", err=True)
         click.echo()
         click.echo("  vast execution cluster setup <cluster-config>", err=True)
         click.echo()
         sys.exit(1)
-    logging.debug(pod_msg)
+
+    # Let the cluster config verify its own storage prerequisites (e.g. rke2
+    # checks its MinIO pod; GCS is a no-op).
+    try:
+        cluster_config.verify_cluster_ready(
+            k8s_client=k8s_client, namespace=namespace, kube_context=kube_context)
+    except Exception as e:
+        click.echo(f"✗ Error: {e}", err=True)
+        sys.exit(1)
 
     # Both batch and search campaigns run via an in-cluster controller pod
     # (fire-and-forget): the controller drives the campaign and launches the
@@ -445,6 +441,100 @@ def run(config, runs, log_tree, kube_context):  # pylint: disable=function-redef
             log_tree=log_tree, control_node_labels=control_node_labels)
     except Exception as e:
         handle_cli_exception(e)
+
+
+def _monitor_via_controller(namespace, kube_context, interval, once):
+    """Monitor a campaign through the controller's control channel.
+
+    Returns ``True`` if it handled the monitoring (a controller pod was found),
+    ``False`` if there is no controller channel so the caller should fall back to
+    the Kubernetes-only view. The controller's ``phase`` is the authoritative
+    "done" signal — fixing the old bug where the monitor exited in the gap
+    *between* search generations (when live Jobs momentarily drop to zero).
+    """
+    from robovast.execution.cluster_execution import control_client
+
+    pod, _phase = control_client.find_controller_pod(namespace, kube_context)
+    if not pod:
+        return False
+
+    cursor_up, clear_line = "\033[A", "\033[2K"
+    prev = [0]
+
+    def _live_counts(campaign_id):
+        """Current batch's live Job counts (running/pending) for this campaign."""
+        if not campaign_id:
+            return {}
+        try:
+            per_run = get_cluster_job_counts_per_campaign(namespace, context=kube_context)
+        except Exception:  # pylint: disable=broad-except
+            return {}
+        return per_run.get(_label_safe_campaign(campaign_id), {})
+
+    def _render(status, note=""):
+        c = _live_counts(status.get("campaign_id"))
+        runs = status.get("runs") or {}
+        lines = [f"Campaign {status.get('campaign_id', '?')}  [{status.get('phase', '?')}"
+                 + (f" / {status['stage']}" if status.get("stage") else "") + "]"]
+        line2 = f"  Batch {status.get('batch', 0)} (done {status.get('batches_done', 0)})"
+        if status.get("best_objective") is not None:
+            line2 += f"   best={status['best_objective']:.4g}"
+        lines.append(line2)
+        if status.get("budget"):
+            lines.append("  Budget: " + " | ".join(
+                f"{b['label']} {b.get('current')}/{b.get('limit')}" for b in status["budget"]))
+        run_line = f"  Runs (this batch): {runs.get('completed', 0)}/{runs.get('total', 0)}"
+        if c:
+            run_line += f"   Running: {c.get('running', 0)}  Pending: {c.get('pending', 0)}"
+        lines.append(run_line)
+        if status.get("stop"):
+            lines.append(f"  Stop: {status['stop'].get('reason', '')}")
+        if note:
+            lines.append(f"  {note}")
+        for _ in range(prev[0]):
+            sys.stdout.write(cursor_up)
+        for line in lines:
+            sys.stdout.write("\r" + clear_line + line + "\n")
+        for _ in range(len(lines), prev[0]):
+            sys.stdout.write("\r" + clear_line + "\n")
+        prev[0] = len(lines)
+        sys.stdout.flush()
+
+    def _pod_done():
+        _, ph = control_client.find_controller_pod(namespace, kube_context)
+        return ph in ("Succeeded", "Failed")
+
+    try:
+        with control_client.port_forward(pod, namespace, kube_context) as base:
+            if once:
+                _render(control_client.get_status(base))
+                return True
+            click.echo(f"Monitoring controller '{pod}' (press Ctrl+C to stop)...")
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            while True:
+                try:
+                    status = control_client.get_status(base)
+                except Exception:  # pylint: disable=broad-except
+                    # Server gone: a terminal pod means the campaign is finished.
+                    if _pod_done():
+                        click.echo("\nController finished.")
+                        return True
+                    time.sleep(interval)
+                    continue
+                _render(status)
+                if status.get("phase") in ("finished", "failed"):
+                    click.echo(f"\nCampaign {status['phase']}.")
+                    return True
+                time.sleep(interval)
+    except Exception:  # pylint: disable=broad-except
+        # Could not establish the channel. If the pod already terminated, report
+        # that; otherwise fall back to the Kubernetes-only view.
+        if _pod_done():
+            click.echo(f"Controller pod {pod} finished (no live channel).")
+            return True
+        logging.debug("Controller channel unavailable; falling back to K8s view.")
+        return False
 
 
 @cluster.command()
@@ -507,6 +597,15 @@ def monitor(interval, once, kube_context):
             contexts_to_monitor = [(kube_context, kube_context)]
 
         multi = len(contexts_to_monitor) > 1
+
+        # Prefer the controller's control channel (single-context campaigns): it
+        # reports loop phase/batch/run progress and is authoritative for "done",
+        # so the monitor no longer exits in the gap between search generations.
+        # Falls through to the Kubernetes-only view below when no controller pod
+        # is reachable (older runs, multi-cluster, or partial setups).
+        if not multi:
+            if _monitor_via_controller(namespace, contexts_to_monitor[0][1], interval, once):
+                return
 
         # Per-context state (keyed by kube_context_name)
         initial_total: dict[str, dict] = {}        # ctx -> {campaign: total}
@@ -683,68 +782,65 @@ def monitor(interval, once, kube_context):
         handle_cli_exception(e)
 
 
-@cluster.command(name='upload-to-share')
-@click.option('--campaign', '-i', multiple=True,
-              help='Only upload this campaign (e.g. campaign-2025-02-27-123456). Can be specified multiple times. Without this, uploads all campaigns.')
-@click.option('--force', '-f', is_flag=True,
-              help='Force recreation of the remote tar.gz archive even if it already exists')
-@click.option('--verbose', '-v', is_flag=True,
-              help='Print detailed progress')
-@click.option('--keep-archive', is_flag=True,
-              help='Keep the tar.gz in the pod /data/ after a successful upload')
-@click.option('--skip-removal', is_flag=True, hidden=True,
-              help='Deprecated: S3/GCS data is now kept by default. Use --remove-from-storage to opt in to deletion.')
-@click.option('--remove-from-storage', is_flag=True,
-              help='Delete the campaign data from S3/GCS after a successful upload. Without this flag, data is kept in storage.')
+@cluster.command()
 @click.option('--context', '-x', 'kube_context', default=None,
               help='Kubernetes context to use (default: active context in kubeconfig)')
-def upload_to_share(campaign, force, verbose, keep_archive, skip_removal, remove_from_storage, kube_context):
-    """Upload campaign archives from the cluster pod to a remote share service.
+def stop(kube_context):
+    """Ask the running controller to stop gracefully (after the current batch).
 
-    Results are transferred entirely inside the archiver sidecar of the
-    robovast pod — no data is downloaded to the local machine.
-
-    Use ``--campaign`` (``-i``) to upload a single campaign. If the specified
-    campaign is not found, available campaigns are listed.
-
-    For each available run the command:
-
-    \b
-    1. Creates a compressed tar.gz archive in the pod.
-       Skips this step if the archive already exists.
-    2. Uploads the archive to the configured share service from inside the pod.
-    3. Removes the archive from the pod on success (unless ``--keep-archive``).
-    4. Keeps the S3/GCS campaign data (use ``--remove-from-storage`` to delete it).
-    5. Keeps both the archive and the bucket if the upload fails so you can
-       retry.
-
-    Configuration is read from a ``.env`` file in the current or any parent
-    directory.  Required variables:
-
-    \b
-    ROBOVAST_SHARE_TYPE  — share provider: ``nextcloud``, ``gcs``, ``sftp``, ``webdav``
-
-    Additional variables depend on the share type.  Run with no ``.env`` file
-    to see a list of required variables for the detected share type.
-
-    Use ``--keep-archive`` to retain the archive in the pod after upload
-    (useful when you want to also download the results locally later).
+    Sends the ``stop`` command over the controller's control channel; the search
+    loop ends once the in-flight batch finishes and the campaign is published as
+    usual. A no-op if no controller is running.
     """
-    # Load .env in priority order:
-    #   1. Next to the --vast-file override (if given)
-    #   2. Next to the .vast config file (dirname of config_path)
-    #   3. Next to the .vast_project file (project_dir)
-    # Falls back to the default cwd-upward search when no project is found.
+    try:
+        from robovast.execution.cluster_execution import control_client
+        namespace = get_cluster_namespace(kube_context)
+        pod, _phase = control_client.find_controller_pod(namespace, kube_context)
+        if not pod:
+            click.echo("No running controller found.")
+            return
+        with control_client.port_forward(pod, namespace, kube_context) as base:
+            result = control_client.send_command(base, "stop")
+        if result.get("ok"):
+            click.echo(f"Stop requested on controller '{pod}'. "
+                       "The campaign will end after the current batch.")
+        else:
+            click.echo(f"Stop command failed: {result.get('error')}")
+    except Exception as e:
+        handle_cli_exception(e)
+
+
+@cluster.command(name='upload-to-share')
+@click.option('--campaign', '-i', default=None,
+              help='Target this campaign\'s controller pod (default: the running / most recent one).')
+@click.option('--context', '-x', 'kube_context', default=None,
+              help='Kubernetes context to use (default: active context in kubeconfig)')
+def upload_to_share(campaign, kube_context):
+    """Retry the in-cluster controller's upload-to-share.
+
+    The controller pod uploads the finished campaign to the configured share
+    automatically; on success the pod completes. If the upload fails (e.g. the
+    share was full or briefly unreachable) the controller stays alive — use this
+    command to retry once the cause is fixed.
+
+    Credentials are reused from the controller's launch-time environment, so no
+    arguments are required. If you correct the share settings in your ``.env``,
+    they are re-sent here as overrides for the retry. Watch progress with
+    ``vast exec cluster monitor``.
+    """
     from robovast.common.cli.project_config import \
         ProjectConfig  # pylint: disable=import-outside-toplevel
+    from robovast.execution.cluster_execution import \
+        control_client  # pylint: disable=import-outside-toplevel
 
+    # Load .env (same discovery as ``cluster run``) so any corrected share
+    # credentials can be forwarded as overrides.
     _vast_override = None
     _click_ctx = click.get_current_context(silent=True)
     if _click_ctx and _click_ctx.obj:
         _vast_override = _click_ctx.obj.get('vast_file')
     if _vast_override:
         load_dotenv(os.path.join(os.path.dirname(_vast_override), ".env"), override=False)
-
     _project_file = ProjectConfig.find_project_file()
     if _project_file:
         _project_dir = os.path.dirname(os.path.abspath(_project_file))
@@ -755,65 +851,39 @@ def upload_to_share(campaign, force, verbose, keep_archive, skip_removal, remove
     else:
         load_dotenv(override=False)
 
+    # Best-effort credential overrides from the current .env (empty → the
+    # controller reuses the credentials injected at launch).
+    overrides: dict = {}
     share_type = os.environ.get("ROBOVAST_SHARE_TYPE", "").strip()
-    if not share_type:
-        raise click.UsageError(
-            "ROBOVAST_SHARE_TYPE is not set.\n"
-            "Add it to a .env file in your project directory.\n"
-            "Supported values: nextcloud, gcs, sftp, webdav\n"
-            "Example .env (WebDAV):\n"
-            "  ROBOVAST_SHARE_TYPE=webdav\n"
-            "  ROBOVAST_WEBDAV_URL=https://nas.example.com/dav/results/\n"
-            "  ROBOVAST_WEBDAV_USER=myuser\n"
-            "  ROBOVAST_WEBDAV_PASSWORD=secret\n"
-            "Example .env (Nextcloud):\n"
-            "  ROBOVAST_SHARE_TYPE=nextcloud\n"
-            "  ROBOVAST_SHARE_URL=https://cloud.example.com/s/AbCdEfGhIjKlMn"
-        )
-
-    providers = load_share_provider_plugins()
-    if share_type not in providers:
-        available = ", ".join(sorted(providers)) or "(none installed)"
-        raise click.UsageError(
-            f"Unknown share type '{share_type}'.\n"
-            f"Available providers: {available}"
-        )
-
-    try:
-        provider = providers[share_type]()
-    except click.UsageError:
-        raise
-    except Exception as e:
-        handle_cli_exception(e)
-        return
-
-    share_url = os.environ.get("ROBOVAST_SHARE_URL", "").strip()
-    if share_url:
-        click.echo(f"Share target ({share_type}): {share_url}")
-
-    # --skip-removal is the old flag (kept for backward compat, now a no-op).
-    # --remove-from-storage is the new explicit opt-in.
-    actually_skip_removal = not remove_from_storage
+    if share_type:
+        providers = load_share_provider_plugins()
+        if share_type in providers:
+            try:
+                provider = providers[share_type]()
+                overrides = {"ROBOVAST_SHARE_TYPE": share_type, **provider.build_pod_env()}
+                share_url = os.environ.get("ROBOVAST_SHARE_URL", "").strip()
+                if share_url:
+                    overrides["ROBOVAST_SHARE_URL"] = share_url
+            except Exception:  # pylint: disable=broad-except
+                overrides = {}
 
     try:
         require_context_for_multi_cluster(kube_context)
-        context_key = kube_context
-        cluster_config = get_cluster_config_for_context(context_key)
-        uploader = ShareUploader(
-            namespace=get_cluster_namespace(context_key),
-            cluster_config=cluster_config,
-            context=kube_context,
-            provider=provider,
-        )
-        count = uploader.upload_campaigns(
-            force=force,
-            verbose=verbose,
-            keep_archive=keep_archive,
-            skip_removal=actually_skip_removal,
-            campaign_ids=list(campaign) or None,
-        )
-        click.echo(f"✓ Uploaded {count} campaign(s) to {share_type} successfully!")
-
+        namespace = get_cluster_namespace(kube_context)
+        pod, _phase = control_client.find_controller_pod(namespace, kube_context, campaign)
+        if not pod:
+            raise click.UsageError(
+                "No controller pod found. Has the campaign been launched with "
+                "'vast exec cluster run'?"
+            )
+        with control_client.port_forward(pod, namespace, kube_context) as base_url:
+            result = control_client.send_command(base_url, "upload-to-share", **overrides)
+        if not result.get("ok"):
+            raise click.UsageError(
+                f"Controller rejected the upload-to-share command: {result.get('error')}"
+            )
+        click.echo("✓ upload-to-share triggered on the controller.")
+        click.echo("  Watch progress with: vast exec cluster monitor")
     except click.UsageError:
         raise
     except Exception as e:
@@ -1325,45 +1395,95 @@ Namespace: {namespace}
 """
 
 import os
+import re
+import subprocess
 import sys
-from robovast.execution.cluster_execution import archiver
-from robovast.execution.cluster_config.base_config import BaseConfig
+import time
+
+import boto3
+from botocore.config import Config as _BotoConfig
+
+ACCESS_KEY = "{access_key}"
+SECRET_KEY = "{secret_key}"
+USES_EMBEDDED = {uses_embedded}
+HOST_ENDPOINT = {host_endpoint}
+SHARED_BUCKET = {shared_bucket}
+S3_REGION = {s3_region}
+CAMPAIGN = "{bucket_name}"
+NAMESPACE = "{namespace}"
+
+_FORWARD_RE = re.compile(r"Forwarding from 127\\.0\\.0\\.1:(\\d+)")
 
 
-class _StaticConfig(BaseConfig):
-    def get_s3_credentials(self):
-        return ("{access_key}", "{secret_key}")
-    def uses_embedded_s3(self):
-        return {uses_embedded}
-    def get_host_s3_endpoint(self):
-        return {host_endpoint}
-    def get_s3_bucket(self):
-        return {shared_bucket}
-    def get_s3_region(self):
-        return {s3_region}
-    def get_storage_backend(self):
-        return "s3"
-    def setup_cluster(self, **kw): pass
-    def cleanup_cluster(self, **kw): pass
-    def prepare_setup_cluster(self, output_dir, **kw): pass
-    def get_instance_type_command(self): return ""
+def _start_port_forward():
+    """Port-forward the in-cluster MinIO (robovast pod); return (proc, endpoint)."""
+    proc = subprocess.Popen(
+        ["kubectl", "port-forward", "-n", NAMESPACE, "pod/robovast", ":9000"],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        line = proc.stdout.readline()
+        if not line:
+            if proc.poll() is not None:
+                raise RuntimeError("kubectl port-forward exited early")
+            continue
+        match = _FORWARD_RE.search(line)
+        if match:
+            return proc, f"http://127.0.0.1:{{match.group(1)}}"
+    proc.terminate()
+    raise TimeoutError("timed out establishing kubectl port-forward")
+
+
+def _client(endpoint):
+    return boto3.client(
+        "s3", endpoint_url=endpoint,
+        aws_access_key_id=ACCESS_KEY, aws_secret_access_key=SECRET_KEY,
+        region_name=S3_REGION,
+        config=_BotoConfig(signature_version="s3v4",
+                           s3={{"addressing_style": "path"}},
+                           request_checksum_calculation="when_required",
+                           response_checksum_validation="when_required"))
 
 
 def main():
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    config_dir = os.path.join(script_dir, "out_template")
-    campaign_id = "{bucket_name}"
-    namespace = "{namespace}"
-
-    if not os.path.exists(config_dir):
+    config_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out_template")
+    if not os.path.isdir(config_dir):
         print(f"ERROR: Config directory not found: {{config_dir}}")
         sys.exit(1)
 
-    config = _StaticConfig()
-    script_path, env_vars, bucket, prefix = archiver.upload_args_for_config(config, campaign_id)
-    print(f"Uploading config files to bucket \'{{bucket}}\'...")
-    archiver.upload_configs(config_dir, campaign_id, bucket, script_path, env_vars, namespace=namespace, prefix=prefix)
-    print("Upload complete.")
+    # Match the layout the job init containers mirror from
+    # (in_pod_storage.campaign_storage_location): a shared bucket stores the
+    # campaign under "<campaign>/"; otherwise the campaign is its own bucket.
+    if SHARED_BUCKET:
+        bucket, prefix = SHARED_BUCKET, f"{{CAMPAIGN}}/"
+    else:
+        bucket, prefix = CAMPAIGN, ""
+
+    pf = None
+    try:
+        if USES_EMBEDDED:
+            pf, endpoint = _start_port_forward()
+        else:
+            endpoint = HOST_ENDPOINT
+        s3 = _client(endpoint)
+        if not SHARED_BUCKET:
+            try:
+                s3.head_bucket(Bucket=bucket)
+            except Exception:  # noqa: BLE001 - bucket likely absent; create it
+                s3.create_bucket(Bucket=bucket)
+        print(f"Uploading config files to '{{bucket}}' (prefix '{{prefix}}')...")
+        count = 0
+        for root, _dirs, files in os.walk(config_dir):
+            for name in files:
+                path = os.path.join(root, name)
+                rel = os.path.relpath(path, config_dir).replace(os.sep, "/")
+                extra = {{"Metadata": {{"executable": "yes"}}}} if os.access(path, os.X_OK) else {{}}
+                s3.upload_file(path, bucket, prefix + rel, ExtraArgs=extra)
+                count += 1
+        print(f"Upload complete ({{count}} files).")
+    finally:
+        if pf is not None:
+            pf.terminate()
 
 
 if __name__ == "__main__":

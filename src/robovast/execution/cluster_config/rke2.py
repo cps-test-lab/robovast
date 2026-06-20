@@ -20,7 +20,8 @@ import logging
 import yaml
 from kubernetes import client, config
 
-from ..cluster_execution.kubernetes import apply_manifests, delete_manifests
+from ..cluster_execution.kubernetes import (apply_manifests, check_pod_running,
+                                            delete_manifests)
 from .base_config import BaseConfig
 
 MINIO_MANIFEST_RKE2 = """---
@@ -55,12 +56,6 @@ spec:
         port: 9000
       initialDelaySeconds: 5
       periodSeconds: 5
-  - name: archiver
-    image: ghcr.io/cps-test-lab/robovast-sidecar:latest
-    command: ["sleep", "infinity"]
-    volumeMounts:
-      - mountPath: /data
-        name: minio-storage
   volumes:
   - name: minio-storage
     emptyDir: {}
@@ -184,6 +179,24 @@ MinIO console is available at port 9001.
 """
         with open(f"{output_dir}/README_rke2.md", "w") as f:
             f.write(readme_content)
+
+    def verify_cluster_ready(self, k8s_client=None, namespace="default", kube_context=None):
+        """Ensure the embedded MinIO (``robovast``) pod is running before a run.
+
+        RKE2 stores campaign data in the in-cluster MinIO server hosted by the
+        ``robovast`` pod, so the run cannot proceed without it.
+        """
+        del kube_context
+        if k8s_client is None:
+            config.load_kube_config()
+            k8s_client = client.CoreV1Api()
+        pod_ok, pod_msg = check_pod_running(k8s_client, "robovast", namespace)
+        if not pod_ok:
+            raise RuntimeError(
+                f"{pod_msg}. The RKE2 MinIO storage pod is required. "
+                "Set it up with: vast execution cluster setup rke2"
+            )
+        logging.debug(pod_msg)
 
     def get_instance_type_command(self):
         """Get command to retrieve instance type of the current node."""

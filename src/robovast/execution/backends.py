@@ -87,6 +87,17 @@ class ExecutionBackend(ABC):
         storage, so the bucket holds a complete, local-equivalent campaign.
         """
 
+    def count_run_artifacts(self, campaign_id: str) -> int | None:
+        """Completed per-run artifacts published so far (controller progress poll).
+
+        Returns the cumulative number of finished runs visible to the backend, or
+        ``None`` when the backend can't introspect (the local
+        :class:`DockerBackend`, whose results are already on disk). The
+        controller's run-level progress poller calls this **concurrently** with
+        :meth:`run_batch`, so it must be cheap and read-only.
+        """
+        return None
+
 
 def _sanitize(tag: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", tag)

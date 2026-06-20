@@ -116,6 +116,65 @@ class GcsShareProvider(BaseShareProvider):
             env["ROBOVAST_GCS_PREFIX"] = prefix
         return env
 
+    def verify_access(self) -> None:
+        """Confirm the service-account credentials can reach the target bucket.
+
+        Exchanges the service-account key for an access token (proving the key
+        is valid) and GETs the bucket metadata over the GCS JSON API (proving
+        the account can see the bucket). Accepts the key as inline JSON
+        (``ROBOVAST_GCS_KEY_JSON``, as injected into the controller) or, on the
+        host, via ``ROBOVAST_GCS_KEY_FILE``.
+        """
+        bucket = os.environ["ROBOVAST_GCS_BUCKET"]
+        token = self._access_token_for_verify()
+        url = (
+            f"https://storage.googleapis.com/storage/v1/b/"
+            f"{urllib.parse.quote(bucket, safe='')}"
+        )
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        try:
+            with urllib.request.urlopen(req, timeout=30):
+                return
+        except urllib.error.HTTPError as exc:
+            raise click.UsageError(
+                f"GCS bucket {bucket!r} is not accessible (HTTP {exc.code} "
+                f"{exc.reason}). Check ROBOVAST_GCS_BUCKET and that the service "
+                "account has access."
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise click.UsageError(
+                f"Cannot reach GCS to verify bucket {bucket!r}: {exc.reason}"
+            ) from exc
+
+    def _access_token_for_verify(self) -> str:
+        """Return a read/write access token from inline key JSON or a key file."""
+        key_json_str = os.environ.get("ROBOVAST_GCS_KEY_JSON", "")
+        try:
+            import google.auth.transport.requests  # pylint: disable=import-outside-toplevel
+            import google.oauth2.service_account  # pylint: disable=import-outside-toplevel
+        except ImportError as exc:
+            raise click.UsageError(f"google-auth is not installed: {exc}") from exc
+        scopes = ["https://www.googleapis.com/auth/devstorage.read_write"]
+        if key_json_str:
+            try:
+                key_data = json.loads(key_json_str)
+            except json.JSONDecodeError as exc:
+                raise click.UsageError(
+                    f"ROBOVAST_GCS_KEY_JSON is not valid JSON: {exc}"
+                ) from exc
+            creds = google.oauth2.service_account.Credentials.from_service_account_info(
+                key_data, scopes=scopes)
+            creds.refresh(google.auth.transport.requests.Request())
+            return creds.token
+        # Host-side fallback: a key file path.
+        key_file = os.environ.get("ROBOVAST_GCS_KEY_FILE", "")
+        if not key_file:
+            raise click.UsageError(
+                "GCS credentials not configured for verification: set "
+                "ROBOVAST_GCS_KEY_JSON or ROBOVAST_GCS_KEY_FILE."
+            )
+        return self._get_gcs_access_token(key_file)
+
     # ------------------------------------------------------------------
     # Download interface (public bucket, no auth required)
     # ------------------------------------------------------------------

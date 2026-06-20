@@ -68,6 +68,54 @@ _POD_START_SENTINEL = f"{_POD_WORKSPACE}/.start"
 # install ``<dir>/*.whl`` rather than a fixed path.
 _POD_WHEEL_DIR = "/tmp/robovast_wheel"  # nosec - in-pod path, not host temp
 
+# Port the in-pod control server (state + RPC) listens on; the host reaches it via
+# `kubectl port-forward` (see control_client). Kept in sync with the server default.
+_CONTROL_PORT = 8099
+
+# In-pod directory the controller writes/reads the campaign tar.gz during
+# upload-to-share (replaces the archiver sidecar's /data volume).
+_POD_ARCHIVE_DIR = f"{_POD_WORKSPACE}/archive"
+
+
+def _share_env_exports():
+    """Build ``export`` lines carrying the share config into the controller pod.
+
+    Reads ``ROBOVAST_SHARE_TYPE`` + the provider's env from the host environment
+    (the ``.env`` is already loaded by ``cluster run``) and resolves it to the
+    pod-side values via the provider's ``build_pod_env`` — so a GCS key *file* is
+    read on the host and shipped as inline JSON, etc. Returns ``[]`` when no
+    share is configured. Raises (click.UsageError) when required vars are missing,
+    failing the launch before a pod is created.
+    """
+    share_type = os.environ.get("ROBOVAST_SHARE_TYPE", "").strip()
+    if not share_type:
+        raise ValueError(
+            "No share destination configured: ROBOVAST_SHARE_TYPE is not set.\n"
+            "The controller uploads every finished campaign to a share, so a run "
+            "is refused when there is nowhere to deliver the results.\n"
+            "Add it to a .env file in your project directory, e.g.:\n"
+            "  ROBOVAST_SHARE_TYPE=webdav\n"
+            "  ROBOVAST_WEBDAV_URL=https://nas.example.com/dav/results/\n"
+            "  ROBOVAST_WEBDAV_USER=myuser\n"
+            "  ROBOVAST_WEBDAV_PASSWORD=secret\n"
+            "Supported types: nextcloud, gcs, sftp, webdav.")
+
+    from .share_providers import \
+        load_share_provider_plugins  # pylint: disable=import-outside-toplevel
+
+    providers = load_share_provider_plugins()
+    if share_type not in providers:
+        available = ", ".join(sorted(providers)) or "(none installed)"
+        raise ValueError(f"Unknown share type '{share_type}'. Available: {available}")
+
+    provider = providers[share_type]()           # validates required env vars
+    pod_env = {"ROBOVAST_SHARE_TYPE": share_type}
+    pod_env.update(provider.build_pod_env())      # resolved creds (key file → JSON)
+    share_url = os.environ.get("ROBOVAST_SHARE_URL", "").strip()
+    if share_url:
+        pod_env["ROBOVAST_SHARE_URL"] = share_url
+    return [f"export {k}={_sh_quote(v)}" for k, v in pod_env.items()]
+
 
 def _kubectl(ctx_args, *args, check=True, stream=False, input_text=None):
     cmd = ["kubectl"] + ctx_args + list(args)
@@ -171,6 +219,9 @@ def _controller_pod_manifest(pod_name, namespace, image, campaign_label,
             "command": ["bash", "-lc",
                         f"until [ -f {_POD_START_SENTINEL} ]; do sleep 1; done; "
                         f"exec bash -l {_POD_RUN_SCRIPT}"],
+            # Control channel (state + RPC). Declared for readability / Service
+            # readiness; `kubectl port-forward` does not require it.
+            "ports": [{"name": "control", "containerPort": _CONTROL_PORT}],
             "volumeMounts": [{"name": "workspace", "mountPath": _POD_WORKSPACE}],
         }],
         "volumes": [{"name": "workspace", "emptyDir": {}}],
@@ -267,9 +318,15 @@ def launch_controller(*, config_path, config_name, setup_kwargs, namespace,
             f"export ROBOVAST_CLUSTER_CONFIG_NAME={_sh_quote(config_name)}",
             f"export ROBOVAST_CLUSTER_CONFIG_KWARGS={_sh_quote(json.dumps(setup_kwargs or {}))}",
             f"export ROBOVAST_NAMESPACE={_sh_quote(namespace)}",
+            f"export ROBOVAST_CONTROL_PORT={_CONTROL_PORT}",
+            f"export ROBOVAST_ARCHIVE_DIR={_sh_quote(_POD_ARCHIVE_DIR)}",
         ]
         if kube_context:
             env_exports.append(f"export ROBOVAST_KUBE_CONTEXT={_sh_quote(kube_context)}")
+        # Share-target credentials (upload-to-share now runs in the controller).
+        # Resolved from the host .env; validated here so a missing var fails the
+        # launch instead of the campaign.
+        env_exports += _share_env_exports()
 
         controller_cmd = [
             "python", "-m", "robovast.execution.controller",
@@ -320,9 +377,13 @@ def launch_controller(*, config_path, config_name, setup_kwargs, namespace,
     click_echo(f"  Controller pod: {pod_name}")
     click_echo("")
     click_echo("The campaign now runs in the cluster. Track and retrieve it with:")
-    click_echo("  vast exec cluster monitor")
-    click_echo("  vast exec cluster upload-to-share   # once finished")
+    click_echo("  vast exec cluster monitor            # live loop state (batches, runs, budget)")
+    click_echo("  vast exec cluster stop               # graceful stop after the current batch")
     click_echo("  vast results download")
+    click_echo("")
+    click_echo("The controller uploads the finished campaign to the configured share "
+               "automatically. If the upload fails it stays alive; retry with:")
+    click_echo("  vast exec cluster upload-to-share    # retry a failed upload")
     return campaign_id
 
 

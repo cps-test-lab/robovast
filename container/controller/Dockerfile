@@ -22,8 +22,11 @@
 FROM python:3.12-slim
 
 # mc (MinIO client) + curl, for parity with the storage tooling used elsewhere.
+# pigz: parallel gzip used by the in-controller upload-to-share compression
+# (s3_to_targz.py / gcs_to_targz.py), which now runs here instead of in the
+# removed archiver sidecar. tar ships in the base image.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl ca-certificates \
+ && apt-get install -y --no-install-recommends curl ca-certificates pigz \
  && rm -rf /var/lib/apt/lists/* \
  && curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc \
  && chmod +x /usr/local/bin/mc

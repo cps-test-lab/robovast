@@ -29,18 +29,23 @@ Required ``-o`` options at ``setup`` time::
         -o gcs_secret_key=<HMAC_SECRET_KEY> \\
         [-o storage_size=50Gi] [-o disk_type=pd-ssd]
 """
-import io
+import concurrent.futures
 import json
 import logging
 import os
 import re
+import shutil
 import subprocess
+import sys
+import tempfile
+import threading
+import urllib.error
+import urllib.parse
+import urllib.request
 from typing import Optional
 
-import yaml
 from kubernetes import client, config
 
-from ..cluster_execution.kubernetes import apply_manifests, delete_manifests
 from .base_config import BaseConfig
 
 
@@ -152,62 +157,10 @@ def _get_gke_cluster_info(kube_context=None): # pylint: disable=too-many-return-
 
 GCS_S3_ENDPOINT = "https://storage.googleapis.com"
 
-# ---------------------------------------------------------------------------
-# Kubernetes manifest for the ``robovast`` helper pod on GCP.
-#
-# No MinIO container — the archiver connects to GCS directly.
-# The archiver sidecar receives GCS credentials via environment variables so
-# that ``s3_to_targz.py`` / ``targz_to_s3.py`` can reach the external bucket.
-# ---------------------------------------------------------------------------
-ROBOVAST_POD_MANIFEST_GCP = """---
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: robovast-storage
-provisioner: pd.csi.storage.gke.io
-parameters:
-  type: {disk_type}
-reclaimPolicy: Delete
-volumeBindingMode: WaitForFirstConsumer
----
-apiVersion: v1
-kind: Pod
-metadata:
-  name: robovast
-  labels:
-    role: robovast
-spec:
-  containers:
-  - name: archiver
-    image: ghcr.io/cps-test-lab/robovast-sidecar:latest
-    command: ["sleep", "infinity"]
-    env:
-    - name: S3_ENDPOINT
-      value: "{s3_endpoint}"
-    - name: S3_ACCESS_KEY
-      value: "{gcs_access_key}"
-    - name: S3_SECRET_KEY
-      value: "{gcs_secret_key}"
-    - name: S3_BUCKET
-      value: "{gcs_bucket}"
-    volumeMounts:
-      - mountPath: /data
-        name: robovast-storage
-    resources:
-      limits:
-        cpu: "4000m"
-        memory: "1Gi"
-  volumes:
-  - name: robovast-storage
-    ephemeral:
-      volumeClaimTemplate:
-        spec:
-          accessModes: [ "ReadWriteOnce" ]
-          storageClassName: "robovast-storage"
-          resources:
-            requests:
-              storage: {storage_size}
-"""
+# No Kubernetes helper pod is deployed on GCP. Campaign data lives directly in
+# the user's GCS bucket; the controller pod compresses and uploads it in-process
+# (see :mod:`..cluster_execution.in_pod_upload`), so the former archiver sidecar
+# pod (and its ephemeral PVC / StorageClass) is no longer needed.
 
 
 class GcpClusterConfig(BaseConfig):
@@ -259,17 +212,6 @@ class GcpClusterConfig(BaseConfig):
                 f"Pass them via -o, e.g. -o gcs_bucket=my-bucket -o gcs_access_key=GOOG... -o gcs_secret_key=..."
             )
         return gcs_bucket, gcs_access_key, gcs_secret_key, gcs_key_file
-
-    def _render_manifest(self, storage_size, disk_type, gcs_bucket, gcs_access_key, gcs_secret_key):
-        """Render the Kubernetes manifest YAML with the given parameters."""
-        return ROBOVAST_POD_MANIFEST_GCP.format(
-            storage_size=storage_size,
-            disk_type=disk_type,
-            s3_endpoint=GCS_S3_ENDPOINT,
-            gcs_bucket=gcs_bucket,
-            gcs_access_key=gcs_access_key,
-            gcs_secret_key=gcs_secret_key,
-        )
 
     def _store_gcs_params(self, gcs_bucket, gcs_access_key, gcs_secret_key, gcs_key_file=None):
         """Cache GCS params on the instance so subsequent method calls can use them."""
@@ -331,133 +273,75 @@ class GcpClusterConfig(BaseConfig):
     # ------------------------------------------------------------------
 
     def setup_cluster(self, storage_size="10Gi", disk_type="pd-standard", **kwargs):
-        """Deploy the robovast helper pod (archiver) for GCP.
+        """Validate the GCS bucket for a GCP cluster. No helper pod is deployed.
 
-        The GCS bucket must already exist.  This method validates that the
-        bucket is reachable with the provided HMAC credentials.
+        Campaign data lives directly in the user's GCS bucket, and the
+        controller pod compresses + uploads it in-process, so GCP setup only
+        validates that the bucket is reachable with the provided HMAC
+        credentials (when given).
 
         Args:
-            storage_size (str): Size of the ephemeral PVC for archive storage.
-            disk_type (str): GCP PD type for the StorageClass.
-            **kwargs: Must include ``gcs_bucket``, ``gcs_access_key``,
-                ``gcs_secret_key``.  Optional: ``kube_context``, ``namespace``.
+            storage_size (str): Unused (kept for CLI compatibility).
+            disk_type (str): Unused (kept for CLI compatibility).
+            **kwargs: Must include ``gcs_bucket`` and either HMAC credentials
+                (``gcs_access_key`` / ``gcs_secret_key``) or ``gcs_key_file``.
         """
+        del storage_size, disk_type  # no PVC / StorageClass any more
         gcs_bucket, gcs_access_key, gcs_secret_key, gcs_key_file = self._extract_gcs_params(kwargs)
         self._store_gcs_params(gcs_bucket, gcs_access_key, gcs_secret_key, gcs_key_file)
 
-        logging.info("Setting up RoboVAST helper pod for GCP (GCS S3 interface)...")
+        logging.info("Setting up RoboVAST for GCP (GCS S3 interface)...")
         logging.info(f"GCS bucket: {gcs_bucket}")
-        logging.info(f"Storage size: {storage_size}  |  Disk type: {disk_type}")
 
         # Validate GCS connectivity — only possible with HMAC credentials;
         # when using a service-account key file the caller is responsible for
         # ensuring the bucket exists.
         if gcs_access_key and gcs_secret_key:
             self._validate_gcs_bucket(gcs_bucket, gcs_access_key, gcs_secret_key)
-
-        config.load_kube_config(context=kwargs.get('kube_context'))
-        k8s_client = client.ApiClient()
-
-        manifest_yaml = self._render_manifest(
-            storage_size, disk_type, gcs_bucket, gcs_access_key, gcs_secret_key,
-        )
-
-        try:
-            yaml_objects = list(yaml.safe_load_all(io.StringIO(manifest_yaml)))
-        except yaml.YAMLError as e:
-            raise RuntimeError(f"Failed to parse manifest YAML: {str(e)}") from e
-
-        yaml_objects = self._apply_pod_node_selector(yaml_objects, kwargs.pop('control_node_labels', None))
-        namespace = kwargs.get('namespace', 'default')
-        try:
-            apply_manifests(k8s_client, iter(yaml_objects), namespace=namespace)
-        except Exception as e:
-            raise RuntimeError(f"Error applying manifest: {str(e)}") from e
+        logging.info("GCP cluster ready (no helper pod required).")
 
     def cleanup_cluster(self, storage_size="10Gi", disk_type="pd-standard", **kwargs):
-        """Remove the robovast helper pod.  The GCS bucket is **not** deleted.
+        """No-op for GCP: there is no helper pod to remove; the bucket is kept.
 
         Args:
-            storage_size (str): Must match the value used during ``setup_cluster``.
-            disk_type (str): Must match the value used during ``setup_cluster``.
-            **kwargs: Must include GCS options (restored from the flag file).
+            storage_size (str): Unused (kept for CLI compatibility).
+            disk_type (str): Unused (kept for CLI compatibility).
+            **kwargs: GCS options (restored from the flag file).
         """
+        del storage_size, disk_type
         gcs_bucket, gcs_access_key, gcs_secret_key, gcs_key_file = self._extract_gcs_params(kwargs)
         self._store_gcs_params(gcs_bucket, gcs_access_key, gcs_secret_key, gcs_key_file)
-
-        logging.debug("Cleaning up RoboVAST helper pod in GCP cluster...")
-        config.load_kube_config(context=kwargs.get('kube_context'))
-        core_v1 = client.CoreV1Api()
-
-        manifest_yaml = self._render_manifest(
-            storage_size, disk_type, gcs_bucket, gcs_access_key, gcs_secret_key,
-        )
-
-        try:
-            yaml_objects = yaml.safe_load_all(io.StringIO(manifest_yaml))
-        except yaml.YAMLError as e:
-            raise RuntimeError(f"Failed to parse manifest YAML: {str(e)}") from e
-
-        namespace = kwargs.get('namespace', 'default')
-        delete_manifests(core_v1, yaml_objects, namespace=namespace)
-        logging.debug("Manifest deleted successfully!")
-        logging.info("-----")
+        logging.info("Nothing to clean up for GCP (no helper pod is deployed).")
         logging.info("Note: The GCS bucket '%s' was NOT deleted (user-managed).", gcs_bucket)
-        logging.info("Warning: Persistent volumes may need to be deleted manually in GCP console.")
-        logging.info("-----")
 
     def prepare_setup_cluster(self, output_dir, storage_size="10Gi", disk_type="pd-standard", **kwargs):
-        """Write the pod manifest and a README for manual deployment.
+        """Write a README for GCP. No manifest is generated (no helper pod).
 
         Args:
             output_dir (str): Directory where setup files will be written.
-            storage_size (str): Size of the ephemeral PVC.
-            disk_type (str): GCP PD type for the StorageClass.
-            **kwargs: Must include ``gcs_bucket``, ``gcs_access_key``,
-                ``gcs_secret_key``.
+            storage_size (str): Unused (kept for CLI compatibility).
+            disk_type (str): Unused (kept for CLI compatibility).
+            **kwargs: Must include ``gcs_bucket`` and credentials.
         """
-        storage_size = kwargs.get("storage_size", storage_size)
-        disk_type = kwargs.get("disk_type", disk_type)
+        del storage_size, disk_type
+        kwargs.pop('control_node_labels', None)
         gcs_bucket, gcs_access_key, gcs_secret_key, gcs_key_file = self._extract_gcs_params(kwargs)
         self._store_gcs_params(gcs_bucket, gcs_access_key, gcs_secret_key, gcs_key_file)
-
-        manifest_yaml = self._render_manifest(
-            storage_size, disk_type, gcs_bucket, gcs_access_key, gcs_secret_key,
-        )
-        control_node_labels = kwargs.pop('control_node_labels', None)
-        if control_node_labels:
-            docs = list(yaml.safe_load_all(io.StringIO(manifest_yaml)))
-            docs = self._apply_pod_node_selector(docs, control_node_labels)
-            manifest_yaml = "---\n".join(
-                yaml.dump(d, default_flow_style=False) for d in docs if d is not None
-            )
-        with open(f"{output_dir}/robovast-manifest.yaml", "w") as f:
-            f.write(manifest_yaml)
 
         readme_content = f"""# GCP Cluster Setup Instructions
 
 Uses **Google Cloud Storage** (S3-compatible interface) for campaign data.
-No embedded MinIO server is deployed.
+No embedded MinIO server and no helper pod are deployed — the in-cluster
+controller pod compresses and uploads campaigns directly.
 
 - **GCS bucket:** `{gcs_bucket}`
 - **S3 endpoint:** `{GCS_S3_ENDPOINT}`
-- **Storage PVC:** {storage_size}, type `{disk_type}` (for archiver scratch space)
 
 ## Setup Steps
 
-### 1. Apply the RoboVAST Manifest
-
-```bash
-kubectl apply -f robovast-manifest.yaml
-```
-
-### 2. Wait for the pod to be ready
-
-```bash
-kubectl wait --for=condition=ready pod/robovast --timeout=120s
-```
-
-The archiver sidecar streams GCS bucket contents to tar.gz in /data.
+No Kubernetes resources need to be applied for storage. Ensure the GCS bucket
+`{gcs_bucket}` exists and the credentials (HMAC keys or a service-account key
+file) have read/write access to it.
 """
         with open(f"{output_dir}/README_gcp.md", "w") as f:
             f.write(readme_content)
@@ -477,6 +361,15 @@ The archiver sidecar streams GCS bucket contents to tar.gz in /data.
     def get_storage_backend(self) -> str:
         """Return ``'gcs'`` to indicate native GCS storage (not the S3-compat path)."""
         return "gcs"
+
+    def compress_campaign(self, campaign_id: str, archive_dir: str) -> str:
+        """Compress the campaign from GCS into ``<archive_dir>/<campaign_id>.tar.gz``.
+
+        Overrides the S3 default with the native GCS download+compress path
+        (parallel download, then ``tar | pigz``). See :func:`_gcs_compress`.
+        """
+        return _gcs_compress(
+            campaign_id, self.get_s3_bucket(), self.get_gcs_key_json(), archive_dir)
 
     def get_gcs_key_file(self) -> Optional[str]:
         """Return the path to the GCS service-account key JSON file, or ``None``."""
@@ -704,3 +597,194 @@ The archiver sidecar streams GCS bucket contents to tar.gz in /data.
                 f"Cannot access GCS bucket '{bucket_name}' (error {code}). "
                 f"Ensure the bucket exists and the HMAC credentials are correct."
             ) from e
+
+
+# ---------------------------------------------------------------------------
+# Native GCS download + compress, used by GcpClusterConfig.compress_campaign for
+# the controller's upload-to-share step. Kept here (GCS is only used by this
+# config) rather than in a shared module. Parallel download then ``tar | pigz``.
+# ---------------------------------------------------------------------------
+
+_GCS_DEFAULT_WORKERS = int(os.environ.get("ROBOVAST_GCS_WORKERS", "16"))
+_GCS_CHUNK = 4 * 1024 * 1024  # 4 MiB per read chunk
+
+
+def _gcs_get_access_token(key_json: dict) -> str:
+    """Exchange a service-account key dict for a short-lived Bearer token."""
+    try:
+        import google.auth.transport.requests  # pylint: disable=import-outside-toplevel
+        import google.oauth2.service_account  # pylint: disable=import-outside-toplevel
+    except ImportError as exc:
+        raise RuntimeError(f"google-auth is not installed: {exc}") from exc
+    scopes = ["https://www.googleapis.com/auth/devstorage.read_only"]
+    creds = google.oauth2.service_account.Credentials.from_service_account_info(
+        key_json, scopes=scopes)
+    creds.refresh(google.auth.transport.requests.Request())
+    return creds.token
+
+
+def _gcs_list_blobs(bucket: str, prefix: str, token: str) -> list:
+    """Return ``(name, size)`` tuples for every object under *prefix*."""
+    blobs = []
+    page_token = None
+    while True:
+        params: dict = {"prefix": prefix}
+        if page_token:
+            params["pageToken"] = page_token
+        url = (
+            f"https://storage.googleapis.com/storage/v1/b/"
+            f"{urllib.parse.quote(bucket, safe='')}/o"
+            f"?{urllib.parse.urlencode(params)}"
+        )
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:  # nosec B310 - https GCS API
+                data = json.load(resp)
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(
+                f"GCS list failed for bucket '{bucket}' prefix '{prefix}': "
+                f"HTTP {exc.code} {exc.reason}"
+            ) from exc
+        for item in data.get("items", []):
+            blobs.append((item["name"], int(item.get("size", 0))))
+        next_page = data.get("nextPageToken")
+        if not next_page:
+            break
+        page_token = next_page
+    return blobs
+
+
+def _gcs_download_blob(bucket: str, blob_name: str, dest_path: str, token: str) -> None:
+    """Download one GCS object to *dest_path*, streaming in 4 MiB chunks."""
+    url = (
+        f"https://storage.googleapis.com/storage/v1/b/"
+        f"{urllib.parse.quote(bucket, safe='')}/o/"
+        f"{urllib.parse.quote(blob_name, safe='')}"
+        f"?alt=media"
+    )
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+    with urllib.request.urlopen(req, timeout=120) as resp:  # nosec B310 - https GCS API
+        with open(dest_path, "wb") as fh:
+            while True:
+                chunk = resp.read(_GCS_CHUNK)
+                if not chunk:
+                    break
+                fh.write(chunk)
+
+
+def _gcs_create_job_links(campaign_dir: str) -> None:
+    """Materialise ``<config>/<run>/job`` symlinks from the link manifest.
+
+    Reads ``<campaign_dir>/_transient/job_links.yaml`` (a ``{link: target}`` map
+    written by robovast for packed campaigns) and creates each relative symlink
+    so the archived tree is navigable. No-op when the manifest is absent.
+    """
+    import yaml  # pylint: disable=import-outside-toplevel
+    manifest = os.path.join(campaign_dir, "_transient", "job_links.yaml")
+    if not os.path.isfile(manifest):
+        return
+    with open(manifest) as fh:
+        links = yaml.safe_load(fh) or {}
+    for link_rel, target in links.items():
+        link_path = os.path.join(campaign_dir, link_rel)
+        os.makedirs(os.path.dirname(link_path), exist_ok=True)
+        if os.path.islink(link_path) or os.path.exists(link_path):
+            try:
+                os.remove(link_path)
+            except OSError:
+                pass
+        try:
+            os.symlink(target, link_path)
+        except OSError as exc:
+            sys.stderr.write(f"WARNING: could not create job link {link_rel}: {exc}\n")
+
+
+def _gcs_compress(campaign: str, bucket: str, key_json: str, archive_dir: str,
+                  *, workers: int = _GCS_DEFAULT_WORKERS) -> str:
+    """Download ``<campaign>/`` from *bucket* and compress it to a tar.gz.
+
+    Args:
+        campaign: Campaign id (GCS key prefix and the tar's top-level folder).
+        bucket: GCS bucket name.
+        key_json: Service-account key as a JSON string.
+        archive_dir: Directory to write ``<campaign>.tar.gz`` (and scratch) into.
+        workers: Parallel download threads.
+
+    Returns the output tar.gz path.
+    """
+    key_data = json.loads(key_json)
+    prefix = f"{campaign}/"
+    output_path = os.path.join(archive_dir, f"{campaign}.tar.gz")
+
+    token = _gcs_get_access_token(key_data)
+    blobs = [(name, size) for name, size in _gcs_list_blobs(bucket, prefix, token)
+             if name != prefix]
+    if not blobs:
+        raise RuntimeError(
+            f"No objects found under prefix '{prefix}' in bucket '{bucket}'.")
+
+    total = len(blobs)
+    total_bytes = sum(size for _, size in blobs)
+    sys.stdout.write(
+        f"{campaign}: {total} object(s)  {total_bytes / 1024 / 1024:.1f} MiB"
+        f"  ({workers} parallel workers)\n")
+    sys.stdout.flush()
+
+    # Phase 1: parallel download into a temp directory under the archive dir.
+    tmpdir = tempfile.mkdtemp(dir=archive_dir, prefix=f".gcs_dl_{campaign}_")
+    try:
+        campaign_dir = os.path.join(tmpdir, campaign)
+        os.makedirs(campaign_dir, exist_ok=True)
+
+        done_count = 0
+        lock = threading.Lock()
+
+        def _download_one(blob_name_size):
+            nonlocal done_count
+            blob_name, _size = blob_name_size
+            relative = blob_name[len(prefix):]
+            if not relative:
+                return
+            _gcs_download_blob(bucket, blob_name, os.path.join(campaign_dir, relative), token)
+            with lock:
+                done_count += 1
+                n = done_count
+            sys.stdout.write(f"\r{campaign}  downloading {n}/{total}...")
+            sys.stdout.flush()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(_download_one, b): b for b in blobs}
+            for fut in concurrent.futures.as_completed(futures):
+                fut.result()  # re-raise any download exception immediately
+
+        sys.stdout.write(f"\r{campaign}  downloaded {total} file(s), compressing...\n")
+        sys.stdout.flush()
+
+        # Materialise per-job artifact symlinks before archiving so the tar.gz
+        # carries them (tar stores symlinks as links — no -h/--dereference).
+        _gcs_create_job_links(campaign_dir)
+
+        # Phase 2: tar + pigz running in parallel via OS pipe.
+        with open(output_path, "wb") as out_f:
+            tar_proc = subprocess.Popen(  # nosec B607 B603 - fixed binary, no shell
+                ["tar", "cf", "-", "-C", tmpdir, campaign],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            pigz_proc = subprocess.Popen(  # nosec B607 B603 - fixed binary, no shell
+                ["pigz", "-c"], stdin=tar_proc.stdout, stdout=out_f,
+                stderr=subprocess.PIPE)
+            tar_proc.stdout.close()  # let tar receive SIGPIPE if pigz exits early
+            _pigz_stderr = pigz_proc.communicate()[1]
+            tar_proc.wait()
+
+        if tar_proc.returncode != 0:
+            raise RuntimeError(f"tar exited with code {tar_proc.returncode}")
+        if pigz_proc.returncode != 0:
+            msg = _pigz_stderr.decode(errors="replace").strip()
+            raise RuntimeError(f"pigz exited with code {pigz_proc.returncode}: {msg}")
+
+        sys.stdout.write(f"{campaign}: wrote {output_path}\n")
+        sys.stdout.flush()
+        return output_path
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)

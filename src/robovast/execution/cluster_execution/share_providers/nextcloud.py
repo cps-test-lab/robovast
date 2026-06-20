@@ -111,6 +111,32 @@ class NextcloudShareProvider(BaseShareProvider):
         session.headers["X-Requested-With"] = "XMLHttpRequest"
         return session
 
+    def verify_access(self) -> None:
+        """Confirm the public Nextcloud share accepts authenticated WebDAV access.
+
+        Issues a ``PROPFIND Depth: 0`` against the share's
+        ``public.php/webdav/`` collection; 207 means the share token resolves
+        and uploads are permitted.
+        """
+        webdav_url, _ = self._parse_share_url()
+        try:
+            with self._session() as session:
+                resp = session.request(
+                    "PROPFIND", webdav_url,
+                    headers={"Depth": "0"}, timeout=30,
+                )
+        except requests.RequestException as exc:
+            raise click.UsageError(
+                f"Cannot reach Nextcloud share at {webdav_url!r}: {exc}\n"
+                "Check network connectivity and ROBOVAST_SHARE_URL."
+            ) from exc
+        if resp.status_code != 207:
+            raise click.UsageError(
+                f"Nextcloud share is not accessible (HTTP {resp.status_code}). "
+                "Check ROBOVAST_SHARE_URL points at a public share with "
+                "'Allow upload and editing' enabled."
+            )
+
     # ------------------------------------------------------------------
     # Download interface (``results download``)
     # ------------------------------------------------------------------

@@ -132,7 +132,8 @@ def _get_remote_size(upload_url: str, auth_header: str) -> int:
 
 
 def upload(campaign: str) -> None:
-    archive_path = f"/data/{campaign}.tar.gz"
+    archive_dir = os.environ.get("ROBOVAST_ARCHIVE_DIR", "/data")
+    archive_path = f"{archive_dir}/{campaign}.tar.gz"
 
     if not os.path.isfile(archive_path):
         sys.stderr.write(f"ERROR: archive not found: {archive_path}\n")

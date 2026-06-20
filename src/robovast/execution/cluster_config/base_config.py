@@ -15,6 +15,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import os
+import subprocess  # nosec B404 - pigz is a fixed, trusted binary
+import tarfile
 from typing import Optional
 
 
@@ -68,6 +71,37 @@ class BaseConfig(object):
             **kwargs: Cluster-specific configuration options
         """
         raise NotImplementedError("prepare_setup_cluster method must be implemented by subclasses.")
+
+    def compress_campaign(self, campaign_id: str, archive_dir: str) -> str:
+        """Compress this campaign's storage into ``<archive_dir>/<campaign_id>.tar.gz``.
+
+        Used by the in-cluster controller's upload-to-share step; returns the
+        archive path. The default reads from the S3/MinIO backend (see
+        :func:`_s3_compress` below); configs backed by a different store (e.g.
+        GCS) override this.
+        """
+        from robovast.execution.cluster_execution import \
+            in_pod_storage  # pylint: disable=import-outside-toplevel
+        bucket, prefix = in_pod_storage.campaign_storage_location(self, campaign_id)
+        access_key, secret_key = self.get_s3_credentials()
+        return _s3_compress(
+            bucket, archive_dir, campaign_id,
+            endpoint=self.get_s3_endpoint(),
+            access_key=access_key, secret_key=secret_key,
+            prefix=prefix or None, region=self.get_s3_region())
+
+    def verify_cluster_ready(self, k8s_client=None, namespace="default", kube_context=None):
+        """Verify the storage infrastructure is ready before launching a run.
+
+        Called by ``vast exec cluster run`` after the cluster config is resolved.
+        Configs that deploy in-cluster storage (e.g. the embedded MinIO pod for
+        ``rke2``) override this to confirm it is running and raise a
+        :class:`RuntimeError` with a remediation hint otherwise.
+
+        The default is a no-op: external-storage configs (e.g. GCS) need no
+        in-cluster helper.
+        """
+        del k8s_client, namespace, kube_context
 
     # ------------------------------------------------------------------
     # S3 storage configuration
@@ -211,3 +245,85 @@ class BaseConfig(object):
             if doc and doc.get('kind') == 'Pod':
                 doc.setdefault('spec', {})['nodeSelector'] = dict(node_labels)
         return docs
+
+
+# ---------------------------------------------------------------------------
+# S3/MinIO download + compress, used by BaseConfig.compress_campaign for the
+# controller's upload-to-share step. Streams the bucket straight into a tar.gz
+# via pigz (parallel gzip). The GCS variant lives in the gcp config.
+# ---------------------------------------------------------------------------
+
+def _s3_add_job_link_entries(tar, s3, bucket_name, prefix, archive_label):
+    """Add ``<config>/<run>/job`` symlink members to the streaming tar.
+
+    Reads the ``_transient/job_links.yaml`` manifest object (written by robovast
+    for packed campaigns) and adds one real symlink member per entry so the
+    tar.gz is navigable. No-op when the manifest object is absent.
+    """
+    import yaml  # pylint: disable=import-outside-toplevel
+    manifest_key = (prefix or "") + "_transient/job_links.yaml"
+    try:
+        resp = s3.get_object(Bucket=bucket_name, Key=manifest_key)
+    except Exception:  # pylint: disable=broad-except
+        return  # no manifest → nothing to link
+    links = yaml.safe_load(resp["Body"].read()) or {}
+    for link_rel, target in links.items():
+        tarinfo = tarfile.TarInfo(name=f"{archive_label}/{link_rel}")
+        tarinfo.type = tarfile.SYMTYPE
+        tarinfo.linkname = target
+        tarinfo.mode = 0o777
+        tar.addfile(tarinfo)
+
+
+def _s3_compress(bucket, archive_dir, archive_name, *, endpoint, access_key,
+                 secret_key, prefix=None, region="us-east-1") -> str:
+    """Stream *bucket* (optionally under *prefix*) into a tar.gz; return its path.
+
+    The archive's single top-level folder is *archive_name* (the campaign id), so
+    it expands to ``<campaign>/<config>/<run>/...``.
+    """
+    import boto3  # pylint: disable=import-outside-toplevel
+    from botocore.config import Config  # pylint: disable=import-outside-toplevel
+
+    prefix = prefix.rstrip("/") + "/" if prefix else None
+    output_path = os.path.join(archive_dir, f"{archive_name}.tar.gz")
+
+    s3 = boto3.client(
+        "s3", endpoint_url=endpoint,
+        aws_access_key_id=access_key, aws_secret_access_key=secret_key,
+        region_name=region,
+        config=Config(signature_version="s3v4",
+                      s3={"addressing_style": "path"},
+                      request_checksum_calculation="when_required",
+                      response_checksum_validation="when_required"))
+
+    paginate_kwargs = {"Bucket": bucket}
+    if prefix:
+        paginate_kwargs["Prefix"] = prefix
+    paginator = s3.get_paginator("list_objects_v2")
+
+    # Stream uncompressed tar into pigz for parallel multi-core compression.
+    with open(output_path, "wb") as out_f:
+        pigz = subprocess.Popen(  # nosec B607 B603 - fixed binary, no shell
+            ["pigz", "-c"], stdin=subprocess.PIPE, stdout=out_f)
+        try:
+            with tarfile.open(fileobj=pigz.stdin, mode="w|") as tar:
+                for page in paginator.paginate(**paginate_kwargs):
+                    for obj in page.get("Contents", []):
+                        key = obj["Key"]
+                        relative_key = key[len(prefix):] if prefix else key
+                        tarinfo = tarfile.TarInfo(name=f"{archive_name}/{relative_key}")
+                        tarinfo.size = obj["Size"]
+                        response = s3.get_object(Bucket=bucket, Key=key)
+                        tarinfo.mode = (
+                            0o755 if response.get("Metadata", {}).get("executable") == "yes"
+                            else 0o644)
+                        tar.addfile(tarinfo, response["Body"])
+                _s3_add_job_link_entries(tar, s3, bucket, prefix, archive_name)
+        finally:
+            pigz.stdin.close()
+            pigz.wait()
+
+    if pigz.returncode != 0:
+        raise RuntimeError(f"pigz exited with code {pigz.returncode}")
+    return output_path

@@ -155,6 +155,33 @@ class SftpShareProvider(BaseShareProvider):
         sftp = ssh.open_sftp()
         return ssh, sftp
 
+    def verify_access(self) -> None:
+        """Confirm the SFTP server accepts the credentials and the remote dir exists.
+
+        Connects with the configured auth and ``stat``s
+        ``ROBOVAST_SFTP_REMOTE_DIR``; any auth/connection/path error raises so
+        the campaign does not start with broken delivery.
+        """
+        remote_dir = os.environ["ROBOVAST_SFTP_REMOTE_DIR"]
+        try:
+            ssh, sftp = self._connect()
+        except Exception as exc:  # paramiko raises a variety of types
+            raise click.UsageError(
+                f"Cannot connect to SFTP server "
+                f"{os.environ.get('ROBOVAST_SFTP_HOST')!r}: {exc}\n"
+                "Check ROBOVAST_SFTP_HOST / _USER / _PASSWORD / _KEY_FILE."
+            ) from exc
+        try:
+            sftp.stat(remote_dir)
+        except IOError as exc:
+            raise click.UsageError(
+                f"SFTP remote directory {remote_dir!r} is not accessible: {exc}\n"
+                "Check ROBOVAST_SFTP_REMOTE_DIR exists and is writable."
+            ) from exc
+        finally:
+            sftp.close()
+            ssh.close()
+
     # ------------------------------------------------------------------
     # Optional download interface
     # ------------------------------------------------------------------
