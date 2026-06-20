@@ -117,6 +117,21 @@ def _share_env_exports():
     return [f"export {k}={_sh_quote(v)}" for k, v in pod_env.items()]
 
 
+def _ntfy_env_exports():
+    """Pass ntfy config from the host .env into the controller pod (best-effort).
+
+    Notifications are optional, so unlike :func:`_share_env_exports` this never
+    raises — when ``ROBOVAST_NTFY_TOPIC`` is unset the controller simply doesn't
+    notify. Each var is forwarded only when present.
+    """
+    out = []
+    for var in ("ROBOVAST_NTFY_TOPIC", "ROBOVAST_NTFY_SERVER", "ROBOVAST_NTFY_TOKEN"):
+        val = os.environ.get(var, "").strip()
+        if val:
+            out.append(f"export {var}={_sh_quote(val)}")
+    return out
+
+
 def _kubectl(ctx_args, *args, check=True, stream=False, input_text=None):
     cmd = ["kubectl"] + ctx_args + list(args)
     logger.debug("kubectl %s", " ".join(args))
@@ -327,6 +342,8 @@ def launch_controller(*, config_path, config_name, setup_kwargs, namespace,
         # Resolved from the host .env; validated here so a missing var fails the
         # launch instead of the campaign.
         env_exports += _share_env_exports()
+        # ntfy push-notification config (optional; topic enables it).
+        env_exports += _ntfy_env_exports()
 
         controller_cmd = [
             "python", "-m", "robovast.execution.controller",

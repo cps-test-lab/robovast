@@ -43,6 +43,7 @@ from robovast.common.campaign_data import aggregate_run_status, list_run_dirs
 from robovast.common.store import STORE_FILENAME, CampaignStore
 
 from .backends import DockerBackend, ExecutionBackend, RunOptions
+from .notify import Notifier
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,7 @@ class CampaignController:
                  options: RunOptions, store: CampaignStore, campaign_config_dump: dict,
                  vast_dir: str, strategy=None, evaluator=None, compose=None,
                  per_batch: int = 1, postprocessing=None, batch_campaign_data=None,
-                 stop_conditions=None, state=None):
+                 stop_conditions=None, state=None, notifier=None):
         self.campaign_id = campaign_id
         self.campaign_root = os.path.join(results_dir, campaign_id)
         self.runs = runs
@@ -89,6 +90,9 @@ class CampaignController:
         # Optional control-channel state (cluster mode). When set, the controller
         # publishes loop phase/progress and honours the cooperative `stop` command.
         self.state = state
+        # ntfy push notifications (no-op when no topic is configured). Built bound
+        # to this campaign id so concurrent campaigns report independently.
+        self.notifier = notifier or Notifier.from_env(campaign_id)
         self._history: list[dict] = []        # per-batch summaries for /status
         # Run-level progress poller plumbing (set up only when `state` is present
         # and the backend can introspect storage).
@@ -111,6 +115,7 @@ class CampaignController:
             self.state.update(mode=self.mode, campaign_id=self.campaign_id)
             self.state.set_phase("running")
         self._start_progress_poller()
+        self.notifier.start_heartbeat(status_fn=self._notify_status)
         try:
             if self.strategy is None:
                 result = self._run_batch_mode(campaign_id)
@@ -119,12 +124,14 @@ class CampaignController:
             if self.state is not None:
                 self.state.set_phase("finished")
             return result
-        except BaseException:
+        except BaseException as exc:
             if self.state is not None:
                 self.state.set_phase("failed")
+            self.notifier.failed(f"{type(exc).__name__}: {exc}")
             raise
         finally:
             self._stop_progress_poller()
+            self.notifier.stop_heartbeat()
 
     # -- run-level progress poller ------------------------------------------
 
@@ -165,6 +172,17 @@ class CampaignController:
     def _stop_progress_poller(self) -> None:
         if self._poller is not None:
             self._poller_stop.set()
+
+    def _notify_status(self):
+        """Heartbeat source: current batch + run progress within it.
+
+        Returns ``(batch, completed, total, batches_done)`` or ``None`` when no
+        control channel is available (then the heartbeat skips this tick).
+        """
+        if self.state is None:
+            return None
+        s = self.state.snapshot()
+        return (s.batch, s.runs.completed, s.runs.total, s.batches_done)
 
     def _begin_batch_progress(self, total: int) -> None:
         """Capture the cumulative-run baseline before a batch's jobs upload."""
@@ -213,6 +231,7 @@ class CampaignController:
         if self.state is not None:
             self.state.update(batches_done=1,
                               batch_history=[{"idx": 0, "n_units": len(configs)}])
+        self.notifier.batch_finished(0, len(configs))
         logger.info("\n%s\n✅  Batch run complete  —  %d configuration(s) in %s\n%s",
                     _BAR, len(configs), self.campaign_root, _BAR)
         return {"mode": "batch", "configs": len(configs), "campaign_root": self.campaign_root}
@@ -255,6 +274,7 @@ class CampaignController:
                 self.state.update(batches_done=batch_idx, best_objective=best_objective,
                                   budget=[self._budget_item(p) for p in progress],
                                   batch_history=list(self._history))
+            self.notifier.batch_finished(batch_idx - 1, len(evaluations))
             result = stop.should_stop(snap)
             if not result and self.state is not None and self.state.stop_requested:
                 result = StopResult(kind="external",
@@ -382,7 +402,7 @@ def _finalize(backend: ExecutionBackend, campaign_root: str) -> None:
         logger.warning("Campaign finalize hook failed", exc_info=True)
 
 def _upload_to_share_with_retrigger(cluster_config, campaign_id: str, provider,
-                                    state) -> int:
+                                    state, notifier=None) -> int:
     """Run upload-to-share after a finished campaign; on failure stay alive.
 
     The campaign is already published to storage (``finalize_campaign``). This
@@ -397,6 +417,8 @@ def _upload_to_share_with_retrigger(cluster_config, campaign_id: str, provider,
     from robovast.execution.cluster_execution import \
         in_pod_upload  # pylint: disable=import-outside-toplevel
 
+    notifier = notifier or Notifier.from_env(campaign_id)
+
     if state is not None:
         state.update(share_provider=provider.SHARE_TYPE)
         state.set_phase("uploading", stage="upload-to-share")
@@ -405,6 +427,7 @@ def _upload_to_share_with_retrigger(cluster_config, campaign_id: str, provider,
         if state is not None:
             state.set_phase("finished", stage="uploaded")
         logger.info("Campaign uploaded to share (%s).", provider.SHARE_TYPE)
+        notifier.uploaded(provider.SHARE_TYPE)
         return 0
 
     logger.error(
@@ -413,6 +436,7 @@ def _upload_to_share_with_retrigger(cluster_config, campaign_id: str, provider,
         "reuses the injected credentials, or pass corrected ones — even a "
         "different share type), or 'vast exec cluster stop' to give up.")
     if state is None:
+        notifier.failed("upload-to-share failed (no control channel to retry)")
         return 1  # no control channel → nothing could retrigger
     state.set_phase("uploading", stage="upload-failed")
 
@@ -421,6 +445,7 @@ def _upload_to_share_with_retrigger(cluster_config, campaign_id: str, provider,
         if action == "abandon":
             logger.warning("Upload abandoned via stop; terminating "
                            "(campaign already published to storage).")
+            notifier.failed("upload-to-share abandoned via stop")
             return 1
         logger.info("Retrying upload-to-share...")
         # Rebuild the provider (the retrigger may switch type and/or supply
@@ -448,13 +473,15 @@ def _upload_to_share_with_retrigger(cluster_config, campaign_id: str, provider,
             state.set_phase("finished", stage="uploaded")
             logger.info("Campaign uploaded to share (%s, retry).",
                         retry_provider.SHARE_TYPE)
+            notifier.uploaded(retry_provider.SHARE_TYPE)
             return 0
         state.set_phase("uploading", stage="upload-failed")
 
 
 def run_search_campaign(vast_file, campaign_config, results_dir, runs,
                         backend: ExecutionBackend | None = None,
-                        options: RunOptions | None = None, campaign_id=None, state=None):
+                        options: RunOptions | None = None, campaign_id=None, state=None,
+                        notifier=None):
     """Build and run a search campaign. Requires ``campaign_config.search``."""
     from robovast.search.compose import Compose
     from robovast.search.evaluator import Evaluator
@@ -477,7 +504,7 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
         vast_dir=vast_dir, strategy=build_strategy(search_cfg, vast_dir),
         evaluator=Evaluator(search_cfg, vast_dir), compose=Compose(vast_file),
         per_batch=search_cfg.per_batch, postprocessing=search_cfg.postprocessing,
-        stop_conditions=build_stop_conditions(search_cfg), state=state)
+        stop_conditions=build_stop_conditions(search_cfg), state=state, notifier=notifier)
     try:
         return controller.run()
     finally:
@@ -487,7 +514,8 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
 
 def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_filter=None,
                        backend: ExecutionBackend | None = None,
-                       options: RunOptions | None = None, campaign_id=None, state=None):
+                       options: RunOptions | None = None, campaign_id=None, state=None,
+                       notifier=None):
     """Build and run a batch campaign (no ``search:`` block)."""
     import fnmatch
 
@@ -515,7 +543,8 @@ def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_fil
             campaign_id=campaign_id, results_dir=results_dir, runs=runs,
             backend=be, options=options or RunOptions(),
             store=store, campaign_config_dump=campaign_config.model_dump(),
-            vast_dir=vast_dir, batch_campaign_data=campaign_data, state=state)
+            vast_dir=vast_dir, batch_campaign_data=campaign_data, state=state,
+            notifier=notifier)
         try:
             return controller.run()
         finally:
@@ -603,6 +632,10 @@ def main(argv=None):
     # campaign to upload after the run (and so the id is stable for both paths).
     campaign_id = args.campaign_id or campaign_id_for(campaign_config)
 
+    # ntfy push notifications (no-op unless ROBOVAST_NTFY_TOPIC is set). Bound to
+    # this campaign id so concurrent controller pods report independently.
+    notifier = Notifier.from_env(campaign_id)
+
     # Start the in-pod control channel (state + RPC) so the host can monitor loop
     # progress and issue commands. Best-effort: a failure leaves the campaign
     # running with the monitor falling back to its Kubernetes-only view.
@@ -628,6 +661,7 @@ def main(argv=None):
         logger.error("Share provider misconfigured: %s", exc)
         if state is not None:
             state.set_phase("failed", stage="share-config-error")
+        notifier.failed(f"share provider misconfigured: {exc}")
         sys.exit(2)
     if share_provider is None:
         # The launcher refuses to start a run without a share destination; guard
@@ -636,6 +670,7 @@ def main(argv=None):
                      "refusing to run a campaign whose results have nowhere to go.")
         if state is not None:
             state.set_phase("failed", stage="share-config-error")
+        notifier.failed("no share destination configured (ROBOVAST_SHARE_TYPE unset)")
         sys.exit(2)
     try:
         in_pod_upload.verify_share_access(share_provider)
@@ -644,23 +679,27 @@ def main(argv=None):
                      "before starting any batches: %s", exc)
         if state is not None:
             state.set_phase("failed", stage="share-verify-failed")
+        notifier.failed(f"pre-flight share credential check failed: {exc}")
         sys.exit(3)
 
+    mode = "search" if campaign_config.search is not None else "batch"
+    notifier.started(mode)
     if campaign_config.search is not None:
         report = run_search_campaign(args.vast, campaign_config, args.results_dir, args.runs,
                                      backend=backend, options=options,
-                                     campaign_id=campaign_id, state=state)
+                                     campaign_id=campaign_id, state=state, notifier=notifier)
         logger.info("Search campaign finished: %s", report)
     else:
         report = run_batch_campaign(args.vast, campaign_config, args.results_dir, args.runs,
                                     config_filter=args.config, backend=backend, options=options,
-                                    campaign_id=campaign_id, state=state)
+                                    campaign_id=campaign_id, state=state, notifier=notifier)
         logger.info("Batch campaign finished: %s", report)
+    notifier.finished(f"{mode} campaign complete.")
 
     # The campaign is now published to storage. Deliver it to the share; stay
     # alive for a manual retrigger if the upload fails.
     sys.exit(_upload_to_share_with_retrigger(
-        backend.cluster_config, campaign_id, share_provider, state))
+        backend.cluster_config, campaign_id, share_provider, state, notifier))
 
 
 if __name__ == "__main__":

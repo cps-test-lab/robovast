@@ -158,6 +158,29 @@ Remove result archives from S3 (after uploading or when no longer needed):
    vast execution cluster download-cleanup
 
 
+Push notifications (ntfy)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Because a run is fire-and-forget, the controller can push `ntfy.sh
+<https://ntfy.sh>`_ notifications so you don't have to poll ``monitor``. Set a
+topic in your ``.env`` and subscribe with the ntfy mobile/desktop app:
+
+.. code-block:: ini
+
+   ROBOVAST_NTFY_TOPIC=robovast-alice-campaigns   # enables notifications
+   ROBOVAST_NTFY_SERVER=https://ntfy.sh           # optional, this is the default
+   ROBOVAST_NTFY_TOKEN=tk_xxx                      # optional, for protected topics
+
+You then get a message when a campaign **starts**, when each **batch finishes**,
+once an **hour** with the current run progress, when the campaign **finishes**,
+when it is **uploaded** to the share, and (urgently) on **failure**.
+
+Notifications are optional and best-effort: with no topic set the controller
+stays silent, and an unreachable ntfy server never affects the campaign. Pick a
+different topic per user so notifications don't cross over; each message carries
+its campaign id so concurrent campaigns sharing a topic stay distinguishable.
+
+
 Manual Deployment (prepare-run)
 ---------------------------------
 
