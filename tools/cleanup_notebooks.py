@@ -15,6 +15,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# Pulls in the cluster_execution package, which has a known internal import cycle.
+# pylint: disable=cyclic-import
+
 import argparse
 import re
 import sys

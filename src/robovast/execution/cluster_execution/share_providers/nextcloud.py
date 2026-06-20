@@ -96,7 +96,8 @@ class NextcloudShareProvider(BaseShareProvider):
             req = urllib.request.Request(
                 file_url, data=reader, method="PUT", headers=headers)
             try:
-                urllib.request.urlopen(req, timeout=300)  # nosec B310 - configured share URL
+                with urllib.request.urlopen(req, timeout=300):  # nosec B310 - configured share URL
+                    pass
             except urllib.error.HTTPError as exc:
                 raise click.UsageError(
                     f"HTTP {exc.code} uploading {object_name} to Nextcloud: {exc.reason}"

@@ -4,6 +4,8 @@
 
 """Unit tests for the in-controller upload-to-share helper."""
 
+# pylint: disable=import-outside-toplevel
+
 import pytest
 
 from robovast.execution.cluster_execution import in_pod_upload

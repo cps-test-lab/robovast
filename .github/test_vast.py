@@ -74,10 +74,10 @@ def check_results_dir_structure(results_dir):  # pylint: disable=too-many-return
     # Check for campaign directories (prefer campaign-*, but accept legacy run-*)
     campaign_dirs = [
         d for d in contents
-        if d.is_dir() and (d.name.startswith('campaign-') or d.name.startswith('growth_sim-'))
+        if d.is_dir() and (d.name.startswith('campaign-') or d.name.startswith('growth-sim-'))
     ]
     if not campaign_dirs:
-        print("✗ No campaign or run directories found (expected campaign-* or growth_sim-* directories)")
+        print("✗ No campaign or run directories found (expected campaign-* or growth-sim-* directories)")
         return False
     
     print(f"✓ Found {len(campaign_dirs)} campaign directory/directories")
@@ -201,21 +201,19 @@ def check_results_dir_structure(results_dir):  # pylint: disable=too-many-return
 
 
 def check_job_directories(campaign_dir):
-    """Check the campaign's job-level artifact directories (``_jobs/job-N/``).
+    """Check the campaign's job-level artifact directories (``_jobs/[batch-N/]job-N/``).
 
-    Regardless of ``configs_per_job`` every run is dispatched through a job, so
+    Regardless of ``runs_per_job`` every run is dispatched through a job, so
     the campaign always has a ``_jobs/`` directory with one ``job-N`` subdir per
-    job, each holding that job's job-level artifacts (at minimum ``sysinfo.yaml``).
+    job (namespaced under a ``batch-N/`` prefix on the batch campaign path),
+    each holding that job's job-level artifacts (at minimum ``sysinfo.yaml``).
     """
     jobs_dir = campaign_dir / '_jobs'
     if not jobs_dir.is_dir():
         print("  ✗ _jobs directory not found in campaign")
         return False
 
-    job_dirs = [
-        d for d in jobs_dir.iterdir()
-        if d.is_dir() and d.name.startswith('job-')
-    ]
+    job_dirs = _job_dirs(jobs_dir)
     if not job_dirs:
         print("  ✗ No job-* directories found in _jobs/")
         return False
@@ -335,27 +333,34 @@ def _find_campaign_dir(results_dir):
         return None
     for d in sorted(output_path.iterdir()):
         if d.is_dir() and (
-            d.name.startswith('campaign-') or d.name.startswith('growth_sim-')
+            d.name.startswith('campaign-') or d.name.startswith('growth-sim-')
         ):
             return d
     return None
 
 
+def _job_dirs(jobs_dir):
+    """Return the ``job-N`` artifact directories under ``_jobs/``.
+
+    Jobs may sit directly under ``_jobs/`` or be namespaced under a
+    ``batch-N/`` prefix (as the batch campaign path does), so match at any
+    depth.
+    """
+    return [d for d in jobs_dir.rglob('job-*') if d.is_dir()]
+
+
 def _count_job_dirs(campaign_dir):
-    """Count ``_jobs/job-N`` directories in a campaign."""
+    """Count ``_jobs/[batch-N/]job-N`` directories in a campaign."""
     jobs_dir = campaign_dir / '_jobs'
     if not jobs_dir.is_dir():
         return 0
-    return len([
-        d for d in jobs_dir.iterdir()
-        if d.is_dir() and d.name.startswith('job-')
-    ])
+    return len(_job_dirs(jobs_dir))
 
 
 def _collect_non_job_files(campaign_dir):
     """Collect campaign-relative file paths, excluding all job-specific artifacts.
 
-    The job *packing* (``configs_per_job``) only changes how runs are grouped
+    The job *packing* (``runs_per_job``) only changes how runs are grouped
     into jobs; the per-config/per-run scenario output must be identical. This
     returns the set of files that should match regardless of packing by skipping:
 
@@ -403,8 +408,8 @@ def _set_image(text, image):
     return ''.join(out)
 
 
-def _set_configs_per_job(text, value):
-    """Return *text* with ``configs_per_job: <value>`` set in the execution block."""
+def _set_runs_per_job(text, value):
+    """Return *text* with ``runs_per_job: <value>`` set in the execution block."""
     out = []
     in_execution = False
     inserted = False
@@ -412,12 +417,12 @@ def _set_configs_per_job(text, value):
         stripped = line.rstrip('\n')
         if stripped == 'execution:':
             out.append(line)
-            out.append(f"  configs_per_job: {value}\n")
+            out.append(f"  runs_per_job: {value}\n")
             in_execution = True
             inserted = True
             continue
-        # Drop any pre-existing configs_per_job entry so ours is authoritative.
-        if in_execution and stripped.startswith('  configs_per_job:'):
+        # Drop any pre-existing runs_per_job entry so ours is authoritative.
+        if in_execution and stripped.startswith('  runs_per_job:'):
             continue
         # A new top-level (unindented) key ends the execution block.
         if in_execution and line[:1].strip() and stripped.endswith(':'):
@@ -428,19 +433,19 @@ def _set_configs_per_job(text, value):
     return ''.join(out)
 
 
-def test_configs_per_job_packing(vast_file_path, test_directory, config=None, runs=None):  # pylint: disable=too-many-return-statements
-    """Verify configs_per_job>1 packs runs into fewer jobs but keeps output identical.
+def test_runs_per_job_packing(vast_file_path, test_directory, config=None, runs=None):  # pylint: disable=too-many-return-statements
+    """Verify runs_per_job>1 packs runs into fewer jobs but keeps output identical.
 
     Runs the same campaign twice — once with the default packing
-    (``configs_per_job=1``, one job per run) and once with
-    ``configs_per_job: 10`` temporarily injected into the VAST file — then
+    (``runs_per_job=1``, one job per run) and once with
+    ``runs_per_job: 10`` temporarily injected into the VAST file — then
     asserts that:
 
     - the packed run produces fewer jobs (``ceil(N/10)`` instead of ``N``), and
     - every non-job output file is byte-for-byte present in both layouts.
     """
     print("\n" + "=" * 60)
-    print("Testing: configs_per_job packing equivalence")
+    print("Testing: runs_per_job packing equivalence")
     print("=" * 60)
 
     repo_root = Path(__file__).parent.parent
@@ -460,21 +465,21 @@ def test_configs_per_job_packing(vast_file_path, test_directory, config=None, ru
     os.makedirs(base_dir, exist_ok=True)
     os.makedirs(packed_dir, exist_ok=True)
 
-    # 1. Baseline: default packing (configs_per_job=1 → one job per run).
-    print("\n--- Baseline run (configs_per_job=1) ---")
+    # 1. Baseline: default packing (runs_per_job=1 → one job per run).
+    print("\n--- Baseline run (runs_per_job=1) ---")
     if not test_vast_workflow(vast_file_path, base_dir, config, run_count):
-        print("✗ Baseline (configs_per_job=1) workflow failed")
+        print("✗ Baseline (runs_per_job=1) workflow failed")
         return False
 
-    # 2. Packed: temporarily inject configs_per_job: 10 and re-run.
-    print("\n--- Packed run (configs_per_job=10) ---")
+    # 2. Packed: temporarily inject runs_per_job: 10 and re-run.
+    print("\n--- Packed run (runs_per_job=10) ---")
     original_text = config_path.read_text(encoding="utf-8")
     try:
         config_path.write_text(
-            _set_configs_per_job(original_text, 10), encoding="utf-8"
+            _set_runs_per_job(original_text, 10), encoding="utf-8"
         )
         if not test_vast_workflow(vast_file_path, packed_dir, config, run_count):
-            print("✗ Packed (configs_per_job=10) workflow failed")
+            print("✗ Packed (runs_per_job=10) workflow failed")
             return False
     finally:
         # Always restore the original VAST file, even on failure.
@@ -496,7 +501,7 @@ def test_configs_per_job_packing(vast_file_path, test_directory, config=None, ru
         f"(expected {expected_packed})"
     )
     if base_jobs <= packed_jobs:
-        print("  ✗ configs_per_job=10 did not reduce the number of jobs")
+        print("  ✗ runs_per_job=10 did not reduce the number of jobs")
         return False
     if packed_jobs != expected_packed:
         print(f"  ✗ Unexpected packed job count: {packed_jobs} != {expected_packed}")
@@ -508,7 +513,7 @@ def test_configs_per_job_packing(vast_file_path, test_directory, config=None, ru
     only_base = base_files - packed_files
     only_packed = packed_files - base_files
     if only_base or only_packed:
-        print("  ✗ Non-job output differs between configs_per_job=1 and =10")
+        print("  ✗ Non-job output differs between runs_per_job=1 and =10")
         if only_base:
             print(f"    Only in baseline: {sorted(only_base)}")
         if only_packed:
@@ -516,7 +521,7 @@ def test_configs_per_job_packing(vast_file_path, test_directory, config=None, ru
         return False
 
     print(f"  ✓ Non-job output identical ({len(base_files)} files) across packings")
-    print("\n✓ configs_per_job packing test succeeded!")
+    print("\n✓ runs_per_job packing test succeeded!")
     return True
 
 
@@ -551,7 +556,7 @@ def main():
     parser.add_argument(
         '--no-packing-test',
         action='store_true',
-        help='Skip the configs_per_job packing-equivalence test (it runs the '
+        help='Skip the runs_per_job packing-equivalence test (it runs the '
              'campaign twice and is more expensive)'
     )
     parser.add_argument(
@@ -590,7 +595,7 @@ def main():
         ]
         if not args.no_packing_test:
             tests.append(
-                ("configs_per_job packing equivalence", test_configs_per_job_packing,
+                ("runs_per_job packing equivalence", test_runs_per_job_packing,
                  args.vast_file, args.test_directory, args.config, args.runs)
             )
 

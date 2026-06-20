@@ -7,6 +7,8 @@
 The QD/Optuna tests are skipped when the optional extra is not installed.
 """
 
+# pylint: disable=import-outside-toplevel
+
 import random
 
 import pytest

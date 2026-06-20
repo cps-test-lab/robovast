@@ -10,6 +10,9 @@ search-space overrides (search is self-contained; there is no ``configuration:``
 template — that is mutually exclusive with ``search:``).
 """
 
+# pytest fixtures share their name with test args; some imports are lazy.
+# pylint: disable=redefined-outer-name,import-outside-toplevel
+
 import os
 import textwrap
 
@@ -53,7 +56,7 @@ def test_compose_yields_one_config_per_param_set(base_vast, tmp_path):
         ParamSet(values={"thrust_gain": 2.0, "mass": 1.5}),
         ParamSet(values={"thrust_gain": 0.5, "mass": 2.5}),
     ]
-    campaign_data, name_by_id = compose.compose(param_sets, str(tmp_path / "art"))
+    campaign_data, _ = compose.compose(param_sets, str(tmp_path / "art"))
 
     configs = campaign_data["configs"]
     assert len(configs) == 2

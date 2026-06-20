@@ -31,6 +31,8 @@ from pprint import pformat
 from .common import convert_dataclasses_to_dict, get_scenario_parameters, load_config
 from .config_identifier import collect_paths_from_config, hash_variation_entrypoints
 from .file_cache2 import CacheKey, FileCache2
+from .plugin_ref import is_file_ref, load_ref
+from .variation.loader import _validate_variation_class
 
 logger = logging.getLogger(__name__)
 
@@ -264,9 +266,6 @@ def _get_variation_classes(scenario_config, vast_dir=""):
         print(f"Warning: Failed to load variation types from entry points: {e}")
 
     # Extract variation class names from the list
-    from robovast.common.plugin_ref import is_file_ref, load_ref
-    from robovast.common.variation.loader import _validate_variation_class
-
     variation_classes = []
     for item in variation_list:
         if isinstance(item, dict):
@@ -346,9 +345,6 @@ def _collect_analysis_input_files(parameters, base_dir=None):
                     for _key, path in plugin_config.items():
                         if isinstance(path, str) and (path.endswith('.ipynb') or path.endswith('.py')):
                             analysis_files.append(path)
-
-    from robovast.common.plugin_ref import \
-        is_file_ref  # pylint: disable=import-outside-toplevel
 
     def _collect_ref(value):
         """Collect a local module path from an entry-point/file ref or file value."""

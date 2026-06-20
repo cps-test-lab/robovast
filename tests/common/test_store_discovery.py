@@ -9,6 +9,9 @@ constructing the Qt window (they use neither Qt nor instance state). Skipped
 when PySide6 is not installed.
 """
 
+# Imports follow an importorskip guard; tests exercise private store helpers.
+# pylint: disable=wrong-import-position,protected-access
+
 import textwrap
 
 import pytest

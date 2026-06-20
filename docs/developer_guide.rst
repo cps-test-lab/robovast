@@ -592,6 +592,91 @@ To test your cluster configuration, you can use:
 The output directory will contain all necessary files and instructions to manually execute the setup steps for your cluster configuration and execution.
 
 
+Add Share Provider Plugin
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Share providers are discovered as **entry-point plugins** under the
+``robovast.share_providers`` group.  They determine where a finished campaign is
+uploaded (see :ref:`cluster-sharing`).  To add a new provider:
+
+1. **Create a provider class** that inherits from
+   :class:`~robovast.execution.cluster_execution.share_providers.base.BaseShareProvider`
+   and implements the three abstract methods:
+
+   .. code-block:: python
+
+      import os
+
+      from robovast.execution.cluster_execution.share_providers.base import (
+          BaseShareProvider,
+          UploadProgressReader,
+      )
+
+      class MyShareProvider(BaseShareProvider):
+          SHARE_TYPE = "myshare"
+
+          def required_env_vars(self) -> dict[str, str]:
+              return {
+                  "ROBOVAST_SHARE_URL": "URL of the target folder",
+                  "MY_SHARE_TOKEN":     "API token for the share service",
+              }
+
+          def build_pod_env(self) -> dict[str, str]:
+              return {
+                  "MY_SHARE_URL":   os.environ["ROBOVAST_SHARE_URL"],
+                  "MY_SHARE_TOKEN": os.environ["MY_SHARE_TOKEN"],
+              }
+
+          def upload_archive(self, archive_path, object_name, progress_callback=None):
+              total = os.path.getsize(archive_path)
+              with open(archive_path, "rb") as fh:
+                  body = UploadProgressReader(
+                      fh, total, progress_callback=progress_callback)
+                  ...  # PUT/stream `body` to the share, raising on failure
+
+2. **Implement** :meth:`~robovast.execution.cluster_execution.share_providers.base.BaseShareProvider.upload_archive`.
+   It runs **in-process** in the controller pod (no sidecar, no subprocess), reads
+   credentials from ``os.environ`` (populated by ``build_pod_env()``), and uploads
+   the local ``archive_path``. Wrap the request body in
+   :class:`~robovast.execution.cluster_execution.share_providers.base.UploadProgressReader`
+   so the ``(bytes_sent, total_bytes)`` ``progress_callback`` drives the live
+   upload bar in ``vast exec cluster monitor``.
+
+   Optionally override
+   :meth:`~robovast.execution.cluster_execution.share_providers.base.BaseShareProvider.verify_access`
+   with a cheap authenticated check so a bad configuration fails the pre-flight
+   credential check before any batches run.
+
+3. **Register the provider** in your package's ``pyproject.toml``:
+
+   .. code-block:: toml
+
+      [tool.poetry.plugins."robovast.share_providers"]
+      myshare = "mypackage.myshare:MyShareProvider"
+
+4. Re-install the package (``pip install -e .``) so the entry point is
+   registered.
+
+After that, ``ROBOVAST_SHARE_TYPE=myshare`` in ``.env`` will select your
+provider automatically.
+
+Share provider API reference
+""""""""""""""""""""""""""""
+
+.. autoclass:: robovast.execution.cluster_execution.share_providers.base.BaseShareProvider
+   :members:
+   :undoc-members:
+
+.. autoclass:: robovast.execution.cluster_execution.share_providers.nextcloud.NextcloudShareProvider
+   :members:
+
+.. autoclass:: robovast.execution.cluster_execution.share_providers.gcs.GcsShareProvider
+   :members:
+
+.. automodule:: robovast.execution.cluster_execution.in_pod_upload
+   :members:
+
+
 Add a MCP Plugin
 ^^^^^^^^^^^^^^^^
 
@@ -918,6 +1003,21 @@ API reference
 
 .. automodule:: robovast.execution.cluster_execution.control_client
    :members: find_controller_pod, port_forward, get_status, send_command
+
+
+.. _cluster-resource-resolution:
+
+Per-Cluster Resource Resolution
+-------------------------------
+
+The resolution logic for per-cluster resources (the ``{context-name: value}``
+mappings documented under *Per-Cluster Resource Limits* in
+:doc:`cluster_execution`) lives in :mod:`robovast.common.cluster_context`:
+
+.. automodule:: robovast.common.cluster_context
+   :members: get_active_kube_context, list_all_contexts, get_config_context_names,
+             require_context_for_multi_cluster, resolve_resource_value, resolve_resources
+   :undoc-members:
 
 
 Querying RoboVAST campaigns

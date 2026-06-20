@@ -171,7 +171,7 @@ class DockerBackend(ExecutionBackend):
             # to fail and a non-zero exit is the signal; the controller reads the
             # per-config results either way. --abort-on-failure changes the
             # script's own behaviour, not ours.
-            result = subprocess.run(cmd)  # nosec - generated, trusted run script
+            result = subprocess.run(cmd, check=False)  # nosec - generated, trusted run script
         if result.returncode != 0:
             logger.warning(
                 "Batch %s run script exited with code %d (some runs failed); "

@@ -102,7 +102,7 @@ def test_failure_rate_aggregates_runs(tmp_path):
             f'<testcase name="t" time="1.0"/></testsuite>')
     res = FailureRate().extract(config_dir)
     assert res.objectives == {"failure_rate": 2 / 3}
-    assert res.measures == {}
+    assert not res.measures
 
 
 def test_failure_rate_missing_dir_is_zero(tmp_path):

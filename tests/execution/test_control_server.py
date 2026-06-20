@@ -4,6 +4,9 @@
 
 """Unit tests for the in-controller control channel (state + RPC)."""
 
+# Imports follow an importorskip guard for optional fastapi dep.
+# pylint: disable=wrong-import-position
+
 import pytest
 
 fastapi_testclient = pytest.importorskip("fastapi.testclient")
@@ -72,7 +75,7 @@ def test_custom_handler_dispatch_and_error():
         raise RuntimeError("kaboom")
 
     result = dispatch(state, Command(name="boom"))
-    assert result.ok is False and "kaboom" in result.error
+    assert result.ok is False and "kaboom" in (result.error or "")
 
 
 def test_healthz():
@@ -106,7 +109,7 @@ def test_upload_to_share_no_args_reuses_injected_creds():
     state = ControllerState()
     state.request_upload()           # manual retrigger with no overrides
     action, overrides = state.wait_for_retrigger()
-    assert action == "retrigger" and overrides == {}
+    assert action == "retrigger" and not overrides
 
 
 def test_stop_abandons_pending_upload_wait():
@@ -114,4 +117,4 @@ def test_stop_abandons_pending_upload_wait():
     state = ControllerState()
     state.request_stop()
     action, overrides = state.wait_for_retrigger()
-    assert action == "abandon" and overrides == {}
+    assert action == "abandon" and not overrides

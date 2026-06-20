@@ -117,7 +117,7 @@ class WebDavShareProvider(BaseShareProvider):
             try:
                 with self._session() as session:
                     resp = session.put(
-                        url, data=reader, headers=headers, timeout=None)
+                        url, data=reader, headers=headers, timeout=(30, None))
             except requests.RequestException as exc:
                 raise click.UsageError(
                     f"Upload to WebDAV failed for '{object_name}': {exc}") from exc

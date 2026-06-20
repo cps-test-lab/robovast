@@ -9,6 +9,9 @@ Covers both modes: a strategy-driven *search* campaign and a strategy-less
 one batch for batch mode).
 """
 
+# Tests exercise store internals and import schema helpers lazily.
+# pylint: disable=import-outside-toplevel,protected-access
+
 import json
 import os
 import sqlite3
@@ -135,7 +138,8 @@ def test_stopping_target_objective_halts_early(tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM batch").fetchone()[0] == 1
     row = conn.execute("SELECT stop_kind, batches FROM campaign").fetchone()
     assert row == ("target_objective", 1)
-    conn.close(); store.close()
+    conn.close()
+    store.close()
     assert report.extra["stop"]["kind"] == "target_objective"
 
 
@@ -147,7 +151,8 @@ def test_no_stopping_runs_full_budget(tmp_path):
     assert report.extra["stop"]["kind"] == "batches"
     conn = sqlite3.connect(store.db_path)
     assert conn.execute("SELECT stop_kind FROM campaign").fetchone()[0] == "batches"
-    conn.close(); store.close()
+    conn.close()
+    store.close()
 
 
 def test_n_reps_override_groups_runs(tmp_path):

@@ -18,11 +18,15 @@
 """CLI for evaluation."""
 
 import sys
+from pathlib import Path
 
 import click
 
+from robovast.common.campaign_index import build_campaign_store
 from robovast.common.cli import handle_cli_exception
 from robovast.common.cli.project_config import ProjectConfig
+from robovast.common.execution import is_campaign_dir
+from robovast.common.store import STORE_FILENAME, CampaignStore
 from robovast.results_processing import is_postprocessing_needed, run_postprocessing
 
 
@@ -42,12 +46,6 @@ def _index_campaigns(results_dir, force=False, feedback=None):
     campaigns write their store live (and are skipped here); batch campaigns are
     indexed post-hoc from their results tree. Idempotent.
     """
-    from pathlib import Path
-
-    from robovast.common.campaign_index import build_campaign_store
-    from robovast.common.execution import is_campaign_dir
-    from robovast.common.store import STORE_FILENAME, CampaignStore
-
     root = Path(results_dir)
     if not root.is_dir():
         return

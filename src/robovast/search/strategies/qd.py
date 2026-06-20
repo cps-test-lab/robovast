@@ -28,7 +28,7 @@ extra to use it.
 
 import logging
 import math
-from typing import Literal, Optional
+from typing import Literal
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict
@@ -91,7 +91,7 @@ class QDStrategy(SearchStrategy):
             dims = [m.bins for m in params.archive.measures.values()]
             self.archive = GridArchive(solution_dim=self.codec.dim, dims=dims, ranges=ranges)
 
-        x0 = (0.5 * np.ones(self.codec.dim))     # centre of the unit cube
+        x0 = 0.5 * np.ones(self.codec.dim)       # centre of the unit cube
         sigma0 = float(params.sigma)             # scalar step (fraction of unit range)
         n_emitters = max(1, params.emitters)
         batch = max(1, math.ceil(cfg.per_batch / n_emitters))

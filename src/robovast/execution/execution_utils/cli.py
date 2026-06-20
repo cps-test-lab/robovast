@@ -258,7 +258,6 @@ def prepare_run(output_dir, config, runs, use_resource_allocation, log_tree, deb
     """
     try:
         import fnmatch
-        import tempfile
 
         from robovast.common.common import load_config
         from robovast.common.config import validate_config
@@ -520,8 +519,8 @@ def _monitor_via_controller(namespace, kube_context, interval, once):
             lines.append("  Budget: " + " | ".join(
                 f"{b['label']} {b.get('current')}/{b.get('limit')}" for b in status["budget"]))
         completed, total = runs.get('completed', 0), runs.get('total', 0)
-        bar, pct = _progress_bar(completed, total)
-        run_line = (f"  Runs (this batch): [{bar}] {pct:5.1f}%  {completed}/{total}")
+        bar_str, pct = _progress_bar(completed, total)
+        run_line = f"  Runs (this batch): [{bar_str}] {pct:5.1f}%  {completed}/{total}"
         if c:
             run_line += f"   Running: {c.get('running', 0)}  Pending: {c.get('pending', 0)}"
         lines.append(run_line)

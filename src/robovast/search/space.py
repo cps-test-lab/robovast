@@ -29,7 +29,7 @@ from typing import Any
 
 import numpy as np
 
-from robovast.common.config import BoolDim, ChoiceDim, FloatDim, IntDim
+from robovast.common.config import BoolDim, ChoiceDim, IntDim
 
 
 class SearchSpaceCodec:

@@ -41,6 +41,7 @@ K8s API from inside the cluster via its ServiceAccount.
 import json
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -405,5 +406,4 @@ def launch_controller(*, config_path, config_name, setup_kwargs, namespace,
 
 
 def _sh_quote(value: str) -> str:
-    import shlex
     return shlex.quote(str(value))

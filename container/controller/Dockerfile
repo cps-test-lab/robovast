@@ -25,6 +25,7 @@ FROM python:3.12-slim
 # pigz: parallel gzip used by the in-controller upload-to-share compression
 # (s3_to_targz.py / gcs_to_targz.py), which now runs here instead of in the
 # removed archiver sidecar. tar ships in the base image.
+# hadolint ignore=DL3008
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates pigz \
  && rm -rf /var/lib/apt/lists/* \
@@ -39,7 +40,9 @@ WORKDIR /opt/robovast
 # the ROS image, not here.
 COPY pyproject.toml poetry.lock README.md ./
 COPY src ./src
-RUN pip install --no-cache-dir ".[qd,optuna]"
+RUN pip install --no-cache-dir poetry==1.8.2 \
+ && poetry config virtualenvs.create false \
+ && poetry install --only main --extras "qd optuna" --no-cache
 
 # Compatibility marker, kept in sync with COMPAT_VERSION in
 # src/robovast/common/execution.py (same contract as the ROS image).

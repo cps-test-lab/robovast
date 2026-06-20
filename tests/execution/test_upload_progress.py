@@ -10,6 +10,8 @@ callback to ``provider.upload_archive``, and the controller callback that
 publishes ``(sent, total, rate)`` into ``Status.extra['upload']``.
 """
 
+# pylint: disable=import-outside-toplevel
+
 import io
 import os
 

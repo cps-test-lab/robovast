@@ -159,7 +159,7 @@ Remove result archives from S3 (after uploading or when no longer needed):
 
 
 Push notifications (ntfy)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Because a run is fire-and-forget, the controller can push `ntfy.sh
 <https://ntfy.sh>`_ notifications so you don't have to poll ``monitor``. Set a
@@ -328,7 +328,7 @@ matching your environment.
 .. _cluster-config-gcp:
 
 GCP (Google Kubernetes Engine)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 **Config name:** ``gcp``
 
@@ -449,18 +449,6 @@ and local integration tests.
   ``vast execution cluster download-cleanup`` to remove S3 buckets after
   processing results via ``kubectl port-forward``.
 * ``emptyDir`` storage means all data is lost if the pod restarts.
-
-
-API Reference
--------------
-
-The resolution logic for per-cluster resources lives in
-:mod:`robovast.common.cluster_context`:
-
-.. automodule:: robovast.common.cluster_context
-   :members: get_active_kube_context, list_all_contexts, get_config_context_names,
-             require_context_for_multi_cluster, resolve_resource_value, resolve_resources
-   :undoc-members:
 
 
 .. _cluster-sharing:
@@ -597,86 +585,3 @@ Grant the ``Storage Object Viewer`` role to the special principal
 Once the bucket is public, ``vast results download`` works without
 any credentials — only ``ROBOVAST_SHARE_TYPE`` and ``ROBOVAST_GCS_BUCKET``
 need to be set.
-
-Adding a new share provider (plugin system)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-Share providers are discovered as **entry-point plugins** under the
-``robovast.share_providers`` group.  To add a new provider:
-
-1. **Create a provider class** that inherits from
-   :class:`~robovast.execution.cluster_execution.share_providers.base.BaseShareProvider`
-   and implements the three abstract methods:
-
-   .. code-block:: python
-
-      import os
-
-      from robovast.execution.cluster_execution.share_providers.base import (
-          BaseShareProvider,
-          UploadProgressReader,
-      )
-
-      class MyShareProvider(BaseShareProvider):
-          SHARE_TYPE = "myshare"
-
-          def required_env_vars(self) -> dict[str, str]:
-              return {
-                  "ROBOVAST_SHARE_URL": "URL of the target folder",
-                  "MY_SHARE_TOKEN":     "API token for the share service",
-              }
-
-          def build_pod_env(self) -> dict[str, str]:
-              return {
-                  "MY_SHARE_URL":   os.environ["ROBOVAST_SHARE_URL"],
-                  "MY_SHARE_TOKEN": os.environ["MY_SHARE_TOKEN"],
-              }
-
-          def upload_archive(self, archive_path, object_name, progress_callback=None):
-              total = os.path.getsize(archive_path)
-              with open(archive_path, "rb") as fh:
-                  body = UploadProgressReader(
-                      fh, total, progress_callback=progress_callback)
-                  ...  # PUT/stream `body` to the share, raising on failure
-
-2. **Implement** :meth:`~robovast.execution.cluster_execution.share_providers.base.BaseShareProvider.upload_archive`.
-   It runs **in-process** in the controller pod (no sidecar, no subprocess), reads
-   credentials from ``os.environ`` (populated by ``build_pod_env()``), and uploads
-   the local ``archive_path``. Wrap the request body in
-   :class:`~robovast.execution.cluster_execution.share_providers.base.UploadProgressReader`
-   so the ``(bytes_sent, total_bytes)`` ``progress_callback`` drives the live
-   upload bar in ``vast exec cluster monitor``.
-
-   Optionally override
-   :meth:`~robovast.execution.cluster_execution.share_providers.base.BaseShareProvider.verify_access`
-   with a cheap authenticated check so a bad configuration fails the pre-flight
-   credential check before any batches run.
-
-3. **Register the provider** in your package's ``pyproject.toml``:
-
-   .. code-block:: toml
-
-      [tool.poetry.plugins."robovast.share_providers"]
-      myshare = "mypackage.myshare:MyShareProvider"
-
-4. Re-install the package (``pip install -e .``) so the entry point is
-   registered.
-
-After that, ``ROBOVAST_SHARE_TYPE=myshare`` in ``.env`` will select your
-provider automatically.
-
-Share provider API reference
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-.. autoclass:: robovast.execution.cluster_execution.share_providers.base.BaseShareProvider
-   :members:
-   :undoc-members:
-
-.. autoclass:: robovast.execution.cluster_execution.share_providers.nextcloud.NextcloudShareProvider
-   :members:
-
-.. autoclass:: robovast.execution.cluster_execution.share_providers.gcs.GcsShareProvider
-   :members:
-
-.. automodule:: robovast.execution.cluster_execution.in_pod_upload
-   :members:

@@ -224,7 +224,7 @@ class RunResultsAnalyzer(QMainWindow):
                 if not isinstance(values, dict):
                     continue
                 try:
-                    def _nb(key):
+                    def _nb(key, values=values):
                         val = values.get(key)
                         return os.path.join(nb_base, val) if val and nb_base else None
                     workloads.append(JupyterNotebookRunner(

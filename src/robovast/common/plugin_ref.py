@@ -28,6 +28,7 @@ This lets users drop project-specific search/extraction logic next to their
 plugins and by results postprocessing.
 """
 
+import hashlib
 import importlib.util
 import logging
 import os
@@ -56,8 +57,11 @@ def _load_from_file(ref: str, base_dir: str) -> Any:
     if not os.path.isfile(path):
         raise FileNotFoundError(f"Plugin file not found for reference '{ref}': {path}")
 
-    # Use a stable, unique module name so repeated loads don't clash.
-    mod_name = "robovast_plugin_" + os.path.splitext(os.path.basename(path))[0] + "_" + str(abs(hash(path)))
+    # Use a stable, unique module name so repeated loads don't clash. A
+    # deterministic digest of the absolute path keeps the name reproducible
+    # across processes (unlike hash(), which is seed-randomized).
+    digest = hashlib.sha1(path.encode("utf-8")).hexdigest()[:12]  # nosec B324 - not security
+    mod_name = "robovast_plugin_" + os.path.splitext(os.path.basename(path))[0] + "_" + digest
     spec = importlib.util.spec_from_file_location(mod_name, path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Could not load plugin module from {path}")

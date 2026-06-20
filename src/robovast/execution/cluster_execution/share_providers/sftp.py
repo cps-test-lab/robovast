@@ -182,8 +182,7 @@ class SftpShareProvider(BaseShareProvider):
 
         # paramiko's put callback is already (bytes_transferred, total_bytes) —
         # the same shape as progress_callback, so forward it directly.
-        cb = (lambda sent, total: progress_callback(sent, total)) \
-            if progress_callback is not None else None
+        cb = progress_callback
 
         ssh, sftp = self._connect()
         try:
