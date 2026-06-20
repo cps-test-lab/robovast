@@ -42,6 +42,13 @@ KUEUE_WORKLOAD_VERSION = "v1beta2"
 KUEUE_WORKLOAD_PLURAL = "workloads"
 KUEUE_RESOURCE_FLAVOR_NAME = "default-flavor"
 
+# Admission webhook configurations installed by the Kueue Helm chart. These are
+# backed by the kueue-controller-manager pods; once those pods are gone the API
+# server cannot reach the webhooks and rejects any mutation of Kueue objects
+# (including finalizer removal). They must be deleted before teardown patches.
+KUEUE_VALIDATING_WEBHOOK_CONFIG = "kueue-validating-webhook-configuration"
+KUEUE_MUTATING_WEBHOOK_CONFIG = "kueue-mutating-webhook-configuration"
+
 # Fallback quotas when cluster resources cannot be queried
 DEFAULT_CPU_QUOTA = 8
 DEFAULT_MEMORY_QUOTA = "32Gi"
@@ -318,6 +325,43 @@ def cleanup_kueue_workloads(
             raise
 
 
+def delete_kueue_webhook_configs(kube_context=None):
+    """Delete Kueue's admission webhook configurations.
+
+    The validating/mutating webhooks are served by the kueue-controller-manager
+    pods. During teardown those pods may already be gone (scaled down, evicted,
+    or removed by an earlier ``helm uninstall``), in which case the API server
+    rejects *any* mutation of Kueue objects with ``no endpoints available for
+    service "kueue-webhook-service"``. That blocks finalizer removal and leaves
+    the ResourceFlavor/ClusterQueue stuck in Terminating. Deleting the webhook
+    configurations first makes the subsequent patches unconditionally succeed.
+
+    Args:
+        kube_context: Kubernetes context to use. ``None`` uses the active context.
+    """
+    try:
+        config.load_kube_config(context=kube_context)
+    except config.ConfigException:
+        pass
+    admission_api = client.AdmissionregistrationV1Api()
+    for name, deleter in [
+        (KUEUE_VALIDATING_WEBHOOK_CONFIG,
+         admission_api.delete_validating_webhook_configuration),
+        (KUEUE_MUTATING_WEBHOOK_CONFIG,
+         admission_api.delete_mutating_webhook_configuration),
+    ]:
+        try:
+            deleter(name=name)
+            logger.info("Deleted Kueue webhook configuration '%s'", name)
+        except client.rest.ApiException as e:
+            if e.status == 404:
+                logger.debug("Webhook configuration '%s' not found, skipping", name)
+            else:
+                logger.warning(
+                    "Could not delete webhook configuration '%s': %s", name, e
+                )
+
+
 def cleanup_kueue_cluster_resources(kube_context=None):
     """Force-remove finalizers from ClusterQueue and ResourceFlavor.
 
@@ -332,6 +376,10 @@ def cleanup_kueue_cluster_resources(kube_context=None):
         config.load_kube_config(context=kube_context)
     except config.ConfigException:
         pass
+    # Remove the admission webhooks first: if the kueue-controller-manager pods
+    # are already gone, the webhook calls fail and block the finalizer patches
+    # below, leaving the resources stuck Terminating.
+    delete_kueue_webhook_configs(kube_context=kube_context)
     custom_api = client.CustomObjectsApi()
     patch_body = {"metadata": {"finalizers": None}}
     for plural, name, label in [
