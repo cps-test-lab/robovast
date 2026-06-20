@@ -216,6 +216,10 @@ If Kueue is not installed, jobs are still created but are *not* queued —
 they start immediately, which can overload the cluster.
 
 
+You can launch several ``vast execution cluster run`` campaigns at once; Kueue
+keeps the cluster busy by admitting their jobs as capacity frees up.
+
+
 Selecting a Cluster Context
 ---------------------------
 
@@ -460,6 +464,13 @@ How it works
    stays alive. Retry with ``vast execution cluster upload-to-share`` (no
    arguments — it reuses the launch-time credentials, or pass corrected ones via
    ``.env``), or give up with ``vast execution cluster stop``.
+
+A retry may also target a **different share** — set a new ``ROBOVAST_SHARE_TYPE``
+(and its variables) in ``.env`` before ``upload-to-share`` to, say, redirect a
+stuck gcs upload to sftp. The retried credentials are pre-flight-checked before
+re-compressing, and the active share type is shown by ``monitor`` while
+uploading. (A missing variable for the new type now fails loudly rather than
+silently reusing the previous destination.)
 
 Configuration via ``.env``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -891,6 +891,24 @@ by label, ``port_forward`` opens the tunnel, and ``get_status`` / ``send_command
 call the endpoints. The CLI ``monitor``, ``stop`` and ``upload-to-share`` are
 thin wrappers over these.
 
+The ``upload-to-share`` command may carry credential overrides, and because they
+populate ``os.environ`` before the provider is loaded they can also **switch the
+share type** (e.g. retry a failed gcs upload to sftp). The active share type is
+reported in ``Status.share_provider`` and shown by ``monitor`` while uploading.
+
+.. warning::
+
+   **Trust model.** The control server is **unauthenticated** — any principal
+   that can ``kubectl port-forward`` to the controller pod (RBAC verb
+   ``pods/portforward`` in the namespace) can issue commands. Because a retrigger
+   can switch the upload destination, such a principal can **redirect a
+   campaign's results to an arbitrary server** (data exfiltration). A principal
+   with ``pods/exec`` could already read the data directly, so this only widens
+   exposure for port-forward-only principals. On shared/multi-tenant clusters,
+   restrict ``pods/portforward`` (and ``pods/exec``) on the robovast namespace
+   accordingly. Adding a bearer-token check on ``POST /command`` is a possible
+   future hardening but is out of scope today.
+
 API reference
 ^^^^^^^^^^^^^
 

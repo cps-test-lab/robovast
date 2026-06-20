@@ -49,3 +49,29 @@ def test_load_provider_applies_overrides(monkeypatch):
         "ROBOVAST_WEBDAV_PASSWORD": "secret",
     })
     assert provider is not None and provider.SHARE_TYPE == "webdav"
+
+
+def test_overrides_switch_provider_type(monkeypatch):
+    # A retrigger can switch the share type: even with another type configured in
+    # the environment, overrides naming a new type load that provider.
+    _clear_share_env(monkeypatch)
+    monkeypatch.setenv("ROBOVAST_SHARE_TYPE", "nextcloud")
+    monkeypatch.setenv("ROBOVAST_SHARE_URL", "https://cloud.example.com/s/tok")
+    provider = in_pod_upload.load_provider_from_env(overrides={
+        "ROBOVAST_SHARE_TYPE": "webdav",
+        "ROBOVAST_WEBDAV_URL": "https://nas.example.com/dav/",
+        "ROBOVAST_WEBDAV_USER": "u",
+        "ROBOVAST_WEBDAV_PASSWORD": "secret",
+    })
+    assert provider.SHARE_TYPE == "webdav"
+
+
+def test_switch_with_missing_var_raises(monkeypatch):
+    # Switching to a provider without its required vars must fail (not silently
+    # fall back) — the constructor raises click.UsageError.
+    import click
+    _clear_share_env(monkeypatch)
+    with pytest.raises(click.UsageError):
+        in_pod_upload.load_provider_from_env(overrides={
+            "ROBOVAST_SHARE_TYPE": "webdav",  # missing URL/USER/PASSWORD
+        })

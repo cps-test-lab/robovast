@@ -398,6 +398,7 @@ def _upload_to_share_with_retrigger(cluster_config, campaign_id: str, provider,
         in_pod_upload  # pylint: disable=import-outside-toplevel
 
     if state is not None:
+        state.update(share_provider=provider.SHARE_TYPE)
         state.set_phase("uploading", stage="upload-to-share")
 
     if in_pod_upload.upload_campaign(cluster_config, campaign_id, provider):
@@ -409,8 +410,8 @@ def _upload_to_share_with_retrigger(cluster_config, campaign_id: str, provider,
     logger.error(
         "upload-to-share failed. The campaign is safe in storage. The controller "
         "will stay alive — retry with 'vast exec cluster upload-to-share' (it "
-        "reuses the injected credentials, or pass corrected ones), or 'vast exec "
-        "cluster stop' to give up.")
+        "reuses the injected credentials, or pass corrected ones — even a "
+        "different share type), or 'vast exec cluster stop' to give up.")
     if state is None:
         return 1  # no control channel → nothing could retrigger
     state.set_phase("uploading", stage="upload-failed")
@@ -422,7 +423,9 @@ def _upload_to_share_with_retrigger(cluster_config, campaign_id: str, provider,
                            "(campaign already published to storage).")
             return 1
         logger.info("Retrying upload-to-share...")
-        state.set_phase("uploading", stage="upload-to-share")
+        # Rebuild the provider (the retrigger may switch type and/or supply
+        # corrected credentials), then re-run the launch-time pre-flight check so
+        # a bad/switched target fails fast instead of after a wasted re-compress.
         try:
             retry_provider = in_pod_upload.load_provider_from_env(overrides)
         except Exception as exc:  # pylint: disable=broad-except
@@ -430,6 +433,15 @@ def _upload_to_share_with_retrigger(cluster_config, campaign_id: str, provider,
             retry_provider = None
         if retry_provider is None:
             logger.error("No usable share provider for retry; waiting again.")
+            state.set_phase("uploading", stage="upload-failed")
+            continue
+        state.update(share_provider=retry_provider.SHARE_TYPE)
+        state.set_phase("uploading", stage="upload-to-share")
+        try:
+            in_pod_upload.verify_share_access(retry_provider)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.error("Share credential check failed on retry (%s): %s",
+                         retry_provider.SHARE_TYPE, exc)
             state.set_phase("uploading", stage="upload-failed")
             continue
         if in_pod_upload.upload_campaign(cluster_config, campaign_id, retry_provider):

@@ -443,20 +443,38 @@ def run(config, runs, log_tree, kube_context):  # pylint: disable=function-redef
         handle_cli_exception(e)
 
 
-def _monitor_via_controller(namespace, kube_context, interval, once):
-    """Monitor a campaign through the controller's control channel.
+def _progress_bar(done, total, width=20):
+    """Return ``(bar, pct)`` — the ``█``/``░`` progress bar used across the monitor."""
+    frac = max(0.0, min(1.0, done / total)) if total and total > 0 else 0.0
+    filled = int(width * frac)
+    return "█" * filled + "░" * (width - filled), 100.0 * frac
 
-    Returns ``True`` if it handled the monitoring (a controller pod was found),
-    ``False`` if there is no controller channel so the caller should fall back to
-    the Kubernetes-only view. The controller's ``phase`` is the authoritative
-    "done" signal — fixing the old bug where the monitor exited in the gap
-    *between* search generations (when live Jobs momentarily drop to zero).
+
+def _monitor_via_controller(namespace, kube_context, interval, once):
+    """Monitor campaigns through their controllers' control channels.
+
+    Handles **multiple concurrent campaigns**: every live controller pod is shown
+    as its own block, each driven by that controller's ``phase`` — the
+    authoritative "done" signal, which fixes the old bug where the monitor exited
+    in the gap *between* search generations (when live Jobs momentarily drop to
+    zero). New campaigns launched while monitoring are picked up on the next tick.
+
+    Returns ``True`` if it handled the monitoring (at least one controller pod was
+    found), ``False`` if there is no controller channel so the caller should fall
+    back to the Kubernetes-only view.
     """
+    import contextlib  # pylint: disable=import-outside-toplevel
+
     from robovast.execution.cluster_execution import control_client
 
-    pod, _phase = control_client.find_controller_pod(namespace, kube_context)
-    if not pod:
+    pods = control_client.find_controller_pods(namespace, kube_context)
+    if not pods:
         return False
+    if not any(ph == "Running" for _n, ph in pods):
+        # Only terminal controller pod(s): the campaign(s) already finished. Report
+        # rather than falling back to the live K8s view (which would just spin).
+        click.echo("Controller finished (no live channel).")
+        return True
 
     cursor_up, clear_line = "\033[A", "\033[2K"
     prev = [0]
@@ -471,11 +489,15 @@ def _monitor_via_controller(namespace, kube_context, interval, once):
             return {}
         return per_run.get(_label_safe_campaign(campaign_id), {})
 
-    def _render(status, note=""):
+    def _campaign_lines(status):
         c = _live_counts(status.get("campaign_id"))
         runs = status.get("runs") or {}
-        lines = [f"Campaign {status.get('campaign_id', '?')}  [{status.get('phase', '?')}"
-                 + (f" / {status['stage']}" if status.get("stage") else "") + "]"]
+        phase_label = status.get("phase", "?")
+        if status.get("stage"):
+            phase_label += f" / {status['stage']}"
+        if status.get("phase") == "uploading" and status.get("share_provider"):
+            phase_label += f" via {status['share_provider']}"
+        lines = [f"Campaign {status.get('campaign_id', '?')}  [{phase_label}]"]
         line2 = f"  Batch {status.get('batch', 0)} (done {status.get('batches_done', 0)})"
         if status.get("best_objective") is not None:
             line2 += f"   best={status['best_objective']:.4g}"
@@ -483,14 +505,18 @@ def _monitor_via_controller(namespace, kube_context, interval, once):
         if status.get("budget"):
             lines.append("  Budget: " + " | ".join(
                 f"{b['label']} {b.get('current')}/{b.get('limit')}" for b in status["budget"]))
-        run_line = f"  Runs (this batch): {runs.get('completed', 0)}/{runs.get('total', 0)}"
+        completed, total = runs.get('completed', 0), runs.get('total', 0)
+        bar, pct = _progress_bar(completed, total)
+        run_line = (f"  Runs (this batch): [{bar}] {pct:5.1f}%  {completed}/{total}")
         if c:
             run_line += f"   Running: {c.get('running', 0)}  Pending: {c.get('pending', 0)}"
         lines.append(run_line)
         if status.get("stop"):
             lines.append(f"  Stop: {status['stop'].get('reason', '')}")
-        if note:
-            lines.append(f"  {note}")
+        return lines
+
+    def _render(blocks):
+        lines = [line for block in blocks for line in block]
         for _ in range(prev[0]):
             sys.stdout.write(cursor_up)
         for line in lines:
@@ -500,39 +526,63 @@ def _monitor_via_controller(namespace, kube_context, interval, once):
         prev[0] = len(lines)
         sys.stdout.flush()
 
-    def _pod_done():
-        _, ph = control_client.find_controller_pod(namespace, kube_context)
-        return ph in ("Succeeded", "Failed")
-
     try:
-        with control_client.port_forward(pod, namespace, kube_context) as base:
+        with contextlib.ExitStack() as stack:
+            channels: dict[str, str] = {}      # pod name -> control-channel base URL
+
+            def _ensure_channels(current):
+                """Open a port-forward for each Running controller not yet connected."""
+                for name, phase in current:
+                    if phase == "Running" and name not in channels:
+                        try:
+                            channels[name] = stack.enter_context(
+                                control_client.port_forward(name, namespace, kube_context))
+                        except Exception:  # pylint: disable=broad-except
+                            logging.debug("Could not port-forward to controller %s", name)
+
+            _ensure_channels(pods)
+            if not channels:
+                return False                   # nothing reachable → K8s fallback
+
             if once:
-                _render(control_client.get_status(base))
+                blocks = []
+                for base in channels.values():
+                    try:
+                        blocks.append(_campaign_lines(control_client.get_status(base)))
+                    except Exception:  # pylint: disable=broad-except
+                        pass
+                _render(blocks)
                 return True
-            click.echo(f"Monitoring controller '{pod}' (press Ctrl+C to stop)...")
+
+            click.echo(f"Monitoring {len(channels)} controller(s) (press Ctrl+C to stop)...")
             sys.stdout.write("\n")
             sys.stdout.flush()
+            done: set[str] = set()             # pod names whose campaign has ended
             while True:
-                try:
-                    status = control_client.get_status(base)
-                except Exception:  # pylint: disable=broad-except
-                    # Server gone: a terminal pod means the campaign is finished.
-                    if _pod_done():
-                        click.echo("\nController finished.")
-                        return True
-                    time.sleep(interval)
-                    continue
-                _render(status)
-                if status.get("phase") in ("finished", "failed"):
-                    click.echo(f"\nCampaign {status['phase']}.")
+                current = control_client.find_controller_pods(namespace, kube_context)
+                phase_by_pod = dict(current)
+                _ensure_channels(current)      # pick up newly-launched campaigns
+                blocks = []
+                for name, base in channels.items():
+                    try:
+                        status = control_client.get_status(base)
+                    except Exception:  # pylint: disable=broad-except
+                        # Channel gone: a terminal pod means that campaign finished.
+                        if phase_by_pod.get(name) in ("Succeeded", "Failed", None):
+                            done.add(name)
+                            blocks.append([f"Campaign (pod {name})  [finished]"])
+                        else:
+                            blocks.append([f"Campaign (pod {name})  [channel unavailable]"])
+                        continue
+                    blocks.append(_campaign_lines(status))
+                    if status.get("phase") in ("finished", "failed"):
+                        done.add(name)
+                _render(blocks)
+                if channels and done >= set(channels):
+                    click.echo("\nAll campaigns finished.")
                     return True
                 time.sleep(interval)
     except Exception:  # pylint: disable=broad-except
-        # Could not establish the channel. If the pod already terminated, report
-        # that; otherwise fall back to the Kubernetes-only view.
-        if _pod_done():
-            click.echo(f"Controller pod {pod} finished (no live channel).")
-            return True
         logging.debug("Controller channel unavailable; falling back to K8s view.")
         return False
 
@@ -851,21 +901,26 @@ def upload_to_share(campaign, kube_context):
     else:
         load_dotenv(override=False)
 
-    # Best-effort credential overrides from the current .env (empty → the
-    # controller reuses the credentials injected at launch).
+    # Credential overrides from the current .env. When ROBOVAST_SHARE_TYPE is set
+    # the user intends to supply (or switch to) a provider, so any missing var is
+    # surfaced rather than swallowed — otherwise a typo would silently fall back
+    # to the launch-time destination. When it is unset, send no overrides (the
+    # documented no-arg path that reuses the launch-time credentials).
     overrides: dict = {}
     share_type = os.environ.get("ROBOVAST_SHARE_TYPE", "").strip()
     if share_type:
         providers = load_share_provider_plugins()
-        if share_type in providers:
-            try:
-                provider = providers[share_type]()
-                overrides = {"ROBOVAST_SHARE_TYPE": share_type, **provider.build_pod_env()}
-                share_url = os.environ.get("ROBOVAST_SHARE_URL", "").strip()
-                if share_url:
-                    overrides["ROBOVAST_SHARE_URL"] = share_url
-            except Exception:  # pylint: disable=broad-except
-                overrides = {}
+        if share_type not in providers:
+            available = ", ".join(sorted(providers)) or "(none installed)"
+            raise click.UsageError(
+                f"Unknown share type '{share_type}'.\nAvailable providers: {available}")
+        # provider() / build_pod_env() raise click.UsageError listing any missing
+        # vars; let it propagate (caught by the outer `except click.UsageError`).
+        provider = providers[share_type]()
+        overrides = {"ROBOVAST_SHARE_TYPE": share_type, **provider.build_pod_env()}
+        share_url = os.environ.get("ROBOVAST_SHARE_URL", "").strip()
+        if share_url:
+            overrides["ROBOVAST_SHARE_URL"] = share_url
 
     try:
         require_context_for_multi_cluster(kube_context)

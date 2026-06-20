@@ -92,6 +92,16 @@ def test_upload_to_share_command_requests_retrigger():
     assert overrides == {"ROBOVAST_WEBDAV_PASSWORD": "new"}
 
 
+def test_status_reports_share_provider():
+    # share_provider tracks the current upload attempt (can change on retrigger).
+    state = ControllerState()
+    state.update(share_provider="sftp")
+    state.set_phase("uploading", stage="upload-to-share")
+    body = _client(state).get("/status").json()
+    assert body["share_provider"] == "sftp"
+    assert body["phase"] == "uploading"
+
+
 def test_upload_to_share_no_args_reuses_injected_creds():
     state = ControllerState()
     state.request_upload()           # manual retrigger with no overrides

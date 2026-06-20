@@ -80,6 +80,43 @@ def find_controller_pod(namespace="default", kube_context=None, campaign=None):
     return pods[-1]                          # newest terminal pod
 
 
+def find_controller_pods(namespace="default", kube_context=None, campaign=None):
+    """Return ``[(pod_name, phase), …]`` for the controller pods, oldest first.
+
+    Unlike :func:`find_controller_pod` (which collapses to a single pod), this
+    returns **every** matching controller so the monitor can show all campaigns
+    running concurrently. Running pods are returned first (the live controllers),
+    followed by terminal pods (newest last); when no controller is Running, the
+    most-recent terminal pod is last so callers can still report a just-finished
+    campaign. With *campaign* given, restricts to that campaign's controller
+    (``campaign-id=<label-safe>``).
+    """
+    from .cluster_execution import _label_safe_campaign  # pylint: disable=import-outside-toplevel
+
+    selector = _CONTROLLER_SELECTOR
+    if campaign is not None:
+        selector += f",campaign-id={_label_safe_campaign(campaign)}"
+    cmd = (["kubectl"] + _ctx_args(kube_context) +
+           ["get", "pods", "-n", namespace, "-l", selector, "--sort-by=.metadata.creationTimestamp",
+            "-o", "jsonpath={range .items[*]}{.metadata.name}{\" \"}{.status.phase}{\"\\n\"}{end}"])
+    try:
+        out = subprocess.run(cmd, check=False, capture_output=True, text=True)  # nosec - controlled args
+    except FileNotFoundError:
+        return []
+    if out.returncode != 0:
+        return []
+
+    pods = []
+    for line in (out.stdout or "").splitlines():
+        line = line.strip()
+        if line:
+            name, _, phase = line.partition(" ")
+            pods.append((name, phase))
+    running = [(n, p) for n, p in pods if p == "Running"]
+    terminal = [(n, p) for n, p in pods if p != "Running"]
+    return running + terminal
+
+
 @contextmanager
 def port_forward(pod, namespace="default", kube_context=None, remote_port=DEFAULT_PORT,
                  timeout=15.0):

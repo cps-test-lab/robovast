@@ -76,7 +76,9 @@ class Status(BaseModel):
     ``phase`` is an **open** string the controller advances through a documented
     vocabulary (``starting`` → ``running`` → ``finishing`` → ``finished`` /
     ``failed``); ``stage`` and ``extra`` exist so future markers (e.g.
-    ``"upload-to-share-done"``) slot in without a schema change.
+    ``"upload-to-share-done"``) slot in without a schema change. ``share_provider``
+    names the share type of the current upload attempt; it can change across
+    retriggers (a failed upload may be retried to a different provider).
     """
     # validate_assignment so the controller can assign plain dicts to the typed
     # sub-fields (``runs``, ``budget``) and they coerce to the models.
@@ -93,6 +95,9 @@ class Status(BaseModel):
     best_objective: Optional[float] = None
     batch_history: list[dict] = Field(default_factory=list)
     stop: Optional[dict] = None          # {kind, reason} once the loop ends
+    # Share type of the current upload attempt; may change across retriggers
+    # (the upload can be retried to a different provider).
+    share_provider: Optional[str] = None
     extra: dict = Field(default_factory=dict)
     updated_at: float = Field(default_factory=time.time)
 
