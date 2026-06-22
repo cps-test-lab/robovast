@@ -483,7 +483,7 @@ def _monitor_via_controller(namespace, kube_context, interval, once):
     pods = control_client.find_controller_pods(namespace, kube_context)
     if not pods:
         return False
-    if not any(ph == "Running" for _n, ph in pods):
+    if not any(ph == "Running" for _n, ph, _c in pods):
         # Only terminal controller pod(s): the campaign(s) already finished. Report
         # rather than falling back to the live K8s view (which would just spin).
         click.echo("Controller finished (no live channel).")
@@ -553,7 +553,7 @@ def _monitor_via_controller(namespace, kube_context, interval, once):
 
             def _ensure_channels(current):
                 """Open a port-forward for each Running controller not yet connected."""
-                for name, phase in current:
+                for name, phase, _campaign in current:
                     if phase == "Running" and name not in channels:
                         try:
                             channels[name] = stack.enter_context(
@@ -581,19 +581,23 @@ def _monitor_via_controller(namespace, kube_context, interval, once):
             done: set[str] = set()             # pod names whose campaign has ended
             while True:
                 current = control_client.find_controller_pods(namespace, kube_context)
-                phase_by_pod = dict(current)
+                phase_by_pod = {n: p for n, p, _c in current}
+                campaign_by_pod = {n: c for n, p, c in current}
                 _ensure_channels(current)      # pick up newly-launched campaigns
                 blocks = []
                 for name, base in channels.items():
                     try:
                         status = control_client.get_status(base)
                     except Exception:  # pylint: disable=broad-except
-                        # Channel gone: a terminal pod means that campaign finished.
+                        # Channel gone: identify the campaign by its pod label so we
+                        # show the campaign name rather than the pod name; fall back
+                        # to the pod name only if the label is unavailable.
+                        label = campaign_by_pod.get(name) or f"pod {name}"
                         if phase_by_pod.get(name) in ("Succeeded", "Failed", None):
                             done.add(name)
-                            blocks.append([f"Campaign (pod {name})  [finished]"])
+                            blocks.append([f"Campaign {label}  [finished]"])
                         else:
-                            blocks.append([f"Campaign (pod {name})  [channel unavailable]"])
+                            blocks.append([f"Campaign {label}  [channel unavailable]"])
                         continue
                     blocks.append(_campaign_lines(status))
                     if status.get("phase") in ("finished", "failed"):

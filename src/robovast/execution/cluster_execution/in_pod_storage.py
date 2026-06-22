@@ -104,6 +104,23 @@ class _S3StorageClient(StorageClient):
             ),
         )
 
+        # botocore adds ``Expect: 100-continue`` to uploads, which makes MinIO
+        # emit an interim ``HTTP/1.1 100 Continue`` response that urllib3
+        # mis-parses ("Failed to parse headers ... MissingHeaderBodySeparatorDefect,
+        # unparsed data: 'HTTP/1...'"). Strip the header so each request gets a
+        # single response. Registered on ``before-send`` (after signing) so the
+        # header is removed regardless of when botocore added it.
+        self._s3.meta.events.register("before-send.s3.*", self._strip_expect_header)
+
+    @staticmethod
+    def _strip_expect_header(request, **kwargs):
+        """Drop the ``Expect: 100-continue`` header from an outgoing S3 request.
+
+        Returning ``None`` lets botocore send the request normally.
+        """
+        request.headers.pop("Expect", None)
+        return None
+
     def _ensure_bucket(self, bucket: str):
         from botocore.exceptions import ClientError  # pylint: disable=import-outside-toplevel
         try:

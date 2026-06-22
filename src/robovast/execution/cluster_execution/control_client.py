@@ -81,7 +81,7 @@ def find_controller_pod(namespace="default", kube_context=None, campaign=None):
 
 
 def find_controller_pods(namespace="default", kube_context=None, campaign=None):
-    """Return ``[(pod_name, phase), …]`` for the controller pods, oldest first.
+    """Return ``[(pod_name, phase, campaign_id), …]`` for the controller pods, oldest first.
 
     Unlike :func:`find_controller_pod` (which collapses to a single pod), this
     returns **every** matching controller so the monitor can show all campaigns
@@ -90,6 +90,10 @@ def find_controller_pods(namespace="default", kube_context=None, campaign=None):
     most-recent terminal pod is last so callers can still report a just-finished
     campaign. With *campaign* given, restricts to that campaign's controller
     (``campaign-id=<label-safe>``).
+
+    ``campaign_id`` is taken from the pod's ``campaign-id`` label so callers can
+    name the campaign even when its control channel is no longer reachable; it is
+    an empty string if the label is absent.
     """
     from .cluster_execution import _label_safe_campaign  # pylint: disable=import-outside-toplevel
 
@@ -98,7 +102,8 @@ def find_controller_pods(namespace="default", kube_context=None, campaign=None):
         selector += f",campaign-id={_label_safe_campaign(campaign)}"
     cmd = (["kubectl"] + _ctx_args(kube_context) +
            ["get", "pods", "-n", namespace, "-l", selector, "--sort-by=.metadata.creationTimestamp",
-            "-o", "jsonpath={range .items[*]}{.metadata.name}{\" \"}{.status.phase}{\"\\n\"}{end}"])
+            "-o", "jsonpath={range .items[*]}{.metadata.name}{\" \"}{.status.phase}{\" \"}"
+            "{.metadata.labels.campaign-id}{\"\\n\"}{end}"])
     try:
         out = subprocess.run(cmd, check=False, capture_output=True, text=True)  # nosec - controlled args
     except FileNotFoundError:
@@ -110,10 +115,13 @@ def find_controller_pods(namespace="default", kube_context=None, campaign=None):
     for line in (out.stdout or "").splitlines():
         line = line.strip()
         if line:
-            name, _, phase = line.partition(" ")
-            pods.append((name, phase))
-    running = [(n, p) for n, p in pods if p == "Running"]
-    terminal = [(n, p) for n, p in pods if p != "Running"]
+            parts = line.split(" ")
+            name = parts[0]
+            phase = parts[1] if len(parts) > 1 else ""
+            campaign_id = parts[2] if len(parts) > 2 else ""
+            pods.append((name, phase, campaign_id))
+    running = [t for t in pods if t[1] == "Running"]
+    terminal = [t for t in pods if t[1] != "Running"]
     return running + terminal
 
 

@@ -178,7 +178,10 @@ def _get_cluster_info(context=None):
                     config_data = yaml.safe_load(f) or {}
                 cluster_info["cluster_config"] = config_data
         except Exception as exc:  # pragma: no cover - best-effort, non-fatal
-            logger.warning("Failed to load cluster config from flag file: %s", exc)
+            # Expected in contexts without an initialized project / flag file
+            # (e.g. the in-cluster controller pod), where this info is simply
+            # unavailable. Keep it at debug to avoid noise; it is non-fatal.
+            logger.debug("Cluster config flag file unavailable: %s", exc)
     except Exception:  # pragma: no cover - import may fail in non-cluster contexts
         # If cluster modules are not available, silently skip cluster_config
         pass

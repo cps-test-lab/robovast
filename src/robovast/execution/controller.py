@@ -571,7 +571,9 @@ def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_fil
             matched = [c for c in campaign_data["configs"]
                        if fnmatch.fnmatch(c["name"], config_filter)]
             if not matched:
-                raise ValueError(f"No configs matched pattern '{config_filter}'")
+                available = "\n".join(f"  - {c['name']}" for c in campaign_data["configs"])
+                raise ValueError(
+                    f"No configs matched pattern '{config_filter}'.\nAvailable configs:\n{available}")
             campaign_data["configs"] = matched
 
         be = backend or DockerBackend()
