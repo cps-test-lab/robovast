@@ -380,6 +380,7 @@ def _build_packed_compose_yaml(
     scenario_execution_params='',
     scenario_file_name='scenario.osc',
     job_prefix='',
+    simulation='',
 ):
     """Build docker-compose YAML for one job.
 
@@ -466,6 +467,8 @@ def _build_packed_compose_yaml(
     lines.append("      - AVAILABLE_CPUS=${AVAILABLE_CPUS}")
     lines.append("      - AVAILABLE_MEM=${AVAILABLE_MEM}")
     lines.append(f"      - SCENARIO_FILE={scenario_file_name}")
+    if simulation:
+        lines.append(f"      - SIMULATION={simulation}")
     lines.extend(packed_env_lines)
     if scenario_execution_params:
         lines.append(f"      - SCENARIO_EXECUTION_PARAMETERS={scenario_execution_params}")
@@ -714,6 +717,7 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
     script += generate_execution_yaml_script(runs, execution_params=campaign_data.get("execution", {}))
 
     scenario_file_name = os.path.basename(campaign_data.get("scenario_file", "scenario.osc"))
+    simulation = campaign_data.get("execution", {}).get("simulation", "")
     _static_params = " ".join(p for p, enabled in [("-t", log_tree), ("-d", debug)] if enabled)
     scenario_execution_params = _static_params if _static_params else "${SCENARIO_EXECUTION_PARAMS}"
 
@@ -792,6 +796,7 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
             scenario_execution_params=scenario_execution_params,
             scenario_file_name=scenario_file_name,
             job_prefix=job_prefix,
+            simulation=simulation,
         )
         # Create this job's artifact links right after it finishes (injected
         # after the compose `down`, before the step's summary/exit), so a

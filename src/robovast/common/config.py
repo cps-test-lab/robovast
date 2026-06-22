@@ -162,6 +162,9 @@ class ExecutionConfig(BaseModel):
     scenario_file: Optional[str] = None
     run_files: Optional[list[str]] = None
     timeout: Optional[int] = None  # Maximum execution time in seconds per run
+    # Simulation backend passed to scenario_execution as ``--simulation <module:Class>``.
+    # Required by scenarios using wait_for_simulation_end() (e.g. MagBotSim).
+    simulation: Optional[str] = None
     # Job packing. ``runs_per_job`` is how many runs (a run = one configuration
     # at one run-number) are packed into a single job:
     #   1 (default): each job runs exactly one run. Right for simulators where

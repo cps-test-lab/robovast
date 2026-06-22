@@ -129,23 +129,30 @@ else
     if [ "${OUTPUT_RESULT_PER_SCENARIO}" = "true" ]; then
         PER_SCENARIO_PARAM="--output-result-per-scenario"
     fi
+    # Optional simulation backend (execution.simulation in the .vast). Required by
+    # scenarios using wait_for_simulation_end(); passed as --simulation <module:Class>.
+    SIMULATION="${SIMULATION:-}"
+    SIMULATION_PARAM=""
+    if [ -n "${SIMULATION}" ]; then
+        SIMULATION_PARAM="--simulation ${SIMULATION}"
+    fi
     if command -v ros2 > /dev/null 2>&1; then
         if [ -e "${SCENARIO_PARAMETER_FILE}" ]; then
             log "Starting scenario execution (ROS2) with config file..."
-            log "Commandline: ros2 run scenario_execution_ros scenario_execution_ros -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}"
-            exec ros2 run scenario_execution_ros scenario_execution_ros -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
+            log "Commandline: ros2 run scenario_execution_ros scenario_execution_ros -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SIMULATION_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}"
+            exec ros2 run scenario_execution_ros scenario_execution_ros -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SIMULATION_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
         else
             log "Starting scenario execution (ROS2) without config file..."
-            exec ros2 run scenario_execution_ros scenario_execution_ros -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
+            exec ros2 run scenario_execution_ros scenario_execution_ros -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} ${SIMULATION_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
         fi
     else
         if [ -e "${SCENARIO_PARAMETER_FILE}" ]; then
             log "Starting scenario execution with config file..."
-            log "Commandline: scenario_execution -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}"
-            exec scenario_execution -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
+            log "Commandline: scenario_execution -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SIMULATION_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}"
+            exec scenario_execution -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SIMULATION_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
         else
             log "Starting scenario execution without config file..."
-            exec scenario_execution -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
+            exec scenario_execution -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} ${SIMULATION_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
         fi
     fi
 fi

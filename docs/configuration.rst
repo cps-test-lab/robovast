@@ -250,6 +250,20 @@ Path to the OpenSCENARIO 2 scenario file (``.osc``), relative to the ``.vast`` c
    execution:
      scenario_file: scenario.osc
 
+simulation
+^^^^^^^^^^
+
+**Type:** String (``module:Class``)
+
+**Required:** No
+
+Simulation backend passed to scenario-execution as ``--simulation <module:Class>``. Required by scenarios that use ``wait_for_simulation_end()`` (e.g. MagBotSim); omit it for ROS/Gazebo scenarios that bring their own simulation.
+
+.. code-block:: yaml
+
+   execution:
+     simulation: scenario_execution_magbotsim.push_box_simulation:PushBoxSimulation
+
 run_as_user
 ^^^^^^^^^^^
 

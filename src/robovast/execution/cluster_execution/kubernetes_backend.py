@@ -313,6 +313,11 @@ class BatchJobRunner:
 
             containers[0]['env'].append({'name': 'SCENARIO_FILE', 'value': scenario_file_name})
 
+            # Simulation backend (execution.simulation) -> --simulation in entrypoint.sh
+            simulation = self.campaign_data.get('execution', {}).get('simulation')
+            if simulation:
+                containers[0]['env'].append({'name': 'SIMULATION', 'value': str(simulation)})
+
             for k, v in extra_main_env:
                 containers[0]['env'].append({'name': k, 'value': v})
 
