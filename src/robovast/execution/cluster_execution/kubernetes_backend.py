@@ -445,7 +445,16 @@ class BatchJobRunner:
     def get_remaining_jobs(self, job_names):
         running_jobs = []
         for job_name in job_names:
-            job_status = self.k8s_batch_client.read_namespaced_job_status(name=job_name, namespace=self.namespace)
+            try:
+                job_status = self.k8s_batch_client.read_namespaced_job_status(name=job_name, namespace=self.namespace)
+            except client.exceptions.ApiException as exc:
+                if exc.status == 404:
+                    # Job no longer exists: it finished and was garbage-collected
+                    # (e.g. an external job-TTL policy) or was cleaned up. Either
+                    # way it is no longer running, so just skip it.
+                    logger.debug("Job %s not found (404); treating as finished.", job_name)
+                    continue
+                raise
 
             # Check if job is still active/running
             if job_status.status.active is not None and job_status.status.active >= 1:
