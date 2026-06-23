@@ -145,8 +145,9 @@ def read_sysinfo(run_dir: Path) -> dict[str, Any]:
     Raises:
         FileNotFoundError: If sysinfo.yaml does not exist.
     """
-    path = run_dir / "sysinfo.yaml"
-    if not path.exists():
+    candidates = [run_dir / "sysinfo.yaml", run_dir / "logs" / "sysinfo.yaml"]
+    path = next((p for p in candidates if p.exists()), None)
+    if path is None:
         raise FileNotFoundError(f"sysinfo.yaml not found in {run_dir}")
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
