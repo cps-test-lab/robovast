@@ -44,7 +44,7 @@ EOF
 }
 
 # Provenance mount (optional)
-PROVENANCE_MOUNT=""
+PROVENANCE_MOUNT=()
 COMPAT_VERSION=""
 
 # Parse command-line arguments
@@ -68,7 +68,7 @@ while [ $# -gt 0 ]; do
                 exit 1
             fi
             PROVENANCE_DIR="$(cd "$(dirname "$2")" && pwd)"
-            PROVENANCE_MOUNT="-v $PROVENANCE_DIR:/provenance"
+            PROVENANCE_MOUNT=(-v "$PROVENANCE_DIR:/provenance")
             shift 2
             ;;
         *)
@@ -92,12 +92,12 @@ ARGS=("$@")
 LAST_ARG="${ARGS[${#ARGS[@]}-1]}"
 
 # Check if the last argument is a directory path
-INPUT_MOUNT=""
+INPUT_MOUNT=()
 CONTAINER_INPUT_PATH=""
 if [ -d "$LAST_ARG" ]; then
     INPUT_DIR="$(cd "$LAST_ARG" && pwd)"
     CONTAINER_INPUT_PATH="/input"
-    INPUT_MOUNT="-v $INPUT_DIR:$CONTAINER_INPUT_PATH"
+    INPUT_MOUNT=(-v "$INPUT_DIR:$CONTAINER_INPUT_PATH")
     echo "Input directory: $INPUT_DIR"
 
     # Replace the last argument with the container path
@@ -130,8 +130,8 @@ docker run \
     --user $(id -u):$(id -g) \
     -e PYTHONUNBUFFERED=1 \
     -v "$SCRIPT_DIR:/scripts:ro" \
-    $INPUT_MOUNT \
-    $PROVENANCE_MOUNT \
+    "${INPUT_MOUNT[@]}" \
+    "${PROVENANCE_MOUNT[@]}" \
     -w /scripts \
     "$DOCKER_IMAGE" \
     /scripts/ros2_exec.sh "${ARGS[@]}"
