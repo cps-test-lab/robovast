@@ -200,8 +200,9 @@ handle_sigint() {
         if [ -n "$COMPOSE_PID" ]; then
             kill -TERM "$COMPOSE_PID" 2>/dev/null || true
         fi
-        # Keep streaming logs while containers shut down
-        if [ -n "$CURRENT_COMPOSE_FILE" ]; then
+        # Keep streaming logs while containers shut down (skip if a live log
+        # follower is already running, e.g. the secondary-container path).
+        if [ -z "$LOG_PID" ] && [ -n "$CURRENT_COMPOSE_FILE" ]; then
             docker compose -f "$CURRENT_COMPOSE_FILE" logs --follow 2>/dev/null &
             LOG_PID=$!
         fi
@@ -607,9 +608,51 @@ def _emit_compose_step(compose_file, compose_yaml, idx, total, label, has_second
         '    exit 130\n'
         'fi\n'
     )
+    # Secondary-container path: start the stack detached and block on the MAIN
+    # ``robovast`` container only (via ``docker wait``) instead of aborting the
+    # whole stack when *any* container exits. A secondary's watchdog can fire
+    # during scenario_execution's teardown — e.g. after a failed scenario, while
+    # the main container is busy stopping processes and deleting entities — and
+    # exit first. With ``--abort-on-container-exit`` that secondary exit would
+    # SIGTERM the main container before scenario_execution writes ``test.xml``,
+    # so a failed run produces no result at all. Waiting on ``robovast`` lets it
+    # finish teardown and emit a (failed) ``test.xml``; the secondaries are then
+    # stopped by the ``down`` that follows this step. Logs are streamed by a
+    # background follower since detached ``up -d`` is silent.
+    compose_secondary = (
+        f'( trap \'\' SIGINT; export COMPOSE_MENU=false;'
+        f' docker compose -f "{compose_file}" up -d )\n'
+        'UP_CODE=$?\n'
+        'if [ "$UP_CODE" -ne 0 ]; then\n'
+        '    EXIT_CODE=$UP_CODE\n'
+        'else\n'
+        f'    docker compose -f "{compose_file}" logs --follow 2>/dev/null &\n'
+        '    LOG_PID=$!\n'
+        '    WAIT_OUT="$(mktemp)"\n'
+        '    ( trap \'\' SIGINT; docker wait robovast > "$WAIT_OUT" 2>/dev/null ) &\n'
+        '    COMPOSE_PID=$!\n'
+        '    wait "$COMPOSE_PID" 2>/dev/null\n'
+        '    WAIT_CODE=$?\n'
+        '    while [ "$WAIT_CODE" -ge 128 ] && kill -0 "$COMPOSE_PID" 2>/dev/null; do\n'
+        '        wait "$COMPOSE_PID" 2>/dev/null\n'
+        '        WAIT_CODE=$?\n'
+        '    done\n'
+        '    COMPOSE_PID=\n'
+        '    if [ -n "$LOG_PID" ]; then\n'
+        '        kill "$LOG_PID" 2>/dev/null || true\n'
+        '        LOG_PID=\n'
+        '    fi\n'
+        '    EXIT_CODE="$(cat "$WAIT_OUT" 2>/dev/null)"\n'
+        '    rm -f "$WAIT_OUT"\n'
+        '    [ -z "$EXIT_CODE" ] && EXIT_CODE=$WAIT_CODE\n'
+        '    if [ "$SIGINT_COUNT" -gt 0 ]; then\n'
+        '        cleanup\n'
+        '        exit 130\n'
+        '    fi\n'
+        'fi\n'
+    )
     if has_secondaries:
-        s += compose_bg
-        s += compose_wait
+        s += compose_secondary
     else:
         s += f'if [ "$START_ONLY" = true ]; then\n'
         s += f'    docker compose -f "{compose_file}" run --rm --entrypoint /bin/bash robovast\n'
