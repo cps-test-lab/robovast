@@ -28,6 +28,34 @@ log() {
 
 log "Running as UID: $(id -u), GID: $(id -g)..."
 
+# Fail fast if any required tool is missing, rather than wasting a full run and
+# only discovering the gap in a post-run step (e.g. 'mc' during the S3 upload).
+check_required_tools() {
+    local missing=""
+    for _tool in "$@"; do
+        command -v "${_tool}" > /dev/null 2>&1 || missing="${missing} ${_tool}"
+    done
+    if [ -n "${missing}" ]; then
+        log "ERROR: Required tool(s) not found in container image:${missing}"
+        log "ERROR: Rebuild the image with the missing tool(s) installed before running."
+        exit 1
+    fi
+}
+
+# Base tools every run needs, plus mode-specific tools injected via the init block
+# (EXTRA_REQUIRED_TOOLS), plus X11 tools only when the virtual display is enabled.
+REQUIRED_TOOLS="python3 start-stop-daemon stdbuf tee find ${EXTRA_REQUIRED_TOOLS:-}"
+if [ "${ENABLE_X11}" != "false" ]; then
+    REQUIRED_TOOLS="${REQUIRED_TOOLS} Xvfb"
+fi
+check_required_tools ${REQUIRED_TOOLS}
+
+# A scenario executor must be present: ROS2's runner or the plain CLI.
+if ! command -v ros2 > /dev/null 2>&1 && ! command -v scenario_execution > /dev/null 2>&1; then
+    log "ERROR: No scenario executor found (need 'ros2' or 'scenario_execution'). Rebuild the image."
+    exit 1
+fi
+
 # Collect system information (non-fatal)
 log "Collecting system information..."
 INSTANCE_TYPE=""

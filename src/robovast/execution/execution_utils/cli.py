@@ -33,6 +33,9 @@ from robovast.common.cli import get_project_config, handle_cli_exception
 from robovast.common.cluster_context import (get_active_kube_context,
                                              get_config_context_names,
                                              require_context_for_multi_cluster)
+from robovast.common.common import load_config
+from robovast.common.config import validate_config
+from robovast.execution.controller import build_campaign_data
 from robovast.execution.cluster_execution.cluster_execution import (
     _label_safe_campaign, cleanup_cluster_campaign,
     get_cluster_job_counts_per_campaign)
@@ -385,6 +388,20 @@ def run(config, runs, log_tree, kube_context):  # pylint: disable=function-redef
 
     # Get project configuration
     project_config = get_project_config()
+
+    # Validate the --config filter on the host *before* launching the controller.
+    # The controller runs fire-and-forget in-cluster, so without this check a typo
+    # only surfaces in the controller pod log; here it fails fast with the list of
+    # available configs. (Search campaigns ignore --config, so skip the check.)
+    if config:
+        campaign_config = validate_config(load_config(project_config.config_path))
+        if campaign_config.search is None:
+            try:
+                with tempfile.TemporaryDirectory(prefix="robovast_cfgcheck_") as _tmp:
+                    build_campaign_data(project_config.config_path, _tmp, config)
+            except ValueError as e:
+                click.echo(f"✗ Error: {e}", err=True)
+                sys.exit(1)
 
     # Check Kubernetes access (namespace-scoped so RBAC namespace-only users succeed)
     k8s_client = get_kubernetes_client(context=kube_context)

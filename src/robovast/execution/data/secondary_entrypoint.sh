@@ -22,6 +22,19 @@ log() {
 log "Secondary container starting ($(hostname))..."
 log "Running as UID: $(id -u), GID: $(id -g)..."
 
+# Fail fast if a required tool is missing instead of dying mid-startup.
+for _tool in python3 stdbuf tee; do
+    command -v "${_tool}" > /dev/null 2>&1 || {
+        log "ERROR: Required tool '${_tool}' not found in container image. Rebuild the image."
+        exit 1
+    }
+done
+# The scenario-execution server runner: ROS2's or the plain CLI.
+if ! command -v ros2 > /dev/null 2>&1 && ! command -v scenario_execution_server > /dev/null 2>&1; then
+    log "ERROR: No scenario-execution server found (need 'ros2' or 'scenario_execution_server'). Rebuild the image."
+    exit 1
+fi
+
 if [ -n "$ROS_DISTRO" ] && [ -f "/opt/ros/$ROS_DISTRO/setup.bash" ]; then
     log "Setting up ROS2 environment..."
     source "/opt/ros/$ROS_DISTRO/setup.bash"

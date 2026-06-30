@@ -304,9 +304,12 @@ def get_execution_env_variables(run_num, config_name, additional_env=None):
     return env_vars
 
 
-_LOCAL_INIT_BLOCK = "command -v fixuid > /dev/null 2>&1 || { echo 'ERROR: fixuid not found in container image. Please rebuild the image.' >&2; exit 1; }; eval $(fixuid -q)"
+_LOCAL_INIT_BLOCK = "command -v fixuid > /dev/null 2>&1 || { echo 'ERROR: fixuid not found in container image. Please rebuild the image.' >&2; exit 1; }; eval $(fixuid -q)\nEXTRA_REQUIRED_TOOLS=\"fixuid\""
 
-_CLUSTER_INIT_BLOCK = ""
+# Cluster runs mirror output to S3 in a post-run step (and pull config via an
+# mc-based init container), so 'mc' must be present. Declared here so the
+# entrypoint's tool check fails fast instead of crashing after a full run.
+_CLUSTER_INIT_BLOCK = "EXTRA_REQUIRED_TOOLS=\"mc\""
 
 _LOCAL_POST_RUN_BLOCK = """\
     # Build built-in cleanup script (stop rosbag and resource monitor gracefully)

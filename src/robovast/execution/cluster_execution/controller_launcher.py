@@ -394,14 +394,15 @@ def launch_controller(*, config_path, config_name, setup_kwargs, namespace,
     click_echo(f"✓ Controller started in-cluster (campaign id: {campaign_id}).")
     click_echo(f"  Controller pod: {pod_name}")
     click_echo("")
+    ctx_suffix = f" -x {kube_context}" if kube_context else ""
     click_echo("The campaign now runs in the cluster. Track and retrieve it with:")
-    click_echo("  vast exec cluster monitor            # live loop state (batches, runs, budget)")
-    click_echo("  vast exec cluster stop               # graceful stop after the current batch")
-    click_echo("  vast results download")
+    click_echo(f"  vast exec cluster monitor{ctx_suffix}            # live loop state (batches, runs, budget)")
+    click_echo(f"  vast exec cluster stop{ctx_suffix}               # graceful stop after the current batch")
+    click_echo(f"  vast results download -i {campaign_id}")
     click_echo("")
     click_echo("The controller uploads the finished campaign to the configured share "
                "automatically. If the upload fails it stays alive; retry with:")
-    click_echo("  vast exec cluster upload-to-share    # retry a failed upload")
+    click_echo(f"  vast exec cluster upload-to-share{ctx_suffix}    # retry a failed upload")
     return campaign_id
 
 

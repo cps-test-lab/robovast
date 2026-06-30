@@ -549,32 +549,58 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
         _finalize(be, os.path.join(results_dir, campaign_id))
 
 
+def filter_configs_by_name(configs, config_filter):
+    """Select campaign configs whose expanded name matches ``config_filter``.
+
+    Matching is a glob against the expanded variation name (e.g.
+    ``config1-1-1-1``), so a bare config-block name like ``config1`` matches
+    nothing — use ``config1*`` to select the whole block.
+
+    Raises ``ValueError`` listing the available config names when nothing
+    matches, so a typo is reported with actionable choices.
+    """
+    import fnmatch
+
+    matched = [c for c in configs if fnmatch.fnmatch(c["name"], config_filter)]
+    if not matched:
+        available = "\n".join(f"  - {c['name']}" for c in configs)
+        raise ValueError(
+            f"No configs matched pattern '{config_filter}'.\n"
+            f"Available configs:\n{available}")
+    return matched
+
+
+def build_campaign_data(vast_file, output_dir, config_filter=None):
+    """Generate the batch campaign data and apply the optional ``--config`` filter.
+
+    Shared by :func:`run_batch_campaign` and the host-side ``cluster run``
+    pre-flight check so both select configs through exactly the same code path.
+    Raises ``ValueError`` if the vast-file yields no configs or the filter matches
+    none (the message lists the available config block names).
+    """
+    from robovast.common.config_generation import generate_scenario_variations
+
+    campaign_data, transient_files = generate_scenario_variations(
+        variation_file=vast_file, progress_update_callback=None, output_dir=output_dir)
+    if not campaign_data["configs"]:
+        raise ValueError("No configs found in vast-file")
+    if config_filter:
+        campaign_data["configs"] = filter_configs_by_name(
+            campaign_data["configs"], config_filter)
+    return campaign_data, transient_files
+
+
 def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_filter=None,
                        backend: ExecutionBackend | None = None,
                        options: RunOptions | None = None, campaign_id=None, state=None,
                        notifier=None):
     """Build and run a batch campaign (no ``search:`` block)."""
-    import fnmatch
-
-    from robovast.common.config_generation import generate_scenario_variations
-
     vast_dir = os.path.dirname(os.path.abspath(vast_file))
     runs = runs if runs is not None else campaign_config.execution.runs
     campaign_id = campaign_id or campaign_id_for(campaign_config)
 
     with tempfile.TemporaryDirectory(prefix="robovast_batch_") as tmp:
-        campaign_data, _ = generate_scenario_variations(
-            variation_file=vast_file, progress_update_callback=None, output_dir=tmp)
-        if not campaign_data["configs"]:
-            raise ValueError("No configs found in vast-file")
-        if config_filter:
-            matched = [c for c in campaign_data["configs"]
-                       if fnmatch.fnmatch(c["name"], config_filter)]
-            if not matched:
-                available = "\n".join(f"  - {c['name']}" for c in campaign_data["configs"])
-                raise ValueError(
-                    f"No configs matched pattern '{config_filter}'.\nAvailable configs:\n{available}")
-            campaign_data["configs"] = matched
+        campaign_data, _ = build_campaign_data(vast_file, tmp, config_filter)
 
         be = backend or DockerBackend()
         store = CampaignStore(os.path.join(results_dir, campaign_id, STORE_FILENAME))
