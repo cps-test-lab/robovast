@@ -122,8 +122,6 @@ def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_
         or to a custom directory specified with ``--output``.
     """
     try:
-        from robovast.common.common import load_config
-        from robovast.common.config import validate_config
         from robovast.execution.backends import RunOptions
         from robovast.execution.controller import (run_batch_campaign,
                                                    run_search_campaign)
@@ -262,8 +260,6 @@ def prepare_run(output_dir, config, runs, use_resource_allocation, log_tree, deb
     try:
         import fnmatch
 
-        from robovast.common.common import load_config
-        from robovast.common.config import validate_config
         from robovast.common.config_generation import generate_scenario_variations
         from robovast.execution.backends import RunOptions, stage_run_script
 
@@ -1363,10 +1359,6 @@ def prepare_run(output, config, runs, cluster_config, options, log_tree, kube_co
         # builder the controller submits with. This command is offline — only
         # manifest generation, no Kubernetes API calls.
         import fnmatch  # pylint: disable=import-outside-toplevel
-        from robovast.common.common import \
-            load_config as _load_config  # pylint: disable=import-outside-toplevel
-        from robovast.common.config import \
-            validate_config as _validate_config  # pylint: disable=import-outside-toplevel
         from robovast.common.config_generation import \
             generate_scenario_variations  # pylint: disable=import-outside-toplevel
         from robovast.common.execution import \
@@ -1376,7 +1368,7 @@ def prepare_run(output, config, runs, cluster_config, options, log_tree, kube_co
         from robovast.execution.controller import \
             campaign_id_for  # pylint: disable=import-outside-toplevel
 
-        campaign_config = _validate_config(_load_config(config_path))
+        campaign_config = validate_config(load_config(config_path))
         if campaign_config.search is not None:
             raise click.ClickException(
                 "'cluster prepare-run' is a batch-only debugging aid, but the given "

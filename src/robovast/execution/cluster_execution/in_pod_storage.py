@@ -119,7 +119,6 @@ class _S3StorageClient(StorageClient):
         Returning ``None`` lets botocore send the request normally.
         """
         request.headers.pop("Expect", None)
-        return None
 
     def _ensure_bucket(self, bucket: str):
         from botocore.exceptions import ClientError  # pylint: disable=import-outside-toplevel
