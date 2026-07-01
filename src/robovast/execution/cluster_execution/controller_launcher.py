@@ -407,7 +407,7 @@ def launch_controller(*, config_path, config_name, setup_kwargs, namespace,
     campaign_config = validate_config(load_config(config_path))
     campaign_id = campaign_id_for(campaign_config)
     campaign_label = _label_safe_campaign(campaign_id)
-    pod_name = f"robovast-controller-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    pod_name = f"ctrl-{campaign_label}"
     config_dir = os.path.dirname(os.path.abspath(config_path))
     vast_in_pod = f"{_POD_CAMPAIGN_DIR}/{os.path.basename(config_path)}"
 
@@ -512,7 +512,6 @@ def launch_controller(*, config_path, config_name, setup_kwargs, namespace,
 
     click_echo("")
     click_echo(f"✓ Controller started in-cluster (campaign id: {campaign_id}).")
-    click_echo(f"  Controller pod: {pod_name}")
     click_echo("")
     ctx_suffix = f" -x {kube_context}" if kube_context else ""
     click_echo("The campaign now runs in the cluster. Track and retrieve it with:")
