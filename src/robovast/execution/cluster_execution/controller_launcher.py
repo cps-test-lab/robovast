@@ -189,32 +189,51 @@ def reap_orphaned_runs(namespace="default", kube_context=None):
         logger.info("Leaving %d running controller pod(s) untouched.", running)
 
 
-def build_dev_wheel():
-    """Build a wheel of the current robovast source. Returns its path, or None.
+def _build_wheel(project_root, package_label):
+    """Build one project's wheel into a fresh temp dir. Returns its path, or None."""
+    dist_dir = tempfile.mkdtemp(prefix="robovast_wheel_")
+    try:
+        subprocess.run(  # nosec - poetry on a known project root
+            ["poetry", "build", "-f", "wheel", "-o", dist_dir],
+            cwd=project_root, check=True, capture_output=True, text=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        logger.warning("Could not build dev wheel for %s (%s); using the image's baseline.",
+                       package_label, exc)
+        shutil.rmtree(dist_dir, ignore_errors=True)
+        return None
+    wheels = [f for f in os.listdir(dist_dir) if f.endswith(".whl")]
+    if not wheels:
+        shutil.rmtree(dist_dir, ignore_errors=True)
+        return None
+    return os.path.join(dist_dir, wheels[0])
 
-    The wheel carries the *current* dev code, which is ``pip install --no-deps``'d
-    over the baseline robovast baked into the controller image. Returns ``None``
-    when no source tree / poetry is available (then the image's baseline is used).
+
+def build_dev_wheels():
+    """Build wheels of the current robovast (+ robovast_nav) source.
+
+    Returns a list of wheel paths (possibly empty). The wheels carry the
+    *current* dev code, which is ``pip install --no-deps``'d over the baseline
+    robovast(-nav) baked into the controller image. robovast_nav is only built
+    when its source tree is present (it's a path dependency, so editable dev
+    checkouts always have it; sdist/PyPI installs of robovast may not).
     """
     import robovast  # pylint: disable=import-outside-toplevel
     repo_root = os.path.abspath(os.path.join(os.path.dirname(robovast.__file__), "..", ".."))
     if not os.path.isfile(os.path.join(repo_root, "pyproject.toml")):
         logger.warning("No pyproject.toml at %s; using the controller image's baseline robovast.",
                        repo_root)
-        return None
-    dist_dir = tempfile.mkdtemp(prefix="robovast_wheel_")
-    try:
-        subprocess.run(  # nosec - poetry on a known repo root
-            ["poetry", "build", "-f", "wheel", "-o", dist_dir],
-            cwd=repo_root, check=True, capture_output=True, text=True,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-        logger.warning("Could not build dev wheel (%s); using the image's baseline robovast.", exc)
-        return None
-    wheels = [f for f in os.listdir(dist_dir) if f.endswith(".whl")]
-    if not wheels:
-        return None
-    return os.path.join(dist_dir, wheels[0])
+        return []
+    wheels = []
+    wheel = _build_wheel(repo_root, "robovast")
+    if wheel:
+        wheels.append(wheel)
+    nav_root = os.path.join(repo_root, "src", "robovast_nav")
+    if os.path.isfile(os.path.join(nav_root, "pyproject.toml")):
+        nav_wheel = _build_wheel(nav_root, "robovast-nav")
+        if nav_wheel:
+            wheels.append(nav_wheel)
+    return wheels
 
 
 def _controller_pod_manifest(pod_name, namespace, image, campaign_label,
@@ -301,7 +320,7 @@ def launch_controller(*, config_path, config_name, setup_kwargs, namespace,
     vast_in_pod = f"{_POD_CAMPAIGN_DIR}/{os.path.basename(config_path)}"
 
     click_echo = logger.info
-    wheel = build_dev_wheel()
+    wheels = build_dev_wheels()
 
     # Reap finished controller pods from previous runs (running ones are left
     # alone — they belong to a concurrent campaign).
@@ -315,14 +334,16 @@ def launch_controller(*, config_path, config_name, setup_kwargs, namespace,
         _kubectl(ctx_args, "wait", "--for=condition=Ready", f"pod/{pod_name}",
                  "-n", namespace, "--timeout=300s")
 
-        pod_wheel = None
-        if wheel:
-            click_echo("Copying dev wheel into the controller pod...")
-            pod_wheel = f"{_POD_WHEEL_DIR}/{os.path.basename(wheel)}"
+        pod_wheels = []
+        if wheels:
+            click_echo("Copying dev wheel(s) into the controller pod...")
             _kubectl(ctx_args, "exec", pod_name, "-n", namespace, "-c", "controller",
                      "--", "mkdir", "-p", _POD_WHEEL_DIR)
-            _kubectl(ctx_args, "cp", wheel, f"{namespace}/{pod_name}:{pod_wheel}",
-                     "-c", "controller")
+            for wheel in wheels:
+                pod_wheel = f"{_POD_WHEEL_DIR}/{os.path.basename(wheel)}"
+                _kubectl(ctx_args, "cp", wheel, f"{namespace}/{pod_name}:{pod_wheel}",
+                         "-c", "controller")
+                pod_wheels.append(pod_wheel)
         click_echo("Copying campaign inputs into the controller pod...")
         _kubectl(ctx_args, "cp", config_dir, f"{namespace}/{pod_name}:{_POD_CAMPAIGN_DIR}",
                  "-c", "controller")
@@ -363,8 +384,9 @@ def launch_controller(*, config_path, config_name, setup_kwargs, namespace,
             controller_cmd += ["--log-tree"]
 
         install = (f"pip install --no-deps --force-reinstall --quiet "
-                   f"--root-user-action=ignore --disable-pip-version-check {pod_wheel} && "
-                   if pod_wheel else "")
+                   f"--root-user-action=ignore --disable-pip-version-check "
+                   f"{' '.join(pod_wheels)} && "
+                   if pod_wheels else "")
         script = " && ".join(env_exports) + " && " + install + " ".join(
             _sh_quote(c) for c in controller_cmd) + "\n"
 
@@ -387,7 +409,7 @@ def launch_controller(*, config_path, config_name, setup_kwargs, namespace,
                  "--ignore-not-found", "--grace-period=0", check=False)
         raise
     finally:
-        if wheel:
+        for wheel in wheels:
             shutil.rmtree(os.path.dirname(wheel), ignore_errors=True)
 
     click_echo("")

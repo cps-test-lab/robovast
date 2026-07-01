@@ -52,6 +52,12 @@ shapely = {version = "^2.0", optional = true}
 optuna = {version = "^4.0", optional = true}
 # Optional test dependencies (the tests/ suite)
 pytest = {version = "^8.0", optional = true}
+# Navigation-specific variation types (FloorplanVariation, PathVariation*,
+# ObstacleVariation*). Path dependency on the sibling robovast-nav package
+# (src/robovast_nav, published standalone to PyPI). Optional: anywhere that
+# composes nav configs (host, cluster controller) needs it; the ROS-runtime
+# image / pure batch-only contexts can skip it.
+robovast-nav = {path = "src/robovast_nav", optional = true}
 
 [tool.poetry.group.docs.dependencies]
 sphinx = "^7.0.0"

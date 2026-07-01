@@ -2932,6 +2932,25 @@ files = [
 pydantic = ">=1.8"
 
 [[package]]
+name = "opencv-python-headless"
+version = "4.11.0.86"
+description = "Wrapper package for OpenCV python bindings."
+optional = true
+python-versions = ">=3.6"
+files = [
+    {file = "opencv-python-headless-4.11.0.86.tar.gz", hash = "sha256:996eb282ca4b43ec6a3972414de0e2331f5d9cda2b41091a49739c19fb843798"},
+    {file = "opencv_python_headless-4.11.0.86-cp37-abi3-macosx_13_0_arm64.whl", hash = "sha256:48128188ade4a7e517237c8e1e11a9cdf5c282761473383e77beb875bb1e61ca"},
+    {file = "opencv_python_headless-4.11.0.86-cp37-abi3-macosx_13_0_x86_64.whl", hash = "sha256:a66c1b286a9de872c343ee7c3553b084244299714ebb50fbdcd76f07ebbe6c81"},
+    {file = "opencv_python_headless-4.11.0.86-cp37-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:6efabcaa9df731f29e5ea9051776715b1bdd1845d7c9530065c7951d2a2899eb"},
+    {file = "opencv_python_headless-4.11.0.86-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:0e0a27c19dd1f40ddff94976cfe43066fbbe9dfbb2ec1907d66c19caef42a57b"},
+    {file = "opencv_python_headless-4.11.0.86-cp37-abi3-win32.whl", hash = "sha256:f447d8acbb0b6f2808da71fddd29c1cdd448d2bc98f72d9bb78a7a898fc9621b"},
+    {file = "opencv_python_headless-4.11.0.86-cp37-abi3-win_amd64.whl", hash = "sha256:6c304df9caa7a6a5710b91709dd4786bf20a74d57672b3c31f7033cc638174ca"},
+]
+
+[package.dependencies]
+numpy = {version = ">=1.26.0", markers = "python_version >= \"3.12\""}
+
+[[package]]
 name = "opentelemetry-api"
 version = "1.42.1"
 description = "OpenTelemetry Python API"
@@ -4266,6 +4285,28 @@ docs = ["docutils", "rich", "rich_rst", "sphinx", "sphinx_copybutton", "sphinx_r
 tests = ["pytest", "pytest-cov"]
 
 [[package]]
+name = "robovast-nav"
+version = "1.0.0"
+description = "Navigation-specific variation types for RoboVAST"
+optional = true
+python-versions = ">=3.12,<3.14"
+files = []
+develop = false
+
+[package.dependencies]
+numpy = "^1.26"
+opencv-python-headless = ">=4.8"
+Pillow = "^12.0"
+pyside6-essentials = "^6.6"
+pyyaml = "^6.0"
+robovast = "^1.0.0"
+scipy = "^1.11"
+
+[package.source]
+type = "directory"
+url = "src/robovast_nav"
+
+[[package]]
 name = "rpds-py"
 version = "2026.5.1"
 description = "Python bindings to Rust's persistent data structures (rpds)"
@@ -5569,7 +5610,7 @@ files = [
 [extras]
 docs = ["sphinx", "sphinx-click", "sphinx-rtd-theme", "sphinxcontrib-spelling"]
 gui = ["pyside6-addons", "pyside6-essentials"]
-nav = []
+nav = ["robovast-nav"]
 optuna = ["optuna"]
 qd = ["ribs", "shapely"]
 test = ["optuna", "pytest", "ribs", "shapely"]
@@ -5577,4 +5618,4 @@ test = ["optuna", "pytest", "ribs", "shapely"]
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.12,<3.14"
-content-hash = "92464cbe60827b1cacf80233719a9801089bf94bb42f38b2478a9dfd6912e9de"
+content-hash = "8548a93cffa9a078c70e2c87b9c5ef149a9733b2a690f96c3f473e524171c395"

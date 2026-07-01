@@ -272,6 +272,43 @@ See ``configs/examples/quadrotor_landing/variations/wind.py`` for a runnable
 example (a wind model that derives the simulator's ``wind_strength``), wired into
 the quadrotor search vasts.
 
+.. note::
+
+   **Packaging a variation plugin as its own distribution.** If your variation
+   types live in a separate installable package (as ``robovast-nav`` does for
+   ``FloorplanVariation``, ``PathVariation*``, ``ObstacleVariation*``), it must
+   be installed everywhere scenario variations get **composed** — not just
+   where scenarios *run*. For local and host-driven cluster runs that's the
+   host venv; for ``vast execution cluster run`` (search/batch) composition
+   happens **inside the in-cluster controller pod**, so the controller image
+   (``container/controller/Dockerfile``) must install the plugin package too,
+   or composing a config that references your variation type will fail there
+   with ``Unknown variation class``.
+
+   Two pitfalls when exposing the package as a poetry extra (e.g.
+   ``nav = ["robovast-nav"]``):
+
+   * The extra's package name must also be declared as an optional dependency
+     in ``[tool.poetry.dependencies]`` (e.g.
+     ``robovast-nav = {path = "src/robovast_nav", optional = true}`` for an
+     in-repo sibling package) — ``poetry check`` catches the mismatch if not.
+   * The controller's dev-iteration fast path
+     (``controller_launcher.build_dev_wheels``) builds a wheel of the current
+     ``robovast`` source for quick redeploys; if your plugin lives in a
+     separate poetry project under ``src/``, it needs its own wheel built and
+     shipped alongside (as ``robovast_nav`` does) or dev changes to it won't
+     reach the controller pod.
+
+   If your plugin's package pulls in a dependency that itself needs system
+   shared libraries (e.g. ``robovast-nav`` hard-depends on
+   ``pyside6-essentials``, whose bundled Qt6 libs need ``libGL.so.1`` and
+   friends to even *import*, regardless of whether any GUI is ever shown), the
+   controller image needs those apt packages too — see the
+   ``container/controller/Dockerfile`` apt-get block for the list verified
+   against ``robovast-nav``. A missing system lib shows up the same way as a
+   missing extra: the plugin's entry point fails to load and the variation
+   type is reported as unknown.
+
 
 Add Command-line Plugin
 ^^^^^^^^^^^^^^^^^^^^^^^
