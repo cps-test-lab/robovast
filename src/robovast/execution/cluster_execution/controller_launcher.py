@@ -45,7 +45,6 @@ import shlex
 import shutil
 import subprocess
 import tempfile
-from datetime import datetime
 
 import yaml
 
@@ -422,8 +421,8 @@ def launch_controller(*, config_path, config_name, setup_kwargs, namespace,
     # and add them as kept-alive sidecars sharing a workspace with the controller.
     aux_specs = _required_container_specs(config_path)
     if aux_specs:
-        click_echo("Adding auxiliary variation sidecar(s): "
-                   + ", ".join(f"{s.container_name()} ({s.image})" for s in aux_specs))
+        click_echo("Adding auxiliary variation sidecar(s): %s",
+                   ", ".join(f"{s.container_name()} ({s.image})" for s in aux_specs))
     manifest = _controller_pod_manifest(pod_name, namespace, image, campaign_label,
                                         control_node_labels, aux_specs=aux_specs)
     click_echo(f"Creating controller pod '{pod_name}' (image {image})...")

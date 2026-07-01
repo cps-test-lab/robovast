@@ -80,7 +80,7 @@ def get_scenery_builder_version():
         try:
             result = subprocess.run(
                 ["docker", "inspect", "--format", fmt, SCENERY_BUILDER_IMAGE],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True, text=True, timeout=10, check=False,
             )
         except (subprocess.SubprocessError, FileNotFoundError, OSError):
             return None

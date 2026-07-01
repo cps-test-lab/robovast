@@ -84,7 +84,7 @@ def progress_update(msg):
 # registers a cluster (sidecar + pods/exec) factory via
 # set_container_runner_factory(); when unset we fall back to the local
 # (ephemeral ``docker run``) runner. See variation/container_runner.py.
-_container_runner_factory = None  # type: ignore[var-annotated]
+_container_runner_factory = None  # type: ignore[var-annotated]  # pylint: disable=invalid-name
 
 
 def set_container_runner_factory(factory):
