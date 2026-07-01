@@ -106,11 +106,14 @@ class CampaignController:
 
     def run(self):
         os.makedirs(self.campaign_root, exist_ok=True)
-        # config_dir = the .vast directory: the base against which this campaign's
-        # evaluation.visualization notebooks resolve in the results GUI.
+        # Paths are stored relative to the campaign root (the dir holding
+        # campaign.db) so the store survives the campaign being moved or
+        # downloaded from the container that produced it. config_dir is the
+        # in-campaign "_config" copy of the .vast: the base against which this
+        # campaign's evaluation.visualization notebooks resolve in the GUI.
         campaign_id = self.store.create_campaign(
             self.campaign_id, self.campaign_config_dump, mode=self.mode,
-            config_dir=self.vast_dir)
+            config_dir="_config")
         if self.state is not None:
             self.state.update(mode=self.mode, campaign_id=self.campaign_id)
             self.state.set_phase("running")
@@ -208,7 +211,7 @@ class CampaignController:
         configs = self.batch_campaign_data["configs"]
         logger.info("\n%s\n📦  Batch run  —  %d configuration(s) × %d run(s)\n%s",
                     _BAR, len(configs), self.runs, _BAR)
-        batch_id = self.store.open_batch(campaign_id, 0, self.campaign_root)
+        batch_id = self.store.open_batch(campaign_id, 0, ".")
         if self.state is not None:
             self.state.update(batch=0)
         self._begin_batch_progress(len(configs) * self.runs)
@@ -227,7 +230,7 @@ class CampaignController:
                 batch_id=batch_id, paramset_id=name, config_name=name,
                 params=cfg.get("config", {}) or {}, objectives={}, measures={},
                 n_samples=len(run_dirs), status=aggregate_run_status(run_dirs),
-                result_dir=cdir)
+                result_dir=os.path.relpath(cdir, self.campaign_root))
         if self.state is not None:
             self.state.update(batches_done=1,
                               batch_history=[{"idx": 0, "n_units": len(configs)}])
@@ -251,7 +254,7 @@ class CampaignController:
         result = None
         while True:
             param_sets = self.strategy.ask(self.per_batch)
-            batch_id = self.store.open_batch(campaign_id, batch_idx, self.campaign_root)
+            batch_id = self.store.open_batch(campaign_id, batch_idx, ".")
             if self.state is not None:
                 self.state.update(batch=batch_idx)
             logger.info("\n%s\n🔁  Batch %d  —  %d parameter set(s)\n%s",
@@ -365,7 +368,8 @@ class CampaignController:
                     self.store.record_unit(
                         batch_id=batch_id, paramset_id=ps.id, config_name=config_name,
                         params=ps.values, objectives=ev.objectives, measures=ev.measures,
-                        n_samples=ev.n_samples, status="evaluated", result_dir=str(config_dir))
+                        n_samples=ev.n_samples, status="evaluated",
+                        result_dir=os.path.relpath(config_dir, self.campaign_root))
         finally:
             self._end_batch_progress()
         return evaluations

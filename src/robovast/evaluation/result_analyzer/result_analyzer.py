@@ -189,19 +189,25 @@ class RunResultsAnalyzer(QMainWindow):
             row = campaigns[0]
             batches = []
             for b in store.batches(row["id"]):
+                # Paths are recorded relative to the campaign root; resolve them
+                # against this campaign's real on-disk location.
                 units = [
                     {
                         "config_name": u["config_name"],
                         "status": u["status"],
                         "n_samples": u["n_samples"],
                         "objective": u["objective"],
-                        "result_dir": u["result_dir"],
+                        "result_dir": str(campaign_dir / u["result_dir"]),
                     }
                     for u in store.units(b["id"])
                 ]
-                batches.append({"idx": b["idx"], "dir": b["dir"], "units": units})
+                batches.append({
+                    "idx": b["idx"],
+                    "dir": str(campaign_dir / b["dir"]),
+                    "units": units,
+                })
         config_json = json.loads(row["config_json"]) if row["config_json"] else {}
-        config_dir = row["config_dir"] or str(campaign_dir / "_config")
+        config_dir = str(campaign_dir / (row["config_dir"] or "_config"))
         # The vast for the local-execution widget: the copy in config_dir if any.
         vast_files = sorted(Path(config_dir).glob("*.vast")) if Path(config_dir).is_dir() else []
         return {

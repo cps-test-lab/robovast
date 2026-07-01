@@ -68,9 +68,11 @@ def build_campaign_store(campaign_dir, *, force: bool = False) -> Path:
             logger.warning("Could not load %s for campaign store: %s", vast_files[0], e)
 
     with CampaignStore(store_path) as store:
+        # Paths are stored relative to the campaign root (the dir holding
+        # campaign.db) so the store survives the campaign being relocated.
         campaign_id = store.create_campaign(
-            campaign_dir.name, config_json, mode="batch", config_dir=str(config_dir))
-        batch_id = store.open_batch(campaign_id, 0, str(campaign_dir))
+            campaign_dir.name, config_json, mode="batch", config_dir="_config")
+        batch_id = store.open_batch(campaign_id, 0, ".")
         for cfg_dir in list_config_dirs(campaign_dir):
             run_dirs = list_run_dirs(cfg_dir)
             try:
@@ -85,7 +87,7 @@ def build_campaign_store(campaign_dir, *, force: bool = False) -> Path:
                 objectives={},
                 measures={},
                 status=aggregate_run_status(run_dirs),
-                result_dir=str(cfg_dir),
+                result_dir=cfg_dir.name,
                 n_samples=len(run_dirs),
             )
     logger.info("Built campaign store: %s", store_path)
