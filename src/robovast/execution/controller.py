@@ -40,12 +40,19 @@ from datetime import datetime
 from pathlib import Path
 
 from robovast.common.campaign_data import aggregate_run_status, list_run_dirs
+from robovast.common.logging_config import (add_campaign_log_handler,
+                                            remove_campaign_log_handler)
 from robovast.common.store import STORE_FILENAME, CampaignStore
 
 from .backends import DockerBackend, ExecutionBackend, RunOptions
 from .notify import Notifier
 
-logger = logging.getLogger(__name__)
+# Use the qualified name rather than __name__: this module is the in-pod cluster
+# entrypoint (``python -m robovast.execution.controller``), where __name__ is
+# "__main__" and would not propagate to the "robovast" logger that
+# add_campaign_log_handler attaches controller.log to — dropping the controller's
+# own lines (banners, progress) from the file while they still reach stderr.
+logger = logging.getLogger("robovast.execution.controller")
 
 _BAR = "=" * 60
 
@@ -106,6 +113,18 @@ class CampaignController:
 
     def run(self):
         os.makedirs(self.campaign_root, exist_ok=True)
+        # Tee the controller's own log into the campaign artifact. Attached before
+        # the loop starts and closed in the finally below, so the file is complete
+        # and flushed before the builders' finally calls finalize_campaign (which,
+        # for cluster runs, uploads the whole campaign_root — including this file —
+        # to storage). Best-effort: a logging failure must never abort a campaign.
+        try:
+            log_handler = add_campaign_log_handler(
+                os.path.join(self.campaign_root, "_execution", "controller.log"))
+        except Exception:  # pylint: disable=broad-except
+            logger.warning("Could not open controller.log; continuing without it.",
+                           exc_info=True)
+            log_handler = None
         # Paths are stored relative to the campaign root (the dir holding
         # campaign.db) so the store survives the campaign being moved or
         # downloaded from the container that produced it. config_dir is the
@@ -135,6 +154,7 @@ class CampaignController:
         finally:
             self._stop_progress_poller()
             self.notifier.stop_heartbeat()
+            remove_campaign_log_handler(log_handler)
 
     # -- run-level progress poller ------------------------------------------
 
