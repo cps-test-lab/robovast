@@ -65,7 +65,7 @@ def test_build_campaign_store_batch(tmp_path):
         assert len(campaigns) == 1
         row = campaigns[0]
         assert row["mode"] == "batch"
-        assert row["config_dir"] == str(campaign / "_config")
+        assert row["config_dir"] == "_config"
 
         batches = store.batches(row["id"])
         assert len(batches) == 1 and batches[0]["idx"] == 0
@@ -76,7 +76,7 @@ def test_build_campaign_store_batch(tmp_path):
         assert units["cb"]["status"] == "failed"
         assert units["cc"]["status"] == "mixed"
         assert all(u["n_samples"] == 2 for u in units.values())
-        assert units["ca"]["result_dir"] == str(campaign / "ca")
+        assert units["ca"]["result_dir"] == "ca"
 
     # config_json carries the evaluation.visualization block for the GUI.
     import json
