@@ -95,7 +95,8 @@ class Variation():
     GUI_RENDERER_CLASS = None  # Could be set to a GUI renderer class
     CACHE_ID = None  # Subclasses set to enable caching (e.g. "robovast_mt_generation_")
 
-    def __init__(self, base_path, parameters, general_parameters, progress_update_callback, scenario_file, output_dir):
+    def __init__(self, base_path, parameters, general_parameters, progress_update_callback,
+                 scenario_file, output_dir, container_runner=None):
         # Reset shared config index for each new Variation instance so
         # generated short names start from 1 for this variation run.
         reset_config_index()
@@ -108,11 +109,38 @@ class Variation():
         self.progress_update_callback = progress_update_callback
         self.scenario_file = scenario_file
         self.output_dir = output_dir
+        # Auxiliary-container handle, provided by the execution backend when this
+        # plugin declared one via get_required_container(); None otherwise.
+        self.container_runner = container_runner
         # Track the next index for each parent config name
         self._config_child_indices = {}
 
     def variation(self, in_configs):
         # vary in_configs and return result
+        return None
+
+    @classmethod
+    def get_required_container(cls, parameters):
+        """Declare an auxiliary container this variation needs while it runs.
+
+        Override in subclasses that must run a helper image (e.g. a mesh/map
+        generator) during :meth:`variation`. Return a
+        :class:`~robovast.common.variation.container_runner.ContainerSpec`, or
+        ``None`` (the default) to require no container.
+
+        The declaration is backend-agnostic: locally the backend satisfies it
+        with an ephemeral ``docker run``; in-cluster it adds a sidecar to the
+        controller pod. Either way the plugin talks to it through
+        ``self.container_runner`` (see
+        :mod:`robovast.common.variation.container_runner`).
+
+        Args:
+            parameters: The raw (unvalidated) parameter dict for this variation
+                block, so the image can depend on config (e.g. a pinned version).
+
+        Returns:
+            A ``ContainerSpec`` or ``None``.
+        """
         return None
 
     def get_cache_input_files(self, in_configs):

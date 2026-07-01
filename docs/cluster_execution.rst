@@ -12,25 +12,35 @@ configuration.
 Overview
 --------
 
-When a cluster run is triggered, RoboVAST performs the following steps
-internally:
+Every cluster run — batch **and** search — is driven by an **in-cluster
+controller pod**. ``vast execution cluster run`` is *fire-and-forget*: it
+launches the controller and returns immediately; the campaign then runs entirely
+inside the cluster. Internally:
 
-1. **Config upload** — All scenario configurations (entrypoints, scenario
-   files, parameter files) are uploaded to a MinIO S3 bucket inside the
-   cluster.
-2. **Job creation** — For each configuration × run number, a Kubernetes
-   ``Job`` is created from a manifest template.  Each job runs an ``initContainer``
-   that pulls its config files from S3 and a main ``robovast`` container that
+1. **Controller launch** — The host creates a short ``robovast-controller`` pod
+   (bound to the controller ServiceAccount), copies the campaign inputs into it,
+   and starts the :class:`CampaignController` in-cluster. The host then detaches.
+2. **Config upload + job creation** — The controller composes each batch,
+   uploads the scenario configurations to the storage bucket, and creates one
+   Kubernetes ``Job`` per packed job. Each job runs an ``initContainer`` that
+   pulls its config files from storage and a main ``robovast`` container that
    executes the scenario.
 3. **Queueing (Kueue)** — Jobs are submitted to a dedicated Kueue
    ``LocalQueue`` (``robovast``).  Kueue's gang-scheduling and resource quotas
    ensure that jobs are admitted only when sufficient CPU/memory is available,
    preventing cluster oversubscription.
-4. **Result collection** — After each job, the scenario container uploads
-   result files back to the S3 bucket.  ``vast execution cluster upload-to-share``
-   compresses and transfers the archives from inside the pod to a configured
-   share service (Nextcloud, GCS, …), or ``vast execution cluster download-cleanup``
-   removes the buckets once results have been handled.
+4. **Result collection** — Jobs upload result files back to the storage bucket,
+   and the controller publishes the **canonical campaign** (``campaign.db`` +
+   ``_execution`` + results) there. The controller then **compresses and uploads
+   the campaign itself** (in-process, no sidecar) to the configured share
+   (Nextcloud, GCS, …). A share destination is **required**: its credentials are
+   verified **before any batches start**, so a missing or misconfigured share
+   fails fast (the run is refused rather than producing results with nowhere to
+   go). If the final upload fails, the controller stays alive so you can retry
+   with ``vast execution cluster upload-to-share``. Track progress with ``vast
+   execution cluster monitor``; retrieve uploaded results with ``vast results
+   download``. ``vast execution cluster download-cleanup`` removes the buckets
+   once results have been handled.
 
 
 Prerequisites
@@ -80,8 +90,9 @@ Available cluster configs (``--list``):
 
 The setup command:
 
-* Deploys a ``robovast`` pod containing MinIO, an nginx HTTP server, and a
-  Python/boto3 archiver sidecar.
+* Deploys a ``robovast`` pod containing the MinIO S3 server (embedded-storage
+  configs such as ``rke2``). External-storage configs (e.g. GCS) deploy no
+  helper pod — the bucket is used directly.
 * Installs `Kueue <https://kueue.sigs.k8s.io/>`_ via Helm and creates a
   ``ClusterQueue`` and ``LocalQueue`` sized to the cluster's available
   CPU/memory.
@@ -104,8 +115,12 @@ Running Scenarios
    # Override the number of runs from the CLI
    vast execution cluster run --runs 5
 
-   # Run only one specific config by name
+   # Run only one specific config by name (batch campaigns)
    vast execution cluster run --config my-config
+
+``run`` is fire-and-forget: it starts the in-cluster controller and returns
+immediately, printing the campaign id and controller pod name. The campaign
+continues in the cluster — watch it with ``vast execution cluster monitor``.
 
 
 Monitoring and Results
@@ -117,11 +132,17 @@ Check the status of a running (or recently completed) run:
 
    vast execution cluster monitor
 
-Upload results to a share service once jobs have finished:
+The controller uploads the finished campaign to the configured share service
+automatically. Use this command only to **retry** an upload that failed (for
+example after the share was full or briefly unreachable):
 
 .. code-block:: bash
 
    vast execution cluster upload-to-share
+
+It needs no arguments — the credentials injected at launch are reused. If you
+correct the share settings in your ``.env`` first, they are re-sent as overrides
+for the retry.
 
 Clean up only the job objects (without touching the result storage):
 
@@ -137,15 +158,43 @@ Remove result archives from S3 (after uploading or when no longer needed):
    vast execution cluster download-cleanup
 
 
+Push notifications (ntfy)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Because a run is fire-and-forget, the controller can push `ntfy.sh
+<https://ntfy.sh>`_ notifications so you don't have to poll ``monitor``. Set a
+topic in your ``.env`` and subscribe with the ntfy mobile/desktop app:
+
+.. code-block:: ini
+
+   ROBOVAST_NTFY_TOPIC=robovast-alice-campaigns   # enables notifications
+   ROBOVAST_NTFY_SERVER=https://ntfy.sh           # optional, this is the default
+   ROBOVAST_NTFY_TOKEN=tk_xxx                      # optional, for protected topics
+
+You then get a message when a campaign **starts**, when each **batch finishes**,
+once an **hour** with the current run progress, when the campaign **finishes**,
+when it is **uploaded** to the share, and (urgently) on **failure**.
+
+Notifications are optional and best-effort: with no topic set the controller
+stays silent, and an unreachable ntfy server never affects the campaign. Pick a
+different topic per user so notifications don't cross over; each message carries
+its campaign id so concurrent campaigns sharing a topic stay distinguishable.
+
+
 Manual Deployment (prepare-run)
 ---------------------------------
 
-To generate all necessary manifests and scripts **without running them**
-(e.g. for airgapped clusters or CI pipelines):
+A **batch-only** debugging aid: generate all manifests and scripts **without
+running them** (e.g. for airgapped clusters, CI pipelines, or to inspect exactly
+what the in-cluster controller would submit):
 
 .. code-block:: bash
 
    vast execution cluster prepare-run ./output-dir
+
+The generated Job manifests are produced by the same builder the controller uses
+at run time, so they match what a real run submits. (For search campaigns, use
+``vast execution cluster run``.)
 
 The output directory contains:
 
@@ -188,6 +237,10 @@ Each generated Job manifest carries the annotation
 
 If Kueue is not installed, jobs are still created but are *not* queued —
 they start immediately, which can overload the cluster.
+
+
+You can launch several ``vast execution cluster run`` campaigns at once; Kueue
+keeps the cluster busy by admitting their jobs as capacity frees up.
 
 
 Selecting a Cluster Context
@@ -275,7 +328,7 @@ matching your environment.
 .. _cluster-config-gcp:
 
 GCP (Google Kubernetes Engine)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 **Config name:** ``gcp``
 
@@ -392,50 +445,43 @@ and local integration tests.
 
 **Notes:**
 
-* No HTTP result server — the nginx sidecar and archiver are not included in
-  the minikube manifest.  Use ``vast execution cluster download-cleanup`` to
-  remove S3 buckets after processing results via ``kubectl port-forward``.
+* No archiver sidecar — it is not included in the minikube manifest.  Use
+  ``vast execution cluster download-cleanup`` to remove S3 buckets after
+  processing results via ``kubectl port-forward``.
 * ``emptyDir`` storage means all data is lost if the pod restarts.
-
-
-API Reference
--------------
-
-The resolution logic for per-cluster resources lives in
-:mod:`robovast.common.cluster_context`:
-
-.. automodule:: robovast.common.cluster_context
-   :members: get_active_kube_context, list_all_contexts, get_config_context_names,
-             require_context_for_multi_cluster, resolve_resource_value, resolve_resources
-   :undoc-members:
 
 
 .. _cluster-sharing:
 
-Sharing Results via ``cluster upload-to-share``
--------------------------------------------------
+Sharing Results
+---------------
 
-The ``upload-to-share`` command transfers campaign results **entirely inside
-the archiver sidecar of the robovast pod** — directly to a shared folder
-(Nextcloud, GCS, …).  No data ever reaches the user's machine.
-
-.. code-block:: bash
-
-   vast execution cluster upload-to-share
+Sharing happens **inside the controller pod**: after the campaign finishes and
+the canonical campaign is published to storage, the controller compresses it
+(streaming from the storage bucket via ``pigz``) and uploads the
+``{campaign_id}.tar.gz`` to the configured share (Nextcloud, GCS, …). No data
+ever reaches the user's machine, and no separate archiver pod is involved.
 
 How it works
 ^^^^^^^^^^^^
 
-For each available campaign the command:
+1. **Pre-flight** — before any batches start, the controller verifies the share
+   credentials work, so a misconfigured share fails fast instead of after a long
+   run.
+2. **Compress + upload** — once the campaign is published to storage, the
+   controller streams it into a ``tar.gz`` and runs the share provider's upload.
+3. **On success** the controller pod completes.
+4. **On failure** the campaign is kept safely in storage and the controller pod
+   stays alive. Retry with ``vast execution cluster upload-to-share`` (no
+   arguments — it reuses the launch-time credentials, or pass corrected ones via
+   ``.env``), or give up with ``vast execution cluster stop``.
 
-1. Creates a compressed ``{campaign_id}.tar.gz`` archive in ``/data/`` on the
-   pod.  If the archive already exists it is reused.
-2. Executes the share-provider upload script inside the archiver container,
-   streaming upload progress back to the local terminal.
-3. Removes the archive from the pod on success (use ``--keep-archive`` to
-   retain it for other uses).
-4. Keeps both the archive and the S3 bucket if the upload fails, so the
-   command can be retried safely.
+A retry may also target a **different share** — set a new ``ROBOVAST_SHARE_TYPE``
+(and its variables) in ``.env`` before ``upload-to-share`` to, say, redirect a
+stuck gcs upload to sftp. The retried credentials are pre-flight-checked before
+re-compressing, and the active share type is shown by ``monitor`` while
+uploading. (A missing variable for the new type now fails loudly rather than
+silently reusing the previous destination.)
 
 Configuration via ``.env``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -480,36 +526,29 @@ with the share token as the HTTP Basic-Auth username and an empty password.
 Only the standard Python library is used inside the pod — no additional
 packages need to be installed.
 
-Example usage:
+Retrying a failed upload:
 
 .. code-block:: bash
 
-   # Upload all available runs
+   # Re-trigger the controller's upload (reuses launch-time credentials)
    vast execution cluster upload-to-share
-
-   # Keep the pod-side archive after upload
-   vast execution cluster upload-to-share --keep-archive
-
-   # Force recreation of the tar.gz even if it already exists
-   vast execution cluster upload-to-share --force
 
 Progress output
 ^^^^^^^^^^^^^^^
 
-A single-line progress bar is printed for each run during upload, showing
-the percentage, transferred size, and upload rate:
+Compression and upload run inside the controller pod; a single-line progress
+bar (percentage, transferred size, rate) is written to the controller log —
+view it with ``vast execution cluster monitor`` or ``kubectl logs``:
 
 .. code-block:: text
 
    campaign-2026-03-01-120000  [████████████░░░░░░░░]   60.0%  1.2 MiB/2.0 MiB  3.4 MiB/s
    campaign-2026-03-01-120000  uploaded (2.0 MiB)  ✓
 
-   ✓ Uploaded 3 campaign(s) to nextcloud successfully!
-
 Google Cloud Storage (GCS)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The GCS provider uploads archives directly from the archiver pod to a GCS
+The GCS provider uploads archives directly from the controller pod to a GCS
 bucket using a service-account key.  Downloads use the public GCS HTTP API
 and **do not require credentials** when the bucket is publicly readable.
 
@@ -546,75 +585,3 @@ Grant the ``Storage Object Viewer`` role to the special principal
 Once the bucket is public, ``vast results download`` works without
 any credentials — only ``ROBOVAST_SHARE_TYPE`` and ``ROBOVAST_GCS_BUCKET``
 need to be set.
-
-Adding a new share provider (plugin system)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-Share providers are discovered as **entry-point plugins** under the
-``robovast.share_providers`` group.  To add a new provider:
-
-1. **Create a provider class** that inherits from
-   :class:`~robovast.execution.cluster_execution.share_providers.base.BaseShareProvider`
-   and implements the three abstract methods:
-
-   .. code-block:: python
-
-      from robovast.execution.cluster_execution.share_providers.base import (
-          BaseShareProvider,
-      )
-
-      class MyShareProvider(BaseShareProvider):
-          SHARE_TYPE = "myshare"
-
-          def required_env_vars(self) -> dict[str, str]:
-              return {
-                  "ROBOVAST_SHARE_URL": "URL of the target folder",
-                  "MY_SHARE_TOKEN":     "API token for the share service",
-              }
-
-          def get_upload_script_path(self) -> str:
-              import os
-              return os.path.join(os.path.dirname(__file__), "myshare_upload_script.py")
-
-          def build_pod_env(self) -> dict[str, str]:
-              import os
-              return {
-                  "MY_SHARE_URL":   os.environ["ROBOVAST_SHARE_URL"],
-                  "MY_SHARE_TOKEN": os.environ["MY_SHARE_TOKEN"],
-              }
-
-2. **Create a pod-side upload script** (``myshare_upload_script.py``).  It
-   runs inside the ``robovast-archiver`` image (``python:3.12-alpine`` +
-   ``pigz``, ``boto3``, ``google-auth``, ``google-api-python-client``).  It
-   receives the run ID as ``sys.argv[1]`` and finds the archive at
-   ``/data/{campaign}.tar.gz``.  Env vars from ``build_pod_env()`` are
-   available via ``os.environ``.
-
-3. **Register the provider** in your package's ``pyproject.toml``:
-
-   .. code-block:: toml
-
-      [tool.poetry.plugins."robovast.share_providers"]
-      myshare = "mypackage.myshare:MyShareProvider"
-
-4. Re-install the package (``pip install -e .``) so the entry point is
-   registered.
-
-After that, ``ROBOVAST_SHARE_TYPE=myshare`` in ``.env`` will select your
-provider automatically.
-
-Share provider API reference
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-.. autoclass:: robovast.execution.cluster_execution.share_providers.base.BaseShareProvider
-   :members:
-   :undoc-members:
-
-.. autoclass:: robovast.execution.cluster_execution.share_providers.nextcloud.NextcloudShareProvider
-   :members:
-
-.. autoclass:: robovast.execution.cluster_execution.share_providers.gcs.GcsShareProvider
-   :members:
-
-.. autoclass:: robovast.execution.cluster_execution.upload_to_share.ShareUploader
-   :members:

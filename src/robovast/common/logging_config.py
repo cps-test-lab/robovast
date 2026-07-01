@@ -18,6 +18,7 @@
 """Logging configuration for RoboVAST."""
 
 import logging
+import os
 import sys
 
 
@@ -80,6 +81,43 @@ def get_logger(name: str) -> logging.Logger:
         Logger instance
     """
     return logging.getLogger(name)
+
+
+def add_campaign_log_handler(log_path: str) -> logging.Handler:
+    """Attach a verbose ``FileHandler`` at *log_path* to the ``robovast`` logger.
+
+    The handler is added to the top-level ``robovast`` logger (not the root
+    logger) so it captures every ``robovast.*`` record via propagation while
+    leaving noisy third-party libraries (``botocore``, ``urllib3``,
+    ``kubernetes``) out of the file. Its level is left at ``NOTSET``, so the
+    ``robovast`` logger's effective level gates records — the file mirrors the
+    console (INFO by default, DEBUG if configured). Existing handlers are
+    untouched, so console output is unaffected.
+
+    Args:
+        log_path: Destination file. Parent directories are created if needed.
+
+    Returns:
+        The attached handler, to be passed to :func:`remove_campaign_log_handler`.
+    """
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    handler = logging.FileHandler(log_path, encoding="utf-8")
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"))
+    logging.getLogger("robovast").addHandler(handler)
+    return handler
+
+
+def remove_campaign_log_handler(handler: logging.Handler | None) -> None:
+    """Flush, close and detach a handler from :func:`add_campaign_log_handler`."""
+    if handler is None:
+        return
+    try:
+        handler.flush()
+        handler.close()
+    finally:
+        logging.getLogger("robovast").removeHandler(handler)
 
 
 def setup_logging_from_project_config() -> None:

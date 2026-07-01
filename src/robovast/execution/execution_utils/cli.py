@@ -21,6 +21,7 @@ import datetime
 import logging
 import os
 import sys
+import tempfile
 import time
 
 import click
@@ -32,8 +33,11 @@ from robovast.common.cli import get_project_config, handle_cli_exception
 from robovast.common.cluster_context import (get_active_kube_context,
                                              get_config_context_names,
                                              require_context_for_multi_cluster)
+from robovast.common.common import load_config
+from robovast.common.config import validate_config
+from robovast.execution.controller import build_campaign_data
 from robovast.execution.cluster_execution.cluster_execution import (
-    JobRunner, _label_safe_campaign, cleanup_cluster_campaign,
+    _label_safe_campaign, cleanup_cluster_campaign,
     get_cluster_job_counts_per_campaign)
 from robovast.execution.cluster_execution.cluster_setup import (
     delete_server, get_cluster_config, get_cluster_config_for_context,
@@ -43,10 +47,8 @@ from robovast.execution.cluster_execution.cluster_setup import (
 from robovast.execution.cluster_execution import bucket_ops
 from robovast.execution.cluster_execution.share_providers import \
     load_share_provider_plugins
-from robovast.execution.cluster_execution.upload_to_share import ShareUploader
 
 from ..cluster_execution.kubernetes import (check_kubernetes_access,
-                                            check_pod_running,
                                             get_kubernetes_client)
 from .execute_local import initialize_local_execution
 
@@ -84,8 +86,9 @@ def local():
               help='Disable host GUI support')
 @click.option('--network-host',  is_flag=True,
               help='Use host network mode')
-@click.option('--image', '-i', default='ghcr.io/cps-test-lab/robovast:latest',
-              help='Use a custom Docker image')
+@click.option('--image', '-i', default=None,
+              help='Use a custom Docker image (overrides execution.image, ROBOVAST_IMAGE '
+                   'and the built-in default)')
 @click.option('--abort-on-failure', is_flag=True,
               help='Stop execution after the first failed run config (default: continue)')
 @click.option('--use-resource-allocation', is_flag=True,
@@ -96,12 +99,18 @@ def local():
               help='Enable scenario execution debug output')
 def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_failure,
         use_resource_allocation, log_tree, debug):
-    """Execute scenario configurations locally using Docker.
+    """Execute the project locally using Docker.
 
-    Runs scenario configurations in Docker containers with bind mounts for configuration
-    and output data. By default, runs all configurations from the project configuration
-    and continues past failures. Use ``--abort-on-failure`` to stop at the first failure.
-    GUI support is enabled by default (requires X11 server on host).
+    Behaviour is selected by the project ``.vast``:
+
+    - If it defines a ``search:`` block, this runs an iterative **search loop**:
+      each generation proposes parameter sets, executes them locally, scores the
+      results, and feeds them back to the strategy. Results and a live-queryable
+      ``campaign.db`` are written under the output directory. (A ``search:``
+      block is mutually exclusive with a ``configuration:`` block.)
+    - Otherwise it runs every configuration once as a **batch** in Docker
+      containers, continuing past failures (use ``--abort-on-failure`` to stop at
+      the first failure). GUI support is enabled by default.
 
     Prerequisites:
     - Docker must be installed and running
@@ -113,39 +122,109 @@ def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_
         or to a custom directory specified with ``--output``.
     """
     try:
-        run_script_path = initialize_local_execution(
-            config, None, runs, feedback_callback=click.echo,
-            skip_resource_allocation=not use_resource_allocation,
-            log_tree=log_tree, debug=debug
-        )
+        from robovast.execution.backends import RunOptions
+        from robovast.execution.controller import (run_batch_campaign,
+                                                   run_search_campaign)
 
-        # Build command with options
-        cmd = [run_script_path]
-        if start_only:
-            cmd.append("--start-only")
-        if no_gui:
-            cmd.append("--no-gui")
-        if network_host:
-            cmd.append("--network-host")
-        if output:
-            os.makedirs(output, exist_ok=True)
-            cmd.extend(["--results-dir", os.path.abspath(output)])
-        if image != 'ghcr.io/cps-test-lab/robovast:latest':
-            cmd.extend(["--image", image])
-        if abort_on_failure:
-            cmd.append("--abort-on-failure")
-        if log_tree:
-            cmd.append("-t")
-        if debug:
-            cmd.append("-d")
+        project_config = get_project_config()
+        campaign_config = validate_config(load_config(project_config.config_path))
+        results_dir = output or project_config.results_dir
 
-        logging.debug(f"Executing run script: {run_script_path}")
+        # --start-only is an interactive debugging shell (drops into a container,
+        # produces no campaign) → keep the legacy direct run.sh path for it.
+        if start_only and campaign_config.search is None:
+            run_script_path = initialize_local_execution(
+                config, None, runs, feedback_callback=click.echo,
+                skip_resource_allocation=not use_resource_allocation,
+                log_tree=log_tree, debug=debug)
+            cmd = [run_script_path, "--start-only"]
+            if no_gui:
+                cmd.append("--no-gui")
+            if network_host:
+                cmd.append("--network-host")
+            # Only an explicit --image is forwarded; otherwise the generated
+            # run.sh already bakes in the resolved image (config/ROBOVAST_IMAGE/default).
+            if image:
+                cmd.extend(["--image", image])
+            os.execv(run_script_path, cmd)  # replaces this process
+            return
 
-        # Use exec to replace current process for proper signal handling
-        os.execv(run_script_path, cmd)
+        options = RunOptions(
+            gui=not no_gui, start_only=start_only, network_host=network_host,
+            abort_on_failure=abort_on_failure, image=image, log_tree=log_tree,
+            debug=debug, skip_resource_allocation=not use_resource_allocation)
+
+        if campaign_config.search is not None:
+            ignored = [name for name, set_ in (
+                ("--config", config), ("--start-only", start_only),
+                ("--network-host", network_host),
+                ("--abort-on-failure", abort_on_failure),
+            ) if set_]
+            if ignored:
+                click.echo(f"Note: {', '.join(ignored)} ignored in search mode.")
+            report = run_search_campaign(
+                project_config.config_path, campaign_config, results_dir, runs,
+                options=options)
+            _print_search_summary(report)
+        else:
+            report = run_batch_campaign(
+                project_config.config_path, campaign_config, results_dir, runs,
+                config_filter=config, options=options)
+            click.echo(f"\nBatch run complete: {report['configs']} configuration(s) "
+                       f"in {report['campaign_root']}.")
 
     except Exception as e:
         handle_cli_exception(e)
+
+
+_RUN_PY_TEMPLATE = '''#!/usr/bin/env python3
+"""Prepared robovast run (generated by `vast exec local prepare-run`).
+
+Runs the campaign controller for this project — a batch, or the full search loop.
+Edit the settings below, then:  python run.py
+"""
+from robovast.common.common import load_config
+from robovast.common.config import validate_config
+from robovast.execution.backends import RunOptions
+from robovast.execution.controller import run_batch_campaign, run_search_campaign
+
+VAST = {vast!r}
+RESULTS_DIR = {results_dir!r}
+RUNS = {runs!r}                      # None -> execution.runs from the vast
+CONFIG_FILTER = {config_filter!r}    # batch only: name/glob to run a subset
+OPTIONS = RunOptions(gui={gui}, network_host={network_host}, abort_on_failure={abort},
+                     image={image!r}, log_tree={log_tree}, debug={debug},
+                     skip_resource_allocation={skip_ra})
+
+
+def main():
+    cfg = validate_config(load_config(VAST))
+    if cfg.search is not None:
+        run_search_campaign(VAST, cfg, RESULTS_DIR, RUNS, options=OPTIONS)
+    else:
+        run_batch_campaign(VAST, cfg, RESULTS_DIR, RUNS, config_filter=CONFIG_FILTER,
+                           options=OPTIONS)
+
+
+if __name__ == "__main__":
+    main()
+'''
+
+
+def _write_controller_run_script(output_dir, *, vast, results_dir, runs,
+                                 config_filter, options):
+    """Write an editable run.py that runs the controller for this project."""
+    content = _RUN_PY_TEMPLATE.format(
+        vast=vast, results_dir=results_dir, runs=runs, config_filter=config_filter,
+        gui=options.gui, network_host=options.network_host,
+        abort=options.abort_on_failure, image=options.image,
+        log_tree=options.log_tree, debug=options.debug,
+        skip_ra=options.skip_resource_allocation)
+    path = os.path.join(output_dir, "run.py")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+    os.chmod(path, 0o755)
+    return path
 
 
 @local.command()
@@ -161,40 +240,82 @@ def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_
 @click.option('--debug', '-d', is_flag=True,
               help='Enable scenario execution debug output')
 def prepare_run(output_dir, config, runs, use_resource_allocation, log_tree, debug):
-    """Prepare run without executing.
+    """Prepare a run without executing — materialize a runnable directory.
 
-    Generates all necessary configuration files and a ``run.sh`` script for
-    manual execution. This is useful for inspecting the generated configuration,
-    debugging, or executing scenarios with custom modifications.
+    What is produced depends on the project ``.vast`` (does NOT execute anything):
 
-    This command does NOT execute the scenario - it only prepares the files.
-    Use ``vast execution local run`` for immediate execution.
+    - **batch** (no ``search:`` block): the full enumerated config tree
+      ``out_template/`` + a docker-compose ``run.sh`` (the classic prepare-run).
+      Inspect/tweak the configs and run ``cd OUTPUT-DIR && ./run.sh``. (This runs
+      the containers only — postprocessing/``campaign.db`` come from
+      ``vast results postprocess`` or ``vast execution local run``.) ``run.sh``
+      supports the same flags as ``run`` (``--no-gui``, ``--abort-on-failure``, …).
+    - **search**: an editable ``run.py`` only — search configs are composed per
+      batch by the controller, so there is nothing static to materialize. Run the
+      whole search loop with ``python OUTPUT-DIR/run.py`` (edit its settings
+      freely; it launches the campaign controller against the project ``.vast``).
 
-    Prerequisites:
-    - Project initialized with ``vast init``
-
-    Generated files in OUTPUT-DIR:
-    - config/: Directory containing all scenario configuration files
-    - run.sh: Executable shell script to run the scenario with Docker
-    - Various temporary configuration files for the execution
-
-    After preparation, inspect the files in OUTPUT-DIR and execute manually ``cd OUTPUT-DIR; ./run.sh``.
-
-    The run.sh script supports the same options as ``vast execution local run``
-    (--start-only, --no-gui, --network-host, --output, --image, --abort-on-failure,
-    --log-tree, --debug).
+    Prerequisite: project initialized with ``vast init``.
     """
     try:
-        initialize_local_execution(
-            config, output_dir, runs, feedback_callback=click.echo,
-            skip_resource_allocation=not use_resource_allocation,
-            log_tree=log_tree, debug=debug
-        )
+        import fnmatch
 
-        click.echo(f"\nFor local execution, run: \n\n{os.path.join(output_dir, 'run.sh')}\n")
+        from robovast.common.config_generation import generate_scenario_variations
+        from robovast.execution.backends import RunOptions, stage_run_script
+
+        project_config = get_project_config()
+        vast = os.path.abspath(project_config.config_path)
+        campaign_config = validate_config(load_config(vast))
+        os.makedirs(output_dir, exist_ok=True)
+        options = RunOptions(gui=True, log_tree=log_tree, debug=debug,
+                             skip_resource_allocation=not use_resource_allocation)
+        eff_runs = runs if runs is not None else campaign_config.execution.runs
+
+        if campaign_config.search is not None:
+            # Search configs are composed per batch by the controller, so there is
+            # nothing static to materialize — emit only an editable run.py that
+            # drives the whole search loop.
+            _write_controller_run_script(
+                output_dir, vast=vast, results_dir=os.path.abspath(output_dir),
+                runs=runs, config_filter=None, options=options)
+            click.echo(f"\nPrepared search launcher in {output_dir}:")
+            click.echo(f"  run the search loop:   python {os.path.join(output_dir, 'run.py')}\n")
+        else:
+            # Batch is fully enumerated — materialize the whole config tree + a
+            # runnable docker-compose run.sh (the classic prepare-run).
+            with tempfile.TemporaryDirectory(prefix="robovast_prepare_") as tmp:
+                campaign_data, _ = generate_scenario_variations(
+                    variation_file=vast, progress_update_callback=None, output_dir=tmp)
+                if not campaign_data["configs"]:
+                    raise click.ClickException("No configs found in vast-file.")
+                if config:
+                    matched = [c for c in campaign_data["configs"]
+                               if fnmatch.fnmatch(c["name"], config)]
+                    if not matched:
+                        raise click.ClickException(f"No configs matched pattern '{config}'.")
+                    campaign_data["configs"] = matched
+                stage_run_script(campaign_data, output_dir, eff_runs, options,
+                                 results_dir=os.path.abspath(output_dir))
+            click.echo(f"\nPrepared batch in {output_dir}:")
+            click.echo(f"  run it:   cd {output_dir} && ./run.sh")
+            click.echo("  (runs the containers only; postprocessing/store run via "
+                       "'vast results postprocess' or 'vast exec local run')\n")
 
     except Exception as e:
         handle_cli_exception(e)
+
+
+def _print_search_summary(report):
+    """Echo a short summary of a finished search campaign's report."""
+    click.echo(f"\nSearch complete: {len(report.evaluations)} evaluation(s).")
+    if report.best is not None:
+        objs = ", ".join(f"{k}={v:.4g}" for k, v in report.best.objectives.items())
+        click.echo(f"Most interesting: {report.best.params.values} ({objs})")
+    if report.extra.get("num_elites") is not None:
+        click.echo(
+            f"Archive: {report.extra['num_elites']} elite(s), "
+            f"coverage={report.extra.get('coverage', 0):.2f}, "
+            f"qd_score={report.extra.get('qd_score', 0):.4g}")
 
 
 @execution.group()
@@ -213,25 +334,20 @@ def cluster():
               help='Run only configurations matching this name or glob pattern (e.g. hall*)')
 @click.option('--runs', '-r', type=int, default=None,
               help='Override the number of runs specified in the config')
-@click.option('--follow', '-f', is_flag=True, default=False,
-              help='Follow job execution and wait for completion (default: exit immediately after creating jobs)')
-@click.option('--cleanup', is_flag=True,
-              help='Clean up previous runs before starting (default: do not cleanup; allows multiple parallel runs)')
 @click.option('--log-tree', '-t', is_flag=True,
               help='Log scenario execution live tree')
 @click.option('--context', '-x', 'kube_context', default=None,
               help='Kubernetes context to use (default: active context in kubeconfig)')
-def run(config, runs, follow, cleanup, log_tree, kube_context):  # pylint: disable=function-redefined,redefined-outer-name
-    """Execute scenarios on a Kubernetes cluster.
+def run(config, runs, log_tree, kube_context):  # pylint: disable=function-redefined,redefined-outer-name
+    """Execute a campaign (batch or search) on a Kubernetes cluster.
 
-    Deploys all run configurations (or a specific one) as Kubernetes jobs
-    for distributed parallel execution.
+    Launches an in-cluster controller pod that drives the whole campaign and
+    creates the per-batch scenario jobs from inside the cluster. The command is
+    fire-and-forget: it returns immediately after starting the controller.
 
-    By default, exits immediately after creating jobs.
-    Use --follow to wait for all jobs to complete before returning.
-    Use --cleanup to remove previous runs before starting (by default,
-    previous runs are left intact so multiple runs can run in parallel).
-    Use 'vast execution cluster run-cleanup' to clean up jobs afterwards.
+    Track progress with 'vast execution cluster monitor', then retrieve results
+    with 'vast execution cluster upload-to-share' and 'vast results download'.
+    Use --config to run only matching configurations (batch campaigns).
     Use --context to target a specific Kubernetes cluster.
 
     Requires project initialization with ``vast init`` first.
@@ -269,6 +385,20 @@ def run(config, runs, follow, cleanup, log_tree, kube_context):  # pylint: disab
     # Get project configuration
     project_config = get_project_config()
 
+    # Validate the --config filter on the host *before* launching the controller.
+    # The controller runs fire-and-forget in-cluster, so without this check a typo
+    # only surfaces in the controller pod log; here it fails fast with the list of
+    # available configs. (Search campaigns ignore --config, so skip the check.)
+    if config:
+        campaign_config = validate_config(load_config(project_config.config_path))
+        if campaign_config.search is None:
+            try:
+                with tempfile.TemporaryDirectory(prefix="robovast_cfgcheck_") as _tmp:
+                    build_campaign_data(project_config.config_path, _tmp, config)
+            except ValueError as e:
+                click.echo(f"✗ Error: {e}", err=True)
+                sys.exit(1)
+
     # Check Kubernetes access (namespace-scoped so RBAC namespace-only users succeed)
     k8s_client = get_kubernetes_client(context=kube_context)
     namespace = get_cluster_namespace(context_key)
@@ -280,58 +410,219 @@ def run(config, runs, follow, cleanup, log_tree, kube_context):  # pylint: disab
         sys.exit(1)
     logging.debug(k8s_msg)
 
-    # Check if transfer pod is running
-    click.echo("Checking robovast pod status...")
-    pod_ok, pod_msg = check_pod_running(k8s_client, "robovast", namespace)
-    cluster_config = None
-
-    if pod_ok:
-        try:
-            cluster_config = get_cluster_config_for_context(context_key)
-            if cluster_config:
-                logging.debug("Auto-detected cluster config (credentials restored from flag file)")
-            else:
-                raise ValueError(
-                    "No cluster config specified and no saved config found. "
-                    "Use --config <name> to select a config, or run setup first."
-                )
-        except Exception as e:
-            pod_msg = f"Failed to get cluster config: {e}"
-            pod_ok = False
-
-    if not pod_ok:
-        click.echo(f"✗ Error: {pod_msg}", err=True)
-        click.echo("To set up the cluster.", err=True)
+    # Resolve the cluster config from the saved flag file (no pod needed).
+    try:
+        cluster_config = get_cluster_config_for_context(context_key)
+        if not cluster_config:
+            raise ValueError(
+                "No cluster config specified and no saved config found. "
+                "Use --config <name> to select a config, or run setup first."
+            )
+        logging.debug("Auto-detected cluster config (credentials restored from flag file)")
+    except Exception as e:
+        click.echo(f"✗ Error: Failed to get cluster config: {e}", err=True)
+        click.echo("To set up the cluster:", err=True)
         click.echo()
         click.echo("  vast execution cluster setup <cluster-config>", err=True)
         click.echo()
         sys.exit(1)
-    logging.debug(pod_msg)
 
+    # Let the cluster config verify its own storage prerequisites (e.g. rke2
+    # checks its MinIO pod; GCS is a no-op).
     try:
-        job_runner = JobRunner(
-            project_config.config_path, config, runs, cluster_config,
-            namespace=namespace, cleanup_before_run=cleanup, log_tree=log_tree,
-            kube_context=kube_context)
-        job_runner.run(detached=not follow)
+        cluster_config.verify_cluster_ready(
+            k8s_client=k8s_client, namespace=namespace, kube_context=kube_context)
+    except Exception as e:
+        click.echo(f"✗ Error: {e}", err=True)
+        sys.exit(1)
 
-        if not follow:
-            click.echo(f"✓ Jobs created successfully (Campaign ID: {job_runner.campaign})")
-            click.echo()
-            click.echo("Jobs are now running in detached mode.")
-            click.echo()
-            click.echo("To check job status, use: vast execution cluster monitor")
-            click.echo("To clean up jobs, use: vast execution cluster run-cleanup")
-            click.echo()
-        else:
-            click.echo("Cluster execution finished.")
-            click.echo()
-            click.echo("You can now upload results to a share using:")
-            click.echo()
-            click.echo("  vast execution cluster upload-to-share")
-            click.echo()
+    # Both batch and search campaigns run via an in-cluster controller pod
+    # (fire-and-forget): the controller drives the campaign and launches the
+    # per-batch scenario jobs from inside the cluster, then publishes the
+    # canonical campaign to storage. The host returns immediately.
+    from robovast.execution.cluster_execution.controller_launcher import \
+        launch_controller  # pylint: disable=import-outside-toplevel
+
+    cfg_name, setup_kwargs = load_cluster_setup_info(context_key)
+    _, control_node_labels = get_kubernetes_node_labels_from_config(project_config.config_path)
+    try:
+        launch_controller(
+            config_path=project_config.config_path, config_name=cfg_name,
+            setup_kwargs=setup_kwargs, namespace=namespace, runs=runs,
+            config_filter=config, kube_context=kube_context,
+            log_tree=log_tree, control_node_labels=control_node_labels)
     except Exception as e:
         handle_cli_exception(e)
+
+
+def _progress_bar(done, total, width=20):
+    """Return ``(bar, pct)`` — the ``█``/``░`` progress bar used across the monitor."""
+    frac = max(0.0, min(1.0, done / total)) if total and total > 0 else 0.0
+    filled = int(width * frac)
+    return "█" * filled + "░" * (width - filled), 100.0 * frac
+
+
+def _fmt_size(n):
+    """Format a byte count as MiB (matches the upload progress display)."""
+    return f"{n / 1024 / 1024:.1f} MiB"
+
+
+def _fmt_rate(bps):
+    """Format a transfer rate (bytes/s) with an adaptive unit."""
+    if bps >= 1024 * 1024:
+        return f"{bps / 1024 / 1024:.1f} MiB/s"
+    if bps >= 1024:
+        return f"{bps / 1024:.1f} KiB/s"
+    return f"{bps:.0f} B/s"
+
+
+def _monitor_via_controller(namespace, kube_context, interval, once):
+    """Monitor campaigns through their controllers' control channels.
+
+    Handles **multiple concurrent campaigns**: every live controller pod is shown
+    as its own block, each driven by that controller's ``phase`` — the
+    authoritative "done" signal, which fixes the old bug where the monitor exited
+    in the gap *between* search generations (when live Jobs momentarily drop to
+    zero). New campaigns launched while monitoring are picked up on the next tick.
+
+    Returns ``True`` if it handled the monitoring (at least one controller pod was
+    found), ``False`` if there is no controller channel so the caller should fall
+    back to the Kubernetes-only view.
+    """
+    import contextlib  # pylint: disable=import-outside-toplevel
+
+    from robovast.execution.cluster_execution import control_client
+
+    pods = control_client.find_controller_pods(namespace, kube_context)
+    if not pods:
+        return False
+    if not any(ph == "Running" for _n, ph, _c in pods):
+        # Only terminal controller pod(s): the campaign(s) already finished. Report
+        # rather than falling back to the live K8s view (which would just spin).
+        click.echo("Controller finished (no live channel).")
+        return True
+
+    cursor_up, clear_line = "\033[A", "\033[2K"
+    prev = [0]
+
+    def _live_counts(campaign_id):
+        """Current batch's live Job counts (running/pending) for this campaign."""
+        if not campaign_id:
+            return {}
+        try:
+            per_run = get_cluster_job_counts_per_campaign(namespace, context=kube_context)
+        except Exception:  # pylint: disable=broad-except
+            return {}
+        return per_run.get(_label_safe_campaign(campaign_id), {})
+
+    def _campaign_lines(status):
+        c = _live_counts(status.get("campaign_id"))
+        runs = status.get("runs") or {}
+        phase_label = status.get("phase", "?")
+        if status.get("stage"):
+            phase_label += f" / {status['stage']}"
+        if status.get("phase") == "uploading" and status.get("share_provider"):
+            phase_label += f" via {status['share_provider']}"
+        lines = [f"Campaign {status.get('campaign_id', '?')}  [{phase_label}]"]
+        line2 = f"  Batch {status.get('batch', 0)} (done {status.get('batches_done', 0)})"
+        if status.get("best_objective") is not None:
+            line2 += f"   best={status['best_objective']:.4g}"
+        lines.append(line2)
+        if status.get("budget"):
+            lines.append("  Budget: " + " | ".join(
+                f"{b['label']} {b.get('current')}/{b.get('limit')}" for b in status["budget"]))
+        completed, total = runs.get('completed', 0), runs.get('total', 0)
+        bar_str, pct = _progress_bar(completed, total)
+        run_line = f"  Runs (this batch): [{bar_str}] {pct:5.1f}%  {completed}/{total}"
+        if c:
+            run_line += f"   Running: {c.get('running', 0)}  Pending: {c.get('pending', 0)}"
+        lines.append(run_line)
+        up = (status.get("extra") or {}).get("upload")
+        if status.get("phase") == "uploading" and up:
+            u_bar, u_pct = _progress_bar(up.get("sent", 0), up.get("total", 0))
+            up_line = (f"  Upload: [{u_bar}] {u_pct:5.1f}%  "
+                       f"{_fmt_size(up.get('sent', 0))}/{_fmt_size(up.get('total', 0))}")
+            if up.get("rate") is not None:
+                up_line += f"   {_fmt_rate(up['rate'])}"
+            lines.append(up_line)
+        if status.get("stop"):
+            lines.append(f"  Stop: {status['stop'].get('reason', '')}")
+        return lines
+
+    def _render(blocks):
+        lines = [line for block in blocks for line in block]
+        for _ in range(prev[0]):
+            sys.stdout.write(cursor_up)
+        for line in lines:
+            sys.stdout.write("\r" + clear_line + line + "\n")
+        for _ in range(len(lines), prev[0]):
+            sys.stdout.write("\r" + clear_line + "\n")
+        prev[0] = len(lines)
+        sys.stdout.flush()
+
+    try:
+        with contextlib.ExitStack() as stack:
+            channels: dict[str, str] = {}      # pod name -> control-channel base URL
+
+            def _ensure_channels(current):
+                """Open a port-forward for each Running controller not yet connected."""
+                for name, phase, _campaign in current:
+                    if phase == "Running" and name not in channels:
+                        try:
+                            channels[name] = stack.enter_context(
+                                control_client.port_forward(name, namespace, kube_context))
+                        except Exception:  # pylint: disable=broad-except
+                            logging.debug("Could not port-forward to controller %s", name)
+
+            _ensure_channels(pods)
+            if not channels:
+                return False                   # nothing reachable → K8s fallback
+
+            if once:
+                blocks = []
+                for base in channels.values():
+                    try:
+                        blocks.append(_campaign_lines(control_client.get_status(base)))
+                    except Exception:  # pylint: disable=broad-except
+                        pass
+                _render(blocks)
+                return True
+
+            click.echo(f"Monitoring {len(channels)} controller(s) (press Ctrl+C to stop)...")
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            done: set[str] = set()             # pod names whose campaign has ended
+            while True:
+                current = control_client.find_controller_pods(namespace, kube_context)
+                phase_by_pod = {n: p for n, p, _c in current}
+                campaign_by_pod = {n: c for n, p, c in current}
+                _ensure_channels(current)      # pick up newly-launched campaigns
+                blocks = []
+                for name, base in channels.items():
+                    try:
+                        status = control_client.get_status(base)
+                    except Exception:  # pylint: disable=broad-except
+                        # Channel gone: identify the campaign by its pod label so we
+                        # show the campaign name rather than the pod name; fall back
+                        # to the pod name only if the label is unavailable.
+                        label = campaign_by_pod.get(name) or f"pod {name}"
+                        if phase_by_pod.get(name) in ("Succeeded", "Failed", None):
+                            done.add(name)
+                            blocks.append([f"Campaign {label}  [finished]"])
+                        else:
+                            blocks.append([f"Campaign {label}  [channel unavailable]"])
+                        continue
+                    blocks.append(_campaign_lines(status))
+                    if status.get("phase") in ("finished", "failed"):
+                        done.add(name)
+                _render(blocks)
+                if channels and done >= set(channels):
+                    click.echo("\nAll campaigns finished.")
+                    return True
+                time.sleep(interval)
+    except Exception:  # pylint: disable=broad-except
+        logging.debug("Controller channel unavailable; falling back to K8s view.")
+        return False
 
 
 @cluster.command()
@@ -394,6 +685,15 @@ def monitor(interval, once, kube_context):
             contexts_to_monitor = [(kube_context, kube_context)]
 
         multi = len(contexts_to_monitor) > 1
+
+        # Prefer the controller's control channel (single-context campaigns): it
+        # reports loop phase/batch/run progress and is authoritative for "done",
+        # so the monitor no longer exits in the gap between search generations.
+        # Falls through to the Kubernetes-only view below when no controller pod
+        # is reachable (older runs, multi-cluster, or partial setups).
+        if not multi:
+            if _monitor_via_controller(namespace, contexts_to_monitor[0][1], interval, once):
+                return
 
         # Per-context state (keyed by kube_context_name)
         initial_total: dict[str, dict] = {}        # ctx -> {campaign: total}
@@ -570,68 +870,65 @@ def monitor(interval, once, kube_context):
         handle_cli_exception(e)
 
 
-@cluster.command(name='upload-to-share')
-@click.option('--campaign', '-i', multiple=True,
-              help='Only upload this campaign (e.g. campaign-2025-02-27-123456). Can be specified multiple times. Without this, uploads all campaigns.')
-@click.option('--force', '-f', is_flag=True,
-              help='Force recreation of the remote tar.gz archive even if it already exists')
-@click.option('--verbose', '-v', is_flag=True,
-              help='Print detailed progress')
-@click.option('--keep-archive', is_flag=True,
-              help='Keep the tar.gz in the pod /data/ after a successful upload')
-@click.option('--skip-removal', is_flag=True, hidden=True,
-              help='Deprecated: S3/GCS data is now kept by default. Use --remove-from-storage to opt in to deletion.')
-@click.option('--remove-from-storage', is_flag=True,
-              help='Delete the campaign data from S3/GCS after a successful upload. Without this flag, data is kept in storage.')
+@cluster.command()
 @click.option('--context', '-x', 'kube_context', default=None,
               help='Kubernetes context to use (default: active context in kubeconfig)')
-def upload_to_share(campaign, force, verbose, keep_archive, skip_removal, remove_from_storage, kube_context):
-    """Upload campaign archives from the cluster pod to a remote share service.
+def stop(kube_context):
+    """Ask the running controller to stop gracefully (after the current batch).
 
-    Results are transferred entirely inside the archiver sidecar of the
-    robovast pod — no data is downloaded to the local machine.
-
-    Use ``--campaign`` (``-i``) to upload a single campaign. If the specified
-    campaign is not found, available campaigns are listed.
-
-    For each available run the command:
-
-    \b
-    1. Creates a compressed tar.gz archive in the pod.
-       Skips this step if the archive already exists.
-    2. Uploads the archive to the configured share service from inside the pod.
-    3. Removes the archive from the pod on success (unless ``--keep-archive``).
-    4. Keeps the S3/GCS campaign data (use ``--remove-from-storage`` to delete it).
-    5. Keeps both the archive and the bucket if the upload fails so you can
-       retry.
-
-    Configuration is read from a ``.env`` file in the current or any parent
-    directory.  Required variables:
-
-    \b
-    ROBOVAST_SHARE_TYPE  — share provider: ``nextcloud``, ``gcs``, ``sftp``, ``webdav``
-
-    Additional variables depend on the share type.  Run with no ``.env`` file
-    to see a list of required variables for the detected share type.
-
-    Use ``--keep-archive`` to retain the archive in the pod after upload
-    (useful when you want to also download the results locally later).
+    Sends the ``stop`` command over the controller's control channel; the search
+    loop ends once the in-flight batch finishes and the campaign is published as
+    usual. A no-op if no controller is running.
     """
-    # Load .env in priority order:
-    #   1. Next to the --vast-file override (if given)
-    #   2. Next to the .vast config file (dirname of config_path)
-    #   3. Next to the .vast_project file (project_dir)
-    # Falls back to the default cwd-upward search when no project is found.
+    try:
+        from robovast.execution.cluster_execution import control_client
+        namespace = get_cluster_namespace(kube_context)
+        pod, _phase = control_client.find_controller_pod(namespace, kube_context)
+        if not pod:
+            click.echo("No running controller found.")
+            return
+        with control_client.port_forward(pod, namespace, kube_context) as base:
+            result = control_client.send_command(base, "stop")
+        if result.get("ok"):
+            click.echo(f"Stop requested on controller '{pod}'. "
+                       "The campaign will end after the current batch.")
+        else:
+            click.echo(f"Stop command failed: {result.get('error')}")
+    except Exception as e:
+        handle_cli_exception(e)
+
+
+@cluster.command(name='upload-to-share')
+@click.option('--campaign', '-i', default=None,
+              help='Target this campaign\'s controller pod (default: the running / most recent one).')
+@click.option('--context', '-x', 'kube_context', default=None,
+              help='Kubernetes context to use (default: active context in kubeconfig)')
+def upload_to_share(campaign, kube_context):
+    """Retry the in-cluster controller's upload-to-share.
+
+    The controller pod uploads the finished campaign to the configured share
+    automatically; on success the pod completes. If the upload fails (e.g. the
+    share was full or briefly unreachable) the controller stays alive — use this
+    command to retry once the cause is fixed.
+
+    Credentials are reused from the controller's launch-time environment, so no
+    arguments are required. If you correct the share settings in your ``.env``,
+    they are re-sent here as overrides for the retry. Watch progress with
+    ``vast exec cluster monitor``.
+    """
     from robovast.common.cli.project_config import \
         ProjectConfig  # pylint: disable=import-outside-toplevel
+    from robovast.execution.cluster_execution import \
+        control_client  # pylint: disable=import-outside-toplevel
 
+    # Load .env (same discovery as ``cluster run``) so any corrected share
+    # credentials can be forwarded as overrides.
     _vast_override = None
     _click_ctx = click.get_current_context(silent=True)
     if _click_ctx and _click_ctx.obj:
         _vast_override = _click_ctx.obj.get('vast_file')
     if _vast_override:
         load_dotenv(os.path.join(os.path.dirname(_vast_override), ".env"), override=False)
-
     _project_file = ProjectConfig.find_project_file()
     if _project_file:
         _project_dir = os.path.dirname(os.path.abspath(_project_file))
@@ -642,65 +939,44 @@ def upload_to_share(campaign, force, verbose, keep_archive, skip_removal, remove
     else:
         load_dotenv(override=False)
 
+    # Credential overrides from the current .env. When ROBOVAST_SHARE_TYPE is set
+    # the user intends to supply (or switch to) a provider, so any missing var is
+    # surfaced rather than swallowed — otherwise a typo would silently fall back
+    # to the launch-time destination. When it is unset, send no overrides (the
+    # documented no-arg path that reuses the launch-time credentials).
+    overrides: dict = {}
     share_type = os.environ.get("ROBOVAST_SHARE_TYPE", "").strip()
-    if not share_type:
-        raise click.UsageError(
-            "ROBOVAST_SHARE_TYPE is not set.\n"
-            "Add it to a .env file in your project directory.\n"
-            "Supported values: nextcloud, gcs, sftp, webdav\n"
-            "Example .env (WebDAV):\n"
-            "  ROBOVAST_SHARE_TYPE=webdav\n"
-            "  ROBOVAST_WEBDAV_URL=https://nas.example.com/dav/results/\n"
-            "  ROBOVAST_WEBDAV_USER=myuser\n"
-            "  ROBOVAST_WEBDAV_PASSWORD=secret\n"
-            "Example .env (Nextcloud):\n"
-            "  ROBOVAST_SHARE_TYPE=nextcloud\n"
-            "  ROBOVAST_SHARE_URL=https://cloud.example.com/s/AbCdEfGhIjKlMn"
-        )
-
-    providers = load_share_provider_plugins()
-    if share_type not in providers:
-        available = ", ".join(sorted(providers)) or "(none installed)"
-        raise click.UsageError(
-            f"Unknown share type '{share_type}'.\n"
-            f"Available providers: {available}"
-        )
-
-    try:
+    if share_type:
+        providers = load_share_provider_plugins()
+        if share_type not in providers:
+            available = ", ".join(sorted(providers)) or "(none installed)"
+            raise click.UsageError(
+                f"Unknown share type '{share_type}'.\nAvailable providers: {available}")
+        # provider() / build_pod_env() raise click.UsageError listing any missing
+        # vars; let it propagate (caught by the outer `except click.UsageError`).
         provider = providers[share_type]()
-    except click.UsageError:
-        raise
-    except Exception as e:
-        handle_cli_exception(e)
-        return
-
-    share_url = os.environ.get("ROBOVAST_SHARE_URL", "").strip()
-    if share_url:
-        click.echo(f"Share target ({share_type}): {share_url}")
-
-    # --skip-removal is the old flag (kept for backward compat, now a no-op).
-    # --remove-from-storage is the new explicit opt-in.
-    actually_skip_removal = not remove_from_storage
+        overrides = {"ROBOVAST_SHARE_TYPE": share_type, **provider.build_pod_env()}
+        share_url = os.environ.get("ROBOVAST_SHARE_URL", "").strip()
+        if share_url:
+            overrides["ROBOVAST_SHARE_URL"] = share_url
 
     try:
         require_context_for_multi_cluster(kube_context)
-        context_key = kube_context
-        cluster_config = get_cluster_config_for_context(context_key)
-        uploader = ShareUploader(
-            namespace=get_cluster_namespace(context_key),
-            cluster_config=cluster_config,
-            context=kube_context,
-            provider=provider,
-        )
-        count = uploader.upload_campaigns(
-            force=force,
-            verbose=verbose,
-            keep_archive=keep_archive,
-            skip_removal=actually_skip_removal,
-            campaign_ids=list(campaign) or None,
-        )
-        click.echo(f"✓ Uploaded {count} campaign(s) to {share_type} successfully!")
-
+        namespace = get_cluster_namespace(kube_context)
+        pod, _phase = control_client.find_controller_pod(namespace, kube_context, campaign)
+        if not pod:
+            raise click.UsageError(
+                "No controller pod found. Has the campaign been launched with "
+                "'vast exec cluster run'?"
+            )
+        with control_client.port_forward(pod, namespace, kube_context) as base_url:
+            result = control_client.send_command(base_url, "upload-to-share", **overrides)
+        if not result.get("ok"):
+            raise click.UsageError(
+                f"Controller rejected the upload-to-share command: {result.get('error')}"
+            )
+        click.echo("✓ upload-to-share triggered on the controller.")
+        click.echo("  Watch progress with: vast exec cluster monitor")
     except click.UsageError:
         raise
     except Exception as e:
@@ -1078,48 +1354,77 @@ def prepare_run(output, config, runs, cluster_config, options, log_tree, kube_co
 
         namespace = cluster_kwargs.get("namespace", get_cluster_namespace(context_key))
 
-        # Initialize job runner (this prepares all scenarios)
-        job_runner = JobRunner(
-            config_path, config, runs, cluster_config,
-            namespace=namespace, log_tree=log_tree,
-            kube_context=kube_context)
+        # Compose the batch campaign data on the host (the same path the
+        # controller uses for batch), then build the manifests with the very
+        # builder the controller submits with. This command is offline — only
+        # manifest generation, no Kubernetes API calls.
+        import fnmatch  # pylint: disable=import-outside-toplevel
+        from robovast.common.config_generation import \
+            generate_scenario_variations  # pylint: disable=import-outside-toplevel
+        from robovast.common.execution import \
+            resolve_robovast_image  # pylint: disable=import-outside-toplevel
+        from robovast.execution.cluster_execution.kubernetes_backend import \
+            BatchJobRunner  # pylint: disable=import-outside-toplevel
+        from robovast.execution.controller import \
+            campaign_id_for  # pylint: disable=import-outside-toplevel
 
-        click.echo(f"Preparing run configuration 'ID: {job_runner.campaign}', run configs: {
-                   len(job_runner.configs)}, runs per run config: {job_runner.num_runs}...")
+        campaign_config = validate_config(load_config(config_path))
+        if campaign_config.search is not None:
+            raise click.ClickException(
+                "'cluster prepare-run' is a batch-only debugging aid, but the given "
+                ".vast defines a 'search:' block. Use 'vast exec cluster run' instead."
+            )
+        campaign_id = campaign_id_for(campaign_config)
+        num_runs = runs if runs is not None else campaign_config.execution.runs
 
-        # Prepare config files
-        logging.debug("Preparing configuration files...")
+        # generate_scenario_variations writes resolved inputs into a working dir
+        # that campaign_data references; keep it alive until the manifests + the
+        # config tree have been written.
+        with tempfile.TemporaryDirectory(prefix="robovast_prepare_") as _work:
+            campaign_data, _ = generate_scenario_variations(
+                variation_file=config_path, progress_update_callback=None,
+                output_dir=_work)
+            if not campaign_data["configs"]:
+                raise click.ClickException("No configs found in vast-file")
+            if config:
+                matched = [c for c in campaign_data["configs"]
+                           if fnmatch.fnmatch(c["name"], config)]
+                if not matched:
+                    raise click.ClickException(f"No configs matched pattern '{config}'")
+                campaign_data["configs"] = matched
 
-        out_dir = os.path.join(output, "out_template")
-        prepare_campaign_configs(
-            out_dir,
-            job_runner.campaign_data,
-            cluster=True
-        )
-        # Per-job multi-document parameter files + job-link manifest (matches
-        # what upload writes for a real run).
-        job_runner._write_job_param_files(out_dir)  # pylint: disable=protected-access
+            image = resolve_robovast_image(
+                config_image=(campaign_data.get("execution") or {}).get("image"))
+            job_runner = BatchJobRunner.for_batch(
+                campaign_data=campaign_data, campaign_id=campaign_id, batch_tag=None,
+                runs=num_runs, cluster_config=cluster_config, namespace=namespace,
+                image=image, kube_context=kube_context, log_tree=log_tree)
 
-        # Create jobs directory
-        jobs_dir = os.path.join(output, "jobs")
-        os.makedirs(jobs_dir, exist_ok=True)
+            click.echo(f"Preparing run configuration 'ID: {campaign_id}', run configs: "
+                       f"{len(campaign_data['configs'])}, runs per run config: {num_runs}...")
 
-        # Generate all job manifests — one K8s Job per packed job
-        # (configs_per_job=1 → one job per config/run).
-        logging.debug("Generating job manifests...")
-        all_jobs = []
-        jobs = job_runner._build_jobs()  # pylint: disable=protected-access
-        for job in jobs:
-            job_manifest = job_runner.create_job_manifest(job, len(jobs))
+            # Prepare config files
+            logging.debug("Preparing configuration files...")
+            out_dir = os.path.join(output, "out_template")
+            prepare_campaign_configs(out_dir, campaign_data, cluster=True)
+            # Per-job multi-document parameter files + job-link manifest (matches
+            # what upload writes for a real run).
+            job_runner._write_job_param_files(out_dir)  # pylint: disable=protected-access
 
-            # Save individual job manifest
-            job_name = job_manifest['metadata']['name']
-            job_file = os.path.join(jobs_dir, f"{job_name}.yaml")
-            with open(job_file, 'w') as f:
-                yaml.dump(job_manifest, f, default_flow_style=False)
-
-            all_jobs.append(job_manifest)
-        job_count = len(all_jobs)
+            # Generate all job manifests — one K8s Job per packed job
+            # (runs_per_job=1 → one job per config/run).
+            logging.debug("Generating job manifests...")
+            jobs_dir = os.path.join(output, "jobs")
+            os.makedirs(jobs_dir, exist_ok=True)
+            all_jobs = []
+            jobs = job_runner._build_jobs()  # pylint: disable=protected-access
+            for job in jobs:
+                job_manifest = job_runner.create_job_manifest(job, len(jobs))
+                job_name = job_manifest['metadata']['name']
+                with open(os.path.join(jobs_dir, f"{job_name}.yaml"), 'w') as f:
+                    yaml.dump(job_manifest, f, default_flow_style=False)
+                all_jobs.append(job_manifest)
+            job_count = len(all_jobs)
 
         # Save combined manifest
         combined_file = os.path.join(output, "all-jobs.yaml")
@@ -1136,9 +1441,7 @@ def prepare_run(output, config, runs, cluster_config, options, log_tree, kube_co
         prepare_kueue_setup(output, namespace=namespace, kube_context=kube_context,
                             node_labels=_jobs_node_labels)
 
-        generate_upload_script(
-            output, job_runner.campaign, namespace, cluster_config,
-        )
+        generate_upload_script(output, campaign_id, namespace, cluster_config)
 
         click.echo(f"✓ Successfully prepared {job_count} job manifests in directory'{
                    output}'.\n\nFollow README files to set up and execute.\n")
@@ -1181,45 +1484,95 @@ Namespace: {namespace}
 """
 
 import os
+import re
+import subprocess
 import sys
-from robovast.execution.cluster_execution import archiver
-from robovast.execution.cluster_config.base_config import BaseConfig
+import time
+
+import boto3
+from botocore.config import Config as _BotoConfig
+
+ACCESS_KEY = "{access_key}"
+SECRET_KEY = "{secret_key}"
+USES_EMBEDDED = {uses_embedded}
+HOST_ENDPOINT = {host_endpoint}
+SHARED_BUCKET = {shared_bucket}
+S3_REGION = {s3_region}
+CAMPAIGN = "{bucket_name}"
+NAMESPACE = "{namespace}"
+
+_FORWARD_RE = re.compile(r"Forwarding from 127\\.0\\.0\\.1:(\\d+)")
 
 
-class _StaticConfig(BaseConfig):
-    def get_s3_credentials(self):
-        return ("{access_key}", "{secret_key}")
-    def uses_embedded_s3(self):
-        return {uses_embedded}
-    def get_host_s3_endpoint(self):
-        return {host_endpoint}
-    def get_s3_bucket(self):
-        return {shared_bucket}
-    def get_s3_region(self):
-        return {s3_region}
-    def get_storage_backend(self):
-        return "s3"
-    def setup_cluster(self, **kw): pass
-    def cleanup_cluster(self, **kw): pass
-    def prepare_setup_cluster(self, output_dir, **kw): pass
-    def get_instance_type_command(self): return ""
+def _start_port_forward():
+    """Port-forward the in-cluster MinIO (robovast pod); return (proc, endpoint)."""
+    proc = subprocess.Popen(
+        ["kubectl", "port-forward", "-n", NAMESPACE, "pod/robovast", ":9000"],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        line = proc.stdout.readline()
+        if not line:
+            if proc.poll() is not None:
+                raise RuntimeError("kubectl port-forward exited early")
+            continue
+        match = _FORWARD_RE.search(line)
+        if match:
+            return proc, f"http://127.0.0.1:{{match.group(1)}}"
+    proc.terminate()
+    raise TimeoutError("timed out establishing kubectl port-forward")
+
+
+def _client(endpoint):
+    return boto3.client(
+        "s3", endpoint_url=endpoint,
+        aws_access_key_id=ACCESS_KEY, aws_secret_access_key=SECRET_KEY,
+        region_name=S3_REGION,
+        config=_BotoConfig(signature_version="s3v4",
+                           s3={{"addressing_style": "path"}},
+                           request_checksum_calculation="when_required",
+                           response_checksum_validation="when_required"))
 
 
 def main():
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    config_dir = os.path.join(script_dir, "out_template")
-    campaign_id = "{bucket_name}"
-    namespace = "{namespace}"
-
-    if not os.path.exists(config_dir):
+    config_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out_template")
+    if not os.path.isdir(config_dir):
         print(f"ERROR: Config directory not found: {{config_dir}}")
         sys.exit(1)
 
-    config = _StaticConfig()
-    script_path, env_vars, bucket, prefix = archiver.upload_args_for_config(config, campaign_id)
-    print(f"Uploading config files to bucket \'{{bucket}}\'...")
-    archiver.upload_configs(config_dir, campaign_id, bucket, script_path, env_vars, namespace=namespace, prefix=prefix)
-    print("Upload complete.")
+    # Match the layout the job init containers mirror from
+    # (in_pod_storage.campaign_storage_location): a shared bucket stores the
+    # campaign under "<campaign>/"; otherwise the campaign is its own bucket.
+    if SHARED_BUCKET:
+        bucket, prefix = SHARED_BUCKET, f"{{CAMPAIGN}}/"
+    else:
+        bucket, prefix = CAMPAIGN, ""
+
+    pf = None
+    try:
+        if USES_EMBEDDED:
+            pf, endpoint = _start_port_forward()
+        else:
+            endpoint = HOST_ENDPOINT
+        s3 = _client(endpoint)
+        if not SHARED_BUCKET:
+            try:
+                s3.head_bucket(Bucket=bucket)
+            except Exception:  # noqa: BLE001 - bucket likely absent; create it
+                s3.create_bucket(Bucket=bucket)
+        print(f"Uploading config files to '{{bucket}}' (prefix '{{prefix}}')...")
+        count = 0
+        for root, _dirs, files in os.walk(config_dir):
+            for name in files:
+                path = os.path.join(root, name)
+                rel = os.path.relpath(path, config_dir).replace(os.sep, "/")
+                extra = {{"Metadata": {{"executable": "yes"}}}} if os.access(path, os.X_OK) else {{}}
+                s3.upload_file(path, bucket, prefix + rel, ExtraArgs=extra)
+                count += 1
+        print(f"Upload complete ({{count}} files).")
+    finally:
+        if pf is not None:
+            pf.terminate()
 
 
 if __name__ == "__main__":

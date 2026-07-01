@@ -19,7 +19,9 @@
 
 import base64
 import os
+import urllib.error
 import urllib.parse
+import urllib.request
 import xml.etree.ElementTree as ET
 from typing import Callable
 
@@ -28,7 +30,7 @@ import requests
 
 from robovast.common.execution import is_campaign_dir
 
-from .base import BaseShareProvider
+from .base import BaseShareProvider, UploadProgressReader
 
 __all__ = ["NextcloudShareProvider"]
 
@@ -64,16 +66,45 @@ class NextcloudShareProvider(BaseShareProvider):
             ),
         }
 
-    def get_upload_script_path(self) -> str:
-        return os.path.join(
-            os.path.dirname(__file__),
-            "nextcloud_upload_script.py",
-        )
-
     def build_pod_env(self) -> dict[str, str]:
         return {
             "ROBOVAST_SHARE_URL": os.environ["ROBOVAST_SHARE_URL"],
         }
+
+    def upload_archive(
+        self,
+        archive_path: str,
+        object_name: str,
+        progress_callback=None,
+    ) -> None:
+        """Upload *archive_path* to the public Nextcloud share via WebDAV ``PUT``."""
+        if not os.path.isfile(archive_path):
+            raise click.UsageError(f"archive not found: {archive_path}")
+
+        webdav_url, _ = self._parse_share_url()
+        file_url = webdav_url + urllib.parse.quote(object_name, safe="")
+        total = os.path.getsize(archive_path)
+
+        headers = dict(self._auth_headers())
+        headers["X-Requested-With"] = "XMLHttpRequest"
+        headers["Content-Type"] = "application/octet-stream"
+        headers["Content-Length"] = str(total)
+
+        with open(archive_path, "rb") as fh:
+            reader = UploadProgressReader(
+                fh, total, progress_callback=progress_callback)
+            req = urllib.request.Request(
+                file_url, data=reader, method="PUT", headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=300):  # nosec B310 - configured share URL
+                    pass
+            except urllib.error.HTTPError as exc:
+                raise click.UsageError(
+                    f"HTTP {exc.code} uploading {object_name} to Nextcloud: {exc.reason}"
+                ) from exc
+            except urllib.error.URLError as exc:
+                raise click.UsageError(
+                    f"Upload to Nextcloud failed: {exc.reason}") from exc
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -110,6 +141,32 @@ class NextcloudShareProvider(BaseShareProvider):
         # request without redirecting to the web login page.
         session.headers["X-Requested-With"] = "XMLHttpRequest"
         return session
+
+    def verify_access(self) -> None:
+        """Confirm the public Nextcloud share accepts authenticated WebDAV access.
+
+        Issues a ``PROPFIND Depth: 0`` against the share's
+        ``public.php/webdav/`` collection; 207 means the share token resolves
+        and uploads are permitted.
+        """
+        webdav_url, _ = self._parse_share_url()
+        try:
+            with self._session() as session:
+                resp = session.request(
+                    "PROPFIND", webdav_url,
+                    headers={"Depth": "0"}, timeout=30,
+                )
+        except requests.RequestException as exc:
+            raise click.UsageError(
+                f"Cannot reach Nextcloud share at {webdav_url!r}: {exc}\n"
+                "Check network connectivity and ROBOVAST_SHARE_URL."
+            ) from exc
+        if resp.status_code != 207:
+            raise click.UsageError(
+                f"Nextcloud share is not accessible (HTTP {resp.status_code}). "
+                "Check ROBOVAST_SHARE_URL points at a public share with "
+                "'Allow upload and editing' enabled."
+            )
 
     # ------------------------------------------------------------------
     # Download interface (``results download``)

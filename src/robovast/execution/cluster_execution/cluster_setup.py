@@ -35,6 +35,175 @@ logger = logging.getLogger(__name__)
 # Flag file name to store the cluster config name that was used for setup
 CLUSTER_CONFIG_FLAG_FILE = ".robovast_cluster_config"
 
+# ServiceAccount the in-cluster controller pod runs as (search campaigns). Must
+# match controller_launcher.CONTROLLER_SERVICE_ACCOUNT.
+CONTROLLER_SERVICE_ACCOUNT = "robovast-controller"
+
+
+def _controller_cluster_role_name(namespace):
+    """Name for the cluster-scoped controller RBAC objects.
+
+    ClusterRole/ClusterRoleBinding are not namespaced, so the namespace is
+    folded into the name to let controller setups in different namespaces
+    coexist without clobbering each other.
+    """
+    return f"robovast-controller-nodes-{namespace}"
+
+
+def _controller_rbac_manifests(namespace):
+    """ServiceAccount + (Cluster)Role + (Cluster)RoleBinding for the controller pod.
+
+    The in-cluster controller (search) creates/monitors/deletes scenario Jobs and
+    reads their pods/logs in its own namespace (namespaced Role).  It also reads
+    node metadata (count/labels/CPU-manager policy) to enrich ``execution.yaml``;
+    nodes are cluster-scoped, so that needs a read-only ClusterRole.
+    """
+    role_name = "robovast-controller"
+    cluster_role_name = _controller_cluster_role_name(namespace)
+    return [
+        {
+            "apiVersion": "v1",
+            "kind": "ServiceAccount",
+            "metadata": {"name": CONTROLLER_SERVICE_ACCOUNT, "namespace": namespace},
+        },
+        {
+            "apiVersion": "rbac.authorization.k8s.io/v1",
+            "kind": "Role",
+            "metadata": {"name": role_name, "namespace": namespace},
+            "rules": [
+                {"apiGroups": ["batch"], "resources": ["jobs"],
+                 "verbs": ["create", "get", "list", "watch", "delete", "deletecollection"]},
+                # read_namespaced_job_status hits the jobs/status subresource,
+                # which is a distinct RBAC resource from jobs.
+                {"apiGroups": ["batch"], "resources": ["jobs/status"],
+                 "verbs": ["get", "list", "watch"]},
+                {"apiGroups": [""], "resources": ["pods", "pods/log"],
+                 "verbs": ["get", "list", "watch", "delete", "deletecollection"]},
+                # Variations that declare an auxiliary container run their commands
+                # in a controller-pod sidecar via the pods/exec subresource
+                # (see cluster_execution.container_runner.ClusterContainerRunner).
+                {"apiGroups": [""], "resources": ["pods/exec"],
+                 "verbs": ["create", "get"]},
+            ],
+        },
+        {
+            "apiVersion": "rbac.authorization.k8s.io/v1",
+            "kind": "RoleBinding",
+            "metadata": {"name": role_name, "namespace": namespace},
+            "subjects": [{"kind": "ServiceAccount", "name": CONTROLLER_SERVICE_ACCOUNT,
+                          "namespace": namespace}],
+            "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role",
+                        "name": role_name},
+        },
+        {
+            "apiVersion": "rbac.authorization.k8s.io/v1",
+            "kind": "ClusterRole",
+            "metadata": {"name": cluster_role_name},
+            "rules": [
+                {"apiGroups": [""], "resources": ["nodes"],
+                 "verbs": ["get", "list"]},
+                # connect_get_node_proxy_with_path("configz") reads the kubelet
+                # config via the nodes/proxy subresource.
+                {"apiGroups": [""], "resources": ["nodes/proxy"],
+                 "verbs": ["get"]},
+            ],
+        },
+        {
+            "apiVersion": "rbac.authorization.k8s.io/v1",
+            "kind": "ClusterRoleBinding",
+            "metadata": {"name": cluster_role_name},
+            "subjects": [{"kind": "ServiceAccount", "name": CONTROLLER_SERVICE_ACCOUNT,
+                          "namespace": namespace}],
+            "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole",
+                        "name": cluster_role_name},
+        },
+    ]
+
+
+_CONTROLLER_RBAC_NAME = "robovast-controller"
+
+
+def apply_controller_rbac(namespace="default", kube_context=None):
+    """Create/update the controller ServiceAccount + Role/RoleBinding (idempotent)."""
+    from kubernetes import client, config  # pylint: disable=import-outside-toplevel
+    from kubernetes.client.rest import \
+        ApiException  # pylint: disable=import-outside-toplevel
+
+    config.load_kube_config(context=kube_context)
+    core = client.CoreV1Api()
+    rbac = client.RbacAuthorizationV1Api()
+    sa, role, binding, cluster_role, cluster_binding = _controller_rbac_manifests(namespace)
+
+    # ServiceAccount — create, tolerate existing.
+    try:
+        core.create_namespaced_service_account(namespace, sa)
+    except ApiException as exc:
+        if exc.status != 409:
+            raise
+
+    # Role — create, or replace its rules if it exists (so verb changes apply).
+    try:
+        rbac.create_namespaced_role(namespace, role)
+    except ApiException as exc:
+        if exc.status != 409:
+            raise
+        rbac.patch_namespaced_role(_CONTROLLER_RBAC_NAME, namespace, {"rules": role["rules"]})
+
+    # RoleBinding — create, tolerate existing.
+    try:
+        rbac.create_namespaced_role_binding(namespace, binding)
+    except ApiException as exc:
+        if exc.status != 409:
+            raise
+
+    # ClusterRole (read-only node access) — create, or replace its rules.
+    try:
+        rbac.create_cluster_role(cluster_role)
+    except ApiException as exc:
+        if exc.status != 409:
+            raise
+        rbac.patch_cluster_role(cluster_role["metadata"]["name"], {"rules": cluster_role["rules"]})
+
+    # ClusterRoleBinding — create, tolerate existing.
+    try:
+        rbac.create_cluster_role_binding(cluster_binding)
+    except ApiException as exc:
+        if exc.status != 409:
+            raise
+    logger.debug("Applied controller RBAC (ServiceAccount %s) in namespace %s",
+                 CONTROLLER_SERVICE_ACCOUNT, namespace)
+
+
+def delete_controller_rbac(namespace="default", kube_context=None):
+    """Remove the controller ServiceAccount + Role/RoleBinding (best-effort)."""
+    from kubernetes import client, config  # pylint: disable=import-outside-toplevel
+    from kubernetes.client.rest import \
+        ApiException  # pylint: disable=import-outside-toplevel
+
+    try:
+        config.load_kube_config(context=kube_context)
+    except Exception as exc:  # pragma: no cover - best-effort cleanup
+        logger.warning("Failed to load kube config for RBAC cleanup: %s", exc)
+        return
+    core = client.CoreV1Api()
+    rbac = client.RbacAuthorizationV1Api()
+    cluster_role_name = _controller_cluster_role_name(namespace)
+    deletions = [
+        ("ClusterRoleBinding", lambda: rbac.delete_cluster_role_binding(cluster_role_name)),
+        ("ClusterRole", lambda: rbac.delete_cluster_role(cluster_role_name)),
+        ("RoleBinding", lambda: rbac.delete_namespaced_role_binding(_CONTROLLER_RBAC_NAME, namespace)),
+        ("Role", lambda: rbac.delete_namespaced_role(_CONTROLLER_RBAC_NAME, namespace)),
+        ("ServiceAccount", lambda: core.delete_namespaced_service_account(CONTROLLER_SERVICE_ACCOUNT, namespace)),
+    ]
+    for kind, call in deletions:
+        try:
+            call()
+        except ApiException as exc:
+            if exc.status != 404:
+                logger.warning("Failed to delete controller %s: %s", kind, exc)
+        except Exception as exc:  # pragma: no cover - best-effort cleanup
+            logger.warning("Failed to delete controller %s: %s", kind, exc)
+
 
 def _sanitize_context_key(key: str) -> str:
     """Sanitize a context key so it can be used safely as a filename suffix."""
@@ -339,6 +508,9 @@ def setup_server(config_name=None, list_configs=False, force=False, **cluster_kw
     apply_kueue_queues(namespace=namespace, kube_context=kube_context,
                        node_labels=jobs_node_labels, cluster_config=cluster_config)
 
+    # RBAC for the in-cluster search controller pod (create/monitor jobs).
+    apply_controller_rbac(namespace=namespace, kube_context=kube_context)
+
     cluster_config.setup_cluster(
         kube_context=kube_context,
         control_node_labels=control_node_labels,
@@ -401,6 +573,9 @@ def delete_server(config_name=None, **cluster_kwargs_override):
         cleanup_cluster_campaign(namespace=namespace, context=kube_context)
     except Exception as e:
         logger.warning(f"Failed to clean up scenario run jobs during cluster cleanup: {e}")
+
+    # Remove the controller RBAC created at setup.
+    delete_controller_rbac(namespace=namespace, kube_context=kube_context)
 
     # Uninstall Kueue (always, since we always install it)
     uninstall_kueue_helm(kube_context=kube_context)

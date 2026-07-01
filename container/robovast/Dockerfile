@@ -41,7 +41,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/* 
 
 # Install system dependencies
-# hadolint ignore=DL3008
+# hadolint ignore=DL3008,SC2086
 RUN \
     apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -114,6 +114,6 @@ RUN USER=ubuntu && \
     chown root:root /usr/local/bin/fixuid && \
     chmod 4755 /usr/local/bin/fixuid && \
     mkdir -p /etc/fixuid && \
-    printf "user: $USER\ngroup: $GROUP\npaths:\n  - /\n  - /out\n" > /etc/fixuid/config.yml
+    printf 'user: %s\ngroup: %s\npaths:\n  - /\n  - /out\n' "$USER" "$GROUP" > /etc/fixuid/config.yml
 
 USER ubuntu:ubuntu

@@ -21,19 +21,12 @@ To run the example, execute the following commands in the base folder of the Rob
    # setup pods in cluster (kubernetes required)
    vast exec cluster setup minikube
     
-   # execute the tests in the cluster
+   # execute the tests in the cluster (fire-and-forget: returns immediately)
    vast exec cluster run
-   
-   # OR: execute in detached mode (exit immediately, cleanup manually)
-   # vast exec cluster run --detach
-   # vast exec cluster monitor  # shows progress per run
-   # vast exec cluster run-cleanup  # run this after jobs complete
-   
-   # Multiple runs can run in parallel by default. Use --cleanup to remove
-   # previous runs before starting.
-    
-   # upload results from the cluster to a share service
-   vast exec cluster upload-to-share
+   vast exec cluster monitor       # shows progress per run
+   vast exec cluster run-cleanup   # run this after jobs complete
+
+   # Multiple campaigns can run in parallel by default.
 
    # optionally: remove result buckets from S3
    vast exec cluster download-cleanup
@@ -154,44 +147,31 @@ To execute all tests in the cluster, run:
 
    vast exec cluster run
 
-By default, this command waits for all jobs to complete and displays statistics.
+This command is *fire-and-forget*: it launches an in-cluster controller pod that
+drives the whole campaign and returns immediately, printing the campaign id and
+controller pod name.
 
-**Detached Execution**
+**Monitoring a run**
 
-For long-running tests, you can use the ``--detach`` (or ``-d``) flag to exit immediately after creating the jobs:
+The campaign runs entirely in the cluster. Track its progress with:
 
 .. code-block:: bash
 
-   vast exec cluster run --detach
+   vast exec cluster monitor
 
-When running in detached mode:
-
-- The command exits right after creating all Kubernetes jobs
-- Jobs continue running in the background in the cluster
-- You can monitor job status using ``kubectl get jobs``
-- You need to manually clean up jobs after they complete
-
-To clean up after a detached run:
+To clean up a run's scenario jobs/pods (and its controller pod):
 
 .. code-block:: bash
 
    vast exec cluster run-cleanup
 
-This removes all scenario execution jobs and their associated pods from the cluster.
+This removes the scenario execution jobs and their associated pods from the cluster.
 
-Upload Results
-""""""""""""""
+Download Results
+""""""""""""""""
 
-The output of an execution is stored on the cluster-internal S3 server and can
-be uploaded to a share service (Nextcloud, GCS, …) with:
-
-.. code-block:: bash
-
-   vast exec cluster upload-to-share
-
-This transfers archives entirely inside the archiver sidecar — nothing is
-downloaded to the local machine.  After a successful upload, the S3 bucket is
-removed automatically.  To retrieve the results on another machine, use:
+When the campaign finishes, the results are uploaded to the configured share
+service (Nextcloud, GCS, …) automatically. Retrieve them with:
 
 .. code-block:: bash
 

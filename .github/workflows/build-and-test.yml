@@ -37,8 +37,12 @@ jobs:
 
       - name: Install project packages
         run: |
-          poetry install
+          poetry install --extras "test"
 
       - name: Run CLI tests
         run: |
           bash .github/test_commands.sh
+
+      - name: Run unit tests
+        run: |
+          poetry run pytest tests/ -q

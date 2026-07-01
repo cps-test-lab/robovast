@@ -15,12 +15,44 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
-from typing import Any, Optional, Union
+import re
+from typing import Annotated, Any, Literal, Optional, Union
 
-from pydantic import (BaseModel, ConfigDict, ValidationError, field_validator,
-                      model_validator)
+from pydantic import (BaseModel, ConfigDict, Field, ValidationError,
+                      field_validator, model_validator)
 
 logger = logging.getLogger(__name__)
+
+# A search-variable marker: a string whose *entire* value is ``$name`` or
+# ``${name}``. Only a standalone token is a reference (no mid-string interp), so
+# the substituted value keeps its native type. Disjoint from the ``@name``
+# scenario-parameter reference resolved inside variation plugins.
+_VAR_RE = re.compile(r'^\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))$')
+
+
+def match_var_marker(value: Any) -> Optional[str]:
+    """Return the referenced variable name if ``value`` is a ``$name``/``${name}``
+    marker string, else ``None``. A leading ``$$`` is an escaped literal ``$``."""
+    if not isinstance(value, str):
+        return None
+    m = _VAR_RE.match(value)
+    if not m:
+        return None
+    return m.group(1) or m.group(2)
+
+
+def _collect_var_refs(node: Any, refs: set) -> None:
+    """Walk plain data (dicts/lists/scalars) collecting every ``$name`` marker."""
+    if isinstance(node, dict):
+        for v in node.values():
+            _collect_var_refs(v, refs)
+    elif isinstance(node, (list, tuple)):
+        for v in node:
+            _collect_var_refs(v, refs)
+    else:
+        name = match_var_marker(node)
+        if name is not None:
+            refs.add(name)
 
 
 class GeneralConfig(BaseModel):
@@ -130,17 +162,20 @@ class ExecutionConfig(BaseModel):
     scenario_file: Optional[str] = None
     run_files: Optional[list[str]] = None
     timeout: Optional[int] = None  # Maximum execution time in seconds per run
-    # Multi-config-per-job packing. ``configs_per_job`` is how many
-    # configurations (parameter sets) run inside a single job:
-    #   1 (default): each job runs exactly one configuration. Right for
-    #     simulators where job dominates the execution time, one job == one 
-    #     scenario (e.g. Gazebo).
-    #   >1: up to N configurations are packed into one job and run sequentially
-    #     inside a single simulator setup (the simulator is reset between them),
-    #     amortising setup for simulators with cheap per-run cost (e.g. MuJoCo).
-    # Results stay keyed by configuration name regardless, so packing is
-    # invisible to downstream processing.
-    configs_per_job: int = 1
+    # Simulation backend passed to scenario_execution as ``--simulation <module:Class>``.
+    # Required by scenarios using wait_for_simulation_end() (e.g. MagBotSim).
+    simulation: Optional[str] = None
+    # Job packing. ``runs_per_job`` is how many runs (a run = one configuration
+    # at one run-number) are packed into a single job:
+    #   1 (default): each job runs exactly one run. Right for simulators where
+    #     setup dominates the execution time, one job == one scenario (e.g. Gazebo).
+    #   >1: up to N runs are packed into one job and run sequentially inside a
+    #     single simulator setup (the simulator is reset between them), amortising
+    #     setup for simulators with cheap per-run cost (e.g. MuJoCo). Runs are
+    #     packed config-major, so a config's repeated runs stay together in a job.
+    # Results stay keyed by configuration name / run number regardless, so packing
+    # is invisible to downstream processing.
+    runs_per_job: int = 1
 
     @field_validator('env')
     @classmethod
@@ -170,11 +205,11 @@ class ExecutionConfig(BaseModel):
 
         return v
 
-    @field_validator('configs_per_job')
+    @field_validator('runs_per_job')
     @classmethod
-    def validate_configs_per_job(cls, v: int) -> int:
+    def validate_runs_per_job(cls, v: int) -> int:
         if v < 1:
-            raise ValueError(f"execution.configs_per_job must be >= 1, got {v}")
+            raise ValueError(f"execution.runs_per_job must be >= 1, got {v}")
         return v
 
 
@@ -188,6 +223,302 @@ class EvaluationConfig(BaseModel):
     visualization: Optional[list[dict[str, Any]]] = None
 
 
+class FloatDim(BaseModel):
+    """A continuous search dimension sampled from ``[low, high]``."""
+    model_config = ConfigDict(extra='forbid')
+    type: Literal['float']
+    low: float
+    high: float
+    log: bool = False
+
+    @model_validator(mode='after')
+    def _check_bounds(self):
+        if self.high < self.low:
+            raise ValueError(f"float dim requires high >= low, got low={self.low}, high={self.high}")
+        if self.log and self.low <= 0:
+            raise ValueError("log-scaled float dim requires low > 0")
+        return self
+
+
+class IntDim(BaseModel):
+    """A discrete integer search dimension sampled from ``[low, high]``."""
+    model_config = ConfigDict(extra='forbid')
+    type: Literal['int']
+    low: int
+    high: int
+    log: bool = False
+    step: Optional[int] = None
+
+    @model_validator(mode='after')
+    def _check_bounds(self):
+        if self.high < self.low:
+            raise ValueError(f"int dim requires high >= low, got low={self.low}, high={self.high}")
+        if self.step is not None and self.step < 1:
+            raise ValueError(f"int dim step must be >= 1, got {self.step}")
+        if self.log and self.low <= 0:
+            raise ValueError("log-scaled int dim requires low > 0")
+        return self
+
+
+class ChoiceDim(BaseModel):
+    """A categorical search dimension sampled uniformly from ``values``."""
+    model_config = ConfigDict(extra='forbid')
+    type: Literal['choice']
+    values: list[Any]
+
+    @field_validator('values')
+    @classmethod
+    def _non_empty(cls, v: list[Any]) -> list[Any]:
+        if not v:
+            raise ValueError("choice dim requires a non-empty 'values' list")
+        return v
+
+
+class BoolDim(BaseModel):
+    """A boolean search dimension — sugar for a two-value categorical."""
+    model_config = ConfigDict(extra='forbid')
+    type: Literal['bool']
+
+
+# Typed search-space dimension; discriminated on the ``type`` tag so that a
+# malformed domain is rejected by Pydantic rather than failing at sample time.
+SearchDim = Annotated[Union[FloatDim, IntDim, ChoiceDim, BoolDim],
+                      Field(discriminator='type')]
+
+
+class BatchesBudget(BaseModel):
+    """Resource cap: stop after this many ask/tell batches."""
+    model_config = ConfigDict(extra='forbid')
+    type: Literal['batches']
+    value: int
+
+    @field_validator('value')
+    @classmethod
+    def _positive(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError(f"budget batches value must be >= 1, got {v}")
+        return v
+
+
+class TimeBudget(BaseModel):
+    """Resource cap: stop after this many seconds of wall-clock time."""
+    model_config = ConfigDict(extra='forbid')
+    type: Literal['time']
+    seconds: float
+
+    @field_validator('seconds')
+    @classmethod
+    def _positive(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError(f"budget time seconds must be > 0, got {v}")
+        return v
+
+
+# A resource cap; the search stops when ANY budget criterion is hit.
+BudgetCriterion = Annotated[
+    Union[BatchesBudget, TimeBudget],
+    Field(discriminator='type')]
+
+
+class TargetObjectiveStop(BaseModel):
+    """Stop when the best objective reaches ``value`` (direction-aware)."""
+    model_config = ConfigDict(extra='forbid')
+    type: Literal['target_objective']
+    value: float
+
+
+class NoImprovementStop(BaseModel):
+    """Stop when the best objective has not improved by >= ``min_delta`` for
+    ``patience`` consecutive batches (early-stopping / convergence)."""
+    model_config = ConfigDict(extra='forbid')
+    type: Literal['no_improvement']
+    patience: int
+    min_delta: float = 0.0
+
+    @field_validator('patience')
+    @classmethod
+    def _positive(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError(f"no_improvement.patience must be >= 1, got {v}")
+        return v
+
+
+class MetricStop(BaseModel):
+    """Stop when a strategy-reported metric (``report().extra[name]``, e.g. the
+    QD ``coverage`` / ``qd_score``) satisfies ``op value``."""
+    model_config = ConfigDict(extra='forbid')
+    type: Literal['metric']
+    name: str
+    op: Literal['>=', '<=', '>', '<'] = '>='
+    value: float
+
+
+# A convergence / quality early-exit; the search stops when ANY fires (resource
+# caps live in the parallel ``budget`` list).
+StopCriterion = Annotated[
+    Union[TargetObjectiveStop, NoImprovementStop, MetricStop],
+    Field(discriminator='type')]
+
+
+# Each budget/stopping entry is written as a single-key mapping (like variations):
+# ``- batches: 200`` or ``- metric: {name: coverage, op: '>=', value: 0.3}``. The
+# key is the criterion name; a scalar value is shorthand for the field named below
+# (criteria with several required fields must use a mapping). The ``type``
+# discriminator is injected from the key so the unions above still validate.
+_BUDGET_SCALAR = {'batches': 'value', 'time': 'seconds'}
+_STOPPING_SCALAR = {'target_objective': 'value', 'no_improvement': 'patience'}
+
+
+def _normalize_criterion(entry: Any, scalar_fields: dict, kind: str) -> dict:
+    if not isinstance(entry, dict) or len(entry) != 1:
+        raise ValueError(
+            f"each search.{kind} entry must be a single-key mapping, e.g. "
+            f"'- batches: 200' or '- metric: {{name: coverage, value: 0.3}}'; got {entry!r}")
+    key, val = next(iter(entry.items()))
+    if isinstance(val, dict):
+        return {'type': key, **val}
+    if key not in scalar_fields:
+        raise ValueError(
+            f"search.{kind} '{key}' needs a mapping of parameters, not a scalar")
+    return {'type': key, scalar_fields[key]: val}
+
+
+class ExtractConfig(BaseModel):
+    """The one scoring step: a plugin (entry-point name or ``path.py:Class``
+    file ref relative to the ``.vast``) plus params passed to it."""
+    model_config = ConfigDict(extra='forbid')
+    plugin: str
+    params: dict[str, Any] = {}
+
+
+class ObjectiveSpec(BaseModel):
+    """One optimized objective and its direction. ``name`` must match a key the
+    extractor returns in ``ExtractResult.objectives``."""
+    model_config = ConfigDict(extra='forbid')
+    name: str
+    direction: Literal['maximize', 'minimize'] = 'maximize'
+
+
+class SearchConfig(BaseModel):
+    """Closed-loop search over a typed parameter space.
+
+    When present, execution runs as an iterative search: a strategy proposes
+    parameter sets, an extractor scores them into objectives (+ measures), and
+    the strategy is told the results to propose the next generation. Absent ⇒
+    single batch (today's behaviour).
+
+    Universal core (every strategy): ``strategy``, ``search_space``, ``extract``,
+    ``objectives``, ``per_batch``, ``budget``, ``seed``, ``postprocessing``.
+    Algorithm-specific tuning lives in ``strategy_parameters``, whose schema is
+    owned and validated by the chosen strategy plugin (e.g. the QD archive).
+    ``strategy``, ``extract.plugin`` and ``postprocessing`` entries may be
+    entry-point names or local files relative to the ``.vast``.
+    """
+    model_config = ConfigDict(extra='forbid')
+    strategy: str
+    search_space: dict[str, SearchDim]
+    extract: ExtractConfig
+    objectives: list[ObjectiveSpec]
+    per_batch: int
+    # Resource caps and convergence early-exits: two parallel typed-criteria
+    # lists, all OR-combined and evaluated by the controller after each batch. At
+    # least one criterion across the two is required (a search needs a way to end).
+    budget: Optional[list[BudgetCriterion]] = None
+    stopping: Optional[list[StopCriterion]] = None
+    seed: Optional[int] = None
+    # Optional variation template + fixed scenario params, identical in shape to a
+    # batch ``configuration:`` block. The template fixes most variation params and
+    # references searched ones with a ``$name`` / ``${name}`` marker resolving to a
+    # search_space dimension; Compose substitutes per proposed parameter set. Any
+    # search_space dim not referenced here falls back to a direct scenario param.
+    # Kept as raw mappings (not VariationConfig/ScenarioParameterConfig, which drop
+    # unknown keys) so the marker references survive for the validator below and
+    # the substitution in Compose; the plugin params are validated at generation.
+    variations: Optional[list[dict[str, Any]]] = None
+    parameters: Optional[list[dict[str, Any]]] = None
+    # Postprocessing run over each batch's results before extract (e.g. to write
+    # metrics.csv). Same format/loader as results_processing.postprocessing:
+    # entry-point name, ``./path.py:Class`` file ref, or ``{name: {params}}``.
+    postprocessing: Optional[list[Union[str, dict[str, Any]]]] = None
+    # Free-form; validated by the strategy plugin's own params model at load.
+    strategy_parameters: dict[str, Any] = {}
+
+    @field_validator('budget', mode='before')
+    @classmethod
+    def _norm_budget(cls, v):
+        if v is None:
+            return v
+        if not isinstance(v, list):
+            raise ValueError("search.budget must be a list of single-key mappings")
+        return [_normalize_criterion(e, _BUDGET_SCALAR, 'budget') for e in v]
+
+    @field_validator('stopping', mode='before')
+    @classmethod
+    def _norm_stopping(cls, v):
+        if v is None:
+            return v
+        if not isinstance(v, list):
+            raise ValueError("search.stopping must be a list of single-key mappings")
+        return [_normalize_criterion(e, _STOPPING_SCALAR, 'stopping') for e in v]
+
+    @field_validator('search_space')
+    @classmethod
+    def _non_empty_space(cls, v: dict) -> dict:
+        if not v:
+            raise ValueError("search.search_space must declare at least one dimension")
+        return v
+
+    @model_validator(mode='after')
+    def _validate_var_references(self):
+        # Every ``$name`` / ``${name}`` marker in the variations/parameters
+        # template must resolve to a declared search_space dimension. This is a
+        # pure string/tree walk on plain data — it must NOT instantiate variation
+        # CONFIG_CLASS models (they would reject the marker strings).
+        declared = set(self.search_space)
+        refs: set[str] = set()
+        for tmpl in (self.variations, self.parameters):
+            if tmpl is not None:
+                _collect_var_refs(tmpl, refs)
+        unknown = sorted(refs - declared)
+        if unknown:
+            raise ValueError(
+                f"search.variations/parameters reference unknown search_space "
+                f"variable(s) {unknown}; declared dimensions: {sorted(declared)}")
+        return self
+
+    @field_validator('objectives')
+    @classmethod
+    def _non_empty_objectives(cls, v: list) -> list:
+        if not v:
+            raise ValueError("search.objectives must declare at least one objective")
+        return v
+
+    @field_validator('per_batch')
+    @classmethod
+    def _positive_per_batch(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError(f"search.per_batch must be >= 1, got {v}")
+        return v
+
+    @model_validator(mode='after')
+    def _validate_stopping(self):
+        # A search needs at least one way to end: a budget cap or a stopping
+        # criterion. Without either it would run forever.
+        if not self.budget and not self.stopping:
+            raise ValueError(
+                "a search must define at least one 'budget' or 'stopping' "
+                "criterion (e.g. budget: [{type: batches, value: 20}])")
+        # target_objective / no_improvement compare the single objective, so they
+        # require a single-objective search (matches SearchStrategy.single_objective).
+        single_only = {'target_objective', 'no_improvement'}
+        for crit in (self.stopping or []):
+            if crit.type in single_only and len(self.objectives) != 1:
+                raise ValueError(
+                    f"search.stopping '{crit.type}' requires a single objective, "
+                    f"but {len(self.objectives)} are configured")
+        return self
+
+
 class ConfigV1(BaseModel):
     model_config = ConfigDict(extra='forbid')
     version: int = 1
@@ -195,8 +526,22 @@ class ConfigV1(BaseModel):
     general: Optional[GeneralConfig] = None
     configuration: Optional[list[ConfigurationConfig]] = None
     execution: ExecutionConfig
+    search: Optional[SearchConfig] = None
     results_processing: Optional[ResultsConfig] = None
     evaluation: Optional[EvaluationConfig] = None
+
+    @model_validator(mode='after')
+    def _search_xor_configuration(self):
+        # Batch and search are mutually exclusive modes of the same `run`
+        # command. A `search:` section synthesizes its configurations from
+        # `search_space`, so it must not be paired with an explicit
+        # `configuration:` block (whose entries may also carry `variations:`).
+        if self.search is not None and self.configuration:
+            raise ValueError(
+                "'search' and 'configuration' are mutually exclusive: a search: "
+                "section synthesizes its configurations from search_space, so the "
+                "configuration: block (and its variations) must be empty/omitted.")
+        return self
 
 
 def validate_config(config: dict):

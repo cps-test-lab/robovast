@@ -9,9 +9,9 @@
 
 FROM python:3.12-alpine
 
-RUN apk add --no-cache pigz==2.8-r1 curl==8.20.0-r1 \
+RUN apk add --no-cache pigz==2.8-r1 \
  && pip install --no-cache-dir \
         boto3==1.42 google-auth==2.49.0 requests==2.32.5 paramiko==4.0.0 pyyaml==6.0.2
 
-RUN curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc && \
+RUN wget -q https://dl.min.io/client/mc/release/linux-amd64/mc -O /usr/local/bin/mc && \
     chmod +x /usr/local/bin/mc

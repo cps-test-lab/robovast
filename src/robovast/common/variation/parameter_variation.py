@@ -29,7 +29,7 @@ class ParameterVariationDistributionUniformConfig(VariationConfig):
     min: float | int | None = None
     max: float | int | None = None
     type: str = "float"
-    seed: int
+    seed: int | None = None
 
 
 class ParameterVariationDistributionUniform(Variation):
@@ -50,24 +50,23 @@ class ParameterVariationDistributionUniform(Variation):
         self.progress_update("Running Parameter Variation (Random)...")
 
         # Extract parameters
-        param_name = self.parameters.get("name")
-        num_variations = self.parameters.get("num_variations", 1)
-        min_val = self.parameters.get("min")
-        max_val = self.parameters.get("max")
-        value_type = self.parameters.get("type", "float")
-        seed = self.parameters.get("seed")
+        param_name = self.parameters.name
+        num_variations = self.parameters.num_variations
+        min_val = self.parameters.min
+        max_val = self.parameters.max
+        value_type = self.parameters.type
+        seed = self.parameters.seed
 
         # Validate required parameters
         if not param_name:
             raise ValueError("Parameter 'name' is required for ParameterVariationDistributionUniform")
         if min_val is None or max_val is None:
             raise ValueError("Parameters 'min' and 'max' are required for ParameterVariationDistributionUniform")
-        if seed is None:
-            raise ValueError("Parameter 'seed' is required for ParameterVariationDistributionUniform")
 
-        # Set random seed
-        random.seed(seed)
-        np.random.seed(seed)
+        # Set random seed for reproducibility when one is provided
+        if seed is not None:
+            random.seed(seed)
+            np.random.seed(seed)
 
         # If no input configs, create initial empty config
         if not in_configs or len(in_configs) == 0:

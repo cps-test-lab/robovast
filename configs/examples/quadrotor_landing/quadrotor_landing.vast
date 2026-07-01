@@ -1,0 +1,47 @@
+version: 1
+metadata:
+  name: quadrotor_landing
+# Batch-mode example (no search block). Run with:
+#   vast execution local run
+# A fixed grid over the parameters (cartesian product of the ParameterVariationList
+# entries below) that exercises the nominal landing and all three failure modes
+# (see files/quadrotor_sim.py). For the closed-loop search that *discovers* the
+# failure regions automatically, see quadrotor_landing_search.vast.
+configuration:
+- name: sweep
+  # Values sit near the failure boundaries so the 16-config grid yields a mix of
+  # outcomes (clean landings, tip_over, drift_miss, hard_crash) instead of only
+  # trivial lands or fatal crashes.
+  variations:
+  - ParameterVariationList:
+      name: thrust_gain
+      values: [1.0, 2.0]
+  - ParameterVariationList:
+      name: mass
+      values: [1.8, 2.8]
+  - ParameterVariationList:
+      name: wind_strength
+      values: [2.5, 4.0]
+  - ParameterVariationList:
+      name: descent_rate
+      values: [1.5, 2.5]
+execution:
+  image: ghcr.io/cps-test-lab/robovast:latest
+  runs: 5
+  scenario_file: scenario.osc
+  run_files:
+  - "files/*.py"
+  runs_per_job: 100
+results_processing:
+  # Derive per-run metrics.csv from the raw trajectory.csv the sim writes, via a
+  # local-file postprocessing plugin (the same one the search uses), so the
+  # analysis notebooks have per-run metrics.
+  postprocessing:
+  - search/metrics.py:QuadMetrics       # per-run metrics.csv (analysis + extract)
+  - analysis/render.py:DescentVideo     # per-run descent.gif for the run notebook
+evaluation:
+  visualization:
+  - Analysis:
+      run: analysis/analysis_run.ipynb
+      config: analysis/analysis_config.ipynb
+      campaign: analysis/analysis_campaign.ipynb

@@ -26,9 +26,12 @@ from typing import Dict, List, Optional, Tuple
 import yaml
 
 from robovast.common.common import load_config
+from robovast.common.plugin_ref import is_file_ref, load_ref
 from robovast.results_processing.metadata import generate_campaign_metadata
 from robovast.results_processing.postprocessing_plugins import generate_data_db
 from robovast.common.results_utils import find_campaign_vast_file
+
+POSTPROCESSING_GROUP = "robovast.postprocessing_commands"
 
 
 def load_postprocessing_plugins() -> Dict[str, callable]:
@@ -67,6 +70,78 @@ def load_postprocessing_plugins() -> Dict[str, callable]:
         # No plugins available or entry_points call failed
         pass
     return plugins
+
+
+def resolve_postprocessing_plugin(plugin_name: str, config_dir: str,
+                                  plugins: Optional[Dict[str, callable]] = None) -> callable:
+    """Resolve a postprocessing plugin by entry-point name OR local file ref.
+
+    Both postprocessing lists (``results_processing.postprocessing`` and
+    ``search.postprocessing``) load plugins identically: a ``plugin_name`` is
+    either an entry-point name (``robovast.postprocessing_commands``) or a local
+    ``<path>.py:<Class>`` file reference resolved relative to *config_dir*. File
+    refs let a SUT ship its own postprocessing plugin without packaging it.
+
+    Returns a ready-to-use callable (class instances are instantiated). Raises
+    ``KeyError``/``ValueError`` if the plugin cannot be resolved.
+    """
+    if is_file_ref(plugin_name):
+        cls = load_ref(plugin_name, POSTPROCESSING_GROUP, config_dir)
+        return cls() if inspect.isclass(cls) else cls
+    if plugins is None:
+        plugins = load_postprocessing_plugins()
+    if plugin_name not in plugins:
+        available = ', '.join(sorted(plugins.keys())) or 'none'
+        raise KeyError(
+            f"Unknown postprocessing plugin: '{plugin_name}'. Available: {available}. "
+            f"Use an entry-point name or a './path.py:Class' local file reference.")
+    return plugins[plugin_name]
+
+
+def run_postprocessing_commands(commands, results_dir: str, config_dir: str,
+                                output=print, execution_image: Optional[str] = None,
+                                debug: bool = False, force: bool = False
+                                ) -> Tuple[bool, List[dict]]:
+    """Resolve and run a list of postprocessing commands over *results_dir*.
+
+    Shared by ``run_postprocessing`` (the ``results_processing.postprocessing``
+    path) and the campaign controller (the ``search.postprocessing`` path), so
+    both load plugins identically (entry-point name or local file ref) and apply
+    the same execution contract. Returns ``(success, provenance_entries)``.
+    """
+    plugins = load_postprocessing_plugins()
+    success = True
+    entries: List[dict] = []
+    with tempfile.TemporaryDirectory(prefix="robovast_provenance_") as temp_dir:
+        for i, command in enumerate(commands, 1):
+            if isinstance(command, str):
+                plugin_name, params = command, {}
+            elif isinstance(command, dict) and len(command) == 1:
+                plugin_name = next(iter(command))
+                params = command[plugin_name] or {}
+            else:
+                output(f"[{i}/{len(commands)}] ✗ Invalid command format: {command!r}")
+                success = False
+                continue
+            try:
+                plugin_func = resolve_postprocessing_plugin(plugin_name, config_dir, plugins)
+            except (KeyError, ValueError, ImportError, FileNotFoundError, AttributeError) as e:
+                output(f"[{i}/{len(commands)}] ✗ {e}")
+                success = False
+                continue
+            output(f"[{i}/{len(commands)}] Executing: {plugin_name}")
+            ok, message, prov = execute_postprocessing_plugin(
+                plugin_name=plugin_name, plugin_func=plugin_func, params=params,
+                results_dir=results_dir, config_dir=config_dir,
+                provenance_file=os.path.join(temp_dir, f"{i}_provenance.json"),
+                execution_image=execution_image, debug=debug, force=force)
+            entries.extend(prov)
+            if not ok:
+                output(f"✗ {message}")
+                success = False
+            else:
+                output(f"✓ {message.splitlines()[0] if message else 'done'}")
+    return success, entries
 
 
 def execute_postprocessing_plugin(
@@ -232,6 +307,11 @@ def validate_postprocessing_command(command: str | dict, plugins: Dict[str, call
         plugin_name = list(command.keys())[0]
     else:
         return False, f"Postprocessing command must be a string or dict, got {type(command)}"
+
+    # Local file references (``./path.py:Class``) are resolved at run time
+    # relative to the config dir, so they are valid here regardless of entry points.
+    if is_file_ref(plugin_name):
+        return True, ""
 
     if plugin_name not in plugins:
         available = ', '.join(sorted(plugins.keys()))
@@ -493,7 +573,12 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
 
             display_cmd = f"{plugin_name} (params: {params})" if params else plugin_name
 
-            plugin_func = plugins[plugin_name]
+            try:
+                plugin_func = resolve_postprocessing_plugin(plugin_name, config_dir, plugins)
+            except (KeyError, ValueError, ImportError, FileNotFoundError, AttributeError) as e:
+                output(f"[{i}/{len(commands)}] ✗ {e}")
+                success = False
+                continue
 
             output(f"[{i}/{len(commands)}] Executing: {display_cmd}")
 

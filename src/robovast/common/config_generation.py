@@ -31,6 +31,8 @@ from pprint import pformat
 from .common import convert_dataclasses_to_dict, get_scenario_parameters, load_config
 from .config_identifier import collect_paths_from_config, hash_variation_entrypoints
 from .file_cache2 import CacheKey, FileCache2
+from .plugin_ref import is_file_ref, load_ref
+from .variation.loader import _validate_variation_class
 
 logger = logging.getLogger(__name__)
 
@@ -77,9 +79,34 @@ def progress_update(msg):
     logger.info(msg)
 
 
-def execute_variation(base_dir, configs, variation_class, parameters, general_parameters, progress_update_callback, scenario_file, output_dir=None):
+# Process-wide factory that turns a variation's ContainerSpec into a concrete
+# ContainerRunner for the active execution backend. The in-pod cluster controller
+# registers a cluster (sidecar + pods/exec) factory via
+# set_container_runner_factory(); when unset we fall back to the local
+# (ephemeral ``docker run``) runner. See variation/container_runner.py.
+_container_runner_factory = None  # type: ignore[var-annotated]  # pylint: disable=invalid-name
+
+
+def set_container_runner_factory(factory):
+    """Register the backend's ContainerRunner factory (or ``None`` to reset)."""
+    global _container_runner_factory  # pylint: disable=global-statement
+    _container_runner_factory = factory
+
+
+def _make_container_runner(spec):
+    """Build a runner for *spec* using the active factory (local fallback)."""
+    if spec is None:
+        return None
+    if _container_runner_factory is not None:
+        return _container_runner_factory(spec)
+    from .variation.container_runner import \
+        LocalContainerRunner  # pylint: disable=import-outside-toplevel
+    return LocalContainerRunner(spec)
+
+
+def execute_variation(base_dir, configs, variation_class, parameters, general_parameters, progress_update_callback, scenario_file, output_dir=None, container_runner=None):
     logger.debug(f"Executing variation: {variation_class.__name__}")
-    variation = variation_class(base_dir, parameters, general_parameters, progress_update_callback, scenario_file, output_dir)
+    variation = variation_class(base_dir, parameters, general_parameters, progress_update_callback, scenario_file, output_dir, container_runner=container_runner)
 
     # Collect input files for campaign self-containment
     input_files = variation.get_input_files()
@@ -221,10 +248,14 @@ def _match_recursive_pattern(path, pattern):
         return fnmatch.fnmatch(path, pattern)
 
 
-def _get_variation_classes(scenario_config):
+def _get_variation_classes(scenario_config, vast_dir=""):
     """
     Read variation class names scenario
 
+    A variation is named either by an installed ``robovast.variation_types``
+    entry point or by a local ``<path>.py:<Class>`` file reference resolved
+    relative to ``vast_dir`` (parity with search strategies/extractors and
+    results postprocessing).
     """
 
     # Get the variation list from settings
@@ -267,6 +298,14 @@ def _get_variation_classes(scenario_config):
             for class_name in item.keys():
                 if class_name in available_classes:
                     variation_classes.append((available_classes[class_name], item[class_name]))
+                elif is_file_ref(class_name):
+                    # Local '<path>.py:<Class>' reference relative to the .vast dir.
+                    variation_class = load_ref(class_name, 'robovast.variation_types', vast_dir)
+                    errors = _validate_variation_class(class_name, variation_class)
+                    if errors:
+                        raise ValueError(
+                            f"Invalid variation plugin '{class_name}': {'; '.join(errors)}")
+                    variation_classes.append((variation_class, item[class_name]))
                 else:
                     error_msg = f"Unknown variation class '{class_name}' found in variation file.\n"
                     if not available_classes:
@@ -274,7 +313,8 @@ def _get_variation_classes(scenario_config):
                         error_msg += "To fix this, run: poetry install\n"
                         error_msg += "If you're in a CI environment, ensure 'poetry install' (without --no-root) has been executed."
                     else:
-                        error_msg += f"Available variation types: {', '.join(available_classes.keys())}"
+                        error_msg += f"Available variation types: {', '.join(available_classes.keys())}. "
+                        error_msg += "Use a '<path>.py:<Class>' file reference for a local module."
                     raise ValueError(error_msg)
 
     return variation_classes
@@ -312,6 +352,17 @@ def _collect_analysis_input_files(parameters, base_dir=None):
     else:
         postprocessing = []
 
+    # The search section also carries postprocessing entries and an extract
+    # plugin, all of which may be local file refs that must be bundled.
+    search = parameters.get('search')
+    search_postprocessing = []
+    search_extract_plugin = None
+    if isinstance(search, dict):
+        search_postprocessing = search.get('postprocessing') or []
+        extract = search.get('extract')
+        if isinstance(extract, dict):
+            search_extract_plugin = extract.get('plugin')
+
     for viz_entry in visualizations:
         if isinstance(viz_entry, dict):
             for _plugin_name, plugin_config in viz_entry.items():
@@ -320,20 +371,31 @@ def _collect_analysis_input_files(parameters, base_dir=None):
                         if isinstance(path, str) and (path.endswith('.ipynb') or path.endswith('.py')):
                             analysis_files.append(path)
 
-    # Collect any postprocessing plugin parameter value that refers to an existing file
-    for pp_entry in postprocessing:
-        if not isinstance(pp_entry, dict):
-            continue
-        for _plugin_name, plugin_params in pp_entry.items():
-            if not isinstance(plugin_params, dict):
-                continue
-            for _key, value in plugin_params.items():
-                if not isinstance(value, str) or os.path.isabs(value):
-                    continue
-                # Only collect if the path actually resolves to an existing file
-                candidate = os.path.join(base_dir, value) if base_dir else value
-                if os.path.isfile(candidate):
-                    analysis_files.append(value)
+    def _collect_ref(value):
+        """Collect a local module path from an entry-point/file ref or file value."""
+        if not isinstance(value, str) or os.path.isabs(value):
+            return
+        path_part = value.rsplit(".py:", 1)[0] + ".py" if is_file_ref(value) else value
+        candidate = os.path.join(base_dir, path_part) if base_dir else path_part
+        if os.path.isfile(candidate):
+            analysis_files.append(path_part)
+
+    # A postprocessing plugin is referenced by its command *name* (an entry-point
+    # name or a ``./path.py:Class`` file ref, e.g. ``./search/metrics.py:QuadMetrics``)
+    # and may carry file-ref params. Collect local modules from both, across the
+    # results_processing and search postprocessing lists.
+    for pp_entry in [*postprocessing, *search_postprocessing]:
+        if isinstance(pp_entry, str):
+            _collect_ref(pp_entry)
+        elif isinstance(pp_entry, dict):
+            for plugin_name, plugin_params in pp_entry.items():
+                _collect_ref(plugin_name)
+                if isinstance(plugin_params, dict):
+                    for _key, value in plugin_params.items():
+                        _collect_ref(value)
+
+    # The search extract plugin itself may be a local file ref.
+    _collect_ref(search_extract_plugin)
 
     # Collect files declared by class-based postprocessing plugins via
     # get_files_to_copy().  This is how e.g. the ``command`` plugin ensures
@@ -426,11 +488,11 @@ def _build_generate_cache_key(
     return key
 
 
-def _rebuild_variation_gui_classes(configurations: list) -> dict:
+def _rebuild_variation_gui_classes(configurations: list, vast_dir="") -> dict:
     """Cheaply reconstruct variation_gui_classes from config blocks without running variations."""
     gui_classes = {}
     for config_block in configurations:
-        for variation_class, _ in _get_variation_classes(config_block):
+        for variation_class, _ in _get_variation_classes(config_block, vast_dir):
             gui_class = getattr(variation_class, 'GUI_CLASS', None)
             renderer_class = getattr(variation_class, 'GUI_RENDERER_CLASS', None)
             if gui_class:
@@ -552,7 +614,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
             if output_dir is not None:
                 _cached["_output_dir"] = os.path.abspath(output_dir)
             progress_update_callback("Loaded configurations from cache (no changes detected).")
-            return _cached, _rebuild_variation_gui_classes(configurations)
+            return _cached, _rebuild_variation_gui_classes(configurations, vast_dir)
         logger.info("Cache MISS for generate_scenario_variations (%s)", variation_file)
     else:
         _cache_meta = None
@@ -580,7 +642,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     for config in configurations:
         if variation_classes is None:
             # Read variation classes from the variation file
-            variation_classes_and_parameters = _get_variation_classes(config)
+            variation_classes_and_parameters = _get_variation_classes(config, vast_dir)
         else:
             raise NotImplementedError("Passing variation_classes is not implemented yet")
 
@@ -628,8 +690,17 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                     variation_gui_classes[variation_gui_class].append(variation_gui_renderer_class)
             started_at = datetime.now(timezone.utc).isoformat()
             t0 = time.monotonic()
-            result, var_input_files, var_campaign_transient, var_config_transient = execute_variation(os.path.dirname(variation_file), current_configs, variation_class,
-                                                                                                      variation_parameters, general_parameters, progress_update_callback, scenario_file, output_dir)
+            # Auxiliary container: if the plugin declares one, the active backend
+            # (local docker or cluster sidecar) provides a runner for its use.
+            container_spec = variation_class.get_required_container(variation_parameters)
+            container_runner = _make_container_runner(container_spec)
+            try:
+                result, var_input_files, var_campaign_transient, var_config_transient = execute_variation(os.path.dirname(variation_file), current_configs, variation_class,
+                                                                                                          variation_parameters, general_parameters, progress_update_callback, scenario_file, output_dir,
+                                                                                                          container_runner=container_runner)
+            finally:
+                if container_runner is not None:
+                    container_runner.close()
             duration = round(time.monotonic() - t0, 3)
 
             # Validate and collect variation input files
@@ -705,7 +776,8 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         "resources": execution_section.get('resources'),
         "secondary_containers": execution_section.get('secondary_containers'),
         "local": execution_section.get('local'),
-        "configs_per_job": execution_section.get('configs_per_job', 1),
+        "runs_per_job": execution_section.get('runs_per_job', 1),
+        "simulation": execution_section.get('simulation'),
     }
 
     # Build result dictionary

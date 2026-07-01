@@ -40,6 +40,55 @@ from .config_identifier import (compute_config_identifier, hash_file_content,
 # /etc/robovast_compat_version.
 COMPAT_VERSION = 2
 
+# Default container images, used when nothing is configured anywhere. The
+# matching ``ROBOVAST_*_IMAGE`` env var overrides *this* hard-coded default only;
+# an explicit value (``--image`` / an ``execution.image`` entry in the ``.vast``
+# file) always takes precedence over the env var.
+DEFAULT_ROBOVAST_IMAGE = "ghcr.io/cps-test-lab/robovast:latest"
+# robovast-controller hosts the in-cluster CampaignController for cluster runs.
+DEFAULT_ROBOVAST_CONTROLLER_IMAGE = "ghcr.io/cps-test-lab/robovast-controller:latest"
+
+
+def _resolve_image(default: str, env_var: str, *, explicit: str | None = None,
+                   config_image: str | None = None) -> str:
+    """Resolve a container image with a fixed precedence.
+
+    Precedence (highest first): *explicit* (e.g. a ``--image`` flag) →
+    *config_image* (a value from the ``.vast`` file) → the *env_var* environment
+    variable (a replacement for the built-in default only, handy for testing a
+    dev image pushed to e.g. Docker Hub) → *default*.
+    """
+    if explicit:
+        return explicit
+    if config_image:
+        return config_image
+    env_image = os.environ.get(env_var, "").strip()
+    if env_image:
+        return env_image
+    return default
+
+
+def resolve_robovast_image(explicit: str | None = None,
+                           config_image: str | None = None) -> str:
+    """Resolve the robovast (job / local) container image.
+
+    Overridable via ``ROBOVAST_IMAGE``. Used for the job pods and local runs.
+    """
+    return _resolve_image(DEFAULT_ROBOVAST_IMAGE, "ROBOVAST_IMAGE",
+                          explicit=explicit, config_image=config_image)
+
+
+def resolve_controller_image(explicit: str | None = None,
+                             config_image: str | None = None) -> str:
+    """Resolve the robovast-controller container image (the in-cluster controller pod).
+
+    Overridable via ``ROBOVAST_CONTROLLER_IMAGE`` — point this at a dev image
+    (e.g. pushed to Docker Hub) to test controller changes before CI publishes
+    the canonical image.
+    """
+    return _resolve_image(DEFAULT_ROBOVAST_CONTROLLER_IMAGE, "ROBOVAST_CONTROLLER_IMAGE",
+                          explicit=explicit, config_image=config_image)
+
 
 def get_app_version() -> str:
     """Return a short version string for the robovast package.
@@ -129,7 +178,10 @@ def _get_cluster_info(context=None):
                     config_data = yaml.safe_load(f) or {}
                 cluster_info["cluster_config"] = config_data
         except Exception as exc:  # pragma: no cover - best-effort, non-fatal
-            logger.warning("Failed to load cluster config from flag file: %s", exc)
+            # Expected in contexts without an initialized project / flag file
+            # (e.g. the in-cluster controller pod), where this info is simply
+            # unavailable. Keep it at debug to avoid noise; it is non-fatal.
+            logger.debug("Cluster config flag file unavailable: %s", exc)
     except Exception:  # pragma: no cover - import may fail in non-cluster contexts
         # If cluster modules are not available, silently skip cluster_config
         pass
@@ -252,9 +304,12 @@ def get_execution_env_variables(run_num, config_name, additional_env=None):
     return env_vars
 
 
-_LOCAL_INIT_BLOCK = "command -v fixuid > /dev/null 2>&1 || { echo 'ERROR: fixuid not found in container image. Please rebuild the image.' >&2; exit 1; }; eval $(fixuid -q)"
+_LOCAL_INIT_BLOCK = "command -v fixuid > /dev/null 2>&1 || { echo 'ERROR: fixuid not found in container image. Please rebuild the image.' >&2; exit 1; }; eval $(fixuid -q)\nEXTRA_REQUIRED_TOOLS=\"fixuid\""
 
-_CLUSTER_INIT_BLOCK = ""
+# Cluster runs mirror output to S3 in a post-run step (and pull config via an
+# mc-based init container), so 'mc' must be present. Declared here so the
+# entrypoint's tool check fails fast instead of crashing after a full run.
+_CLUSTER_INIT_BLOCK = "EXTRA_REQUIRED_TOOLS=\"mc\""
 
 _LOCAL_POST_RUN_BLOCK = """\
     # Build built-in cleanup script (stop rosbag and resource monitor gracefully)
@@ -646,15 +701,19 @@ def _namespace_file_params(value, deploy_paths, namespace_prefix):
     files are mounted under a per-config directory (``<namespace_prefix>/...``)
     to avoid name collisions. Any string parameter whose value equals one of the
     config's ``_config_files`` deploy paths is rewritten to
-    ``<namespace_prefix>/<deploy_path>`` so it resolves unambiguously regardless
-    of the working directory. All other values are left untouched.
+    ``<namespace_prefix>/<deploy_path>``. All other values are left untouched.
+
+    The prefix is *relative to the config mount root* (i.e. the scenario file's
+    own directory), because scenarios resolve file params against their own
+    location (``get_scenario_file_directory() + "/" + value``). Making the value
+    absolute here would double the mount root (``/config/config/...``).
 
     Args:
         value: A scenario-parameter value (scalar, list or dict) to walk.
         deploy_paths: Set of deploy-relative paths (e.g. ``maps/hallways.yaml``)
             for this config's generated files.
-        namespace_prefix: Absolute mount prefix for this config's files
-            (e.g. ``/config/<config-name>``).
+        namespace_prefix: Per-config prefix relative to the config mount root
+            (e.g. ``<config-name>``).
 
     Returns:
         The value with file paths rewritten.
@@ -668,22 +727,20 @@ def _namespace_file_params(value, deploy_paths, namespace_prefix):
     return value
 
 
-def build_job_parameter_documents(job, scenario_name, config_mount_root="/config"):
+def build_job_parameter_documents(job, scenario_name):
     """Build scenario-parameter override documents for a packed job.
 
     Produces one YAML document per work item in the job. Each document
     overrides ``scenario_name``'s parameters for that config and sets the special
     ``_output_dir`` key to ``<config-name>/<run_number>`` so scenario_execution
     writes the item's results into robovast's per-config/run layout. File-valued
-    parameters are namespaced under ``<config_mount_root>/<config-name>`` to
-    keep multiple configs' files from colliding in a single job.
+    parameters are namespaced under ``<config-name>/`` (relative to the config
+    mount root) to keep multiple configs' files from colliding in a single job.
 
     Args:
         job: A :class:`~robovast.execution.packer.JobSpec`.
         scenario_name: The scenario name to override (top-level key, matching
             the single-config ``scenario.config`` wrapping).
-        config_mount_root: Mount root inside the container where per-config files
-            live (default ``/config``).
 
     Returns:
         list[dict]: One override document per work item, ready to dump as a
@@ -697,7 +754,10 @@ def build_job_parameter_documents(job, scenario_name, config_mount_root="/config
         config_dict = convert_dataclasses_to_dict(copy.deepcopy(config))
 
         deploy_paths = {rel for rel, _ in config_data.get("_config_files", [])}
-        namespace_prefix = f"{config_mount_root}/{config_name}"
+        # Prefix is relative to the config mount root: scenarios resolve file
+        # params against their own directory (which *is* that mount root), so an
+        # absolute "/config/..." here would double to "/config/config/...".
+        namespace_prefix = config_name
         namespaced = _namespace_file_params(config_dict, deploy_paths, namespace_prefix)
 
         # _output_dir is consumed by scenario_execution to place this item's

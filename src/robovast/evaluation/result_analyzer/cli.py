@@ -18,11 +18,15 @@
 """CLI for evaluation."""
 
 import sys
+from pathlib import Path
 
 import click
 
+from robovast.common.campaign_index import build_campaign_store
 from robovast.common.cli import handle_cli_exception
 from robovast.common.cli.project_config import ProjectConfig
+from robovast.common.execution import is_campaign_dir
+from robovast.common.store import STORE_FILENAME, CampaignStore
 from robovast.results_processing import is_postprocessing_needed, run_postprocessing
 
 
@@ -33,6 +37,58 @@ def evaluation():
     Tools for interactive exploration and visualization of
     scenario execution results using Jupyter notebooks.
     """
+
+
+def _index_campaigns(results_dir, force=False, feedback=None):
+    """Ensure every batch campaign under ``results_dir`` has a campaign store.
+
+    The results GUI reads campaigns exclusively from ``campaign.db``. Search
+    campaigns write their store live (and are skipped here); batch campaigns are
+    indexed post-hoc from their results tree. Idempotent.
+    """
+    root = Path(results_dir)
+    if not root.is_dir():
+        return
+    for child in sorted(root.iterdir()):
+        if not child.is_dir() or not is_campaign_dir(child.name):
+            continue
+        # A search campaign has generation-* subdirs and writes its own store;
+        # never let the batch indexer clobber it.
+        if any(c.is_dir() and c.name.startswith("generation-") for c in child.iterdir()):
+            continue
+        store = child / STORE_FILENAME
+        if store.exists():
+            with CampaignStore(store) as s:
+                rows = s.list_campaigns()
+            if rows and rows[0]["mode"] == "search":
+                continue
+        try:
+            build_campaign_store(child, force=force)
+            if feedback:
+                feedback(f"Indexed campaign: {child.name}")
+        except Exception as e:  # pylint: disable=broad-except
+            if feedback:
+                feedback(f"Warning: could not index {child.name}: {e}")
+
+
+@evaluation.command(name='index')
+@click.option('--results-dir', '-r', default=None,
+              help='Directory containing run results (uses project results dir if not specified)')
+@click.option('--force', '-f', is_flag=True,
+              help='Rebuild campaign stores even if they appear up to date')
+def index_cmd(results_dir, force):
+    """Build/refresh the ``campaign.db`` store for batch campaigns.
+
+    The results GUI reads exclusively from these stores. Search campaigns write
+    their own store during execution and are skipped.
+    """
+    if results_dir is None:
+        raw_config = ProjectConfig.load()
+        if not raw_config or not raw_config.results_dir:
+            raise click.ClickException(
+                "Project not initialized. Run 'vast init <config-file>' first.")
+        results_dir = raw_config.results_dir
+    _index_campaigns(results_dir, force=force, feedback=click.echo)
 
 
 @evaluation.command(name='gui')
@@ -94,6 +150,10 @@ def result_analyzer_cmd(ctx, results_dir, force, skip_postprocessing):
                     default=True
                 ):
                     sys.exit(1)
+
+    # The GUI reads campaigns exclusively from campaign.db; make sure every
+    # batch campaign is indexed (search campaigns already have their store).
+    _index_campaigns(results_dir, force=force, feedback=click.echo)
 
     try:
         from PySide6.QtWidgets import \

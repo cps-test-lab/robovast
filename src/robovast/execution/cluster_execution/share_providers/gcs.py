@@ -29,7 +29,7 @@ import click
 
 from robovast.common.execution import is_campaign_dir
 
-from .base import BaseShareProvider
+from .base import BaseShareProvider, UploadProgressReader
 
 __all__ = ["GcsShareProvider"]
 
@@ -80,12 +80,6 @@ class GcsShareProvider(BaseShareProvider):
             ),
         }
 
-    def get_upload_script_path(self) -> str:
-        return os.path.join(
-            os.path.dirname(__file__),
-            "gcs_upload_script.py",
-        )
-
     def build_pod_env(self) -> dict[str, str]:
         key_file = os.environ.get("ROBOVAST_GCS_KEY_FILE", "")
         if not key_file:
@@ -115,6 +109,217 @@ class GcsShareProvider(BaseShareProvider):
         if prefix:
             env["ROBOVAST_GCS_PREFIX"] = prefix
         return env
+
+    def verify_access(self) -> None:
+        """Confirm the service-account credentials can reach the target bucket.
+
+        Exchanges the service-account key for an access token (proving the key
+        is valid) and GETs the bucket metadata over the GCS JSON API (proving
+        the account can see the bucket). Accepts the key as inline JSON
+        (``ROBOVAST_GCS_KEY_JSON``, as injected into the controller) or, on the
+        host, via ``ROBOVAST_GCS_KEY_FILE``.
+        """
+        bucket = os.environ["ROBOVAST_GCS_BUCKET"]
+        token = self._access_token_for_verify()
+        url = (
+            f"https://storage.googleapis.com/storage/v1/b/"
+            f"{urllib.parse.quote(bucket, safe='')}"
+        )
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        try:
+            with urllib.request.urlopen(req, timeout=30):
+                return
+        except urllib.error.HTTPError as exc:
+            raise click.UsageError(
+                f"GCS bucket {bucket!r} is not accessible (HTTP {exc.code} "
+                f"{exc.reason}). Check ROBOVAST_GCS_BUCKET and that the service "
+                "account has access."
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise click.UsageError(
+                f"Cannot reach GCS to verify bucket {bucket!r}: {exc.reason}"
+            ) from exc
+
+    def _access_token_for_verify(self) -> str:
+        """Return a read/write access token from inline key JSON or a key file."""
+        key_json_str = os.environ.get("ROBOVAST_GCS_KEY_JSON", "")
+        try:
+            import google.auth.transport.requests  # pylint: disable=import-outside-toplevel
+            import google.oauth2.service_account  # pylint: disable=import-outside-toplevel
+        except ImportError as exc:
+            raise click.UsageError(f"google-auth is not installed: {exc}") from exc
+        scopes = ["https://www.googleapis.com/auth/devstorage.read_write"]
+        if key_json_str:
+            try:
+                key_data = json.loads(key_json_str)
+            except json.JSONDecodeError as exc:
+                raise click.UsageError(
+                    f"ROBOVAST_GCS_KEY_JSON is not valid JSON: {exc}"
+                ) from exc
+            creds = google.oauth2.service_account.Credentials.from_service_account_info(
+                key_data, scopes=scopes)
+            creds.refresh(google.auth.transport.requests.Request())
+            return creds.token
+        # Host-side fallback: a key file path.
+        key_file = os.environ.get("ROBOVAST_GCS_KEY_FILE", "")
+        if not key_file:
+            raise click.UsageError(
+                "GCS credentials not configured for verification: set "
+                "ROBOVAST_GCS_KEY_JSON or ROBOVAST_GCS_KEY_FILE."
+            )
+        return self._get_gcs_access_token(key_file)
+
+    # ------------------------------------------------------------------
+    # Upload interface (resumable, authenticated)
+    # ------------------------------------------------------------------
+
+    def upload_archive(
+        self,
+        archive_path: str,
+        object_name: str,
+        progress_callback=None,
+    ) -> None:
+        """Upload *archive_path* to the bucket as ``<prefix><object_name>``.
+
+        Uses a GCS resumable upload so an interrupted transfer can continue: the
+        session URI is persisted next to the archive and, on a later attempt, GCS
+        is asked how many bytes it already holds so the upload resumes from there.
+        Expired sessions (HTTP 404) restart cleanly.
+        """
+        if not os.path.isfile(archive_path):
+            raise click.UsageError(f"archive not found: {archive_path}")
+
+        bucket = os.environ["ROBOVAST_GCS_BUCKET"]
+        prefix = os.environ.get("ROBOVAST_GCS_PREFIX", "")
+        remote_name = f"{prefix}{object_name}" if prefix else object_name
+        total = os.path.getsize(archive_path)
+        token = self._access_token_for_verify()
+
+        session_uri, offset = self._gcs_get_session(
+            archive_path, bucket, remote_name, total, token)
+
+        if offset >= total:
+            self._gcs_delete_session(archive_path)
+            if progress_callback is not None and total > 0:
+                progress_callback(total, total)
+            return
+
+        with open(archive_path, "rb") as fh:
+            if offset > 0:
+                fh.seek(offset)
+            reader = UploadProgressReader(
+                fh, total, progress_callback=progress_callback, start_offset=offset)
+            req = urllib.request.Request(
+                session_uri,
+                data=reader,
+                method="PUT",
+                headers={
+                    "Content-Type": "application/octet-stream",
+                    "Content-Length": str(total - offset),
+                    "Content-Range": f"bytes {offset}-{total - 1}/{total}",
+                },
+            )
+            try:
+                urllib.request.urlopen(req, timeout=600)  # nosec B310 - https GCS endpoint
+            except urllib.error.HTTPError as exc:
+                raise click.UsageError(
+                    f"HTTP {exc.code} uploading {object_name} to GCS: {exc.reason}"
+                ) from exc
+            except urllib.error.URLError as exc:
+                raise click.UsageError(f"Upload to GCS failed: {exc.reason}") from exc
+
+        self._gcs_delete_session(archive_path)
+
+    # -- resumable-session management --------------------------------------
+
+    @staticmethod
+    def _gcs_session_file(archive_path: str) -> str:
+        return f"{archive_path}.gcs_session"
+
+    def _gcs_get_session(
+        self, archive_path: str, bucket: str, remote_name: str, total: int, token: str,
+    ) -> tuple[str, int]:
+        """Return ``(session_uri, resume_offset)``, reusing a saved session if valid."""
+        session_path = self._gcs_session_file(archive_path)
+        saved_uri = None
+        if os.path.isfile(session_path):
+            with open(session_path) as fh:
+                saved_uri = fh.read().strip() or None
+        if saved_uri:
+            offset = self._gcs_query_progress(saved_uri, total)
+            if offset is None:
+                self._gcs_delete_session(archive_path)  # expired — start fresh
+            else:
+                return saved_uri, offset
+
+        session_uri = self._gcs_initiate_resumable(bucket, remote_name, total, token)
+        with open(session_path, "w") as fh:
+            fh.write(session_uri)
+        return session_uri, 0
+
+    def _gcs_delete_session(self, archive_path: str) -> None:
+        try:
+            os.remove(self._gcs_session_file(archive_path))
+        except OSError:
+            pass
+
+    @staticmethod
+    def _gcs_initiate_resumable(bucket: str, remote_name: str, total: int, token: str) -> str:
+        """POST to the GCS resumable-upload initiation endpoint; return the session URI."""
+        url = (
+            f"https://storage.googleapis.com/upload/storage/v1/b/"
+            f"{urllib.parse.quote(bucket, safe='')}/o?uploadType=resumable"
+        )
+        body = json.dumps({"name": remote_name}).encode()
+        req = urllib.request.Request(
+            url,
+            data=body,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json; charset=UTF-8",
+                "X-Upload-Content-Type": "application/octet-stream",
+                "X-Upload-Content-Length": str(total),
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:  # nosec B310
+                session_uri = resp.headers.get("Location")
+        except urllib.error.HTTPError as exc:
+            raise click.UsageError(
+                f"HTTP {exc.code} initiating GCS resumable upload: {exc.reason}"
+            ) from exc
+        if not session_uri:
+            raise click.UsageError("GCS did not return a resumable upload session URI")
+        return session_uri
+
+    @staticmethod
+    def _gcs_query_progress(session_uri: str, total: int) -> int | None:
+        """Ask GCS how many bytes it holds for a session.
+
+        Returns the byte offset to resume from (``total`` = already complete), or
+        ``None`` if the session has expired (HTTP 404).
+        """
+        req = urllib.request.Request(
+            session_uri,
+            data=b"",
+            method="PUT",
+            headers={"Content-Range": f"bytes */{total}", "Content-Length": "0"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30):  # nosec B310
+                return total  # 200/201 — already complete
+        except urllib.error.HTTPError as exc:
+            if exc.code == 308:  # Resume Incomplete
+                range_header = exc.headers.get("Range", "")
+                if range_header:
+                    return int(range_header.split("-")[-1]) + 1
+                return 0
+            if exc.code == 404:
+                return None  # session expired
+            raise click.UsageError(
+                f"HTTP {exc.code} querying GCS upload progress: {exc.reason}"
+            ) from exc
 
     # ------------------------------------------------------------------
     # Download interface (public bucket, no auth required)

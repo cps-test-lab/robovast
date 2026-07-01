@@ -153,9 +153,9 @@ def _bucket_name(campaign_id: str) -> str:
 
     Per-bucket mode (embedded MinIO) names the bucket after the campaign, but
     bucket names must be lowercase with no underscores.  The bucket is created
-    with this sanitized name (see ``archiver.upload_args_for_config``), so all
-    per-bucket operations must sanitize identically — otherwise MinIO rejects
-    an underscore-containing name with HTTP 400, not a 404.
+    with this sanitized name (see ``in_pod_storage.campaign_storage_location``),
+    so all per-bucket operations must sanitize identically — otherwise MinIO
+    rejects an underscore-containing name with HTTP 400, not a 404.
     """
     return campaign_id.lower().replace("_", "-")
 

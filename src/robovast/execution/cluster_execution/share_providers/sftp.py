@@ -82,12 +82,6 @@ class SftpShareProvider(BaseShareProvider):
             ),
         }
 
-    def get_upload_script_path(self) -> str:
-        return os.path.join(
-            os.path.dirname(__file__),
-            "sftp_upload_script.py",
-        )
-
     def build_pod_env(self) -> dict[str, str]:
         env: dict[str, str] = {
             "ROBOVAST_SFTP_HOST": os.environ["ROBOVAST_SFTP_HOST"],
@@ -140,13 +134,18 @@ class SftpShareProvider(BaseShareProvider):
         port = int(os.environ.get("ROBOVAST_SFTP_PORT", "22"))
         user = os.environ["ROBOVAST_SFTP_USER"]
         password = os.environ.get("ROBOVAST_SFTP_PASSWORD", "") or None
+        # Host-side uses a key *file*; inside the controller pod the launcher
+        # injects the key as inline PEM (ROBOVAST_SFTP_KEY_PEM) via build_pod_env.
         key_file = os.environ.get("ROBOVAST_SFTP_KEY_FILE", "") or None
+        key_pem = os.environ.get("ROBOVAST_SFTP_KEY_PEM", "") or None
 
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
         connect_kwargs: dict = {"username": user, "port": port}
-        if key_file:
+        if key_pem:
+            connect_kwargs["pkey"] = self._load_pkey(key_pem)
+        elif key_file:
             connect_kwargs["key_filename"] = key_file
         elif password:
             connect_kwargs["password"] = password
@@ -154,6 +153,70 @@ class SftpShareProvider(BaseShareProvider):
         ssh.connect(host, **connect_kwargs)
         sftp = ssh.open_sftp()
         return ssh, sftp
+
+    @staticmethod
+    def _load_pkey(pem: str):
+        """Parse an inline PEM private key, trying the common key types."""
+        import io  # pylint: disable=import-outside-toplevel
+
+        for cls in (paramiko.RSAKey, paramiko.Ed25519Key, paramiko.ECDSAKey):
+            try:
+                return cls.from_private_key(io.StringIO(pem))
+            except paramiko.SSHException:
+                continue
+        raise click.UsageError(
+            "Could not parse ROBOVAST_SFTP_KEY_PEM as a known key type.")
+
+    def upload_archive(
+        self,
+        archive_path: str,
+        object_name: str,
+        progress_callback=None,
+    ) -> None:
+        """Upload *archive_path* to the remote directory via SFTP ``put``."""
+        if not os.path.isfile(archive_path):
+            raise click.UsageError(f"archive not found: {archive_path}")
+
+        remote_dir = os.environ["ROBOVAST_SFTP_REMOTE_DIR"].rstrip("/")
+        remote_path = f"{remote_dir}/{object_name}"
+
+        # paramiko's put callback is already (bytes_transferred, total_bytes) —
+        # the same shape as progress_callback, so forward it directly.
+        cb = progress_callback
+
+        ssh, sftp = self._connect()
+        try:
+            sftp.put(archive_path, remote_path, callback=cb)
+        finally:
+            sftp.close()
+            ssh.close()
+
+    def verify_access(self) -> None:
+        """Confirm the SFTP server accepts the credentials and the remote dir exists.
+
+        Connects with the configured auth and ``stat``s
+        ``ROBOVAST_SFTP_REMOTE_DIR``; any auth/connection/path error raises so
+        the campaign does not start with broken delivery.
+        """
+        remote_dir = os.environ["ROBOVAST_SFTP_REMOTE_DIR"]
+        try:
+            ssh, sftp = self._connect()
+        except Exception as exc:  # paramiko raises a variety of types
+            raise click.UsageError(
+                f"Cannot connect to SFTP server "
+                f"{os.environ.get('ROBOVAST_SFTP_HOST')!r}: {exc}\n"
+                "Check ROBOVAST_SFTP_HOST / _USER / _PASSWORD / _KEY_FILE."
+            ) from exc
+        try:
+            sftp.stat(remote_dir)
+        except IOError as exc:
+            raise click.UsageError(
+                f"SFTP remote directory {remote_dir!r} is not accessible: {exc}\n"
+                "Check ROBOVAST_SFTP_REMOTE_DIR exists and is writable."
+            ) from exc
+        finally:
+            sftp.close()
+            ssh.close()
 
     # ------------------------------------------------------------------
     # Optional download interface

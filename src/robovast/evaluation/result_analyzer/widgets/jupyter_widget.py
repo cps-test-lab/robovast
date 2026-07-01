@@ -331,19 +331,21 @@ def format_notebook_error_html(error_str: str) -> str:
 class JupyterNotebookRunner(CancellableWorkload):
     """Thread for executing notebooks without blocking the UI"""
 
-    def __init__(self, name, run_nb, config_nb, campaign_nb):
+    def __init__(self, name, run_nb, config_nb, campaign_nb, batch_nb=None):
         super().__init__(name)
         self.notebook_content = None
         self.run_nb = run_nb
         self.config_nb = config_nb
         self.campaign_nb = campaign_nb
+        self.batch_nb = batch_nb
 
     def set_notebook(self, notebook_content: str):
         """Set the notebook content to execute"""
         self.notebook_content = notebook_content
 
-    def get_notebook(self, path, run_type):
-        """Load and prepare notebook with DATA_DIR replaced.
+    def get_notebook(self, path, run_type, inject=None):
+        """Load and prepare the notebook: inject ``DATA_DIR`` (and any ``inject``
+        variables, e.g. ``BATCH`` for a batch notebook).
 
         Returns:
             nbformat.NotebookNode: The prepared notebook object
@@ -358,23 +360,22 @@ class JupyterNotebookRunner(CancellableWorkload):
         except Exception as e:
             raise ValueError(f"Failed to parse notebook as JSON: {e}") from e
 
-        # Find and replace DATA_DIR in code cells
-        replace_variable = "DATA_DIR"
-        replace_string = f"'{os.path.abspath(path)}'"
-        regex_pattern = re.compile(r'(?m)^(\s*)DATA_DIR\s*=\s*([\'"]).*?\2(.*)$')
+        # Inject DATA_DIR (required) plus any extra variables (optional). Each is a
+        # ``NAME = <repr>`` assignment replaced in-place wherever the notebook
+        # declares it; only DATA_DIR must be present.
+        injections = {"DATA_DIR": repr(os.path.abspath(path))}
+        for name, value in (inject or {}).items():
+            injections[name] = repr(value)
 
-        num_replacements = 0
-        for cell in notebook.cells:
-            if cell.cell_type == 'code':
-                # Replace DATA_DIR assignment in this cell
-                cell.source, count = regex_pattern.subn(
-                    rf'\1{replace_variable} = {replace_string}\3',
-                    cell.source
-                )
-                num_replacements += count
-
-        if num_replacements == 0:
-            raise ValueError(f"Expected at least one replacement of '{replace_variable}', but made {num_replacements} replacements.")
+        for var, replacement in injections.items():
+            pattern = re.compile(rf'(?m)^(\s*){var}\s*=\s*.*$')
+            count = 0
+            for cell in notebook.cells:
+                if cell.cell_type == 'code':
+                    cell.source, n = pattern.subn(rf'\1{var} = {replacement}', cell.source)
+                    count += n
+            if var == "DATA_DIR" and count == 0:
+                raise ValueError("Expected at least one 'DATA_DIR' assignment to replace.")
 
         # Return notebook object directly
         return notebook
@@ -384,6 +385,8 @@ class JupyterNotebookRunner(CancellableWorkload):
             return self.run_nb
         elif run_type == RunType.CONFIG:
             return self.config_nb
+        elif run_type == RunType.BATCH:
+            return self.batch_nb
         elif run_type == RunType.CAMPAIGN:
             return self.campaign_nb
         return None
@@ -422,6 +425,8 @@ class JupyterNotebookRunner(CancellableWorkload):
             return "overview_run.html"
         elif run_type == RunType.CONFIG:
             return "overview_config.html"
+        elif run_type == RunType.BATCH:
+            return "overview_batch.html"
         elif run_type == RunType.CAMPAIGN:
             return "overview_campaign.html"
         raise ValueError("Unknown run-type")
@@ -434,11 +439,16 @@ class JupyterNotebookRunner(CancellableWorkload):
             return hash_files
         return []
 
-    def run(self, data_path, run_type):
+    def run(self, data_path, run_type, inject=None):
         if not self._get_external_notebook_path(run_type):
             return False, "Notebook not available"
         hash_files = self.get_hash_files(run_type)
         cache_file_name = self.get_cache_file_name(run_type)
+        # A batch node shares its path with the campaign (flat layout); the cache
+        # is keyed by the injected variables too, so each batch caches separately.
+        cache_suffix = "".join(f"_{k}-{v}" for k, v in sorted((inject or {}).items()))
+        if cache_suffix:
+            cache_file_name = cache_file_name.replace(".html", f"{cache_suffix}.html")
         file_cache = FileCache(data_path, cache_file_name, hash_files, ".html")
         try:
             # Check cache first
@@ -450,7 +460,7 @@ class JupyterNotebookRunner(CancellableWorkload):
 
             self.progress_callback(0, "Creating notebook...")
 
-            notebook = self.get_notebook(data_path, run_type)
+            notebook = self.get_notebook(data_path, run_type, inject=inject)
             if not notebook:
                 raise ValueError("Failed to prepare notebook content.")
 

@@ -64,9 +64,10 @@ The structure inside is domain-specific, but typically includes:
 .. code-block:: text
 
    _execution/
-   └── execution.yaml
+   ├── execution.yaml
+   └── controller.log                        # Campaign controller log
 
-Contains:
+``execution.yaml`` contains:
 
 - ``execution_time``: ISO timestamp of when the execution started
 - ``robovast_version``: Git commit hash of the robovast version used
@@ -74,6 +75,12 @@ Contains:
 - ``execution_type``: ``cluster`` or ``local``
 - ``image``: Docker image with SHA digest
 - ``cluster_info``: Node count, labels, CPU manager policies (cluster only)
+
+``controller.log`` captures the campaign controller's own log for the whole run —
+batch/search progress, backend job dispatch, postprocessing and stopping
+decisions. For cluster runs this is the same output the controller pod prints to
+``kubectl logs``, preserved here so a downloaded or shared campaign is
+self-documenting without a live cluster.
 
 ``_transient/`` — Intermediate Data
 """""""""""""""""""""""""""""""""""""
@@ -170,8 +177,8 @@ Job Directory
 
 ``_jobs/job-N/`` holds the artifacts of one *job* — the unit of dispatch (one
 Kubernetes Job, or one local ``docker compose`` run). With the default
-``configs_per_job: 1`` there is one job per run; with ``configs_per_job > 1``
-several configurations share a job (and therefore share these artifacts). Each
+``runs_per_job: 1`` there is one job per run; with ``runs_per_job > 1``
+several runs share a job (and therefore share these artifacts). Each
 run links to its job via ``<run>/job`` (e.g. ``<run>/job/sysinfo.yaml``).
 
 .. code-block:: text

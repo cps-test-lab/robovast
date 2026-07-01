@@ -110,16 +110,15 @@ A good practice is, to first run a single configuration to verify that everythin
     # Results can then be retrieved with: vast results download
     # Files are organized as: <results-dir>/<campaign-name>-<timestamp>/<config-name>/<run_number>/
 
-For long-running tests, you can use detached mode to run jobs in the background:
+``vast exec cluster run`` is fire-and-forget: it launches an in-cluster
+controller pod that drives the campaign and returns immediately. The campaign
+runs in the background in the cluster:
 
 .. code-block:: bash
 
-    # Run in detached mode (command exits after creating jobs)
-    vast exec cluster run --detach
-    
     # Monitor job status (shows progress per run when multiple runs are active)
     vast exec cluster monitor
-    
+
     # Clean up after jobs complete (all campaigns, or use --campaign for a specific campaign)
     vast exec cluster run-cleanup
 
@@ -171,6 +170,24 @@ Afterwards you can start the GUI:
     # or, to force postprocessing even if results are unchanged:
     vast results postprocess --force
     vast evaluation gui
+
+.. note::
+
+   The GUI discovers campaigns **exclusively from a per-campaign
+   ``campaign.db`` store** — it does not walk the results filesystem. Search
+   campaigns write this store live; batch campaigns are indexed post-hoc from
+   their results tree. ``vast evaluation gui`` indexes any missing batch stores
+   automatically before launching, but you can also (re)build them explicitly:
+
+   .. code-block:: bash
+
+       vast evaluation index            # build/refresh campaign stores
+       vast evaluation index --force    # rebuild even if up to date
+
+   The store also carries the campaign **mode** (``batch``/``search``), so the
+   GUI renders the search ``batch`` level and resolves the
+   ``evaluation.visualization`` notebooks from the recorded ``config_dir``. See
+   :ref:`campaign-store` for the schema and internals.
 
 
 Container Image Compatibility Version
@@ -238,6 +255,59 @@ To your `pyproject.toml`, add an entry under `[tool.poetry.plugins."robovast.var
 
     [tool.poetry.plugins."robovast.variation_types"]
     "YourVariation" = "robovast_<yourplugin>.your_variation:YourVariation"
+
+A variation can also be loaded from a **local file relative to the .vast**
+without packaging it — reference it as ``<path>.py:<Class>`` wherever a variation
+name is expected (in a ``configuration[].variations`` list or a ``search.variations``
+template). This is the same ``./path.py:Class`` convention used by search
+strategies, extractors and postprocessing plugins:
+
+.. code-block:: yaml
+
+    variations:
+    - variations/wind.py:WindFieldVariation:
+        wind_speed: 5.0
+
+See ``configs/examples/quadrotor_landing/variations/wind.py`` for a runnable
+example (a wind model that derives the simulator's ``wind_strength``), wired into
+the quadrotor search vasts.
+
+.. note::
+
+   **Packaging a variation plugin as its own distribution.** If your variation
+   types live in a separate installable package (as ``robovast-nav`` does for
+   ``FloorplanVariation``, ``PathVariation*``, ``ObstacleVariation*``), it must
+   be installed everywhere scenario variations get **composed** — not just
+   where scenarios *run*. For local and host-driven cluster runs that's the
+   host venv; for ``vast execution cluster run`` (search/batch) composition
+   happens **inside the in-cluster controller pod**, so the controller image
+   (``container/controller/Dockerfile``) must install the plugin package too,
+   or composing a config that references your variation type will fail there
+   with ``Unknown variation class``.
+
+   Two pitfalls when exposing the package as a poetry extra (e.g.
+   ``nav = ["robovast-nav"]``):
+
+   * The extra's package name must also be declared as an optional dependency
+     in ``[tool.poetry.dependencies]`` (e.g.
+     ``robovast-nav = {path = "src/robovast_nav", optional = true}`` for an
+     in-repo sibling package) — ``poetry check`` catches the mismatch if not.
+   * The controller's dev-iteration fast path
+     (``controller_launcher.build_dev_wheels``) builds a wheel of the current
+     ``robovast`` source for quick redeploys; if your plugin lives in a
+     separate poetry project under ``src/``, it needs its own wheel built and
+     shipped alongside (as ``robovast_nav`` does) or dev changes to it won't
+     reach the controller pod.
+
+   If your plugin's package pulls in a dependency that itself needs system
+   shared libraries (e.g. ``robovast-nav`` hard-depends on
+   ``pyside6-essentials``, whose bundled Qt6 libs need ``libGL.so.1`` and
+   friends to even *import*, regardless of whether any GUI is ever shown), the
+   controller image needs those apt packages too — see the
+   ``container/controller/Dockerfile`` apt-get block for the list verified
+   against ``robovast-nav``. A missing system lib shows up the same way as a
+   missing extra: the plugin's entry point fails to load and the variation
+   type is reported as unknown.
 
 
 Add Command-line Plugin
@@ -559,6 +629,91 @@ To test your cluster configuration, you can use:
 The output directory will contain all necessary files and instructions to manually execute the setup steps for your cluster configuration and execution.
 
 
+Add Share Provider Plugin
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Share providers are discovered as **entry-point plugins** under the
+``robovast.share_providers`` group.  They determine where a finished campaign is
+uploaded (see :ref:`cluster-sharing`).  To add a new provider:
+
+1. **Create a provider class** that inherits from
+   :class:`~robovast.execution.cluster_execution.share_providers.base.BaseShareProvider`
+   and implements the three abstract methods:
+
+   .. code-block:: python
+
+      import os
+
+      from robovast.execution.cluster_execution.share_providers.base import (
+          BaseShareProvider,
+          UploadProgressReader,
+      )
+
+      class MyShareProvider(BaseShareProvider):
+          SHARE_TYPE = "myshare"
+
+          def required_env_vars(self) -> dict[str, str]:
+              return {
+                  "ROBOVAST_SHARE_URL": "URL of the target folder",
+                  "MY_SHARE_TOKEN":     "API token for the share service",
+              }
+
+          def build_pod_env(self) -> dict[str, str]:
+              return {
+                  "MY_SHARE_URL":   os.environ["ROBOVAST_SHARE_URL"],
+                  "MY_SHARE_TOKEN": os.environ["MY_SHARE_TOKEN"],
+              }
+
+          def upload_archive(self, archive_path, object_name, progress_callback=None):
+              total = os.path.getsize(archive_path)
+              with open(archive_path, "rb") as fh:
+                  body = UploadProgressReader(
+                      fh, total, progress_callback=progress_callback)
+                  ...  # PUT/stream `body` to the share, raising on failure
+
+2. **Implement** :meth:`~robovast.execution.cluster_execution.share_providers.base.BaseShareProvider.upload_archive`.
+   It runs **in-process** in the controller pod (no sidecar, no subprocess), reads
+   credentials from ``os.environ`` (populated by ``build_pod_env()``), and uploads
+   the local ``archive_path``. Wrap the request body in
+   :class:`~robovast.execution.cluster_execution.share_providers.base.UploadProgressReader`
+   so the ``(bytes_sent, total_bytes)`` ``progress_callback`` drives the live
+   upload bar in ``vast exec cluster monitor``.
+
+   Optionally override
+   :meth:`~robovast.execution.cluster_execution.share_providers.base.BaseShareProvider.verify_access`
+   with a cheap authenticated check so a bad configuration fails the pre-flight
+   credential check before any batches run.
+
+3. **Register the provider** in your package's ``pyproject.toml``:
+
+   .. code-block:: toml
+
+      [tool.poetry.plugins."robovast.share_providers"]
+      myshare = "mypackage.myshare:MyShareProvider"
+
+4. Re-install the package (``pip install -e .``) so the entry point is
+   registered.
+
+After that, ``ROBOVAST_SHARE_TYPE=myshare`` in ``.env`` will select your
+provider automatically.
+
+Share provider API reference
+""""""""""""""""""""""""""""
+
+.. autoclass:: robovast.execution.cluster_execution.share_providers.base.BaseShareProvider
+   :members:
+   :undoc-members:
+
+.. autoclass:: robovast.execution.cluster_execution.share_providers.nextcloud.NextcloudShareProvider
+   :members:
+
+.. autoclass:: robovast.execution.cluster_execution.share_providers.gcs.GcsShareProvider
+   :members:
+
+.. automodule:: robovast.execution.cluster_execution.in_pod_upload
+   :members:
+
+
 Add a MCP Plugin
 ^^^^^^^^^^^^^^^^
 
@@ -588,6 +743,318 @@ Then register the class as an entry point in ``pyproject.toml``:
    my_plugin = "my_package.mcp_plugin:MyMCPPlugin"
 
 The plugin is picked up automatically the next time the server starts.
+
+
+.. _extending-search-strategy:
+
+Add Search Strategy Plugin
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+A search strategy drives the closed-loop search (see :doc:`search`): it proposes
+parameter sets, is told their evaluations, and produces a final report. Strategies
+are algorithm-agnostic and share one config schema; only the per-strategy
+``strategy_parameters`` block differs.
+
+Subclass ``robovast.search.strategy.SearchStrategy`` and implement the four
+abstract methods. Optionally set ``PARAMS_MODEL`` to a Pydantic model — the
+framework validates ``search.strategy_parameters`` against it and passes the
+parsed object as ``params``:
+
+.. code-block:: python
+
+   from pydantic import BaseModel
+   from robovast.search.strategy import SearchStrategy
+   from robovast.search.types import ParamSet, SearchReport
+
+   class MyParams(BaseModel):
+       step: float = 0.1
+
+   class MyStrategy(SearchStrategy):
+       PARAMS_MODEL = MyParams  # optional; omit (None) for no parameters
+
+       def ask(self, n: int) -> list[ParamSet]:
+           """Propose n parameter sets (keys match search_space dims)."""
+           ...
+
+       def tell(self, evaluations) -> None:
+           """Ingest the evaluations of the batch just run."""
+           ...
+
+       def is_done(self) -> bool:
+           """True when the budget is exhausted / converged."""
+           ...
+
+       def report(self) -> SearchReport:
+           """Return the deliverable (ranked best, archive, Pareto front)."""
+           ...
+
+``self.search_space``, ``self.objectives`` and the validated ``self.params`` are
+available on the instance. For single-objective strategies, ``self.objective_value(ev)``
+returns the sole objective sign-oriented so that **higher is always better**.
+
+Register the class under ``robovast.search_strategies``; the key is the
+``search.strategy`` name:
+
+.. code-block:: toml
+
+   [tool.poetry.plugins."robovast.search_strategies"]
+   my_strategy = "your_package.strategies:MyStrategy"
+
+A strategy can also be loaded from a **local file relative to the .vast** without
+packaging, using ``strategy: ./search/my_strategy.py:MyStrategy`` (the same
+``load_ref`` mechanism used for extractors and search postprocessing).
+
+
+.. _extending-extractor:
+
+Add Extractor Plugin
+^^^^^^^^^^^^^^^^^^^^^
+
+The *extractor* is the single, SUT-specific scoring step: it reads a parameter
+set's per-config result directory and returns named **objectives** (optimized)
+and **measures** (quality-diversity behavior axes; ignored by non-QD strategies).
+This is the one place system-under-test logic lives.
+
+Subclass ``robovast.search.extractor.Extractor``. It is constructed with the
+``extract.params`` from the ``.vast`` (so thresholds / column names can be swept
+without editing code), and aggregation over the config's runs is its
+responsibility:
+
+.. code-block:: python
+
+   from pathlib import Path
+   from robovast.search.extractor import (Extractor, ExtractResult,
+                                          completed_run_dirs)
+
+   class MyExtract(Extractor):
+       # __init__(self, **params) is inherited; params land on self.params
+
+       def extract(self, config_dir: Path) -> ExtractResult:
+           runs = completed_run_dirs(config_dir)        # helper: finished runs
+           failures = sum(1 for r in runs if _failed(r))
+           return ExtractResult(
+               objectives={"failure_rate": failures / max(len(runs), 1)},
+               measures={},                              # {} when unused
+           )
+
+``objectives`` and ``measures`` are named dicts, so single- and multi-objective
+use the same shape. The framework records how many runs backed each result.
+
+Register under ``robovast.extractors`` (referenced by ``search.extract.plugin``),
+or load from a local file with ``extract.plugin: ./search/extract.py:MyExtract``:
+
+.. code-block:: toml
+
+   [tool.poetry.plugins."robovast.extractors"]
+   my_extract = "your_package.extractors:MyExtract"
+
+The extractor **reads** what a postprocessing plugin produced (e.g. per-run
+``metrics.csv``) — it no longer computes raw metrics itself. Pair it with a
+postprocessing plugin (below) that writes ``metrics.csv`` from raw artifacts:
+list that plugin in ``search.postprocessing`` (run before extract) and/or in
+``results_processing.postprocessing`` (analysis), so search and the analysis
+notebooks read the same metrics. Postprocessing plugins load identically in both
+lists — by entry-point name or a local ``./path.py:Class`` file reference.
+
+
+.. _campaign-store:
+
+Campaign Store and Results Indexing
+-----------------------------------
+
+Every campaign — batch or search — is described by a single sqlite store,
+``campaign.db`` (``robovast.common.store.STORE_FILENAME``), written at the
+root of the campaign directory. It is the **single source of truth** the results
+GUI reads, and the seam an in-cluster controller or web UI can later read/stream.
+
+A campaign runs one or more **batches**: a batch-mode campaign (no ``search:``
+block) has exactly one batch of the enumerated configs; a search campaign has one
+batch per ask/tell round.
+
+Schema
+^^^^^^
+
+``robovast.common.store.CampaignStore`` is a thin wrapper over three tables::
+
+    campaign (1) --< batch (1) --< unit (one per param set / config)
+
+* **campaign** — ``mode`` (``batch``/``search``), ``config_dir`` (base directory
+  against which ``evaluation.visualization`` notebooks resolve), ``config_json``
+  (the full config), and an opaque ``strategy_state`` blob for resumable
+  strategies.
+* **batch** — one ask/tell round (search), or the single batch (``idx=0``) of a
+  batch-mode campaign.
+* **unit** — one evaluated parameter set (search) or one configuration (batch):
+  the sampled ``params``, ``objectives``/``measures`` (JSON; ``{}`` for batch),
+  ``n_samples``, an aggregate ``status`` and the ``result_dir``.
+
+Who writes it
+^^^^^^^^^^^^^
+
+* **The controller** (``robovast.execution.controller.CampaignController``) writes
+  the store *live* for both modes as each batch is evaluated, so progress is
+  queryable while a campaign runs. It owns the campaign id, the flat results
+  layout (``<campaign>/<config>/<run>/``) and the batch loop; an
+  :class:`~robovast.execution.backends.ExecutionBackend` (``DockerBackend``
+  locally) only dispatches one batch's jobs.
+* **The post-hoc indexer** ``robovast.common.campaign_index.build_campaign_store(campaign_dir)``
+  reconstructs the same store by scanning a finished results tree (reusing the
+  ``campaign_data`` readers). It is used for campaign dirs not produced by the
+  controller — e.g. cluster results downloaded from S3 — and is idempotent
+  (mtime-guarded; ``force=True`` to rebuild), invoked by ``vast evaluation index``
+  and automatically on ``vast evaluation gui`` launch. Controller-written stores
+  are left untouched.
+
+Store-driven GUI
+^^^^^^^^^^^^^^^^^
+
+The results GUI (``RunResultsAnalyzer``) discovers campaigns by scanning
+``<results_dir>/*/campaign.db`` — there is no filesystem-walk or depth-based
+heuristic. It reads the campaign/batch/unit rows to build the tree
+(campaign → *batch*, search only → config), resolves notebook workloads from
+``config_json`` against ``config_dir``, and enumerates only the run-level leaves
+from each unit's ``result_dir``.
+
+
+.. _controller-control-interface:
+
+Controller Control Interface
+----------------------------
+
+Every cluster campaign is driven by a fire-and-forget **controller pod**. While
+it runs (and after it finishes) the host talks to it through a small in-pod
+**HTTP/JSON control channel** — the live seam for monitoring and for issuing
+commands such as a graceful stop or an upload retry.
+
+Server
+^^^^^^
+
+``robovast.execution.control_server`` runs a **FastAPI + uvicorn** server on a
+daemon thread beside the synchronous controller loop (default port ``8099``,
+``ROBOVAST_CONTROL_PORT``). Startup is **best-effort**: if it fails (e.g.
+``uvicorn`` missing) the campaign continues and the monitor falls back to its
+Kubernetes-only view. FastAPI also serves the live OpenAPI schema at ``/docs``,
+so the same contract serves the CLI now and a web UI later.
+
+Endpoints
+^^^^^^^^^
+
+* ``GET /status`` — the controller's live :class:`~robovast.execution.control_server.Status`
+  (loop phase, current batch, budget/run progress, history). The CLI ``monitor``
+  polls this; ``phase`` is the authoritative "done" signal.
+* ``POST /command`` — an extensible RPC: a JSON body ``{name, args}`` is dispatched
+  through the handler registry and returns a
+  :class:`~robovast.execution.control_server.CommandResult` (``{ok, result, error}``).
+  An unknown command returns HTTP 400.
+* ``GET /healthz`` — liveness (``{"ok": true}``).
+
+Status: phase and stage
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``phase`` is an **open** string advanced through a documented vocabulary, with
+``stage`` carrying finer markers so new states slot in without a schema change:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 80
+
+   * - ``phase``
+     - Meaning
+   * - ``starting`` → ``running``
+     - Campaign created; batch loop executing.
+   * - ``finishing``
+     - Search stop condition met (or a ``stop`` was requested); winding down.
+   * - ``uploading``
+     - Campaign published to storage; compressing/uploading to the share. The
+       ``stage`` refines this: ``upload-to-share`` (in progress),
+       ``upload-failed`` (waiting for a retrigger), ``uploaded`` (done).
+   * - ``finished``
+     - Done (``stage=uploaded``) — the controller process exits 0.
+   * - ``failed``
+     - Aborted. ``stage`` says why for the new pre-flight gates:
+       ``share-config-error`` (no/invalid share configured) or
+       ``share-verify-failed`` (credentials rejected before any batch ran).
+
+Commands
+^^^^^^^^
+
+Handlers are registered in the :data:`~robovast.execution.control_server.HANDLERS`
+registry via the ``@register("name")`` decorator and receive
+``(state, **args)``. Built-in commands:
+
+* ``stop`` — cooperative graceful stop. During the batch loop it ends the search
+  after the current batch; while the controller is parked waiting to retry a
+  failed upload it **abandons** that wait and terminates.
+* ``upload-to-share`` — (re)run the post-campaign upload. ``args`` may carry
+  credential overrides (e.g. a corrected password); with no args the
+  launch-time credentials are reused. The handler only *signals* — the actual
+  upload runs on the controller's main thread (see below) — so callers poll
+  ``GET /status`` for the ``stage`` transition.
+
+State ownership and the retrigger handshake
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+:class:`~robovast.execution.control_server.ControllerState` is the thread-safe
+holder the **controller writes** and the **server reads**. The controller calls
+``update`` / ``set_phase`` at each batch boundary; the server thread reads a
+consistent ``snapshot``. Long-running work never executes on a request thread:
+``upload-to-share`` calls ``request_upload(overrides)`` (and ``stop`` calls
+``request_stop()``), which wake the controller's main thread blocked in
+``wait_for_retrigger()`` — it returns ``("retrigger", overrides)`` to retry or
+``("abandon", {})`` when a stop was requested.
+
+Host-side client
+^^^^^^^^^^^^^^^^^
+
+``robovast.execution.cluster_execution.control_client`` reaches the server over
+``kubectl port-forward`` (the same transport the launcher uses, so it needs only
+the user's kubeconfig — no extra RBAC): ``find_controller_pod`` locates the pod
+by label, ``port_forward`` opens the tunnel, and ``get_status`` / ``send_command``
+call the endpoints. The CLI ``monitor``, ``stop`` and ``upload-to-share`` are
+thin wrappers over these.
+
+The ``upload-to-share`` command may carry credential overrides, and because they
+populate ``os.environ`` before the provider is loaded they can also **switch the
+share type** (e.g. retry a failed gcs upload to sftp). The active share type is
+reported in ``Status.share_provider`` and shown by ``monitor`` while uploading.
+
+.. warning::
+
+   **Trust model.** The control server is **unauthenticated** — any principal
+   that can ``kubectl port-forward`` to the controller pod (RBAC verb
+   ``pods/portforward`` in the namespace) can issue commands. Because a retrigger
+   can switch the upload destination, such a principal can **redirect a
+   campaign's results to an arbitrary server** (data exfiltration). A principal
+   with ``pods/exec`` could already read the data directly, so this only widens
+   exposure for port-forward-only principals. On shared/multi-tenant clusters,
+   restrict ``pods/portforward`` (and ``pods/exec``) on the robovast namespace
+   accordingly. Adding a bearer-token check on ``POST /command`` is a possible
+   future hardening but is out of scope today.
+
+API reference
+^^^^^^^^^^^^^
+
+.. automodule:: robovast.execution.control_server
+   :members: Status, Command, CommandResult, ControllerState, register, dispatch
+   :undoc-members:
+
+.. automodule:: robovast.execution.cluster_execution.control_client
+   :members: find_controller_pod, port_forward, get_status, send_command
+
+
+.. _cluster-resource-resolution:
+
+Per-Cluster Resource Resolution
+-------------------------------
+
+The resolution logic for per-cluster resources (the ``{context-name: value}``
+mappings documented under *Per-Cluster Resource Limits* in
+:doc:`cluster_execution`) lives in :mod:`robovast.common.cluster_context`:
+
+.. automodule:: robovast.common.cluster_context
+   :members: get_active_kube_context, list_all_contexts, get_config_context_names,
+             require_context_for_multi_cluster, resolve_resource_value, resolve_resources
+   :undoc-members:
 
 
 Querying RoboVAST campaigns
