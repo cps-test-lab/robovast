@@ -696,6 +696,13 @@ def main(argv=None):
 
     campaign_config = validate_config(load_config(args.vast))
     backend = _build_cluster_backend(args.namespace, args.kube_context, args.log_tree)
+    # Variations that declare an auxiliary container are served by a sidecar in
+    # this controller pod (injected by the host launcher); route their commands
+    # through pods/exec instead of the local ``docker run`` default.
+    from robovast.common.config_generation import set_container_runner_factory
+    from robovast.execution.cluster_execution.container_runner import \
+        make_cluster_container_runner_factory
+    set_container_runner_factory(make_cluster_container_runner_factory(args.namespace))
     options = RunOptions(log_tree=args.log_tree)
     # The host launcher passes --campaign-id; resolve it here too so we know which
     # campaign to upload after the run (and so the id is stable for both paths).

@@ -701,15 +701,19 @@ def _namespace_file_params(value, deploy_paths, namespace_prefix):
     files are mounted under a per-config directory (``<namespace_prefix>/...``)
     to avoid name collisions. Any string parameter whose value equals one of the
     config's ``_config_files`` deploy paths is rewritten to
-    ``<namespace_prefix>/<deploy_path>`` so it resolves unambiguously regardless
-    of the working directory. All other values are left untouched.
+    ``<namespace_prefix>/<deploy_path>``. All other values are left untouched.
+
+    The prefix is *relative to the config mount root* (i.e. the scenario file's
+    own directory), because scenarios resolve file params against their own
+    location (``get_scenario_file_directory() + "/" + value``). Making the value
+    absolute here would double the mount root (``/config/config/...``).
 
     Args:
         value: A scenario-parameter value (scalar, list or dict) to walk.
         deploy_paths: Set of deploy-relative paths (e.g. ``maps/hallways.yaml``)
             for this config's generated files.
-        namespace_prefix: Absolute mount prefix for this config's files
-            (e.g. ``/config/<config-name>``).
+        namespace_prefix: Per-config prefix relative to the config mount root
+            (e.g. ``<config-name>``).
 
     Returns:
         The value with file paths rewritten.
@@ -723,22 +727,20 @@ def _namespace_file_params(value, deploy_paths, namespace_prefix):
     return value
 
 
-def build_job_parameter_documents(job, scenario_name, config_mount_root="/config"):
+def build_job_parameter_documents(job, scenario_name):
     """Build scenario-parameter override documents for a packed job.
 
     Produces one YAML document per work item in the job. Each document
     overrides ``scenario_name``'s parameters for that config and sets the special
     ``_output_dir`` key to ``<config-name>/<run_number>`` so scenario_execution
     writes the item's results into robovast's per-config/run layout. File-valued
-    parameters are namespaced under ``<config_mount_root>/<config-name>`` to
-    keep multiple configs' files from colliding in a single job.
+    parameters are namespaced under ``<config-name>/`` (relative to the config
+    mount root) to keep multiple configs' files from colliding in a single job.
 
     Args:
         job: A :class:`~robovast.execution.packer.JobSpec`.
         scenario_name: The scenario name to override (top-level key, matching
             the single-config ``scenario.config`` wrapping).
-        config_mount_root: Mount root inside the container where per-config files
-            live (default ``/config``).
 
     Returns:
         list[dict]: One override document per work item, ready to dump as a
@@ -752,7 +754,10 @@ def build_job_parameter_documents(job, scenario_name, config_mount_root="/config
         config_dict = convert_dataclasses_to_dict(copy.deepcopy(config))
 
         deploy_paths = {rel for rel, _ in config_data.get("_config_files", [])}
-        namespace_prefix = f"{config_mount_root}/{config_name}"
+        # Prefix is relative to the config mount root: scenarios resolve file
+        # params against their own directory (which *is* that mount root), so an
+        # absolute "/config/..." here would double to "/config/config/...".
+        namespace_prefix = config_name
         namespaced = _namespace_file_params(config_dict, deploy_paths, namespace_prefix)
 
         # _output_dir is consumed by scenario_execution to place this item's

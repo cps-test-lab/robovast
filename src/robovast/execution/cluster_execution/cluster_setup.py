@@ -79,6 +79,11 @@ def _controller_rbac_manifests(namespace):
                  "verbs": ["get", "list", "watch"]},
                 {"apiGroups": [""], "resources": ["pods", "pods/log"],
                  "verbs": ["get", "list", "watch", "delete", "deletecollection"]},
+                # Variations that declare an auxiliary container run their commands
+                # in a controller-pod sidecar via the pods/exec subresource
+                # (see cluster_execution.container_runner.ClusterContainerRunner).
+                {"apiGroups": [""], "resources": ["pods/exec"],
+                 "verbs": ["create", "get"]},
             ],
         },
         {

@@ -19,62 +19,75 @@ import os
 import shutil
 import subprocess
 import tarfile
-import tempfile
-from importlib.resources import files
 
 from robovast.common import FileCache
 
 logger = logging.getLogger(__name__)
 
+# Auxiliary container image that produces floorplan maps/meshes. Declared by
+# FloorplanVariation.get_required_container(); the active execution backend runs
+# our commands in it (ephemeral ``docker run`` locally, a controller-pod sidecar
+# via pods/exec in the cluster). Its entrypoint is ``floorplan``.
+SCENERY_BUILDER_IMAGE = "ghcr.io/secorolab/scenery_builder"
+SCENERY_BUILDER_ENTRYPOINT = ["floorplan"]
 
-def _run_with_live_output(cmd, progress_update_callback):
-    """Run a command and stream its output live via progress_update_callback."""
-    logger.debug("Executing: %s", ' '.join(cmd))
-    output_lines = []
-    with subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    ) as proc:
-        for line in proc.stdout:
-            stripped = line.rstrip('\n')
-            progress_update_callback(stripped)
-            output_lines.append(stripped)
-        proc.wait()
-        if proc.returncode != 0:
-            # Log the full output at ERROR level so it's visible even when
-            # progress_update_callback is logger.debug (e.g. during local exec).
-            logger.error(
-                "Command failed (exit %d): %s\nOutput:\n%s",
-                proc.returncode, ' '.join(cmd), '\n'.join(output_lines)
-            )
-            raise subprocess.CalledProcessError(proc.returncode, cmd)
+
+def _shared_dir(path):
+    """Create *path* (and parents) world-writable so an aux container running as a
+    different uid than the caller can write into it, then return it."""
+    os.makedirs(path, exist_ok=True)
+    try:
+        os.chmod(path, 0o777)
+    except OSError:
+        pass
+    return path
+
+
+def _stage_input_dir(src_dir, dst_dir):
+    """Copy *src_dir* into the workspace at *dst_dir*, world-writable.
+
+    scenery_builder writes metadata sidecars (e.g. ``<model>.fpm.yaml``) back
+    into the input directory, so it must be writable by the container's user —
+    which may differ from ours (e.g. the sidecar's ``appuser``). ``copytree``
+    also runs ``copystat`` on *dst_dir*, resetting the source dir's mode, so we
+    fix up permissions *after* the copy: dirs become 0777 and files 0666."""
+    shutil.copytree(src_dir, dst_dir, dirs_exist_ok=True)
+    for root, dirs, filenames in os.walk(dst_dir):
+        for name in [root] + [os.path.join(root, d) for d in dirs]:
+            try:
+                os.chmod(name, 0o777)
+            except OSError:
+                pass
+        for f in filenames:
+            try:
+                os.chmod(os.path.join(root, f), 0o666)
+            except OSError:
+                pass
 
 
 def get_scenery_builder_version():
     """Return the docker image digest/ID of the scenery_builder image.
 
-    Calls ``scenery_builder.sh -v`` which runs ``docker inspect`` on the image
-    and prints its first RepoDigest (falling back to the image ID).
+    Runs ``docker inspect`` on the image and returns its first RepoDigest
+    (falling back to the image ID). Used only for provenance.
 
     Returns:
-        The version string stripped of whitespace, or ``None`` if the version
-        cannot be determined (e.g. docker is unavailable or the image has not
-        been pulled yet).
+        The version string stripped of whitespace, or ``None`` if it cannot be
+        determined (e.g. docker is unavailable, as in the controller pod, or the
+        image has not been pulled yet).
     """
-    script_path = str(files('robovast_nav.data').joinpath('scenery_builder.sh'))
-    if not os.path.exists(script_path):
-        return None
-    try:
-        result = subprocess.run(
-            [script_path, '-v'],
-            capture_output=True, text=True, check=True, timeout=10
-        )
+    for fmt in ("{{index .RepoDigests 0}}", "{{.Id}}"):
+        try:
+            result = subprocess.run(
+                ["docker", "inspect", "--format", fmt, SCENERY_BUILDER_IMAGE],
+                capture_output=True, text=True, timeout=10,
+            )
+        except (subprocess.SubprocessError, FileNotFoundError, OSError):
+            return None
         version = result.stdout.strip()
-        return version if version else None
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        return None
+        if result.returncode == 0 and version:
+            return version
+    return None
 
 
 def _create_config_for_floorplan(
@@ -98,22 +111,47 @@ def _create_config_for_floorplan(
     Returns:
         Updated configuration dictionary
     """
-    base_name = os.path.basename(floorplan_name)
-    map_file_path = os.path.join(output_dir, floorplan_name, 'maps', base_name + '.yaml')
-    mesh_file_path = os.path.join(output_dir, floorplan_name, '3d-mesh', base_name + '.stl')
-    mesh_file_metadata_path = os.path.join(output_dir, floorplan_name, '3d-mesh', base_name + '.stl.yaml')
+    maps_dir = os.path.join(output_dir, floorplan_name, 'maps')
+    mesh_dir = os.path.join(output_dir, floorplan_name, '3d-mesh')
 
-    if not os.path.exists(map_file_path):
-        raise FileNotFoundError(f"Warning: Map file not found: {map_file_path}")
-    if not os.path.exists(mesh_file_path):
-        raise FileNotFoundError(f"Warning: Mesh file not found: {mesh_file_path}")
+    def _pick(directory, suffix, exclude_suffix=None):
+        if not os.path.isdir(directory):
+            return None
+        candidates = sorted(
+            f for f in os.listdir(directory)
+            if f.endswith(suffix) and (exclude_suffix is None or not f.endswith(exclude_suffix))
+        )
+        return candidates[0] if candidates else None
+
+    # scenery_builder names artefacts after the floorplan's internal model name
+    # (e.g. ``rooms.yaml``), which need not match the variation folder name
+    # (e.g. ``rooms_1``). Discover the actual files rather than assuming the name.
+    map_yaml_name = _pick(maps_dir, '.yaml')
+    mesh_stl_name = _pick(mesh_dir, '.stl', exclude_suffix='.stl.yaml')
+
+    if not map_yaml_name:
+        raise FileNotFoundError(f"Warning: Map file (*.yaml) not found in: {maps_dir}")
+    if not mesh_stl_name:
+        raise FileNotFoundError(f"Warning: Mesh file (*.stl) not found in: {mesh_dir}")
+
+    map_stem = map_yaml_name[:-len('.yaml')]
+    map_pgm_name = map_stem + '.pgm'
+    mesh_yaml_name = mesh_stl_name + '.yaml'
+
+    map_file_path = os.path.join(maps_dir, map_yaml_name)
+    map_pgm_path = os.path.join(maps_dir, map_pgm_name)
+    mesh_file_path = os.path.join(mesh_dir, mesh_stl_name)
+    mesh_file_metadata_path = os.path.join(mesh_dir, mesh_yaml_name)
+
+    if not os.path.exists(map_pgm_path):
+        raise FileNotFoundError(f"Warning: Map PGM not found: {map_pgm_path}")
     if not os.path.exists(mesh_file_metadata_path):
         raise FileNotFoundError(f"Warning: Mesh metadata file not found: {mesh_file_metadata_path}")
 
-    rel_map_yaml_path = os.path.join('maps', base_name + '.yaml')
-    rel_map_pgm_path = os.path.join('maps', base_name + '.pgm')
-    rel_mesh_path = os.path.join('3d-mesh', base_name + '.stl')
-    rel_mesh_metadata_path = os.path.join('3d-mesh', base_name + '.stl.yaml')
+    rel_map_yaml_path = os.path.join('maps', map_yaml_name)
+    rel_map_pgm_path = os.path.join('maps', map_pgm_name)
+    rel_mesh_path = os.path.join('3d-mesh', mesh_stl_name)
+    rel_mesh_metadata_path = os.path.join('3d-mesh', mesh_yaml_name)
 
     new_config = update_config_fn(in_config, {
         map_file_parameter_name: rel_map_yaml_path,
@@ -121,7 +159,7 @@ def _create_config_for_floorplan(
     },
         config_files=[
         (rel_map_yaml_path, map_file_path),
-        (rel_map_pgm_path, os.path.join(output_dir, floorplan_name, 'maps', base_name + '.pgm')),
+        (rel_map_pgm_path, map_pgm_path),
         (rel_mesh_path, mesh_file_path),
         (rel_mesh_metadata_path, mesh_file_metadata_path)
     ],
@@ -131,20 +169,20 @@ def _create_config_for_floorplan(
     return new_config
 
 
-def generate_floorplan_variations(base_path, variation_files, num_variations, seed_value, output_dir, progress_update_callback, scenery_builder_version=None):
+def generate_floorplan_variations(base_path, variation_files, num_variations, seed_value, output_dir, progress_update_callback, container_runner, scenery_builder_version=None):
     if not os.path.exists(base_path):
         progress_update_callback(f"✗ Path not found: {base_path}")
         return None
 
-    script_path = str(files('robovast_nav.data').joinpath('scenery_builder.sh'))
+    if container_runner is None:
+        raise RuntimeError(
+            "FloorplanVariation requires an auxiliary container runner but none "
+            "was provided by the execution backend.")
 
-    if not os.path.exists(script_path):
-        progress_update_callback(f"✗ Script not found at: {script_path}")
-        raise FileNotFoundError(f"Script not found at: {script_path}")
-
-    temp_base_obj = tempfile.TemporaryDirectory(prefix="floorplan_variation_")
-    temp_base = temp_base_obj.name
-    progress_update_callback(f"Created temporary directory: {temp_base}")
+    # Everything the container reads/writes must live under the shared workspace
+    # so it is visible at the same path inside the container.
+    temp_base = _shared_dir(os.path.join(container_runner.workspace, "floorplan_variation"))
+    progress_update_callback(f"Using container workspace: {temp_base}")
 
     all_map_dirs = []
     floorplan_names = []
@@ -165,28 +203,30 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
             progress_update_callback(f"✓ Using cached output for {variation}")
             all_map_dirs.append(cached_file)
         else:
+            # Stage the whole directory containing the variation file into the
+            # workspace so the container can read it at the same absolute path.
+            # The .variation file references siblings (e.g. ``import "rooms.fpm"``),
+            # so the entire directory must be present (the previous docker wrapper
+            # bind-mounted the containing directory for the same reason).
+            input_dir = os.path.join(temp_base, variation, "input")
+            _stage_input_dir(os.path.dirname(variation_file_path), input_dir)
+            staged_input = os.path.join(input_dir, os.path.basename(variation_file))
+
             # Step 1: variation
-            temp_variation_output_path = os.path.join(temp_base, variation, "configs")
-            os.makedirs(temp_variation_output_path, exist_ok=True)
+            temp_variation_output_path = _shared_dir(os.path.join(temp_base, variation, "configs"))
             progress_update_callback(
                 f"Step 1: Running variation for {variation}..."
             )
 
             cmd1 = [
-                script_path,
                 "variation",
-                "-i",
-                variation_file_path,
-                "-o",
-                temp_variation_output_path,
-                "-n",
-                str(num_variations),
-                "-s",
-                str(seed_value),
+                "-m", staged_input,
+                "-o", temp_variation_output_path,
+                "-n", str(num_variations),
+                "-s", str(seed_value),
             ]
-            progress_update_callback(f"Command: {' '.join(cmd1)}")
             try:
-                _run_with_live_output(cmd1, progress_update_callback)
+                container_runner.run(cmd1, progress_update_callback)
             except subprocess.CalledProcessError as e:
                 error_msg = f"Command failed with exit code {e.returncode}"
                 progress_update_callback(error_msg)
@@ -205,23 +245,18 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
             for fpm_file in fpm_files:
                 config_name = os.path.splitext(fpm_file)[0]
                 fpm_path = os.path.join(temp_variation_output_path, fpm_file)
-                temp_transform_path = os.path.join(temp_base, variation, "json-ld", config_name)
-                os.makedirs(temp_transform_path, exist_ok=True)
+                temp_transform_path = _shared_dir(os.path.join(temp_base, variation, "json-ld", config_name))
 
                 progress_update_callback(
                     f"Step 2: Transforming {config_name}..."
                 )
                 cmd2 = [
-                    script_path,
                     "transform",
-                    "-i",
-                    fpm_path,
-                    "-o",
-                    temp_transform_path,
+                    "-m", fpm_path,
+                    "-o", temp_transform_path,
                 ]
-                progress_update_callback(f"Command: {' '.join(cmd2)}")
                 try:
-                    _run_with_live_output(cmd2, progress_update_callback)
+                    container_runner.run(cmd2, progress_update_callback)
                 except subprocess.CalledProcessError as e:
                     error_msg = f"Transform command failed with exit code {e.returncode}"
                     progress_update_callback(error_msg)
@@ -229,25 +264,20 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
 
                 # Step 3: generate map
                 artifacts_path = os.path.join(temp_base, variation, "artifacts")
-                temp_generate_output_path = os.path.join(artifacts_path, config_name)
-                os.makedirs(temp_generate_output_path, exist_ok=True)
+                temp_generate_output_path = _shared_dir(os.path.join(artifacts_path, config_name))
 
                 progress_update_callback(
                     f"Step 3: Generating map for {config_name}..."
                 )
                 cmd3 = [
-                    script_path,
                     "generate",
-                    "-i",
-                    temp_transform_path,
-                    "-o",
-                    temp_generate_output_path,
+                    "-i", temp_transform_path,
+                    "-o", temp_generate_output_path,
                     "occ-grid",
                     "mesh"
                 ]
-                progress_update_callback(f"Command: {' '.join(cmd3)}")
                 try:
-                    _run_with_live_output(cmd3, progress_update_callback)
+                    container_runner.run(cmd3, progress_update_callback)
                 except subprocess.CalledProcessError as e:
                     error_msg = f"Generate command failed with exit code {e.returncode}"
                     progress_update_callback(error_msg)
@@ -312,7 +342,7 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
     return floorplan_names, floorplan_versions
 
 
-def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progress_update_callback, scenery_builder_version=None):
+def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progress_update_callback, container_runner, scenery_builder_version=None):
     """Generate artifacts (maps and meshes) from existing floorplan files.
 
     Args:
@@ -320,6 +350,8 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
         floorplan_files: List of floorplan (.fpm) file paths
         output_dir: Directory where artifacts will be generated
         progress_update_callback: Callback function for progress updates
+        container_runner: Backend-provided handle to run scenery_builder commands
+            (see robovast.common.variation.container_runner).
         scenery_builder_version: Optional version string for the scenery_builder image.
             Written into the cache tar so it survives cache hits.
 
@@ -332,15 +364,14 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
         progress_update_callback(f"✗ Path not found: {base_path}")
         return None
 
-    script_path = str(files('robovast_nav.data').joinpath('scenery_builder.sh'))
+    if container_runner is None:
+        raise RuntimeError(
+            "FloorplanGeneration requires an auxiliary container runner but none "
+            "was provided by the execution backend.")
 
-    if not os.path.exists(script_path):
-        progress_update_callback(f"✗ Script not found at: {script_path}")
-        raise FileNotFoundError(f"Script not found at: {script_path}")
-
-    temp_base_obj = tempfile.TemporaryDirectory(prefix="floorplan_generation_")
-    temp_base = temp_base_obj.name
-    progress_update_callback(f"Created temporary directory: {temp_base}")
+    # Everything the container reads/writes must live under the shared workspace.
+    temp_base = _shared_dir(os.path.join(container_runner.workspace, "floorplan_generation"))
+    progress_update_callback(f"Using container workspace: {temp_base}")
 
     all_artifacts_dirs = []
     floorplan_names = []
@@ -363,22 +394,23 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
             progress_update_callback(f"✓ Using cached output for {floorplan_basename}")
             all_artifacts_dirs.append(cached_file)
         else:
+            # Stage the whole directory containing the floorplan file into the
+            # workspace so any sibling files it references are also present.
+            input_dir = os.path.join(temp_base, floorplan_basename, "input")
+            _stage_input_dir(os.path.dirname(floorplan_file_path), input_dir)
+            staged_input = os.path.join(input_dir, os.path.basename(floorplan_file))
+
             # Step 1: transform floorplan to JSON-LD
-            temp_transform_path = os.path.join(temp_base, floorplan_basename, "json-ld")
-            os.makedirs(temp_transform_path, exist_ok=True)
+            temp_transform_path = _shared_dir(os.path.join(temp_base, floorplan_basename, "json-ld"))
 
             progress_update_callback(f"Step 1: Transforming {floorplan_basename}...")
             cmd_transform = [
-                script_path,
                 "transform",
-                "-i",
-                floorplan_file_path,
-                "-o",
-                temp_transform_path,
+                "-m", staged_input,
+                "-o", temp_transform_path,
             ]
-            progress_update_callback(f"Command: {' '.join(cmd_transform)}")
             try:
-                _run_with_live_output(cmd_transform, progress_update_callback)
+                container_runner.run(cmd_transform, progress_update_callback)
             except subprocess.CalledProcessError as e:
                 error_msg = f"Transform command failed with exit code {e.returncode}"
                 progress_update_callback(error_msg)
@@ -386,24 +418,19 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
 
             # Step 2: generate artifacts (map and mesh)
             artifacts_path = os.path.join(temp_base, floorplan_basename, "artifacts")
-            temp_generate_output_path = os.path.join(artifacts_path, floorplan_basename)
-            os.makedirs(temp_generate_output_path, exist_ok=True)
+            temp_generate_output_path = _shared_dir(os.path.join(artifacts_path, floorplan_basename))
 
             progress_update_callback(f"Step 2: Generating artifacts for {floorplan_basename}...")
             cmd_generate = [
-                script_path,
                 "generate",
-                "-i",
-                temp_transform_path,
-                "-o",
-                temp_generate_output_path,
+                "-i", temp_transform_path,
+                "-o", temp_generate_output_path,
                 "occ-grid",
                 "mesh"
             ]
-            progress_update_callback(f"Command: {' '.join(cmd_generate)}")
             progress_update_callback("Generating floorplan. This may take a while...")
             try:
-                _run_with_live_output(cmd_generate, progress_update_callback)
+                container_runner.run(cmd_generate, progress_update_callback)
             except subprocess.CalledProcessError as e:
                 error_msg = f"Generate command failed with exit code {e.returncode}"
                 progress_update_callback(error_msg)

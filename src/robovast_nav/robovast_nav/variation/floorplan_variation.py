@@ -25,11 +25,27 @@ from rdflib import Namespace, PROV, FOAF
 
 from robovast.common.variation.base_variation import ProvContribution
 
-from ..floorplan_generation import (_create_config_for_floorplan,
+from robovast.common.variation.container_runner import ContainerSpec
+
+from ..floorplan_generation import (SCENERY_BUILDER_ENTRYPOINT,
+                                    SCENERY_BUILDER_IMAGE,
+                                    _create_config_for_floorplan,
                                     generate_floorplan_artifacts,
                                     generate_floorplan_variations,
                                     get_scenery_builder_version)
 from .nav_base_variation import NavVariation
+
+
+def _scenery_builder_container_spec():
+    """ContainerSpec for the scenery_builder image both floorplan variations use.
+
+    Its entrypoint is ``floorplan`` (carried in command_prefix so the same
+    invocation works via ``docker run`` locally and ``pods/exec`` in-cluster).
+    """
+    return ContainerSpec(
+        image=SCENERY_BUILDER_IMAGE,
+        command_prefix=list(SCENERY_BUILDER_ENTRYPOINT),
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +182,10 @@ class FloorplanGeneration(NavVariation):
     """
 
     CONFIG_CLASS = FloorplanGenerationConfig
+
+    @classmethod
+    def get_required_container(cls, parameters):
+        return _scenery_builder_container_spec()
 
     @classmethod
     def collect_prov_metadata(cls, config_entry, campaign_namespace, config_namespace, gen_activity_id, vast_id):
@@ -422,6 +442,7 @@ class FloorplanGeneration(NavVariation):
             self.parameters.floorplans,
             self.output_dir,
             self.progress_update,
+            self.container_runner,
             scenery_builder_version=scenery_builder_image,
         )
 
@@ -491,6 +512,10 @@ class FloorplanVariation(NavVariation):
 
     CONFIG_CLASS = FloorplanVariationConfig
     # GUI_CLASS = FloorplanVariationGui
+
+    @classmethod
+    def get_required_container(cls, parameters):
+        return _scenery_builder_container_spec()
 
     @classmethod
     def collect_config_metadata(cls, config_entry: dict, config_dir: Path, campaign_dir: Path) -> dict:
@@ -604,6 +629,7 @@ class FloorplanVariation(NavVariation):
                                                         self.parameters.seed,
                                                         self.output_dir,
                                                         self.progress_update,
+                                                        self.container_runner,
                                                         scenery_builder_version=scenery_builder_image)
 
         if not floorplan_names:

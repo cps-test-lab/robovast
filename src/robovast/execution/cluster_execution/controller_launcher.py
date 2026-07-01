@@ -236,8 +236,100 @@ def build_dev_wheels():
     return wheels
 
 
+# Shared emptyDir mount point for auxiliary variation sidecars. Must match
+# cluster_execution.container_runner.AUX_WORKSPACE so the controller and each
+# sidecar see the workspace at the same absolute path.
+_AUX_WORKSPACE = "/aux"
+
+
+def _required_container_specs(config_path):
+    """Collect the distinct auxiliary ContainerSpecs the campaign's variations need.
+
+    Loads the ``.vast`` file and asks each declared variation plugin (via
+    ``get_required_container``) whether it needs a helper image while it runs.
+    Returns a list of ``ContainerSpec`` deduplicated by sidecar container name.
+    Best-effort: a plugin that fails to load is skipped (the run will surface the
+    real error later), so a launch is never blocked by container discovery.
+    """
+    from robovast.common.common import load_config  # pylint: disable=import-outside-toplevel
+    from robovast.common.config_generation import \
+        _get_variation_classes  # pylint: disable=import-outside-toplevel
+
+    vast_dir = os.path.dirname(os.path.abspath(config_path))
+    try:
+        parameters = load_config(config_path)
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning("Could not inspect '%s' for aux containers: %s", config_path, exc)
+        return []
+
+    # Batch campaigns declare variations under top-level ``configuration`` blocks;
+    # search campaigns declare them once as ``search.variations`` (compose expands
+    # that template into configuration blocks in-pod). Inspect both so the sidecar
+    # is injected regardless of campaign type. Unsubstituted ``$name`` search
+    # markers in the template are harmless here: get_required_container ignores
+    # the parameter values.
+    blocks = list(parameters.get("configuration", []) or [])
+    search_variations = (parameters.get("search", {}) or {}).get("variations")
+    if search_variations:
+        blocks.append({"variations": search_variations})
+
+    specs = {}
+    for config_block in blocks:
+        try:
+            classes = _get_variation_classes(config_block, vast_dir)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("Skipping aux-container discovery for a config block: %s", exc)
+            continue
+        for variation_class, variation_parameters in classes:
+            try:
+                spec = variation_class.get_required_container(variation_parameters)
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.warning("get_required_container failed for %s: %s",
+                               getattr(variation_class, "__name__", variation_class), exc)
+                continue
+            if spec is not None:
+                specs.setdefault(spec.container_name(), spec)
+    return list(specs.values())
+
+
+def _aux_sidecar_containers(specs):
+    """Build sidecar container dicts for the given ContainerSpecs.
+
+    Each sidecar runs the aux image with its one-shot entrypoint overridden by
+    the spec's ``keep_alive_command`` so it stays up for the whole campaign, and
+    mounts the shared ``aux`` volume so files staged by the controller are
+    visible to the exec'd commands (and vice versa).
+    """
+    sidecars = []
+    for spec in specs:
+        container = {
+            "name": spec.container_name(),
+            "image": spec.image,
+            "imagePullPolicy": "IfNotPresent",
+            "command": list(spec.keep_alive_command),
+            "volumeMounts": [{"name": "aux", "mountPath": _AUX_WORKSPACE}],
+        }
+        if spec.env:
+            container["env"] = [{"name": k, "value": str(v)} for k, v in spec.env.items()]
+        if spec.run_as_user:
+            uid = spec.run_as_user.split(":", 1)[0]
+            try:
+                container["securityContext"] = {"runAsUser": int(uid)}
+            except ValueError:
+                pass
+        sidecars.append(container)
+    return sidecars
+
+
 def _controller_pod_manifest(pod_name, namespace, image, campaign_label,
-                             control_node_labels=None):
+                             control_node_labels=None, aux_specs=None):
+    aux_specs = aux_specs or []
+    controller_mounts = [{"name": "workspace", "mountPath": _POD_WORKSPACE}]
+    volumes = [{"name": "workspace", "emptyDir": {}}]
+    if aux_specs:
+        # Shared workspace between the controller and every aux sidecar.
+        controller_mounts.append({"name": "aux", "mountPath": _AUX_WORKSPACE})
+        volumes.append({"name": "aux", "emptyDir": {}})
     spec = {
         "restartPolicy": "Never",
         "serviceAccountName": CONTROLLER_SERVICE_ACCOUNT,
@@ -257,9 +349,9 @@ def _controller_pod_manifest(pod_name, namespace, image, campaign_label,
             # Control channel (state + RPC). Declared for readability / Service
             # readiness; `kubectl port-forward` does not require it.
             "ports": [{"name": "control", "containerPort": _CONTROL_PORT}],
-            "volumeMounts": [{"name": "workspace", "mountPath": _POD_WORKSPACE}],
-        }],
-        "volumes": [{"name": "workspace", "emptyDir": {}}],
+            "volumeMounts": controller_mounts,
+        }] + _aux_sidecar_containers(aux_specs),
+        "volumes": volumes,
     }
     if control_node_labels:
         spec["nodeSelector"] = dict(control_node_labels)
@@ -326,8 +418,14 @@ def launch_controller(*, config_path, config_name, setup_kwargs, namespace,
     # alone — they belong to a concurrent campaign).
     reap_orphaned_runs(namespace=namespace, kube_context=kube_context)
 
+    # Discover auxiliary containers declared by the campaign's variation plugins
+    # and add them as kept-alive sidecars sharing a workspace with the controller.
+    aux_specs = _required_container_specs(config_path)
+    if aux_specs:
+        click_echo("Adding auxiliary variation sidecar(s): "
+                   + ", ".join(f"{s.container_name()} ({s.image})" for s in aux_specs))
     manifest = _controller_pod_manifest(pod_name, namespace, image, campaign_label,
-                                        control_node_labels)
+                                        control_node_labels, aux_specs=aux_specs)
     click_echo(f"Creating controller pod '{pod_name}' (image {image})...")
     _kubectl(ctx_args, "apply", "-f", "-", input_text=yaml.safe_dump(manifest))
     try:

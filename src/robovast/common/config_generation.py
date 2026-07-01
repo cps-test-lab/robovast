@@ -79,9 +79,34 @@ def progress_update(msg):
     logger.info(msg)
 
 
-def execute_variation(base_dir, configs, variation_class, parameters, general_parameters, progress_update_callback, scenario_file, output_dir=None):
+# Process-wide factory that turns a variation's ContainerSpec into a concrete
+# ContainerRunner for the active execution backend. The in-pod cluster controller
+# registers a cluster (sidecar + pods/exec) factory via
+# set_container_runner_factory(); when unset we fall back to the local
+# (ephemeral ``docker run``) runner. See variation/container_runner.py.
+_container_runner_factory = None  # type: ignore[var-annotated]
+
+
+def set_container_runner_factory(factory):
+    """Register the backend's ContainerRunner factory (or ``None`` to reset)."""
+    global _container_runner_factory  # pylint: disable=global-statement
+    _container_runner_factory = factory
+
+
+def _make_container_runner(spec):
+    """Build a runner for *spec* using the active factory (local fallback)."""
+    if spec is None:
+        return None
+    if _container_runner_factory is not None:
+        return _container_runner_factory(spec)
+    from .variation.container_runner import \
+        LocalContainerRunner  # pylint: disable=import-outside-toplevel
+    return LocalContainerRunner(spec)
+
+
+def execute_variation(base_dir, configs, variation_class, parameters, general_parameters, progress_update_callback, scenario_file, output_dir=None, container_runner=None):
     logger.debug(f"Executing variation: {variation_class.__name__}")
-    variation = variation_class(base_dir, parameters, general_parameters, progress_update_callback, scenario_file, output_dir)
+    variation = variation_class(base_dir, parameters, general_parameters, progress_update_callback, scenario_file, output_dir, container_runner=container_runner)
 
     # Collect input files for campaign self-containment
     input_files = variation.get_input_files()
@@ -665,8 +690,17 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                     variation_gui_classes[variation_gui_class].append(variation_gui_renderer_class)
             started_at = datetime.now(timezone.utc).isoformat()
             t0 = time.monotonic()
-            result, var_input_files, var_campaign_transient, var_config_transient = execute_variation(os.path.dirname(variation_file), current_configs, variation_class,
-                                                                                                      variation_parameters, general_parameters, progress_update_callback, scenario_file, output_dir)
+            # Auxiliary container: if the plugin declares one, the active backend
+            # (local docker or cluster sidecar) provides a runner for its use.
+            container_spec = variation_class.get_required_container(variation_parameters)
+            container_runner = _make_container_runner(container_spec)
+            try:
+                result, var_input_files, var_campaign_transient, var_config_transient = execute_variation(os.path.dirname(variation_file), current_configs, variation_class,
+                                                                                                          variation_parameters, general_parameters, progress_update_callback, scenario_file, output_dir,
+                                                                                                          container_runner=container_runner)
+            finally:
+                if container_runner is not None:
+                    container_runner.close()
             duration = round(time.monotonic() - t0, 3)
 
             # Validate and collect variation input files

@@ -40,7 +40,7 @@ execution:
   resources:
     cpu: 8
   runs: 10
-  scenario_file: scenario.osc
+  scenario_file: nav_through_poses.osc
   run_files:
   - "files/*"
 results_processing:
