@@ -165,6 +165,12 @@ class ExecutionConfig(BaseModel):
     # Simulation backend passed to scenario_execution as ``--simulation <module:Class>``.
     # Required by scenarios using wait_for_simulation_end() (e.g. MagBotSim).
     simulation: Optional[str] = None
+    # Runner selection for scenario-execution inside the container, threaded to the entrypoint as
+    # SCENARIO_MODE. ``auto`` (default) keeps the entrypoint's detection: use the ROS runner
+    # (scenario_execution_ros) when ros2 is on PATH, else the non-ROS CLI. ``ros2`` forces the ROS
+    # runner -- needed when a SimulationInterface must run alongside ROS behaviours (the ROS runner
+    # ticks the SimulationInterface in its spin loop).
+    mode: str = "auto"
     # Job packing. ``runs_per_job`` is how many runs (a run = one configuration
     # at one run-number) are packed into a single job:
     #   1 (default): each job runs exactly one run. Right for simulators where
@@ -210,6 +216,14 @@ class ExecutionConfig(BaseModel):
     def validate_runs_per_job(cls, v: int) -> int:
         if v < 1:
             raise ValueError(f"execution.runs_per_job must be >= 1, got {v}")
+        return v
+
+    @field_validator('mode')
+    @classmethod
+    def validate_mode(cls, v: str) -> str:
+        allowed = {"auto", "ros2"}
+        if v not in allowed:
+            raise ValueError(f"execution.mode must be one of {sorted(allowed)}, got '{v}'")
         return v
 
 

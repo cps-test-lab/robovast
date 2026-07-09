@@ -27,7 +27,8 @@ from robovast.common import (COMPAT_VERSION, generate_execution_yaml_script,
 from robovast.common.cli import get_project_config
 from robovast.common.common import get_scenario_parameters
 from robovast.common.config_generation import generate_scenario_variations
-from robovast.common.execution import (build_job_parameter_documents,
+from robovast.common.execution import (_apply_local_parameter_overrides,
+                                       build_job_parameter_documents,
                                        dump_multi_document_yaml,
                                        resolve_robovast_image,
                                        write_job_links_manifest)
@@ -382,6 +383,7 @@ def _build_packed_compose_yaml(
     scenario_file_name='scenario.osc',
     job_prefix='',
     simulation='',
+    mode='auto',
 ):
     """Build docker-compose YAML for one job.
 
@@ -470,6 +472,8 @@ def _build_packed_compose_yaml(
     lines.append(f"      - SCENARIO_FILE={scenario_file_name}")
     if simulation:
         lines.append(f"      - SIMULATION={simulation}")
+    if mode and mode != "auto":
+        lines.append(f"      - SCENARIO_MODE={mode}")
     lines.extend(packed_env_lines)
     if scenario_execution_params:
         lines.append(f"      - SCENARIO_EXECUTION_PARAMETERS={scenario_execution_params}")
@@ -761,6 +765,7 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
 
     scenario_file_name = os.path.basename(campaign_data.get("scenario_file", "scenario.osc"))
     simulation = campaign_data.get("execution", {}).get("simulation", "")
+    mode = campaign_data.get("execution", {}).get("mode", "auto")
     _static_params = " ".join(p for p, enabled in [("-t", log_tree), ("-d", debug)] if enabled)
     scenario_execution_params = _static_params if _static_params else "${SCENARIO_EXECUTION_PARAMS}"
 
@@ -803,7 +808,20 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
     # a <config>/<run>/job symlink.
     scenario_path = os.path.join(
         os.path.dirname(campaign_data["vast"]), campaign_data["scenario_file"])
-    scenario_name = next(iter(get_scenario_parameters(scenario_path).keys()))
+    scenario_params_by_name = get_scenario_parameters(scenario_path)
+    scenario_name = next(iter(scenario_params_by_name.keys()))
+
+    # Local-only scenario-parameter overrides (execution.local.parameter_overrides): applied to every
+    # packed job document below so they reach the container (the packed params.yaml is what the local
+    # run mounts). ``scenario.config`` also carries them, but the local run uses the job documents.
+    local_cfg = campaign_data.get("execution", {}).get("local") or {}
+    local_param_overrides = (
+        local_cfg.get("parameter_overrides") if isinstance(local_cfg, dict) else None
+    ) or []
+    valid_param_names = [
+        p.get("name") for p in scenario_params_by_name.get(scenario_name, [])
+        if isinstance(p, dict) and "name" in p
+    ]
 
     jobs = build_jobs(campaign_data["configs"], runs, execution_params)
     os.makedirs(os.path.join(config_path_result, "_transient"), exist_ok=True)
@@ -814,6 +832,11 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
     total = len(jobs)
     for idx, job in enumerate(jobs, 1):
         documents = build_job_parameter_documents(job, scenario_name)
+        if local_param_overrides:
+            for doc in documents:
+                _apply_local_parameter_overrides(
+                    doc[scenario_name], local_param_overrides, valid_param_names,
+                    scenario_name, scenario_path)
         param_rel = f"_transient/job-{job.index}.params.yaml"
         with open(os.path.join(config_path_result, param_rel), 'w') as f:
             f.write(dump_multi_document_yaml(documents))
@@ -840,6 +863,7 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
             scenario_file_name=scenario_file_name,
             job_prefix=job_prefix,
             simulation=simulation,
+            mode=mode,
         )
         # Create this job's artifact links right after it finishes (injected
         # after the compose `down`, before the step's summary/exit), so a

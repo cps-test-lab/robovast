@@ -164,7 +164,17 @@ else
     if [ -n "${SIMULATION}" ]; then
         SIMULATION_PARAM="--simulation ${SIMULATION}"
     fi
-    if command -v ros2 > /dev/null 2>&1; then
+    # Runner selection (execution.mode in the .vast): `ros2` forces the ROS runner
+    # (scenario_execution_ros), `auto` (default/empty) auto-detects ros2 on PATH.
+    SCENARIO_MODE="${SCENARIO_MODE:-auto}"
+    if [ "${SCENARIO_MODE}" = "ros2" ]; then
+        USE_ROS_RUNNER=1
+    elif command -v ros2 > /dev/null 2>&1; then
+        USE_ROS_RUNNER=1
+    else
+        USE_ROS_RUNNER=0
+    fi
+    if [ "${USE_ROS_RUNNER}" = "1" ]; then
         if [ -e "${SCENARIO_PARAMETER_FILE}" ]; then
             log "Starting scenario execution (ROS2) with config file..."
             log "Commandline: ros2 run scenario_execution_ros scenario_execution_ros -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SIMULATION_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}"

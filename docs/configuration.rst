@@ -264,6 +264,30 @@ Simulation backend passed to scenario-execution as ``--simulation <module:Class>
    execution:
      simulation: scenario_execution_magbotsim.push_box_simulation:PushBoxSimulation
 
+A ``simulation`` backend can also be combined with the **ROS** runner (see ``mode`` below): when
+``mode: ros2`` is set, the ROS runner ticks the ``SimulationInterface`` inside its spin loop, so a
+step-based simulation runs alongside the ROS behaviours that drive it (a simulation that publishes
+``/clock`` becomes the time source).
+
+mode
+^^^^
+
+**Type:** String (``auto`` | ``ros2``)
+
+**Required:** No (default ``auto``)
+
+Selects which scenario-execution runner runs inside the container. ``auto`` keeps the entrypoint's
+detection: the ROS runner (``scenario_execution_ros``) when ``ros2`` is on ``PATH``, otherwise the
+non-ROS ``scenario_execution`` CLI. ``ros2`` forces the ROS runner. Forcing ``ros2`` is needed when a
+``simulation`` (SimulationInterface) must run **alongside** ROS behaviours: only the ROS runner provides
+rclpy for the ROS behaviours, and it also ticks the ``SimulationInterface`` in its spin loop.
+
+.. code-block:: yaml
+
+   execution:
+     mode: ros2
+     simulation: my_pkg.my_module:MySimulation
+
 run_as_user
 ^^^^^^^^^^^
 

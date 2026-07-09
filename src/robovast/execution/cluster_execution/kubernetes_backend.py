@@ -318,6 +318,11 @@ class BatchJobRunner:
             if simulation:
                 containers[0]['env'].append({'name': 'SIMULATION', 'value': str(simulation)})
 
+            # Runner selection (execution.mode) -> SCENARIO_MODE in entrypoint.sh
+            mode = self.campaign_data.get('execution', {}).get('mode', 'auto')
+            if mode and mode != 'auto':
+                containers[0]['env'].append({'name': 'SCENARIO_MODE', 'value': str(mode)})
+
             for k, v in extra_main_env:
                 containers[0]['env'].append({'name': k, 'value': v})
 
