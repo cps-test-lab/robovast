@@ -92,12 +92,23 @@ def _collect_floorplan_transient_files(output_dir, floorplan_name):
     return transient_files
 
 
+_SUPPORTED_MESH_FORMATS = ('stl', 'obj')
+
+
 class FloorplanVariationConfig(BaseModel):
     model_config = ConfigDict(extra='forbid')
     name: list[str]
     variation_files: list[str]
     num_variations: int
     seed: int
+    mesh_format: str = 'stl'
+
+    @field_validator('mesh_format')
+    @classmethod
+    def validate_mesh_format(cls, v):
+        if v not in _SUPPORTED_MESH_FORMATS:
+            raise ValueError(f"mesh_format must be one of {_SUPPORTED_MESH_FORMATS}, got '{v}'")
+        return v
 
     @field_validator('name')
     @classmethod
@@ -129,10 +140,19 @@ class FloorplanGenerationConfig(BaseModel):
               These names will be used as parameter keys in the generated configs.
         floorplans: List of paths to .fpm floorplan files to generate artifacts for.
                     Paths are relative to the base configuration directory.
+        mesh_format: 3D mesh format to produce, ``stl`` (default) or ``obj``.
     """
     model_config = ConfigDict(extra='forbid')
     name: list[str]
     floorplans: list[str]
+    mesh_format: str = 'stl'
+
+    @field_validator('mesh_format')
+    @classmethod
+    def validate_mesh_format(cls, v):
+        if v not in _SUPPORTED_MESH_FORMATS:
+            raise ValueError(f"mesh_format must be one of {_SUPPORTED_MESH_FORMATS}, got '{v}'")
+        return v
 
     @field_validator('name')
     @classmethod
@@ -166,7 +186,7 @@ class FloorplanGeneration(NavVariation):
 
     - Map YAML file (``maps/*.yaml``)
     - Map PGM file (``maps/*.pgm``)
-    - 3D mesh STL file (``3d-mesh/*.stl``)
+    - 3D mesh file (``3d-mesh/*.stl`` or ``3d-mesh/*.obj``)
 
     Example:
 
@@ -390,8 +410,8 @@ class FloorplanGeneration(NavVariation):
             if value.endswith(".yaml"):
                 # Map file — the .yaml itself is the metadata
                 yaml_path = campaign_dir / candidate
-            elif value.endswith(".stl"):
-                # Mesh file — load the .stl.yaml sidecar
+            elif value.endswith((".stl", ".obj")):
+                # Mesh file — load the .stl.yaml / .obj.yaml sidecar
                 yaml_path = campaign_dir / (candidate + ".yaml")
             else:
                 continue
@@ -444,6 +464,7 @@ class FloorplanGeneration(NavVariation):
             self.progress_update,
             self.container_runner,
             scenery_builder_version=scenery_builder_image,
+            mesh_format=self.parameters.mesh_format,
         )
 
         if not floorplan_names:
@@ -470,7 +491,8 @@ class FloorplanGeneration(NavVariation):
                     config,
                     map_file_parameter_name,
                     mesh_file_parameter_name,
-                    self.update_config
+                    self.update_config,
+                    mesh_format=self.parameters.mesh_format,
                 )
                 if not transient:
                     raise FileNotFoundError(
@@ -502,12 +524,13 @@ class FloorplanVariation(NavVariation):
       (must contain at least one file).
     - ``num_variations``: Number of floorplan variations to generate (minimum 1).
     - ``seed``: Seed for random number generation to ensure reproducibility.
+    - ``mesh_format`` (optional): 3D mesh format to produce, ``stl`` (default) or ``obj``.
 
     Generated outputs:
 
     - Map YAML file (``maps/*.yaml``)
     - Map PGM file (``maps/*.pgm``)
-    - 3D mesh STL file (``3d-mesh/*.stl``)
+    - 3D mesh file (``3d-mesh/*.stl`` or ``3d-mesh/*.obj``)
     """
 
     CONFIG_CLASS = FloorplanVariationConfig
@@ -591,8 +614,8 @@ class FloorplanVariation(NavVariation):
             if value.endswith(".yaml"):
                 # Map file — the .yaml itself is the metadata
                 yaml_path = campaign_dir / candidate
-            elif value.endswith(".stl"):
-                # Mesh file — load the .stl.yaml sidecar
+            elif value.endswith((".stl", ".obj")):
+                # Mesh file — load the .stl.yaml / .obj.yaml sidecar
                 yaml_path = campaign_dir / (candidate + ".yaml")
             else:
                 continue
@@ -630,7 +653,8 @@ class FloorplanVariation(NavVariation):
                                                         self.output_dir,
                                                         self.progress_update,
                                                         self.container_runner,
-                                                        scenery_builder_version=scenery_builder_image)
+                                                        scenery_builder_version=scenery_builder_image,
+                                                        mesh_format=self.parameters.mesh_format)
 
         if not floorplan_names:
             raise ValueError("Floorplan variation failed, no result returned")
@@ -656,7 +680,8 @@ class FloorplanVariation(NavVariation):
                         config,
                         map_file_parameter_name,
                         mesh_file_parameter_name,
-                        self.update_config
+                        self.update_config,
+                        mesh_format=self.parameters.mesh_format,
                     )
                     if transient:
                         new_config.setdefault('_config_transient_files', []).extend(transient)

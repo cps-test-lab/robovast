@@ -96,7 +96,8 @@ def _create_config_for_floorplan(
     in_config,
     map_file_parameter_name,
     mesh_file_parameter_name,
-    update_config_fn
+    update_config_fn,
+    mesh_format="stl"
 ):
     """Create a configuration entry for a generated floorplan with its artifacts.
 
@@ -107,12 +108,14 @@ def _create_config_for_floorplan(
         map_file_parameter_name: Config key for map file parameter
         mesh_file_parameter_name: Config key for mesh file parameter
         update_config_fn: Function to update config with new values
+        mesh_format: Mesh file format produced by scenery_builder (``stl`` or ``obj``)
 
     Returns:
         Updated configuration dictionary
     """
     maps_dir = os.path.join(output_dir, floorplan_name, 'maps')
     mesh_dir = os.path.join(output_dir, floorplan_name, '3d-mesh')
+    mesh_ext = '.' + mesh_format
 
     def _pick(directory, suffix, exclude_suffix=None):
         if not os.path.isdir(directory):
@@ -127,12 +130,12 @@ def _create_config_for_floorplan(
     # (e.g. ``rooms.yaml``), which need not match the variation folder name
     # (e.g. ``rooms_1``). Discover the actual files rather than assuming the name.
     map_yaml_name = _pick(maps_dir, '.yaml')
-    mesh_stl_name = _pick(mesh_dir, '.stl', exclude_suffix='.stl.yaml')
+    mesh_stl_name = _pick(mesh_dir, mesh_ext, exclude_suffix=mesh_ext + '.yaml')
 
     if not map_yaml_name:
         raise FileNotFoundError(f"Warning: Map file (*.yaml) not found in: {maps_dir}")
     if not mesh_stl_name:
-        raise FileNotFoundError(f"Warning: Mesh file (*.stl) not found in: {mesh_dir}")
+        raise FileNotFoundError(f"Warning: Mesh file (*{mesh_ext}) not found in: {mesh_dir}")
 
     map_stem = map_yaml_name[:-len('.yaml')]
     map_pgm_name = map_stem + '.pgm'
@@ -180,7 +183,18 @@ def _create_config_for_floorplan(
     return new_config
 
 
-def generate_floorplan_variations(base_path, variation_files, num_variations, seed_value, output_dir, progress_update_callback, container_runner, scenery_builder_version=None):
+def _mesh_command(mesh_format):
+    """Build the scenery_builder ``mesh`` sub-command for *mesh_format*.
+
+    ``stl`` is scenery_builder's default, so we omit ``--format`` for it to stay
+    compatible with images that predate the flag; other formats pass it through.
+    """
+    if mesh_format and mesh_format != "stl":
+        return ["mesh", "--format", mesh_format]
+    return ["mesh"]
+
+
+def generate_floorplan_variations(base_path, variation_files, num_variations, seed_value, output_dir, progress_update_callback, container_runner, scenery_builder_version=None, mesh_format="stl"):
     if not os.path.exists(base_path):
         progress_update_callback(f"✗ Path not found: {base_path}")
         return None
@@ -204,9 +218,9 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
         variation = os.path.splitext(os.path.basename(variation_file))[0]
         progress_update_callback(f"\nProcessing: {variation}")
 
-        file_cache = FileCache(base_path, "floorplan_variation", [variation_file, num_variations, seed_value])
+        file_cache = FileCache(base_path, "floorplan_variation", [variation_file, num_variations, seed_value, mesh_format])
         files_for_hash = [variation_file_path]  # TODO: add fpm
-        strings_for_hash = [str(num_variations), str(seed_value)]
+        strings_for_hash = [str(num_variations), str(seed_value), mesh_format]
         cached_file = file_cache.get_cached_file(files_for_hash, binary=False,
                                                  content=False, strings_for_hash=strings_for_hash)
 
@@ -285,8 +299,7 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
                     "-i", temp_transform_path,
                     "-o", temp_generate_output_path,
                     "occ-grid",
-                    "mesh"
-                ]
+                ] + _mesh_command(mesh_format)
                 try:
                     container_runner.run(cmd3, progress_update_callback)
                 except subprocess.CalledProcessError as e:
@@ -353,7 +366,7 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
     return floorplan_names, floorplan_versions
 
 
-def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progress_update_callback, container_runner, scenery_builder_version=None):
+def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progress_update_callback, container_runner, scenery_builder_version=None, mesh_format="stl"):
     """Generate artifacts (maps and meshes) from existing floorplan files.
 
     Args:
@@ -365,6 +378,7 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
             (see robovast.common.variation.container_runner).
         scenery_builder_version: Optional version string for the scenery_builder image.
             Written into the cache tar so it survives cache hits.
+        mesh_format: Mesh file format produced by scenery_builder (``stl`` or ``obj``).
 
     Returns:
         Tuple of (floorplan_names, versions) where floorplan_names is a list of
@@ -395,9 +409,9 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
         floorplan_basename = os.path.splitext(os.path.basename(floorplan_file))[0]
         progress_update_callback(f"\nProcessing: {floorplan_basename}")
 
-        file_cache = FileCache(base_path, "floorplan_generation", [floorplan_file])
+        file_cache = FileCache(base_path, "floorplan_generation", [floorplan_file, mesh_format])
         files_for_hash = [floorplan_file_path]
-        strings_for_hash = []
+        strings_for_hash = [mesh_format]
         cached_file = file_cache.get_cached_file(files_for_hash, binary=False,
                                                  content=False, strings_for_hash=strings_for_hash)
 
@@ -437,8 +451,7 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
                 "-i", temp_transform_path,
                 "-o", temp_generate_output_path,
                 "occ-grid",
-                "mesh"
-            ]
+            ] + _mesh_command(mesh_format)
             progress_update_callback("Generating floorplan. This may take a while...")
             try:
                 container_runner.run(cmd_generate, progress_update_callback)
