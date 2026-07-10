@@ -153,6 +153,17 @@ def _create_config_for_floorplan(
     rel_mesh_path = os.path.join('3d-mesh', mesh_stl_name)
     rel_mesh_metadata_path = os.path.join('3d-mesh', mesh_yaml_name)
 
+    # Deploy the json-ld sibling of 3d-mesh/ next to the mesh. It is the mesh's structured source
+    # (every wall/column as an exact convex polyhedron), which a simulator needs to build collision
+    # geometry: a concave floorplan mesh collides only by its convex hull, i.e. a solid block filling
+    # the building. Simulators that don't need it simply ignore these files.
+    jsonld_dir = os.path.join(output_dir, floorplan_name, 'json-ld')
+    jsonld_files = [
+        (os.path.join('json-ld', f), os.path.join(jsonld_dir, f))
+        for f in sorted(os.listdir(jsonld_dir))
+        if os.path.isfile(os.path.join(jsonld_dir, f))
+    ] if os.path.isdir(jsonld_dir) else []
+
     new_config = update_config_fn(in_config, {
         map_file_parameter_name: rel_map_yaml_path,
         mesh_file_parameter_name: rel_mesh_path,
@@ -162,7 +173,7 @@ def _create_config_for_floorplan(
         (rel_map_pgm_path, map_pgm_path),
         (rel_mesh_path, mesh_file_path),
         (rel_mesh_metadata_path, mesh_file_metadata_path)
-    ],
+    ] + jsonld_files,
         other_values={
             '_map_file': map_file_path,
     })
