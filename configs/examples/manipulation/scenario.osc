@@ -1,0 +1,10 @@
+import osc.helpers
+
+scenario manipulation:
+    planner_id: string
+    arm_joint_goal: list of float
+    gripper_joint_goal: list of float
+    velocity_scaling_requested: float
+    acceleration_scaling_requested: float
+    do serial:
+        emit end
