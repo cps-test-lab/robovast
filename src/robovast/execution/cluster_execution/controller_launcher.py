@@ -44,6 +44,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 
 import yaml
@@ -235,6 +236,151 @@ def build_dev_wheels():
     return wheels
 
 
+# Distributions build_dev_wheels() already ships; discover_plugin_installs()
+# skips them so a plugin's dependency on robovast(-nav) doesn't double-install.
+# Canonicalized (PEP 503) for comparison.
+_BUILTIN_PLUGIN_DISTS = {"robovast", "robovast-nav"}
+
+# Opt-out for controller images that already bake third-party variation plugins
+# in: set to "1"/"true" to skip host-side plugin detection entirely.
+_SKIP_PLUGIN_INJECTION_ENV = "ROBOVAST_SKIP_PLUGIN_INJECTION"
+
+
+def _canonical_dist_name(name):
+    """PEP 503 canonical distribution name (``Scenario_MT`` -> ``scenario-mt``)."""
+    import re  # pylint: disable=import-outside-toplevel
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _pip_wheel(source_dir, label):
+    """Build one project's wheel via ``pip wheel`` (PEP 517). Returns path or None.
+
+    Unlike :func:`_build_wheel` (``poetry build``, used for the robovast source we
+    control), third-party plugins may use any build backend, so this drives the
+    project's own backend through pip. ``--no-deps`` builds just this project.
+    """
+    dist_dir = tempfile.mkdtemp(prefix="robovast_plugin_wheel_")
+    try:
+        subprocess.run(  # nosec - pip on a known local source dir
+            [sys.executable, "-m", "pip", "wheel", "--no-deps",
+             "-w", dist_dir, source_dir],
+            check=True, capture_output=True, text=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        detail = getattr(exc, "stderr", "") or exc
+        logger.warning("Could not build wheel for plugin %s from %s: %s",
+                       label, source_dir, detail)
+        shutil.rmtree(dist_dir, ignore_errors=True)
+        return None
+    wheels = [f for f in os.listdir(dist_dir) if f.endswith(".whl")]
+    if not wheels:
+        shutil.rmtree(dist_dir, ignore_errors=True)
+        return None
+    return os.path.join(dist_dir, wheels[0])
+
+
+def discover_plugin_installs():
+    """Find third-party variation-plugin distributions installed on the host.
+
+    Composition of scenario variations happens *inside the controller pod*, so any
+    ``robovast.variation_types`` plugin the campaign uses must be installed there
+    too. The controller image only bakes in robovast + robovast-nav; anything else
+    (e.g. ``scenario_mt`` from a sibling checkout) would fail in-pod with
+    ``Unknown variation class``. This detects those extra distributions from the
+    host venv so :func:`launch_controller` can ship them into the pod.
+
+    Returns ``(wheel_paths, requirement_specs)``:
+
+    * ``wheel_paths`` — freshly built wheels for plugins installed from a local
+      directory (editable or not); installed in-pod from the copied file.
+    * ``requirement_specs`` — pip requirement strings for plugins installed from a
+      VCS (passed through as ``name @ git+url@commit``) or an index (``name==ver``).
+
+    Uses PEP 610 ``direct_url.json`` to tell the source apart. Returns
+    ``([], [])`` when the ``ROBOVAST_SKIP_PLUGIN_INJECTION`` env opt-out is set.
+    Raises on a build failure — unlike :func:`build_dev_wheels` there is no
+    baseline copy in the image to fall back to, so a silent skip would only defer
+    the failure into the pod as a confusing ``Unknown variation class``.
+    """
+    from importlib.metadata import entry_points  # pylint: disable=import-outside-toplevel
+
+    if os.environ.get(_SKIP_PLUGIN_INJECTION_ENV, "").strip().lower() in ("1", "true", "yes"):
+        logger.info("%s set; skipping host-side variation-plugin detection.",
+                    _SKIP_PLUGIN_INJECTION_ENV)
+        return [], []
+
+    # Collect the distinct distributions backing the variation-type entry points,
+    # keyed by canonical name so a plugin split across several entry points (as
+    # scenario_mt is) is shipped once.
+    dists = {}
+    for ep in entry_points(group="robovast.variation_types"):
+        dist = getattr(ep, "dist", None)
+        if dist is None:
+            continue
+        canonical = _canonical_dist_name(dist.name)
+        if canonical in _BUILTIN_PLUGIN_DISTS:
+            continue
+        dists.setdefault(canonical, dist)
+
+    wheels = []
+    specs = []
+    for canonical, dist in sorted(dists.items()):
+        source_dir = _plugin_source_dir(dist)
+        if source_dir is not None:
+            wheel = _pip_wheel(source_dir, dist.name)
+            if wheel is None:
+                raise RuntimeError(
+                    f"Failed to build a wheel for variation plugin '{dist.name}' from "
+                    f"'{source_dir}'. The controller pod needs it to compose variations; "
+                    f"fix the build or set {_SKIP_PLUGIN_INJECTION_ENV}=1 if the controller "
+                    f"image already provides the plugin.")
+            wheels.append(wheel)
+        else:
+            specs.append(_plugin_requirement_spec(dist))
+    return wheels, specs
+
+
+def _plugin_source_dir(dist):
+    """Local source directory for a dist installed from a path, else ``None``.
+
+    Reads PEP 610 ``direct_url.json``: a ``dir_info`` entry (editable or plain
+    local install) means the source lives on this host and we can rebuild a wheel
+    from it; ``vcs_info`` or an index install has no local tree.
+    """
+    raw = dist.read_text("direct_url.json")
+    if not raw:
+        return None
+    info = json.loads(raw)
+    if "dir_info" not in info:
+        return None
+    url = info.get("url", "")
+    prefix = "file://"
+    if not url.startswith(prefix):
+        return None
+    from urllib.request import url2pathname  # pylint: disable=import-outside-toplevel
+    from urllib.parse import urlparse  # pylint: disable=import-outside-toplevel
+    return url2pathname(urlparse(url).path)
+
+
+def _plugin_requirement_spec(dist):
+    """pip requirement string for a dist not installed from a local directory.
+
+    VCS installs keep their direct URL (``name @ git+url@commit``) so pip fetches
+    the same revision; index installs pin the exact version (``name==version``).
+    """
+    raw = dist.read_text("direct_url.json")
+    if raw:
+        info = json.loads(raw)
+        if "vcs_info" in info:
+            vcs = info["vcs_info"]
+            url = f"{vcs['vcs']}+{info['url']}"
+            commit = vcs.get("commit_id") or vcs.get("requested_revision")
+            if commit:
+                url += f"@{commit}"
+            return f"{dist.name} @ {url}"
+    return f"{dist.name}=={dist.version}"
+
+
 # Shared emptyDir mount point for auxiliary variation sidecars. Must match
 # cluster_execution.container_runner.AUX_WORKSPACE so the controller and each
 # sidecar see the workspace at the same absolute path.
@@ -413,6 +559,14 @@ def launch_controller(*, config_path, config_name, setup_kwargs, namespace,
     click_echo = logger.info
     wheels = build_dev_wheels()
 
+    # Detect third-party variation plugins installed on the host (beyond the
+    # robovast/robovast-nav baked into the image) so they can be shipped into the
+    # pod — composition of their variation types runs in-cluster.
+    plugin_wheels, plugin_specs = discover_plugin_installs()
+    if plugin_wheels or plugin_specs:
+        click_echo("Shipping variation plugin(s) into the controller pod: %s",
+                   ", ".join([os.path.basename(w) for w in plugin_wheels] + plugin_specs))
+
     # Reap finished controller pods from previous runs (running ones are left
     # alone — they belong to a concurrent campaign).
     reap_orphaned_runs(namespace=namespace, kube_context=kube_context)
@@ -432,15 +586,17 @@ def launch_controller(*, config_path, config_name, setup_kwargs, namespace,
                  "-n", namespace, "--timeout=300s")
 
         pod_wheels = []
-        if wheels:
-            click_echo("Copying dev wheel(s) into the controller pod...")
+        pod_plugin_wheels = []
+        if wheels or plugin_wheels:
+            click_echo("Copying wheel(s) into the controller pod...")
             _kubectl(ctx_args, "exec", pod_name, "-n", namespace, "-c", "controller",
                      "--", "mkdir", "-p", _POD_WHEEL_DIR)
-            for wheel in wheels:
+            for wheel, sink in ([(w, pod_wheels) for w in wheels]
+                                + [(w, pod_plugin_wheels) for w in plugin_wheels]):
                 pod_wheel = f"{_POD_WHEEL_DIR}/{os.path.basename(wheel)}"
                 _kubectl(ctx_args, "cp", wheel, f"{namespace}/{pod_name}:{pod_wheel}",
                          "-c", "controller")
-                pod_wheels.append(pod_wheel)
+                sink.append(pod_wheel)
         click_echo("Copying campaign inputs into the controller pod...")
         _kubectl(ctx_args, "cp", config_dir, f"{namespace}/{pod_name}:{_POD_CAMPAIGN_DIR}",
                  "-c", "controller")
@@ -480,12 +636,23 @@ def launch_controller(*, config_path, config_name, setup_kwargs, namespace,
         if log_tree:
             controller_cmd += ["--log-tree"]
 
-        install = (f"pip install --no-deps --force-reinstall --quiet "
-                   f"--root-user-action=ignore --disable-pip-version-check "
-                   f"{' '.join(pod_wheels)} && "
-                   if pod_wheels else "")
-        script = " && ".join(env_exports) + " && " + install + " ".join(
-            _sh_quote(c) for c in controller_cmd) + "\n"
+        # Install third-party variation plugins first, *with* dependencies (so a
+        # plugin's own deps — e.g. a git dependency — resolve). Then reinstall the
+        # dev wheels last with --no-deps so the current robovast/robovast-nav code
+        # always wins over whatever a plugin's resolution may have pulled in.
+        installs = []
+        plugin_targets = pod_plugin_wheels + [_sh_quote(s) for s in plugin_specs]
+        if plugin_targets:
+            installs.append(
+                "pip install --quiet --root-user-action=ignore "
+                "--disable-pip-version-check " + " ".join(plugin_targets))
+        if pod_wheels:
+            installs.append(
+                "pip install --no-deps --force-reinstall --quiet "
+                "--root-user-action=ignore --disable-pip-version-check "
+                + " ".join(pod_wheels))
+        script = " && ".join(env_exports + installs + [" ".join(
+            _sh_quote(c) for c in controller_cmd)]) + "\n"
 
         # Stage the run script, then drop the start sentinel — the pod entrypoint
         # is waiting on it and will exec the controller as its main process.
@@ -506,7 +673,7 @@ def launch_controller(*, config_path, config_name, setup_kwargs, namespace,
                  "--ignore-not-found", "--grace-period=0", check=False)
         raise
     finally:
-        for wheel in wheels:
+        for wheel in wheels + plugin_wheels:
             shutil.rmtree(os.path.dirname(wheel), ignore_errors=True)
 
     click_echo("")

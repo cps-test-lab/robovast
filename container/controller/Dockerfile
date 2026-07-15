@@ -39,7 +39,7 @@ FROM python:3.12-slim
 # against pyside6-essentials + matplotlib's Qt backend on this base image.
 # hadolint ignore=DL3008
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl ca-certificates pigz \
+ && apt-get install -y --no-install-recommends curl ca-certificates pigz git \
         libglib2.0-0 libegl1 libfontconfig1 libx11-6 \
         libxkbcommon0 libgl1 libfreetype6 libdbus-1-3 \
  && rm -rf /var/lib/apt/lists/* \

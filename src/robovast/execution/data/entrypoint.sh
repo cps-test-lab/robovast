@@ -50,6 +50,18 @@ if [ "${ENABLE_X11}" != "false" ]; then
 fi
 check_required_tools ${REQUIRED_TOOLS}
 
+# setup ros2 environment (optional — skipped when ROS is not present). Done before
+# the executor check below: the ROS runner (scenario_execution_ros / ros2) only
+# lands on PATH once the ROS overlay and the /ws workspace are sourced, so checking
+# earlier would spuriously report "no scenario executor" on a ROS image.
+if [ -n "$ROS_DISTRO" ] && [ -f "/opt/ros/$ROS_DISTRO/setup.bash" ]; then
+    log "Setting up ROS2 environment..."
+    source "/opt/ros/$ROS_DISTRO/setup.bash" --
+    if [ -f "/ws/install/setup.bash" ]; then
+        source "/ws/install/setup.bash" --
+    fi
+fi
+
 # A scenario executor must be present: ROS2's runner or the plain CLI.
 if ! command -v ros2 > /dev/null 2>&1 && ! command -v scenario_execution > /dev/null 2>&1; then
     log "ERROR: No scenario executor found (need 'ros2' or 'scenario_execution'). Rebuild the image."
@@ -61,15 +73,6 @@ log "Collecting system information..."
 INSTANCE_TYPE=""
 SYSINFO_FILE="${OUTPUT_DIR}/sysinfo.yaml"
 python3 /config/collect_sysinfo.py --output "${SYSINFO_FILE}" --external "instance_type=${INSTANCE_TYPE}" --external "available_cpus=${AVAILABLE_CPUS}" --external "available_mem=${AVAILABLE_MEM}"
-
-# setup ros2 environment (optional — skipped when ROS is not present)
-if [ -n "$ROS_DISTRO" ] && [ -f "/opt/ros/$ROS_DISTRO/setup.bash" ]; then
-    log "Setting up ROS2 environment..."
-    source "/opt/ros/$ROS_DISTRO/setup.bash" --
-    if [ -f "/ws/install/setup.bash" ]; then
-        source "/ws/install/setup.bash" --
-    fi
-fi
 
 # Check if X11 is enabled (default: true for backward compatibility)
 if [ "${ENABLE_X11}" != "false" ]; then

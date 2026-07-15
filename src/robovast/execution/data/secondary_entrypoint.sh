@@ -29,18 +29,22 @@ for _tool in python3 stdbuf tee; do
         exit 1
     }
 done
-# The scenario-execution server runner: ROS2's or the plain CLI.
-if ! command -v ros2 > /dev/null 2>&1 && ! command -v scenario_execution_server > /dev/null 2>&1; then
-    log "ERROR: No scenario-execution server found (need 'ros2' or 'scenario_execution_server'). Rebuild the image."
-    exit 1
-fi
-
+# Set up the ROS overlay first (when present) so the ROS server runner
+# (scenario_execution_server_ros / ros2) is on PATH for the check below: it only
+# lands there once the ROS overlay and the /ws workspace are sourced, so checking
+# earlier would spuriously report "no scenario-execution server" on a ROS image.
 if [ -n "$ROS_DISTRO" ] && [ -f "/opt/ros/$ROS_DISTRO/setup.bash" ]; then
     log "Setting up ROS2 environment..."
     source "/opt/ros/$ROS_DISTRO/setup.bash"
     if [ -f "/ws/install/setup.bash" ]; then
         source "/ws/install/setup.bash"
     fi
+fi
+
+# The scenario-execution server runner: ROS2's or the plain CLI.
+if ! command -v ros2 > /dev/null 2>&1 && ! command -v scenario_execution_server > /dev/null 2>&1; then
+    log "ERROR: No scenario-execution server found (need 'ros2' or 'scenario_execution_server'). Rebuild the image."
+    exit 1
 fi
 
 exec > >(stdbuf -oL tee -a "${LOG_FILE}")

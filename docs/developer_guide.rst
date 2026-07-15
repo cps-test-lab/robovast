@@ -280,13 +280,36 @@ the quadrotor search vasts.
    be installed everywhere scenario variations get **composed** — not just
    where scenarios *run*. For local and host-driven cluster runs that's the
    host venv; for ``vast execution cluster run`` (search/batch) composition
-   happens **inside the in-cluster controller pod**, so the controller image
-   (``container/controller/Dockerfile``) must install the plugin package too,
-   or composing a config that references your variation type will fail there
-   with ``Unknown variation class``.
+   happens **inside the in-cluster controller pod**.
 
-   Two pitfalls when exposing the package as a poetry extra (e.g.
-   ``nav = ["robovast-nav"]``):
+   You do **not** need to bake a third-party plugin into the controller image.
+   At launch, ``controller_launcher.discover_plugin_installs`` enumerates the
+   ``robovast.variation_types`` entry points installed in the host venv, drops
+   the built-ins (``robovast``, ``robovast-nav``, already in the image), and
+   ships the rest into the controller pod, installing them there before the
+   controller composes anything. How each plugin travels is decided from its
+   PEP 610 ``direct_url.json`` provenance:
+
+   * installed from a **local directory** (editable ``pip install -e`` or a
+     plain path install) → a wheel is built from that source with ``pip wheel``
+     and copied into the pod;
+   * installed from a **VCS** → its ``name @ git+url@commit`` direct URL is
+     replayed, so the pod fetches the same revision;
+   * installed from an **index** → pinned as ``name==version``.
+
+   The pod then ``pip install``\ s each plugin **with its dependencies**, so the
+   one real constraint is that your plugin must **declare its dependencies
+   correctly** in its own project metadata — the pod resolves them from the
+   wheel/spec rather than inheriting whatever happened to be in the host venv.
+   A VCS dependency (e.g. ``scenario_mt``'s ``fpm @ git+…``) is fetched with the
+   ``git`` binary the controller image now ships. Set
+   ``ROBOVAST_SKIP_PLUGIN_INJECTION=1`` to disable detection entirely (e.g. for a
+   custom controller image that already bakes the plugins in). Note detection is
+   host-venv driven: a plugin only reaches the pod if it is installed on the host
+   that launches the run.
+
+   Two pitfalls when exposing the package as a poetry extra of *this* repo (e.g.
+   ``nav = ["robovast-nav"]``) rather than as an independent third-party plugin:
 
    * The extra's package name must also be declared as an optional dependency
      in ``[tool.poetry.dependencies]`` (e.g.
@@ -297,7 +320,9 @@ the quadrotor search vasts.
      ``robovast`` source for quick redeploys; if your plugin lives in a
      separate poetry project under ``src/``, it needs its own wheel built and
      shipped alongside (as ``robovast_nav`` does) or dev changes to it won't
-     reach the controller pod.
+     reach the controller pod. This applies only to the built-in
+     ``robovast``/``robovast-nav`` sources — independent plugins are handled by
+     ``discover_plugin_installs`` above.
 
    If your plugin's package pulls in a dependency that itself needs system
    shared libraries (e.g. ``robovast-nav`` hard-depends on
