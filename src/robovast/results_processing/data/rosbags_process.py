@@ -373,6 +373,77 @@ class BtToCsvHandler(RosbagHandler):
 
 
 # ---------------------------------------------------------------------------
+# Nav2BtToCsvHandler
+# ---------------------------------------------------------------------------
+
+class Nav2BtToCsvHandler(RosbagHandler):
+    """Extract Nav2 internal behaviour-tree status changes to CSV.
+
+    Reads ``nav2_msgs/msg/BehaviorTreeLog`` messages published on
+    ``/bt_navigator/behavior_tree_log`` and writes one CSV per bag with
+    columns: ``timestamp``, ``node_name``, ``uid``, ``previous_status``,
+    ``current_status``.
+    """
+
+    _BT_LOG_TOPIC = "/behavior_tree_log"
+    _FIELDNAMES = ["timestamp", "node_name", "uid", "previous_status", "current_status"]
+
+    def __init__(self, csv_filename: str = "nav2_behaviors.csv") -> None:
+        self._csv_filename = csv_filename
+        self._last_status: Dict[tuple, str] = {}
+        self._csvfile = None
+        self._writer = None
+        self._record_count: int = 0
+        self._output_file: str = ""
+
+    def topics(self) -> List[str]:
+        return [self._BT_LOG_TOPIC]
+
+    def on_begin(self, bag_path: str, topic_type_map: Dict[str, str]) -> None:
+        self._last_status = {}
+        self._record_count = 0
+        self._csvfile = None
+        self._writer = None
+        self._output_file = os.path.join(
+            os.path.abspath(os.path.dirname(bag_path)), self._csv_filename
+        )
+
+    def on_message(self, topic: str, msg: Any, timestamp: int) -> None:
+        if topic != self._BT_LOG_TOPIC:
+            return
+        for event in msg.event_log:
+            key = (event.node_name, event.uid)
+            if self._last_status.get(key) == event.current_status:
+                continue
+            self._last_status[key] = event.current_status
+            if self._csvfile is None:
+                self._csvfile = open(self._output_file, "w", newline="")
+                self._writer = csv.DictWriter(self._csvfile, fieldnames=self._FIELDNAMES)
+                self._writer.writeheader()
+            self._writer.writerow({
+                "timestamp": timestamp / 1_000_000_000.0,
+                "node_name": event.node_name,
+                "uid": event.uid,
+                "previous_status": event.previous_status,
+                "current_status": event.current_status,
+            })
+            self._record_count += 1
+
+    def on_end(self) -> Tuple[int, List[str]]:
+        if self._csvfile is not None:
+            self._csvfile.close()
+        if self._record_count > 0:
+            print(f"  ✓ {self._output_file}: {self._record_count} status records")
+            return self._record_count, [self._output_file]
+        print(f"  ✗ {self._output_file}: no nav2 behavior tree records found")
+        return 0, []
+
+    @classmethod
+    def from_config(cls, config: dict) -> "Nav2BtToCsvHandler":
+        return cls(csv_filename=config.get("csv_filename", "nav2_behaviors.csv"))
+
+
+# ---------------------------------------------------------------------------
 # ActionToCsvHandler helpers
 # ---------------------------------------------------------------------------
 
@@ -665,12 +736,13 @@ class ToWebmHandler(RosbagHandler):
 # ---------------------------------------------------------------------------
 
 HANDLER_REGISTRY: Dict[str, type] = {
-    "to_csv":        ToCsvHandler,
-    "tf_to_csv":     TfToCsvHandler,
-    "bt_to_csv":     BtToCsvHandler,
-    "action_to_csv": ActionToCsvHandler,
-    "rosout_to_csv": RosoutToCsvHandler,
-    "to_webm":       ToWebmHandler,
+    "to_csv":          ToCsvHandler,
+    "tf_to_csv":       TfToCsvHandler,
+    "bt_to_csv":       BtToCsvHandler,
+    "nav2_bt_to_csv":  Nav2BtToCsvHandler,
+    "action_to_csv":   ActionToCsvHandler,
+    "rosout_to_csv":   RosoutToCsvHandler,
+    "to_webm":         ToWebmHandler,
 }
 
 

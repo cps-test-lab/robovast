@@ -109,10 +109,9 @@ def find_rosbags(directory, bag_dir_name="rosbag2"):
                 for entry in it:
                     if not entry.is_dir(follow_symlinks=False):
                         continue
-                    if entry.name == prune_top:
-                        candidate = os.path.join(path, bag_dir_name)
-                        if os.path.isdir(candidate):
-                            bags.append(candidate)
+                    if entry.name == prune_top or entry.name.startswith(prune_top + "_"):
+                        if entry.is_dir(follow_symlinks=False):
+                            bags.append(entry.path)
                         # do not recurse into bag dir
                     else:
                         subdirs.append(entry.path)
