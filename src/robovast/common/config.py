@@ -541,7 +541,20 @@ class ConfigV1(BaseModel):
     version: int = 1
     metadata: Optional[dict[str, Any]] = None
     general: Optional[GeneralConfig] = None
-    plugins: Optional[list[str]] = None
+    plugins: Optional[list[str]] = Field(
+        default=None,
+        description=(
+            "Variation-plugin packages this campaign needs, as pip requirement "
+            "specs. Required for any third-party variation type not built into "
+            "robovast/robovast-nav. Each entry is one of: an index pin "
+            "('my_plugin==1.2.3'); a git URL "
+            "('scenario_mt @ git+https://github.com/org/repo@ref' — for a private "
+            "repo, provide a GitHub token at 'vast exec cluster setup'); or a "
+            "workspace-relative path to a wheel you uploaded "
+            "('./plugins/my_plugin-1.0-py3-none-any.whl'). They are installed into "
+            "the workspace's '.robovast_plugins/' (with dependencies) before "
+            "composing, so the variation names resolve."),
+    )
     configuration: Optional[list[ConfigurationConfig]] = None
     execution: ExecutionConfig
     search: Optional[SearchConfig] = None

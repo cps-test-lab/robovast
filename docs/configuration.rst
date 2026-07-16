@@ -17,6 +17,8 @@ A ``.vast`` configuration file has the following top-level structure:
      title: "Project Title"
      description: "Project description"
      ...
+   plugins:
+     - my_plugin==1.2.3
    configuration:
      - name: scenario1
        ...
@@ -68,6 +70,53 @@ All fields within ``metadata`` are optional and can be customized according to y
    ``<name>-YYYY-MM-DD-HHMMSS`` (e.g. ``navigation-evaluation-2026-03-10-142530``).
    When ``metadata.name`` is omitted the prefix defaults to ``campaign``
    (e.g. ``campaign-2026-03-10-142530``).
+
+
+Plugins Section
+---------------
+
+**Type:** List of strings
+
+**Required:** No
+
+The ``plugins`` section declares the **variation-plugin packages** this campaign
+needs — required whenever a scenario's ``variations`` use a variation type that is
+not built into ``robovast`` / ``robovast-nav`` (for example the ``scenario_mt``
+metamorphic types). Each entry is a `pip requirement specifier
+<https://pip.pypa.io/en/stable/reference/requirement-specifiers/>`_, in one of three
+forms:
+
+.. code-block:: yaml
+
+   plugins:
+     # 1. published on a package index — pin the version
+     - my_plugin==1.2.3
+     # 2. a git repository — pin a ref (branch, tag, or commit)
+     - scenario_mt @ git+https://github.com/org/scenario_mt@main
+     # 3. a wheel you uploaded into this project — a workspace-relative path
+     - ./plugins/my_plugin-1.0.0-py3-none-any.whl
+
+The packages are installed **into the workspace** (a ``.robovast_plugins/`` directory
+next to your ``.vast``), together with their dependencies, before the variations are
+composed — so the variation type names resolve. The installed directory travels with
+the campaign into the cluster; the execution pods do not install or clone anything.
+
+.. note::
+
+   **Private git repositories.** A ``git+https`` URL to a private repository needs
+   credentials. For the ``robovast-service`` / MCP flow, provide a GitHub token at
+   deployment time — set ``ROBOVAST_GIT_TOKEN`` (or ``GITHUB_TOKEN`` / ``GH_TOKEN``)
+   in your project's ``.env`` file (or the environment) when you run
+   ``vast exec cluster setup``; it is stored as a Kubernetes Secret and the service
+   uses it to authenticate the clone. Alternatively, upload a pre-built wheel into
+   the project and reference it by its workspace-relative path (form 3 above) — this
+   needs no credentials at all.
+
+.. tip::
+
+   For a single, dependency-free custom variation you do not need to package it: put
+   the ``.py`` file in your project and reference the class directly from a
+   ``variations`` entry as ``relative/path.py:ClassName`` (see :ref:`variation-points`).
 
 
 Configuration Section

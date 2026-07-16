@@ -277,36 +277,111 @@ the quadrotor search vasts.
    **Packaging a variation plugin as its own distribution.** If your variation
    types live in a separate installable package (as ``robovast-nav`` does for
    ``FloorplanVariation``, ``PathVariation*``, ``ObstacleVariation*``), it must
-   be installed everywhere scenario variations get **composed** — not just
-   where scenarios *run*. For local and host-driven cluster runs that's the
-   host venv; for ``vast execution cluster run`` (search/batch) composition
-   happens **inside the in-cluster controller pod**.
+   be importable everywhere scenario variations get **composed** — not just where
+   scenarios *run*. Composition happens in the process that expands the
+   ``variations:`` cross-product: the ``vast`` CLI on your host for
+   ``vast exec local run``; the ``robovast-service`` for an MCP/service campaign;
+   and, for a cluster run, **inside the controller pod** (search composes each
+   batch there iteratively, so the plugin must be importable in the pod).
 
-   You do **not** need to bake a third-party plugin into the controller image.
-   At launch, ``controller_launcher.discover_plugin_installs`` enumerates the
-   ``robovast.variation_types`` entry points installed in the host venv, drops
-   the built-ins (``robovast``, ``robovast-nav``, already in the image), and
-   ships the rest into the controller pod, installing them there before the
-   controller composes anything. How each plugin travels is decided from its
-   PEP 610 ``direct_url.json`` provenance:
+   There is **one mechanism** for all of these — the ``.vast``'s ``plugins:`` list
+   (next section) — and it is uniform across the CLI and the MCP/service paths:
 
-   * installed from a **local directory** (editable ``pip install -e`` or a
-     plain path install) → a wheel is built from that source with ``pip wheel``
-     and copied into the pod;
-   * installed from a **VCS** → its ``name @ git+url@commit`` direct URL is
-     replayed, so the pod fetches the same revision;
-   * installed from an **index** → pinned as ``name==version``.
+   * **On your host (``vast`` CLI), a plugin you have already installed is
+     detected and used as-is.** ``config_plugins.ensure_workspace_plugins`` checks
+     whether each declared distribution is importable; if you ran
+     ``pip install`` / ``make venv`` yourself, nothing is re-fetched. Only the
+     declared specs that are *missing* are installed — into the project's
+     ``.robovast_plugins/`` directory via ``pip install --target`` (never your
+     active venv).
+   * **For a cluster run, every declared plugin is materialized into
+     ``.robovast_plugins/`` and staged into the pod** with the campaign inputs
+     (``ensure_workspace_plugins(..., force=True)`` from the CLI launcher and from
+     the service's ``create_campaign``). The controller pod imports them off
+     ``sys.path`` and **never installs or clones** — no per-pod credentials, and a
+     private-repo clone happens once, on the credentialed host/service.
 
-   The pod then ``pip install``\ s each plugin **with its dependencies**, so the
-   one real constraint is that your plugin must **declare its dependencies
-   correctly** in its own project metadata — the pod resolves them from the
-   wheel/spec rather than inheriting whatever happened to be in the host venv.
-   A VCS dependency (e.g. ``scenario_mt``'s ``fpm @ git+…``) is fetched with the
-   ``git`` binary the controller image now ships. Set
-   ``ROBOVAST_SKIP_PLUGIN_INJECTION=1`` to disable detection entirely (e.g. for a
-   custom controller image that already bakes the plugins in). Note detection is
-   host-venv driven: a plugin only reaches the pod if it is installed on the host
-   that launches the run.
+   Dependencies come from each package's own metadata into that same directory, so
+   the one real constraint is that your plugin must **declare its dependencies
+   correctly** (e.g. ``scenario_mt``'s ``shapely`` and its ``fpm @ git+…``). There
+   is no separate host-venv "injection" step and no wheel-shipping; a plugin
+   installed only in your host venv but **not** declared in ``plugins:`` will not
+   reach a cluster pod.
+
+   **Declaring a plugin in the ``.vast`` (CLI, MCP, and ``robovast-service``).**
+   Declare the plugin **inside the ``.vast``** with a top-level ``plugins:`` list of
+   pip requirement specs. This is the single portable mechanism: it works for the
+   CLI (where you may instead just install the plugin yourself — it is detected) and
+   for an MCP/service campaign, where the LLM only authors inputs into a workspace
+   and ``.vast`` / ``.osc`` are the only file types it can write inline::
+
+       plugins:
+         - scenario_mt @ git+https://github.com/secorolab/metamorphic_testing@main
+         - some_published_plugin==1.2.3
+         - ./plugins/my_plugin-1.0.0-py3-none-any.whl   # a wheel you uploaded
+
+   These are **installed into the workspace**, not into the controller pod. Before
+   variation types are resolved from entry points, ``config_plugins.
+   ensure_workspace_plugins`` (called once at the top of
+   ``generate_scenario_variations`` — the sole convergence for local, service and
+   pod composition) installs the declared specs into ``<workspace>/.robovast_plugins/``
+   with ``pip install --target`` (**with dependencies**) and puts that directory on
+   ``sys.path`` so the entry points resolve. A ``.installed`` marker (a hash of the
+   specs) makes it idempotent.
+
+   The key property: ``.robovast_plugins/`` is a normal part of the project tree, so
+   it is **staged to the object store and downloaded into the controller pod with
+   everything else**. There the marker already matches, so the pod imports the
+   plugin off ``sys.path`` and **never installs, clones, or needs credentials** — it
+   only executes. The install runs where the workspace lives:
+
+   * the ``robovast-service`` runs it in ``create_campaign`` (and for
+     validate/preview) — its environment is what reaches the source and holds any
+     git credentials;
+   * on your host (``vast`` CLI), a declared plugin **already installed** in the
+     active venv is *detected and used as-is* — install it yourself and it is not
+     re-fetched. Only missing specs are installed, and always into
+     ``.robovast_plugins/`` (never your site-packages), so a run is **non-invasive**.
+
+   **Sources.** An index pin needs no source access. A git URL works when the
+   install environment can reach it — for a **private** repo in the service, provide
+   a GitHub token at ``vast exec cluster setup`` (below). A **workspace-relative
+   wheel** you ``create_upload``\ ed is the fully offline path (no git, no
+   credentials) for a private or unpublished plugin. On a failed install the error
+   is raised synchronously from the service call (create/validate/preview), so an
+   MCP user sees an actionable message instead of a controller-pod ``Unknown
+   variation class`` later.
+
+   Because the ``robovast-service`` is one long-lived process serving many
+   workspaces and Python cannot un-import, a plugin already loaded (from another
+   workspace) cannot be swapped; ``ensure_workspace_plugins`` **logs a warning** in
+   that case (the already-loaded version wins until the service restarts).
+
+   **Private-repo credentials (``vast exec cluster setup``).** When a ``git+https``
+   plugin points at a private repo, provide a token via ``ROBOVAST_GIT_TOKEN`` (or
+   ``GITHUB_TOKEN`` / ``GH_TOKEN``) — either exported in the environment or, more
+   conveniently, set in the project's ``.env`` file (setup loads ``.env`` the same
+   way ``upload-to-share`` does). ``deploy_service``
+   stores it in a ``robovast-git-credentials`` Secret and **mounts it read-only as a
+   file** into the service pod (``/var/run/secrets/robovast-git/token``). The token is
+   handled so it is **not accessible to any workspace or command**:
+
+   * it is **never** put in an environment variable (which every child process /
+     command would inherit), **never** written to ``~/.gitconfig``, and **never**
+     placed on a command line (``ps``-visible);
+   * it is supplied to ``git`` only for the one ``pip install`` subprocess, via a
+     throwaway ``GIT_ASKPASS`` helper in an owner-only temp dir that is removed
+     immediately after;
+   * it never enters a workspace, the staged project, or a controller pod (the pod
+     imports the already-installed ``.robovast_plugins/`` and needs no credentials).
+
+   (Because variation composition runs in-process, an operator who needs hard
+   isolation from untrusted plugin code should prefer the uploaded-wheel source,
+   which needs no credential at all.)
+
+   For a single dependency-free variation you can skip packaging entirely and use a
+   ``<path>.py:<Class>`` file reference resolved relative to the ``.vast`` directory
+   (see below).
 
    Two pitfalls when exposing the package as a poetry extra of *this* repo (e.g.
    ``nav = ["robovast-nav"]``) rather than as an independent third-party plugin:
@@ -1081,6 +1156,48 @@ mappings documented under *Per-Cluster Resource Limits* in
              require_context_for_multi_cluster, resolve_resource_value, resolve_resources
    :undoc-members:
 
+
+.. _web-ui-internals:
+
+Web UI internals
+----------------
+
+The web frontend (user guide: :ref:`web_ui`) is a **plain Vite + React + TypeScript
+app** (MUI + `TanStack Query <https://tanstack.com/query>`_) living at the repo-root
+``ui/`` directory. It has its own ``package.json`` / ``node_modules`` and is
+independent of the Python build; ``npm run build`` emits ``ui/dist``.
+
+It is deliberately **not** a plugin framework or a shared UI shell — most of what a
+bespoke shell would provide maps to stable, widely-used OSS (server-state polling →
+TanStack Query, charts → Plotly, forms → Monaco/rjsf), so the app is an ordinary
+React app that reuses those libraries directly.
+
+**Thin client of the interface.** All service access goes through one seam,
+``ui/src/lib/robovastClient.ts``, which mirrors
+:class:`robovast.service.interface.RobovastInterface` — the ``Routes`` paths and the
+request/response models (including :class:`~robovast.execution.control_server.Status`)
+— **1:1**, exactly as the Python ``HTTPTransport`` does. When the interface changes,
+update this file. Pages call the client via TanStack Query (``refetchInterval`` drives
+the Monitor's live polling; mutations drive create/stop). Current pages:
+``ui/src/pages/Monitor.tsx`` and ``ui/src/pages/Launcher.tsx``, sharing
+``ui/src/components/StatusView.tsx`` for the live ``Status`` render.
+
+**The service serves the SPA.** :func:`robovast.service.app.build_app` mounts
+``ui/dist`` at ``/`` (``_mount_ui`` / ``_ui_dist``) **after** registering the API
+routes, so the interface routes win and the SPA is served from everything else. The
+UI is therefore same-origin with the API (no CORS in production) and **starts with the
+service**. The build location is ``ui/dist`` relative to the repo, overridable with
+``ROBOVAST_UI_DIST``; package the built assets into the service/controller image so the
+in-cluster service ships the UI. If no build is present the service runs API-only.
+
+**Dev loop.** ``cd ui && npm run dev`` runs Vite (:5173) and proxies the API path
+prefixes to a running ``vast serve`` (``ROBOVAST_SERVICE_URL`` to retarget), keeping the
+browser same-origin for hot-reload development.
+
+**Extending.** Add an operation by giving ``robovastClient.ts`` a method mirroring the
+new interface op, then a page/tab that queries it. Planned next: a config editor over the
+workspace file endpoints and a results/eval viewer over the (forthcoming) data-query
+endpoints.
 
 Querying RoboVAST campaigns
 ---------------------------

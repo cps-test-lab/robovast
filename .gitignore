@@ -8,3 +8,5 @@ venv
 **/.cache
 **/.robovast_*
 results
+ui/node_modules
+ui/dist

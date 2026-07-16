@@ -20,7 +20,9 @@ from importlib.metadata import entry_points
 from typing import Any
 
 from ..config import VariationConfig
+from ..plugin_ref import is_file_ref, load_ref
 from .base_variation import Variation
+from .loader import _validate_variation_class
 
 logger = logging.getLogger(__name__)
 
@@ -114,10 +116,22 @@ class OneOfVariation(Variation):
 
             type_name, child_params = next(iter(child_entry.items()))
 
-            if type_name not in available_classes:
+            if type_name in available_classes:
+                child_class = available_classes[type_name]
+            elif is_file_ref(type_name):
+                # Local '<path>.py:<Class>' reference resolved relative to the
+                # .vast dir (self.base_path), same as the top-level variations list.
+                child_class = load_ref(type_name, "robovast.variation_types", self.base_path)
+                errors = _validate_variation_class(type_name, child_class)
+                if errors:
+                    raise ValueError(
+                        f"Invalid variation plugin '{type_name}' in OneOfVariation: "
+                        f"{'; '.join(errors)}")
+            else:
                 raise ValueError(
                     f"Unknown variation type '{type_name}' in OneOfVariation. "
-                    f"Available types: {', '.join(sorted(available_classes.keys()))}"
+                    f"Available types: {', '.join(sorted(available_classes.keys()))}. "
+                    "Use a '<path>.py:<Class>' file reference for a local module."
                 )
 
             # child_params may be None for parameter-less child variations.
@@ -125,8 +139,6 @@ class OneOfVariation(Variation):
                 child_params = {}
 
             self.progress_update(f"Running child variation: {type_name}")
-
-            child_class = available_classes[type_name]
             # Note: Variation.__init__ calls reset_config_index() which resets the
             # shared module-level counter.  This is harmless because all built-in
             # variations use the per-instance _config_child_indices dict for naming,

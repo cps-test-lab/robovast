@@ -30,7 +30,7 @@ from pprint import pformat
 
 from .common import convert_dataclasses_to_dict, get_scenario_parameters, load_config
 from .config_identifier import collect_paths_from_config, hash_variation_entrypoints
-from .config_plugins import ensure_config_plugins
+from .config_plugins import ensure_workspace_plugins
 from .file_cache2 import CacheKey, FileCache2
 from .plugin_ref import is_file_ref, load_ref
 from .variation.loader import _validate_variation_class
@@ -527,12 +527,6 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
 
     parameters = load_config(variation_file)
 
-    # Ensure any variation-plugin packages the .vast declares in ``plugins:`` are
-    # available before resolving variation types from entry points. In a controller
-    # pod this installs them; locally it only checks and errors (never mutates the
-    # host venv). Runs once here — the sole convergence for local, cluster and search.
-    ensure_config_plugins(parameters)
-
     # Get scenario file from configuration section
     configurations = parameters.get('configuration', [])
 
@@ -627,6 +621,15 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         _cache_meta = None
         _cache_artifacts = None
         _cache_key = None
+
+    # About to compose (cache miss, or caching disabled). Ensure any variation-plugin
+    # packages the .vast declares in ``plugins:`` are installed into the workspace's
+    # ``.robovast_plugins/`` dir and on ``sys.path`` before resolving variation types
+    # from entry points. Idempotent: in a controller pod the dir was staged with the
+    # project so this only adjusts ``sys.path``. Skipped when the caller supplies
+    # precomputed ``variation_classes``.
+    if variation_classes is None:
+        ensure_workspace_plugins(vast_dir, parameters.get("plugins"))
 
     configs = []
     variation_gui_classes = {}
