@@ -33,6 +33,31 @@ def mcp():
     """
 
 
+def _silence_shutdown_noise():
+    """Suppress uvicorn's benign Ctrl+C shutdown tracebacks for HTTP transports.
+
+    SSE keeps the ``GET /mcp`` stream open until the client disconnects, and
+    FastMCP runs uvicorn with ``timeout_graceful_shutdown=0``, so on Ctrl+C the
+    open stream is cancelled immediately. uvicorn then logs the resulting
+    ``asyncio.CancelledError`` as an "Exception in ASGI application" traceback
+    plus a "Cancel N running task(s)" error, even though the shutdown is normal.
+    Drop just those records; every other error still propagates.
+    """
+    import asyncio  # pylint: disable=import-outside-toplevel
+    import logging  # pylint: disable=import-outside-toplevel
+
+    class _ShutdownNoiseFilter(logging.Filter):
+        def filter(self, record):
+            exc = record.exc_info[1] if record.exc_info else None
+            if isinstance(exc, asyncio.CancelledError):
+                return False
+            if record.getMessage().startswith("Cancel "):
+                return False
+            return True
+
+    logging.getLogger("uvicorn.error").addFilter(_ShutdownNoiseFilter())
+
+
 @mcp.command(name='serve')
 @click.option('--transport', type=click.Choice(['stdio', 'sse', 'streamable-http']),
               default='sse', show_default=True,
@@ -44,8 +69,9 @@ def mcp():
                    'address on a network you trust.')
 @click.option('--port', default=8801, show_default=True, type=int,
               help='Port to bind when using an HTTP transport.')
-@click.option('--debug', is_flag=True,
-              help='Enable DEBUG logging for all MCP messages.')
+@click.option('-d', '--debug', count=True,
+              help='MCP debug logging. -d logs each tool call with its '
+                   'arguments; -dd also logs the result.')
 def serve(transport, host, port, debug):
     """Start the RoboVAST MCP server.
 
@@ -71,6 +97,9 @@ def serve(transport, host, port, debug):
         logging.getLogger("robovast.mcp_server").setLevel(logging.DEBUG)
 
     mcp_server = create_server(host=host, port=port, debug=debug)
+
+    if transport in ("sse", "streamable-http"):
+        _silence_shutdown_noise()
 
     try:
         if transport in ("sse", "streamable-http"):

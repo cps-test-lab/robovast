@@ -22,7 +22,8 @@ Start via the VAST CLI::
     vast mcp serve --transport stdio                    # stdio
     vast mcp serve --transport streamable-http          # modern HTTP (Open WebUI etc.)
     vast mcp serve --transport streamable-http --host 127.0.0.1 --port 9000
-    vast mcp serve --transport streamable-http --debug  # human-readable request/reply log
+    vast mcp serve --transport streamable-http -d       # log each tool call + args
+    vast mcp serve --transport streamable-http -dd      # also log the result
 
 All tools are provided by plugins registered under the
 ``robovast.mcp_plugins`` entry-point group.
@@ -80,8 +81,12 @@ def _short(value: object) -> str:
     return text
 
 
-def _install_debug_logging(mcp: FastMCP) -> None:
-    """Install middleware to emit human-readable request/reply log lines."""
+def _install_debug_logging(mcp: FastMCP, level: int) -> None:
+    """Install middleware to emit human-readable request/reply log lines.
+
+    ``level`` >= 1 logs each tool call with its arguments; ``level`` >= 2 also
+    logs the (successful) result. Errors are always logged when any level is on.
+    """
     from fastmcp.server.middleware import Middleware, MiddlewareContext  # pylint: disable=import-outside-toplevel
 
     class _DebugLoggingMiddleware(Middleware):
@@ -92,7 +97,8 @@ def _install_debug_logging(mcp: FastMCP) -> None:
             logger.debug("→ %s(%s)", context.message.name, args_repr)
             try:
                 result = await call_next(context)
-                logger.debug("← %s → %s", context.message.name, _short(_extract_result(result)))
+                if level >= 2:
+                    logger.debug("← %s → %s", context.message.name, _short(_extract_result(result)))
                 return result
             except Exception as exc:
                 logger.debug("← %s ✗ %s: %s", context.message.name, type(exc).__name__, exc)
@@ -104,7 +110,7 @@ def _install_debug_logging(mcp: FastMCP) -> None:
 def create_server(
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
-    debug: bool = False,
+    debug: int = 0,
 ) -> FastMCP:
     """Create and configure the MCP server instance.
 
@@ -115,8 +121,9 @@ def create_server(
     port:
         Port to bind when using an HTTP transport.
     debug:
-        When *True*, wrap ``call_tool`` to emit human-readable request/reply
-        log lines at ``DEBUG`` level.
+        Verbosity for the human-readable request/reply log at ``DEBUG`` level.
+        ``0`` disables it, ``1`` logs each tool call with its arguments, and
+        ``2`` also logs the result.
     """
     mcp = FastMCP(name="RoboVAST Results API", instructions="""
                 This server provides access to the results created by RoboVAST.
@@ -137,7 +144,7 @@ def create_server(
     )
 
     if debug:
-        _install_debug_logging(mcp)
+        _install_debug_logging(mcp, debug)
 
     return mcp
 
