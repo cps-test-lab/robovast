@@ -461,7 +461,7 @@ def get_campaign_status(campaign_id: str) -> dict:
         client = _service_client()
         if client is not None:
             st = client.get_status(campaign_id)
-            return {
+            result = {
                 "campaign_id": campaign_id,
                 "backend": "service",
                 "status": st.phase,
@@ -469,6 +469,9 @@ def get_campaign_status(campaign_id: str) -> dict:
                 "runs_total": st.runs.total,
                 "log_tail": st.stage or "",
             }
+            if st.error:  # the controller's failure reason — no need to read pod logs
+                result["error"] = st.error
+            return result
 
         project = _load_project()
         results_dir = str(project.results_dir)

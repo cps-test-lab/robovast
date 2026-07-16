@@ -424,7 +424,10 @@ class Compress(BasePostprocessingPlugin):
 
 
 # Reserved campaign-level directory names (not config dirs)
-_CAMPAIGN_RESERVED_DIRS = {"_config", "_execution", "_transient"}
+# NOTE: the campaign layout (which dirs are reserved vs. configurations) is defined
+# once in robovast.common.campaign_data — use list_config_dirs()/list_run_dirs()
+# rather than re-deriving it here (a local copy drifted and counted `_jobs` as a
+# configuration).
 
 
 def _csv_to_table_name(filename: str) -> str:
@@ -549,6 +552,9 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
     Returns:
         Tuple of (success, message).
     """
+    from robovast.common.campaign_data import (  # pylint: disable=import-outside-toplevel
+        list_config_dirs, list_run_dirs)
+
     def _log(msg: str) -> None:
         if output_callback:
             output_callback(msg)
@@ -598,19 +604,13 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
         # display_name -> total row count across all runs
         table_rows: dict[str, int] = {}
 
-        config_dirs = sorted(
-            d for d in campaign_path.iterdir()
-            if d.is_dir()
-            and d.name not in _CAMPAIGN_RESERVED_DIRS
-            and not d.name.startswith(".")
-        )
+        config_dirs = list_config_dirs(campaign_path)
 
         # Count total runs upfront for progress reporting
         all_run_dirs: list = []
         for config_dir in config_dirs:
-            for d in config_dir.iterdir():
-                if d.is_dir() and d.name.isdigit():
-                    all_run_dirs.append((config_dir.name, d))
+            for d in list_run_dirs(config_dir):
+                all_run_dirs.append((config_dir.name, d))
         total_runs = len(all_run_dirs)
         _log(f"  Building data.db from {total_runs} run(s) across {len(config_dirs)} config(s)...")
 

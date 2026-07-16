@@ -9,7 +9,7 @@ packages = [{include = "robovast_nav"}]
 
 [tool.poetry.dependencies]
 python = ">=3.12,<3.14"
-robovast = "^1.0.0"
+robovast = "^2.0.0"
 robovast-mcp = {version = "^0.1.0", optional = true}
 pyside6-essentials = "^6.6"
 scipy = "^1.11"

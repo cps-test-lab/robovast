@@ -19,6 +19,20 @@
 #   docker build -f container/controller/Dockerfile -t <you>/robovast-controller:dev .
 # or use container/controller/build.sh. Point a run at a dev image via the
 # ROBOVAST_CONTROLLER_IMAGE env var.
+#
+# This image also runs the persistent `robovast-service` Deployment (mode 3), which
+# serves the **web UI** alongside the REST API on one port — so the SPA is built
+# here (stage below) and pointed at via ROBOVAST_UI_DIST. Without it the in-cluster
+# service comes up API-only and the browser gets a 404 on `/`.
+
+# -- web UI (ui/dist), served by `vast serve` from this image -----------------
+FROM node:20-slim AS ui-build
+WORKDIR /ui
+# Install deps against the lockfile first so this layer caches across UI edits.
+COPY ui/package.json ui/package-lock.json ./
+RUN npm ci
+COPY ui/ ./
+RUN npm run build          # -> /ui/dist
 
 FROM python:3.12-slim
 
@@ -64,6 +78,12 @@ COPY src ./src
 RUN pip install --no-cache-dir poetry==1.8.2 \
  && poetry config virtualenvs.create false \
  && poetry install --only main --extras "qd optuna nav" --no-cache
+
+# The built SPA + the env `robovast.service.app._ui_dist()` reads. The in-image
+# path cannot be derived from the source tree (robovast is installed into
+# site-packages here), so it is stated explicitly.
+COPY --from=ui-build /ui/dist /opt/robovast/ui
+ENV ROBOVAST_UI_DIST=/opt/robovast/ui
 
 # Compatibility marker, kept in sync with COMPAT_VERSION in
 # src/robovast/common/execution.py (same contract as the ROS image).

@@ -22,8 +22,8 @@ from pathlib import Path
 from robovast.common.cli.project_config import ProjectConfig
 from robovast.common.execution import is_campaign_dir
 
-# Directories at campaign level that are not config directories
-_RESERVED_DIRS = {"_config", "_execution", "_transient", "_control"}
+# The campaign layout (which dirs are reserved vs. configurations) is defined once
+# in robovast.common.campaign_data — see list_config_dirs() below.
 
 
 def resolve_results_dir() -> Path:
@@ -144,11 +144,9 @@ def list_config_dirs(campaign: str) -> list[Path]:
     Returns:
         Sorted list of paths to configuration directories.
     """
-    campaign_path = resolve_campaign_path(campaign)
-    return sorted(
-        d for d in campaign_path.iterdir()
-        if d.is_dir() and d.name not in _RESERVED_DIRS and not d.name.startswith(".")
-    )
+    from robovast.common.campaign_data import \
+        list_config_dirs as _list_config_dirs  # noqa: PLC0415
+    return _list_config_dirs(resolve_campaign_path(campaign))
 
 
 def list_run_dirs(campaign: str, config: str) -> list[Path]:

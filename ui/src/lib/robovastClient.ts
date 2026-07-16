@@ -1,0 +1,360 @@
+// Typed REST client — the browser binding of the RobovastInterface contract. It mirrors
+// src/robovast/service/interface.py (the `Routes` paths + request/response models) exactly, the same
+// way the Python HTTPTransport does; the UI never talks to anything but the service. Keep this file the
+// single seam: if interface.py changes, change it here.
+//
+// Base URL is "" by default — the service serves this SPA same-origin, so relative paths hit its API.
+// In dev the Vite proxy forwards the API prefixes to a running `vast serve`, so "" works there too.
+// Override with VITE_ROBOVAST_URL to point at an arbitrary service.
+
+const BASE = (import.meta.env.VITE_ROBOVAST_URL ?? '').replace(/\/$/, '')
+
+// -- interface models (mirror interface.py / control_server.Status) ---------
+
+export interface VersionInfo {
+  robovast_version: string
+  api_version: string
+  backend?: string | null
+}
+
+export interface CampaignSummary {
+  campaign_id: string
+  phase: string
+  num_runs: number
+  num_passed: number
+  num_failed: number
+  started_at?: string | null
+  finished_at?: string | null
+}
+
+export interface ListCampaignsResponse {
+  campaigns: CampaignSummary[]
+  total: number
+}
+
+// Newest first. Prefer started_at when the backend provides it; fall back to
+// campaign_id, which encodes the timestamp (campaign-YYYY-MM-DD-HHMMSS) and so
+// sorts lexicographically by time. Returns a new array (never mutates input).
+const sortKey = (c: CampaignSummary) => c.started_at ?? c.campaign_id
+export const campaignsNewestFirst = (campaigns: CampaignSummary[]) =>
+  [...campaigns].sort((a, b) =>
+    sortKey(a) < sortKey(b) ? 1 : sortKey(a) > sortKey(b) ? -1 : 0)
+
+export interface CreateCampaignRequest {
+  workspace_id: string
+  config_path?: string
+  config_filter?: string
+  runs?: number
+  postprocess?: boolean
+}
+
+export interface CampaignRef {
+  campaign_id: string
+}
+
+export interface ActionResult {
+  ok: boolean
+  message?: string | null
+}
+
+// control_server.Status (reused verbatim by the interface) — the live monitor model.
+export interface RunProgress {
+  completed: number
+  total: number
+}
+
+export interface BudgetItem {
+  label: string
+  current?: number | null
+  limit: number
+  done: boolean
+}
+
+export interface Status {
+  phase: string
+  stage?: string | null
+  mode?: string | null
+  campaign_id?: string | null
+  batch: number
+  batches_done: number
+  budget: BudgetItem[]
+  runs: RunProgress
+  best_objective?: number | null
+  batch_history: Record<string, unknown>[]
+  stop?: Record<string, unknown> | null
+  error?: string | null
+  share_provider?: string | null
+  extra: Record<string, unknown>
+  updated_at: number
+}
+
+export interface WorkspaceInfo {
+  workspace_id: string
+  name: string
+  created_at?: string | null
+}
+
+export interface ListWorkspacesResponse {
+  workspaces: WorkspaceInfo[]
+}
+
+export interface FileMeta {
+  path: string
+  bytes: number
+  sha256: string
+  executable: boolean
+}
+
+export interface ListFilesResponse {
+  files: FileMeta[]
+}
+
+export interface FileContent {
+  path: string
+  content: string
+}
+
+export interface UploadGrant {
+  token: string
+  path: string
+  expires_in: number
+  url?: string | null
+}
+
+// -- config-editor models (mirror interface.py) ----------------------------
+
+export interface ValidationProblem {
+  stage: string
+  config?: string | null
+  field?: string | null
+  message: string
+}
+
+export interface ValidationReport {
+  valid: boolean
+  problems: ValidationProblem[]
+  configs: number
+  runs_per_config: number
+  total_trials: number
+}
+
+export interface VariationRemote {
+  name: string
+  remote_entry_url: string
+  module: string
+}
+
+export interface VariationPreview {
+  variation_type: string
+  params: Record<string, unknown>
+  remote?: VariationRemote | null
+}
+
+export interface PreviewConfiguration {
+  name: string
+  parameters: Record<string, unknown>
+  previews: VariationPreview[]
+}
+
+export interface PreviewResponse {
+  configs: number
+  runs_per_config: number
+  total_trials: number
+  configurations: PreviewConfiguration[]
+  truncated: boolean
+}
+
+export interface VariationTypeParam {
+  name: string
+  type: string
+  required: boolean
+  default?: unknown
+  description?: string | null
+}
+
+export interface VariationTypeInfo {
+  name: string
+  summary: string
+  params: VariationTypeParam[]
+}
+
+export interface VariationTypesResponse {
+  types: VariationTypeInfo[]
+}
+
+// -- results data query (eval viewer) ---------------------------------------
+
+export interface DataTable {
+  schema: string
+  table: string
+  columns: string[]
+  rows: number | null
+}
+
+export interface DataDescribe {
+  campaign_id: string
+  tables: DataTable[]
+  note: string
+}
+
+export interface DataQueryResult {
+  campaign_id: string
+  columns: string[]
+  rows: Record<string, unknown>[]
+  row_count: number
+  truncated: boolean
+}
+
+export interface PlotSpec {
+  title: string
+  query: string
+  vega_lite: Record<string, unknown>
+}
+
+export interface CampaignPlotsResponse {
+  campaign_id: string
+  plots: PlotSpec[]
+}
+
+// -- transport --------------------------------------------------------------
+
+export class RobovastError extends Error {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
+    super(message)
+    this.name = 'RobovastError'
+  }
+}
+
+async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method,
+    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+  if (!res.ok) {
+    // FastAPI errors carry {detail}; fall back to the status text.
+    let detail = res.statusText
+    try {
+      const j = (await res.json()) as { detail?: string }
+      if (j?.detail) detail = j.detail
+    } catch {
+      /* non-JSON body */
+    }
+    throw new RobovastError(res.status, detail)
+  }
+  if (res.status === 204) return undefined as T
+  return (await res.json()) as T
+}
+
+// -- the interface (Phase-0 subset the M1 UI needs) -------------------------
+
+export const robovast = {
+  baseUrl: BASE,
+
+  version: () => request<VersionInfo>('GET', '/version'),
+
+  listWorkspaces: () => request<ListWorkspacesResponse>('GET', '/workspaces'),
+
+  listCampaigns: (limit = 20, offset = 0) =>
+    request<ListCampaignsResponse>('GET', `/campaigns?limit=${limit}&offset=${offset}`),
+
+  getStatus: (campaignId: string) =>
+    request<Status>('GET', `/campaigns/${encodeURIComponent(campaignId)}/status`),
+
+  createCampaign: (req: CreateCampaignRequest) =>
+    request<CampaignRef>('POST', '/campaigns', {
+      config_path: '',
+      config_filter: '',
+      runs: 1,
+      postprocess: true,
+      ...req,
+    }),
+
+  stop: (campaignId: string) =>
+    request<ActionResult>('POST', `/campaigns/${encodeURIComponent(campaignId)}/stop`),
+
+  // -- workspaces & files ---------------------------------------------------
+
+  createWorkspace: (name = '') => request<WorkspaceInfo>('POST', '/workspaces', { name }),
+
+  deleteWorkspace: (id: string) =>
+    request<ActionResult>('DELETE', `/workspaces/${encodeURIComponent(id)}`),
+
+  listProjectFiles: (id: string) =>
+    request<ListFilesResponse>('GET', `/workspaces/${encodeURIComponent(id)}/files`),
+
+  readProjectFile: (id: string, path: string) =>
+    request<FileContent>(
+      'GET',
+      `/workspaces/${encodeURIComponent(id)}/file?path=${encodeURIComponent(path)}`,
+    ),
+
+  writeProjectFile: (id: string, path: string, content: string) =>
+    request<FileMeta>('POST', `/workspaces/${encodeURIComponent(id)}/file`, {
+      workspace_id: id,
+      path,
+      content,
+    }),
+
+  deleteProjectFile: (id: string, path: string) =>
+    request<ActionResult>(
+      'DELETE',
+      `/workspaces/${encodeURIComponent(id)}/file?path=${encodeURIComponent(path)}`,
+    ),
+
+  // Upload any (non-.vast/.osc) file via the TTL PUT side channel.
+  uploadFile: async (id: string, path: string, data: Blob) => {
+    const grant = await request<UploadGrant>(
+      'POST',
+      `/workspaces/${encodeURIComponent(id)}/uploads`,
+      { workspace_id: id, path },
+    )
+    const res = await fetch(`${BASE}${grant.url ?? `/uploads/${grant.token}`}`, {
+      method: 'PUT',
+      body: data,
+    })
+    if (!res.ok) throw new RobovastError(res.status, `upload failed: ${res.statusText}`)
+    return (await res.json()) as FileMeta
+  },
+
+  // -- config editor --------------------------------------------------------
+
+  validateProject: (id: string, path = '') =>
+    request<ValidationReport>('POST', `/workspaces/${encodeURIComponent(id)}/validate`, {
+      path,
+    }),
+
+  previewConfigurations: (id: string, maxConfigs = 0, path = '') =>
+    request<PreviewResponse>('POST', `/workspaces/${encodeURIComponent(id)}/preview`, {
+      max_configs: maxConfigs,
+      path,
+    }),
+
+  getConfigSchema: () => request<Record<string, unknown>>('GET', '/config/schema'),
+
+  listVariationTypes: () => request<VariationTypesResponse>('GET', '/variation_types'),
+
+  // -- eval / results data query --------------------------------------------
+
+  describeCampaignData: (campaignId: string) =>
+    request<DataDescribe>('GET', `/campaigns/${encodeURIComponent(campaignId)}/describe`),
+
+  queryCampaignDataSql: (campaignId: string, sql: string, maxRows = 500) =>
+    request<DataQueryResult>('POST', `/campaigns/${encodeURIComponent(campaignId)}/query`, {
+      sql,
+      max_rows: maxRows,
+    }),
+
+  listCampaignPlots: (campaignId: string) =>
+    request<CampaignPlotsResponse>('GET', `/campaigns/${encodeURIComponent(campaignId)}/plots`),
+
+  runPostprocessing: (campaignId: string, force = false) =>
+    request<ActionResult>(
+      'POST',
+      `/campaigns/${encodeURIComponent(campaignId)}/postprocessing/run`,
+      { campaign_id: campaignId, force, skip: [] },
+    ),
+}

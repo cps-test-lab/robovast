@@ -509,6 +509,11 @@ def _monitor_via_controller(namespace, kube_context, interval, once):
             lines.append(up_line)
         if status.get("stop"):
             lines.append(f"  Stop: {status['stop'].get('reason', '')}")
+        if status.get("error"):
+            # Indent the (possibly multi-line) failure reason under the campaign.
+            first, *rest = str(status["error"]).splitlines()
+            lines.append(f"  Error: {first}")
+            lines.extend(f"         {ln}" for ln in rest)
         return lines
 
     def _render(blocks):

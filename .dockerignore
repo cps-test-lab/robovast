@@ -1,0 +1,33 @@
+# Docker build context = the repository root (the images need pyproject.toml,
+# poetry.lock, README.md, src/ and ui/). Everything else is excluded so the
+# context stays small — without this the daemon is sent multiple GB (venv, .git,
+# ui/node_modules, results) on every build.
+
+# Local environments / VCS
+.git
+.github
+venv
+.venv
+.mypy_cache
+.pytest_cache
+**/__pycache__
+**/*.pyc
+
+# Web UI: sources are copied in and built inside the image; never ship the host's
+# node_modules (platform-specific) or a stale dist.
+ui/node_modules
+ui/dist
+
+# Campaign outputs / generated artifacts
+results
+allure-report
+allure-results
+docs/_build
+**/.cache
+**/.robovast_*
+*.tar.gz
+
+# Python build artifacts (the image installs from source)
+dist
+build
+*.egg-info

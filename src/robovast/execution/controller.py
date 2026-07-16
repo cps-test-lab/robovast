@@ -618,6 +618,49 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
         _finalize(be, _campaign_root)
 
 
+def _record_controller_failure(campaign_root, campaign_id, state, exc, backend):
+    """Durably record *why* the controller failed, then leave it queryable.
+
+    Writes ``_execution/outcome.json`` (the terminal ``Status`` with ``error``) and
+    uploads it — plus ``controller.log`` if present — to the object store, because
+    the normal ``_finalize`` upload is skipped when the failure precedes it (e.g. an
+    early config-expansion crash). Best-effort: recording a failure must never mask
+    the original one.
+    """
+    from robovast.common import campaign_data
+    from robovast.execution.control_server import ControllerState, failure_detail
+
+    detail = failure_detail(exc)
+    if state is None:
+        state = ControllerState()
+        state.update(campaign_id=campaign_id)
+    state.update(error=detail)
+    state.set_phase("failed")
+
+    try:
+        campaign_data.write_execution_outcome(campaign_root, state.snapshot())
+    except Exception:  # pylint: disable=broad-except
+        logger.warning("Could not write outcome.json for %s", campaign_id, exc_info=True)
+        return
+
+    # Upload just the control-plane artifacts (outcome + log) to the object store,
+    # so the stateless service resolves the reason after the pod is gone.
+    try:
+        from robovast.execution.cluster_execution import in_pod_storage
+        cfg = getattr(backend, "cluster_config", None)
+        if cfg is None:
+            return
+        storage = in_pod_storage.storage_client_for(cfg)
+        bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
+        exec_dir = os.path.join(campaign_root, "_execution")
+        for name in ("outcome.json", "controller.log"):
+            path = os.path.join(exec_dir, name)
+            if os.path.isfile(path):
+                storage.upload_file(path, bucket, f"{prefix}_execution/{name}")
+    except Exception:  # pylint: disable=broad-except
+        logger.warning("Could not upload failure record for %s", campaign_id, exc_info=True)
+
+
 def filter_configs_by_name(configs, config_filter):
     """Select campaign configs whose expanded name matches ``config_filter``.
 
@@ -844,16 +887,27 @@ def main(argv=None):
 
     mode = "search" if campaign_config.search is not None else "batch"
     notifier.started(mode)
-    if campaign_config.search is not None:
-        report = run_search_campaign(args.vast, campaign_config, args.results_dir, args.runs,
-                                     backend=backend, options=options,
-                                     campaign_id=campaign_id, state=state, notifier=notifier)
-        logger.info("Search campaign finished: %s", report)
-    else:
-        report = run_batch_campaign(args.vast, campaign_config, args.results_dir, args.runs,
-                                    config_filter=args.config, backend=backend, options=options,
-                                    campaign_id=campaign_id, state=state, notifier=notifier)
-        logger.info("Batch campaign finished: %s", report)
+    campaign_root = os.path.join(args.results_dir, campaign_id)
+    try:
+        if campaign_config.search is not None:
+            report = run_search_campaign(args.vast, campaign_config, args.results_dir, args.runs,
+                                         backend=backend, options=options,
+                                         campaign_id=campaign_id, state=state, notifier=notifier)
+            logger.info("Search campaign finished: %s", report)
+        else:
+            report = run_batch_campaign(args.vast, campaign_config, args.results_dir, args.runs,
+                                        config_filter=args.config, backend=backend, options=options,
+                                        campaign_id=campaign_id, state=state, notifier=notifier)
+            logger.info("Batch campaign finished: %s", report)
+    except BaseException as exc:  # noqa: BLE001 - top-level: record why, then die
+        # An uncaught failure here (e.g. a config_filter typo raising in
+        # build_campaign_data, before the store/_finalize exist) would otherwise
+        # only reach the pod's stderr. Record a durable, queryable reason the
+        # service surfaces via get_status, since _finalize's upload is skipped.
+        logger.exception("%s campaign failed", mode)
+        _record_controller_failure(campaign_root, campaign_id, state, exc, backend)
+        notifier.failed(f"{mode} campaign failed: {exc}")
+        sys.exit(1)
     notifier.finished(f"{mode} campaign complete.")
 
     # The campaign is now published to the object store. When a share is

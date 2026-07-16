@@ -69,6 +69,15 @@ class StorageClient:
     def download_prefix(self, bucket: str, prefix: str, local_dir: str) -> int:
         raise NotImplementedError
 
+    def read_object(self, bucket: str, key: str) -> "bytes | None":
+        """Return a single object's bytes, or ``None`` if it does not exist.
+
+        A targeted single-key read (vs :meth:`download_prefix`) for small
+        control-plane objects like ``_execution/outcome.json`` — the service reads
+        just that one key to surface a failed campaign's reason.
+        """
+        raise NotImplementedError
+
     def list_keys(self, bucket: str, prefix: str = "") -> list[str]:
         """Return object keys under *prefix* (no trailing-slash pseudo-dirs).
 
@@ -169,6 +178,16 @@ class _S3StorageClient(StorageClient):
         logger.debug("Downloaded %d files from s3://%s/%s", count, bucket, prefix)
         return count
 
+    def read_object(self, bucket: str, key: str) -> "bytes | None":
+        from botocore.exceptions import ClientError  # pylint: disable=import-outside-toplevel
+        try:
+            return self._s3.get_object(Bucket=bucket, Key=key)["Body"].read()
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code in ("404", "NoSuchKey", "NoSuchBucket"):
+                return None
+            raise
+
     def list_keys(self, bucket: str, prefix: str = "") -> list[str]:
         from botocore.exceptions import ClientError  # pylint: disable=import-outside-toplevel
         prefix = prefix.rstrip("/")
@@ -239,6 +258,13 @@ class _GcsStorageClient(StorageClient):
             count += 1
         logger.debug("Downloaded %d files from gs://%s/%s", count, bucket, prefix)
         return count
+
+    def read_object(self, bucket: str, key: str) -> "bytes | None":
+        from google.cloud.exceptions import NotFound  # pylint: disable=import-outside-toplevel
+        try:
+            return self._client.bucket(bucket).blob(key).download_as_bytes()
+        except NotFound:
+            return None
 
     def list_keys(self, bucket: str, prefix: str = "") -> list[str]:
         from google.cloud.exceptions import NotFound  # pylint: disable=import-outside-toplevel

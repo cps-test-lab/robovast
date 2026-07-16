@@ -95,11 +95,30 @@ class Status(BaseModel):
     best_objective: Optional[float] = None
     batch_history: list[dict] = Field(default_factory=list)
     stop: Optional[dict] = None          # {kind, reason} once the loop ends
+    # Human-readable failure reason (message + short traceback tail) when
+    # ``phase == "failed"``. Surfaced in the CLI/UI/MCP so a controller crash no
+    # longer has to be dug out of the pod log; ``None`` on a healthy campaign.
+    error: Optional[str] = None
     # Share type of the current upload attempt; may change across retriggers
     # (the upload can be retried to a different provider).
     share_provider: Optional[str] = None
     extra: dict = Field(default_factory=dict)
     updated_at: float = Field(default_factory=time.time)
+
+
+def failure_detail(exc: BaseException, tail_lines: int = 20) -> str:
+    """A concise, human-readable failure string for ``Status.error``.
+
+    The exception message first (it carries the actionable part — e.g. the
+    "Available configs:" list), then the tail of the traceback for genuine bugs.
+    Shared by the local worker and the in-pod controller so both record failures
+    the same way.
+    """
+    import traceback
+    message = str(exc) or exc.__class__.__name__
+    tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    tb_tail = "".join(tb.splitlines(keepends=True)[-tail_lines:])
+    return f"{message}\n\n{tb_tail}".strip()
 
 
 class Command(BaseModel):

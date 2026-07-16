@@ -4337,7 +4337,7 @@ opencv-python-headless = ">=4.8"
 Pillow = "^12.0"
 pyside6-essentials = "^6.6"
 pyyaml = "^6.0"
-robovast = "^1.0.0"
+robovast = "^2.0.0"
 scipy = "^1.11"
 
 [package.source]

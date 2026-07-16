@@ -48,6 +48,37 @@ def read_execution_metadata(campaign_dir: Path) -> dict[str, Any]:
         return yaml.safe_load(f)
 
 
+#: Campaign terminal-outcome record — the final ``Status`` (phase/error/…) serialized
+#: beside ``controller.log`` in ``_execution/``. Written on terminal exit so a controller
+#: crash that never builds ``data.db`` still leaves a durable, queryable reason.
+_OUTCOME_FILENAME = "outcome.json"
+
+
+def write_execution_outcome(campaign_root: Path, status) -> None:
+    """Persist the campaign's terminal outcome to ``_execution/outcome.json``.
+
+    ``status`` is a :class:`robovast.execution.control_server.Status`; it is stored
+    verbatim (``model_dump_json``) so the reader gets the same model back. Used by
+    both the local worker and the in-pod controller, so a failed campaign leaves the
+    record at the **same** campaign-relative path regardless of backend.
+    """
+    exec_dir = Path(campaign_root) / "_execution"
+    exec_dir.mkdir(parents=True, exist_ok=True)
+    (exec_dir / _OUTCOME_FILENAME).write_text(status.model_dump_json(), encoding="utf-8")
+
+
+def read_execution_outcome(campaign_dir: Path):
+    """Read ``_execution/outcome.json`` back into a ``Status``; ``None`` if absent.
+
+    Returns a :class:`robovast.execution.control_server.Status`.
+    """
+    from robovast.execution.control_server import Status  # lazy: keep this module light
+    path = Path(campaign_dir) / "_execution" / _OUTCOME_FILENAME
+    if not path.exists():
+        return None
+    return Status.model_validate_json(path.read_text(encoding="utf-8"))
+
+
 def read_scenario_config(config_dir: Path) -> dict[str, Any]:
     """Read scenario configuration from ``_config/scenario.config``.
 
