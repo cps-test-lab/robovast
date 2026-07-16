@@ -461,11 +461,16 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         skip_metadata: bool = False,
         campaign: Optional[str] = None,
 ):
-    """Run postprocessing commands on run results.
+    """Run postprocessing commands on **one campaign's** run results.
 
-    The postprocessing configuration is read from the ``.vast`` file found in
-    the most recent ``campaign-<id>/_config/`` directory under *results_dir*,
-    unless *vast_file* is provided explicitly.
+    One call processes exactly one campaign — the one named by *campaign*, or the
+    most recent under *results_dir*. Each campaign snapshots its own config, so
+    there is no "process every campaign with one config" mode; a caller that wants
+    several loops over them and passes each one here (that way every campaign is
+    processed with *its own* config).
+
+    The postprocessing configuration is read from that campaign's
+    ``_config/`` directory, unless *vast_file* is provided explicitly.
 
     Args:
         results_dir: Directory containing run results (parent of campaign-* dirs)
@@ -476,6 +481,8 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         debug: If True, include full plugin stdout in output; otherwise show only the summary line.
         skip_rosout: If True, skip rosout processing entirely (shorthand for ``skip=['rosbags_rosout_to_csv']``).
         skip: List of plugin names to skip entirely (e.g. ``['rosbags_to_webm']``).
+        campaign: Which campaign directory to process. ``None`` uses the most
+            recent one.
 
     Returns:
         Tuple of (success: bool, message: str)
@@ -491,17 +498,32 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     if not os.path.exists(results_dir):
         return False, f"Results directory does not exist: {results_dir}"
 
+    # -- which campaign: exactly one, always ------------------------------------
+    # One call postprocesses one campaign. Each campaign snapshots its own config,
+    # so there is no coherent "process everything with one config" mode; a caller
+    # that wants several loops and passes each campaign here.
+    if campaign is None:
+        _vast, _config_dir = find_campaign_vast_file(results_dir)
+        if _vast is None:
+            return False, (
+                f"No .vast file found in any campaign-*/_config/ directory under: {results_dir}\n"
+                "Ensure at least one execution campaign has been completed."
+            )
+        campaign = os.path.basename(str(Path(_config_dir).parent))
+    campaign_dir = os.path.join(results_dir, campaign)
+    if not os.path.isdir(campaign_dir):
+        return False, f"Campaign {campaign!r} not found under {results_dir}"
+    output(f"Campaign: {campaign}")
+
+    # -- which config: an override wins, else the campaign's own snapshot --------
     if vast_file is not None:
-        # Explicit override: validate the supplied path and skip campaign discovery
         if not os.path.isfile(vast_file):
             return False, f"Override .vast file does not exist: {vast_file}"
         vast_path = os.path.abspath(vast_file)
         config_dir = os.path.dirname(vast_path)
         output(f"Using override config: {vast_path}")
-    elif campaign is not None:
-        # Target a specific campaign (not the most recent) so one campaign can be
-        # reprocessed without touching its siblings.
-        config_dir = os.path.join(results_dir, campaign, "_config")
+    else:
+        config_dir = os.path.join(campaign_dir, "_config")
         vasts = sorted(str(p) for p in Path(config_dir).glob("*.vast")) \
             if os.path.isdir(config_dir) else []
         if not vasts:
@@ -509,17 +531,10 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
                            f"Is {campaign!r} a valid campaign under {results_dir}?")
         vast_path = vasts[0]
         output(f"Using config from campaign {campaign}: {vast_path}")
-    else:
-        # Discover the .vast config file from the most recent campaign
-        vast_path, config_dir = find_campaign_vast_file(results_dir)
-        if vast_path is None:
-            return False, (
-                f"No .vast file found in any campaign-*/_config/ directory under: {results_dir}\n"
-                "Ensure at least one execution campaign has been completed."
-            )
-        output(f"Using config from: {vast_path}")
 
-    campaign_dir = str(Path(config_dir).parent)
+    # Everything below operates on this campaign only — the plugins scan its tree
+    # and metadata is generated for it, never for its siblings.
+    scope_dir = campaign_dir
 
     # Read execution image from execution.yaml (if available)
     execution_image = None
@@ -614,7 +629,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
                 plugin_name=plugin_name,
                 plugin_func=plugin_func,
                 params=params,
-                results_dir=results_dir,
+                results_dir=scope_dir,
                 config_dir=config_dir,
                 provenance_file=provenance_file,
                 execution_image=execution_image,
@@ -650,6 +665,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     else:
         meta_success, meta_msg = generate_campaign_metadata(
             results_dir, vast_file=vast_file, output_callback=output_callback,
+            campaign=campaign,
         )
         if not meta_success:
             output(f"Warning: Metadata generation failed: {meta_msg}")

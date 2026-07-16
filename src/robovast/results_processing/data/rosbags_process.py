@@ -75,6 +75,20 @@ class RosbagHandler(ABC):
     subprocess (to avoid pickling issues with TF buffers, open file handles, etc.).
     """
 
+    #: Where this bag's outputs go. ``None`` (the default) means "beside the bag" —
+    #: what a local/bind-mounted run wants, since the container writes straight into
+    #: the real campaign dir. The worker sets it when ``--output-root`` is given, so
+    #: outputs land in a separate tree (a pod cannot write into the caller's
+    #: filesystem, so the cluster Job keeps inputs and outputs in different dirs).
+    output_dir: Optional[str] = None
+
+    def _out_dir(self, bag_path: str) -> str:
+        """Absolute output directory for *bag_path* (created if needed)."""
+        out = self.output_dir or os.path.dirname(bag_path)
+        out = os.path.abspath(out)
+        os.makedirs(out, exist_ok=True)
+        return out
+
     @abstractmethod
     def topics(self) -> List[str]:
         """Return list of topic names this handler wants to receive."""
@@ -139,7 +153,7 @@ class ToCsvHandler(RosbagHandler):
         return self._topics
 
     def on_begin(self, bag_path: str, topic_type_map: Dict[str, str]) -> None:
-        self._parent_folder = os.path.abspath(os.path.dirname(bag_path))
+        self._parent_folder = self._out_dir(bag_path)
         self._bag_name = os.path.basename(bag_path)
         self._records_by_topic = {t: [] for t in self._topics}
         missing = [t for t in self._topics if t not in topic_type_map]
@@ -228,7 +242,7 @@ class TfToCsvHandler(RosbagHandler):
         self._record_counts = {f: 0 for f in self._frames}
         self._found_tfs = set()
         self._output_file = os.path.join(
-            os.path.abspath(os.path.dirname(bag_path)), self._csv_filename
+            self._out_dir(bag_path), self._csv_filename
         )
         self._csvfile = None
         self._writer = None
@@ -328,7 +342,7 @@ class BtToCsvHandler(RosbagHandler):
         self._csvfile = None
         self._writer = None
         self._output_file = os.path.join(
-            os.path.abspath(os.path.dirname(bag_path)), self._csv_filename
+            self._out_dir(bag_path), self._csv_filename
         )
 
     def on_message(self, topic: str, msg: Any, timestamp: int) -> None:
@@ -437,7 +451,7 @@ class ActionToCsvHandler(RosbagHandler):
     def on_begin(self, bag_path: str, topic_type_map: Dict[str, str]) -> None:
         self._feedback_rows = []
         self._status_rows = []
-        self._parent_dir = os.path.dirname(bag_path)
+        self._parent_dir = self._out_dir(bag_path)
         available = set(topic_type_map)
         if self._feedback_topic not in available and self._status_topic not in available:
             action_topics = sorted(t for t in available if "_action" in t)
@@ -520,7 +534,7 @@ class RosoutToCsvHandler(RosbagHandler):
     def on_begin(self, bag_path: str, topic_type_map: Dict[str, str]) -> None:
         self._record_count = 0
         self._output_file = os.path.join(
-            os.path.abspath(os.path.dirname(bag_path)), self._csv_filename
+            self._out_dir(bag_path), self._csv_filename
         )
         if _ROSOUT_TOPIC not in topic_type_map:
             print(f"  ✗ {bag_path}: topic {_ROSOUT_TOPIC} not found in bag")
@@ -596,7 +610,7 @@ class ToWebmHandler(RosbagHandler):
         self._timestamps = []
         topic_suffix = _sanitize_topic(self._topic)
         bag_name = os.path.basename(bag_path)
-        parent_folder = os.path.abspath(os.path.dirname(bag_path))
+        parent_folder = self._out_dir(bag_path)
         self._output_file = os.path.join(parent_folder, f"{bag_name}_{topic_suffix}.webm")
         if self._topic not in topic_type_map:
             print(f"  ✗ {bag_path}: topic '{self._topic}' not in bag")
@@ -722,15 +736,17 @@ def process_rosbag_worker(args: tuple) -> Tuple[str, int, List[Tuple[int, List[s
     """Process a single rosbag with all configured handlers.
 
     Args:
-        args: (bag_path, plugin_configs, debug) where plugin_configs is a list of
-              handler config dicts and debug controls per-bag output.
+        args: (bag_path, plugin_configs, debug, force, plugin_configs_hash, out_dir)
+              where plugin_configs is a list of handler config dicts, debug controls
+              per-bag output, and out_dir is where this bag's outputs go (``None`` =
+              beside the bag, the local default).
 
     Returns:
         (bag_path, total_records, handler_results) where handler_results is a list of
         (record_count, output_files) per handler. total_records == -2 if the
         bag itself failed to open.
     """
-    bag_path, plugin_configs, debug, force, plugin_configs_hash = args
+    bag_path, plugin_configs, debug, force, plugin_configs_hash, out_dir = args
     run_dir = os.path.dirname(bag_path)
     fingerprint: Optional[str] = None
 
@@ -749,7 +765,9 @@ def process_rosbag_worker(args: tuple) -> Tuple[str, int, List[Tuple[int, List[s
                 print(f"  ✗ Unknown handler type '{handler_type}' — skipping")
                 continue
             try:
-                handlers.append(handler_cls.from_config(cfg))
+                handler = handler_cls.from_config(cfg)
+                handler.output_dir = out_dir  # None = beside the bag (local default)
+                handlers.append(handler)
             except Exception as e:
                 print(f"  ✗ Handler '{handler_type}' init failed: {e}")
 
@@ -892,6 +910,15 @@ def main() -> int:
         action="store_true",
         help="Reprocess all bags even if already cached",
     )
+    parser.add_argument(
+        "--output-root",
+        default=None,
+        help="Write outputs under this root, mirroring each bag's path relative to "
+             "the input dir (e.g. <output-root>/<config>/<run>/). Default: write "
+             "beside each bag, i.e. into the input tree itself. Use this when the "
+             "input is read-only or lives in a different volume than the outputs "
+             "(the in-cluster postprocessing Job mounts bags and outputs separately).",
+    )
     args = parser.parse_args()
 
     try:
@@ -925,12 +952,21 @@ def main() -> int:
     plugin_configs_hash = hashlib.md5(
         json.dumps(plugin_configs, sort_keys=True).encode()
     ).hexdigest()
-    process_args = [
-        (bag_path, plugin_configs, args.debug, args.force, plugin_configs_hash)
-        for bag_path in rosbag_paths
-    ]
     n_bags = len(rosbag_paths)
     input_root = os.path.abspath(args.input)
+
+    def _out_dir_for(bag_path: str) -> Optional[str]:
+        """Mirror the bag's location under --output-root, or None (beside the bag)."""
+        if not args.output_root:
+            return None
+        rel = os.path.relpath(os.path.dirname(os.path.abspath(bag_path)), input_root)
+        return os.path.join(os.path.abspath(args.output_root), rel)
+
+    process_args = [
+        (bag_path, plugin_configs, args.debug, args.force, plugin_configs_hash,
+         _out_dir_for(bag_path))
+        for bag_path in rosbag_paths
+    ]
 
     start = time.time()
     total_records = 0

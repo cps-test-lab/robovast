@@ -418,6 +418,43 @@ class CampaignController:
 
 # -- builders ---------------------------------------------------------------
 
+def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
+                          campaign_id: str, state=None) -> None:
+    """Run analysis postprocessing in-cluster, when the service asked for it.
+
+    Called from the builders' ``finally`` **after the store is closed** (so
+    ``campaign.db`` is flushed — ``generate_data_db``'s ``runs`` table reads it) and
+    **before** :func:`_finalize`, so the resulting ``data.db``/CSVs ride the existing
+    campaign upload instead of needing one of their own.
+
+    Opt-in via ``ROBOVAST_POSTPROCESS=1`` (set by ``create_campaign(postprocess=True)``)
+    and a no-op otherwise, so ``vast exec cluster run`` is unchanged. Best-effort: a
+    failure is surfaced on the status channel but never loses the campaign's results.
+    """
+    if os.environ.get("ROBOVAST_POSTPROCESS") != "1":
+        return
+    cluster_config = getattr(backend, "cluster_config", None)
+    if cluster_config is None:  # local backend — the in-process chain handles it
+        return
+    try:
+        from robovast.execution.cluster_execution.postprocess_job import \
+            postprocess_campaign
+        if state is not None:
+            state.set_phase("postprocessing")
+        ok, message = postprocess_campaign(
+            cluster_config, campaign_id, campaign_root,
+            os.environ.get("ROBOVAST_NAMESPACE", "default"),
+            os.environ.get("ROBOVAST_CONTROLLER_IMAGE", ""),
+        )
+        logger.info("Analysis postprocessing: %s", message)
+        if not ok and state is not None:
+            state.set_phase("failed", stage=f"postprocessing: {message}")
+    except Exception:  # pylint: disable=broad-except
+        logger.warning("Analysis postprocessing failed", exc_info=True)
+        if state is not None:
+            state.set_phase("failed", stage="postprocessing failed")
+
+
 def _finalize(backend: ExecutionBackend, campaign_root: str) -> None:
     """Run the backend's campaign finalize hook, best-effort.
 
@@ -560,7 +597,7 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
     vast_dir = os.path.dirname(os.path.abspath(vast_file))
     runs = runs if runs is not None else campaign_config.execution.runs
     campaign_id = campaign_id or campaign_id_for(campaign_config)
-    be = backend or DockerBackend()
+    be = backend or DockerBackend(state=state)
     store = CampaignStore(os.path.join(results_dir, campaign_id, STORE_FILENAME))
     controller = CampaignController(
         campaign_id=campaign_id, results_dir=results_dir, runs=runs,
@@ -574,7 +611,11 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
         return controller.run()
     finally:
         store.close()
-        _finalize(be, os.path.join(results_dir, campaign_id))
+        _campaign_root = os.path.join(results_dir, campaign_id)
+        # After store.close() (campaign.db flushed, which data.db's `runs` table
+        # reads) and before _finalize, so data.db rides the existing upload.
+        _chain_postprocessing(be, _campaign_root, campaign_id, state)
+        _finalize(be, _campaign_root)
 
 
 def filter_configs_by_name(configs, config_filter):
@@ -630,7 +671,7 @@ def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_fil
     with tempfile.TemporaryDirectory(prefix="robovast_batch_") as tmp:
         campaign_data, _ = build_campaign_data(vast_file, tmp, config_filter)
 
-        be = backend or DockerBackend()
+        be = backend or DockerBackend(state=state)
         store = CampaignStore(os.path.join(results_dir, campaign_id, STORE_FILENAME))
         controller = CampaignController(
             campaign_id=campaign_id, results_dir=results_dir, runs=runs,
@@ -642,7 +683,11 @@ def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_fil
             return controller.run()
         finally:
             store.close()
-            _finalize(be, os.path.join(results_dir, campaign_id))
+            _campaign_root = os.path.join(results_dir, campaign_id)
+            # After store.close() (campaign.db flushed, which data.db's `runs` table
+            # reads) and before _finalize, so data.db rides the existing upload.
+            _chain_postprocessing(be, _campaign_root, campaign_id, state)
+            _finalize(be, _campaign_root)
 
 
 # -- in-pod entrypoint ------------------------------------------------------

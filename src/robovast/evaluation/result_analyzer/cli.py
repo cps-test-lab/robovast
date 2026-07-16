@@ -136,12 +136,27 @@ def result_analyzer_cmd(ctx, results_dir, force, skip_postprocessing):
                 needs_pp = False
 
         if needs_pp:
-            success, message = run_postprocessing(
-                results_dir=results_dir,
-                output_callback=click.echo,
-                force=force,
-                vast_file=vast_override,
+            # One call = one campaign, so loop over the campaigns this GUI will
+            # browse \u2014 each is processed with *its own* snapshot config (unless an
+            # explicit override was given), never a newer campaign's.
+            campaigns = sorted(
+                d.name for d in Path(results_dir).iterdir()
+                if d.is_dir() and is_campaign_dir(d.name)
             )
+            if not campaigns:
+                click.echo(f"No campaigns found in {results_dir}", err=True)
+            success, message = True, ""
+            for campaign_name in campaigns:
+                click.echo(f"\n--- {campaign_name} ---")
+                ok, msg = run_postprocessing(
+                    results_dir=results_dir,
+                    campaign=campaign_name,
+                    output_callback=click.echo,
+                    force=force,
+                    vast_file=vast_override,
+                )
+                if not ok:
+                    success, message = False, f"{campaign_name}: {msg}"
 
             if not success:
                 click.echo(f"\n\u2717 Postprocessing failed: {message}", err=True)

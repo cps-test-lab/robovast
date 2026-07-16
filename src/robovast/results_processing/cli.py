@@ -201,6 +201,7 @@ def publish_cmd(results_dir, force, skip_postprocessing, skip_upload, campaign):
         click.echo("Running postprocessing...")
         pp_success, pp_message = run_postprocessing(
             results_dir=results_dir,
+            campaign=campaign,
             output_callback=click.echo,
             vast_file=vast_file,
         )

@@ -310,14 +310,18 @@ def _build_dataset(dataset_iri, campaign_ns: Namespace, metadata: dict, vast_con
     creators = get_agents_by_type("creators")
     contributors = get_agents_by_type("contributors")
 
+    # Loop-invariant: derived from the campaign metadata, not from any publication
+    # entry. Must be bound before the loop — the dataset below always needs it, but
+    # the loop body runs only when a non-zenodo publication entry exists.
+    license_ = metadata.get("license", "").lower()
+    license_iri = f"http://purl.org/NET/rdflicense/{license_}"
+
     distributions = []
     published_date = None
     for d in vast_config.get("results_processing", {}).get("publication", []):
         if d == "zenodo":
             published_date = dt.datetime.now().isoformat()
             continue
-        license_ = metadata.get("license", "").lower()
-        license_iri = f"http://purl.org/NET/rdflicense/{license_}"
         for k, v in d.items():
             file_name = v.get("filename")
             v["metadata"]["license"] = license_iri

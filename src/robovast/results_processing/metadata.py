@@ -296,6 +296,7 @@ def generate_campaign_metadata(
     results_dir: str,
     vast_file: Optional[str] = None,
     output_callback=None,
+    campaign: Optional[str] = None,
 ) -> tuple[bool, str]:
     """Run the full metadata generation pipeline for all campaigns.
 
@@ -312,6 +313,8 @@ def generate_campaign_metadata(
         vast_file: Optional explicit ``.vast`` file path.  When ``None``,
             the ``.vast`` file is discovered from the most recent campaign.
         output_callback: Optional callable for status messages.
+        campaign: Restrict generation to this campaign directory name. ``None``
+            processes every campaign under *results_dir* (the default).
 
     Returns:
         Tuple ``(success, message)``.
@@ -326,12 +329,16 @@ def generate_campaign_metadata(
     if not results_path.is_dir():
         return False, f"Results directory does not exist: {results_dir}"
 
-    # Find campaign directories
+    # Find campaign directories — restricted to one when the caller targets it, so
+    # reprocessing a campaign never touches (or fails on) its siblings.
     campaign_dirs = sorted(
         d for d in results_path.iterdir()
         if d.is_dir() and is_campaign_dir(d.name)
+        and (campaign is None or d.name == campaign)
     )
     if not campaign_dirs:
+        if campaign is not None:
+            return False, f"Campaign {campaign!r} not found in {results_dir}"
         return False, f"No campaign directories found in {results_dir}"
 
     # Load variation classes (for metadata hooks)

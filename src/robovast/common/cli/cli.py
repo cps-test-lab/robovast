@@ -174,6 +174,41 @@ def init(config, results_dir, project_log_level, force):
     logging.debug(f"Project file: {project_file}")
 
 
+def _ensure_ui_built(rebuild: bool = False) -> None:
+    """(Re)build the web UI's ``ui/dist`` for a source checkout, when needed.
+
+    No-op unless run from a source tree: a packaged install / in-cluster pod has
+    no ``ui/`` sources (its dist is baked in and pointed at by ``ROBOVAST_UI_DIST``),
+    so there is nothing — and no ``npm`` — to build. In a checkout, build only when
+    ``ui/dist`` is missing or older than the UI sources (or when *rebuild*), so a
+    normal ``vast serve`` costs just an mtime scan.
+    """
+    import subprocess
+    from pathlib import Path
+    if os.environ.get('ROBOVAST_UI_DIST'):
+        return  # packaged/baked dist — nothing to build here
+    ui_dir = Path(__file__).resolve().parents[4] / 'ui'
+    if not (ui_dir / 'package.json').is_file():
+        return  # not a source checkout
+    dist_index = ui_dir / 'dist' / 'index.html'
+    src_dir = ui_dir / 'src'
+    fresh = dist_index.is_file() and src_dir.is_dir() and not any(
+        p.stat().st_mtime > dist_index.stat().st_mtime
+        for p in src_dir.rglob('*') if p.is_file())
+    if fresh and not rebuild:
+        return
+    npm = shutil.which('npm')
+    if npm is None:
+        raise click.ClickException(
+            "the web UI needs building but 'npm' was not found; install Node.js "
+            "(or prebuild once with 'cd ui && npm run build')")
+    if not (ui_dir / 'node_modules').is_dir():
+        click.echo('Installing web UI dependencies (npm install)…')
+        subprocess.run([npm, 'install'], cwd=str(ui_dir), check=True)  # noqa: S603
+    click.echo('Building web UI (npm run build)…')
+    subprocess.run([npm, 'run', 'build'], cwd=str(ui_dir), check=True)  # noqa: S603
+
+
 @cli.command()
 @click.option('--host', default='127.0.0.1', show_default=True,
               help='Interface to bind. Keep 127.0.0.1 unless behind a tunnel/proxy: '
@@ -184,12 +219,18 @@ def init(config, results_dir, project_log_level, force):
               default='auto', show_default=True,
               help="Execution backend. 'auto' picks 'cluster' when running inside "
                    "a Kubernetes pod, else 'local' Docker.")
-def serve(host, port, backend):
-    """Run a persistent robovast-service.
+@click.option('--rebuild-ui', is_flag=True,
+              help='Force a web UI rebuild even if ui/dist looks up to date '
+                   '(source checkout only).')
+def serve(host, port, backend, rebuild_ui):
+    """Run a persistent robovast-service (and its web UI).
 
-    Starts the FastAPI service that the ``vast`` CLI, the MCP server, and a
-    future web UI drive campaigns through over HTTP — and campaigns survive
-    client exit (unlike ``vast exec local run``). One binary, two backends:
+    Starts the FastAPI service that the ``vast`` CLI, the MCP server, and the web
+    UI drive campaigns through over HTTP — and campaigns survive client exit
+    (unlike ``vast exec local run``). The service also serves the web UI at the
+    same URL, so this is the one command to run it: from a source checkout it
+    (re)builds ``ui/dist`` first when it is missing or stale (needs ``npm``;
+    ``--rebuild-ui`` forces it). One binary, two backends:
 
     * **local** (default off-cluster) — local Docker + local filesystem (mode 2);
       run it on your machine or a remote VM reached over an SSH tunnel.
@@ -198,9 +239,13 @@ def serve(host, port, backend):
 
     Security: unauthenticated in v1, so it binds ``127.0.0.1`` by default and
     must stay behind localhost / SSH tunnel / port-forward (see
-    ``docs/deployment.rst``). OpenAPI docs at ``/docs``.
+    ``docs/deployment.rst``). Web UI + OpenAPI docs at ``/`` and ``/docs``.
     """
     from robovast.service.app import serve as _serve
+
+    # Build the SPA the service serves, so a source checkout needs one command
+    # (no-op for a packaged/in-cluster install — see _ensure_ui_built).
+    _ensure_ui_built(rebuild=rebuild_ui)
 
     if backend == 'auto':
         backend = 'cluster' if os.environ.get('KUBERNETES_SERVICE_HOST') else 'local'
@@ -217,6 +262,112 @@ def serve(host, port, backend):
     click.echo(f"Starting robovast-service on http://{host}:{port} (OpenAPI at /docs)")
     click.echo(f"Backend: {backend} | storage: {storage} | Ctrl-C to stop")
     _serve(impl, host=host, port=port)
+
+
+# ---------------------------------------------------------------------------
+# workspace — server-side editable project inputs (thin client of the service)
+# ---------------------------------------------------------------------------
+
+_SERVICE_URL_OPTION = click.option(
+    '--service-url', default='', metavar='URL',
+    help='Talk to a running service at this URL (default: $ROBOVAST_SERVICE_URL, '
+         'else in-process). Point at a running `vast serve` to share its workspaces.')
+
+
+def _client(service_url):
+    """A RobovastClient for the given URL, or $ROBOVAST_SERVICE_URL, or in-process."""
+    from robovast.service.client import RobovastClient
+    return RobovastClient(service_url or os.environ.get('ROBOVAST_SERVICE_URL', ''))
+
+
+@cli.group()
+def workspace():
+    """Manage server-side workspaces (editable project inputs).
+
+    A workspace holds a self-contained project (``.vast`` + scenario/run files) on
+    the service, independent of any CWD. These commands mirror the MCP workspace
+    tools and drive the same interface, so they work in-process or against a
+    running ``vast serve`` (``--service-url`` / ``$ROBOVAST_SERVICE_URL``).
+    """
+
+
+#: Directory names skipped by ``workspace init`` — campaign outputs, not project inputs.
+_INIT_EXCLUDE_DIRS = {'results'}
+
+
+@workspace.command('init')
+@click.argument('directory', type=click.Path(exists=True, file_okay=False))
+@click.option('--name', default='', help='Workspace name (default: the directory name).')
+@click.option('--exclude', 'excludes', multiple=True, metavar='NAME',
+              help='Directory name to skip (repeatable). Adds to the default '
+                   f"{sorted(_INIT_EXCLUDE_DIRS)}.")
+@_SERVICE_URL_OPTION
+def workspace_init(directory, name, excludes, service_url):
+    """Create a workspace and upload every file from DIRECTORY into it.
+
+    ``.vast``/``.osc`` are written inline; all other files go through the upload
+    side channel (executability preserved). Hidden files/dirs (``.cache`` etc.) and
+    output dirs (``results/``, plus any ``--exclude``) are skipped. Prints the new
+    workspace id — open it in the web UI's Config tab.
+    """
+    from pathlib import Path
+    from robovast.service.interface import (CreateUploadRequest,
+                                            CreateWorkspaceRequest,
+                                            WriteFileRequest)
+    client = _client(service_url)
+    root = Path(directory).resolve()
+    skip_dirs = _INIT_EXCLUDE_DIRS | set(excludes)
+    ws = client.create_workspace(CreateWorkspaceRequest(name=name or root.name))
+    wid = ws.workspace_id
+
+    count = 0
+    for path in sorted(root.rglob('*')):
+        rel = path.relative_to(root)
+        if not path.is_file():
+            continue
+        # skip hidden (.cache, .robovast_*, …) and excluded output dirs (results/, …)
+        if any(part.startswith('.') or part in skip_dirs for part in rel.parts):
+            continue
+        rel_str = rel.as_posix()
+        if path.suffix.lower() in ('.vast', '.osc'):
+            client.write_project_file(WriteFileRequest(
+                workspace_id=wid, path=rel_str, content=path.read_text(encoding='utf-8')))
+        else:
+            grant = client.create_upload(CreateUploadRequest(
+                workspace_id=wid, path=rel_str, executable=os.access(path, os.X_OK)))
+            data = path.read_bytes()
+            if grant.url:  # HTTP service issued an absolute PUT URL
+                import requests
+                requests.put(grant.url, data=data, timeout=120).raise_for_status()
+            elif hasattr(client, 'store'):  # in-process LocalTransport
+                client.store.write_upload(grant.token, data)
+            else:
+                raise click.ClickException(
+                    f"cannot upload {rel_str!r}: this client has no upload channel")
+        count += 1
+        click.echo(f"  + {rel_str}")
+    click.echo(f"workspace {wid} initialized from {root} ({count} files)")
+
+
+@workspace.command('list')
+@_SERVICE_URL_OPTION
+def workspace_list(service_url):
+    """List workspaces (newest first)."""
+    for w in _client(service_url).list_workspaces().workspaces:
+        click.echo(f"{w.workspace_id}  {w.name or '-':20}  {w.created_at or ''}")
+
+
+@workspace.command('delete')
+@click.argument('workspace', metavar='WORKSPACE')
+@_SERVICE_URL_OPTION
+def workspace_delete(workspace, service_url):
+    """Delete a workspace and its inputs (existing campaigns are unaffected).
+
+    WORKSPACE may be a ``ws-…`` id or a workspace name (unique names resolve;
+    ambiguous ones must be deleted by id).
+    """
+    res = _client(service_url).delete_workspace(workspace)
+    click.echo(res.message or ('deleted' if res.ok else 'failed'))
 
 
 @cli.command()

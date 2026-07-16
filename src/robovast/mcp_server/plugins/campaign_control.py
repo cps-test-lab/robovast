@@ -325,7 +325,8 @@ def init_project(config_path: str, project_dir: str, results_dir: str = "",
 
 
 def start_campaign(config_filter: str = "", runs: int = 0,
-                   backend: str = "local", context: str = "") -> dict:
+                   backend: str = "local", context: str = "",
+                   workspace_id: str = "", config_path: str = "") -> dict:
     """Start a campaign and return immediately; results land on local disk either way.
 
     Validates the campaign first and refuses if invalid. Both backends run as a
@@ -345,6 +346,10 @@ def start_campaign(config_filter: str = "", runs: int = 0,
         runs: Runs per configuration; ``0`` uses the value from the ``.vast`` file.
         backend: ``"local"`` (Docker on this host) or ``"cluster"`` (Kubernetes).
         context: Kubernetes context for ``cluster`` (empty = active context).
+        workspace_id: When a service is configured, run this workspace's project
+            (empty = the CWD project). Independent of the backend.
+        config_path: Which ``.vast`` to run when the workspace has several
+            (workspace-relative; empty = the sole ``.vast``).
 
     Returns:
         ``{campaign_id, backend, log_path}`` on success; ``{error, ...}`` on
@@ -358,7 +363,8 @@ def start_campaign(config_filter: str = "", runs: int = 0,
             # ignored here — they are implicit in which service is configured).
             from robovast.service.interface import CreateCampaignRequest
             ref = client.create_campaign(CreateCampaignRequest(
-                workspace_id="", config_filter=config_filter,
+                workspace_id=workspace_id, config_path=config_path,
+                config_filter=config_filter,
                 runs=runs if runs and runs > 0 else 1))
             return {"campaign_id": ref.campaign_id, "backend": "service"}
 

@@ -10,3 +10,4 @@ venv
 results
 ui/node_modules
 ui/dist
+.env

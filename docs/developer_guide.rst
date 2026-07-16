@@ -1195,9 +1195,92 @@ prefixes to a running ``vast serve`` (``ROBOVAST_SERVICE_URL`` to retarget), kee
 browser same-origin for hot-reload development.
 
 **Extending.** Add an operation by giving ``robovastClient.ts`` a method mirroring the
-new interface op, then a page/tab that queries it. Planned next: a config editor over the
-workspace file endpoints and a results/eval viewer over the (forthcoming) data-query
-endpoints.
+new interface op, then a page/tab that queries it.
+
+**Config editor** (``ui/src/pages/ConfigEditor.tsx``) is the browser ``vast config gui``:
+a **Monaco** editor (``ui/src/lib/monaco.ts`` bundles the editor + YAML workers and, via
+``monaco-yaml``, drives completion/inline-validation from ``get_config_schema()``). It edits a
+workspace's ``.vast`` (workspace = the project, since a browser has no CWD), autosaves +
+debounce-validates through ``validate_project``, and previews resolved configurations through
+``preview_configurations``. These four ops — ``validate_project`` / ``preview_configurations`` /
+``get_config_schema`` / ``list_variation_types`` — were **promoted onto** ``RobovastInterface``
+(previously MCP-only, calling local functions); ``LocalTransport`` wraps ``validate_project_file``
+/ ``generate_scenario_variations`` / ``ConfigV1.model_json_schema()`` / the
+``robovast.variation_types`` entry points, and ``validate_project`` swallows unexpected errors into
+a structured problem so the editor's live validation never 500s on in-progress YAML.
+
+**Per-variation previews.** ``preview_configurations`` returns, per configuration, a ``previews``
+list (``{variation_type, params, remote}``) read from the config's declared ``variations``. The
+editor (``ui/src/preview/``) renders **built-in** variation types host-native — ``builtins.tsx``
+maps a variation-type name to a Plotly component (distribution curves for
+``ParameterVariationDistribution*``, a value list for ``ParameterVariationList``). An **external**
+variation plugin may instead ship a web preview: it sets ``Variation.WEB_PREVIEW`` to a
+package-relative dir holding a built **Module Federation** remote (``remoteEntry.js`` exposing a
+``./preview`` React component); the service serves it at
+``GET /variation_types/{name}/assets/{path}`` and ``preview_configurations`` fills in the ``remote``
+descriptor, which ``RemotePreview.tsx`` loads at runtime (sharing the host's React singletons).
+Built-ins ship no assets; a type with neither shows just the resolved parameters.
+
+**Results viewer** (``ui/src/pages/Eval.tsx``) is the browser ``vast eval gui``: pick a
+campaign, browse its ``data.db`` schema, run read-only SQL, and chart the result with
+**Vega-Lite** (``ui/src/preview/VegaLiteChart.tsx`` — rows bound in as ``data.values``).
+The two data-query ops — ``describe_campaign_data`` / ``query_campaign_data_sql`` — were
+**promoted onto** ``RobovastInterface``; the actual SQL lives in one shared, directory-based
+helper, :mod:`robovast.results_processing.data_query` (``mode=ro`` + a ``sqlite3`` authorizer,
+``campaign.db`` attached as schema ``campaign``). Both callers reuse it: the service methods
+resolve the campaign dir per transport (``LocalTransport`` on disk, the cluster service via
+``fetch_campaign`` from the object store), and the MCP ``run_data`` plugin resolves it via
+``results_resolver`` **or delegates to a configured service** — so CLI, MCP, and the web UI query
+results identically, local or cluster. User-declared plots (``evaluation.plots`` in the ``.vast``,
+:class:`robovast.common.config.PlotSpec`) are surfaced by ``list_campaign_plots`` and rendered by
+the same Vega-Lite component.
+
+Deferred: web notebook execution (a server-side kernel; the desktop ``vast eval gui`` keeps that
+role) and a bundle code-split (Monaco + Plotly + Vega + Module Federation make the SPA large).
+
+.. _cluster-postprocessing:
+
+Analysis postprocessing: local vs cluster
+-----------------------------------------
+
+``data.db`` (what the eval viewer and ``query_campaign_data_sql`` read) is produced by *analysis*
+postprocessing. It splits along a natural seam: **only the batched ``rosbags_*`` → CSV step needs
+ROS2**; everything after it (``generate_data_db``, metadata) is plain Python.
+
+Both backends run the rosbag conversion **in the campaign's own execution image** — the
+system-under-test's image, recorded in ``<campaign>/_execution/execution.yaml`` — because rosbags
+carry the SUT's *custom ROS2 message types* and only deserialize there.
+
+**Local.** ``run_postprocessing`` reads that ``image:`` and passes it to
+``docker_exec.sh --image``, which bind-mounts the campaign dir (``-v $INPUT_DIR:/input``) — so the
+container writes CSVs **in place**. Nothing to sync.
+
+**Cluster.** A pod cannot bind-mount the caller's filesystem, so the conversion runs as a Job
+(:mod:`robovast.execution.cluster_execution.postprocess_job`) modelled on the run Jobs:
+
+* **image** = the campaign's execution image (never a default — a missing ``image:`` is an error,
+  not a silent wrong-image conversion);
+* the conversion scripts are **mounted in** via an initContainer + emptyDir (the K8s analog of
+  ``docker_exec.sh``'s ``-v $SCRIPT_DIR:/scripts:ro``) — nothing is ever baked into the user's image;
+* inputs (``/bags``, mirrored from the object store) and outputs (``/out``) are **separate dirs** —
+  the run-Job pattern — enabled by ``rosbags_process.py --output-root``. Its default is the input
+  root, i.e. "beside the bag", so the local path is unchanged. The Job then mirrors ``/out``
+  wholesale to a ``<campaign_prefix>_postproc/`` staging prefix; no rosbag is ever re-uploaded.
+
+Stage 2 (``data.db`` + metadata) is pure Python and reuses the normal pipeline with the rosbag steps
+skipped (``run_host_postprocessing``), so there is no second copy of the postprocessing sequence.
+
+Two entry points share that one implementation (``postprocess_campaign``):
+
+* **auto-chain** — the per-campaign controller, when the service passes ``ROBOVAST_POSTPROCESS=1``
+  (from ``create_campaign(postprocess=True)``). It runs **after ``store.close()``** (``campaign.db``
+  must be flushed — ``data.db``'s ``runs`` table reads it) and **before ``_finalize``**, so the
+  results ride the controller's existing campaign upload rather than needing one of their own.
+* **explicit re-run** — :class:`~robovast.service.cluster_service.ClusterService.run_postprocessing`
+  (the campaign controller is long gone by then), which overrides the ``LocalTransport``
+  implementation — unusable in the service pod, which has no local results root and no ROS runtime.
+  It fetches the campaign, runs the same two stages, and publishes ``_execution/`` back. This backs
+  the web **Run postprocessing** button, the MCP ``run_postprocessing`` tool, and the CLI.
 
 Querying RoboVAST campaigns
 ---------------------------

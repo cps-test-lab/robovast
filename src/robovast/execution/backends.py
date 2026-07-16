@@ -32,6 +32,7 @@ the same controller.
 import logging
 import os
 import re
+import signal
 import subprocess  # nosec - invokes the generated, trusted robovast run script
 import tempfile
 from abc import ABC, abstractmethod
@@ -137,7 +138,22 @@ class DockerBackend(ExecutionBackend):
     with ``--campaign-dir <campaign_root>`` so the batch writes directly into the
     campaign root (the controller owns the campaign id). The simulator-side
     ``entrypoint.sh`` is unchanged.
+
+    A ``state`` (:class:`~robovast.execution.control_server.ControllerState`) makes
+    ``stop`` effective: ``run.sh`` loops over runs in a single subprocess, so
+    killing one scenario container only fails that run — the loop starts the next.
+    When ``state.stop_requested`` is set we SIGTERM the ``run.sh`` process, which
+    fires its own ``SIGTERM`` cleanup trap (``docker compose down``) and exits the
+    whole loop.
     """
+
+    #: How often to check ``stop_requested`` while a batch subprocess runs.
+    _STOP_POLL_SECONDS = 0.5
+    #: Grace period for ``run.sh``'s cleanup trap before escalating to SIGKILL.
+    _STOP_GRACE_SECONDS = 15
+
+    def __init__(self, state=None):
+        self._state = state
 
     def run_batch(self, campaign_data: dict, *, campaign_root: str, batch_tag: str,
                   runs: int, options: RunOptions) -> None:
@@ -171,8 +187,43 @@ class DockerBackend(ExecutionBackend):
             # to fail and a non-zero exit is the signal; the controller reads the
             # per-config results either way. --abort-on-failure changes the
             # script's own behaviour, not ours.
-            result = subprocess.run(cmd, check=False)  # nosec - generated, trusted run script
-        if result.returncode != 0:
+            returncode = self._run_watching_stop(cmd)
+        if returncode != 0:
             logger.warning(
                 "Batch %s run script exited with code %d (some runs failed); "
-                "continuing to evaluate produced results.", batch_tag, result.returncode)
+                "continuing to evaluate produced results.", batch_tag, returncode)
+
+    def _run_watching_stop(self, cmd) -> int:
+        """Run *cmd* to completion, terminating it if ``stop_requested`` is set.
+
+        The run script is launched in its own session (process group) so a stop
+        can SIGTERM it — firing its cleanup trap — and, if that hangs, SIGKILL the
+        whole group as a backstop.
+        """
+        # nosec - generated, trusted run script
+        proc = subprocess.Popen(cmd, start_new_session=True)  # pylint: disable=consider-using-with
+        stopped = False
+        while True:
+            try:
+                return proc.wait(timeout=self._STOP_POLL_SECONDS)
+            except subprocess.TimeoutExpired:
+                if not stopped and self._state is not None and self._state.stop_requested:
+                    stopped = True
+                    self._terminate(proc)
+
+    def _terminate(self, proc: "subprocess.Popen") -> None:
+        """SIGTERM the run script (its trap cleans up), SIGKILL the group if it hangs."""
+        logger.info("Stop requested — terminating batch run script (pid %d)", proc.pid)
+        try:
+            proc.terminate()  # SIGTERM to run.sh → 'trap cleanup; exit 130'
+        except ProcessLookupError:
+            return
+        try:
+            proc.wait(timeout=self._STOP_GRACE_SECONDS)
+            return
+        except subprocess.TimeoutExpired:
+            logger.warning("Run script did not exit after SIGTERM; killing process group")
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, OSError) as e:
+            logger.debug("process group kill failed (already gone?): %s", e)

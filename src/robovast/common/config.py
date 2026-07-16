@@ -236,8 +236,24 @@ class ResultsConfig(BaseModel):
     publication: Optional[list[str | dict[str, Any]]] = None
 
 
+class PlotSpec(BaseModel):
+    """A user-declared eval plot: a read-only SQL query + a Vega-Lite encoding.
+
+    The query runs over the campaign's ``data.db`` (``runs`` + metric tables,
+    ``campaign.db`` attached); its result rows are bound into the Vega-Lite spec as
+    ``data.values`` by the web eval viewer, so the spec declares only
+    ``mark``/``encoding`` and its ``field`` names are the query's column aliases
+    (no ``data`` block is authored).
+    """
+    title: str = ""
+    query: str
+    vega_lite: dict[str, Any] = {}
+
+
 class EvaluationConfig(BaseModel):
     visualization: Optional[list[dict[str, Any]]] = None
+    #: Declared plots, rendered by the web eval viewer (see :class:`PlotSpec`).
+    plots: Optional[list[PlotSpec]] = None
 
 
 class FloatDim(BaseModel):

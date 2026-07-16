@@ -136,6 +136,11 @@ def read_test_result(run_dir: Path) -> dict[str, Any]:
 def read_sysinfo(run_dir: Path) -> dict[str, Any]:
     """Read system information from ``sysinfo.yaml``.
 
+    ``collect_sysinfo.py`` writes it into the **job** directory, which each run
+    dir exposes as its ``job`` symlink (``_jobs/batch-<n>/job-<m>/sysinfo.yaml``) —
+    on both backends. Older/other layouts kept it in the run dir or its ``logs/``,
+    so all three locations are accepted.
+
     Args:
         run_dir: Path to the run directory.
 
@@ -145,7 +150,9 @@ def read_sysinfo(run_dir: Path) -> dict[str, Any]:
     Raises:
         FileNotFoundError: If sysinfo.yaml does not exist.
     """
-    candidates = [run_dir / "sysinfo.yaml", run_dir / "logs" / "sysinfo.yaml"]
+    candidates = [run_dir / "job" / "sysinfo.yaml",
+                  run_dir / "sysinfo.yaml",
+                  run_dir / "logs" / "sysinfo.yaml"]
     path = next((p for p in candidates if p.exists()), None)
     if path is None:
         raise FileNotFoundError(f"sysinfo.yaml not found in {run_dir}")
