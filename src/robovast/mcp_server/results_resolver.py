@@ -16,13 +16,14 @@
 
 """Path resolution helpers for MCP plugins that access campaign results."""
 
+import os
 from pathlib import Path
 
 from robovast.common.cli.project_config import ProjectConfig
 from robovast.common.execution import is_campaign_dir
 
 # Directories at campaign level that are not config directories
-_RESERVED_DIRS = {"_config", "_execution", "_transient"}
+_RESERVED_DIRS = {"_config", "_execution", "_transient", "_control"}
 
 
 def resolve_results_dir() -> Path:
@@ -52,8 +53,14 @@ def resolve_results_dir() -> Path:
 def resolve_campaign_path(campaign: str) -> Path:
     """Build and validate the path to a campaign directory.
 
+    A campaign folder is self-contained for analysis, so ``campaign`` may be
+    either a campaign **name** resolved under the initialized project's results
+    directory, or an **absolute path** to a campaign directory — the latter lets
+    analysis tools operate on any campaign folder with no initialized project.
+
     Args:
-        campaign: Campaign name (e.g. ``campaign-2026-03-04-152130``).
+        campaign: Campaign name (e.g. ``campaign-2026-03-04-152130``) or an
+            absolute path to a campaign directory.
 
     Returns:
         Absolute path to the campaign directory.
@@ -61,6 +68,12 @@ def resolve_campaign_path(campaign: str) -> Path:
     Raises:
         ValueError: If the campaign directory does not exist.
     """
+    # Absolute path → use it directly, skipping the project/results-dir lookup.
+    if os.path.isabs(campaign):
+        path = Path(campaign)
+        if not path.is_dir():
+            raise ValueError(f"Campaign directory not found: {campaign}")
+        return path
     path = resolve_results_dir() / campaign
     if not path.is_dir():
         raise ValueError(f"Campaign {campaign} not found.")

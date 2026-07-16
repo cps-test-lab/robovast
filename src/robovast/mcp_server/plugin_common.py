@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from robovast.evaluation.mcp_server import results_resolver
+from robovast.mcp_server import results_resolver
 
 _metadata_cache: dict[Path, dict[str, Any]] = {}
 

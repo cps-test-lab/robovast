@@ -40,7 +40,7 @@ _PLUGIN_GROUPS: dict[str, dict] = {
         "description": (
             "MCP server tools and resources. Plugins can provide new tools."
         ),
-        "loader_module": "robovast.evaluation.mcp_server.registry",
+        "loader_module": "robovast.mcp_server.registry",
     },
     "robovast.cli_plugins": {
         "description": (

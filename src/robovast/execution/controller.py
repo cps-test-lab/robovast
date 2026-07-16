@@ -65,7 +65,11 @@ def campaign_id_for(campaign_config) -> str:
     cluster sanitises the name to hyphens — doing it here keeps both identical.
     """
     name = (campaign_config.metadata or {}).get("name", "campaign").replace("_", "-")
-    return f"{name}-{datetime.now().strftime('%Y-%m-%d-%H%M%S')}"
+    # Hundredths of a second so two launches within the same second get distinct
+    # ids (``is_campaign_dir`` accepts 6-8 trailing digits). This lets a control
+    # plane launch back-to-back campaigns without id collisions.
+    now = datetime.now()
+    return f"{name}-{now.strftime('%Y-%m-%d-%H%M%S')}{now.microsecond // 10000:02d}"
 
 
 class CampaignController:

@@ -81,6 +81,7 @@ configuration = "robovast.configuration.configuration_utils.cli:configuration"
 execution = "robovast.execution.execution_utils.cli:execution"
 results = "robovast.results_processing.cli:results"
 evaluation = "robovast.evaluation.result_analyzer.cli:evaluation"
+mcp = "robovast.mcp_server.cli:mcp"
 
 [tool.poetry.plugins."robovast.cluster_configs"]
 minikube = "robovast.execution.cluster_config.minikube:MinikubeClusterConfig"
@@ -119,14 +120,15 @@ zenodo = "robovast.results_processing.publication_plugins.zenodo:Zenodo"
 [tool.poetry.plugins."robovast.metadata_processing"]
 
 [tool.poetry.plugins."robovast.mcp_plugins"]
-docs = "robovast.evaluation.mcp_server.plugins.docs:DocsPlugin"
-campaign_metadata = "robovast.evaluation.mcp_server.plugins.campaign_metadata:CampaignMetadataPlugin"
-configuration_metadata = "robovast.evaluation.mcp_server.plugins.configuration_metadata:ConfigurationMetadataPlugin"
-plugin_metadata = "robovast.evaluation.mcp_server.plugins.plugin_metadata:PluginMetadataPlugin"
-run_metadata = "robovast.evaluation.mcp_server.plugins.run_metadata:RunMetadataPlugin"
-run_data = "robovast.evaluation.mcp_server.plugins.run_data:RunDataPlugin"
-search_metadata = "robovast.evaluation.mcp_server.plugins.search_metadata:SearchMetadataPlugin"
-prompts = "robovast.evaluation.mcp_server.plugins.prompts:PromptsPlugin"
+docs = "robovast.mcp_server.plugins.docs:DocsPlugin"
+campaign_metadata = "robovast.mcp_server.plugins.campaign_metadata:CampaignMetadataPlugin"
+configuration_metadata = "robovast.mcp_server.plugins.configuration_metadata:ConfigurationMetadataPlugin"
+plugin_metadata = "robovast.mcp_server.plugins.plugin_metadata:PluginMetadataPlugin"
+run_metadata = "robovast.mcp_server.plugins.run_metadata:RunMetadataPlugin"
+run_data = "robovast.mcp_server.plugins.run_data:RunDataPlugin"
+search_metadata = "robovast.mcp_server.plugins.search_metadata:SearchMetadataPlugin"
+prompts = "robovast.mcp_server.plugins.prompts:PromptsPlugin"
+campaign_control = "robovast.mcp_server.plugins.campaign_control:CampaignControlPlugin"
 
 [build-system]
 requires = ["poetry-core"]

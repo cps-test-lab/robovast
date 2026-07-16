@@ -26,7 +26,7 @@ from typing import Any
 import yaml
 from fastmcp import FastMCP
 
-from robovast.evaluation.mcp_server import results_resolver
+from robovast.mcp_server import results_resolver
 
 from ..plugin_common import _list_files_relative, _read_text_paginated, read_campaign_metadata
 

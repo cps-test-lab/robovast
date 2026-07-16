@@ -294,7 +294,7 @@ def get_vast_configuration_info(
 
 
 # Campaign-level directories that are not configuration directories.
-RESERVED_CAMPAIGN_DIRS = {"_config", "_execution", "_transient", "_jobs"}
+RESERVED_CAMPAIGN_DIRS = {"_config", "_execution", "_transient", "_jobs", "_control"}
 
 
 def list_config_dirs(campaign_dir: Path) -> list[Path]:

@@ -18,11 +18,11 @@
 
 Start via the VAST CLI::
 
-    vast eval mcp-server                                      # legacy SSE on 0.0.0.0:8000 (default)
-    vast eval mcp-server --transport stdio                    # stdio (default)
-    vast eval mcp-server --transport streamable-http          # modern HTTP (Open WebUI etc.)
-    vast eval mcp-server --transport streamable-http --host 127.0.0.1 --port 9000
-    vast eval mcp-server --transport streamable-http --debug  # human-readable request/reply log
+    vast mcp serve                                      # SSE on 127.0.0.1:8801 (default)
+    vast mcp serve --transport stdio                    # stdio
+    vast mcp serve --transport streamable-http          # modern HTTP (Open WebUI etc.)
+    vast mcp serve --transport streamable-http --host 127.0.0.1 --port 9000
+    vast mcp serve --transport streamable-http --debug  # human-readable request/reply log
 
 All tools are provided by plugins registered under the
 ``robovast.mcp_plugins`` entry-point group.
@@ -38,8 +38,8 @@ from .registry import load_plugins
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_HOST = "0.0.0.0"
-DEFAULT_PORT = 8000
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 8801
 _MAX_REPR = 400  # max chars for logged values
 
 
@@ -143,4 +143,4 @@ def create_server(
 
 
 if __name__ == "__main__":
-    raise SystemExit("Use 'vast eval mcp-server' to start the MCP server.")
+    raise SystemExit("Use 'vast mcp serve' to start the MCP server.")

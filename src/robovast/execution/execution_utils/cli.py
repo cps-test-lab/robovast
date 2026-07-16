@@ -35,7 +35,6 @@ from robovast.common.cluster_context import (get_active_kube_context,
                                              require_context_for_multi_cluster)
 from robovast.common.common import load_config
 from robovast.common.config import validate_config
-from robovast.execution.controller import build_campaign_data
 from robovast.execution.cluster_execution.cluster_execution import (
     _label_safe_campaign, cleanup_cluster_campaign,
     get_cluster_job_counts_per_campaign)
@@ -97,8 +96,11 @@ def local():
               help='Log scenario execution live tree')
 @click.option('--debug', '-d', is_flag=True,
               help='Enable scenario execution debug output')
+@click.option('--campaign-id', default=None,
+              help='Use this campaign id (and directory name) instead of generating '
+                   'one. Lets an external launcher know the id up front.')
 def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_failure,
-        use_resource_allocation, log_tree, debug):
+        use_resource_allocation, log_tree, debug, campaign_id):
     """Execute the project locally using Docker.
 
     Behaviour is selected by the project ``.vast``:
@@ -164,12 +166,12 @@ def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_
                 click.echo(f"Note: {', '.join(ignored)} ignored in search mode.")
             report = run_search_campaign(
                 project_config.config_path, campaign_config, results_dir, runs,
-                options=options)
+                options=options, campaign_id=campaign_id)
             _print_search_summary(report)
         else:
             report = run_batch_campaign(
                 project_config.config_path, campaign_config, results_dir, runs,
-                config_filter=config, options=options)
+                config_filter=config, options=options, campaign_id=campaign_id)
             click.echo(f"\nBatch run complete: {report['configs']} configuration(s) "
                        f"in {report['campaign_root']}.")
 
@@ -338,119 +340,62 @@ def cluster():
               help='Log scenario execution live tree')
 @click.option('--context', '-x', 'kube_context', default=None,
               help='Kubernetes context to use (default: active context in kubeconfig)')
-def run(config, runs, log_tree, kube_context):  # pylint: disable=function-redefined,redefined-outer-name
+@click.option('--wait-and-download', 'wait_and_download', is_flag=True,
+              help='Block until the campaign finishes and its results are uploaded, '
+                   'then download them into the project results directory — making a '
+                   'cluster run as transparent as a local run.')
+@click.option('--poll-interval', type=float, default=5.0, show_default=True,
+              help='Seconds between status polls when --wait-and-download is set.')
+@click.option('--campaign-id', default=None,
+              help='Launch under this campaign id instead of generating one.')
+def run(config, runs, log_tree, kube_context, wait_and_download, poll_interval,
+        campaign_id):  # pylint: disable=function-redefined,redefined-outer-name
     """Execute a campaign (batch or search) on a Kubernetes cluster.
 
     Launches an in-cluster controller pod that drives the whole campaign and
-    creates the per-batch scenario jobs from inside the cluster. The command is
-    fire-and-forget: it returns immediately after starting the controller.
+    creates the per-batch scenario jobs from inside the cluster. By default the
+    command is fire-and-forget: it returns immediately after starting the
+    controller. Track progress with 'vast exec cluster monitor', then retrieve
+    results with 'vast results download'.
 
-    Track progress with 'vast execution cluster monitor', then retrieve results
-    with 'vast execution cluster upload-to-share' and 'vast results download'.
+    Pass ``--wait-and-download`` to instead block until the campaign finishes and
+    its results have been uploaded to the share, then download them into the
+    project results directory automatically — one command, results on local disk,
+    exactly like a local run.
+
     Use --config to run only matching configurations (batch campaigns).
     Use --context to target a specific Kubernetes cluster.
 
     Requires project initialization with ``vast init`` first.
     """
+    from robovast.execution.execution_utils.cluster_run import (  # pylint: disable=import-outside-toplevel
+        launch_cluster_campaign, wait_for_cluster_campaign)
     try:
-        require_context_for_multi_cluster(kube_context)
-    except ValueError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
-    context_key = kube_context
+        campaign_id = launch_cluster_campaign(
+            config_filter=config, runs=runs, log_tree=log_tree,
+            kube_context=kube_context, campaign_id=campaign_id, feedback=click.echo)
+        if not wait_and_download:
+            click.echo(f"Launched cluster campaign '{campaign_id}'. "
+                       "Track progress with 'vast exec cluster monitor'.")
+            return
 
-    # Load .env before accessing cluster config / credentials so that
-    # ROBOVAST_GCS_KEY_FILE, ROBOVAST_GCS_KEY_JSON, etc. are available.
-    from robovast.common.cli.project_config import \
-        ProjectConfig as _PC  # pylint: disable=import-outside-toplevel
+        click.echo(f"Launched cluster campaign '{campaign_id}'. "
+                   "Waiting for it to finish...")
+        outcome = wait_for_cluster_campaign(
+            campaign_id, kube_context=kube_context, interval=poll_interval,
+            feedback=click.echo)
+        if outcome == "failed":
+            raise click.ClickException(
+                f"Campaign '{campaign_id}' failed (or its upload failed). "
+                "Inspect with 'vast exec cluster monitor'; retry the upload with "
+                f"'vast exec cluster upload-to-share -i {campaign_id}'.")
 
-    # Respect the global --vast-file override for .env discovery.
-    _vast_override = None
-    _click_ctx = click.get_current_context(silent=True)
-    if _click_ctx and _click_ctx.obj:
-        _vast_override = _click_ctx.obj.get('vast_file')
-    if _vast_override:
-        load_dotenv(os.path.join(os.path.dirname(_vast_override), ".env"), override=False)
-
-    _pf = _PC.find_project_file()
-    if _pf:
-        _pd = os.path.dirname(os.path.abspath(_pf))
-        _pc = _PC.load()
-        if _pc and _pc.config_path and not _vast_override:
-            load_dotenv(os.path.join(os.path.dirname(_pc.config_path), ".env"), override=False)
-        load_dotenv(os.path.join(_pd, ".env"), override=False)
-    else:
-        load_dotenv(override=False)
-
-    # Get project configuration
-    project_config = get_project_config()
-
-    # Validate the --config filter on the host *before* launching the controller.
-    # The controller runs fire-and-forget in-cluster, so without this check a typo
-    # only surfaces in the controller pod log; here it fails fast with the list of
-    # available configs. (Search campaigns ignore --config, so skip the check.)
-    if config:
-        campaign_config = validate_config(load_config(project_config.config_path))
-        if campaign_config.search is None:
-            try:
-                with tempfile.TemporaryDirectory(prefix="robovast_cfgcheck_") as _tmp:
-                    build_campaign_data(project_config.config_path, _tmp, config)
-            except ValueError as e:
-                click.echo(f"✗ Error: {e}", err=True)
-                sys.exit(1)
-
-    # Check Kubernetes access (namespace-scoped so RBAC namespace-only users succeed)
-    k8s_client = get_kubernetes_client(context=kube_context)
-    namespace = get_cluster_namespace(context_key)
-    click.echo("Checking Kubernetes cluster access...")
-    k8s_ok, k8s_msg = check_kubernetes_access(k8s_client, namespace=namespace)
-    if not k8s_ok:
-        click.echo(f"✗ Error: {k8s_msg}", err=True)
-        click.echo("  Kubernetes cluster is required for RoboVAST execution.", err=True)
-        sys.exit(1)
-    logging.debug(k8s_msg)
-
-    # Resolve the cluster config from the saved flag file (no pod needed).
-    try:
-        cluster_config = get_cluster_config_for_context(context_key)
-        if not cluster_config:
-            raise ValueError(
-                "No cluster config specified and no saved config found. "
-                "Use --config <name> to select a config, or run setup first."
-            )
-        logging.debug("Auto-detected cluster config (credentials restored from flag file)")
-    except Exception as e:
-        click.echo(f"✗ Error: Failed to get cluster config: {e}", err=True)
-        click.echo("To set up the cluster:", err=True)
-        click.echo()
-        click.echo("  vast execution cluster setup <cluster-config>", err=True)
-        click.echo()
-        sys.exit(1)
-
-    # Let the cluster config verify its own storage prerequisites (e.g. rke2
-    # checks its MinIO pod; GCS is a no-op).
-    try:
-        cluster_config.verify_cluster_ready(
-            k8s_client=k8s_client, namespace=namespace, kube_context=kube_context)
-    except Exception as e:
-        click.echo(f"✗ Error: {e}", err=True)
-        sys.exit(1)
-
-    # Both batch and search campaigns run via an in-cluster controller pod
-    # (fire-and-forget): the controller drives the campaign and launches the
-    # per-batch scenario jobs from inside the cluster, then publishes the
-    # canonical campaign to storage. The host returns immediately.
-    from robovast.execution.cluster_execution.controller_launcher import \
-        launch_controller  # pylint: disable=import-outside-toplevel
-
-    cfg_name, setup_kwargs = load_cluster_setup_info(context_key)
-    _, control_node_labels = get_kubernetes_node_labels_from_config(project_config.config_path)
-    try:
-        launch_controller(
-            config_path=project_config.config_path, config_name=cfg_name,
-            setup_kwargs=setup_kwargs, namespace=namespace, runs=runs,
-            config_filter=config, kube_context=kube_context,
-            log_tree=log_tree, control_node_labels=control_node_labels)
+        click.echo(f"Campaign '{campaign_id}' finished. Downloading results...")
+        from robovast.results_processing.cli import \
+            download_from_share_cmd  # pylint: disable=import-outside-toplevel
+        download_from_share_cmd.callback(
+            output=None, campaigns=(campaign_id,), force=False,
+            keep_archive=False, debug=False)
     except Exception as e:
         handle_cli_exception(e)
 

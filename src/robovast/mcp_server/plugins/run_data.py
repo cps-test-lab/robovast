@@ -33,7 +33,7 @@ from typing import Any, Literal, TypedDict
 
 from fastmcp import FastMCP
 
-from robovast.evaluation.mcp_server import results_resolver
+from robovast.mcp_server import results_resolver
 
 from ..plugin_common import _get_config_by_identifier_or_name, _iter_all_configs
 

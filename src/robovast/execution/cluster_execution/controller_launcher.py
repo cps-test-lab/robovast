@@ -517,7 +517,7 @@ def _controller_pod_manifest(pod_name, namespace, image, campaign_label,
 
 def launch_controller(*, config_path, config_name, setup_kwargs, namespace,
                       runs, kube_context, config_filter=None, log_tree=False,
-                      control_node_labels=None):
+                      control_node_labels=None, campaign_id=None):
     """Launch the controller pod for a campaign (batch or search) and detach.
 
     The in-pod controller drives the whole campaign and publishes the canonical
@@ -537,6 +537,9 @@ def launch_controller(*, config_path, config_name, setup_kwargs, namespace,
         config_filter: Optional glob; run only matching configurations (batch only).
         log_tree: Forward the live scenario tree to the job logs.
         control_node_labels: Optional nodeSelector for the controller pod.
+        campaign_id: Optional campaign id to use (and pod label). Defaults to a
+            freshly generated one; pass it when an external caller needs to know
+            the id up front (e.g. to wait for and download the campaign).
 
     Returns:
         The campaign id (host-generated) the controller runs under.
@@ -550,7 +553,7 @@ def launch_controller(*, config_path, config_name, setup_kwargs, namespace,
     # Generate the campaign id on the host so we can label the pod and tell the
     # user what to monitor/retrieve; the controller is told to use the same id.
     campaign_config = validate_config(load_config(config_path))
-    campaign_id = campaign_id_for(campaign_config)
+    campaign_id = campaign_id or campaign_id_for(campaign_config)
     campaign_label = _label_safe_campaign(campaign_id)
     pod_name = f"ctrl-{campaign_label}"
     config_dir = os.path.dirname(os.path.abspath(config_path))

@@ -17,7 +17,6 @@
 import logging
 import os
 import pickle
-import sys
 from dataclasses import asdict, is_dataclass
 
 import numpy as np
@@ -79,7 +78,7 @@ def load_config(config_file, subsection=None, allow_missing=False):
                 return config
         except yaml.YAMLError as e:
             logger.error(f"Error parsing YAML file: {e}")
-            sys.exit(1)
+            raise ValueError(f"Error parsing YAML file {config_file}: {e}") from e
 
 
 def dataclass_representer(dumper, data):
