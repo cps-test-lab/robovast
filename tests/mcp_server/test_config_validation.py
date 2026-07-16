@@ -9,15 +9,28 @@ process (the old ``load_config`` did ``sys.exit(1)`` on a YAML error), and it
 must report *all* problems at once with locations.
 """
 
-import shutil
-from pathlib import Path
+from robovast.common.config_validation import (_postprocessing_problems,
+                                               validate_project_file)
 
-import pytest
 
-from robovast.common.config_validation import validate_project_file
+def test_rosbags_compat_names_validate_clean(tmp_path):
+    """rosbags_* names are batched into rosbags_process at runtime, not entry
+    points; the validator must accept them just as the runtime does."""
+    from robovast.results_processing.postprocessing import ROSBAG_BATCH_NAMES
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_GROWTH_SIM = _REPO_ROOT / "configs" / "examples" / "growth_sim"
+    entries = list(ROSBAG_BATCH_NAMES) + [{"rosbags_to_csv": {"topics": ["/odom"]}}]
+    problems = _postprocessing_problems(entries, str(tmp_path), "rp")
+    assert problems == []
+
+
+def test_compress_and_unknown_postprocessing(tmp_path):
+    """compress is a registered entry point (accepted); a bogus name is rejected."""
+    problems = _postprocessing_problems(
+        ["compress", "definitely_not_a_plugin"], str(tmp_path), "rp")
+    # Only the bogus name (index 1) is a problem; compress (index 0) resolved.
+    assert len(problems) == 1
+    assert problems[0]["field"] == "rp[1]"
+    assert "definitely_not_a_plugin" in problems[0]["message"]
 
 
 def test_malformed_yaml_returns_problem_without_exiting(tmp_path):
@@ -102,14 +115,30 @@ def test_local_plugin_refs_are_interface_checked(tmp_path):
     assert any(f and f.startswith("results_processing.postprocessing") for f in fields)
 
 
-@pytest.mark.skipif(not (_GROWTH_SIM / "growth_sim.vast").exists(),
-                    reason="growth_sim example not present")
 def test_valid_project_reports_counts(tmp_path):
-    # Copy the example so generation caches land in tmp, not the repo tree.
-    dst = tmp_path / "growth_sim"
-    shutil.copytree(_GROWTH_SIM, dst)
-    report = validate_project_file(str(dst / "growth_sim.vast"))
+    """A self-contained valid project validates clean and reports its counts.
+
+    Built in ``tmp_path`` rather than pointing at a repo example, so the test is
+    not coupled to any fixture on disk. The three-value variation list yields
+    three configs.
+    """
+    (tmp_path / "scenario.osc").write_text("scenario test:\n    timeout(10s)\n")
+    vast = tmp_path / "valid.vast"
+    vast.write_text(
+        "version: 1\n"
+        "configuration:\n"
+        "- name: c1\n"
+        "  variations:\n"
+        "  - ParameterVariationList:\n"
+        "      name: growth_rate\n"
+        "      values: [0.1, 0.2, 0.3]\n"
+        "execution:\n"
+        "  image: example:latest\n"
+        "  runs: 2\n"
+        "  scenario_file: scenario.osc\n"
+    )
+    report = validate_project_file(str(vast))
     assert report["valid"] is True, report["problems"]
     assert report["problems"] == []
-    assert report["configs"] > 0
+    assert report["configs"] == 3
     assert report["total_trials"] == report["configs"] * report["runs_per_config"]

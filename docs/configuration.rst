@@ -644,6 +644,26 @@ To list all available plugins and their descriptions:
 - ``command``: Execute arbitrary commands or scripts. Requires ``script`` parameter, optional ``args`` parameter (list).
 - ``compress``: Create a gzipped tarball (``<name>-<timestamp>.tar.gz``) for each campaign directory; runs on the host (no Docker). Optional ``output_dir`` (default: results directory), ``exclude_dirs`` (directory names to exclude, default ``['.cache']``), ``overwrite`` (if ``false``, skip when a tarball already exists; default ``false``).
 
+.. note::
+
+   The ``rosbags_*`` names above are handled by a single unified plugin,
+   ``rosbags_process`` — the one that shows up in ``vast configuration plugins``
+   and the ``list_plugins`` MCP tool. When several ``rosbags_*`` commands appear
+   in a config, they are transparently batched into one ``rosbags_process`` call
+   so each rosbag is read only once. You can keep using the individual
+   ``rosbags_*`` names (they remain valid), or write ``rosbags_process`` directly
+   with a list of handler ``type`` entries when you need finer control:
+
+   .. code-block:: yaml
+
+      postprocessing:
+        - rosbags_process:
+            plugins:
+              - type: tf_to_csv
+                frames: [base_link]
+              - type: to_csv
+                topics: [/cmd_vel, /odom]
+
 See :ref:`extending-postprocessing` for how to add custom postprocessing plugins.
 
 publication

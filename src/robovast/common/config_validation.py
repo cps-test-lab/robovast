@@ -243,9 +243,14 @@ def _postprocessing_problems(entries, vast_dir, field_prefix):
     so a broken local ``./path.py:Class`` — unknown name, import error, missing
     class, not a ``BasePostprocessingPlugin`` — is caught here instead of in a
     controller-pod log after launch. Collect-all: never raises.
+
+    The ``rosbags_*`` command names in ``ROSBAG_BATCH_NAMES`` are not entry points
+    but are transparently rewritten into a batched ``rosbags_process`` call at
+    runtime, so they are accepted here just as the runtime accepts them —
+    otherwise validation would reject configs that actually execute fine.
     """
-    from robovast.results_processing.postprocessing import \
-        resolve_postprocessing_plugin  # pylint: disable=import-outside-toplevel
+    from robovast.results_processing.postprocessing import (  # pylint: disable=import-outside-toplevel
+        ROSBAG_BATCH_NAMES, resolve_postprocessing_plugin)
 
     problems = []
     for i, command in enumerate(entries or []):
@@ -260,6 +265,8 @@ def _postprocessing_problems(entries, vast_dir, field_prefix):
                 f"mapping): {command!r}",
                 field=f"{field_prefix}[{i}]"))
             continue
+        if name in ROSBAG_BATCH_NAMES:
+            continue  # rewritten to rosbags_process at runtime; not an entry point
         try:
             resolve_postprocessing_plugin(name, vast_dir)
         except Exception as e:  # noqa: BLE001 - surface any resolution error

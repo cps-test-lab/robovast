@@ -14,11 +14,15 @@ matches, exactly as the real ``--campaign-id`` child would).
 import subprocess
 import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from robovast.mcp_server.plugins import campaign_control as cc
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_GROWTH_SIM = _REPO_ROOT / "configs" / "examples" / "growth_sim" / "growth_sim.vast"
 
 _real_popen = subprocess.Popen
 
@@ -56,6 +60,28 @@ def project(tmp_path, monkeypatch):
     for proc in list(cc._LOCAL_PROCS.values()):
         proc.terminate()
     cc._LOCAL_PROCS.clear()
+
+
+@pytest.mark.skipif(not _GROWTH_SIM.exists(),
+                    reason="growth_sim example not present")
+def test_preview_configurations_resolves_without_running():
+    """preview_configurations returns resolved per-cell parameters, no execution."""
+    result = cc.preview_configurations(str(_GROWTH_SIM))
+    assert "error" not in result
+    assert result["configs"] == len(result["configurations"])
+    assert result["total_trials"] == result["configs"] * result["runs_per_config"]
+    first = result["configurations"][0]
+    assert set(first) == {"name", "parameters"}
+    assert isinstance(first["parameters"], dict) and first["parameters"]
+    # Truncation caps the returned list but keeps the true total.
+    capped = cc.preview_configurations(str(_GROWTH_SIM), max_configs=1)
+    assert len(capped["configurations"]) == 1
+    assert capped["truncated"] is True
+    assert capped["configs"] == result["configs"]
+
+
+def test_preview_configurations_bad_path_returns_error():
+    assert "error" in cc.preview_configurations("/no/such/file.vast")
 
 
 def test_start_status_and_single_flight(project):

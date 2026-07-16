@@ -211,6 +211,51 @@ def validate_project(config_path: str = "") -> dict:
                               "field": None, "message": str(e)}]}
 
 
+def preview_configurations(config_path: str = "", max_configs: int = 0) -> dict:
+    """Preview the resolved configurations a ``.vast`` would generate — WITHOUT running.
+
+    ``validate_project`` returns only the counts; this returns the actual resolved
+    per-configuration parameter sets, so you can eyeball what each variation cell
+    expands to before starting a campaign (the read-only, in-memory equivalent of
+    ``vast configuration generate`` / ``vast exec local prepare-run``, which stage
+    the same tree to disk). Nothing is executed and nothing is written.
+
+    Args:
+        config_path: Path to the ``.vast`` file. Empty uses the initialized
+            project's config.
+        max_configs: Cap the number of configurations returned (``0`` = all). The
+            ``configs`` count always reflects the true total; ``truncated`` marks
+            when the returned list was shortened.
+
+    Returns:
+        ``{configs, runs_per_config, total_trials, configurations, truncated}``
+        where each configuration is ``{name, parameters}`` and ``parameters`` is
+        the resolved parameter-name → value mapping for that cell. On failure,
+        ``{error}``.
+    """
+    from robovast.common.config_generation import generate_scenario_variations
+    try:
+        path = config_path or _load_project().config_path
+        campaign_data, _ = generate_scenario_variations(
+            variation_file=path, output_dir=None)
+        configs = campaign_data["configs"]
+        runs = campaign_data.get("execution", {}).get("runs", 1)
+        items = [{"name": c["name"], "parameters": c.get("config", {})}
+                 for c in configs]
+        truncated = bool(max_configs) and len(items) > max_configs
+        if truncated:
+            items = items[:max_configs]
+        return {
+            "configs": len(configs),
+            "runs_per_config": runs,
+            "total_trials": len(configs) * runs,
+            "configurations": items,
+            "truncated": truncated,
+        }
+    except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
+        return {"error": str(e)}
+
+
 def init_project(config_path: str, project_dir: str, results_dir: str = "",
                  log_level: str = "INFO") -> dict:
     """Initialize a RoboVAST project (write ``.robovast_project``) from a ``.vast`` file.
@@ -539,6 +584,7 @@ class _suppress_process_errors:
 
 _TOOLS = [
     validate_project,
+    preview_configurations,
     init_project,
     start_campaign,
     get_campaign_status,

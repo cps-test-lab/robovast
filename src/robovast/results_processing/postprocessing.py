@@ -227,6 +227,12 @@ _ROSBAG_BATCH_MAP: Dict[str, Tuple[str, str]] = {
     "rosbags_to_webm":       ("to_webm",         "rosbag2"),
 }
 
+#: Postprocessing command names that are not entry points but are transparently
+#: rewritten into a batched ``rosbags_process`` call at runtime (see
+#: :func:`_batch_rosbags_commands`). Validation must treat these as valid too,
+#: otherwise it rejects configs the runtime would happily execute.
+ROSBAG_BATCH_NAMES: frozenset = frozenset(_ROSBAG_BATCH_MAP)
+
 
 def _batch_rosbags_commands(commands: List, skip_rosout: bool = False) -> List:
     """Replace all batchable rosbags_* plugin calls with rosbags_process calls.
