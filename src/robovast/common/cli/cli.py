@@ -175,6 +175,51 @@ def init(config, results_dir, project_log_level, force):
 
 
 @cli.command()
+@click.option('--host', default='127.0.0.1', show_default=True,
+              help='Interface to bind. Keep 127.0.0.1 unless behind a tunnel/proxy: '
+                   'the service is unauthenticated in v1.')
+@click.option('--port', default=8800, show_default=True, type=int,
+              help='Port to listen on.')
+@click.option('--backend', type=click.Choice(['auto', 'local', 'cluster']),
+              default='auto', show_default=True,
+              help="Execution backend. 'auto' picks 'cluster' when running inside "
+                   "a Kubernetes pod, else 'local' Docker.")
+def serve(host, port, backend):
+    """Run a persistent robovast-service.
+
+    Starts the FastAPI service that the ``vast`` CLI, the MCP server, and a
+    future web UI drive campaigns through over HTTP — and campaigns survive
+    client exit (unlike ``vast exec local run``). One binary, two backends:
+
+    * **local** (default off-cluster) — local Docker + local filesystem (mode 2);
+      run it on your machine or a remote VM reached over an SSH tunnel.
+    * **cluster** (default in-pod) — launches a controller pod per campaign
+      (mode 3); this is what the in-cluster ``robovast-service`` Deployment runs.
+
+    Security: unauthenticated in v1, so it binds ``127.0.0.1`` by default and
+    must stay behind localhost / SSH tunnel / port-forward (see
+    ``docs/deployment.rst``). OpenAPI docs at ``/docs``.
+    """
+    from robovast.service.app import serve as _serve
+
+    if backend == 'auto':
+        backend = 'cluster' if os.environ.get('KUBERNETES_SERVICE_HOST') else 'local'
+
+    if backend == 'cluster':
+        from robovast.service.cluster_service import ClusterService
+        impl = ClusterService()
+        storage = "object store"
+    else:
+        from robovast.service.client import LocalTransport
+        impl = LocalTransport()
+        storage = "local filesystem"
+
+    click.echo(f"Starting robovast-service on http://{host}:{port} (OpenAPI at /docs)")
+    click.echo(f"Backend: {backend} | storage: {storage} | Ctrl-C to stop")
+    _serve(impl, host=host, port=port)
+
+
+@cli.command()
 def install_completion():
     """Install shell completion for the vast command.
 

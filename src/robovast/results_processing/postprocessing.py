@@ -459,6 +459,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         skip: Optional[List[str]] = None,
         skip_db: bool = False,
         skip_metadata: bool = False,
+        campaign: Optional[str] = None,
 ):
     """Run postprocessing commands on run results.
 
@@ -497,6 +498,17 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         vast_path = os.path.abspath(vast_file)
         config_dir = os.path.dirname(vast_path)
         output(f"Using override config: {vast_path}")
+    elif campaign is not None:
+        # Target a specific campaign (not the most recent) so one campaign can be
+        # reprocessed without touching its siblings.
+        config_dir = os.path.join(results_dir, campaign, "_config")
+        vasts = sorted(str(p) for p in Path(config_dir).glob("*.vast")) \
+            if os.path.isdir(config_dir) else []
+        if not vasts:
+            return False, (f"No .vast file in {config_dir}. "
+                           f"Is {campaign!r} a valid campaign under {results_dir}?")
+        vast_path = vasts[0]
+        output(f"Using config from campaign {campaign}: {vast_path}")
     else:
         # Discover the .vast config file from the most recent campaign
         vast_path, config_dir = find_campaign_vast_file(results_dir)

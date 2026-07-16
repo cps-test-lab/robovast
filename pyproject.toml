@@ -130,9 +130,9 @@ configuration_metadata = "robovast.mcp_server.plugins.configuration_metadata:Con
 plugin_metadata = "robovast.mcp_server.plugins.plugin_metadata:PluginMetadataPlugin"
 run_metadata = "robovast.mcp_server.plugins.run_metadata:RunMetadataPlugin"
 run_data = "robovast.mcp_server.plugins.run_data:RunDataPlugin"
-search_metadata = "robovast.mcp_server.plugins.search_metadata:SearchMetadataPlugin"
 prompts = "robovast.mcp_server.plugins.prompts:PromptsPlugin"
 campaign_control = "robovast.mcp_server.plugins.campaign_control:CampaignControlPlugin"
+workspace = "robovast.mcp_server.plugins.workspace:WorkspacePlugin"
 
 [build-system]
 requires = ["poetry-core"]

@@ -755,32 +755,47 @@ def main(argv=None):
     # (ROBOVAST_SHARE_TYPE + provider vars) from the host .env.
     from robovast.execution.cluster_execution import \
         in_pod_upload  # pylint: disable=import-outside-toplevel
+    # The external share is OPTIONAL when the controller is launched by the
+    # robovast-service (mode 3): results already live in the object store, which
+    # the service pulls from. ROBOVAST_SKIP_SHARE=1 makes a missing share a
+    # non-error. The legacy ``vast exec cluster run`` path leaves it unset and
+    # keeps requiring a share (its ``--wait-and-download`` delivers via the share).
+    skip_share = os.environ.get("ROBOVAST_SKIP_SHARE", "") in ("1", "true", "True")
     try:
         share_provider = in_pod_upload.load_provider_from_env()
     except Exception as exc:  # pylint: disable=broad-except
-        logger.error("Share provider misconfigured: %s", exc)
-        if state is not None:
-            state.set_phase("failed", stage="share-config-error")
-        notifier.failed(f"share provider misconfigured: {exc}")
-        sys.exit(2)
+        if skip_share:
+            logger.warning("Share provider misconfigured but ROBOVAST_SKIP_SHARE set; "
+                           "results stay in the object store: %s", exc)
+            share_provider = None
+        else:
+            logger.error("Share provider misconfigured: %s", exc)
+            if state is not None:
+                state.set_phase("failed", stage="share-config-error")
+            notifier.failed(f"share provider misconfigured: {exc}")
+            sys.exit(2)
     if share_provider is None:
-        # The launcher refuses to start a run without a share destination; guard
-        # here too for standalone/manual invocations.
-        logger.error("No share destination configured (ROBOVAST_SHARE_TYPE unset); "
-                     "refusing to run a campaign whose results have nowhere to go.")
-        if state is not None:
-            state.set_phase("failed", stage="share-config-error")
-        notifier.failed("no share destination configured (ROBOVAST_SHARE_TYPE unset)")
-        sys.exit(2)
-    try:
-        in_pod_upload.verify_share_access(share_provider)
-    except Exception as exc:  # pylint: disable=broad-except
-        logger.error("Pre-flight share credential check failed; aborting "
-                     "before starting any batches: %s", exc)
-        if state is not None:
-            state.set_phase("failed", stage="share-verify-failed")
-        notifier.failed(f"pre-flight share credential check failed: {exc}")
-        sys.exit(3)
+        if not skip_share:
+            # The launcher refuses to start a run without a share destination;
+            # guard here too for standalone/manual invocations.
+            logger.error("No share destination configured (ROBOVAST_SHARE_TYPE unset); "
+                         "refusing to run a campaign whose results have nowhere to go.")
+            if state is not None:
+                state.set_phase("failed", stage="share-config-error")
+            notifier.failed("no share destination configured (ROBOVAST_SHARE_TYPE unset)")
+            sys.exit(2)
+        logger.info("No external share configured; results delivered via the object "
+                    "store (ROBOVAST_SKIP_SHARE set).")
+    else:
+        try:
+            in_pod_upload.verify_share_access(share_provider)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.error("Pre-flight share credential check failed; aborting "
+                         "before starting any batches: %s", exc)
+            if state is not None:
+                state.set_phase("failed", stage="share-verify-failed")
+            notifier.failed(f"pre-flight share credential check failed: {exc}")
+            sys.exit(3)
 
     mode = "search" if campaign_config.search is not None else "batch"
     notifier.started(mode)
@@ -796,8 +811,14 @@ def main(argv=None):
         logger.info("Batch campaign finished: %s", report)
     notifier.finished(f"{mode} campaign complete.")
 
-    # The campaign is now published to storage. Deliver it to the share; stay
-    # alive for a manual retrigger if the upload fails.
+    # The campaign is now published to the object store. When a share is
+    # configured, also deliver it there (staying alive for a manual retrigger if
+    # the upload fails). With no share (mode 3), the object store IS the delivery
+    # mechanism — the service pulls results from it — so we're done.
+    if share_provider is None:
+        if state is not None:
+            state.set_phase("finished", stage="stored")
+        sys.exit(0)
     sys.exit(_upload_to_share_with_retrigger(
         backend.cluster_config, campaign_id, share_provider, state, notifier))
 

@@ -541,11 +541,28 @@ class ConfigV1(BaseModel):
     version: int = 1
     metadata: Optional[dict[str, Any]] = None
     general: Optional[GeneralConfig] = None
+    plugins: Optional[list[str]] = None
     configuration: Optional[list[ConfigurationConfig]] = None
     execution: ExecutionConfig
     search: Optional[SearchConfig] = None
     results_processing: Optional[ResultsConfig] = None
     evaluation: Optional[EvaluationConfig] = None
+
+    @field_validator('plugins')
+    @classmethod
+    def _validate_plugins(cls, v):
+        # Each entry is a pip requirement spec (a git URL such as
+        # ``pkg @ git+https://host/repo@ref`` or an index pin ``pkg==1.2.3``)
+        # installed into the composing environment before variation resolution.
+        # A bare local path won't resolve inside the controller pod, so entries
+        # should be network-reachable; we only enforce non-empty strings here.
+        if v is None:
+            return v
+        for entry in v:
+            if not isinstance(entry, str) or not entry.strip():
+                raise ValueError("each 'plugins' entry must be a non-empty string "
+                                 "(a pip requirement spec, e.g. a git+https URL)")
+        return v
 
     @model_validator(mode='after')
     def _search_xor_configuration(self):

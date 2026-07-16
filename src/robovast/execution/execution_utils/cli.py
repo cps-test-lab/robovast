@@ -371,6 +371,23 @@ def run(config, runs, log_tree, kube_context, wait_and_download, poll_interval,
     from robovast.execution.execution_utils.cluster_run import (  # pylint: disable=import-outside-toplevel
         launch_cluster_campaign, wait_for_cluster_campaign)
     try:
+        # Client-server path: when a robovast-service is configured
+        # (ROBOVAST_SERVICE_URL), push the local project into a server-side
+        # workspace and launch through the service — no kubectl/host launch here.
+        from robovast.service.project_push import (  # pylint: disable=import-outside-toplevel
+            configured_service_url, run_project_via_service)
+        service_url = configured_service_url()
+        if service_url:
+            from robovast.common.cli.project_config import \
+                get_project_config  # pylint: disable=import-outside-toplevel
+            project = get_project_config()
+            cid = run_project_via_service(
+                service_url, project.config_path, config_filter=config or "",
+                runs=runs or 1, feedback=click.echo)
+            click.echo(f"Launched cluster campaign '{cid}' via robovast-service. "
+                       "Track it with 'vast exec cluster monitor' or the service.")
+            return
+
         campaign_id = launch_cluster_campaign(
             config_filter=config, runs=runs, log_tree=log_tree,
             kube_context=kube_context, campaign_id=campaign_id, feedback=click.echo)

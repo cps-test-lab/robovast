@@ -517,6 +517,15 @@ def setup_server(config_name=None, list_configs=False, force=False, **cluster_kw
         **cluster_kwargs,
     )
 
+    # Deploy the persistent robovast-service (Deployment + ClusterIP Service +
+    # its own RBAC) so clients drive campaigns over HTTP (mode 3), reached via
+    # `kubectl port-forward svc/robovast-service`. Requires a controller image
+    # that contains the `robovast.service` package + `vast serve` (plan 0.7);
+    # override with ROBOVAST_CONTROLLER_IMAGE to point at a current dev image.
+    from robovast.execution.cluster_execution.service_deploy import deploy_service
+    deploy_service(namespace=namespace, kube_context=kube_context,
+                   config_name=config_name, config_kwargs=cluster_kwargs)
+
     # Save the config name and kwargs to flag file after successful setup
     flag_path = get_cluster_config_flag_path(context_key)
     save_cluster_setup_info(config_name, cluster_kwargs, context_key)
@@ -573,6 +582,11 @@ def delete_server(config_name=None, **cluster_kwargs_override):
         cleanup_cluster_campaign(namespace=namespace, context=kube_context)
     except Exception as e:
         logger.warning(f"Failed to clean up scenario run jobs during cluster cleanup: {e}")
+
+    # Remove the persistent robovast-service (Deployment + Service + RBAC).
+    # Never touches the object store (the durable data home).
+    from robovast.execution.cluster_execution.service_deploy import delete_service
+    delete_service(namespace=namespace, kube_context=kube_context)
 
     # Remove the controller RBAC created at setup.
     delete_controller_rbac(namespace=namespace, kube_context=kube_context)

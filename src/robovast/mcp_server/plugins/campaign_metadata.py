@@ -363,18 +363,20 @@ def get_campaign_transient_file(
 
 # -- Plugin class ------------------------------------------------------------
 
+# Note: get_campaign_scenario_parameters, get_campaign_config, and
+# get_campaign_agents were dropped from the MCP surface — their data is reachable
+# via get_campaign_scenario (scenario + agents/params), get_configuration_variations
+# (resolved per-config params), and the campaign archive. Query results via the
+# run_data SQL tools.
 _TOOLS = [
     list_campaigns,
     get_campaign_summary,
     get_campaign_scenario,
-    get_campaign_scenario_parameters,
     list_campaign_run_files,
     get_campaign_run_file,
-    get_campaign_config,
     get_campaign_execution_details,
     get_campaign_postprocessing_details,
     list_campaign_configurations,
-    get_campaign_agents,
     list_campaign_transient_files,
     get_campaign_transient_file,
 ]

@@ -184,3 +184,80 @@ def test_list_running_reports_live_local(project):
     listing = cc.list_running_campaigns()
     ids = [e["campaign_id"] for e in listing["running"]]
     assert started["campaign_id"] in ids
+
+
+# -- client-server routing (ROBOVAST_SERVICE_URL set) -----------------------
+
+
+class _FakeClient:
+    """A RobovastInterface stand-in recording calls, for the service path."""
+
+    def __init__(self):
+        self.calls = []
+
+    def create_campaign(self, request):
+        from robovast.service.interface import CampaignRef
+        self.calls.append(("create_campaign", request))
+        return CampaignRef(campaign_id="svc-campaign-1")
+
+    def get_status(self, campaign_id):
+        from robovast.service.interface import Status
+        self.calls.append(("get_status", campaign_id))
+        return Status(phase="running", campaign_id=campaign_id,
+                      runs={"completed": 3, "total": 8})
+
+    def stop(self, campaign_id):
+        from robovast.service.interface import ActionResult
+        self.calls.append(("stop", campaign_id))
+        return ActionResult(ok=True, message="stop requested")
+
+    def list_campaigns(self, request=None):
+        from robovast.service.interface import (CampaignSummary,
+                                                ListCampaignsResponse)
+        self.calls.append(("list_campaigns", request))
+        return ListCampaignsResponse(total=2, campaigns=[
+            CampaignSummary(campaign_id="svc-running", phase="running"),
+            CampaignSummary(campaign_id="svc-done", phase="finished")])
+
+
+@pytest.fixture
+def service(monkeypatch):
+    """Route the control tools through a fake robovast-service client."""
+    fake = _FakeClient()
+    monkeypatch.setattr(cc, "_service_client", lambda: fake)
+    return fake
+
+
+def test_service_start_routes_to_client(service):
+    started = cc.start_campaign(config_filter="hospital*", runs=5)
+    assert started == {"campaign_id": "svc-campaign-1", "backend": "service"}
+    name, req = service.calls[-1]
+    assert name == "create_campaign"
+    assert req.config_filter == "hospital*" and req.runs == 5
+
+
+def test_service_status_maps_from_status_model(service):
+    st = cc.get_campaign_status("svc-campaign-1")
+    assert st["backend"] == "service"
+    assert st["status"] == "running"
+    assert st["runs_done"] == 3 and st["runs_total"] == 8
+
+
+def test_service_stop_routes_to_client(service):
+    res = cc.stop_campaign("svc-campaign-1")
+    assert res["stopped"] is True and res["status"] == "stopping"
+    assert ("stop", "svc-campaign-1") in service.calls
+
+
+def test_service_list_running_filters_terminal(service):
+    listing = cc.list_running_campaigns()
+    ids = [e["campaign_id"] for e in listing["running"]]
+    assert ids == ["svc-running"]  # 'svc-done' (finished) filtered out
+    assert listing["count"] == 1
+
+
+def test_no_service_url_uses_subprocess_path(project):
+    # With no service configured, the local subprocess path is used unchanged.
+    assert cc._service_client() is None
+    started = cc.start_campaign(backend="local")
+    assert started["log_path"].endswith(f"_control/logs/{started['campaign_id']}.log")

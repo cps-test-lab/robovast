@@ -222,6 +222,9 @@ def get_configuration_variations(campaign_id: str, configuration_id: str) -> lis
 
 # -- Plugin class ------------------------------------------------------------
 
+# get_configuration_config_file dropped from the MCP surface (raw config-file
+# access) — resolved config is in get_configuration_variations / the run_data SQL
+# 'runs' table, and the raw config is in the campaign archive.
 _TOOLS = [
     get_configuration_summary,
     get_configuration_scenario_parameter,
@@ -229,7 +232,6 @@ _TOOLS = [
     list_configuration_transient_files,
     get_configuration_transient_file,
     list_configuration_config_files,
-    get_configuration_config_file,
 ]
 
 

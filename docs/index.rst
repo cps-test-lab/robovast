@@ -59,5 +59,7 @@ The dataset serves as a comprehensive validation tool for navigation stacks such
    search
    evaluation
    mcp
+   architecture
+   deployment
    developer_guide
    future_work

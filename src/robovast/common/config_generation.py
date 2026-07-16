@@ -30,6 +30,7 @@ from pprint import pformat
 
 from .common import convert_dataclasses_to_dict, get_scenario_parameters, load_config
 from .config_identifier import collect_paths_from_config, hash_variation_entrypoints
+from .config_plugins import ensure_config_plugins
 from .file_cache2 import CacheKey, FileCache2
 from .plugin_ref import is_file_ref, load_ref
 from .variation.loader import _validate_variation_class
@@ -525,6 +526,12 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     _maybe_disable_ssl_verification()
 
     parameters = load_config(variation_file)
+
+    # Ensure any variation-plugin packages the .vast declares in ``plugins:`` are
+    # available before resolving variation types from entry points. In a controller
+    # pod this installs them; locally it only checks and errors (never mutates the
+    # host venv). Runs once here — the sole convergence for local, cluster and search.
+    ensure_config_plugins(parameters)
 
     # Get scenario file from configuration section
     configurations = parameters.get('configuration', [])

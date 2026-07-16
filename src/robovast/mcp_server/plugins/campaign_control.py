@@ -69,6 +69,25 @@ def _load_project():
     return project
 
 
+def _service_client():
+    """Return a ``RobovastClient`` bound to a configured robovast-service, or None.
+
+    When ``ROBOVAST_SERVICE_URL`` is set, the control tools drive that service
+    (a local ``vast serve``, a remote VM, or a cluster deployment) through the
+    :class:`~robovast.service.interface.RobovastInterface` contract instead of
+    spawning ``vast exec`` subprocesses — the client-server path in which the
+    service is the execution authority and its own status tracking replaces the
+    local subprocess + ``CampaignRegistry`` machinery. Unset (the default) keeps
+    the in-process subprocess path below, so nothing changes for local/cluster
+    users who have not opted into a service yet.
+    """
+    url = os.environ.get("ROBOVAST_SERVICE_URL", "")
+    if not url:
+        return None
+    from robovast.service.client import RobovastClient
+    return RobovastClient(url)
+
+
 def _classify_dead_local_for(results_dir):
     """Return a ``entry -> status`` classifier for dead local entries.
 
@@ -332,6 +351,17 @@ def start_campaign(config_filter: str = "", runs: int = 0,
         refusal or failure.
     """
     try:
+        client = _service_client()
+        if client is not None:
+            # Client-server path: the service is the execution authority and
+            # picks the backend by its own deployment (backend/context args are
+            # ignored here — they are implicit in which service is configured).
+            from robovast.service.interface import CreateCampaignRequest
+            ref = client.create_campaign(CreateCampaignRequest(
+                workspace_id="", config_filter=config_filter,
+                runs=runs if runs and runs > 0 else 1))
+            return {"campaign_id": ref.campaign_id, "backend": "service"}
+
         project = _load_project()
         campaign_config, info = _validate(project, config_filter)
         if not info["valid"]:
@@ -422,6 +452,18 @@ def get_campaign_status(campaign_id: str) -> dict:
         log_tail}``; ``{error}`` if unknown.
     """
     try:
+        client = _service_client()
+        if client is not None:
+            st = client.get_status(campaign_id)
+            return {
+                "campaign_id": campaign_id,
+                "backend": "service",
+                "status": st.phase,
+                "runs_done": st.runs.completed,
+                "runs_total": st.runs.total,
+                "log_tail": st.stage or "",
+            }
+
         project = _load_project()
         results_dir = str(project.results_dir)
         registry = _registry(results_dir)
@@ -461,6 +503,12 @@ def stop_campaign(campaign_id: str) -> dict:
         ``{campaign_id, stopped, status}`` or ``{error}``.
     """
     try:
+        client = _service_client()
+        if client is not None:
+            res = client.stop(campaign_id)
+            return {"campaign_id": campaign_id, "stopped": res.ok,
+                    "status": "stopping", "note": res.message}
+
         project = _load_project()
         results_dir = str(project.results_dir)
         registry = _registry(results_dir)
@@ -556,6 +604,15 @@ def list_running_campaigns() -> dict:
         ``campaign_id``, ``backend``, and ``status``.
     """
     try:
+        client = _service_client()
+        if client is not None:
+            resp = client.list_campaigns()
+            terminal = {"finished", "failed", "crashed", "unknown"}
+            running = [{"campaign_id": c.campaign_id, "backend": "service",
+                        "status": c.phase}
+                       for c in resp.campaigns if c.phase not in terminal]
+            return {"count": len(running), "running": running}
+
         project = _load_project()
         results_dir = str(project.results_dir)
         registry = _registry(results_dir)
@@ -582,6 +639,68 @@ class _suppress_process_errors:
 
 # -- Plugin class ------------------------------------------------------------
 
+def get_postprocessing(campaign_id: str) -> dict:
+    """Show a campaign's effective analysis-postprocessing entries + edit history.
+
+    Raw rosbags are always preserved, so postprocessing can be edited and re-run
+    to compute *different* metrics later without re-executing the campaign. The
+    immutable ``_config/`` snapshot is never changed; edits are versioned
+    overrides. Pair with :func:`update_postprocessing` + :func:`run_postprocessing`.
+
+    Returns:
+        ``{campaign_id, source, entries, revisions}`` or ``{error}``.
+    """
+    from robovast.service.client import RobovastClient
+    try:
+        return RobovastClient(os.environ.get("ROBOVAST_SERVICE_URL", "")) \
+            .get_postprocessing(campaign_id).model_dump()
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
+
+
+def update_postprocessing(campaign_id: str, entries: list) -> dict:
+    """Replace a campaign's analysis-postprocessing entries (a new versioned override).
+
+    ``entries`` is a list of postprocessing commands — a bare plugin name
+    (``"rosbags_to_csv"``) or a single-key dict with params
+    (``{"command": {"script": "postprocess.sh"}}``). Validated before writing;
+    the ``_config/`` snapshot is untouched. Call :func:`run_postprocessing` to apply.
+
+    Returns:
+        ``{campaign_id, revision, entries}`` or ``{error}``.
+    """
+    from robovast.service.client import RobovastClient
+    from robovast.service.interface import UpdatePostprocessingRequest
+    try:
+        return RobovastClient(os.environ.get("ROBOVAST_SERVICE_URL", "")) \
+            .update_postprocessing(UpdatePostprocessingRequest(
+                campaign_id=campaign_id, entries=entries)).model_dump()
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
+
+
+def run_postprocessing(campaign_id: str, force: bool = False,
+                       skip: list | None = None) -> dict:
+    """(Re)run analysis postprocessing for one campaign with its effective config.
+
+    Reprocesses just this campaign (not its siblings), rebuilding ``data.db`` so
+    the new metrics are immediately queryable via ``query_campaign_data_sql``.
+
+    Args:
+        campaign_id: The campaign to (re)process.
+        force: Bypass per-rosbag caches and reprocess all bags.
+        skip: Plugin names to skip (e.g. ``["rosbags_to_webm"]``).
+    """
+    from robovast.service.client import RobovastClient
+    from robovast.service.interface import RunPostprocessingRequest
+    try:
+        return RobovastClient(os.environ.get("ROBOVAST_SERVICE_URL", "")) \
+            .run_postprocessing(RunPostprocessingRequest(
+                campaign_id=campaign_id, force=force, skip=skip or [])).model_dump()
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
+
+
 _TOOLS = [
     validate_project,
     preview_configurations,
@@ -590,6 +709,9 @@ _TOOLS = [
     get_campaign_status,
     stop_campaign,
     list_running_campaigns,
+    get_postprocessing,
+    update_postprocessing,
+    run_postprocessing,
 ]
 
 

@@ -448,6 +448,86 @@ def _csv_to_table_name(filename: str) -> str:
     return sanitized or "t_unknown"
 
 
+def _build_runs_table(conn, campaign_path, config_dirs) -> None:
+    """Create a ``runs`` dimension table: per-run status/duration + scenario params.
+
+    Params (and the objective) come from ``campaign.db``'s ``unit`` table, keyed
+    by ``config_name``; status/duration come from each run's ``test.xml``. Joining
+    ``runs`` to any metric table on ``(config_name, run_id)`` answers questions
+    like "how does <param> affect <metric>" in one query. Scalar params become
+    columns (prefixed ``param_``); non-scalar values are JSON-encoded.
+    """
+    from robovast.common.campaign_data import \
+        read_test_result  # pylint: disable=import-outside-toplevel
+
+    # Resolved params + objective per config, from campaign.db (read-only).
+    params_by_config: dict[str, dict] = {}
+    objective_by_config: dict[str, object] = {}
+    campaign_db = campaign_path / "campaign.db"
+    if campaign_db.exists():
+        cc = sqlite3.connect(f"file:{campaign_db}?mode=ro", uri=True)
+        try:
+            for cn, pj, obj in cc.execute(
+                    "SELECT config_name, params_json, objective FROM unit"):
+                if not cn:
+                    continue
+                try:
+                    params_by_config[cn] = json.loads(pj) if pj else {}
+                except (TypeError, ValueError):
+                    params_by_config[cn] = {}
+                objective_by_config[cn] = obj
+        except sqlite3.Error:
+            pass
+        finally:
+            cc.close()
+
+    base_cols = ["config_name", "run_id", "status", "passed",
+                 "duration_s", "errors", "failures", "objective"]
+    param_keys = sorted({k for p in params_by_config.values() for k in p
+                         if f"param_{k}" not in base_cols})
+    param_cols = [f"param_{k}" for k in param_keys]
+    all_cols = base_cols + param_cols
+
+    conn.execute("DROP TABLE IF EXISTS runs")
+    col_defs = ", ".join(
+        (f'"{c}" INTEGER' if c in ("run_id", "errors", "failures") else
+         f'"{c}" REAL' if c in ("duration_s", "objective") else
+         f'"{c}" TEXT')
+        for c in all_cols)
+    conn.execute(f"CREATE TABLE runs ({col_defs})")
+    conn.execute('CREATE INDEX idx_runs_ctx ON runs (config_name, run_id)')
+
+    placeholders = ", ".join("?" for _ in all_cols)
+    col_list = ", ".join(f'"{c}"' for c in all_cols)
+    insert_sql = f"INSERT INTO runs ({col_list}) VALUES ({placeholders})"
+
+    for config_dir in config_dirs:
+        config_name = config_dir.name
+        params = params_by_config.get(config_name, {})
+        objective = objective_by_config.get(config_name)
+        for run_dir in sorted(
+                (d for d in config_dir.iterdir() if d.is_dir() and d.name.isdigit()),
+                key=lambda d: int(d.name)):
+            run_id = int(run_dir.name)
+            try:
+                tr = read_test_result(run_dir)
+                passed = 1 if tr.get("success") else 0
+                errors = int(tr.get("errors", 0))
+                failures = int(tr.get("failures", 0))
+                duration = tr.get("duration_sec")
+                status = ("passed" if passed else
+                          "error" if errors else "failed")
+            except (FileNotFoundError, OSError, ValueError, TypeError):
+                passed, errors, failures, duration, status = 0, 0, 0, None, "unknown"
+            base_vals = [config_name, run_id, status, passed, duration,
+                         errors, failures, objective]
+            param_vals = [
+                json.dumps(params[k]) if isinstance(params.get(k), (list, dict))
+                else params.get(k)
+                for k in param_keys]
+            conn.execute(insert_sql, base_vals + param_vals)
+
+
 def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str]:
     """Consolidate all per-run CSV files into a single SQLite database.
 
@@ -659,6 +739,10 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
                     conn.commit()
                     pct = completed_runs / total_runs * 100 if total_runs else 100
                     _log(f"  {completed_runs}/{total_runs} runs ({pct:.0f}%)")
+
+        # Dimension table joining per-run status/duration to scenario parameters,
+        # so "how does <param> affect <metric>" is a single SQL join.
+        _build_runs_table(conn, campaign_path, config_dirs)
 
         # Final commit and persist name map
         conn.commit()
