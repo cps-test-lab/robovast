@@ -132,8 +132,8 @@ def _autodoc_to_rst(directive: str, target: str, options: dict[str, str]) -> str
     return f"*[unsupported directive: {directive}]*"
 
 
-_AUTODOC_RE = re.compile(
-    r"^\.\.\s+(auto(?:module|class|function))::\s+(\S+)\s*$",
+_DIRECTIVE_RE = re.compile(
+    r"^\.\.\s+(auto(?:module|class|function)|literalinclude)::\s+(\S+)\s*$",
     re.MULTILINE,
 )
 
@@ -141,6 +141,65 @@ _MCP_TOOLS_RE = re.compile(
     r"^\.\.\s+mcp-tools::\s+(\S+)\s*$",
     re.MULTILINE,
 )
+
+# Inline interpreted-text roles like :doc:`how_to_run`, :ref:`label`,
+# :repo_link:`configs/examples/growth_sim`, :func:`x`.  Rendered to plain text.
+_INLINE_ROLE_RE = re.compile(r":[\w:+-]+:`([^`]+)`")
+
+
+def _select_lines(lines: list[str], spec: str) -> list[str]:
+    """Select 1-indexed, inclusive line ranges per a Sphinx ``:lines:`` spec.
+
+    Supports single lines, ``a-b`` ranges, open-ended ``a-``/``-b``, and
+    comma-separated combinations (e.g. ``"2-21,32-36"``).
+    """
+    result: list[str] = []
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            if "-" in part:
+                a, b = part.split("-", 1)
+                start = int(a) if a.strip() else 1
+                end = int(b) if b.strip() else len(lines)
+            else:
+                start = end = int(part)
+        except ValueError:
+            continue
+        result.extend(lines[max(0, start - 1) : end])
+    return result
+
+
+def _render_literalinclude(rel_path: str, options: dict[str, str], base_dir: Path) -> str:
+    """Embed a ``.. literalinclude::`` target as a fenced code block."""
+    path = (base_dir / rel_path).resolve()
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as e:
+        return f"*[literalinclude:: {rel_path} — could not read: {e}]*"
+    spec = options.get("lines")
+    if spec:
+        lines = _select_lines(lines, spec)
+    lang = options.get("language", "").strip()
+    out: list[str] = []
+    caption = options.get("caption")
+    if caption:
+        out += [f"**{caption}**", ""]
+    out.append(f"```{lang}".rstrip())
+    out += lines
+    out.append("```")
+    return "\n".join(out)
+
+
+def _strip_inline_roles(text: str) -> str:
+    """Turn ``:role:`content``` into plain text (``title <target>`` → title)."""
+    def _repl(m: re.Match) -> str:
+        content = m.group(1)
+        titled = re.match(r"(.*?)\s*<[^>]+>\s*$", content)
+        return titled.group(1) if titled else content
+
+    return _INLINE_ROLE_RE.sub(_repl, text)
 
 
 def _resolve_mcp_tools_directive(target: str) -> str:
@@ -159,8 +218,15 @@ def _resolve_mcp_tools_directive(target: str) -> str:
         return f"*[mcp-tools:: {target} — could not resolve: {e}]*"
 
 
-def _resolve_autodoc(text: str) -> str:
-    """Replace Sphinx autodoc and mcp-tools directives with actual content."""
+def _resolve_directives(text: str, base_dir: Path) -> str:
+    """Resolve autodoc, ``literalinclude``, ``mcp-tools``, and inline roles.
+
+    Produces self-contained plain text: autodoc directives are expanded from
+    live objects, ``literalinclude`` targets are embedded as code blocks (so
+    example snippets travel with the doc), tool listings are rendered, and
+    cross-reference roles are reduced to their display text. *base_dir* is the
+    directory the document lives in, used to resolve ``literalinclude`` paths.
+    """
     def _replace_mcp_tools(m: re.Match) -> str:
         return _resolve_mcp_tools_directive(m.group(1)) + "\n"
 
@@ -170,7 +236,7 @@ def _resolve_autodoc(text: str) -> str:
     result: list[str] = []
     i = 0
     while i < len(lines):
-        m = _AUTODOC_RE.match(lines[i])
+        m = _DIRECTIVE_RE.match(lines[i])
         if not m:
             result.append(lines[i])
             i += 1
@@ -179,7 +245,7 @@ def _resolve_autodoc(text: str) -> str:
         directive, target = m.group(1), m.group(2)
         i += 1
 
-        # Consume indented option lines (:members:, :undoc-members:, …)
+        # Consume indented option lines (:members:, :lines:, :language:, …)
         options: dict[str, str] = {}
         while i < len(lines):
             opt = re.match(r"[ \t]+:([\w-]+):\s*(.*)", lines[i])
@@ -191,9 +257,12 @@ def _resolve_autodoc(text: str) -> str:
             else:
                 break
 
-        result.append(_autodoc_to_rst(directive, target, options) + "\n")
+        if directive == "literalinclude":
+            result.append(_render_literalinclude(target, options, base_dir) + "\n")
+        else:
+            result.append(_autodoc_to_rst(directive, target, options) + "\n")
 
-    return "".join(result)
+    return _strip_inline_roles("".join(result))
 
 
 def _extract_title(text: str) -> str | None:
@@ -209,6 +278,44 @@ def _extract_title(text: str) -> str | None:
     return None
 
 
+def _extract_md_title(text: str) -> str | None:
+    """Return the first Markdown ``# heading`` (or first non-empty line)."""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("#"):
+            return stripped.lstrip("#").strip()
+        return stripped
+    return None
+
+
+def _collect_doc_sources(docs_dir: Path) -> dict[str, tuple[Path, str]]:
+    """Discover documentation sources as ``name -> (path, kind)``.
+
+    Generic and maintenance-free: every ``docs/*.rst`` (kind ``"rst"``) and
+    ``docs/*.md`` page, the repository ``README.md``, and each top-level
+    package README under ``src/*/README.md`` (all kind ``"md"``). ``index`` is
+    skipped; ``.rst`` wins a name collision with ``.md``.
+    """
+    sources: dict[str, tuple[Path, str]] = {}
+    for p in sorted(docs_dir.glob("*.rst")):
+        if p.stem != "index":
+            sources[p.stem] = (p, "rst")
+    for p in sorted(docs_dir.glob("*.md")):
+        sources.setdefault(p.stem, (p, "md"))
+
+    repo_root = docs_dir.parent
+    root_readme = repo_root / "README.md"
+    if root_readme.is_file():
+        sources["readme"] = (root_readme, "md")
+    src_dir = repo_root / "src"
+    if src_dir.is_dir():
+        for p in sorted(src_dir.glob("*/README.md")):
+            sources[f"readme-{p.parent.name}"] = (p, "md")
+    return sources
+
+
 # -- Module-level doc loading ------------------------------------------------
 
 _docs_dir: Path | None = _find_docs_dir()
@@ -218,15 +325,15 @@ _doc_meta: dict[str, str] = {}
 _doc_content: dict[str, str] = {}
 
 if _docs_dir is not None:
-    _doc_files = {
-        p.stem: p
-        for p in sorted(_docs_dir.glob("*.rst"))
-        if p.stem != "index"
-    }
-    for _name, _path in _doc_files.items():
-        _text = _path.read_text(encoding="utf-8")
-        _doc_meta[_name] = _extract_title(_text) or _name
-        _doc_content[_name] = _resolve_autodoc(_text)
+    for _name, (_path, _kind) in _collect_doc_sources(_docs_dir).items():
+        _text = _path.read_text(encoding="utf-8", errors="replace")
+        _doc_files[_name] = _path
+        if _kind == "rst":
+            _doc_meta[_name] = _extract_title(_text) or _name
+            _doc_content[_name] = _resolve_directives(_text, _path.parent)
+        else:
+            _doc_meta[_name] = _extract_md_title(_text) or _name
+            _doc_content[_name] = _text
 
 
 # -- Tool functions ----------------------------------------------------------

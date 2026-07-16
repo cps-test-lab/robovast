@@ -27,15 +27,61 @@ error at a time, or the server dies.
 block it belongs to, and the offending field — so a caller gets the full list at
 once and can fix a ``.vast`` in far fewer iterations. It reuses the existing
 validation helpers rather than duplicating their logic.
+
+It also resolves and interface-checks the ``.vast``'s plugin references — the
+variation types, the ``results_processing``/``search`` postprocessing commands,
+and the search ``strategy`` and ``extract.plugin`` — whether they are installed
+entry-point names or local ``./path.py:Class`` file refs. Those non-variation
+plugins are otherwise only resolved when a campaign runs, so a broken local
+plugin would surface as a cryptic controller-pod log; here it is caught up front.
+This function is the shared core behind both the ``validate_project`` MCP tool
+and the ``vast configuration validate`` CLI command.
 """
 
+import inspect
 import logging
 import os
+from contextlib import contextmanager
 
 import yaml
 from pydantic import ValidationError
 
 logger = logging.getLogger(__name__)
+
+#: Logger whose WARNING records are surfaced in the validation result. Config
+#: generation emits non-fatal advisories here (e.g. an ``execution.run_files``
+#: pattern that matched nothing) that a caller such as the MCP server would
+#: otherwise never see.
+_GENERATION_LOGGER = "robovast.common.config_generation"
+
+
+class _WarningCollector(logging.Handler):
+    """Log handler that records the formatted message of every WARNING+ record."""
+
+    def __init__(self):
+        super().__init__(level=logging.WARNING)
+        self.messages = []
+
+    def emit(self, record):
+        if record.levelno >= logging.WARNING:
+            self.messages.append(record.getMessage())
+
+
+@contextmanager
+def _collect_warnings(logger_name):
+    """Yield a list that collects WARNING+ messages logged under ``logger_name``.
+
+    A handler is attached for the duration so the warnings are captured even
+    though the underlying logger's own handlers/level are left untouched (they
+    still emit to the console as before).
+    """
+    target = logging.getLogger(logger_name)
+    handler = _WarningCollector()
+    target.addHandler(handler)
+    try:
+        yield handler.messages
+    finally:
+        target.removeHandler(handler)
 
 
 def _problem(stage, message, config=None, field=None):
@@ -190,6 +236,132 @@ def _config_block_problems(config, vast_dir, valid_param_names):
     return problems
 
 
+def _postprocessing_problems(entries, vast_dir, field_prefix):
+    """Resolve every postprocessing command (entry-point name or local file ref).
+
+    Uses the same resolver the runtime uses (``resolve_postprocessing_plugin``),
+    so a broken local ``./path.py:Class`` — unknown name, import error, missing
+    class, not a ``BasePostprocessingPlugin`` — is caught here instead of in a
+    controller-pod log after launch. Collect-all: never raises.
+    """
+    from robovast.results_processing.postprocessing import \
+        resolve_postprocessing_plugin  # pylint: disable=import-outside-toplevel
+
+    problems = []
+    for i, command in enumerate(entries or []):
+        if isinstance(command, str):
+            name = command
+        elif isinstance(command, dict) and len(command) == 1:
+            name = next(iter(command))
+        else:
+            problems.append(_problem(
+                "postprocessing",
+                f"Invalid postprocessing entry (expected a name or single-key "
+                f"mapping): {command!r}",
+                field=f"{field_prefix}[{i}]"))
+            continue
+        try:
+            resolve_postprocessing_plugin(name, vast_dir)
+        except Exception as e:  # noqa: BLE001 - surface any resolution error
+            problems.append(_problem(
+                "postprocessing", str(e), field=f"{field_prefix}[{i}]"))
+    return problems
+
+
+def _search_problems(search, vast_dir):
+    """Resolve and interface-check the search strategy and extractor plugins.
+
+    Both are referenced like every other plugin (entry-point name or local
+    ``./path.py:Class`` file ref) and are otherwise only resolved when a search
+    actually runs. Collect-all: never raises.
+    """
+    from robovast.common.config import \
+        get_validated_config  # pylint: disable=import-outside-toplevel
+    from robovast.search.extractor import Extractor  # pylint: disable=import-outside-toplevel
+    from robovast.search.plugins import (  # pylint: disable=import-outside-toplevel
+        EXTRACTOR_GROUP, STRATEGY_GROUP, load_ref)
+    from robovast.search.strategy import \
+        SearchStrategy  # pylint: disable=import-outside-toplevel
+
+    problems = []
+
+    # -- strategy (+ its optional PARAMS_MODEL) ------------------------------
+    strategy = search.get("strategy")
+    if isinstance(strategy, str) and strategy:
+        try:
+            strategy_cls = load_ref(strategy, STRATEGY_GROUP, vast_dir)
+        except Exception as e:  # noqa: BLE001 - surface any resolution error
+            problems.append(_problem("search-strategy", str(e), field="search.strategy"))
+        else:
+            if not (inspect.isclass(strategy_cls)
+                    and issubclass(strategy_cls, SearchStrategy)):
+                problems.append(_problem(
+                    "search-strategy",
+                    f"'{strategy}' is not a subclass of SearchStrategy.",
+                    field="search.strategy"))
+            else:
+                params_model = getattr(strategy_cls, "PARAMS_MODEL", None)
+                params = search.get("strategy_parameters") or {}
+                if params_model is not None and isinstance(params, dict):
+                    try:
+                        get_validated_config(params, params_model)
+                    except ValueError as e:
+                        problems.append(_problem(
+                            "search-strategy-params", str(e),
+                            field="search.strategy_parameters"))
+
+    # -- extractor ----------------------------------------------------------
+    extract = search.get("extract")
+    if isinstance(extract, dict):
+        plugin = extract.get("plugin")
+        if isinstance(plugin, str) and plugin:
+            try:
+                extractor_cls = load_ref(plugin, EXTRACTOR_GROUP, vast_dir)
+            except Exception as e:  # noqa: BLE001 - surface any resolution error
+                problems.append(_problem(
+                    "search-extractor", str(e), field="search.extract.plugin"))
+            else:
+                if not (inspect.isclass(extractor_cls)
+                        and issubclass(extractor_cls, Extractor)):
+                    problems.append(_problem(
+                        "search-extractor",
+                        f"'{plugin}' is not a subclass of Extractor.",
+                        field="search.extract.plugin"))
+                elif getattr(extractor_cls, "extract", None) is Extractor.extract:
+                    problems.append(_problem(
+                        "search-extractor",
+                        f"'{plugin}' does not override the 'extract' method.",
+                        field="search.extract.plugin"))
+
+    return problems
+
+
+def _plugin_ref_problems(raw, vast_dir):
+    """Resolve & interface-check every non-variation plugin ref in the ``.vast``.
+
+    Variation plugins are already checked per config block; this covers the other
+    plugin-carrying sections — ``results_processing.postprocessing``,
+    ``search.postprocessing``, ``search.strategy`` and ``search.extract.plugin``
+    — reusing the runtime resolvers so validation matches execution. Collect-all:
+    never raises.
+    """
+    problems = []
+
+    results = raw.get("results_processing")
+    if isinstance(results, dict):
+        problems.extend(_postprocessing_problems(
+            results.get("postprocessing"), vast_dir,
+            "results_processing.postprocessing"))
+
+    search = raw.get("search")
+    if isinstance(search, dict):
+        problems.extend(_postprocessing_problems(
+            search.get("postprocessing"), vast_dir, "search.postprocessing"))
+        problems.extend(_search_problems(search, vast_dir))
+
+    return problems
+
+
 def validate_project_file(config_path):
     """Validate a ``.vast`` project file, collecting *all* problems at once.
 
@@ -216,6 +388,9 @@ def validate_project_file(config_path):
 
     for config in raw.get("configuration", []) or []:
         problems.extend(_config_block_problems(config, vast_dir, valid_param_names))
+
+    # Top-level plugin refs (postprocessing / search strategy / extractor).
+    problems.extend(_plugin_ref_problems(raw, vast_dir))
 
     if problems:
         return {"valid": False, "problems": problems,

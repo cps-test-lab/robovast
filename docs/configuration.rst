@@ -88,6 +88,7 @@ name
 **Required:** Yes
 
 A unique identifier for the scenario. This name will be used as the directory name for results.
+It must be lowercase and must not contain underscores, spaces, or periods (use hyphens instead).
 
 .. code-block:: yaml
 

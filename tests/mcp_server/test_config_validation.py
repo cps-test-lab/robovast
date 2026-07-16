@@ -57,6 +57,51 @@ def test_multiple_errors_collected_with_locations(tmp_path):
     assert var_problem["config"] == "c1"  # located to the config block
 
 
+def test_local_plugin_refs_are_interface_checked(tmp_path):
+    """postprocessing / search strategy / extractor local refs are validated."""
+    (tmp_path / "plugins").mkdir()
+    (tmp_path / "plugins" / "bad_post.py").write_text("class NotAPlugin:\n    pass\n")
+    (tmp_path / "plugins" / "bad_strategy.py").write_text("class BadStrategy:\n    pass\n")
+    (tmp_path / "plugins" / "bad_extract.py").write_text(
+        "from robovast.search.extractor import Extractor\n"
+        "class BadExtract(Extractor):\n    pass\n")
+    (tmp_path / "scenario.osc").write_text("")
+
+    vast = tmp_path / "broken.vast"
+    vast.write_text(
+        "version: 1\n"
+        "execution:\n"
+        "  scenario_file: scenario.osc\n"
+        "search:\n"
+        "  strategy: plugins/bad_strategy.py:BadStrategy\n"
+        "  search_space:\n"
+        "    wind: {type: float, low: 0.0, high: 5.0}\n"
+        "  objectives:\n"
+        "  - name: err\n"
+        "    direction: minimize\n"
+        "  budget:\n"
+        "  - max_generations: 2\n"
+        "  per_batch: 2\n"
+        "  postprocessing:\n"
+        "  - plugins/bad_post.py:NotAPlugin\n"
+        "  - plugins/does_not_exist.py:Ghost\n"
+        "  extract:\n"
+        "    plugin: plugins/bad_extract.py:BadExtract\n"
+        "results_processing:\n"
+        "  postprocessing:\n"
+        "  - plugins/bad_post.py:NotAPlugin\n"
+    )
+    report = validate_project_file(str(vast))
+    assert report["valid"] is False
+    stages = {p["stage"] for p in report["problems"]}
+    assert {"postprocessing", "search-strategy", "search-extractor"} <= stages
+    # Each problem is located to the offending field.
+    fields = {p["field"] for p in report["problems"]}
+    assert "search.strategy" in fields
+    assert "search.extract.plugin" in fields
+    assert any(f and f.startswith("results_processing.postprocessing") for f in fields)
+
+
 @pytest.mark.skipif(not (_GROWTH_SIM / "growth_sim.vast").exists(),
                     reason="growth_sim example not present")
 def test_valid_project_reports_counts(tmp_path):

@@ -181,11 +181,15 @@ def validate_project(config_path: str = "") -> dict:
     """Validate a RoboVAST project (``.vast`` file), reporting ALL problems at once.
 
     A ``.vast`` file defines a *project* (a campaign is one execution of it). This
-    checks the whole file — YAML, schema, variation types and their parameters,
-    the scenario file, and scenario-parameter references — and returns **every**
-    problem it finds in one pass, each tagged with the config block and field, so
-    the file can be fixed in as few iterations as possible. When valid, it also
-    returns the config/run counts (same math as ``vast config info``).
+    checks the whole file — YAML, schema, the scenario file, scenario-parameter
+    references, and every plugin reference (variation types and their parameters,
+    the ``results_processing``/``search`` postprocessing commands, and the search
+    strategy/extractor), whether installed entry-point names or local
+    ``./path.py:Class`` file refs — and returns **every** problem it finds in one
+    pass, each tagged with the config block and field, so the file can be fixed in
+    as few iterations as possible. When valid, it also returns the config/run
+    counts (same math as ``vast config info``). Same collect-all core as the
+    ``vast configuration validate`` CLI command.
 
     Args:
         config_path: Path to the ``.vast`` file. Empty uses the initialized

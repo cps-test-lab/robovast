@@ -29,6 +29,7 @@ All tools are provided by plugins registered under the
 ``robovast.mcp_plugins`` entry-point group.
 """
 
+import contextvars
 import json
 import logging
 
@@ -42,6 +43,17 @@ logger = logging.getLogger(__name__)
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8801
 _MAX_REPR = 400  # max chars for logged values
+
+#: The robovast logger subtree whose WARNING+ records are forwarded into tool
+#: results. Third-party warnings are intentionally excluded.
+_CAPTURED_LOGGER = "robovast"
+
+#: Per-call sink for captured warnings. Set by the forwarding middleware for the
+#: duration of each tool call; contextvars are task-local, so concurrent calls
+#: never see each other's warnings.
+_warning_sink: contextvars.ContextVar[list | None] = contextvars.ContextVar(
+    "robovast_mcp_warning_sink", default=None
+)
 
 
 def _extract_result(value: object) -> object:
@@ -79,6 +91,57 @@ def _short(value: object) -> str:
     if len(text) > _MAX_REPR:
         text = text[:_MAX_REPR] + "…"
     return text
+
+
+class _WarningCaptureHandler(logging.Handler):
+    """Collect WARNING+ messages into the active per-call sink, if any.
+
+    Installed once on the ``robovast`` logger. It only *records* messages; the
+    logger's own console handlers still emit them as before, so normal output is
+    unchanged.
+    """
+
+    def __init__(self):
+        super().__init__(level=logging.WARNING)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        sink = _warning_sink.get()
+        if sink is not None and record.levelno >= logging.WARNING:
+            sink.append(record.getMessage())
+
+
+def _install_warning_forwarding(mcp: FastMCP) -> None:
+    """Forward WARNING+ logs emitted during a tool call into that call's result.
+
+    Non-fatal advisories (e.g. an ``execution.run_files`` pattern that matched
+    nothing) are logged, never returned, so an MCP client never sees them. This
+    middleware captures them generically for *every* tool and appends them to the
+    result as an extra text block plus a ``meta.warnings`` list — no per-tool code.
+    """
+    from fastmcp.server.middleware import Middleware, MiddlewareContext  # pylint: disable=import-outside-toplevel
+    from mcp.types import TextContent  # pylint: disable=import-outside-toplevel
+
+    logging.getLogger(_CAPTURED_LOGGER).addHandler(_WarningCaptureHandler())
+
+    class _WarningForwardingMiddleware(Middleware):
+        async def on_call_tool(self, context: MiddlewareContext, call_next):  # type: ignore[override]
+            sink: list[str] = []
+            token = _warning_sink.set(sink)
+            try:
+                result = await call_next(context)
+            finally:
+                _warning_sink.reset(token)
+            if sink:
+                header = f"⚠ {len(sink)} warning(s) during {context.message.name}:"
+                text = "\n".join([header, *(f"  - {m}" for m in sink)])
+                try:
+                    result.content = list(result.content) + [TextContent(type="text", text=text)]
+                    result.meta = {**(result.meta or {}), "warnings": list(sink)}
+                except Exception:  # noqa: BLE001 - never let attaching warnings break a call
+                    logger.debug("Could not attach warnings to result.", exc_info=True)
+            return result
+
+    mcp.add_middleware(_WarningForwardingMiddleware())
 
 
 def _install_debug_logging(mcp: FastMCP, level: int) -> None:
@@ -138,6 +201,8 @@ def create_server(
 
     plugins = load_plugins(mcp)
     plugin_names = [p.name for p in plugins]
+
+    _install_warning_forwarding(mcp)
 
     logger.info(
         f"Started MCP server: host={host}, port={port}, debug={debug}, plugins=[{', '.join(plugin_names)}]"

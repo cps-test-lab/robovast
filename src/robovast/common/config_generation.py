@@ -583,7 +583,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         )
         _cached = _cache_meta.get_json(_cache_key)
         if _cached is not None:
-            logger.info("Cache HIT for generate_scenario_variations (%s)", variation_file)
+            logger.debug("Cache HIT for generate_scenario_variations (%s)", variation_file)
             # Restore the whole output_dir from the tarball when the caller wants it.
             if output_dir is not None:
                 _tar_path = _cache_artifacts.get(_cache_key, content=False)
@@ -615,7 +615,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                 _cached["_output_dir"] = os.path.abspath(output_dir)
             progress_update_callback("Loaded configurations from cache (no changes detected).")
             return _cached, _rebuild_variation_gui_classes(configurations, vast_dir)
-        logger.info("Cache MISS for generate_scenario_variations (%s)", variation_file)
+        logger.debug("Cache MISS for generate_scenario_variations (%s)", variation_file)
     else:
         _cache_meta = None
         _cache_artifacts = None

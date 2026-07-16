@@ -87,7 +87,15 @@ def resolve_postprocessing_plugin(plugin_name: str, config_dir: str,
     """
     if is_file_ref(plugin_name):
         cls = load_ref(plugin_name, POSTPROCESSING_GROUP, config_dir)
-        return cls() if inspect.isclass(cls) else cls
+        plugin = cls() if inspect.isclass(cls) else cls
+        # A postprocessing plugin is invoked by calling it (BasePostprocessingPlugin
+        # via __call__, or a plain callable). Reject anything else up front so the
+        # error is reported at load/validation time rather than mid-run.
+        if not callable(plugin):
+            raise ValueError(
+                f"Postprocessing plugin '{plugin_name}' is not callable; it must be "
+                f"a BasePostprocessingPlugin subclass or a callable.")
+        return plugin
     if plugins is None:
         plugins = load_postprocessing_plugins()
     if plugin_name not in plugins:

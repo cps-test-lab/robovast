@@ -69,7 +69,10 @@ class ScenarioParameterConfig(BaseModel):
 
 
 class ConfigurationConfig(BaseModel):
-    name: str
+    name: str = Field(
+        description="Unique scenario identifier, also used as the results "
+        "directory name. Lowercase only; no underscores, spaces, or periods "
+        "(e.g. 'nav2-controller-comparison').")
     parameters: Optional[list[ScenarioParameterConfig]] = None
     variations: Optional[list[VariationConfig]] = None
 

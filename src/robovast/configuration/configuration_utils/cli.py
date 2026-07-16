@@ -141,6 +141,122 @@ def info():
         handle_cli_exception(e)
 
 
+@configuration.command(name='validate')
+@click.option('--input', 'input_file', default=None, type=click.Path(exists=True),
+              help='.vast file to validate. Defaults to the project config file.')
+def validate(input_file):
+    """Validate a .vast file, reporting ALL problems at once.
+
+    Runs the same collect-all linter as the ``validate_project`` MCP tool: YAML,
+    schema, the scenario file and its parameter references, and every plugin
+    reference — variation types, postprocessing commands, and the search
+    strategy/extractor — whether installed or local ``./path.py:Class`` refs.
+    Exits non-zero if any problem is found.
+    """
+    from robovast.common.config_validation import \
+        validate_project_file  # pylint: disable=import-outside-toplevel
+
+    config = input_file or get_project_config().config_path
+    report = validate_project_file(config)
+
+    problems = report.get("problems", [])
+    if report.get("valid"):
+        click.echo(click.style("✓ Valid", fg="green"))
+        click.echo(f"Configurations: {report.get('configs', 0)}")
+        click.echo(f"Runs per configuration: {report.get('runs_per_config', 0)}")
+        click.echo(f"Total runs: {report.get('total_trials', 0)}")
+        return
+
+    click.echo(click.style(f"✗ {len(problems)} problem(s) found:", fg="red"))
+    for p in problems:
+        location = " ".join(filter(None, [
+            f"[{p['stage']}]" if p.get("stage") else None,
+            f"config={p['config']}" if p.get("config") else None,
+            f"field={p['field']}" if p.get("field") else None,
+        ]))
+        click.echo(f"  - {location}: {p.get('message', '')}" if location
+                   else f"  - {p.get('message', '')}")
+    sys.exit(1)
+
+
+@configuration.command(name='plugins')
+@click.option('--group', default='robovast.variation_types', show_default=True,
+              help='Entry-point group to list.')
+def plugins_cmd(group):
+    """List installed plugins for an extension group.
+
+    Defaults to the variation types usable in a ``.vast`` ``variations`` block.
+    Pass a name to ``vast configuration plugin-info`` for its parameter schema.
+    """
+    eps = sorted(entry_points(group=group), key=lambda e: e.name)
+    if not eps:
+        click.echo(click.style(f"No plugins found in group '{group}'.", fg="yellow"))
+        return
+    width = max(len(ep.name) for ep in eps)
+    for ep in eps:
+        summary = _plugin_doc_summary(ep) or ""
+        click.echo(f"  {ep.name.ljust(width)}  {summary}")
+
+
+@configuration.command(name='plugin-info')
+@click.argument('name', metavar='NAME')
+@click.option('--group', default='robovast.variation_types', show_default=True,
+              help='Entry-point group the plugin belongs to.')
+def plugin_info(name, group):
+    """Show a plugin's docstring and its accepted parameter schema.
+
+    The CLI counterpart to the ``get_plugin_details`` MCP tool: for a plugin that
+    declares a parameter model (variation types via ``CONFIG_CLASS``, search
+    strategies via ``PARAMS_MODEL``) it prints each parameter's name, type,
+    whether it is required, and its default — the field schema that the top-level
+    ``.vast`` JSON Schema cannot express. Exits non-zero for an unknown plugin.
+    """
+    from robovast.common.plugin_schema import \
+        plugin_parameter_schema  # pylint: disable=import-outside-toplevel
+
+    matches = [ep for ep in entry_points(group=group) if ep.name == name]
+    if not matches:
+        click.echo(click.style(
+            f"✗ No plugin '{name}' found in group '{group}'.", fg="red"))
+        sys.exit(1)
+
+    ep = matches[0]
+    click.echo(click.style(ep.name, fg="green", bold=True) + f"  ({ep.value})")
+    doc = _plugin_doc_summary(ep, max_lines=0)
+    if doc:
+        click.echo(doc)
+
+    params = plugin_parameter_schema(group, name)
+    if not params:
+        click.echo("\nParameters: (none declared)")
+        return
+
+    click.echo("\nParameters:")
+    headers = ("name", "type", "required", "default")
+    rows = [(p["name"], p["type"], "yes" if p["required"] else "no",
+             "" if "default" not in p else repr(p["default"])) for p in params]
+    widths = [max(len(h), *(len(r[i]) for r in rows)) for i, h in enumerate(headers)]
+    click.echo("  " + "  ".join(h.ljust(widths[i]) for i, h in enumerate(headers)))
+    click.echo("  " + "  ".join("-" * widths[i] for i in range(len(headers))))
+    for row in rows:
+        click.echo("  " + "  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)))
+
+
+def _plugin_doc_summary(ep, max_lines: int = 1):
+    """Return up to *max_lines* non-blank docstring lines for entry point *ep*."""
+    import textwrap  # pylint: disable=import-outside-toplevel
+    try:
+        obj = ep.load()
+    except Exception:  # noqa: BLE001 - a broken plugin must not break the listing
+        return None
+    raw = getattr(obj, "__doc__", None) or ""
+    lines = [l for l in textwrap.dedent(raw).strip().splitlines() if l.strip()]
+    if not lines:
+        return None
+    selected = lines if max_lines == 0 else lines[:max_lines]
+    return "\n".join(selected)
+
+
 @configuration.command(name='export-configs')
 @click.argument('args', nargs=-1, required=True, metavar='PATTERN... OUTPUT')
 @click.option('--input', 'input_file', default=None, type=click.Path(exists=True),

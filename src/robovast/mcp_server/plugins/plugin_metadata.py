@@ -28,6 +28,8 @@ from importlib.metadata import entry_points
 
 from fastmcp import FastMCP
 
+from robovast.common.plugin_schema import schema_from_object
+
 logger = logging.getLogger(__name__)
 
 
@@ -97,20 +99,24 @@ _PLUGIN_GROUPS: dict[str, dict] = {
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _load_doc(ep, max_lines: int = 1) -> str | None:  # type: ignore[type-arg]
-    """Load *ep* and return up to *max_lines* lines of its docstring, or ``None``.
+def _doc_from_obj(obj, max_lines: int = 1) -> str | None:
+    """Return up to *max_lines* lines of *obj*'s docstring, or ``None``.
 
     With the default of ``max_lines=1`` only the summary line is returned.
     Pass a larger value (or ``0`` for unlimited) to get more detail.
     """
+    raw = getattr(obj, "__doc__", None) or ""
+    lines = [l for l in textwrap.dedent(raw).strip().splitlines() if l.strip()]
+    if not lines:
+        return None
+    selected = lines if max_lines == 0 else lines[:max_lines]
+    return " ".join(selected) or None
+
+
+def _load_doc(ep, max_lines: int = 1) -> str | None:  # type: ignore[type-arg]
+    """Load *ep* and return up to *max_lines* lines of its docstring, or ``None``."""
     try:
-        obj = ep.load()
-        raw = getattr(obj, "__doc__", None) or ""
-        lines = [l for l in textwrap.dedent(raw).strip().splitlines() if l.strip()]
-        if not lines:
-            return None
-        selected = lines if max_lines == 0 else lines[:max_lines]
-        return " ".join(selected) or None
+        return _doc_from_obj(ep.load(), max_lines)
     except Exception as exc:  # noqa: BLE001
         logger.debug("Could not load %r for doc extraction: %s", ep.value, exc)
         return None
@@ -152,24 +158,26 @@ def list_plugins(group: str = "") -> list[dict]:
         group: Entry-point group name, e.g. ``"robovast.mcp_plugins"``
                or ``"robovast.postprocessing_commands"``.
     """
-    groups = []
     if group:
         groups = [group] if group in _PLUGIN_GROUPS else []
     else:
         groups = list(_PLUGIN_GROUPS.keys())
-    
+
+    if not groups:
+        return [{"error": f"No plugins found in group '{group}'."}]
+
+    records = []
     for grp in groups:
-        records = []
         for ep in entry_points(group=grp):
             records.append(
                 {
+                    "group": grp,
                     "name": ep.name,
                     "class": ep.value,
                     "doc": _load_doc(ep),
                 }
             )
-        return sorted(records, key=lambda r: r["name"])
-    return [{"error": f"No plugins found in group '{group}'."}]
+    return sorted(records, key=lambda r: (r["group"], r["name"]))
 
 
 def search_plugin(name: str) -> list[dict]:
@@ -221,7 +229,12 @@ def get_plugin_details(group: str, name: str, max_lines: int = 0) -> dict:
     """Get full details for a specific plugin.
 
     Loads the entry point identified by *group* and *name* and returns its
-    import target together with the plugin's docstring.
+    import target together with the plugin's docstring. When the plugin declares
+    a parameter model (variation types via ``CONFIG_CLASS``, search strategies
+    via ``PARAMS_MODEL``), a ``parameters`` field lists each accepted parameter's
+    ``name``, ``type``, whether it is ``required``, and its ``default`` — the
+    field schema is not expressible in the top-level ``.vast`` JSON Schema, so
+    this is the only place to see it before authoring a config.
 
     Args:
         group: Extension group name, e.g. ``"robovast.postprocessing_commands"``.
@@ -233,12 +246,22 @@ def get_plugin_details(group: str, name: str, max_lines: int = 0) -> dict:
     if not matches:
         return {"error": f"No plugin '{name}' found in group '{group}'."}
     ep = matches[0]
-    return {
+    try:
+        obj = ep.load()
+    except Exception as exc:  # noqa: BLE001 - a broken plugin must not raise here
+        logger.debug("Could not load %r for details: %s", ep.value, exc)
+        obj = None
+
+    details = {
         "group": group,
         "name": ep.name,
         "class": ep.value,
-        "doc": _load_doc(ep, max_lines=max_lines),
+        "doc": _doc_from_obj(obj, max_lines) if obj is not None else None,
     }
+    parameters = schema_from_object(obj) if obj is not None else None
+    if parameters is not None:
+        details["parameters"] = parameters
+    return details
 
 
 # ---------------------------------------------------------------------------

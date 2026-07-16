@@ -121,6 +121,8 @@ zenodo = "robovast.results_processing.publication_plugins.zenodo:Zenodo"
 
 [tool.poetry.plugins."robovast.mcp_plugins"]
 docs = "robovast.mcp_server.plugins.docs:DocsPlugin"
+examples = "robovast.mcp_server.plugins.examples:ExamplesPlugin"
+reference = "robovast.mcp_server.plugins.reference:ReferencePlugin"
 campaign_metadata = "robovast.mcp_server.plugins.campaign_metadata:CampaignMetadataPlugin"
 configuration_metadata = "robovast.mcp_server.plugins.configuration_metadata:ConfigurationMetadataPlugin"
 plugin_metadata = "robovast.mcp_server.plugins.plugin_metadata:PluginMetadataPlugin"
