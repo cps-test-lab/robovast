@@ -75,7 +75,9 @@ def test_installs_into_workspace_dir_and_adds_syspath(tmp_path, monkeypatch):
     target = str(tmp_path / PLUGIN_DIRNAME)
     assert result == target
     assert calls["target"] == target and calls["specs"] == ["totally-made-up-pkg==1.0"]
-    assert sys.path[0] == target                      # prepended
+    # Prepended so the plugin's pinned deps win (safe: imports run only in the
+    # isolated compose subprocess, never in the long-lived service).
+    assert sys.path[0] == target
     assert os.path.isfile(os.path.join(target, MARKER_NAME))  # marker written
 
 
@@ -93,7 +95,7 @@ def test_marker_hit_skips_install(tmp_path, monkeypatch):
     monkeypatch.setattr(cp, "_install_target", boom)
     target = ensure_workspace_plugins(str(tmp_path), specs)
     assert target == str(tmp_path / PLUGIN_DIRNAME)
-    assert sys.path[0] == target  # still put on sys.path
+    assert sys.path[0] == target  # still put on sys.path (prepended)
 
 
 def test_changed_specs_reinstall(tmp_path, monkeypatch):

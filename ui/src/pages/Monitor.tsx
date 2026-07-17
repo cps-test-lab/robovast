@@ -60,6 +60,12 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
         ) : null}
       </Stack>
 
+      {stop.isError ? (
+        <Alert severity="error" sx={{ mb: 1 }}>
+          Stop failed: {(stop.error as Error).message}
+        </Alert>
+      ) : null}
+
       {status.isError ? (
         <Stack direction="row" spacing={1} alignItems="center">
           <PhaseChip phase={phase} />

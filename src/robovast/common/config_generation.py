@@ -17,10 +17,13 @@
 import contextvars
 import copy
 import fnmatch
+import json
 import logging
 import os
 import re
 import ssl
+import subprocess  # nosec B404 - spawns the trusted robovast compose worker
+import sys
 import tarfile
 import tempfile
 import time
@@ -107,10 +110,35 @@ def set_container_runner_factory(factory):
     return _container_runner_factory.set(factory)
 
 
+#: Set in the child environment of the isolated compose subprocess. Its presence
+#: makes ``generate_scenario_variations`` run the composition in-process (no further
+#: fork) — see ``_compose_isolated`` and the dispatch in that function.
+_ISOLATED_ENV = "ROBOVAST_ISOLATED_COMPOSE"
+
+#: Set in the isolated worker's env only when the *parent* had a backend
+#: ContainerRunner factory active (a cluster run). The factory is a ContextVar that
+#: cannot cross the process boundary, so an aux-container variation cannot be built
+#: in the worker; this flag lets ``_make_container_runner`` raise a clear error
+#: instead of silently falling back to a local ``docker run`` that a cluster
+#: controller pod cannot provide.
+_ISOLATED_NO_BACKEND = "ROBOVAST_ISOLATED_NO_BACKEND"
+
+
 def _make_container_runner(spec):
     """Build a runner for *spec* using the active factory (local fallback)."""
     if spec is None:
         return None
+    if os.environ.get(_ISOLATED_NO_BACKEND) == "1" and _container_runner_factory.get() is None:
+        # Isolated compose subprocess of a cluster run: the backend's runner factory
+        # (a ContextVar) did not cross the process boundary, and a local docker
+        # runner is not available in a controller pod. Fail clearly rather than
+        # obscurely. Full support (a serializable runner descriptor handed to the
+        # worker) is a documented follow-up.
+        raise RuntimeError(
+            "A variation requires an auxiliary container during composition, which "
+            "is not yet supported under isolated plugin composition on a cluster "
+            "backend. Run this campaign locally, or remove the aux-container "
+            "variation from the plugin composition.")
     factory = _container_runner_factory.get()
     if factory is not None:
         return factory(spec)
@@ -526,7 +554,133 @@ def _rebuild_variation_gui_classes(configurations: list, vast_dir="") -> dict:
     return gui_classes
 
 
-def generate_scenario_variations(variation_file, progress_update_callback=None, variation_classes=None, output_dir=None, use_cache=True):
+def _result_to_transport(result: dict) -> dict:
+    """Serialize a composition ``result`` to a JSON-safe transport dict.
+
+    This is the single serialization used by BOTH the on-disk cache and the
+    isolated-compose IPC boundary, so a campaign composed in a subprocess is
+    byte-for-byte identical to a cached one. Per-config ``_config_files`` /
+    ``_config_transient_files`` ``(rel, path)`` tuples become tagged dicts (source
+    files keep their absolute path; artifacts store the path relative to
+    ``output_dir``); ephemeral fields (``_output_dir``, ``_transient_files``,
+    ``_config_block``) are dropped.
+    """
+    transport = copy.deepcopy(result)
+    transport["_transient_files"] = []
+    transport.pop("_output_dir", None)
+    for cfg in transport.get("configs", []):
+        cfg.pop("_config_block", None)
+        storable = []
+        for rel, path in cfg.get("_config_files", []):
+            if os.path.isabs(rel):
+                raise ValueError(
+                    f"_config_files entry has an absolute deploy path '{rel}' "
+                    f"in config '{cfg.get('name')}'. "
+                    "Variation plugins must use relative paths in _config_files.")
+            if os.path.isabs(path):  # source file — stable project path
+                storable.append({"rel": rel, "abs": path, "kind": "source"})
+            else:  # artifact — relative to output_dir
+                storable.append({"rel": rel, "rel_from_output": path, "kind": "artifact"})
+        cfg["_config_files"] = storable
+        cfg["_config_transient_files"] = [
+            {"rel": rel, "rel_from_output": path}
+            for rel, path in cfg.get("_config_transient_files", [])
+        ]
+    return convert_dataclasses_to_dict(transport)
+
+
+def _result_from_transport(data: dict, output_dir) -> dict:
+    """Reconstruct a composition result (in place) from a transport dict.
+
+    Inverse of :func:`_result_to_transport`: tagged ``_config_files`` /
+    ``_config_transient_files`` dicts become ``(rel, path)`` tuples again, and
+    ``_output_dir`` is restored from the caller's *output_dir* so relative artifact
+    paths resolve. Plugin-free — safe to run in the parent process.
+    """
+    for cfg in data.get("configs", []):
+        rebuilt = []
+        for entry in cfg.get("_config_files", []):
+            rel = entry["rel"]
+            if entry["kind"] == "source":
+                rebuilt.append((rel, entry["abs"]))
+            else:  # artifact — keep relative to output_dir
+                rebuilt.append((rel, entry["rel_from_output"]))
+        cfg["_config_files"] = rebuilt
+        cfg["_config_transient_files"] = [
+            (entry["rel"], entry["rel_from_output"])
+            for entry in cfg.get("_config_transient_files", [])
+        ]
+    if output_dir is not None:
+        data["_output_dir"] = os.path.abspath(output_dir)
+    return data
+
+
+def _compose_isolated(variation_file, output_dir, use_cache, progress_update_callback):
+    """Compose a ``plugins:``-declaring .vast in an isolated subprocess.
+
+    The worker leads ``sys.path`` with the project's ``.robovast_plugins`` so the
+    plugin's pinned dependencies (which may conflict with the service's — e.g. a
+    forked rdflib) win in that fresh process and never touch the long-lived robovast
+    process. Only ``campaign_data`` crosses back, as the cache-transport JSON;
+    artifacts are written into the shared *output_dir* on disk. The worker's output
+    (pip install progress, composition progress, and any plugin traceback) is
+    streamed live and, on failure, surfaced in the raised error.
+    """
+    if output_dir is None:
+        output_dir = tempfile.mkdtemp(prefix="robovast_isolated_compose_")
+    output_dir = os.path.abspath(output_dir)
+    os.makedirs(output_dir, exist_ok=True)
+
+    env = dict(os.environ)
+    env[_ISOLATED_ENV] = "1"
+    # A backend aux-container factory (a ContextVar) cannot cross into the worker;
+    # signal it to fail clearly if a variation needs one (see _make_container_runner).
+    if _container_runner_factory.get() is not None:
+        env[_ISOLATED_NO_BACKEND] = "1"
+
+    with tempfile.TemporaryDirectory(prefix="robovast_compose_job_") as jobdir:
+        result_path = os.path.join(jobdir, "result.json")
+        job_path = os.path.join(jobdir, "job.json")
+        with open(job_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "variation_file": os.path.abspath(variation_file),
+                "output_dir": output_dir,
+                "use_cache": bool(use_cache),
+                "result_path": result_path,
+            }, f)
+
+        cmd = [sys.executable, "-m", "robovast.common.compose_worker", job_path]
+        output_lines: list = []
+        # Merge stderr into stdout so a full pipe on either stream cannot deadlock;
+        # the plugin traceback (stderr) is interleaved and captured for the error.
+        proc = subprocess.Popen(  # nosec B603 - fixed module, config-derived job file
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, env=env)
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            line = line.rstrip("\n")
+            output_lines.append(line)
+            print(line, flush=True)
+            progress_update_callback(line)
+        returncode = proc.wait()
+
+        if returncode != 0:
+            tail = "\n".join(output_lines[-25:])
+            raise RuntimeError(
+                f"Isolated plugin composition failed (exit {returncode}):\n{tail}")
+
+        try:
+            with open(result_path, encoding="utf-8") as f:
+                transport = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            tail = "\n".join(output_lines[-25:])
+            raise RuntimeError(
+                f"Isolated plugin composition produced no result ({e}):\n{tail}") from e
+
+    return _result_from_transport(transport, output_dir)
+
+
+def generate_scenario_variations(variation_file, progress_update_callback=None, variation_classes=None, output_dir=None, use_cache=True, isolate_plugins=True):
     """Generate all scenario variation configs from a .vast file.
 
     Caching is active for all flows when ``use_cache=True``.  Two cache
@@ -540,6 +694,16 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     On a cache hit the metadata JSON is returned immediately and, when an
     ``output_dir`` was provided, the artifact tarball is extracted there so
     that ``_config_files`` absolute paths are valid.
+
+    When the .vast declares external variation-plugin packages (``plugins:``) and
+    ``isolate_plugins`` is true (the default), the composition runs in an isolated
+    subprocess (:func:`_compose_isolated`) so the plugin and its pinned dependencies
+    are imported there — never in this long-lived process — and cannot clash with
+    robovast's own. Only ``campaign_data`` crosses back; the second return value
+    (variation GUI classes) is then ``{}``. The interactive GUI config editor, which
+    needs the live GUI classes, passes ``isolate_plugins=False`` to compose in-process
+    (it already runs in its own desktop process). A warm cache hit returns without
+    forking. Built-in-only vasts (no ``plugins:``) always compose in-process.
     """
     if not progress_update_callback:
         progress_update_callback = logger.debug
@@ -586,6 +750,21 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     for af in analysis_files:
         _validate_relative_path(af, "analysis file")
 
+    # Whether this composition must run in an isolated subprocess: the .vast declares
+    # external variation-plugin packages (``plugins:``), the caller allows isolation
+    # (the interactive GUI editor opts out to keep live GUI classes), variation
+    # classes were not pre-supplied, and we are not already inside the isolated
+    # worker. When true, the plugin is imported only in that subprocess — never in
+    # this (long-lived) process — so its pinned dependencies cannot clash with ours.
+    # The flag also gates the cache-hit GUI rebuild below, which would import the
+    # plugin in-process.
+    should_isolate = (
+        bool(parameters.get("plugins"))
+        and isolate_plugins
+        and variation_classes is None
+        and os.environ.get(_ISOLATED_ENV) != "1"
+    )
+
     # --- Cache check ---
     # Cache is active for all flows when use_cache=True and variation_classes is None.
     # Two cache entries share the same key:
@@ -615,41 +794,38 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                     with tarfile.open(_tar_path, "r:gz") as tar:
                         tar.extractall(output_dir)  # nosec – trusted local cache
                     logger.debug("Restored output_dir from cache tar to %s", output_dir)
-            # Reconstruct _config_files and _config_transient_files as (rel, path) tuples,
-            # using the same format as the non-cached path: source files keep their
-            # absolute path; artifact files use rel_from_output (relative to output_dir).
-            for cfg in _cached.get("configs", []):
-                rebuilt = []
-                for entry in cfg.get("_config_files", []):
-                    rel = entry["rel"]
-                    if entry["kind"] == "source":
-                        rebuilt.append((rel, entry["abs"]))
-                    else:  # artifact — keep relative to output_dir
-                        rebuilt.append((rel, entry["rel_from_output"]))
-                cfg["_config_files"] = rebuilt
-
-                cfg["_config_transient_files"] = [
-                    (entry["rel"], entry["rel_from_output"])
-                    for entry in cfg.get("_config_transient_files", [])
-                ]
-            # Expose the output_dir so callers (e.g. execution.py) can resolve
-            # relative artifact paths without needing extra context.
-            if output_dir is not None:
-                _cached["_output_dir"] = os.path.abspath(output_dir)
+            # Reconstruct _config_files/_config_transient_files as (rel, path) tuples
+            # and expose _output_dir — the same transform the isolated boundary uses,
+            # so cached and freshly-composed results are structurally identical.
+            _cached = _result_from_transport(_cached, output_dir)
             progress_update_callback("Loaded configurations from cache (no changes detected).")
-            return _cached, _rebuild_variation_gui_classes(configurations, vast_dir)
+            # A plugin campaign's cache hit returns here WITHOUT importing the plugin:
+            # skip the GUI rebuild (which would import it in-process). Headless callers
+            # discard GUI classes anyway; the GUI editor opts out of isolation.
+            gui_classes = {} if should_isolate else _rebuild_variation_gui_classes(configurations, vast_dir)
+            return _cached, gui_classes
         logger.debug("Cache MISS for generate_scenario_variations (%s)", variation_file)
     else:
         _cache_meta = None
         _cache_artifacts = None
         _cache_key = None
 
+    # Cache miss for a plugin campaign: compose in an isolated subprocess so the
+    # plugin (and its pinned deps) are imported there, never in this process. The
+    # worker writes artifacts into the shared output_dir and returns campaign_data;
+    # GUI classes are skipped (headless callers discard them). The worker itself
+    # writes the cache, so the next build hits the fast path above without forking.
+    if should_isolate:
+        return _compose_isolated(variation_file, output_dir, use_cache, progress_update_callback), {}
+
     # About to compose (cache miss, or caching disabled). Ensure any variation-plugin
     # packages the .vast declares in ``plugins:`` are installed into the workspace's
     # ``.robovast_plugins/`` dir and on ``sys.path`` before resolving variation types
     # from entry points. Idempotent: in a controller pod the dir was staged with the
     # project so this only adjusts ``sys.path``. Skipped when the caller supplies
-    # precomputed ``variation_classes``.
+    # precomputed ``variation_classes``. In the isolated worker this is where the
+    # plugin actually gets installed/imported (``_ISOLATED_ENV`` is set, so we reach
+    # here rather than re-forking).
     if variation_classes is None:
         ensure_workspace_plugins(vast_dir, parameters.get("plugins"))
 
@@ -834,38 +1010,10 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     # --- Store result in cache ---
     if _cache_meta is not None and _cache_key is not None:
         try:
-            cacheable = copy.deepcopy(result)
-            # Strip ephemeral / run-specific fields before storing.
-            cacheable["_transient_files"] = []
-            cacheable.pop("_output_dir", None)  # reconstructed from caller's output_dir on hit
-
-            # _config_files: after normalization, artifact paths are already relative to
-            # output_dir while source paths remain absolute.  Detect by os.path.isabs.
-            for cfg in cacheable.get("configs", []):
-                cfg.pop("_config_block", None)
-
-                raw_files = cfg.get("_config_files", [])
-                storable = []
-                for rel, path in raw_files:
-                    if os.path.isabs(rel):
-                        raise ValueError(
-                            f"_config_files entry has an absolute deploy path '{rel}' "
-                            f"in config '{cfg.get('name')}'. "
-                            "Variation plugins must use relative paths in _config_files."
-                        )
-                    if os.path.isabs(path):  # source file — stable project path
-                        storable.append({"rel": rel, "abs": path, "kind": "source"})
-                    else:  # artifact — relative to output_dir
-                        storable.append({"rel": rel, "rel_from_output": path, "kind": "artifact"})
-                cfg["_config_files"] = storable
-
-                # _config_transient_files are always artifacts (relative after normalization)
-                raw_transient = cfg.get("_config_transient_files", [])
-                cfg["_config_transient_files"] = [
-                    {"rel": rel, "rel_from_output": path} for rel, path in raw_transient
-                ]
-
-            _cache_meta.set_json(_cache_key, convert_dataclasses_to_dict(cacheable))
+            # Same JSON-safe transform the isolated-compose boundary uses (tuples →
+            # tagged dicts, ephemeral fields stripped), so a cached campaign matches a
+            # subprocess-composed one byte-for-byte.
+            _cache_meta.set_json(_cache_key, _result_to_transport(result))
             logger.debug("Stored generate_scenario_variations metadata in cache")
 
             # Archive the entire output_dir as a single tarball.

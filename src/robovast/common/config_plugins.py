@@ -31,18 +31,25 @@ install **once, into the workspace**:
 
 * :func:`ensure_workspace_plugins` installs the declared specs into
   ``<vast_dir>/.robovast_plugins/`` with ``pip install --target`` and records a
-  ``.installed`` marker (a hash of the specs), then puts that directory on
-  ``sys.path`` so entry points resolve in the current process.
+  ``.installed`` marker (a hash of the specs), then **prepends** that directory to
+  ``sys.path`` so entry points resolve and the plugin's pinned dependencies win.
 * The directory is a normal part of the project tree, so it is staged to the
   object store and downloaded into the controller pod with everything else. There
   the marker already matches, so the install is **skipped** and the pod merely
   imports off ``sys.path`` — no pip, no git, no credentials.
 
 Installing to ``--target`` (not the active venv) keeps this **non-invasive**: a
-local run never mutates the user's site-packages. Because the service is a single
-long-lived process, a plugin already imported from elsewhere (another workspace)
-cannot be replaced — Python cannot un-import — so we **warn** rather than silently
-serve a stale version.
+local run never mutates the user's site-packages. Prepending is what lets a plugin's
+pinned dependency win over a different version the host also ships (``--target``
+pulls the full closure, e.g. a *forked* ``rdflib`` the plugin requires) — a mismatch
+would otherwise silently break composition (a wrong ``rdflib`` mangles JSON-LD
+parsing). **This is only safe because plugin composition runs in the isolated
+subprocess** (``config_generation._compose_isolated``): a fresh, short-lived process
+whose ``sys.path`` this rearranges — never the long-lived robovast service, which
+never imports plugin code. Because that worker is short-lived and single-purpose,
+the ``_warn_if_already_loaded`` first-wins caveat below is effectively moot there;
+it still guards any in-process caller (e.g. the GUI editor) that opts out of
+isolation.
 """
 
 import hashlib
@@ -272,7 +279,17 @@ def _is_importable(spec: str) -> bool:
 
 
 def _prepend_sys_path(target_dir: str) -> None:
-    """Put *target_dir* first on ``sys.path`` and refresh import caches."""
+    """Put *target_dir* **first** on ``sys.path`` and refresh import caches.
+
+    Prepended so the workspace's pinned plugin dependencies win — a plugin may
+    need a *different* version of a package the environment also ships (``rdflib``,
+    ``pyld``, …), and a mismatch silently breaks it (e.g. a newer ``rdflib`` drops
+    remote JSON-LD ``@context`` triples the plugin relies on). This is only safe
+    because plugin imports happen in the **isolated compose subprocess** (see
+    ``config_generation._compose_isolated``), never in the long-lived service
+    process — so forcing the plugin's versions here cannot disturb robovast's own
+    use of those packages.
+    """
     if target_dir in sys.path:
         sys.path.remove(target_dir)
     sys.path.insert(0, target_dir)

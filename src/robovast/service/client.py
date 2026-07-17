@@ -142,6 +142,11 @@ class LocalTransport(RobovastInterface):
     #: ``robovast``, so two concurrent local campaigns would collide.
     _CONTAINER_NAME = "robovast"
 
+    #: How long to wait, on shutdown, for a stopped campaign's worker thread to
+    #: run its container teardown before we exit anyway. A hair over the backend's
+    #: SIGTERM grace (``_STOP_GRACE_SECONDS`` = 15s) so the trap can complete.
+    _SHUTDOWN_JOIN_SECONDS = 20
+
     def __init__(self, store=None, workspace_dirs=None):
         self._campaigns: dict[str, _LocalCampaign] = {}
         self._lock = threading.Lock()
@@ -496,13 +501,48 @@ class LocalTransport(RobovastInterface):
         if entry is None:
             return ActionResult(ok=False, message=f"campaign {campaign_id} not tracked here")
         entry.state.request_stop()
-        # Kill the running scenario container so the worker unblocks promptly.
+        self._kill_scenario_container()
+        return ActionResult(ok=True, message="stop requested")
+
+    def _kill_scenario_container(self) -> None:
+        """Force-remove the single-flight scenario container so the worker unblocks.
+
+        The backend's run script (in its own session) is blocked on ``docker
+        compose``; removing the container makes it return promptly, then its
+        ``stop_requested`` poll tears the rest down. Best-effort — a missing
+        container is fine.
+        """
         try:
             subprocess.run(["docker", "rm", "-f", self._CONTAINER_NAME],  # noqa: S603,S607
                            check=False, capture_output=True)
         except OSError as e:
             logger.warning("docker rm -f %s failed: %s", self._CONTAINER_NAME, e)
-        return ActionResult(ok=True, message="stop requested")
+
+    def shutdown(self) -> None:
+        """Stop any in-flight campaign so Ctrl+C on ``vast serve`` tears it down.
+
+        Campaigns run on daemon worker threads, so a bare process exit would kill
+        the worker mid-run and orphan its ``docker compose`` containers. On
+        shutdown we request a cooperative stop of every still-running campaign
+        (same path as :meth:`stop`) and briefly join the workers so their
+        container-teardown traps complete before the process exits.
+        """
+        with self._lock:
+            running = [e for e in self._campaigns.values() if not self._is_done(e)]
+        if not running:
+            return
+        logger.info("Shutting down — stopping %d running campaign(s)", len(running))
+        for entry in running:
+            entry.state.request_stop()
+        # Single-flight: one scenario container backs whichever campaign is running.
+        self._kill_scenario_container()
+        for entry in running:
+            if entry.thread is not None:
+                entry.thread.join(timeout=self._SHUTDOWN_JOIN_SECONDS)
+                if entry.thread.is_alive():
+                    logger.warning(
+                        "Campaign %s did not stop within %ds; exiting anyway",
+                        entry.campaign_id, self._SHUTDOWN_JOIN_SECONDS)
 
     def list_campaigns(
         self, request: Optional[ListCampaignsRequest] = None

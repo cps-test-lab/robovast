@@ -57,10 +57,29 @@ DEFAULT_PORT = 8800
 
 def build_app(impl: RobovastInterface):
     """Build the FastAPI app bound to *impl* (lazy import; needs ``fastapi``)."""
+    from contextlib import \
+        asynccontextmanager  # pylint: disable=import-outside-toplevel
+
+    import anyio  # pylint: disable=import-outside-toplevel
     from fastapi import (Body, FastAPI,  # pylint: disable=import-outside-toplevel
                          HTTPException, Request)
 
-    app = FastAPI(title="robovast-service", docs_url="/docs")
+    @asynccontextmanager
+    async def _lifespan(_app):
+        """Run ``impl.shutdown()`` on service teardown (Ctrl+C on ``vast serve``).
+
+        uvicorn runs the lifespan shutdown when it catches SIGINT, but it does not
+        wait on the daemon worker threads a local campaign runs on. Stopping them
+        here — off the event loop, since the join blocks — lets a Ctrl+C tear down
+        the running campaign's containers instead of orphaning them.
+        """
+        yield
+        try:
+            await anyio.to_thread.run_sync(impl.shutdown)
+        except Exception:  # noqa: BLE001 - teardown must never mask the real exit
+            logger.exception("error during service shutdown")
+
+    app = FastAPI(title="robovast-service", docs_url="/docs", lifespan=_lifespan)
 
     def _guard(fn):
         """Map interface exceptions to clean HTTP errors instead of 500s."""

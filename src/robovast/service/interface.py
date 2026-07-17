@@ -626,3 +626,14 @@ class RobovastInterface(ABC):
         """Return the campaign's user-declared plots (``evaluation.plots`` in its
         snapshot ``.vast``): ``{title, query, vega_lite}`` each, rendered by the
         eval viewer against :meth:`query_campaign_data_sql`."""
+
+    # -- lifecycle ----------------------------------------------------------
+
+    def shutdown(self) -> None:
+        """Release resources when the service is stopping (Ctrl+C on ``vast serve``).
+
+        Called once from the app's lifespan teardown. The default is a no-op;
+        implementations that drive campaigns in-process (the local transport)
+        override it to stop still-running campaigns so their containers don't
+        outlive the process. Must not raise.
+        """

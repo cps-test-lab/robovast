@@ -83,10 +83,15 @@ class GenerationWorker(QObject):
     def run(self):
         """Run the generation process."""
         try:
+            # Compose in-process (isolate_plugins=False): the editor needs the live
+            # variation GUI classes to render, and it already runs in its own desktop
+            # process where importing the plugin is acceptable. All headless callers
+            # keep the default isolation and discard the GUI classes.
             campaign_data, variation_gui_classes = generate_scenario_variations(
                 variation_file=self.yaml_path,
                 progress_update_callback=self._check_interruption,
-                output_dir=self.output_dir
+                output_dir=self.output_dir,
+                isolate_plugins=False,
             )
 
             # Check if we were cancelled during generation
