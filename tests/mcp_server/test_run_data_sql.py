@@ -87,6 +87,33 @@ def test_empty_result_carries_note(campaign):
     assert r["row_count"] == 0 and "runs" in r.get("note", "")
 
 
+def test_multi_campaign_cross_query(campaign, tmp_path):
+    """A second campaign attaches as schema ``c1`` so two campaigns join in one query."""
+    # Build a minimal second campaign (just a data.db with a runs table).
+    other = tmp_path / "camp-2026-07-17-090000"
+    (other / "_execution").mkdir(parents=True)
+    db = sqlite3.connect(other / "_execution" / "data.db")
+    db.execute("CREATE TABLE runs (config_name TEXT, run_id INTEGER, objective REAL)")
+    db.executemany("INSERT INTO runs VALUES (?,?,?)",
+                   [("x", 0, 0.1), ("x", 1, 0.2), ("y", 0, 0.3)])
+    db.commit(); db.close()
+
+    r = run_data.query_campaign_data_sql(
+        campaign,
+        "SELECT (SELECT COUNT(*) FROM runs) AS a, (SELECT COUNT(*) FROM c1.runs) AS b",
+        extra_campaign_ids=[str(other)])
+    assert r["rows"][0]["a"] == 2   # primary campaign has 2 runs
+    assert r["rows"][0]["b"] == 3   # attached c1 has 3
+    assert r["attached"] == {"c1": str(other)}
+
+
+def test_single_campaign_query_unchanged_without_extra(campaign):
+    """Omitting extra_campaign_ids keeps the original single-campaign behavior."""
+    r = run_data.query_campaign_data_sql(campaign, "SELECT COUNT(*) n FROM runs")
+    assert r["rows"][0]["n"] == 2
+    assert "attached" not in r
+
+
 def test_list_campaign_plots(campaign):
     # Author-declared plots live in the snapshot .vast under evaluation.plots.
     config_dir = __import__("pathlib").Path(campaign) / "_config"

@@ -168,7 +168,15 @@ def _register_aggregates(conn: sqlite3.Connection) -> None:
     conn.create_aggregate("PERCENTILE", 2, _Percentile)
 
 
-def _open_db(campaign_dir) -> sqlite3.Connection:
+def _attach_ro(conn: sqlite3.Connection, db_path: Path, alias: str) -> None:
+    """Attach *db_path* read-only under *alias*, best-effort (logs on failure)."""
+    try:
+        conn.execute(f'ATTACH DATABASE ? AS "{alias}"', (f"file:{db_path}?mode=ro",))
+    except sqlite3.Error as e:
+        logger.debug("could not attach %s as %s: %s", db_path, alias, e)
+
+
+def _open_db(campaign_dir, extra_dirs: dict | None = None) -> sqlite3.Connection:
     """Open a campaign's queryable databases read-only.
 
     Prefers ``<campaign_dir>/_execution/data.db`` (the postprocessed metrics). When
@@ -178,7 +186,11 @@ def _open_db(campaign_dir) -> sqlite3.Connection:
     ``<campaign_dir>/campaign.db`` is attached read-only as schema ``campaign`` when
     present, and ``REGEXP`` + the statistical aggregates are registered.
 
-    Raises :class:`DataQueryError` only when neither database exists.
+    *extra_dirs* maps a SQL schema alias → another campaign directory; each such
+    campaign's ``data.db`` is attached under that alias (and its ``campaign.db`` as
+    ``<alias>_campaign``), so several campaigns can be compared in one query.
+
+    Raises :class:`DataQueryError` only when the primary campaign has neither database.
     """
     campaign_dir = Path(campaign_dir)
     data_db = campaign_dir / "_execution" / "data.db"
@@ -198,11 +210,15 @@ def _open_db(campaign_dir) -> sqlite3.Connection:
     conn.create_function("REGEXP", 2, _regexp)
     _register_aggregates(conn)
     if campaign_db.exists():
-        try:
-            conn.execute("ATTACH DATABASE ? AS campaign",
-                         (f"file:{campaign_db}?mode=ro",))
-        except sqlite3.Error as e:
-            logger.debug("could not attach campaign.db at %s: %s", campaign_db, e)
+        _attach_ro(conn, campaign_db, "campaign")
+    for alias, other in (extra_dirs or {}).items():
+        other = Path(other)
+        other_data = other / "_execution" / "data.db"
+        if other_data.exists():
+            _attach_ro(conn, other_data, alias)
+        other_campaign = other / "campaign.db"
+        if other_campaign.exists():
+            _attach_ro(conn, other_campaign, f"{alias}_campaign")
     return conn
 
 
@@ -241,8 +257,12 @@ _DESCRIBE_NOTE = (
 def _list_tables(conn: sqlite3.Connection) -> list[dict]:
     """Return ``[{schema, table, columns, rows, description}]`` across attached DBs."""
     tables = []
-    names = [r["name"] for r in conn.execute("PRAGMA database_list").fetchall()]
-    schemas = ["main"] + (["campaign"] if "campaign" in names else [])
+    # Every attached schema except the transient `temp` one; keep `main`/`campaign`
+    # first for readability, then any extra-campaign aliases in attach order.
+    names = [r["name"] for r in conn.execute("PRAGMA database_list").fetchall()
+             if r["name"] != "temp"]
+    ordered = [s for s in ("main", "campaign") if s in names]
+    schemas = ordered + [s for s in names if s not in ordered]
     for schema in schemas:
         rows = conn.execute(
             f"SELECT name FROM {schema}.sqlite_master "
@@ -303,12 +323,16 @@ def _empty_result_note(conn: sqlite3.Connection) -> str:
     )
 
 
-def query_data_db(campaign_dir, sql: str, max_rows: int = 500) -> dict:
+def query_data_db(campaign_dir, sql: str, max_rows: int = 500,
+                  extra_dirs: dict | None = None) -> dict:
     """Run a read-only ``SELECT``; return ``{columns, rows, row_count, truncated}``.
+
+    *extra_dirs* (schema alias → campaign dir) attaches further campaigns so one
+    query can span several (e.g. an A/B comparison); see :func:`_open_db`.
 
     Raises :class:`DataQueryError` for a rejected (non-read) or invalid query.
     """
-    conn = _open_db(campaign_dir)
+    conn = _open_db(campaign_dir, extra_dirs=extra_dirs)
     max_rows = max(1, min(int(max_rows), 5000))
     try:
         conn.set_authorizer(_readonly_authorizer)

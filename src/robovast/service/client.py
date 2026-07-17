@@ -627,11 +627,15 @@ class LocalTransport(RobovastInterface):
         return DataDescribe(campaign_id=campaign_id, **result)
 
     def query_campaign_data_sql(
-        self, campaign_id: str, sql: str, max_rows: int = 500
+        self, campaign_id: str, sql: str, max_rows: int = 500,
+        extra_campaign_ids=None,
     ) -> "DataQueryResult":
         from robovast.results_processing.data_query import query_data_db
         from robovast.service.interface import DataQueryResult
-        result = query_data_db(self._data_dir(campaign_id), sql, max_rows)
+        extra_dirs = {f"c{i + 1}": self._data_dir(cid)
+                      for i, cid in enumerate(extra_campaign_ids or [])}
+        result = query_data_db(self._data_dir(campaign_id), sql, max_rows,
+                               extra_dirs=extra_dirs)
         return DataQueryResult(campaign_id=campaign_id, **result)
 
     def _data_dir(self, campaign_id: str):
@@ -902,11 +906,14 @@ class HTTPTransport(RobovastInterface):
         return DataDescribe.model_validate(self._get(Routes.campaign_describe(campaign_id)))
 
     def query_campaign_data_sql(
-        self, campaign_id: str, sql: str, max_rows: int = 500
+        self, campaign_id: str, sql: str, max_rows: int = 500,
+        extra_campaign_ids=None,
     ) -> "DataQueryResult":
         from robovast.service.interface import DataQueryResult
         return DataQueryResult.model_validate(self._post(
-            Routes.campaign_query(campaign_id), json={"sql": sql, "max_rows": max_rows}))
+            Routes.campaign_query(campaign_id),
+            json={"sql": sql, "max_rows": max_rows,
+                  "extra_campaign_ids": extra_campaign_ids or []}))
 
     def list_campaign_plots(self, campaign_id: str) -> "CampaignPlotsResponse":
         from robovast.service.interface import CampaignPlotsResponse

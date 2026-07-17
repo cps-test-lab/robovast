@@ -261,8 +261,10 @@ def build_app(impl: RobovastInterface):
     def query_campaign_data_sql(
         campaign_id: str, sql: str = Body(..., embed=True),
         max_rows: int = Body(500, embed=True),
+        extra_campaign_ids: list[str] = Body(default_factory=list, embed=True),
     ) -> DataQueryResult:
-        return _guard(lambda: impl.query_campaign_data_sql(campaign_id, sql, max_rows))
+        return _guard(lambda: impl.query_campaign_data_sql(
+            campaign_id, sql, max_rows, extra_campaign_ids))
 
     @app.get("/campaigns/{campaign_id}/plots", response_model=CampaignPlotsResponse)
     def list_campaign_plots(campaign_id: str) -> CampaignPlotsResponse:

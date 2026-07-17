@@ -613,7 +613,8 @@ class RobovastInterface(ABC):
 
     @abstractmethod
     def query_campaign_data_sql(
-        self, campaign_id: str, sql: str, max_rows: int = 500
+        self, campaign_id: str, sql: str, max_rows: int = 500,
+        extra_campaign_ids: Optional[list[str]] = None,
     ) -> DataQueryResult:
         """Run a read-only ``SELECT`` over a campaign's data (``campaign.db`` attached)."""
 

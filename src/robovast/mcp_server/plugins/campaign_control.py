@@ -152,6 +152,76 @@ def _read_progress(campaign_dir):
     return done, passed, failed
 
 
+def _progress_from_status(st) -> float | None:
+    """Overall progress in ``[0, 1]``, or ``None`` when it cannot be known honestly.
+
+    - **batch** mode: ``completed / total`` — the total is known up front.
+    - **search** mode: the loop ends when a stopping criterion fires, so progress is
+      the closest criterion, ``max(current / limit)`` over the ``budget``. A search's
+      per-batch run ratio is deliberately **not** used — it would read as overall
+      completion when it is only progress through one batch of an open-ended search.
+
+    Returns ``None`` (never a misleading number) when a search has no usable budget
+    value yet.
+    """
+    if st.budget:
+        fracs = [max(0.0, min(1.0, b.current / b.limit))
+                 for b in st.budget if b.current is not None and b.limit]
+        return max(fracs) if fracs else None
+    mode = (st.mode or "").lower()
+    if mode in ("", "batch") and st.runs and st.runs.total:
+        return max(0.0, min(1.0, st.runs.completed / st.runs.total))
+    return None
+
+
+def _status_to_dict(campaign_id: str, backend, st) -> dict:
+    """Render a controller :class:`Status` into the MCP status dict.
+
+    Faithful to both batch and search campaigns: run counts are **batch-scoped**
+    (``batch_runs_*``) and ``progress`` is computed mode-aware (see
+    :func:`_progress_from_status`), while the search-only fields (best objective,
+    budget, batches done, stop reason) are surfaced when present.
+    """
+    result: dict = {
+        "campaign_id": campaign_id,
+        "backend": backend,
+        "status": st.phase,
+        "mode": st.mode,
+        "batch_runs_done": st.runs.completed if st.runs else 0,
+        "batch_runs_total": st.runs.total if st.runs else 0,
+        "progress": _progress_from_status(st),
+    }
+    if st.batches_done:
+        result["batches_done"] = st.batches_done
+    if st.best_objective is not None:
+        result["best_objective"] = st.best_objective
+    if st.budget:
+        result["budget"] = [b.model_dump() for b in st.budget]
+    if st.stop:
+        result["stop"] = st.stop
+    if st.error:
+        result["error"] = st.error
+    return result
+
+
+def _campaign_mode(campaign_dir) -> str | None:
+    """Best-effort read of ``campaign.mode`` ('search'/'batch') from campaign.db."""
+    import sqlite3  # noqa: PLC0415
+    from robovast.common.store import STORE_FILENAME  # noqa: PLC0415
+    db = Path(campaign_dir) / STORE_FILENAME
+    if not db.exists():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        try:
+            row = conn.execute("SELECT mode FROM campaign LIMIT 1").fetchone()
+            return row[0] if row else None
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+
+
 def _log_tail(log_path, max_lines=40):
     """Return the last ``max_lines`` lines of a log file, or ``""``."""
     if not log_path or not os.path.exists(log_path):
@@ -454,23 +524,18 @@ def get_campaign_status(campaign_id: str) -> dict:
         campaign_id: The id returned by :func:`start_campaign`.
 
     Returns:
-        ``{campaign_id, backend, status, runs_done, runs_total, passed, failed,
-        log_tail}``; ``{error}`` if unknown.
+        ``{campaign_id, backend, status, mode, batch_runs_done, batch_runs_total,
+        progress, ...}`` — plus search-only fields (``best_objective``, ``budget``,
+        ``batches_done``, ``stop``) when applicable; ``{error}`` if unknown. Run
+        counts are **batch-scoped**; ``progress`` is overall and mode-aware (``None``
+        when a search's completion cannot be known yet).
     """
     try:
         client = _service_client()
         if client is not None:
             st = client.get_status(campaign_id)
-            result = {
-                "campaign_id": campaign_id,
-                "backend": "service",
-                "status": st.phase,
-                "runs_done": st.runs.completed,
-                "runs_total": st.runs.total,
-                "log_tail": st.stage or "",
-            }
-            if st.error:  # the controller's failure reason — no need to read pod logs
-                result["error"] = st.error
+            result = _status_to_dict(campaign_id, "service", st)
+            result["stage"] = st.stage or ""  # a live marker string, not a log tail
             return result
 
         project = _load_project()
@@ -481,17 +546,26 @@ def get_campaign_status(campaign_id: str) -> dict:
         if entry is None:
             return {"error": f"campaign {campaign_id!r} not tracked"}
         campaign_dir = os.path.join(results_dir, campaign_id)
+
+        # Prefer the durable full Status a finished/failed campaign leaves behind
+        # (rich search state on both backends, at the same path); otherwise
+        # synthesize a live Status from the registry + on-disk batch progress.
+        from robovast.common.campaign_data import read_execution_outcome  # noqa: PLC0415
+        st = read_execution_outcome(Path(campaign_dir))
         done, passed, failed = _read_progress(campaign_dir)
-        return {
-            "campaign_id": campaign_id,
-            "backend": entry.get("backend"),
-            "status": entry.get("status"),
-            "runs_done": done,
-            "runs_total": entry.get("expected_total"),
-            "passed": passed,
-            "failed": failed,
-            "log_tail": _log_tail(entry.get("log_path")),
-        }
+        if st is None:
+            from robovast.execution.control_server import Status  # noqa: PLC0415
+            st = Status(phase=entry.get("status") or "running",
+                        campaign_id=campaign_id,
+                        mode=_campaign_mode(campaign_dir),
+                        runs={"completed": done,
+                              "total": entry.get("expected_total") or 0})
+        result = _status_to_dict(campaign_id, entry.get("backend"), st)
+        # Local extras beyond the Status model: cumulative pass/fail + a real log tail.
+        result["passed"] = passed
+        result["failed"] = failed
+        result["log_tail"] = _log_tail(entry.get("log_path"))
+        return result
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 

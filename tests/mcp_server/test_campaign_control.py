@@ -93,7 +93,7 @@ def test_start_status_and_single_flight(project):
     status = cc.get_campaign_status(cid)
     assert status["backend"] == "local"
     assert status["status"] == "running"
-    assert status["runs_total"] == 2
+    assert status["batch_runs_total"] == 2
 
     # A second local start must be refused while the first is live.
     refused = cc.start_campaign(backend="local")
@@ -240,7 +240,7 @@ def test_service_status_maps_from_status_model(service):
     st = cc.get_campaign_status("svc-campaign-1")
     assert st["backend"] == "service"
     assert st["status"] == "running"
-    assert st["runs_done"] == 3 and st["runs_total"] == 8
+    assert st["batch_runs_done"] == 3 and st["batch_runs_total"] == 8
 
 
 def test_service_stop_routes_to_client(service):

@@ -80,7 +80,8 @@ def describe_campaign_data(campaign_id: str) -> dict:
         return {"error": str(e)}
 
 
-def query_campaign_data_sql(campaign_id: str, sql: str, max_rows: int = 500) -> dict:
+def query_campaign_data_sql(campaign_id: str, sql: str, max_rows: int = 500,
+                            extra_campaign_ids: list | None = None) -> dict:
     """Run a **read-only** SQL query over a campaign's data.
 
     Runs against ``data.db`` (metric tables + the ``runs`` dimension table) with
@@ -88,14 +89,21 @@ def query_campaign_data_sql(campaign_id: str, sql: str, max_rows: int = 500) -> 
     a ``REGEXP(pat, col)`` function is available. Discover the schema first with
     :func:`describe_campaign_data`.
 
+    To **compare campaigns**, pass ``extra_campaign_ids``: each is attached under a
+    schema alias ``c1``, ``c2``, … (its ``campaign.db`` as ``c1_campaign``, …), so a
+    single query can span several campaigns. The returned ``attached`` maps each
+    alias back to its campaign id.
+
     Args:
-        campaign_id: Campaign identifier or absolute campaign path.
+        campaign_id: Campaign identifier or absolute campaign path (schema ``main``).
         sql: A single ``SELECT`` statement.
         max_rows: Maximum rows to return (clamped to ``1..5000``); ``truncated``
             marks when more rows matched.
+        extra_campaign_ids: Additional campaigns to attach as ``c1``, ``c2``, ….
 
     Returns:
-        ``{campaign_id, columns, rows, row_count, truncated}`` or ``{error}``.
+        ``{campaign_id, columns, rows, row_count, truncated[, attached]}`` or
+        ``{error}``.
 
     Example — mean of a metric per parameter value::
 
@@ -105,13 +113,34 @@ def query_campaign_data_sql(campaign_id: str, sql: str, max_rows: int = 500) -> 
                    FROM runs r JOIN landing_error m
                      ON r.config_name = m.config_name AND r.run_id = m.run_id
                    GROUP BY r.param_wind_strength ORDER BY r.param_wind_strength''')
+
+    Example — compare a metric across two campaigns::
+
+        query_campaign_data_sql(
+            campaign_id="campaign-A", extra_campaign_ids=["campaign-B"],
+            sql='''SELECT 'A' AS campaign, AVG(objective) FROM runs
+                   UNION ALL
+                   SELECT 'B', AVG(objective) FROM c1.runs''')
     """
+    extra_campaign_ids = extra_campaign_ids or []
+    aliases = {f"c{i + 1}": cid for i, cid in enumerate(extra_campaign_ids)}
+
     client = _service_client()
     if client is not None:
-        return client.query_campaign_data_sql(campaign_id, sql, max_rows).model_dump()
+        result = client.query_campaign_data_sql(
+            campaign_id, sql, max_rows, extra_campaign_ids).model_dump()
+        if aliases:
+            result["attached"] = aliases
+        return result
     try:
         campaign_dir = results_resolver.resolve_campaign_path(campaign_id)
-        return {"campaign_id": campaign_id, **query_data_db(campaign_dir, sql, max_rows)}
+        extra_dirs = {alias: results_resolver.resolve_campaign_path(cid)
+                      for alias, cid in aliases.items()}
+        result = {"campaign_id": campaign_id,
+                  **query_data_db(campaign_dir, sql, max_rows, extra_dirs=extra_dirs)}
+        if aliases:
+            result["attached"] = aliases
+        return result
     except (DataQueryError, ValueError) as e:
         return {"error": str(e)}
 
