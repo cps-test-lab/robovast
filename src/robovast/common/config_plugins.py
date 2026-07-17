@@ -77,12 +77,25 @@ MARKER_NAME = ".installed"
 GIT_TOKEN_FILE = "/var/run/secrets/robovast-git/token"
 
 #: Local/dev fallback only. In a shared service prefer the mounted file — an env
-#: var is inherited by every child process/command.
+#: var is inherited by every child process/command. ``ROBOVAST_GIT_TOKEN`` is the
+#: canonical name; the conventional ``GITHUB_TOKEN`` / ``GH_TOKEN`` are also
+#: accepted so a token already exported for ``gh``/CI is used without renaming.
 GIT_TOKEN_ENV = "ROBOVAST_GIT_TOKEN"
+
+#: The full set of host env vars a GitHub token may come from, most-specific
+#: first. This is the single source of truth shared with the cluster setup
+#: (``service_deploy._GIT_TOKEN_HOST_ENVS``), so local composition and the cluster
+#: accept the *same* names and a ``git+https`` plugin install authenticates
+#: identically in either place.
+GIT_TOKEN_ENVS = (GIT_TOKEN_ENV, "GITHUB_TOKEN", "GH_TOKEN")
 
 
 def _read_git_token() -> str:
-    """Return the configured GitHub token, or ``""``. File mount preferred."""
+    """Return the configured GitHub token, or ``""``.
+
+    Common to both environments: the mounted secret file is preferred (the cluster
+    path), then any of :data:`GIT_TOKEN_ENVS` from the host env (the local path).
+    """
     try:
         with open(GIT_TOKEN_FILE, encoding="utf-8") as f:
             tok = f.read().strip()
@@ -90,7 +103,11 @@ def _read_git_token() -> str:
                 return tok
     except OSError:
         pass
-    return os.environ.get(GIT_TOKEN_ENV, "").strip()
+    for var in GIT_TOKEN_ENVS:
+        val = os.environ.get(var, "").strip()
+        if val:
+            return val
+    return ""
 
 
 def _git_askpass_env(token: str, workdir: str) -> dict:
@@ -174,7 +191,8 @@ def _install_target(target_dir: str, specs) -> None:
     env = dict(os.environ)
     # Never leak a fallback token into the child via the inherited environment;
     # it is re-supplied below only through the scoped GIT_ASKPASS overlay.
-    env.pop(GIT_TOKEN_ENV, None)
+    for _tok_var in GIT_TOKEN_ENVS:
+        env.pop(_tok_var, None)
 
     token = _read_git_token()
     askpass_dir = None
@@ -183,21 +201,40 @@ def _install_target(target_dir: str, specs) -> None:
         os.chmod(askpass_dir, 0o700)  # nosec B103 - owner-only, transient
         env.update(_git_askpass_env(token, askpass_dir))
 
+    # Stream pip's output live: a git+https install clones the repo (and any git
+    # dependencies), which can take a while, so echo each line as it arrives rather
+    # than capturing silently and only surfacing it on failure. The lines are still
+    # accumulated so a failure gets the same actionable diagnosis as before.
+    cmd = [sys.executable, "-m", "pip", "install", "--target", target_dir,
+           "--root-user-action=ignore", "--disable-pip-version-check",
+           # git clones write progress with '\r'; ask for verbose line-based
+           # progress so the long clone/build phase is visible while piped.
+           "-v", "--progress-bar", "off", *specs]
+    output_lines: list[str] = []
     try:
-        subprocess.run(  # nosec B603 - specs come from the trusted campaign .vast
-            [sys.executable, "-m", "pip", "install", "--target", target_dir,
-             "--root-user-action=ignore", "--disable-pip-version-check", *specs],
-            check=True, capture_output=True, text=True, env=env,
-        )
-    except subprocess.CalledProcessError as exc:
-        raise RuntimeError(_diagnose_pip_failure(specs, exc.stderr)) from exc
-    except FileNotFoundError as exc:  # pip / python missing
-        raise RuntimeError(
-            f"Could not run pip to install variation plugin(s) {list(specs)}: {exc}"
-        ) from exc
+        try:
+            proc = subprocess.Popen(  # nosec B603 - specs come from the trusted campaign .vast
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, env=env,
+            )
+        except FileNotFoundError as exc:  # pip / python missing
+            raise RuntimeError(
+                f"Could not run pip to install variation plugin(s) {list(specs)}: {exc}"
+            ) from exc
+
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            line = line.rstrip("\n")
+            output_lines.append(line)
+            logger.info("pip: %s", line)
+            print(f"  pip | {line}", flush=True)
+        returncode = proc.wait()
     finally:
         if askpass_dir:
             shutil.rmtree(askpass_dir, ignore_errors=True)
+
+    if returncode != 0:
+        raise RuntimeError(_diagnose_pip_failure(specs, "\n".join(output_lines)))
 
 
 def _warn_if_already_loaded(specs) -> None:

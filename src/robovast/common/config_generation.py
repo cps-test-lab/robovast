@@ -328,8 +328,16 @@ def _get_variation_classes(scenario_config, vast_dir=""):
                         error_msg += "To fix this, run: poetry install\n"
                         error_msg += "If you're in a CI environment, ensure 'poetry install' (without --no-root) has been executed."
                     else:
-                        error_msg += f"Available variation types: {', '.join(available_classes.keys())}. "
-                        error_msg += "Use a '<path>.py:<Class>' file reference for a local module."
+                        error_msg += f"Available variation types: {', '.join(available_classes.keys())}.\n"
+                        error_msg += (
+                            f"'{class_name}' is not built into robovast/robovast-nav. If it comes from a "
+                            "third-party package (e.g. 'scenario_mt'), declare that package in the "
+                            "top-level 'plugins:' list of your .vast so it is installed before composing, "
+                            "e.g.:\n"
+                            "  plugins:\n"
+                            "  - 'my_plugin @ git+https://github.com/org/repo@ref'\n"
+                            "Then re-run so the variation names resolve via its entry points.\n"
+                            "Alternatively, use a '<path>.py:<Class>' file reference for a local module.")
                     raise ValueError(error_msg)
 
     return variation_classes

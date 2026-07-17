@@ -28,6 +28,32 @@ def _restore_sys_path():
     sys.path[:] = before
 
 
+class _FakePopen:
+    """Minimal stand-in for ``subprocess.Popen`` used by ``_install_target``.
+
+    ``_install_target`` streams the child's merged stdout line by line and then
+    calls ``wait()``. The fake exposes an iterable ``stdout`` and a ``wait`` that
+    returns the configured return code, and records the ``cmd``/``env`` it was
+    given via ``on_call`` for assertions.
+    """
+
+    def __init__(self, cmd, *, returncode=0, lines=(), on_call=None, **kw):
+        if on_call is not None:
+            on_call(cmd, kw)
+        self.stdout = iter([f"{line}\n" for line in lines])
+        self._returncode = returncode
+
+    def wait(self):
+        return self._returncode
+
+
+def _fake_popen_factory(*, returncode=0, lines=(), on_call=None):
+    def _factory(cmd, **kw):
+        return _FakePopen(cmd, returncode=returncode, lines=lines,
+                          on_call=on_call, **kw)
+    return _factory
+
+
 def test_no_plugins_is_noop(tmp_path):
     assert ensure_workspace_plugins(str(tmp_path), None) is None
     assert ensure_workspace_plugins(str(tmp_path), []) is None
@@ -82,11 +108,10 @@ def test_changed_specs_reinstall(tmp_path, monkeypatch):
 def test_install_failure_is_actionable(tmp_path, monkeypatch):
     import subprocess
 
-    def failing_run(cmd, **kw):
-        raise subprocess.CalledProcessError(
-            1, cmd, stderr="fatal: could not read Username for 'https://github.com'")
-
-    monkeypatch.setattr(subprocess, "run", failing_run)
+    # pip exits non-zero and its (streamed) output carries a git auth failure.
+    monkeypatch.setattr(subprocess, "Popen", _fake_popen_factory(
+        returncode=1,
+        lines=["fatal: could not read Username for 'https://github.com'"]))
     with pytest.raises(RuntimeError) as ei:
         ensure_workspace_plugins(str(tmp_path), ["x @ git+https://github.com/o/r@main"])
     msg = str(ei.value)
@@ -99,13 +124,8 @@ def test_never_touches_active_venv(tmp_path, monkeypatch):
     import subprocess
     captured = {}
 
-    def fake_run(cmd, **kw):
-        captured["cmd"] = cmd
-        class R:  # minimal CompletedProcess stand-in
-            returncode = 0
-        return R()
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "Popen", _fake_popen_factory(
+        on_call=lambda cmd, kw: captured.update(cmd=cmd)))
     ensure_workspace_plugins(str(tmp_path), ["some-pkg==1.0"])
     assert "--target" in captured["cmd"]
     ti = captured["cmd"].index("--target")
@@ -152,14 +172,11 @@ def test_git_token_never_in_process_env_only_scoped_to_subprocess(tmp_path, monk
     monkeypatch.setattr(cp, "GIT_TOKEN_FILE", str(tmp_path / "nope"))  # no file → env fallback
     captured = {}
 
-    def fake_run(cmd, **kw):
+    def _cap(cmd, kw):
         captured["cmd"] = cmd
         captured["env"] = kw.get("env")
-        class R:
-            returncode = 0
-        return R()
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "Popen", _fake_popen_factory(on_call=_cap))
     ensure_workspace_plugins(str(tmp_path), ["x @ git+https://github.com/o/r@main"])
 
     child_env = captured["env"]
@@ -181,13 +198,8 @@ def test_git_token_read_from_mounted_file(tmp_path, monkeypatch):
     monkeypatch.delenv(cp.GIT_TOKEN_ENV, raising=False)
     captured = {}
 
-    def fake_run(cmd, **kw):
-        captured["env"] = kw.get("env")
-        class R:
-            returncode = 0
-        return R()
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "Popen", _fake_popen_factory(
+        on_call=lambda cmd, kw: captured.update(env=kw.get("env"))))
     ensure_workspace_plugins(str(tmp_path / "ws"), ["x @ git+https://github.com/o/r@main"])
     assert captured["env"]["ROBOVAST__GIT_TOKEN"] == "ghp_fromfile"
 
@@ -195,15 +207,28 @@ def test_git_token_read_from_mounted_file(tmp_path, monkeypatch):
 def test_no_token_no_askpass(tmp_path, monkeypatch):
     import subprocess
     monkeypatch.setattr(cp, "GIT_TOKEN_FILE", str(tmp_path / "absent"))
-    monkeypatch.delenv(cp.GIT_TOKEN_ENV, raising=False)
+    for _var in cp.GIT_TOKEN_ENVS:  # no token from ANY accepted name
+        monkeypatch.delenv(_var, raising=False)
     captured = {}
 
-    def fake_run(cmd, **kw):
-        captured["env"] = kw.get("env")
-        class R:
-            returncode = 0
-        return R()
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "Popen", _fake_popen_factory(
+        on_call=lambda cmd, kw: captured.update(env=kw.get("env"))))
     ensure_workspace_plugins(str(tmp_path / "ws"), ["some-pkg==1.0"])
     assert "GIT_ASKPASS" not in captured["env"]
+
+
+def test_reads_token_from_conventional_env_name(tmp_path, monkeypatch):
+    """Local compose honours the conventional GITHUB_TOKEN/GH_TOKEN, not only the
+    canonical ROBOVAST_GIT_TOKEN — the same names the cluster setup accepts."""
+    monkeypatch.setattr(cp, "GIT_TOKEN_FILE", str(tmp_path / "absent"))
+    for var in cp.GIT_TOKEN_ENVS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("GH_TOKEN", "ghp_conventional")
+    assert cp._read_git_token() == "ghp_conventional"
+
+
+def test_token_env_names_shared_with_cluster_setup():
+    """Cluster and local read the token from the SAME set of env names (one source
+    of truth), so a token that works for one works for the other."""
+    from robovast.execution.cluster_execution import service_deploy as sd
+    assert tuple(sd._GIT_TOKEN_HOST_ENVS) == tuple(cp.GIT_TOKEN_ENVS)

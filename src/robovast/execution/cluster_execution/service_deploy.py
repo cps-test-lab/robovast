@@ -173,7 +173,11 @@ def _service_manifest(namespace):
 GIT_SECRET_NAME = "robovast-git-credentials"
 GIT_SECRET_KEY = "token"
 GIT_TOKEN_MOUNT_DIR = "/var/run/secrets/robovast-git"
-_GIT_TOKEN_HOST_ENVS = ("ROBOVAST_GIT_TOKEN", "GITHUB_TOKEN", "GH_TOKEN")
+# Host env vars a GitHub token may come from at setup. Shared with the
+# compose-time reader (``config_plugins.GIT_TOKEN_ENVS``) so the cluster and a
+# local run accept the *same* names — one source of truth, no drift.
+from robovast.common.config_plugins import \
+    GIT_TOKEN_ENVS as _GIT_TOKEN_HOST_ENVS  # noqa: E402
 
 
 def _load_setup_dotenv():
