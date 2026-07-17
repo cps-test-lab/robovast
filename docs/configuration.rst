@@ -322,7 +322,7 @@ step-based simulation runs alongside the ROS behaviours that drive it (a simulat
 mode
 ^^^^
 
-**Type:** String (``auto`` | ``ros2``)
+**Type:** String (``auto`` | ``ros2`` | ``base``)
 
 **Required:** No (default ``auto``)
 
@@ -331,6 +331,9 @@ detection: the ROS runner (``scenario_execution_ros``) when ``ros2`` is on ``PAT
 non-ROS ``scenario_execution`` CLI. ``ros2`` forces the ROS runner. Forcing ``ros2`` is needed when a
 ``simulation`` (SimulationInterface) must run **alongside** ROS behaviours: only the ROS runner provides
 rclpy for the ROS behaviours, and it also ticks the ``SimulationInterface`` in its spin loop.
+``base`` forces the non-ROS ``scenario_execution`` CLI **even when** ``ros2`` is on ``PATH`` -- use it
+for pure non-ROS scenarios (e.g. :repo_link:`configs/examples/growth_sim`) so they skip the unneeded
+ROS runner in an image that ships ROS.
 
 .. code-block:: yaml
 

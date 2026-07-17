@@ -208,17 +208,40 @@ class DockerBackend(ExecutionBackend):
         The run script is launched in its own session (process group) so a stop
         can SIGTERM it — firing its cleanup trap — and, if that hangs, SIGKILL the
         whole group as a backstop.
+
+        Because the script runs in its *own* session it is not in the terminal's
+        foreground process group, so a terminal Ctrl+C never reaches it directly.
+        We forward the ``SIGINT`` to the script's session ourselves so its
+        ``handle_sigint`` trap runs exactly as when it ran in the foreground:
+        first press → graceful ``docker compose`` shutdown, repeats → force exit.
         """
         # nosec - generated, trusted run script
         proc = subprocess.Popen(cmd, start_new_session=True)  # pylint: disable=consider-using-with
         stopped = False
-        while True:
+        interrupted = False
+        returncode = None
+        while returncode is None:
             try:
-                return proc.wait(timeout=self._STOP_POLL_SECONDS)
+                returncode = proc.wait(timeout=self._STOP_POLL_SECONDS)
             except subprocess.TimeoutExpired:
                 if not stopped and self._state is not None and self._state.stop_requested:
                     stopped = True
                     self._terminate(proc)
+            except KeyboardInterrupt:
+                interrupted = True
+                self._forward_sigint(proc)
+        if interrupted:
+            # Ctrl+C tore the batch down — propagate so the command exits instead
+            # of proceeding to evaluate a half-finished campaign.
+            raise KeyboardInterrupt
+        return returncode
+
+    def _forward_sigint(self, proc: "subprocess.Popen") -> None:
+        """Relay Ctrl+C to the run script's session so its SIGINT trap fires."""
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGINT)
+        except (ProcessLookupError, OSError) as e:
+            logger.debug("could not forward SIGINT (process gone?): %s", e)
 
     def _terminate(self, proc: "subprocess.Popen") -> None:
         """SIGTERM the run script (its trap cleans up), SIGKILL the group if it hangs."""

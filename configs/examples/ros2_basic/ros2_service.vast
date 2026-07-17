@@ -1,0 +1,19 @@
+version: 1
+metadata:
+  name: ros2_service
+configuration:
+- name: minimal
+execution:
+  image: ghcr.io/cps-test-lab/robovast:latest
+  resources:
+    cpu: 1
+  runs: 1
+  env:
+  - ENABLE_X11: "false"
+  scenario_file: ros2_service.osc
+  run_files:
+  - "files/*.py"
+results_processing:
+  postprocessing:
+  - rosbags_to_csv:
+      topics: ["/counter"]

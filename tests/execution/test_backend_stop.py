@@ -24,9 +24,12 @@ generated ``run.sh``.
 """
 
 import os
+import signal
 import stat
 import textwrap
 import threading
+
+import pytest
 
 from robovast.execution.backends import DockerBackend
 from robovast.execution.control_server import ControllerState
@@ -99,3 +102,40 @@ def test_no_state_runs_to_completion(tmp_path):
     script = _script(tmp_path, "exit 3\n")
     rc = DockerBackend()._run_watching_stop([script])
     assert rc == 3
+
+
+def test_ctrl_c_is_forwarded_to_run_script_session(tmp_path):
+    """A terminal Ctrl+C reaches the run script's own SIGINT trap.
+
+    The script runs in a new session (detached from the terminal foreground
+    group), so ``_run_watching_stop`` must relay the ``SIGINT`` itself. The
+    stand-in mimics ``run.sh``: repeated presses force an exit-130, after which
+    the wait loop re-raises ``KeyboardInterrupt`` so the command exits instead of
+    evaluating a half-finished campaign.
+    """
+    marker = tmp_path / "forced_exit"
+    script = _script(tmp_path, f"""
+        SIGINT_COUNT=0
+        handle() {{
+            SIGINT_COUNT=$((SIGINT_COUNT + 1))
+            if [ $SIGINT_COUNT -ge 2 ]; then
+                touch "{marker}"
+                exit 130
+            fi
+        }}
+        trap handle SIGINT
+        while true; do sleep 0.05; done
+    """)
+
+    backend = DockerBackend()
+    backend._STOP_POLL_SECONDS = 0.05
+
+    # Deliver two Ctrl+C presses to *this* process; the main thread turns each
+    # into a KeyboardInterrupt inside proc.wait(), which the loop forwards on.
+    for delay in (0.2, 0.5):
+        threading.Timer(delay, os.kill, (os.getpid(), signal.SIGINT)).start()
+
+    with pytest.raises(KeyboardInterrupt):
+        backend._run_watching_stop([script])
+
+    assert marker.exists(), "the script's SIGINT trap must have force-exited"

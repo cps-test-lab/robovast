@@ -806,8 +806,10 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
     # per (config, run), >1 packs several configs per job. Both produce the same
     # layout — results in <config>/<run>/ and job artifacts in _jobs/job-N/ with
     # a <config>/<run>/job symlink.
-    scenario_path = os.path.join(
-        os.path.dirname(campaign_data["vast"]), campaign_data["scenario_file"])
+    # campaign_data["scenario_file"] is already resolved relative to the vast's
+    # location during config generation (dirname(vast) + execution.scenario_file),
+    # so it is the path relative to cwd -- do not re-prepend dirname(vast).
+    scenario_path = campaign_data["scenario_file"]
     scenario_params_by_name = get_scenario_parameters(scenario_path)
     scenario_name = next(iter(scenario_params_by_name.keys()))
 

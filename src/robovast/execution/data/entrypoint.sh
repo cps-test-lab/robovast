@@ -167,33 +167,29 @@ else
     if [ -n "${SIMULATION}" ]; then
         SIMULATION_PARAM="--simulation ${SIMULATION}"
     fi
-    # Runner selection (execution.mode in the .vast): `ros2` forces the ROS runner
-    # (scenario_execution_ros), `auto` (default/empty) auto-detects ros2 on PATH.
+    # Runner selection (execution.mode in the .vast):
+    #   ros2 -> ROS runner:      `ros2 run scenario_execution_ros scenario_execution_ros`
+    #   base -> non-ROS runner:  `ros2 run scenario_execution scenario_execution`
+    #           (the ROS image builds the base package into the workspace, reachable
+    #           via `ros2 run`, not as a bare binary on PATH)
+    #   auto -> detect: the ROS runner when ros2 is on PATH, otherwise the bare
+    #           `scenario_execution` console script (pip/non-ROS images only)
     SCENARIO_MODE="${SCENARIO_MODE:-auto}"
     if [ "${SCENARIO_MODE}" = "ros2" ]; then
-        USE_ROS_RUNNER=1
+        RUNNER_CMD="ros2 run scenario_execution_ros scenario_execution_ros"
+    elif [ "${SCENARIO_MODE}" = "base" ]; then
+        RUNNER_CMD="ros2 run scenario_execution scenario_execution"
     elif command -v ros2 > /dev/null 2>&1; then
-        USE_ROS_RUNNER=1
+        RUNNER_CMD="ros2 run scenario_execution_ros scenario_execution_ros"
     else
-        USE_ROS_RUNNER=0
+        RUNNER_CMD="scenario_execution"
     fi
-    if [ "${USE_ROS_RUNNER}" = "1" ]; then
-        if [ -e "${SCENARIO_PARAMETER_FILE}" ]; then
-            log "Starting scenario execution (ROS2) with config file..."
-            log "Commandline: ros2 run scenario_execution_ros scenario_execution_ros -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SIMULATION_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}"
-            exec ros2 run scenario_execution_ros scenario_execution_ros -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SIMULATION_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
-        else
-            log "Starting scenario execution (ROS2) without config file..."
-            exec ros2 run scenario_execution_ros scenario_execution_ros -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} ${SIMULATION_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
-        fi
+    if [ -e "${SCENARIO_PARAMETER_FILE}" ]; then
+        log "Starting scenario execution (mode=${SCENARIO_MODE}) with config file..."
+        log "Commandline: ${RUNNER_CMD} -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SIMULATION_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}"
+        exec ${RUNNER_CMD} -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SIMULATION_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
     else
-        if [ -e "${SCENARIO_PARAMETER_FILE}" ]; then
-            log "Starting scenario execution with config file..."
-            log "Commandline: scenario_execution -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SIMULATION_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}"
-            exec scenario_execution -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SIMULATION_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
-        else
-            log "Starting scenario execution without config file..."
-            exec scenario_execution -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} ${SIMULATION_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
-        fi
+        log "Starting scenario execution (mode=${SCENARIO_MODE}) without config file..."
+        exec ${RUNNER_CMD} -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} ${SIMULATION_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
     fi
 fi

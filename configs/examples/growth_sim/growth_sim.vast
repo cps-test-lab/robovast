@@ -29,6 +29,7 @@ execution:
   env:
   - ENABLE_X11: "false"
   scenario_file: scenario.osc
+  mode: base
   run_files:
   - "files/*.py"
   - "files/*.sh"

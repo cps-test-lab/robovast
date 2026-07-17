@@ -172,7 +172,8 @@ class ExecutionConfig(BaseModel):
     # SCENARIO_MODE. ``auto`` (default) keeps the entrypoint's detection: use the ROS runner
     # (scenario_execution_ros) when ros2 is on PATH, else the non-ROS CLI. ``ros2`` forces the ROS
     # runner -- needed when a SimulationInterface must run alongside ROS behaviours (the ROS runner
-    # ticks the SimulationInterface in its spin loop).
+    # ticks the SimulationInterface in its spin loop). ``base`` forces the non-ROS CLI
+    # (scenario_execution) even when ros2 is on PATH -- for pure non-ROS scenarios (e.g. growth_sim).
     mode: str = "auto"
     # Job packing. ``runs_per_job`` is how many runs (a run = one configuration
     # at one run-number) are packed into a single job:
@@ -224,7 +225,7 @@ class ExecutionConfig(BaseModel):
     @field_validator('mode')
     @classmethod
     def validate_mode(cls, v: str) -> str:
-        allowed = {"auto", "ros2"}
+        allowed = {"auto", "ros2", "base"}
         if v not in allowed:
             raise ValueError(f"execution.mode must be one of {sorted(allowed)}, got '{v}'")
         return v
