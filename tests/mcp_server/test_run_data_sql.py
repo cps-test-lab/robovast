@@ -79,3 +79,26 @@ def test_sql_rejects_writes(campaign, bad):
 def test_sql_truncates_at_max_rows(campaign):
     r = run_data.query_campaign_data_sql(campaign, "SELECT * FROM runs", max_rows=1)
     assert r["row_count"] == 1 and r["truncated"] is True
+
+
+def test_empty_result_carries_note(campaign):
+    r = run_data.query_campaign_data_sql(
+        campaign, "SELECT * FROM runs WHERE config_name='nope'")
+    assert r["row_count"] == 0 and "runs" in r.get("note", "")
+
+
+def test_list_campaign_plots(campaign):
+    # Author-declared plots live in the snapshot .vast under evaluation.plots.
+    config_dir = __import__("pathlib").Path(campaign) / "_config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "demo.vast").write_text(
+        "evaluation:\n"
+        "  plots:\n"
+        "    - title: Wind vs objective\n"
+        "      query: SELECT param_wind, objective FROM runs\n"
+        "      vega_lite: {mark: point}\n",
+        encoding="utf-8")
+    r = run_data.list_campaign_plots(campaign)
+    assert r["plots"][0]["title"] == "Wind vs objective"
+    assert "SELECT" in r["plots"][0]["query"]
+    assert r["plots"][0]["vega_lite"] == {"mark": "point"}

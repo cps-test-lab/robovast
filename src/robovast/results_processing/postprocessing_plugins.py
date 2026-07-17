@@ -460,8 +460,29 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
     like "how does <param> affect <metric>" in one query. Scalar params become
     columns (prefixed ``param_``); non-scalar values are JSON-encoded.
     """
-    from robovast.common.campaign_data import \
-        read_test_result  # pylint: disable=import-outside-toplevel
+    from datetime import datetime, timedelta  # pylint: disable=import-outside-toplevel
+
+    from robovast.common.campaign_data import (  # pylint: disable=import-outside-toplevel
+        read_sysinfo, read_test_result)
+
+    def _end_time(start_iso, duration_sec):
+        """ISO end time = start + duration, or None when either is unavailable."""
+        if not start_iso or duration_sec is None:
+            return None
+        try:
+            return (datetime.fromisoformat(start_iso)
+                    + timedelta(seconds=float(duration_sec))).isoformat()
+        except (ValueError, TypeError):
+            return None
+
+    def _sysinfo(run_dir):
+        """Host info for a run (instance_type/cpu_name/cpus/mem), tolerant of absence."""
+        try:
+            si = read_sysinfo(run_dir) or {}
+        except (FileNotFoundError, OSError, ValueError, TypeError):
+            return None, None, None, None
+        return (si.get("instance_type"), si.get("cpu_name"),
+                si.get("available_cpus"), si.get("available_mem_gb"))
 
     # Resolved params + objective per config, from campaign.db (read-only).
     params_by_config: dict[str, dict] = {}
@@ -485,7 +506,9 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
             cc.close()
 
     base_cols = ["config_name", "run_id", "status", "passed",
-                 "duration_s", "errors", "failures", "objective"]
+                 "duration_s", "errors", "failures", "objective",
+                 "start_time", "end_time",
+                 "instance_type", "cpu_name", "available_cpus", "available_mem_gb"]
     param_keys = sorted({k for p in params_by_config.values() for k in p
                          if f"param_{k}" not in base_cols})
     param_cols = [f"param_{k}" for k in param_keys]
@@ -493,8 +516,8 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
 
     conn.execute("DROP TABLE IF EXISTS runs")
     col_defs = ", ".join(
-        (f'"{c}" INTEGER' if c in ("run_id", "errors", "failures") else
-         f'"{c}" REAL' if c in ("duration_s", "objective") else
+        (f'"{c}" INTEGER' if c in ("run_id", "errors", "failures", "available_cpus") else
+         f'"{c}" REAL' if c in ("duration_s", "objective", "available_mem_gb") else
          f'"{c}" TEXT')
         for c in all_cols)
     conn.execute(f"CREATE TABLE runs ({col_defs})")
@@ -512,18 +535,24 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
                 (d for d in config_dir.iterdir() if d.is_dir() and d.name.isdigit()),
                 key=lambda d: int(d.name)):
             run_id = int(run_dir.name)
+            start_time = None
             try:
                 tr = read_test_result(run_dir)
                 passed = 1 if tr.get("success") else 0
                 errors = int(tr.get("errors", 0))
                 failures = int(tr.get("failures", 0))
                 duration = tr.get("duration_sec")
+                start_time = tr.get("start_time")
                 status = ("passed" if passed else
                           "error" if errors else "failed")
             except (FileNotFoundError, OSError, ValueError, TypeError):
                 passed, errors, failures, duration, status = 0, 0, 0, None, "unknown"
+            end_time = _end_time(start_time, duration)
+            instance_type, cpu_name, avail_cpus, avail_mem = _sysinfo(run_dir)
             base_vals = [config_name, run_id, status, passed, duration,
-                         errors, failures, objective]
+                         errors, failures, objective,
+                         start_time, end_time,
+                         instance_type, cpu_name, avail_cpus, avail_mem]
             param_vals = [
                 json.dumps(params[k]) if isinstance(params.get(k), (list, dict))
                 else params.get(k)

@@ -23,10 +23,12 @@ storage in-cluster, so it compresses and uploads itself — no second pod, no
 (:meth:`~robovast.execution.cluster_config.base_config.BaseConfig.compress_campaign`);
 this module stays generic and just orchestrates compress → upload → retry.
 
-Share credentials are injected into the controller pod at launch (resolved from
-the host ``.env`` by :mod:`.controller_launcher`), so they are already present in
-``os.environ`` here. :func:`load_provider_from_env` reads them (with optional
-overrides supplied by a retrigger command).
+Share credentials come from the service's own environment (its Deployment env), so
+they are already present in ``os.environ`` here. :func:`load_provider_from_env`
+reads them, with optional *overrides* supplied per call — that is how a failed
+upload is retried with corrected (or switched) credentials, now that
+``upload_to_share`` is a stateless service operation rather than a command sent to
+a parked controller pod.
 """
 
 import logging

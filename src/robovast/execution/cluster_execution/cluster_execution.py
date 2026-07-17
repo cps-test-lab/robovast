@@ -211,15 +211,17 @@ def cleanup_cluster_campaign(namespace="default", campaign=None, context=None):
     logger.info("Restoring ClusterQueue stopPolicy to None after cleanup")
     set_cluster_queue_stop_policy(None, kube_context=context)
 
-    # Step 9: Also reap the controller pod(s). On a full cleanup (campaign is
-    # None) reap every controller pod; for a single campaign reap only its pod
-    # (label ``campaign-id=<campaign>``) so concurrent runs are left untouched.
+    # Step 9: Also reap any auxiliary-container pod(s). There are no controller
+    # pods any more (the service drives campaigns in-process), but a campaign whose
+    # variations need a helper image has an aux pod. On a full cleanup (campaign is
+    # None) reap every aux pod; for a single campaign reap only its pod (label
+    # ``campaign-id=<campaign>``) so concurrent campaigns are left untouched.
     try:
-        from .controller_launcher import \
-            cleanup_controller_pods  # pylint: disable=import-outside-toplevel
-        cleanup_controller_pods(namespace=namespace, kube_context=context, campaign=campaign)
+        from .container_runner import \
+            cleanup_aux_pods  # pylint: disable=import-outside-toplevel
+        cleanup_aux_pods(namespace=namespace, kube_context=context, campaign=campaign)
     except Exception as exc:  # pragma: no cover - best-effort
-        logger.warning("Failed to clean up controller pods: %s", exc)
+        logger.warning("Failed to clean up aux pods: %s", exc)
 
 
 def get_cluster_job_counts_per_campaign(namespace="default", context=None):

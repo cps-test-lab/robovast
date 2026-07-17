@@ -147,9 +147,9 @@ To execute all tests in the cluster, run:
 
    vast exec cluster run
 
-This command is *fire-and-forget*: it launches an in-cluster controller pod that
-drives the whole campaign and returns immediately, printing the campaign id and
-controller pod name.
+This command is *fire-and-forget*: it starts the campaign on the
+``robovast-service`` (which drives it in-process) and returns immediately, printing
+the campaign id.
 
 **Monitoring a run**
 
@@ -159,7 +159,7 @@ The campaign runs entirely in the cluster. Track its progress with:
 
    vast exec cluster monitor
 
-To clean up a run's scenario jobs/pods (and its controller pod):
+To clean up a run's scenario jobs/pods (and any auxiliary-container pod):
 
 .. code-block:: bash
 

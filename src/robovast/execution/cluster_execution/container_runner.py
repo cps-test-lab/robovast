@@ -13,128 +13,437 @@
 # and limitations under the License.
 #
 # SPDX-License-Identifier: Apache-2.0
-"""Cluster backend for auxiliary variation containers (sidecar + ``pods/exec``).
+"""Cluster backend for auxiliary variation containers (aux Pod + ``pods/exec``).
 
 When a variation plugin declares a
-:class:`~robovast.common.variation.container_runner.ContainerSpec`, the host
-launcher adds that image as a **kept-alive sidecar** in the controller pod, with
-a shared ``emptyDir`` mounted at :data:`AUX_WORKSPACE` in both the ``controller``
-container and the sidecar. This module runs the plugin's commands *inside* that
-sidecar via the Kubernetes ``pods/exec`` subresource — the in-cluster equivalent
-of ``docker exec``.
+:class:`~robovast.common.variation.container_runner.ContainerSpec`, the service
+starts **one aux Pod per campaign** holding a kept-alive container per spec, and
+runs the plugin's commands inside it via the Kubernetes ``pods/exec`` subresource
+— the in-cluster equivalent of ``docker exec``.
 
-Because the sidecar is already running (no per-call container create and no image
-re-pull), each call pays only the exec stream setup (tens–low-hundreds of ms
-in-cluster) plus the command's native runtime.
+**Why a separate pod (and what that costs).** The aux container used to be a
+*sidecar of the per-campaign controller pod*, which shared an ``emptyDir`` with
+the controller — that is how the plugin contract's "workspace visible at the same
+absolute path on both sides" was satisfied for free. The controller pod is gone:
+the driver now runs inside the long-lived ``robovast-service`` pod, and a pod's
+container set is immutable, so a *campaign-specific* sidecar of the service pod is
+impossible. Instead each campaign gets its own aux Pod, and this module **emulates
+the shared workspace** by tar-copying it into the pod before every ``run()`` and
+copying the results back afterwards, at the *same absolute path*.
+
+Consequences to know:
+
+* The plugin contract is preserved for the *stage inputs → run → read outputs*
+  pattern (what ``FloorplanVariation`` does). It is **narrowed** in one respect:
+  the two sides no longer share a live filesystem, so a command that expects the
+  caller to observe its writes *while it is still running* (or vice versa) will
+  not see them — only the state at copy-in/copy-out boundaries.
+* The aux image must provide ``tar`` and ``base64`` (both are in any normal
+  userland image). Transfers are base64-framed because the exec channel is
+  text-oriented and would corrupt raw binary.
+* Aux compute is scheduled by Kubernetes as its own pod, so it never competes
+  with the service (the control plane) for resources.
+
+Lifecycle: the pod is labelled with its campaign, owned by the service pod (so
+Kubernetes garbage-collects it if the service is replaced), carries an
+``activeDeadlineSeconds`` backstop, and is deleted when the campaign ends.
 """
 
+import base64
+import io
 import logging
 import os
-import socket
 import subprocess
+import tarfile
+import tempfile
 import time
 
 logger = logging.getLogger(__name__)
 
-# Shared emptyDir mount point, identical in the controller and every aux sidecar,
-# so a plugin's absolute workspace paths resolve the same on both sides. Kept in
-# sync with the volume injected by controller_launcher._aux_sidecar_containers.
-AUX_WORKSPACE = "/aux"
+#: Default wall-clock cap for an aux pod, so a leaked one always dies by itself.
+DEFAULT_AUX_DEADLINE_SECONDS = 12 * 60 * 60
+
+#: Label selector identifying every aux pod (one per campaign that needs one).
+AUX_LABEL = "app=robovast-aux"
 
 
-def _pod_name() -> str:
-    """The controller pod's own name (== hostname for a pod)."""
-    return os.environ.get("HOSTNAME") or socket.gethostname()
+def aux_pod_name(campaign_id: str) -> str:
+    """Deterministic aux-pod name for *campaign_id*."""
+    from robovast.execution.cluster_execution.cluster_execution import \
+        _label_safe_campaign
+    return f"robovast-aux-{_label_safe_campaign(campaign_id)}"
 
 
-class ClusterContainerRunner:
-    """Runs commands in a controller-pod sidecar via the ``pods/exec`` API.
+def required_container_specs(config_path):
+    """Collect the distinct auxiliary ContainerSpecs a campaign's variations need.
 
-    The workspace for every aux container is a per-container subdirectory under
-    the shared :data:`AUX_WORKSPACE` emptyDir, so multiple sidecars don't collide
-    and the path is identical inside the sidecar and the controller.
+    Loads the ``.vast`` file and asks each declared variation plugin (via
+    ``get_required_container``) whether it needs a helper image while it runs.
+    Returns a list of ``ContainerSpec`` deduplicated by container name.
+    Best-effort: a plugin that fails to load is skipped (the run surfaces the real
+    error later), so a launch is never blocked by container discovery.
+    """
+    from robovast.common.common import load_config
+    from robovast.common.config_generation import _get_variation_classes
+
+    vast_dir = os.path.dirname(os.path.abspath(config_path))
+    try:
+        parameters = load_config(config_path)
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning("Could not inspect '%s' for aux containers: %s", config_path, exc)
+        return []
+
+    # Batch campaigns declare variations under top-level ``configuration`` blocks;
+    # search campaigns declare them once as ``search.variations`` (compose expands
+    # that template into configuration blocks per generation). Inspect both so the
+    # aux pod is created regardless of campaign type. Unsubstituted ``$name`` search
+    # markers in the template are harmless: get_required_container ignores values.
+    blocks = list(parameters.get("configuration", []) or [])
+    search_variations = (parameters.get("search", {}) or {}).get("variations")
+    if search_variations:
+        blocks.append({"variations": search_variations})
+
+    specs = {}
+    for config_block in blocks:
+        try:
+            classes = _get_variation_classes(config_block, vast_dir)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("Skipping aux-container discovery for a config block: %s", exc)
+            continue
+        for variation_class, variation_parameters in classes:
+            try:
+                spec = variation_class.get_required_container(variation_parameters)
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.warning("get_required_container failed for %s: %s",
+                               getattr(variation_class, "__name__", variation_class), exc)
+                continue
+            if spec is not None:
+                specs.setdefault(spec.container_name(), spec)
+    return list(specs.values())
+
+
+def cleanup_aux_pods(namespace="default", kube_context=None, campaign=None):
+    """Delete aux pods (label ``app=robovast-aux``). Best-effort.
+
+    With *campaign* given, deletes only that campaign's aux pod so concurrent
+    campaigns are left untouched; otherwise deletes every aux pod. Backs
+    ``vast exec cluster run-cleanup`` (the successor to the controller-pod reap).
+    """
+    from kubernetes import client, config
+
+    from robovast.execution.cluster_execution.cluster_execution import \
+        _label_safe_campaign
+
+    selector = AUX_LABEL
+    if campaign is not None:
+        selector += f",campaign-id={_label_safe_campaign(campaign)}"
+    try:
+        if kube_context:
+            config.load_kube_config(context=kube_context)
+        else:
+            try:
+                config.load_incluster_config()
+            except Exception:  # noqa: BLE001 - host fallback
+                config.load_kube_config()
+        core = client.CoreV1Api()
+        pods = core.list_namespaced_pod(namespace, label_selector=selector).items
+    except Exception as e:  # noqa: BLE001
+        logger.debug("Could not list aux pods for cleanup: %s", e)
+        return 0
+    deleted = 0
+    for pod in pods:
+        try:
+            core.delete_namespaced_pod(pod.metadata.name, namespace,
+                                       grace_period_seconds=0)
+            deleted += 1
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Could not delete aux pod %s: %s", pod.metadata.name, e)
+    return deleted
+
+
+def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None,
+                           deadline_seconds: int = DEFAULT_AUX_DEADLINE_SECONDS) -> dict:
+    """Manifest for a campaign's aux Pod: one kept-alive container per spec.
+
+    Each container runs the aux image with its one-shot entrypoint overridden by
+    the spec's ``keep_alive_command``, so it stays up for the whole campaign and
+    every ``run()`` pays only the exec setup (no per-call create or image re-pull).
+
+    *owner_ref* should be the **service pod** so Kubernetes garbage-collects this
+    pod when the service is replaced — the same "dies with its parent" guarantee
+    the old controller-pod sidecar had.
+    """
+    from robovast.execution.cluster_execution.cluster_execution import \
+        _label_safe_campaign
+
+    containers = []
+    for spec in specs:
+        container = {
+            "name": spec.container_name(),
+            "image": spec.image,
+            "imagePullPolicy": "IfNotPresent",
+            "command": list(spec.keep_alive_command),
+        }
+        if spec.env:
+            container["env"] = [{"name": k, "value": str(v)} for k, v in spec.env.items()]
+        if spec.run_as_user:
+            uid = spec.run_as_user.split(":", 1)[0]
+            try:
+                container["securityContext"] = {"runAsUser": int(uid)}
+            except ValueError:
+                pass
+        containers.append(container)
+
+    metadata = {
+        "name": aux_pod_name(campaign_id),
+        "namespace": namespace,
+        "labels": {"app": "robovast-aux",
+                   "campaign-id": _label_safe_campaign(campaign_id)},
+    }
+    if owner_ref:
+        metadata["ownerReferences"] = [owner_ref]
+    return {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": metadata,
+        "spec": {
+            "restartPolicy": "Never",
+            # Backstop: even if teardown and the reaper both miss it, it dies.
+            "activeDeadlineSeconds": int(deadline_seconds),
+            "containers": containers,
+        },
+    }
+
+
+def service_pod_owner_reference(core_v1, namespace):
+    """An ownerReference to *this* (service) pod, or None if it can't be resolved.
+
+    Owning aux pods by the current service **Pod** (not the Deployment) is
+    deliberate: a service restart abandons its in-flight campaigns, so their aux
+    pods should be collected with it rather than outlive it.
+    """
+    pod_name = os.environ.get("HOSTNAME")
+    if not pod_name:
+        return None
+    try:
+        pod = core_v1.read_namespaced_pod(pod_name, namespace)
+    except Exception as exc:  # pylint: disable=broad-except - not fatal, reaper covers it
+        logger.debug("Could not resolve service pod %s for ownerReference: %s",
+                     pod_name, exc)
+        return None
+    return {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "name": pod.metadata.name,
+        "uid": pod.metadata.uid,
+        "controller": False,
+        "blockOwnerDeletion": False,
+    }
+
+
+class AuxPodSession:
+    """Creates a campaign's aux Pod, yields a runner factory, deletes it after.
+
+    Used as a context manager by the service's per-campaign worker thread, so the
+    pod's lifetime is exactly the campaign's and the runner factory it installs is
+    scoped to that worker (see ``config_generation.set_container_runner_factory``).
+    A campaign with no aux specs creates nothing.
     """
 
-    def __init__(self, spec, namespace, core_v1=None):
-        self._spec = spec
-        self._namespace = namespace
+    def __init__(self, campaign_id, specs, namespace, core_v1=None,
+                 ready_timeout: float = 300.0):
+        self.campaign_id = campaign_id
+        self.specs = list(specs or [])
+        self.namespace = namespace
+        self.pod_name = aux_pod_name(campaign_id)
         self._core_v1 = core_v1
-        self._container = spec.container_name()
-        self.workspace = os.path.join(AUX_WORKSPACE, self._container)
-        os.makedirs(self.workspace, exist_ok=True)
+        self._ready_timeout = ready_timeout
+        self._created = False
 
     def _client(self):
         if self._core_v1 is None:
-            from kubernetes import client, config  # pylint: disable=import-outside-toplevel
+            from kubernetes import client, config
             try:
                 config.load_incluster_config()
-            except config.ConfigException:
+            except Exception:  # noqa: BLE001 - dev/local fallback
                 config.load_kube_config()
             self._core_v1 = client.CoreV1Api()
         return self._core_v1
 
-    def run(self, command, progress_update_callback=None):
-        progress_update_callback = progress_update_callback or logger.debug
-        full_cmd = list(self._spec.command_prefix) + list(command)
-        # Retry the first exec a few times: the sidecar may still be starting when
-        # the controller reaches the variation step.
+    def __enter__(self):
+        if not self.specs:
+            return self
+        from kubernetes.client.rest import ApiException
+        core = self._client()
+        manifest = build_aux_pod_manifest(
+            self.campaign_id, self.specs, self.namespace,
+            owner_ref=service_pod_owner_reference(core, self.namespace))
+        try:
+            core.create_namespaced_pod(self.namespace, manifest)
+            self._created = True
+        except ApiException as e:
+            if e.status != 409:  # already exists → reuse it
+                raise RuntimeError(
+                    f"could not create aux pod {self.pod_name}: {e.reason}") from e
+            self._created = True
+        logger.info("Aux pod %s created (%d container(s)) for campaign %s",
+                    self.pod_name, len(self.specs), self.campaign_id)
+        self._wait_running(core)
+        return self
+
+    def _wait_running(self, core) -> None:
+        deadline = time.time() + self._ready_timeout
+        while time.time() < deadline:
+            pod = core.read_namespaced_pod(self.pod_name, self.namespace)
+            phase = pod.status.phase
+            if phase == "Running":
+                return
+            if phase in ("Failed", "Succeeded"):
+                raise RuntimeError(
+                    f"aux pod {self.pod_name} reached {phase} before it could be used")
+            time.sleep(2)
+        raise RuntimeError(
+            f"aux pod {self.pod_name} was not Running within {self._ready_timeout}s")
+
+    def runner_factory(self):
+        """A ``factory(spec) -> ClusterContainerRunner`` bound to this campaign's pod."""
+        def factory(spec):
+            return ClusterContainerRunner(
+                spec, self.pod_name, self.namespace, self._client())
+        return factory
+
+    def __exit__(self, exc_type, exc, tb):
+        if not self._created:
+            return False
+        try:
+            self._client().delete_namespaced_pod(self.pod_name, self.namespace)
+            logger.info("Aux pod %s deleted", self.pod_name)
+        except Exception as e:  # pylint: disable=broad-except - GC/reaper is the backstop
+            logger.warning("Could not delete aux pod %s: %s", self.pod_name, e)
+        return False
+
+
+class ClusterContainerRunner:
+    """Runs a plugin's commands in a campaign's aux Pod via ``pods/exec``.
+
+    ``workspace`` is a **local** directory in the service; it is mirrored into the
+    aux container at the identical absolute path around each :meth:`run`, so the
+    plugin's absolute paths stay valid on both sides (see the module docstring for
+    the one way this differs from the old shared-volume behaviour).
+    """
+
+    def __init__(self, spec, pod_name, namespace, core_v1=None):
+        self._spec = spec
+        self._pod = pod_name
+        self._namespace = namespace
+        self._core_v1 = core_v1
+        self._container = spec.container_name()
+        self.workspace = tempfile.mkdtemp(prefix="robovast_aux_")
+
+    def _client(self):
+        if self._core_v1 is None:
+            from kubernetes import client, config
+            try:
+                config.load_incluster_config()
+            except Exception:  # noqa: BLE001 - dev/local fallback
+                config.load_kube_config()
+            self._core_v1 = client.CoreV1Api()
+        return self._core_v1
+
+    # -- exec plumbing ------------------------------------------------------
+
+    def _exec(self, command, stdin_data=None, progress_update_callback=None):
+        """Exec *command* in the aux container; return collected stdout.
+
+        Raises ``subprocess.CalledProcessError`` on a non-zero exit, so callers
+        (and plugins) see the same failure type as the local ``docker run`` path.
+        """
+        from kubernetes.stream import stream
+
+        resp = stream(
+            self._client().connect_get_namespaced_pod_exec,
+            self._pod, self._namespace,
+            container=self._container,
+            command=command,
+            stderr=True, stdin=stdin_data is not None, stdout=True, tty=False,
+            _preload_content=False,
+        )
+        out_chunks: list[str] = []
+        if stdin_data is not None:
+            resp.write_stdin(stdin_data)
+        while resp.is_open():
+            resp.update(timeout=1)
+            if resp.peek_stdout():
+                chunk = resp.read_stdout()
+                out_chunks.append(chunk)
+                if progress_update_callback:
+                    for line in chunk.splitlines():
+                        progress_update_callback(line)
+            if resp.peek_stderr():
+                chunk = resp.read_stderr()
+                if progress_update_callback:
+                    for line in chunk.splitlines():
+                        progress_update_callback(line)
+                else:
+                    logger.debug("aux stderr: %s", chunk.rstrip())
+        returncode = resp.returncode
+        resp.close()
+        if returncode != 0:
+            raise subprocess.CalledProcessError(returncode, command)
+        return "".join(out_chunks)
+
+    def _retrying_exec(self, command, **kwargs):
+        """Exec, retrying transient 'container not ready yet' failures."""
         last_exc = None
         for attempt in range(10):
             try:
-                return self._exec(full_cmd, progress_update_callback)
+                return self._exec(command, **kwargs)
             except subprocess.CalledProcessError:
-                raise  # a real non-zero exit from the command — don't retry
+                raise  # a real non-zero exit — don't retry
             except Exception as exc:  # pylint: disable=broad-except
                 last_exc = exc
                 logger.debug("exec into %s not ready yet (attempt %d): %s",
                              self._container, attempt + 1, exc)
                 time.sleep(1)
         raise RuntimeError(
-            f"Could not exec into aux sidecar '{self._container}': {last_exc}")
+            f"Could not exec into aux container '{self._container}': {last_exc}")
 
-    def _exec(self, full_cmd, progress_update_callback):
-        from kubernetes.stream import stream  # pylint: disable=import-outside-toplevel
+    # -- workspace mirroring ------------------------------------------------
 
-        logger.debug("exec %s -c %s -- %s", _pod_name(), self._container, " ".join(full_cmd))
-        resp = stream(
-            self._client().connect_get_namespaced_pod_exec,
-            _pod_name(), self._namespace,
-            container=self._container,
-            command=full_cmd,
-            stderr=True, stdin=False, stdout=True, tty=False,
-            _preload_content=False,
-        )
-        output_lines = []
-        while resp.is_open():
-            resp.update(timeout=1)
-            if resp.peek_stdout():
-                for line in resp.read_stdout().splitlines():
-                    progress_update_callback(line)
-                    output_lines.append(line)
-            if resp.peek_stderr():
-                for line in resp.read_stderr().splitlines():
-                    progress_update_callback(line)
-                    output_lines.append(line)
-        returncode = resp.returncode
-        resp.close()
-        if returncode != 0:
-            logger.error(
-                "Container command failed (exit %s) in %s: %s\nOutput:\n%s",
-                returncode, self._container, " ".join(full_cmd), "\n".join(output_lines))
-            raise subprocess.CalledProcessError(returncode, full_cmd)
+    def _copy_in(self) -> None:
+        """Mirror the local workspace into the container at the same path."""
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            tar.add(self.workspace, arcname=".")
+        payload = base64.b64encode(buf.getvalue()).decode("ascii")
+        self._retrying_exec(
+            ["sh", "-c",
+             f"mkdir -p '{self.workspace}' && base64 -d | tar xzf - -C '{self.workspace}'"],
+            stdin_data=payload)
+
+    def _copy_out(self) -> None:
+        """Mirror the container's workspace back over the local one."""
+        out = self._retrying_exec(
+            ["sh", "-c", f"tar czf - -C '{self.workspace}' . | base64"])
+        raw = base64.b64decode("".join(out.split()))
+        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as tar:
+            tar.extractall(self.workspace)  # noqa: S202 - our own aux container
+
+    def run(self, command, progress_update_callback=None) -> None:
+        progress_update_callback = progress_update_callback or logger.debug
+        full_cmd = list(self._spec.command_prefix) + list(command)
+        self._copy_in()
+        try:
+            self._exec(full_cmd, progress_update_callback=progress_update_callback)
+        finally:
+            # Bring back whatever the command produced, even on failure — partial
+            # output is often what makes the failure diagnosable.
+            try:
+                self._copy_out()
+            except Exception as e:  # pylint: disable=broad-except
+                logger.warning("Could not copy aux workspace back: %s", e)
 
     def close(self):
-        # The sidecar lives for the whole campaign and is reaped with the pod;
-        # nothing to tear down here.
+        # The aux pod is torn down with the campaign by AuxPodSession; the local
+        # temp workspace is small and reaped with the pod's scratch.
         pass
-
-
-def make_cluster_container_runner_factory(namespace, core_v1=None):
-    """Return a factory that builds :class:`ClusterContainerRunner` for a spec.
-
-    Registered as the process-wide runner factory by the in-pod controller (see
-    :func:`robovast.common.config_generation.set_container_runner_factory`).
-    """
-    def factory(spec):
-        return ClusterContainerRunner(spec, namespace, core_v1)
-    return factory

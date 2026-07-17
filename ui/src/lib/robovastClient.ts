@@ -88,6 +88,14 @@ export interface Status {
   updated_at: number
 }
 
+// An incremental slice of a campaign's controller.log. Poll from `next_offset`
+// and append `text`; stop once `eof` is set (mirrors service/interface.py:LogChunk).
+export interface LogChunk {
+  text: string
+  next_offset: number
+  eof: boolean
+}
+
 export interface WorkspaceInfo {
   workspace_id: string
   name: string
@@ -263,6 +271,12 @@ export const robovast = {
 
   getStatus: (campaignId: string) =>
     request<Status>('GET', `/campaigns/${encodeURIComponent(campaignId)}/status`),
+
+  getCampaignLogs: (campaignId: string, offset = 0) =>
+    request<LogChunk>(
+      'GET',
+      `/campaigns/${encodeURIComponent(campaignId)}/logs?offset=${offset}`,
+    ),
 
   createCampaign: (req: CreateCampaignRequest) =>
     request<CampaignRef>('POST', '/campaigns', {

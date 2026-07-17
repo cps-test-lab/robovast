@@ -39,10 +39,12 @@ from robovast.service.interface import (ActionResult, CampaignRef,
                                         CreateWorkspaceRequest, EditFileRequest,
                                         FileContent, FileMeta,
                                         ListCampaignsResponse, ListFilesResponse,
-                                        ListWorkspacesResponse, PreviewResponse,
+                                        ListWorkspacesResponse, LogChunk,
+                                        PreviewResponse,
                                         RobovastInterface, Routes,
                                         RunPostprocessingRequest, Status,
                                         UpdatePostprocessingRequest, UploadGrant,
+                                        UploadToShareRequest,
                                         ValidationReport, VariationTypesResponse,
                                         VersionInfo, WorkspaceInfo, WriteFileRequest,
                                         DataDescribe, DataQueryResult,
@@ -194,13 +196,20 @@ def build_app(impl: RobovastInterface):
     def get_status(campaign_id: str) -> Status:
         return _guard(lambda: impl.get_status(campaign_id))
 
+    @app.get("/campaigns/{campaign_id}/logs", response_model=LogChunk)
+    def get_campaign_logs(campaign_id: str, offset: int = 0) -> LogChunk:
+        return _guard(lambda: impl.get_campaign_logs(campaign_id, offset))
+
     @app.post("/campaigns/{campaign_id}/stop", response_model=ActionResult)
     def stop(campaign_id: str) -> ActionResult:
         return _guard(lambda: impl.stop(campaign_id))
 
     @app.post("/campaigns/{campaign_id}/upload-to-share", response_model=ActionResult)
-    def upload_to_share(campaign_id: str) -> ActionResult:
-        return _guard(lambda: impl.upload_to_share(campaign_id))
+    def upload_to_share(campaign_id: str,
+                        request: "UploadToShareRequest | None" = None) -> ActionResult:
+        # Body is optional: no-arg retries reuse the service's share environment.
+        overrides = request.overrides if request else None
+        return _guard(lambda: impl.upload_to_share(campaign_id, overrides))
 
     @app.get("/campaigns/{campaign_id}/archive")
     def download_campaign_archive(campaign_id: str):

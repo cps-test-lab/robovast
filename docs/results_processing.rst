@@ -78,9 +78,9 @@ The structure inside is domain-specific, but typically includes:
 
 ``controller.log`` captures the campaign controller's own log for the whole run —
 batch/search progress, backend job dispatch, postprocessing and stopping
-decisions. For cluster runs this is the same output the controller pod prints to
-``kubectl logs``, preserved here so a downloaded or shared campaign is
-self-documenting without a live cluster.
+decisions. For cluster runs the ``robovast-service`` writes this as it drives the
+campaign (and the web UI streams it live); it is preserved in the campaign so a
+downloaded or shared campaign is self-documenting without a live cluster.
 
 ``_transient/`` — Intermediate Data
 """""""""""""""""""""""""""""""""""""

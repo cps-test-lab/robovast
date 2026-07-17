@@ -97,13 +97,16 @@ def test_service_is_clusterip_selecting_the_deployment():
     assert svc["spec"]["ports"][0]["port"] == sd.SERVICE_PORT
 
 
-def test_service_rbac_can_manage_pods_but_not_jobs():
+def test_service_rbac_can_manage_jobs_pods_and_exec():
     ms = sd.service_manifests(namespace="default", image="x")
     role = next(m for m in ms if m["kind"] == "Role")
     resources = {r for rule in role["rules"] for r in rule["resources"]}
-    assert "pods" in resources and "pods/log" in resources
-    # the service launches/monitors controller pods; controllers create the Jobs
-    assert "jobs" not in resources
+    # The service drives campaigns in-process now (no controller pod), so it needs
+    # everything that pod's ServiceAccount used to hold: it creates/monitors the
+    # scenario + postprocessing Jobs, their pods/logs, and the per-campaign aux pods
+    # it execs into.
+    assert {"jobs", "jobs/status"} <= resources
+    assert {"pods", "pods/log", "pods/exec"} <= resources
 
 
 def test_default_image_resolves_from_controller_image():

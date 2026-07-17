@@ -32,11 +32,19 @@ directly and is unaffected.
 """
 
 import logging
+import math
 import re
 import sqlite3
+import statistics
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+#: A single cell wider than this is masked/truncated so a stray ``SELECT
+#: strategy_state`` (a pickled-optimizer BLOB) or a giant ``config_json`` cannot
+#: dump megabytes of bytes into an LLM's context. Rows are already capped by
+#: ``max_rows``; this bounds width, which rows alone do not.
+_MAX_CELL_BYTES = 2048
 
 
 class DataQueryError(ValueError):
@@ -66,20 +74,129 @@ def _regexp(pattern: str, value) -> bool:
         return False
 
 
-def _open_db(campaign_dir) -> sqlite3.Connection:
-    """Open ``<campaign_dir>/_execution/data.db`` read-only (raises if absent).
+# -- statistical aggregates --------------------------------------------------
+# SQLite ships only AVG/SUM/MIN/MAX/COUNT, but campaign analysis is about
+# variance across runs ("is this config flaky?", "p95 landing error"). Register
+# the missing ones so the LLM can express those in one query rather than
+# hand-rolling (and mis-rolling) medians via window functions.
 
-    Attaches ``<campaign_dir>/campaign.db`` read-only as schema ``campaign`` when
-    present, and registers a ``REGEXP`` function.
+
+def _floats(values):
+    out = []
+    for v in values:
+        if v is None:
+            continue
+        try:
+            out.append(float(v))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+class _Stddev:
+    """Sample standard deviation (``NULL`` for fewer than two numeric values)."""
+
+    def __init__(self):
+        self._vals = []
+
+    def step(self, value):
+        self._vals.append(value)
+
+    def finalize(self):
+        xs = _floats(self._vals)
+        return statistics.stdev(xs) if len(xs) >= 2 else None
+
+
+class _Variance:
+    """Sample variance (``NULL`` for fewer than two numeric values)."""
+
+    def __init__(self):
+        self._vals = []
+
+    def step(self, value):
+        self._vals.append(value)
+
+    def finalize(self):
+        xs = _floats(self._vals)
+        return statistics.variance(xs) if len(xs) >= 2 else None
+
+
+class _Median:
+    """Median of the numeric values (``NULL`` when there are none)."""
+
+    def __init__(self):
+        self._vals = []
+
+    def step(self, value):
+        self._vals.append(value)
+
+    def finalize(self):
+        xs = _floats(self._vals)
+        return statistics.median(xs) if xs else None
+
+
+class _Percentile:
+    """``PERCENTILE(col, p)`` — the ``p``-th percentile (0..100), linear interp."""
+
+    def __init__(self):
+        self._vals = []
+        self._p = None
+
+    def step(self, value, p):
+        self._vals.append(value)
+        self._p = p  # same for every row; last one wins
+
+    def finalize(self):
+        xs = sorted(_floats(self._vals))
+        if not xs or self._p is None:
+            return None
+        try:
+            p = max(0.0, min(100.0, float(self._p)))
+        except (TypeError, ValueError):
+            return None
+        k = (len(xs) - 1) * (p / 100.0)
+        lo, hi = math.floor(k), math.ceil(k)
+        if lo == hi:
+            return xs[int(k)]
+        return xs[lo] * (hi - k) + xs[hi] * (k - lo)
+
+
+def _register_aggregates(conn: sqlite3.Connection) -> None:
+    conn.create_aggregate("STDDEV", 1, _Stddev)
+    conn.create_aggregate("VARIANCE", 1, _Variance)
+    conn.create_aggregate("MEDIAN", 1, _Median)
+    conn.create_aggregate("PERCENTILE", 2, _Percentile)
+
+
+def _open_db(campaign_dir) -> sqlite3.Connection:
+    """Open a campaign's queryable databases read-only.
+
+    Prefers ``<campaign_dir>/_execution/data.db`` (the postprocessed metrics). When
+    it is absent — postprocessing has not run, or the campaign is still live — falls
+    back to an empty in-memory ``main`` so ``campaign.db`` (the live store: config,
+    objectives, batch progress) is still reachable rather than raising. Either way
+    ``<campaign_dir>/campaign.db`` is attached read-only as schema ``campaign`` when
+    present, and ``REGEXP`` + the statistical aggregates are registered.
+
+    Raises :class:`DataQueryError` only when neither database exists.
     """
-    db_path = Path(campaign_dir) / "_execution" / "data.db"
-    if not db_path.exists():
+    campaign_dir = Path(campaign_dir)
+    data_db = campaign_dir / "_execution" / "data.db"
+    campaign_db = campaign_dir / "campaign.db"
+
+    if data_db.exists():
+        conn = sqlite3.connect(f"file:{data_db}?mode=ro", uri=True)
+    elif campaign_db.exists():
+        # No metrics yet, but the live store is queryable via schema `campaign`.
+        conn = sqlite3.connect("file::memory:", uri=True)
+    else:
         raise DataQueryError(
-            "No data.db found for this campaign. Run postprocessing first.")
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            "No data.db or campaign.db found for this campaign. "
+            "Run postprocessing first, or start the campaign.")
+
     conn.row_factory = sqlite3.Row
     conn.create_function("REGEXP", 2, _regexp)
-    campaign_db = Path(campaign_dir) / "campaign.db"
+    _register_aggregates(conn)
     if campaign_db.exists():
         try:
             conn.execute("ATTACH DATABASE ? AS campaign",
@@ -89,35 +206,101 @@ def _open_db(campaign_dir) -> sqlite3.Connection:
     return conn
 
 
+# Human-readable meaning for the non-obvious tables an LLM will otherwise see as
+# bare names. Metric tables (one per CSV stem) are self-describing by their columns.
+_TABLE_DESCRIPTIONS = {
+    ("main", "runs"): (
+        "Per-run dimension table: status/passed/duration_s/errors/failures, the "
+        "scalar objective, and each scenario parameter as a param_* column "
+        "(non-scalar params are JSON-encoded — use json_extract/json_each). Join to "
+        "any metric table on (config_name, run_id)."),
+    ("campaign", "campaign"): (
+        "One row for the campaign. config_json holds the entire .vast (use "
+        "json_extract, e.g. json_extract(config_json,'$.evaluation')); stop_kind/"
+        "stop_reason/batches/elapsed_s explain why/when a search terminated. "
+        "strategy_state is an opaque BLOB (masked in query results)."),
+    ("campaign", "batch"): (
+        "One row per search batch/iteration; idx is the iteration index — the "
+        "search history over time."),
+    ("campaign", "unit"): (
+        "One row per evaluated configuration. objectives_json (all named "
+        "objectives) and measures_json (quality-diversity measures) live ONLY here "
+        "— runs.objective lifts just the single scalar objective."),
+}
+
+_DESCRIBE_NOTE = (
+    "Join the 'runs' table (param_* columns + status/duration) to any metric table "
+    "on (config_name, run_id). campaign.db is attached as schema 'campaign' (see "
+    "the campaign/batch/unit table descriptions). Extra aggregate functions are "
+    "available beyond SQLite's built-ins: STDDEV, VARIANCE, MEDIAN, and "
+    "PERCENTILE(col, p) where p is 0..100. A REGEXP(pattern, col) function is also "
+    "registered."
+)
+
+
+def _list_tables(conn: sqlite3.Connection) -> list[dict]:
+    """Return ``[{schema, table, columns, rows, description}]`` across attached DBs."""
+    tables = []
+    names = [r["name"] for r in conn.execute("PRAGMA database_list").fetchall()]
+    schemas = ["main"] + (["campaign"] if "campaign" in names else [])
+    for schema in schemas:
+        rows = conn.execute(
+            f"SELECT name FROM {schema}.sqlite_master "
+            "WHERE type='table' AND name NOT LIKE 'sqlite_%' "
+            "AND name != '_table_name_map' ORDER BY name").fetchall()
+        for tr in rows:
+            name = tr["name"]
+            cols = [r["name"] for r in conn.execute(
+                f'PRAGMA {schema}.table_info("{name}")').fetchall()]
+            try:
+                n = conn.execute(f'SELECT COUNT(*) FROM {schema}."{name}"').fetchone()[0]
+            except sqlite3.Error:
+                n = None
+            entry = {"schema": schema, "table": name, "columns": cols, "rows": n}
+            desc = _TABLE_DESCRIPTIONS.get((schema, name))
+            if desc:
+                entry["description"] = desc
+            tables.append(entry)
+    return tables
+
+
 def describe_data_db(campaign_dir) -> dict:
-    """Return ``{tables: [{schema, table, columns, rows}], note}`` for a campaign."""
+    """Return ``{tables: [{schema, table, columns, rows, description}], note}``.
+
+    Works before postprocessing: when ``data.db`` is absent, the attached
+    ``campaign`` schema (config/objectives/batch progress) is still described.
+    """
     conn = _open_db(campaign_dir)
     try:
-        tables = []
-        names = [r["name"] for r in conn.execute("PRAGMA database_list").fetchall()]
-        schemas = ["main"] + (["campaign"] if "campaign" in names else [])
-        for schema in schemas:
-            rows = conn.execute(
-                f"SELECT name FROM {schema}.sqlite_master "
-                "WHERE type='table' AND name NOT LIKE 'sqlite_%' "
-                "AND name != '_table_name_map' ORDER BY name").fetchall()
-            for tr in rows:
-                name = tr["name"]
-                cols = [r["name"] for r in conn.execute(
-                    f'PRAGMA {schema}.table_info("{name}")').fetchall()]
-                try:
-                    n = conn.execute(f'SELECT COUNT(*) FROM {schema}."{name}"').fetchone()[0]
-                except sqlite3.Error:
-                    n = None
-                tables.append({"schema": schema, "table": name, "columns": cols, "rows": n})
-        return {
-            "tables": tables,
-            "note": "Join the 'runs' table (param_* columns + status/duration) to any "
-                    "metric table on (config_name, run_id). campaign.db is attached as "
-                    "schema 'campaign'.",
-        }
+        return {"tables": _list_tables(conn), "note": _DESCRIBE_NOTE}
     finally:
         conn.close()
+
+
+def _cap_cell(value):
+    """Bound a single cell's width. BLOBs are masked; oversized text is truncated."""
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return f"<BLOB {len(bytes(value))} bytes>"
+    if isinstance(value, str) and len(value.encode("utf-8", "replace")) > _MAX_CELL_BYTES:
+        return value.encode("utf-8", "replace")[:_MAX_CELL_BYTES].decode(
+            "utf-8", "ignore") + f"…<truncated, {len(value)} chars total>"
+    return value
+
+
+def _empty_result_note(conn: sqlite3.Connection) -> str:
+    """Explain a 0-row result: list non-empty base tables so a broken JOIN/filter
+    is distinguishable from a genuinely empty dataset."""
+    non_empty = []
+    for t in _list_tables(conn):
+        if t.get("rows"):
+            qualified = t["table"] if t["schema"] == "main" else f'{t["schema"]}.{t["table"]}'
+            non_empty.append(f"{qualified}: {t['rows']}")
+    if not non_empty:
+        return "Query matched 0 rows, and no base table has any rows."
+    return (
+        "Query matched 0 rows. This may be correct, or a filter/JOIN-key mismatch. "
+        "Non-empty tables (rows): " + ", ".join(non_empty) + "."
+    )
 
 
 def query_data_db(campaign_dir, sql: str, max_rows: int = 500) -> dict:
@@ -142,9 +325,14 @@ def query_data_db(campaign_dir, sql: str, max_rows: int = 500) -> dict:
         columns = [d[0] for d in cursor.description]
         fetched = cursor.fetchmany(max_rows + 1)
         truncated = len(fetched) > max_rows
-        rows = [dict(zip(columns, r)) for r in fetched[:max_rows]]
-        return {"columns": columns, "row_count": len(rows),
-                "truncated": truncated, "rows": rows}
+        rows = [{c: _cap_cell(v) for c, v in zip(columns, r)}
+                for r in fetched[:max_rows]]
+        result = {"columns": columns, "row_count": len(rows),
+                  "truncated": truncated, "rows": rows}
+        if not rows:
+            conn.set_authorizer(None)  # _empty_result_note runs its own COUNT(*)s
+            result["note"] = _empty_result_note(conn)
+        return result
     finally:
         conn.set_authorizer(None)
         conn.close()

@@ -14,6 +14,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import contextvars
 import copy
 import fnmatch
 import logging
@@ -80,26 +81,39 @@ def progress_update(msg):
     logger.info(msg)
 
 
-# Process-wide factory that turns a variation's ContainerSpec into a concrete
-# ContainerRunner for the active execution backend. The in-pod cluster controller
-# registers a cluster (sidecar + pods/exec) factory via
-# set_container_runner_factory(); when unset we fall back to the local
-# (ephemeral ``docker run``) runner. See variation/container_runner.py.
-_container_runner_factory = None  # type: ignore[var-annotated]  # pylint: disable=invalid-name
+# Factory that turns a variation's ContainerSpec into a concrete ContainerRunner
+# for the active execution backend. The service's per-campaign worker registers a
+# cluster (aux-pod + pods/exec) factory via set_container_runner_factory(); when
+# unset we fall back to the local (ephemeral ``docker run``) runner. See
+# variation/container_runner.py.
+#
+# It is a **ContextVar, not a module global**, because the service now drives many
+# campaigns concurrently as threads in one process (the driver used to be an
+# isolated per-campaign pod). A new thread starts with a fresh context, so each
+# worker's set() is scoped to that worker's composition — concurrent campaigns
+# never clobber each other's aux-pod target. Composition is synchronous within the
+# worker thread (no thread pool), so the value is visible where it's read.
+_container_runner_factory: "contextvars.ContextVar" = contextvars.ContextVar(
+    "robovast_container_runner_factory", default=None)
 
 
 def set_container_runner_factory(factory):
-    """Register the backend's ContainerRunner factory (or ``None`` to reset)."""
-    global _container_runner_factory  # pylint: disable=global-statement
-    _container_runner_factory = factory
+    """Register the backend's ContainerRunner factory for the current context.
+
+    Scoped to the calling thread/context (see the ContextVar note above); pass
+    ``None`` to reset. Returns the ``Token`` so a caller may restore the prior
+    value in a ``finally`` if it wants to.
+    """
+    return _container_runner_factory.set(factory)
 
 
 def _make_container_runner(spec):
     """Build a runner for *spec* using the active factory (local fallback)."""
     if spec is None:
         return None
-    if _container_runner_factory is not None:
-        return _container_runner_factory(spec)
+    factory = _container_runner_factory.get()
+    if factory is not None:
+        return factory(spec)
     from .variation.container_runner import \
         LocalContainerRunner  # pylint: disable=import-outside-toplevel
     return LocalContainerRunner(spec)

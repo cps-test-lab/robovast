@@ -171,7 +171,9 @@ Available Tools
 ---------------
 
 All tools are provided by plugins loaded at startup via the
-``robovast.mcp_plugins`` entry-point group.
+``robovast.mcp_plugins`` entry-point group. The table below is generated from the
+**registered** plugins, so it always reflects the tools the server actually
+exposes (installing extras such as ``nav`` adds more).
 
 Use MCP Inspector or a compatible client to explore the available tools and
 their input/output schemas.
@@ -180,33 +182,4 @@ their input/output schemas.
 
     npx @modelcontextprotocol/inspector
 
-
-Campaign control tools
-""""""""""""""""""""""
-
-.. mcp-tools:: robovast.mcp_server.plugins.campaign_control._TOOLS
-
-Campaign metadata tools
-"""""""""""""""""""""""
-
-.. mcp-tools:: robovast.mcp_server.plugins.campaign_metadata._TOOLS
-
-Configuration metadata tools
-""""""""""""""""""""""""""""
-
-.. mcp-tools:: robovast.mcp_server.plugins.configuration_metadata._TOOLS
-
-Run metadata tools
-""""""""""""""""""
-
-.. mcp-tools:: robovast.mcp_server.plugins.run_metadata._TOOLS
-
-Run data tools
-""""""""""""""
-
-.. mcp-tools:: robovast.mcp_server.plugins.run_data._TOOLS
-
-Plugin metadata tools
-"""""""""""""""""""""
-
-.. mcp-tools:: robovast.mcp_server.plugins.plugin_metadata._TOOLS
+.. mcp-tools::

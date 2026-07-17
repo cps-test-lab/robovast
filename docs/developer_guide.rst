@@ -110,9 +110,9 @@ A good practice is, to first run a single configuration to verify that everythin
     # Results can then be retrieved with: vast results download
     # Files are organized as: <results-dir>/<campaign-name>-<timestamp>/<config-name>/<run_number>/
 
-``vast exec cluster run`` is fire-and-forget: it launches an in-cluster
-controller pod that drives the campaign and returns immediately. The campaign
-runs in the background in the cluster:
+``vast exec cluster run`` is fire-and-forget: it starts the campaign on the
+``robovast-service``, which drives it in-process, and returns immediately. The
+campaign runs in the background in the cluster:
 
 .. code-block:: bash
 
@@ -280,9 +280,9 @@ the quadrotor search vasts.
    be importable everywhere scenario variations get **composed** — not just where
    scenarios *run*. Composition happens in the process that expands the
    ``variations:`` cross-product: the ``vast`` CLI on your host for
-   ``vast exec local run``; the ``robovast-service`` for an MCP/service campaign;
-   and, for a cluster run, **inside the controller pod** (search composes each
-   batch there iteratively, so the plugin must be importable in the pod).
+   ``vast exec local run``; and the ``robovast-service`` for every service/cluster
+   campaign — the service drives the campaign in-process, so composition (which for
+   search runs once per generation) happens in the service, not in a separate pod.
 
    There is **one mechanism** for all of these — the ``.vast``'s ``plugins:`` list
    (next section) — and it is uniform across the CLI and the MCP/service paths:
@@ -294,19 +294,19 @@ the quadrotor search vasts.
      declared specs that are *missing* are installed — into the project's
      ``.robovast_plugins/`` directory via ``pip install --target`` (never your
      active venv).
-   * **For a cluster run, every declared plugin is materialized into
-     ``.robovast_plugins/`` and staged into the pod** with the campaign inputs
-     (``ensure_workspace_plugins(..., force=True)`` from the CLI launcher and from
-     the service's ``create_campaign``). The controller pod imports them off
-     ``sys.path`` and **never installs or clones** — no per-pod credentials, and a
-     private-repo clone happens once, on the credentialed host/service.
+   * **For a service/cluster campaign, the service installs each declared plugin
+     into the workspace's ``.robovast_plugins/`` and imports it off ``sys.path``**
+     when it composes (``config_plugins.ensure_workspace_plugins``). The install
+     runs once, on the credentialed service, so a private-repo clone needs
+     credentials only there; the driver then uses the installed plugin directly —
+     there is no staging round-trip through the object store and no separate pod.
 
    Dependencies come from each package's own metadata into that same directory, so
    the one real constraint is that your plugin must **declare its dependencies
    correctly** (e.g. ``scenario_mt``'s ``shapely`` and its ``fpm @ git+…``). There
    is no separate host-venv "injection" step and no wheel-shipping; a plugin
    installed only in your host venv but **not** declared in ``plugins:`` will not
-   reach a cluster pod.
+   reach the service.
 
    **Declaring a plugin in the ``.vast`` (CLI, MCP, and ``robovast-service``).**
    Declare the plugin **inside the ``.vast``** with a top-level ``plugins:`` list of
@@ -320,20 +320,17 @@ the quadrotor search vasts.
          - some_published_plugin==1.2.3
          - ./plugins/my_plugin-1.0.0-py3-none-any.whl   # a wheel you uploaded
 
-   These are **installed into the workspace**, not into the controller pod. Before
-   variation types are resolved from entry points, ``config_plugins.
-   ensure_workspace_plugins`` (called once at the top of
-   ``generate_scenario_variations`` — the sole convergence for local, service and
-   pod composition) installs the declared specs into ``<workspace>/.robovast_plugins/``
-   with ``pip install --target`` (**with dependencies**) and puts that directory on
-   ``sys.path`` so the entry points resolve. A ``.installed`` marker (a hash of the
-   specs) makes it idempotent.
+   These are **installed into the workspace**. Before variation types are resolved
+   from entry points, ``config_plugins.ensure_workspace_plugins`` (called once at
+   the top of ``generate_scenario_variations`` — the sole convergence for local and
+   service composition) installs the declared specs into
+   ``<workspace>/.robovast_plugins/`` with ``pip install --target`` (**with
+   dependencies**) and puts that directory on ``sys.path`` so the entry points
+   resolve. A ``.installed`` marker (a hash of the specs) makes it idempotent.
 
-   The key property: ``.robovast_plugins/`` is a normal part of the project tree, so
-   it is **staged to the object store and downloaded into the controller pod with
-   everything else**. There the marker already matches, so the pod imports the
-   plugin off ``sys.path`` and **never installs, clones, or needs credentials** — it
-   only executes. The install runs where the workspace lives:
+   The key property: ``.robovast_plugins/`` lives in the workspace the driver
+   composes from, so the plugin is imported straight off ``sys.path`` with no
+   staging step. The install runs where the workspace lives:
 
    * the ``robovast-service`` runs it in ``create_campaign`` (and for
      validate/preview) — its environment is what reaches the source and holds any
@@ -349,8 +346,8 @@ the quadrotor search vasts.
    wheel** you ``create_upload``\ ed is the fully offline path (no git, no
    credentials) for a private or unpublished plugin. On a failed install the error
    is raised synchronously from the service call (create/validate/preview), so an
-   MCP user sees an actionable message instead of a controller-pod ``Unknown
-   variation class`` later.
+   MCP user sees an actionable message instead of an ``Unknown variation class``
+   surfacing later on the campaign's status.
 
    Because the ``robovast-service`` is one long-lived process serving many
    workspaces and Python cannot un-import, a plugin already loaded (from another
@@ -372,8 +369,9 @@ the quadrotor search vasts.
    * it is supplied to ``git`` only for the one ``pip install`` subprocess, via a
      throwaway ``GIT_ASKPASS`` helper in an owner-only temp dir that is removed
      immediately after;
-   * it never enters a workspace, the staged project, or a controller pod (the pod
-     imports the already-installed ``.robovast_plugins/`` and needs no credentials).
+   * it never enters a workspace or a campaign's inputs (the driver imports the
+     already-installed ``.robovast_plugins/`` from the workspace and needs no
+     credentials at composition time).
 
    (Because variation composition runs in-process, an operator who needs hard
    isolation from untrusted plugin code should prefer the uploaded-wheel source,
@@ -390,14 +388,13 @@ the quadrotor search vasts.
      in ``[tool.poetry.dependencies]`` (e.g.
      ``robovast-nav = {path = "src/robovast_nav", optional = true}`` for an
      in-repo sibling package) — ``poetry check`` catches the mismatch if not.
-   * The controller's dev-iteration fast path
-     (``controller_launcher.build_dev_wheels``) builds a wheel of the current
-     ``robovast`` source for quick redeploys; if your plugin lives in a
-     separate poetry project under ``src/``, it needs its own wheel built and
-     shipped alongside (as ``robovast_nav`` does) or dev changes to it won't
-     reach the controller pod. This applies only to the built-in
-     ``robovast``/``robovast-nav`` sources — independent plugins are handled by
-     ``discover_plugin_installs`` above.
+   * For a cluster run, the built-in ``robovast`` / ``robovast-nav`` code comes
+     from the **service image** (``vast exec cluster setup`` deploys it), so dev
+     changes to those sources reach a run by rebuilding/redeploying that image —
+     point ``ROBOVAST_CONTROLLER_IMAGE`` at a dev image to iterate. This applies
+     only to the built-in sources; independent plugins are handled by
+     ``discover_plugin_installs`` above (installed into the workspace, no image
+     rebuild needed).
 
    If your plugin's package pulls in a dependency that itself needs system
    shared libraries (e.g. ``robovast-nav`` hard-depends on
@@ -772,7 +769,7 @@ uploaded (see :ref:`cluster-sharing`).  To add a new provider:
                   ...  # PUT/stream `body` to the share, raising on failure
 
 2. **Implement** :meth:`~robovast.execution.cluster_execution.share_providers.base.BaseShareProvider.upload_archive`.
-   It runs **in-process** in the controller pod (no sidecar, no subprocess), reads
+   It runs **in-process** in the service (no sidecar, no subprocess), reads
    credentials from ``os.environ`` (populated by ``build_pod_env()``), and uploads
    the local ``archive_path``. Wrap the request body in
    :class:`~robovast.execution.cluster_execution.share_providers.base.UploadProgressReader`
@@ -1018,35 +1015,31 @@ from each unit's ``result_dir``.
 
 .. _controller-control-interface:
 
-Controller Control Interface
-----------------------------
+Campaign state and control
+--------------------------
 
-Every cluster campaign is driven by a fire-and-forget **controller pod**. While
-it runs (and after it finishes) the host talks to it through a small in-pod
-**HTTP/JSON control channel** — the live seam for monitoring and for issuing
-commands such as a graceful stop or an upload retry.
+A campaign is driven by a :class:`~robovast.execution.controller.CampaignController`
+running **in the driving process** — the ``vast`` CLI locally, the
+``robovast-service`` for a cluster campaign (one worker thread each). There is no
+separate controller pod and no in-pod HTTP control channel: monitoring and control
+are ordinary :class:`~robovast.service.interface.RobovastInterface` calls the
+service answers directly, so the CLI, MCP and web UI all use one path.
 
-Server
-^^^^^^
+Live state
+^^^^^^^^^^
 
-``robovast.execution.control_server`` runs a **FastAPI + uvicorn** server on a
-daemon thread beside the synchronous controller loop (default port ``8099``,
-``ROBOVAST_CONTROL_PORT``). Startup is **best-effort**: if it fails (e.g.
-``uvicorn`` missing) the campaign continues and the monitor falls back to its
-Kubernetes-only view. FastAPI also serves the live OpenAPI schema at ``/docs``,
-so the same contract serves the CLI now and a web UI later.
+:class:`~robovast.execution.control_server.ControllerState` is the thread-safe
+holder the controller **writes** and readers **snapshot**. The controller calls
+``update`` / ``set_phase`` at each batch boundary; a reader takes a consistent
+``snapshot`` (deep copy), which is exactly what ``get_status`` returns. The one
+status model, :class:`~robovast.execution.control_server.Status`, is reused
+verbatim by the interface, the MCP tools and the TS client.
 
-Endpoints
-^^^^^^^^^
-
-* ``GET /status`` — the controller's live :class:`~robovast.execution.control_server.Status`
-  (loop phase, current batch, budget/run progress, history). The CLI ``monitor``
-  polls this; ``phase`` is the authoritative "done" signal.
-* ``POST /command`` — an extensible RPC: a JSON body ``{name, args}`` is dispatched
-  through the handler registry and returns a
-  :class:`~robovast.execution.control_server.CommandResult` (``{ok, result, error}``).
-  An unknown command returns HTTP 400.
-* ``GET /healthz`` — liveness (``{"ok": true}``).
+Because the service drives many campaigns as threads in one process, per-campaign
+state that used to be isolated by *being in its own pod* is now isolated
+explicitly: the container-runner factory is a ``ContextVar``, ``controller.log`` is
+filtered to its worker thread, and each aux pod / result prefix is keyed by
+campaign id.
 
 Status: phase and stage
 ^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -1064,82 +1057,35 @@ Status: phase and stage
      - Campaign created; batch loop executing.
    * - ``finishing``
      - Search stop condition met (or a ``stop`` was requested); winding down.
-   * - ``uploading``
-     - Campaign published to storage; compressing/uploading to the share. The
-       ``stage`` refines this: ``upload-to-share`` (in progress),
-       ``upload-failed`` (waiting for a retrigger), ``uploaded`` (done).
+   * - ``postprocessing``
+     - Chained analysis postprocessing (rosbag→CSV Job + ``data.db``) running.
    * - ``finished``
-     - Done (``stage=uploaded``) — the controller process exits 0.
+     - Done; the campaign is published to the object store.
    * - ``failed``
-     - Aborted. ``stage`` says why for the new pre-flight gates:
-       ``share-config-error`` (no/invalid share configured) or
-       ``share-verify-failed`` (credentials rejected before any batch ran).
+     - Aborted. ``stage``/``error`` say why (e.g. a bad ``config_filter`` lists the
+       available config names). Recorded to ``_execution/outcome.json`` so it is
+       readable after the fact.
 
-Commands
-^^^^^^^^
+Control operations
+^^^^^^^^^^^^^^^^^^^
 
-Handlers are registered in the :data:`~robovast.execution.control_server.HANDLERS`
-registry via the ``@register("name")`` decorator and receive
-``(state, **args)``. Built-in commands:
-
-* ``stop`` — cooperative graceful stop. During the batch loop it ends the search
-  after the current batch; while the controller is parked waiting to retry a
-  failed upload it **abandons** that wait and terminates.
-* ``upload-to-share`` — (re)run the post-campaign upload. ``args`` may carry
-  credential overrides (e.g. a corrected password); with no args the
-  launch-time credentials are reused. The handler only *signals* — the actual
-  upload runs on the controller's main thread (see below) — so callers poll
-  ``GET /status`` for the ``stage`` transition.
-
-State ownership and the retrigger handshake
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-:class:`~robovast.execution.control_server.ControllerState` is the thread-safe
-holder the **controller writes** and the **server reads**. The controller calls
-``update`` / ``set_phase`` at each batch boundary; the server thread reads a
-consistent ``snapshot``. Long-running work never executes on a request thread:
-``upload-to-share`` calls ``request_upload(overrides)`` (and ``stop`` calls
-``request_stop()``), which wake the controller's main thread blocked in
-``wait_for_retrigger()`` — it returns ``("retrigger", overrides)`` to retry or
-``("abandon", {})`` when a stop was requested.
-
-Host-side client
-^^^^^^^^^^^^^^^^^
-
-``robovast.execution.cluster_execution.control_client`` reaches the server over
-``kubectl port-forward`` (the same transport the launcher uses, so it needs only
-the user's kubeconfig — no extra RBAC): ``find_controller_pod`` locates the pod
-by label, ``port_forward`` opens the tunnel, and ``get_status`` / ``send_command``
-call the endpoints. The CLI ``monitor``, ``stop`` and ``upload-to-share`` are
-thin wrappers over these.
-
-The ``upload-to-share`` command may carry credential overrides, and because they
-populate ``os.environ`` before the provider is loaded they can also **switch the
-share type** (e.g. retry a failed gcs upload to sftp). The active share type is
-reported in ``Status.share_provider`` and shown by ``monitor`` while uploading.
-
-.. warning::
-
-   **Trust model.** The control server is **unauthenticated** — any principal
-   that can ``kubectl port-forward`` to the controller pod (RBAC verb
-   ``pods/portforward`` in the namespace) can issue commands. Because a retrigger
-   can switch the upload destination, such a principal can **redirect a
-   campaign's results to an arbitrary server** (data exfiltration). A principal
-   with ``pods/exec`` could already read the data directly, so this only widens
-   exposure for port-forward-only principals. On shared/multi-tenant clusters,
-   restrict ``pods/portforward`` (and ``pods/exec``) on the robovast namespace
-   accordingly. Adding a bearer-token check on ``POST /command`` is a possible
-   future hardening but is out of scope today.
+* ``stop`` (``client.stop``) — sets a cooperative flag on the campaign's
+  ``ControllerState`` (``request_stop``); the loop ends after the current batch. In
+  the service this is a direct in-process call.
+* ``get_campaign_logs`` — serves ``controller.log`` from a byte offset (live file
+  while the campaign runs, the object-store copy afterwards). The web UI polls it to
+  stream the log; ``vast … monitor`` renders live status from ``get_status``.
+* ``upload_to_share`` — a **stateless** post-campaign push to an external share,
+  reading the finished campaign from the object store. Repeatable with optional
+  credential overrides (which may also switch the share type); no process is kept
+  alive to await a retry.
 
 API reference
 ^^^^^^^^^^^^^
 
 .. automodule:: robovast.execution.control_server
-   :members: Status, Command, CommandResult, ControllerState, register, dispatch
+   :members: Status, ControllerState
    :undoc-members:
-
-.. automodule:: robovast.execution.cluster_execution.control_client
-   :members: find_controller_pod, port_forward, get_status, send_command
 
 
 .. _cluster-resource-resolution:
@@ -1272,15 +1218,16 @@ skipped (``run_host_postprocessing``), so there is no second copy of the postpro
 
 Two entry points share that one implementation (``postprocess_campaign``):
 
-* **auto-chain** — the per-campaign controller, when the service passes ``ROBOVAST_POSTPROCESS=1``
-  (from ``create_campaign(postprocess=True)``). It runs **after ``store.close()``** (``campaign.db``
-  must be flushed — ``data.db``'s ``runs`` table reads it) and **before ``_finalize``**, so the
-  results ride the controller's existing campaign upload rather than needing one of their own.
-* **explicit re-run** — :class:`~robovast.service.cluster_service.ClusterService.run_postprocessing`
-  (the campaign controller is long gone by then), which overrides the ``LocalTransport``
-  implementation — unusable in the service pod, which has no local results root and no ROS runtime.
-  It fetches the campaign, runs the same two stages, and publishes ``_execution/`` back. This backs
-  the web **Run postprocessing** button, the MCP ``run_postprocessing`` tool, and the CLI.
+* **auto-chain** — the campaign driver, when ``create_campaign(postprocess=True)`` sets
+  ``RunOptions.postprocess`` (an option, not a process-global env var, so concurrent campaigns in the
+  one service process stay distinct). It runs **after ``store.close()``** (``campaign.db`` must be
+  flushed — ``data.db``'s ``runs`` table reads it) and **before ``_finalize``**, so the results ride
+  the campaign's existing upload rather than needing one of their own.
+* **explicit re-run** — :class:`~robovast.service.cluster_service.ClusterService.run_postprocessing`,
+  which overrides the ``LocalTransport`` implementation — unusable in the service, which has no local
+  results root and no ROS runtime. It fetches the campaign, runs the same two stages, and publishes
+  ``_execution/`` back. This backs the web **Run postprocessing** button, the MCP
+  ``run_postprocessing`` tool, and the CLI.
 
 Querying RoboVAST campaigns
 ---------------------------

@@ -1,8 +1,11 @@
+import { useEffect, useRef, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import Box from '@mui/material/Box'
+import Button from '@mui/material/Button'
 import LinearProgress from '@mui/material/LinearProgress'
 import Stack from '@mui/material/Stack'
 import Typography from '@mui/material/Typography'
-import type { Status } from '@/lib/robovastClient'
+import { robovast, type Status } from '@/lib/robovastClient'
 import { PhaseChip } from './PhaseChip'
 
 // Renders one campaign's live Status — the browser analog of what `vast exec cluster monitor` prints:
@@ -79,7 +82,102 @@ export function StatusView({ status }: { status: Status }) {
         </Typography>
       ) : null}
       {status.error ? <FailureBox error={status.error} /> : null}
+      {status.campaign_id ? (
+        <CampaignLog campaignId={status.campaign_id} terminal={terminal} />
+      ) : null}
     </Stack>
+  )
+}
+
+// Live controller.log for one campaign, streamed incrementally. Polls
+// getCampaignLogs from a byte offset and appends the returned slice — the same
+// offset protocol the CLI/service use — so it shows the log live while the
+// campaign runs and the full log once it finishes. Collapsed by default.
+export function CampaignLog({
+  campaignId,
+  terminal,
+}: {
+  campaignId: string
+  terminal: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const [text, setText] = useState('')
+  const [eof, setEof] = useState(false)
+  const offset = useRef(0)
+  const preRef = useRef<HTMLPreElement>(null)
+
+  // Reset when the campaign changes (StatusView is reused across rows).
+  useEffect(() => {
+    offset.current = 0
+    setText('')
+    setEof(false)
+  }, [campaignId])
+
+  // Keep polling while the panel is open and the log has not ended. Once the
+  // campaign is terminal we fetch the tail one more time, then stop.
+  useQuery({
+    queryKey: ['logs', campaignId, open],
+    enabled: open && !eof,
+    queryFn: async () => {
+      const chunk = await robovast.getCampaignLogs(campaignId, offset.current)
+      if (chunk.text) {
+        offset.current = chunk.next_offset
+        setText((t) => t + chunk.text)
+      }
+      if (chunk.eof || (terminal && !chunk.text)) setEof(true)
+      return chunk
+    },
+    refetchInterval: () => (eof ? false : 1500),
+  })
+
+  // Autoscroll to the newest line as it streams in.
+  useEffect(() => {
+    if (preRef.current) preRef.current.scrollTop = preRef.current.scrollHeight
+  }, [text])
+
+  return (
+    <Box>
+      <Stack direction="row" spacing={1} alignItems="center">
+        <Button size="small" variant="text" onClick={() => setOpen((o) => !o)}>
+          {open ? 'Hide log' : 'Show log'}
+        </Button>
+        <Box flexGrow={1} />
+        <Button
+          size="small"
+          variant="text"
+          component="a"
+          href={`${robovast.baseUrl}/campaigns/${encodeURIComponent(campaignId)}/logs?offset=0`}
+          target="_blank"
+          rel="noreferrer"
+        >
+          Download
+        </Button>
+      </Stack>
+      {open ? (
+        <Box
+          component="pre"
+          ref={preRef}
+          sx={{
+            m: 0,
+            px: 1,
+            py: 0.75,
+            bgcolor: 'background.paper',
+            color: 'text.primary',
+            border: 1,
+            borderColor: 'divider',
+            borderRadius: 1,
+            fontFamily: 'monospace',
+            fontSize: '0.72rem',
+            whiteSpace: 'pre-wrap',
+            overflowX: 'auto',
+            maxHeight: 320,
+            overflowY: 'auto',
+          }}
+        >
+          {text || (eof ? '(no log)' : 'loading…')}
+        </Box>
+      ) : null}
+    </Box>
   )
 }
 

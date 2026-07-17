@@ -89,6 +89,8 @@ ENV ROBOVAST_UI_DIST=/opt/robovast/ui
 # src/robovast/common/execution.py (same contract as the ROS image).
 RUN echo "2" > /etc/robovast_compat_version
 
-# The controller pod overrides the command (e.g. an idle `sleep infinity` so the
-# host can copy in the dev wheel and exec the controller); provide a sane default.
-CMD ["python", "-m", "robovast.execution.controller", "--help"]
+# This image is the robovast-service image (and the source of the robovast the
+# postprocessing Job's initContainer copies in). The campaign controller is a
+# library now, not an entrypoint — it runs inside the service process — so the
+# default command is just a sane smoke check.
+CMD ["vast", "--help"]

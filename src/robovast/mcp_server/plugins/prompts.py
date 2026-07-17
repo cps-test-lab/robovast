@@ -32,31 +32,41 @@ Campaigns are organised in a three-level hierarchy:
   to every configuration and run.
 - **configuration** – A specific parameterized experiment setup within a
   campaign. There can be multiple runs of the same configuration.
-- **run** – An individual execution of a configuration.  Inherits all input
+- **run** – An individual execution of a configuration. Inherits all input
   files from its configuration and campaign. Produces output files (test
   results, logs, rosbags). Typically it runs a simulation.
-- **run_data** – Structured tabular output derived from a run. It is accessible
-  through query/inspect tools like `query_run_data_table`,`inspect_run_data_table`.
 
-## Tool Naming Convention
+## How to analyze results (the main workflow)
 
-Tools follow the pattern `<verb>_<resource>[_<detail>]`.  Available verbs:
+A campaign's per-run metrics are consolidated into a small SQL database. Read-only
+SQL is the primary way to answer quantitative questions:
 
-- **get** – Retrieve a specific structured metadata object.
-- **list** – Enumerate objects within a resource.
-- **query** – Retrieve filtered record sets with pagination.
-- **search** – Filter and query resources by criteria.
-- **inspect** – Compute derived analysis or statistics.
-- **draw** – Render a visual image from data (map overlays, plots).
-- **display** – Show a captured image (e.g. simulation screenshot).
+1. `describe_campaign_data(campaign_id)` – the schema: metric tables (one per
+   recorded CSV), and a **`runs`** dimension table holding, for every run, its
+   status/duration/objective plus each scenario parameter as a `param_*` column.
+   The campaign's store is attached as schema `campaign` (tables `campaign`,
+   `batch`, `unit`) — that is where the full `.vast` (`campaign.config_json`),
+   multi-objective/quality-diversity results (`unit.objectives_json` /
+   `measures_json`), and search history/stop reason live.
+2. `query_campaign_data_sql(campaign_id, sql)` – run one read-only `SELECT`. Join
+   `runs` to any metric table on `(config_name, run_id)`. Besides the built-ins,
+   `STDDEV`, `VARIANCE`, `MEDIAN`, `PERCENTILE(col, p)` and `REGEXP(pat, col)` are
+   available; use `json_extract` / `json_each` for JSON-encoded (non-scalar) params.
+3. `list_campaign_plots(campaign_id)` – the plots the campaign author declared,
+   each a runnable `query` plus a Vega-Lite spec. A good first look at what matters.
+
+For non-tabular detail, the campaign/configuration/run `list_*` and `get_*` tools
+expose the scenario, input files, logs, and other run outputs.
 
 ## Important Instructions
 
-- **In a typical workflow, only campaigns relevant to the current
-  analysis task are accessible through this server. So if not needed, don't ask
-  for a specific campaign. Use `list_campaigns` to discover what is available.
-- If not requested otherwise, start with campaign-level summaries before 
-  drilling into individual configurations or runs.
+- In a typical workflow, only campaigns relevant to the current analysis task are
+  accessible through this server. If not needed, don't ask for a specific
+  campaign — use `list_campaigns` to discover what is available.
+- Prefer `describe_campaign_data` + `query_campaign_data_sql` for any
+  count/rate/aggregate question rather than reading files run-by-run.
+- When a query returns 0 rows, check the returned note: it distinguishes a
+  genuinely empty result from a likely filter/JOIN-key mismatch.
 
 In case of any ambiguity about tool usage, parameters, or the data model, ask
 for clarification or refer to the documentation using `list_docs` and `search_docs`.

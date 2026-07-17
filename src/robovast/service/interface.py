@@ -44,9 +44,10 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
-# Reused verbatim — the controller's live status model and RPC envelopes.
-from robovast.execution.control_server import (Command, CommandResult,  # noqa: F401
-                                               Status)
+# Reused verbatim — the controller's live status model. (The old ``Command`` /
+# ``CommandResult`` RPC envelopes are gone: the controller runs in-process now, so
+# ``stop`` is a direct call rather than an HTTP command to a controller pod.)
+from robovast.execution.control_server import Status  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Request / response models
@@ -133,6 +134,35 @@ class RunPostprocessingRequest(BaseModel):
     campaign_id: str
     force: bool = False
     skip: list[str] = Field(default_factory=list)
+
+
+class UploadToShareRequest(BaseModel):
+    """Optional credential overrides for an upload-to-share attempt.
+
+    Upload-to-share is a **stateless, repeatable** operation: the finished campaign
+    lives in the object store, so a failed upload is retried by simply calling this
+    again — optionally with corrected credentials — rather than by keeping a
+    controller process parked and waiting for a retrigger (which is how it used to
+    work, back when the campaign only existed inside that live pod).
+
+    *overrides* are ``{ENV_VAR: value}`` share settings applied to the attempt
+    (e.g. a fixed password, or a different ``ROBOVAST_SHARE_TYPE`` entirely). Empty
+    means "use the service's configured share environment".
+    """
+    overrides: dict = Field(default_factory=dict)
+
+
+class LogChunk(BaseModel):
+    """An incremental slice of a campaign's ``controller.log``.
+
+    The controller runs in the driving process, so its log is a local file there
+    (the CLI locally, the service for cluster campaigns). Clients poll from a byte
+    *offset* and append — ``next_offset`` is where to resume; ``eof`` is True once
+    the campaign has reached a terminal phase and no more will be written.
+    """
+    text: str = ""
+    next_offset: int = 0
+    eof: bool = False
 
 
 class VersionInfo(BaseModel):
@@ -307,6 +337,10 @@ class DataQueryResult(BaseModel):
     rows: list[dict] = Field(default_factory=list)
     row_count: int = 0
     truncated: bool = False
+    # Present when 0 rows matched: distinguishes "genuinely empty" from a likely
+    # filter/JOIN-key mismatch (see ``data_query._empty_result_note``). Carried on
+    # the model so the hint survives the HTTP path, not just the in-process one.
+    note: Optional[str] = None
 
 
 class CampaignPlotsResponse(BaseModel):
@@ -384,6 +418,10 @@ class Routes:
     @staticmethod
     def campaign_stop(campaign_id: str) -> str:
         return f"/campaigns/{campaign_id}/stop"
+
+    @staticmethod
+    def campaign_logs(campaign_id: str) -> str:
+        return f"/campaigns/{campaign_id}/logs"
 
     @staticmethod
     def campaign_upload_to_share(campaign_id: str) -> str:
@@ -484,6 +522,15 @@ class RobovastInterface(ABC):
         """Return the campaign's live :class:`Status` (phase, progress, history)."""
 
     @abstractmethod
+    def get_campaign_logs(self, campaign_id: str, offset: int = 0) -> LogChunk:
+        """Return the campaign's ``controller.log`` from byte *offset* onward.
+
+        For streaming: poll from ``0``, append :attr:`LogChunk.text`, then poll
+        again from the returned :attr:`LogChunk.next_offset`. Serves the live file
+        while the campaign runs and the durable copy afterwards.
+        """
+
+    @abstractmethod
     def stop(self, campaign_id: str) -> ActionResult:
         """Request a cooperative stop of a running campaign."""
 
@@ -494,8 +541,14 @@ class RobovastInterface(ABC):
         """List campaigns known to this service (global, newest first)."""
 
     @abstractmethod
-    def upload_to_share(self, campaign_id: str) -> ActionResult:
-        """Trigger the optional/vanilla ``tar.gz`` upload to the external share."""
+    def upload_to_share(self, campaign_id: str,
+                        overrides: Optional[dict] = None) -> ActionResult:
+        """Upload the finished campaign's ``tar.gz`` to the external share.
+
+        Stateless and repeatable: it reads the campaign from its durable home (the
+        object store), so a failed upload is retried by calling this again — pass
+        *overrides* (``{ENV_VAR: value}``) to correct or switch the share settings.
+        """
 
     # -- postprocessing (editable, re-runnable; never mutates _config) ------
 

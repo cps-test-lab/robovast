@@ -14,44 +14,28 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""In-controller HTTP/JSON control channel (state + RPC).
+"""Live campaign state (the ``Status`` model + ``ControllerState``).
 
-Every cluster campaign is driven by a fire-and-forget **controller pod** (see
-:mod:`robovast.execution.cluster_execution.controller_launcher`). The controller
-loop deletes each batch's Kubernetes Jobs once their results are downloaded, so a
-client that reconstructs progress purely from live Jobs cannot tell the gap
-*between* search generations from the real end of the campaign, nor see the
-loop-level state (current batch, search budget, run-level progress).
+Every campaign is driven by a :class:`~robovast.execution.controller.CampaignController`
+that runs **in the driving process** — the ``vast`` CLI locally, or the
+``robovast-service`` for cluster runs. The controller advances a shared
+:class:`ControllerState`; the service reads its :meth:`~ControllerState.snapshot`
+directly to answer ``GET /campaigns/{id}/status`` (no separate control server, no
+pod-IP hop — those existed only when the controller lived in its own pod).
 
-This module gives the controller a tiny **FastAPI + uvicorn** server, run on a
-daemon thread beside the synchronous controller loop:
-
-* ``GET  /status``  — the controller's live :class:`Status` (loop phase, current
-  batch, budget progress, per-batch run progress, history). The CLI ``monitor``
-  polls this; the ``phase`` field is the authoritative "done" signal.
-* ``POST /command`` — an extensible RPC: dispatch ``{name, args}`` through the
-  :data:`HANDLERS` registry. Ships one handler (``stop``); register more later.
-* ``GET  /healthz`` — liveness.
-
-FastAPI auto-emits an OpenAPI schema (``/docs``), so the same contract serves the
-CLI now and a web UI later (reached via ``kubectl port-forward`` now, a Service /
-Ingress later — no code change).
-
-``fastapi`` / ``uvicorn`` are imported lazily (only :func:`build_app` /
-:func:`serve_in_thread` need them) so the models and :class:`ControllerState`
-import cleanly anywhere; ``pydantic`` is a core dependency.
+``Status`` is the one status contract, reused verbatim by
+:mod:`robovast.service.interface`, the MCP server, and the TS client mirror.
+``fastapi``/``uvicorn`` are no longer needed here.
 """
 
 import logging
 import threading
 import time
-from typing import Any, Callable, Optional
+from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_PORT = 8099
 
 
 # -- wire models ------------------------------------------------------------
@@ -71,7 +55,7 @@ class BudgetItem(BaseModel):
 
 
 class Status(BaseModel):
-    """The controller's live state, served by ``GET /status``.
+    """The controller's live state, served by ``GET /campaigns/{id}/status``.
 
     ``phase`` is an **open** string the controller advances through a documented
     vocabulary (``starting`` → ``running`` → ``finishing`` → ``finished`` /
@@ -111,8 +95,8 @@ def failure_detail(exc: BaseException, tail_lines: int = 20) -> str:
 
     The exception message first (it carries the actionable part — e.g. the
     "Available configs:" list), then the tail of the traceback for genuine bugs.
-    Shared by the local worker and the in-pod controller so both record failures
-    the same way.
+    Shared by the local worker and the in-process cluster worker so both record
+    failures the same way.
     """
     import traceback
     message = str(exc) or exc.__class__.__name__
@@ -121,38 +105,22 @@ def failure_detail(exc: BaseException, tail_lines: int = 20) -> str:
     return f"{message}\n\n{tb_tail}".strip()
 
 
-class Command(BaseModel):
-    """An RPC request: a registered handler name plus its keyword args."""
-    name: str
-    args: dict = Field(default_factory=dict)
-
-
-class CommandResult(BaseModel):
-    ok: bool
-    result: Any = None
-    error: Optional[str] = None
-
-
 # -- shared state -----------------------------------------------------------
 
 class ControllerState:
-    """Thread-safe holder the controller writes and the server reads.
+    """Thread-safe holder the controller writes and the service reads.
 
     The controller calls :meth:`update` / :meth:`set_phase` at each batch
     boundary (and :meth:`update` for run-level progress within a batch); the
-    server thread reads a consistent :meth:`snapshot`. :meth:`request_stop` /
-    :attr:`stop_requested` back the cooperative ``stop`` command.
+    reader takes a consistent :meth:`snapshot`. :meth:`request_stop` /
+    :attr:`stop_requested` back the cooperative ``stop`` (now an in-process call
+    from ``client.stop`` rather than an HTTP command).
     """
 
     def __init__(self, **initial):
         self._lock = threading.Lock()
         self._status = Status(**initial)
         self._stop_event = threading.Event()
-        # Retrigger plumbing for the post-campaign upload-to-share step: the
-        # control server signals, the controller's main thread performs the
-        # upload. A `stop` request abandons the wait and terminates.
-        self._retrigger_event = threading.Event()
-        self._retrigger_overrides: dict = {}
 
     def snapshot(self) -> Status:
         with self._lock:
@@ -173,138 +141,7 @@ class ControllerState:
 
     def request_stop(self) -> None:
         self._stop_event.set()
-        # Wake a thread blocked in wait_for_retrigger so `stop` also abandons a
-        # stuck post-campaign upload.
-        self._retrigger_event.set()
 
     @property
     def stop_requested(self) -> bool:
         return self._stop_event.is_set()
-
-    # -- upload-to-share retrigger -----------------------------------------
-
-    def request_upload(self, overrides: Optional[dict] = None) -> None:
-        """Ask the controller's main thread to (re)run upload-to-share.
-
-        *overrides* are optional ``{ENV_VAR: value}`` credential corrections
-        applied before the next attempt (the manual retrigger usually needs no
-        args — the launch-time credentials are still in the pod).
-        """
-        with self._lock:
-            self._retrigger_overrides = dict(overrides or {})
-        self._retrigger_event.set()
-
-    def wait_for_retrigger(self) -> tuple[str, dict]:
-        """Block until an upload retrigger or a stop is requested.
-
-        Returns ``("retrigger", overrides)`` to retry the upload, or
-        ``("abandon", {})`` when a ``stop`` was requested (give up, terminate).
-        """
-        self._retrigger_event.wait()
-        self._retrigger_event.clear()
-        if self._stop_event.is_set():
-            return "abandon", {}
-        with self._lock:
-            overrides = dict(self._retrigger_overrides)
-            self._retrigger_overrides = {}
-        return "retrigger", overrides
-
-
-# -- command registry -------------------------------------------------------
-
-# name -> handler(state, **args) -> result. Extend by decorating new handlers.
-HANDLERS: dict[str, Callable[..., Any]] = {}
-
-
-def register(name: str) -> Callable[[Callable], Callable]:
-    def deco(fn: Callable) -> Callable:
-        HANDLERS[name] = fn
-        return fn
-    return deco
-
-
-@register("stop")
-def _stop(state: ControllerState, **_args) -> dict:
-    """Request a cooperative graceful stop.
-
-    During the campaign loop this ends the search after the current batch; while
-    the controller is waiting to retry a failed upload-to-share, it abandons the
-    wait and terminates the controller.
-    """
-    state.request_stop()
-    return {"stop_requested": True}
-
-
-@register("upload-to-share")
-def _upload_to_share(state: ControllerState, **args) -> dict:
-    """(Re)run the post-campaign upload-to-share.
-
-    Signals the controller's main thread to perform the upload; the actual work
-    runs there (not on this request thread). Optional *args* are credential
-    overrides (e.g. a corrected password) applied before the retry. Poll
-    ``GET /status`` for the ``stage`` transition to ``uploaded`` /
-    ``upload-failed``.
-    """
-    state.request_upload(args)
-    return {"upload_requested": True}
-
-
-def dispatch(state: ControllerState, command: Command) -> CommandResult:
-    handler = HANDLERS.get(command.name)
-    if handler is None:
-        return CommandResult(ok=False, error=f"unknown command '{command.name}'")
-    try:
-        return CommandResult(ok=True, result=handler(state, **command.args))
-    except Exception as exc:  # pylint: disable=broad-except
-        logger.warning("command '%s' failed: %s", command.name, exc, exc_info=True)
-        return CommandResult(ok=False, error=str(exc))
-
-
-# -- server -----------------------------------------------------------------
-
-def build_app(state: ControllerState):
-    """Build the FastAPI app bound to *state* (lazy import; needs ``fastapi``)."""
-    from fastapi import FastAPI, HTTPException  # pylint: disable=import-outside-toplevel
-
-    app = FastAPI(title="robovast controller", docs_url="/docs")
-
-    @app.get("/status", response_model=Status)
-    def get_status() -> Status:
-        return state.snapshot()
-
-    @app.post("/command", response_model=CommandResult)
-    def post_command(command: Command) -> CommandResult:
-        result = dispatch(state, command)
-        if not result.ok and (result.error or "").startswith("unknown command"):
-            raise HTTPException(status_code=400, detail=result.error)
-        return result
-
-    @app.get("/healthz")
-    def healthz() -> dict:
-        return {"ok": True}
-
-    return app
-
-
-def serve_in_thread(state: ControllerState, port: int = DEFAULT_PORT,
-                    host: str = "0.0.0.0") -> threading.Thread:  # nosec B104 - in-cluster pod
-    """Start the control server on a daemon thread; return the thread.
-
-    Best-effort: a failure to start (e.g. ``uvicorn`` missing) is logged and the
-    campaign proceeds without the channel — the monitor then falls back to its
-    Kubernetes-only view.
-    """
-    def _run() -> None:
-        try:
-            import uvicorn  # pylint: disable=import-outside-toplevel
-            app = build_app(state)
-            uvicorn.Server(uvicorn.Config(
-                app, host=host, port=port, log_level="warning")).run()
-        except Exception:  # pylint: disable=broad-except
-            logger.warning("Control server failed to start; monitor will fall back "
-                           "to the Kubernetes-only view.", exc_info=True)
-
-    thread = threading.Thread(target=_run, name="robovast-control-server", daemon=True)
-    thread.start()
-    logger.info("Control server listening on %s:%d (GET /status, POST /command).", host, port)
-    return thread

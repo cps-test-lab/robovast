@@ -62,20 +62,6 @@ from robovast.service.interface import (ActionResult, CampaignRef,
 logger = logging.getLogger(__name__)
 
 
-def _validate_config_filter(config_path: str, config_filter: str) -> None:
-    """Raise ``ValueError`` if ``config_filter`` matches no config in the project.
-
-    Reuses ``build_campaign_data`` — the exact expansion + filter path the
-    controller runs — so the "No configs matched … Available: …" message is
-    identical everywhere and a typo fails fast at submit time (no campaign
-    launched). Both the local and cluster ``create_campaign`` call this.
-    """
-    import tempfile
-    from robovast.execution.controller import build_campaign_data
-    with tempfile.TemporaryDirectory(prefix="robovast_cfgcheck_") as tmp:
-        build_campaign_data(config_path, tmp, config_filter)
-
-
 def _robovast_version() -> str:
     try:
         return _pkg_version("robovast")
@@ -290,10 +276,63 @@ class LocalTransport(RobovastInterface):
     def version(self) -> VersionInfo:
         return VersionInfo(robovast_version=_robovast_version(), backend="docker")
 
+    # -- launch hooks (overridden by ClusterService) -------------------------
+    #
+    # create_campaign below is shared by BOTH deployments: local Docker and the
+    # in-cluster service. They differ only in these hooks — the driver loop, its
+    # worker thread, the status/outcome bookkeeping and the postprocess tail are
+    # identical, which is the whole point of running the controller in-process on
+    # both sides.
+
+    def _guard_new_campaign(self) -> None:
+        """Reject a launch this deployment cannot run concurrently.
+
+        Local Docker is single-flight (the backend hardcodes the ``robovast``
+        container name), so two concurrent local campaigns would collide. The
+        cluster service overrides this to a no-op: its campaigns are I/O-bound
+        drivers whose compute lives in Kubernetes Jobs, so they run in parallel.
+        """
+        with self._lock:
+            if any(not self._is_done(c) for c in self._campaigns.values()):
+                raise RuntimeError(
+                    "A local campaign is already running (local Docker is "
+                    "single-flight). Stop it before starting another.")
+
+    def _build_backend(self, state):
+        """The :class:`ExecutionBackend` this deployment runs campaigns on."""
+        from robovast.execution.backends import DockerBackend
+        return DockerBackend(state=state)
+
+    def _run_options(self, request) -> "RunOptions":  # noqa: F821
+        from robovast.execution.backends import RunOptions
+        return RunOptions(gui=False)
+
+    def _campaign_context(self, campaign_id: str, project):
+        """Per-campaign setup entered *inside* the worker thread.
+
+        A context manager, so anything thread-scoped (the cluster's aux-pod
+        container-runner factory) is established where the composition that reads
+        it runs, and torn down when the campaign ends. No-op locally.
+        """
+        import contextlib
+        return contextlib.nullcontext()
+
+    def _postprocess_in_process(self) -> bool:
+        """True when the worker runs analysis postprocessing after the loop.
+
+        Local does (in-process). The cluster service instead chains it *inside* the
+        builder (``RunOptions.postprocess``) so ``data.db`` rides the campaign's
+        existing upload rather than needing one of its own.
+        """
+        return True
+
+    def _record_campaign_failure(self, campaign_id, results_dir, state, exc, backend):
+        """Durably record a failed campaign. Local writes ``_execution/outcome.json``."""
+        self._record_outcome(campaign_id, results_dir, state)
+
     def create_campaign(self, request: CreateCampaignRequest) -> CampaignRef:
         from robovast.common.common import load_config
         from robovast.common.config import validate_config
-        from robovast.execution.backends import RunOptions
         from robovast.execution.controller import (campaign_id_for,
                                                    run_batch_campaign,
                                                    run_search_campaign)
@@ -305,54 +344,62 @@ class LocalTransport(RobovastInterface):
         is_search = campaign_config.search is not None
         config_filter = request.config_filter or None
 
-        # Validate the filter *before* launching so a typo fails fast with the
-        # available config names, instead of surfacing later as a failed campaign.
-        # (Search campaigns ignore config_filter.) Same check the cluster path runs.
-        if config_filter and not is_search:
-            _validate_config_filter(project.config_path, config_filter)
+        # NOTE: the config_filter is deliberately **not** validated here. Doing so
+        # meant expanding the whole campaign synchronously on the caller's thread,
+        # which (a) broke this method's documented "returns immediately" contract —
+        # the POST hung for the entire expansion, holding an anyio threadpool slot —
+        # (b) expanded twice (once here, once in the worker), and (c) could not work
+        # for campaigns needing an auxiliary container, whose runner only exists
+        # inside the worker's _campaign_context. Expansion now happens exactly once,
+        # in the worker. A bad filter surfaces there as phase=failed with the same
+        # "Available configs:" message in Status.error (+ outcome.json) — which the
+        # in-process driver makes visible immediately; the old submit-time check
+        # existed only because a doomed *controller pod* would have hidden it in
+        # kubectl logs, and there is no such pod any more.
 
-        with self._lock:
-            if any(not self._is_done(c) for c in self._campaigns.values()):
-                raise RuntimeError(
-                    "A local campaign is already running (local Docker is "
-                    "single-flight). Stop it before starting another.")
+        self._guard_new_campaign()
 
         state = ControllerState()
         entry = _LocalCampaign(campaign_id, results_dir, state)
         runs = request.runs if request.runs and request.runs > 0 else None
-        options = RunOptions(gui=False)
+        options = self._run_options(request)
 
         def _worker():
+            backend = None
             try:
-                if is_search:
-                    run_search_campaign(
-                        project.config_path, campaign_config, results_dir, runs,
-                        options=options, campaign_id=campaign_id, state=state)
-                else:
-                    run_batch_campaign(
-                        project.config_path, campaign_config, results_dir, runs,
-                        config_filter=config_filter, options=options,
-                        campaign_id=campaign_id, state=state)
+                with self._campaign_context(campaign_id, project):
+                    backend = self._build_backend(state)
+                    if is_search:
+                        run_search_campaign(
+                            project.config_path, campaign_config, results_dir, runs,
+                            backend=backend, options=options,
+                            campaign_id=campaign_id, state=state)
+                    else:
+                        run_batch_campaign(
+                            project.config_path, campaign_config, results_dir, runs,
+                            config_filter=config_filter, backend=backend,
+                            options=options, campaign_id=campaign_id, state=state)
             except Exception as e:  # noqa: BLE001 - surfaced via status
-                logger.exception("Local campaign %s failed", campaign_id)
+                logger.exception("Campaign %s failed", campaign_id)
                 entry.error = str(e)
                 state.update(error=failure_detail(e))
                 state.set_phase("failed", stage=str(e))
-                self._record_outcome(campaign_id, results_dir, state)
+                self._record_campaign_failure(
+                    campaign_id, results_dir, state, e, backend)
                 return
             # Analysis postprocessing (rosbags → CSV → data.db) — what the eval
             # viewer / `query_campaign_data_sql` read. The batch/search loop leaves
             # it separate, so run it here when the caller asked (the default).
-            if request.postprocess:
+            if request.postprocess and self._postprocess_in_process():
                 self._postprocess(campaign_id, results_dir, state, entry)
 
         thread = threading.Thread(
-            target=_worker, name=f"robovast-local-{campaign_id}", daemon=True)
+            target=_worker, name=f"robovast-{campaign_id}", daemon=True)
         entry.thread = thread
         with self._lock:
             self._campaigns[campaign_id] = entry
         thread.start()
-        logger.info("Started local campaign %s (search=%s)", campaign_id, is_search)
+        logger.info("Started campaign %s (search=%s)", campaign_id, is_search)
         return CampaignRef(campaign_id=campaign_id)
 
     def _postprocess(self, campaign_id, results_dir, state, entry):
@@ -402,6 +449,39 @@ class LocalTransport(RobovastInterface):
         # Not tracked in this process — reconstruct from disk (past campaign).
         return self._status_from_disk(campaign_id)
 
+    _CONTROLLER_LOG = ("_execution", "controller.log")
+
+    @staticmethod
+    def _read_log_slice(path: "Path | str", offset: int, eof: bool):
+        """Read a ``controller.log`` from *offset*; return a :class:`LogChunk`.
+
+        Bytes are read (not text) so a mid-file offset can never split a character,
+        then decoded leniently. A missing file is an empty chunk — normal for a
+        campaign that has not written its first line yet.
+        """
+        from robovast.service.interface import LogChunk
+        try:
+            with open(path, "rb") as f:
+                f.seek(max(0, offset))
+                data = f.read()
+        except FileNotFoundError:
+            return LogChunk(text="", next_offset=offset, eof=eof)
+        return LogChunk(text=data.decode("utf-8", "replace"),
+                        next_offset=(max(0, offset) + len(data)), eof=eof)
+
+    def get_campaign_logs(self, campaign_id: str, offset: int = 0):
+        """Serve the live ``controller.log`` from the shared campaigns root.
+
+        Local runs write the file in place and it grows there, so the same read
+        serves a live and a finished campaign; ``eof`` is set once the campaign is
+        no longer being driven here.
+        """
+        path = self._campaigns_root() / campaign_id / Path(*self._CONTROLLER_LOG)
+        with self._lock:
+            entry = self._campaigns.get(campaign_id)
+        eof = entry is None or self._is_done(entry)
+        return self._read_log_slice(path, offset, eof)
+
     def stop(self, campaign_id: str) -> ActionResult:
         with self._lock:
             entry = self._campaigns.get(campaign_id)
@@ -433,7 +513,8 @@ class LocalTransport(RobovastInterface):
         summaries = [self._summary_for(d) for d in window]
         return ListCampaignsResponse(campaigns=summaries, total=total)
 
-    def upload_to_share(self, campaign_id: str) -> ActionResult:
+    def upload_to_share(self, campaign_id: str,
+                        overrides: Optional[dict] = None) -> ActionResult:
         return ActionResult(
             ok=False,
             message="upload_to_share is not supported by the local backend "
@@ -760,6 +841,11 @@ class HTTPTransport(RobovastInterface):
     def get_status(self, campaign_id: str) -> Status:
         return Status.model_validate(self._get(Routes.campaign_status(campaign_id)))
 
+    def get_campaign_logs(self, campaign_id: str, offset: int = 0):
+        from robovast.service.interface import LogChunk
+        return LogChunk.model_validate(
+            self._get(Routes.campaign_logs(campaign_id), offset=offset))
+
     def stop(self, campaign_id: str) -> ActionResult:
         return ActionResult.model_validate(self._post(Routes.campaign_stop(campaign_id)))
 
@@ -770,9 +856,11 @@ class HTTPTransport(RobovastInterface):
         return ListCampaignsResponse.model_validate(
             self._get(Routes.CAMPAIGNS, limit=request.limit, offset=request.offset))
 
-    def upload_to_share(self, campaign_id: str) -> ActionResult:
+    def upload_to_share(self, campaign_id: str,
+                        overrides: Optional[dict] = None) -> ActionResult:
         return ActionResult.model_validate(
-            self._post(Routes.campaign_upload_to_share(campaign_id)))
+            self._post(Routes.campaign_upload_to_share(campaign_id),
+                       {"overrides": overrides or {}}))
 
     def get_postprocessing(self, campaign_id: str):
         from robovast.service.interface import PostprocessingInfo

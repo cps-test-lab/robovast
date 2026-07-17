@@ -331,6 +331,42 @@ def cluster():
     """
 
 
+def _require_service_client():
+    """A :class:`RobovastClient` for the configured robovast-service.
+
+    Every cluster operation goes through the service — it is the only thing that
+    drives campaigns (there is no controller pod to reach any more), so the CLI is
+    a thin client of it exactly like the MCP server and the web UI.
+    """
+    from robovast.service.client import RobovastClient
+    from robovast.service.project_push import configured_service_url
+    url = configured_service_url()
+    if not url:
+        raise ValueError(
+            "No robovast-service configured. Set ROBOVAST_SERVICE_URL to your "
+            "service (e.g. via 'kubectl port-forward svc/robovast-service 8800:8800'), "
+            "or deploy one with 'vast exec cluster setup <cluster-config>'.")
+    return RobovastClient(url)
+
+
+def _sole_running_campaign(client):
+    """The one running campaign's id, or None; errors if several are running.
+
+    Campaigns run in parallel now, so a bare ``stop`` is only unambiguous when
+    exactly one is live.
+    """
+    from robovast.service.interface import ListCampaignsRequest
+    live = [c for c in client.list_campaigns(ListCampaignsRequest(limit=100)).campaigns
+            if c.phase not in ("finished", "failed", "unknown")]
+    if not live:
+        return None
+    if len(live) > 1:
+        names = ", ".join(c.campaign_id for c in live)
+        raise ValueError(
+            f"{len(live)} campaigns are running ({names}); pass --campaign to choose one.")
+    return live[0].campaign_id
+
+
 @cluster.command()
 @click.option('--config', '-c', default=None,
               help='Run only configurations matching this name or glob pattern (e.g. hall*)')
@@ -368,51 +404,52 @@ def run(config, runs, log_tree, kube_context, wait_and_download, poll_interval,
 
     Requires project initialization with ``vast init`` first.
     """
-    from robovast.execution.execution_utils.cluster_run import (  # pylint: disable=import-outside-toplevel
-        launch_cluster_campaign, wait_for_cluster_campaign)
     try:
-        # Client-server path: when a robovast-service is configured
-        # (ROBOVAST_SERVICE_URL), push the local project into a server-side
-        # workspace and launch through the service — no kubectl/host launch here.
+        # The robovast-service is the *only* way to run on a cluster: it drives the
+        # campaign in-process and creates the scenario Jobs. (The old fallback —
+        # kubectl-cp'ing a wheel into a per-campaign controller pod — is gone along
+        # with that pod.) So push the local project into a server-side workspace and
+        # launch through the service.
+        from robovast.execution.execution_utils.cluster_run import \
+            wait_for_cluster_campaign  # pylint: disable=import-outside-toplevel
         from robovast.service.project_push import (  # pylint: disable=import-outside-toplevel
-            configured_service_url, run_project_via_service)
+            configured_service_url, download_campaign_via_service,
+            run_project_via_service)
+
         service_url = configured_service_url()
-        if service_url:
-            from robovast.common.cli.project_config import \
-                get_project_config  # pylint: disable=import-outside-toplevel
-            project = get_project_config()
-            cid = run_project_via_service(
-                service_url, project.config_path, config_filter=config or "",
-                runs=runs or 1, feedback=click.echo)
+        if not service_url:
+            raise click.UsageError(
+                "No robovast-service configured. Cluster runs go through the "
+                "service.\nSet ROBOVAST_SERVICE_URL (e.g. after "
+                "'kubectl port-forward svc/robovast-service 8800:8800'), or deploy "
+                "one with 'vast exec cluster setup <cluster-config>'.")
+
+        from robovast.common.cli.project_config import \
+            get_project_config  # pylint: disable=import-outside-toplevel
+        project = get_project_config()
+        cid = run_project_via_service(
+            service_url, project.config_path, config_filter=config or "",
+            runs=runs or 1, feedback=click.echo)
+        if not wait_and_download:
             click.echo(f"Launched cluster campaign '{cid}' via robovast-service. "
                        "Track it with 'vast exec cluster monitor' or the service.")
             return
 
-        campaign_id = launch_cluster_campaign(
-            config_filter=config, runs=runs, log_tree=log_tree,
-            kube_context=kube_context, campaign_id=campaign_id, feedback=click.echo)
-        if not wait_and_download:
-            click.echo(f"Launched cluster campaign '{campaign_id}'. "
-                       "Track progress with 'vast exec cluster monitor'.")
-            return
-
-        click.echo(f"Launched cluster campaign '{campaign_id}'. "
-                   "Waiting for it to finish...")
+        click.echo(f"Launched cluster campaign '{cid}'. Waiting for it to finish...")
         outcome = wait_for_cluster_campaign(
-            campaign_id, kube_context=kube_context, interval=poll_interval,
-            feedback=click.echo)
+            cid, service_url=service_url, interval=poll_interval, feedback=click.echo)
         if outcome == "failed":
             raise click.ClickException(
-                f"Campaign '{campaign_id}' failed (or its upload failed). "
-                "Inspect with 'vast exec cluster monitor'; retry the upload with "
-                f"'vast exec cluster upload-to-share -i {campaign_id}'.")
+                f"Campaign '{cid}' failed. Inspect with 'vast exec cluster monitor' "
+                "(the failure reason is on its status).")
 
-        click.echo(f"Campaign '{campaign_id}' finished. Downloading results...")
-        from robovast.results_processing.cli import \
-            download_from_share_cmd  # pylint: disable=import-outside-toplevel
-        download_from_share_cmd.callback(
-            output=None, campaigns=(campaign_id,), force=False,
-            keep_archive=False, debug=False)
+        click.echo(f"Campaign '{cid}' finished. Downloading results...")
+        # The service streams the campaign from the object store — no external
+        # share needed for delivery.
+        download_campaign_via_service(
+            service_url, cid, os.getcwd(), feedback=click.echo)
+    except click.UsageError:
+        raise
     except Exception as e:
         handle_cli_exception(e)
 
@@ -438,30 +475,42 @@ def _fmt_rate(bps):
     return f"{bps:.0f} B/s"
 
 
-def _monitor_via_controller(namespace, kube_context, interval, once):
-    """Monitor campaigns through their controllers' control channels.
+def _monitor_via_service(namespace, kube_context, interval, once):
+    """Monitor campaigns through the robovast-service.
 
-    Handles **multiple concurrent campaigns**: every live controller pod is shown
-    as its own block, each driven by that controller's ``phase`` — the
-    authoritative "done" signal, which fixes the old bug where the monitor exited
-    in the gap *between* search generations (when live Jobs momentarily drop to
-    zero). New campaigns launched while monitoring are picked up on the next tick.
+    The service drives every campaign in-process, so its ``get_status`` *is* the
+    controller's live state — no controller pod to find and no ``port-forward`` to
+    open (both are gone). Handles **multiple concurrent campaigns**: each live one
+    is its own block, driven by that campaign's ``phase`` — the authoritative
+    "done" signal, which is what keeps the monitor from exiting in the gap between
+    search generations (when live Jobs momentarily drop to zero). Campaigns started
+    while monitoring are picked up on the next tick.
 
-    Returns ``True`` if it handled the monitoring (at least one controller pod was
-    found), ``False`` if there is no controller channel so the caller should fall
-    back to the Kubernetes-only view.
+    Returns ``True`` if it handled the monitoring, ``False`` if no service is
+    configured so the caller can fall back to the Kubernetes-only view.
     """
-    import contextlib  # pylint: disable=import-outside-toplevel
+    from robovast.service.interface import ListCampaignsRequest
 
-    from robovast.execution.cluster_execution import control_client
-
-    pods = control_client.find_controller_pods(namespace, kube_context)
-    if not pods:
+    try:
+        client = _require_service_client()
+    except Exception:  # pylint: disable=broad-except
+        logging.debug("No robovast-service configured; falling back to K8s view.")
         return False
-    if not any(ph == "Running" for _n, ph, _c in pods):
-        # Only terminal controller pod(s): the campaign(s) already finished. Report
-        # rather than falling back to the live K8s view (which would just spin).
-        click.echo("Controller finished (no live channel).")
+
+    def _live():
+        """(campaign_id, phase) for everything the service is tracking."""
+        try:
+            resp = client.list_campaigns(ListCampaignsRequest(limit=100))
+        except Exception:  # pylint: disable=broad-except
+            logging.debug("Could not list campaigns from the service.")
+            return None
+        return [(c.campaign_id, c.phase) for c in resp.campaigns]
+
+    campaigns = _live()
+    if campaigns is None:
+        return False
+    if not campaigns:
+        click.echo("No campaigns known to the robovast-service.")
         return True
 
     cursor_up, clear_line = "\033[A", "\033[2K"
@@ -527,68 +576,43 @@ def _monitor_via_controller(namespace, kube_context, interval, once):
         prev[0] = len(lines)
         sys.stdout.flush()
 
+    def _blocks_for(ids):
+        """Render blocks for *ids*, and report which have reached a terminal phase."""
+        blocks, finished = [], set()
+        for cid in ids:
+            try:
+                # `Status` is a pydantic model; _campaign_lines reads it as a dict.
+                status = client.get_status(cid).model_dump()
+            except Exception:  # pylint: disable=broad-except
+                blocks.append([f"Campaign {cid}  [status unavailable]"])
+                continue
+            blocks.append(_campaign_lines(status))
+            if status.get("phase") in ("finished", "failed"):
+                finished.add(cid)
+        return blocks, finished
+
     try:
-        with contextlib.ExitStack() as stack:
-            channels: dict[str, str] = {}      # pod name -> control-channel base URL
+        if once:
+            blocks, _ = _blocks_for([cid for cid, _ph in campaigns])
+            _render(blocks)
+            return True
 
-            def _ensure_channels(current):
-                """Open a port-forward for each Running controller not yet connected."""
-                for name, phase, _campaign in current:
-                    if phase == "Running" and name not in channels:
-                        try:
-                            channels[name] = stack.enter_context(
-                                control_client.port_forward(name, namespace, kube_context))
-                        except Exception:  # pylint: disable=broad-except
-                            logging.debug("Could not port-forward to controller %s", name)
-
-            _ensure_channels(pods)
-            if not channels:
-                return False                   # nothing reachable → K8s fallback
-
-            if once:
-                blocks = []
-                for base in channels.values():
-                    try:
-                        blocks.append(_campaign_lines(control_client.get_status(base)))
-                    except Exception:  # pylint: disable=broad-except
-                        pass
-                _render(blocks)
+        click.echo(f"Monitoring {len(campaigns)} campaign(s) (press Ctrl+C to stop)...")
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        while True:
+            current = _live()
+            if current is None:
+                return False
+            ids = [cid for cid, _ph in current]
+            blocks, finished = _blocks_for(ids)
+            _render(blocks)
+            if ids and finished >= set(ids):
+                click.echo("\nAll campaigns finished.")
                 return True
-
-            click.echo(f"Monitoring {len(channels)} controller(s) (press Ctrl+C to stop)...")
-            sys.stdout.write("\n")
-            sys.stdout.flush()
-            done: set[str] = set()             # pod names whose campaign has ended
-            while True:
-                current = control_client.find_controller_pods(namespace, kube_context)
-                phase_by_pod = {n: p for n, p, _c in current}
-                campaign_by_pod = {n: c for n, p, c in current}
-                _ensure_channels(current)      # pick up newly-launched campaigns
-                blocks = []
-                for name, base in channels.items():
-                    try:
-                        status = control_client.get_status(base)
-                    except Exception:  # pylint: disable=broad-except
-                        # Channel gone: identify the campaign by its pod label so we
-                        # show the campaign name rather than the pod name; fall back
-                        # to the pod name only if the label is unavailable.
-                        label = campaign_by_pod.get(name) or f"pod {name}"
-                        if phase_by_pod.get(name) in ("Succeeded", "Failed", None):
-                            done.add(name)
-                            blocks.append([f"Campaign {label}  [finished]"])
-                        else:
-                            blocks.append([f"Campaign {label}  [channel unavailable]"])
-                        continue
-                    blocks.append(_campaign_lines(status))
-                    if status.get("phase") in ("finished", "failed"):
-                        done.add(name)
-                _render(blocks)
-                if channels and done >= set(channels):
-                    click.echo("\nAll campaigns finished.")
-                    return True
-                time.sleep(interval)
+            time.sleep(interval)
     except Exception:  # pylint: disable=broad-except
-        logging.debug("Controller channel unavailable; falling back to K8s view.")
+        logging.debug("Service monitor failed; falling back to K8s view.")
         return False
 
 
@@ -653,13 +677,13 @@ def monitor(interval, once, kube_context):
 
         multi = len(contexts_to_monitor) > 1
 
-        # Prefer the controller's control channel (single-context campaigns): it
-        # reports loop phase/batch/run progress and is authoritative for "done",
-        # so the monitor no longer exits in the gap between search generations.
-        # Falls through to the Kubernetes-only view below when no controller pod
-        # is reachable (older runs, multi-cluster, or partial setups).
+        # Prefer the robovast-service (single-context campaigns): it drives the
+        # campaigns, so its status reports loop phase/batch/run progress and is
+        # authoritative for "done" — the monitor never exits in the gap between
+        # search generations. Falls through to the Kubernetes-only view below when
+        # no service is configured (multi-cluster, or partial setups).
         if not multi:
-            if _monitor_via_controller(namespace, contexts_to_monitor[0][1], interval, once):
+            if _monitor_via_service(namespace, contexts_to_monitor[0][1], interval, once):
                 return
 
         # Per-context state (keyed by kube_context_name)
@@ -838,55 +862,54 @@ def monitor(interval, once, kube_context):
 
 
 @cluster.command()
+@click.option('--campaign', '-i', default=None,
+              help='Campaign to stop (default: the only running one)')
 @click.option('--context', '-x', 'kube_context', default=None,
-              help='Kubernetes context to use (default: active context in kubeconfig)')
-def stop(kube_context):
-    """Ask the running controller to stop gracefully (after the current batch).
+              help='(deprecated) accepted for compatibility; the service is addressed '
+                   'by ROBOVAST_SERVICE_URL')
+def stop(campaign, kube_context):  # pylint: disable=unused-argument
+    """Ask a running campaign to stop gracefully (after the current batch).
 
-    Sends the ``stop`` command over the controller's control channel; the search
+    Goes through the robovast-service, which drives the campaign in-process: the
     loop ends once the in-flight batch finishes and the campaign is published as
-    usual. A no-op if no controller is running.
+    usual. A no-op if nothing is running.
     """
     try:
-        from robovast.execution.cluster_execution import control_client
-        namespace = get_cluster_namespace(kube_context)
-        pod, _phase = control_client.find_controller_pod(namespace, kube_context)
-        if not pod:
-            click.echo("No running controller found.")
+        client = _require_service_client()
+        campaign_id = campaign or _sole_running_campaign(client)
+        if campaign_id is None:
+            click.echo("No running campaign found.")
             return
-        with control_client.port_forward(pod, namespace, kube_context) as base:
-            result = control_client.send_command(base, "stop")
-        if result.get("ok"):
-            click.echo(f"Stop requested on controller '{pod}'. "
+        result = client.stop(campaign_id)
+        if result.ok:
+            click.echo(f"Stop requested for '{campaign_id}'. "
                        "The campaign will end after the current batch.")
         else:
-            click.echo(f"Stop command failed: {result.get('error')}")
+            click.echo(f"Stop failed: {result.message}")
     except Exception as e:
         handle_cli_exception(e)
 
 
 @cluster.command(name='upload-to-share')
 @click.option('--campaign', '-i', default=None,
-              help='Target this campaign\'s controller pod (default: the running / most recent one).')
+              help='Campaign to upload (default: the only running one).')
 @click.option('--context', '-x', 'kube_context', default=None,
-              help='Kubernetes context to use (default: active context in kubeconfig)')
-def upload_to_share(campaign, kube_context):
-    """Retry the in-cluster controller's upload-to-share.
+              help='(deprecated) accepted for compatibility; the service is addressed '
+                   'by ROBOVAST_SERVICE_URL')
+def upload_to_share(campaign, kube_context):  # pylint: disable=unused-argument
+    """Upload a finished campaign to the configured external share.
 
-    The controller pod uploads the finished campaign to the configured share
-    automatically; on success the pod completes. If the upload fails (e.g. the
-    share was full or briefly unreachable) the controller stays alive — use this
-    command to retry once the cause is fixed.
+    The service uploads the campaign straight from the object store, so this is
+    **stateless and repeatable**: if an upload fails (e.g. the share was full or
+    briefly unreachable), fix the cause and simply run this again — nothing has to
+    have stayed alive in the meantime.
 
-    Credentials are reused from the controller's launch-time environment, so no
-    arguments are required. If you correct the share settings in your ``.env``,
-    they are re-sent here as overrides for the retry. Watch progress with
-    ``vast exec cluster monitor``.
+    With no share settings in your environment the service's own configuration is
+    used. If you set/correct them in your ``.env``, they are sent as overrides for
+    this attempt (and may even switch the share type).
     """
     from robovast.common.cli.project_config import \
         ProjectConfig  # pylint: disable=import-outside-toplevel
-    from robovast.execution.cluster_execution import \
-        control_client  # pylint: disable=import-outside-toplevel
 
     # Load .env (same discovery as ``cluster run``) so any corrected share
     # credentials can be forwarded as overrides.
@@ -909,8 +932,8 @@ def upload_to_share(campaign, kube_context):
     # Credential overrides from the current .env. When ROBOVAST_SHARE_TYPE is set
     # the user intends to supply (or switch to) a provider, so any missing var is
     # surfaced rather than swallowed — otherwise a typo would silently fall back
-    # to the launch-time destination. When it is unset, send no overrides (the
-    # documented no-arg path that reuses the launch-time credentials).
+    # to the service's configured destination. When it is unset, send no overrides
+    # (the documented no-arg path that uses the service's own share settings).
     overrides: dict = {}
     share_type = os.environ.get("ROBOVAST_SHARE_TYPE", "").strip()
     if share_type:
@@ -928,22 +951,16 @@ def upload_to_share(campaign, kube_context):
             overrides["ROBOVAST_SHARE_URL"] = share_url
 
     try:
-        require_context_for_multi_cluster(kube_context)
-        namespace = get_cluster_namespace(kube_context)
-        pod, _phase = control_client.find_controller_pod(namespace, kube_context, campaign)
-        if not pod:
+        client = _require_service_client()
+        campaign_id = campaign or _sole_running_campaign(client)
+        if campaign_id is None:
             raise click.UsageError(
-                "No controller pod found. Has the campaign been launched with "
-                "'vast exec cluster run'?"
-            )
-        with control_client.port_forward(pod, namespace, kube_context) as base_url:
-            result = control_client.send_command(base_url, "upload-to-share", **overrides)
-        if not result.get("ok"):
-            raise click.UsageError(
-                f"Controller rejected the upload-to-share command: {result.get('error')}"
-            )
-        click.echo("✓ upload-to-share triggered on the controller.")
-        click.echo("  Watch progress with: vast exec cluster monitor")
+                "No campaign specified and none is running; pass --campaign <id>.")
+        click.echo(f"Uploading {campaign_id} to the share ...")
+        result = client.upload_to_share(campaign_id, overrides or None)
+        if not result.ok:
+            raise click.UsageError(f"upload-to-share failed: {result.message}")
+        click.echo(f"✓ {result.message}")
     except click.UsageError:
         raise
     except Exception as e:

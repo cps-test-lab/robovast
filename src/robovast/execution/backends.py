@@ -60,6 +60,15 @@ class RunOptions:
     log_tree: bool = False
     debug: bool = False
     skip_resource_allocation: bool = True
+    # -- chained analysis postprocessing (cluster backend only) --------------
+    # Per-campaign, so it must travel with the options rather than through the
+    # process environment: the service drives many campaigns concurrently in one
+    # process, where an env var could not distinguish them. ``namespace`` /
+    # ``controller_image`` are process-level for the service and fall back to the
+    # env / resolve_controller_image() when unset.
+    postprocess: bool = False
+    namespace: str | None = None
+    controller_image: str | None = None
 
 
 class ExecutionBackend(ABC):

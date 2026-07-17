@@ -20,6 +20,7 @@
 import logging
 import os
 import sys
+import threading
 
 
 def setup_logging(log_level: str = "INFO") -> None:
@@ -83,7 +84,26 @@ def get_logger(name: str) -> logging.Logger:
     return logging.getLogger(name)
 
 
-def add_campaign_log_handler(log_path: str) -> logging.Handler:
+class _ThreadOwnedFilter(logging.Filter):
+    """Pass only records emitted from an owned set of threads.
+
+    The ``robovast`` logger is process-wide, but the service now drives several
+    campaigns concurrently as threads in one process. Without this, every
+    campaign's records would fan out to *every* campaign's ``controller.log``.
+    Seeded with the attaching thread (the campaign's worker); ``owned`` is public
+    so a campaign that spawns a logging helper thread can register its ident too.
+    """
+
+    def __init__(self, owner_ident: int):
+        super().__init__()
+        self.owned: set[int] = {owner_ident}
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.thread in self.owned
+
+
+def add_campaign_log_handler(log_path: str,
+                             isolate_thread: bool = True) -> logging.Handler:
     """Attach a verbose ``FileHandler`` at *log_path* to the ``robovast`` logger.
 
     The handler is added to the top-level ``robovast`` logger (not the root
@@ -96,6 +116,11 @@ def add_campaign_log_handler(log_path: str) -> logging.Handler:
 
     Args:
         log_path: Destination file. Parent directories are created if needed.
+        isolate_thread: When True (default), only records from the calling thread
+            reach this file — so concurrent campaigns in one process (the service)
+            keep separate ``controller.log`` files. The attached filter is exposed
+            on the handler's ``.filters`` (an :class:`_ThreadOwnedFilter` whose
+            ``owned`` set can be extended for helper threads).
 
     Returns:
         The attached handler, to be passed to :func:`remove_campaign_log_handler`.
@@ -105,6 +130,8 @@ def add_campaign_log_handler(log_path: str) -> logging.Handler:
     handler.setFormatter(logging.Formatter(
         "%(asctime)s %(levelname)s %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S"))
+    if isolate_thread:
+        handler.addFilter(_ThreadOwnedFilter(threading.get_ident()))
     logging.getLogger("robovast").addHandler(handler)
     return handler
 

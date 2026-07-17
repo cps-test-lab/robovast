@@ -586,19 +586,20 @@ def _kill_tracked_process(campaign_id, entry):
 
 
 def _cluster_cooperative_stop(campaign_id, entry):
-    """Send the cooperative ``stop`` command to the in-cluster controller."""
-    from robovast.execution.cluster_execution import control_client
-    from robovast.execution.cluster_execution.cluster_setup import get_cluster_namespace
+    """Ask the robovast-service to stop the campaign cooperatively.
 
-    context = entry.get("context") or None
-    namespace = get_cluster_namespace(context)
-    pod, _phase = control_client.find_controller_pod(
-        namespace=namespace, kube_context=context, campaign=campaign_id)
-    if pod is None:
-        raise RuntimeError(f"no controller pod found for {campaign_id!r}")
-    with control_client.port_forward(
-            pod, namespace=namespace, kube_context=context) as base_url:
-        control_client.send_command(base_url, "stop")
+    The service drives the campaign in-process, so this is a plain interface call —
+    no controller pod to find and no ``port-forward`` to open (both are gone). MCP
+    is a thin client of the same contract the CLI and web UI use.
+    """
+    client = _service_client()
+    if client is None:
+        raise RuntimeError(
+            "no robovast-service configured (set ROBOVAST_SERVICE_URL); "
+            "cluster campaigns are driven by the service")
+    result = client.stop(campaign_id)
+    if not result.ok:
+        raise RuntimeError(f"stop failed for {campaign_id!r}: {result.message}")
 
 
 def list_running_campaigns() -> dict:

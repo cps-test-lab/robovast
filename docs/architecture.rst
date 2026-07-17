@@ -23,9 +23,29 @@ bindings:
 * the **MCP tools** and **``vast`` CLI** commands, which wrap the client.
 
 Campaign status reuses :class:`robovast.execution.control_server.Status`
-verbatim — the same model the per-campaign controller already serves on its
-``/status`` channel — so the persistent service is a *superset* of the existing
-control channel, not a new vocabulary.
+verbatim — the live state the campaign driver publishes — so every client reads
+one status vocabulary regardless of where the campaign runs.
+
+Where the driver runs
+----------------------
+
+A campaign is driven by one :class:`robovast.execution.controller.CampaignController`
+(batch or search) that runs **in the driving process**, against the backend for
+that deployment:
+
+* **local** — the ``vast`` CLI process *is* the driver, over ``DockerBackend``;
+* **cluster** — the ``robovast-service`` runs the driver in a worker thread (one
+  per campaign) over ``KubernetesBackend``, which creates the scenario Jobs.
+
+There is **no separate per-campaign controller pod**. The service is already a
+long-lived, in-cluster process with the cluster config, the Kubernetes API, the
+object store and the workspace (plugins installed) — so it hosts the driver
+directly instead of staging the project out and launching a second process to do
+it. ``stop`` and live status are therefore in-process operations the service
+exposes over the interface, not a network hop to a controller. Two things a
+campaign still runs as their own Kubernetes workloads, because each needs to be
+one: the scenario/postprocessing **Jobs**, and — only for variations that declare
+one — a per-campaign **auxiliary-container pod** the driver execs into.
 
 .. code-block:: text
 

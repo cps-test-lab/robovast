@@ -174,35 +174,6 @@ def list_configuration_config_files(
     ]
 
 
-def get_configuration_config_file(
-    campaign_id: str,
-    configuration_id: str,
-    file_name: str,
-    lines: int = 100,
-    offset: int = 0,
-) -> dict:
-    """Read a single configuration config file (or a page of it).
-
-    Returns paginated text content. Binary files are not returned.
-
-    Args:
-        campaign_id: Campaign name.
-        configuration_id: Configuration name or identifier.
-        file_name: Configuration config file name.
-        lines: Maximum number of lines to return (default 100).
-        offset: Line offset to start reading from (default 0).
-    """
-    config_entry = _get_config_by_identifier_or_name(campaign_id, configuration_id)
-    if config_entry is None:
-        return {"error": f"Configuration not found: {configuration_id}"}
-    config_name = config_entry.get("name", configuration_id)
-    campaign_path = results_resolver.resolve_campaign_path(campaign_id)
-    path = campaign_path / config_name / "_config" / file_name
-    if not path.exists():
-        return {"error": f"File not found: {file_name}"}
-    return _read_text_paginated(path, lines, offset)
-
-
 def get_configuration_variations(campaign_id: str, configuration_id: str) -> list[dict]:
     """Return the variation steps that produced this configuration.
 
@@ -222,9 +193,6 @@ def get_configuration_variations(campaign_id: str, configuration_id: str) -> lis
 
 # -- Plugin class ------------------------------------------------------------
 
-# get_configuration_config_file dropped from the MCP surface (raw config-file
-# access) — resolved config is in get_configuration_variations / the run_data SQL
-# 'runs' table, and the raw config is in the campaign archive.
 _TOOLS = [
     get_configuration_summary,
     get_configuration_scenario_parameter,

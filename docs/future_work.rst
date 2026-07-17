@@ -8,44 +8,52 @@ Directions that are designed but not yet implemented. Recorded here so the
 intent and the reusable building blocks are not lost.
 
 
+.. _future-raster-egress:
+
+Visual artifact egress over MCP (video and rasters)
+---------------------------------------------------
+
+**Motivation.** Analysis over MCP is increasingly driven by an LLM. Quantitative
+questions are well served: per-run metrics are consolidated into
+``<campaign>/_execution/data.db`` and queried with read-only SQL via the
+``run_data`` tools (``describe_campaign_data`` / ``query_campaign_data_sql``), and
+a campaign's author-declared charts are exposed as Vega-Lite specs by
+``list_campaign_plots`` (from ``evaluation.plots`` in the snapshot ``.vast``).
+
+What is **not** reachable is any raster or video output. ``get_run_output_file``
+deliberately refuses binary files, so ``rosbags_to_webm`` recordings and rendered
+PNG plots cannot travel to the model. ``list_campaign_plots`` + SQL covers
+*charts* (declarative specs the client renders), not *pixels*: a trajectory
+overlay, a costmap, or a landing-scatter image cannot be seen. For a
+robotics-simulation tool this is the main remaining analysis gap — 5000 rows of
+poses is not how a human notices a robot driving into a wall.
+
+**Open questions** (to decide, not yet decided):
+
+* Should the model receive images as MCP image content, and for which artifacts?
+* Is video better delivered as a short-lived artifact/link than inline, given
+  size?
+* The ``nav`` plugin (``robovast_nav``) already returns images via
+  ``draw_map`` / ``display_simulation_screenshot`` — is that the pattern to
+  generalize, or is a campaign-level artifact route the right home?
+
+
 .. _future-llm-analysis:
 
-LLM-authored analysis and a web-UI figure layer
------------------------------------------------
+Server-rendered figures (optional)
+----------------------------------
 
-**Motivation.** The MCP server is increasingly driven by an LLM rather than a
-human. Analysis today has two insertion points, both aimed at people:
+A machine-readable figure layer **now exists**: a campaign's ``evaluation.plots``
+declare ``{title, query, vega_lite}`` entries, surfaced over MCP by
+``list_campaign_plots`` and over the service by ``GET
+/campaigns/{id}/plots``. The web UI can render those Vega-Lite specs directly, and
+an LLM can read ``data.db`` through the ``run_data`` SQL tools to *propose* new
+ones.
 
-* a **postprocessing plugin** (``robovast.postprocessing_commands`` or a local
-  ``./file.py:Class`` ref) that turns rosbags into per-run CSVs, which
-  :func:`generate_data_db` consolidates into ``<campaign>/_execution/data.db``;
-  that database is already queryable over MCP via the ``run_data`` tools
-  (``list_run_data_tables`` / ``query_run_data_table`` / ``inspect_run_data_table``).
-* an ``evaluation.visualization`` **Jupyter notebook** that reads an injected
-  ``DATA_DIR`` and is rendered to a static ``overview_*.html`` with matplotlib
-  via ``nbconvert`` (``result_analyzer/widgets/jupyter_widget.py``).
-
-There is **no machine-readable figure layer** — no plotly, no Vega-Lite, no JSON
-chart description anywhere in the codebase. That is the gap for both an LLM and
-the planned web UI.
-
-**Proposed direction.** A declarative, per-project analysis mechanism that
-queries ``data.db`` (plus ``test.xml`` pass/fail via
-:func:`read_test_result`) and emits **plotly / Vega-Lite JSON figure
-descriptions** rather than pre-rendered images. Benefits:
-
-* Machine-readable and diff-able; the web UI can render the JSON directly and
-  interactively (zoom, hover, toggle series) instead of embedding a static PNG.
-* LLM-authorable and LLM-inspectable — the model can already read ``data.db``
-  through the ``run_data`` tools, so it can *propose* a figure spec, and a tool
-  could *validate/execute* one against a campaign.
-* Sits alongside the notebook path (which stays for rich, code-driven analysis);
-  the two are complementary.
-
-**Sketch.** An ``analysis`` spec (declarative: table + filter/aggregate +
-encoding) resolved to a query over ``data.db`` → a plotly figure JSON. Exposed
-as (a) an ``evaluation.visualization`` variant referencing a ``.json`` spec
-file, and (b) an MCP tool ``render_analysis(campaign, spec) -> figure_json`` for
-the web UI / LLM loop. Natural data sources: ``_execution/data.db`` and the
-JUnit ``test.xml`` per run.
-
+What is *not* built is a server-side ``render_analysis(campaign, spec) ->
+figure_json`` that resolves a declarative spec to a figure on the server. It is an
+open question whether this is worth building at all: an LLM that can write SQL and
+emit a Vega-Lite spec itself may not need the server to render one. Retained here
+as a possibility, not a commitment. The ``evaluation.visualization`` Jupyter
+notebook path (rendered to a static ``overview_*.html`` via ``nbconvert``) is
+unaffected and stays for rich, code-driven analysis.

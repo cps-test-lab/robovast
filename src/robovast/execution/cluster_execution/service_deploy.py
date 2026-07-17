@@ -64,15 +64,26 @@ def _service_rbac_manifests(namespace):
             "apiVersion": "rbac.authorization.k8s.io/v1",
             "kind": "Role",
             "metadata": {"name": role_name, "namespace": namespace},
+            # The service drives campaigns in-process now (there is no controller
+            # pod), so it needs everything that pod's ServiceAccount used to hold.
             "rules": [
+                # Scenario runs and the rosbag→CSV postprocessing are Jobs the
+                # service creates, watches and reaps.
+                {"apiGroups": ["batch"], "resources": ["jobs"],
+                 "verbs": ["create", "get", "list", "watch", "delete", "deletecollection"]},
+                # read_namespaced_job_status hits the jobs/status subresource,
+                # which is a distinct RBAC resource from jobs.
+                {"apiGroups": ["batch"], "resources": ["jobs/status"],
+                 "verbs": ["get", "list", "watch"]},
+                # Job pods (+ logs), and the per-campaign auxiliary-container pods
+                # the service creates and tears down.
                 {"apiGroups": [""], "resources": ["pods", "pods/log"],
                  "verbs": ["create", "get", "list", "watch", "delete", "deletecollection"]},
+                # Variations that declare an auxiliary container run their commands
+                # in that campaign's aux pod via the pods/exec subresource (see
+                # cluster_execution.container_runner.ClusterContainerRunner).
                 {"apiGroups": [""], "resources": ["pods/exec"],
                  "verbs": ["create", "get"]},
-                # Read Service endpoints of controller pods when reaching their
-                # /status channel directly in-cluster.
-                {"apiGroups": [""], "resources": ["services"],
-                 "verbs": ["get", "list", "watch"]},
             ],
         },
         {
@@ -233,8 +244,10 @@ def service_manifests(namespace="default", image=None, env=None,
     image = image or resolve_controller_image()
     if env is None:
         env = _cluster_env(namespace, config_name, config_kwargs)
-    # The in-cluster ClusterService launches controller pods with the SAME image
-    # it runs, so they contain the same robovast (incl. cluster_bootstrap).
+    # The service no longer launches controller pods, but it still needs an image
+    # that contains robovast: the postprocessing Job mounts the conversion scripts
+    # in from it via an initContainer. Default it to the SAME image the service
+    # runs, so they are always in step.
     if not any(e["name"] == "ROBOVAST_CONTROLLER_IMAGE" for e in env):
         env = [*env, {"name": "ROBOVAST_CONTROLLER_IMAGE", "value": image}]
 

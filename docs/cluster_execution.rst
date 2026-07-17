@@ -12,35 +12,47 @@ configuration.
 Overview
 --------
 
-Every cluster run — batch **and** search — is driven by an **in-cluster
-controller pod**. ``vast execution cluster run`` is *fire-and-forget*: it
-launches the controller and returns immediately; the campaign then runs entirely
-inside the cluster. Internally:
+Every cluster run — batch **and** search — is driven by the
+**robovast-service**, which runs the campaign *in-process* (one worker thread per
+campaign) and creates the scenario Jobs itself. So cluster runs require a deployed
+service (``vast execution cluster setup`` installs it) reachable via
+``ROBOVAST_SERVICE_URL``; ``vast execution cluster run`` pushes the local project
+into a server-side workspace and starts the campaign there. It is *fire-and-forget*
+— it returns immediately with the campaign id, and the campaign continues in the
+cluster. Internally:
 
-1. **Controller launch** — The host creates a short ``robovast-controller`` pod
-   (bound to the controller ServiceAccount), copies the campaign inputs into it,
-   and starts the :class:`CampaignController` in-cluster. The host then detaches.
-2. **Config upload + job creation** — The controller composes each batch,
-   uploads the scenario configurations to the storage bucket, and creates one
-   Kubernetes ``Job`` per packed job. Each job runs an ``initContainer`` that
-   pulls its config files from storage and a main ``robovast`` container that
-   executes the scenario.
+1. **Launch** — The client pushes the project to a workspace and calls
+   ``create_campaign``. The service starts a :class:`CampaignController` in a
+   worker thread over ``KubernetesBackend``. No per-campaign controller pod is
+   created; the service is the driver.
+2. **Config upload + job creation** — The driver composes each batch, uploads the
+   scenario configurations to the storage bucket, and creates one Kubernetes
+   ``Job`` per packed job. Each job runs an ``initContainer`` that pulls its
+   config files from storage and a main ``robovast`` container that executes the
+   scenario. (Variations that declare an auxiliary container get a per-campaign
+   aux pod the driver execs into during composition.)
 3. **Queueing (Kueue)** — Jobs are submitted to a dedicated Kueue
    ``LocalQueue`` (``robovast``).  Kueue's gang-scheduling and resource quotas
    ensure that jobs are admitted only when sufficient CPU/memory is available,
    preventing cluster oversubscription.
 4. **Result collection** — Jobs upload result files back to the storage bucket,
-   and the controller publishes the **canonical campaign** (``campaign.db`` +
-   ``_execution`` + results) there. The controller then **compresses and uploads
-   the campaign itself** (in-process, no sidecar) to the configured share
-   (Nextcloud, GCS, …). A share destination is **required**: its credentials are
-   verified **before any batches start**, so a missing or misconfigured share
-   fails fast (the run is refused rather than producing results with nowhere to
-   go). If the final upload fails, the controller stays alive so you can retry
-   with ``vast execution cluster upload-to-share``. Track progress with ``vast
-   execution cluster monitor``; retrieve uploaded results with ``vast results
-   download``. ``vast execution cluster download-cleanup`` removes the buckets
-   once results have been handled.
+   and the driver publishes the **canonical campaign** (``campaign.db`` +
+   ``_execution`` + results) there. The **object store is the durable home and
+   the delivery mechanism**: the service streams downloads straight from it
+   (``vast results download`` / ``--wait-and-download``), so no external share is
+   required. An external ``tar.gz`` share is optional and on-demand: run ``vast
+   execution cluster upload-to-share`` at any time — it is a stateless service
+   call that reads the finished campaign from the object store, so a failed upload
+   is simply retried (no process has to stay alive). Track progress with ``vast
+   execution cluster monitor``; ``vast execution cluster download-cleanup`` removes
+   the buckets once results have been handled.
+
+.. note::
+
+   Live status, ``stop``, ``monitor`` and ``upload-to-share`` all go through the
+   service (``ROBOVAST_SERVICE_URL``) — there is no controller pod to ``kubectl
+   port-forward`` into any more. The web UI additionally streams each campaign's
+   ``controller.log`` live from the service.
 
 
 Prerequisites
@@ -118,9 +130,11 @@ Running Scenarios
    # Run only one specific config by name (batch campaigns)
    vast execution cluster run --config my-config
 
-``run`` is fire-and-forget: it starts the in-cluster controller and returns
-immediately, printing the campaign id and controller pod name. The campaign
-continues in the cluster — watch it with ``vast execution cluster monitor``.
+``run`` is fire-and-forget: it starts the campaign on the service and returns
+immediately, printing the campaign id. The campaign continues in the cluster —
+watch it with ``vast execution cluster monitor``. (It requires
+``ROBOVAST_SERVICE_URL`` to point at a deployed service; run ``vast execution
+cluster setup`` first if you have none.)
 
 
 Monitoring and Results
@@ -132,17 +146,21 @@ Check the status of a running (or recently completed) run:
 
    vast execution cluster monitor
 
-The controller uploads the finished campaign to the configured share service
-automatically. Use this command only to **retry** an upload that failed (for
-example after the share was full or briefly unreachable):
+The service publishes the finished campaign to the object store automatically,
+and ``vast results download`` (or ``run --wait-and-download``) streams it from
+there — no external share needed. To additionally push the campaign to an external
+share, or to **retry** an upload that failed (e.g. after the share was full or
+briefly unreachable):
 
 .. code-block:: bash
 
    vast execution cluster upload-to-share
 
-It needs no arguments — the credentials injected at launch are reused. If you
-correct the share settings in your ``.env`` first, they are re-sent as overrides
-for the retry.
+This is a **stateless** service call: it reads the finished campaign from the
+object store, so it is safely repeatable — nothing has to have stayed alive since
+the run. It needs no arguments (the service's own share settings are used); if you
+set/correct the share settings in your ``.env`` first, they are sent as overrides
+for this attempt (and may even switch the share type).
 
 Clean up only the job objects (without touching the result storage):
 
@@ -161,7 +179,7 @@ Remove result archives from S3 (after uploading or when no longer needed):
 Push notifications (ntfy)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Because a run is fire-and-forget, the controller can push `ntfy.sh
+Because a run is fire-and-forget, the campaign driver can push `ntfy.sh
 <https://ntfy.sh>`_ notifications so you don't have to poll ``monitor``. Set a
 topic in your ``.env`` and subscribe with the ntfy mobile/desktop app:
 
@@ -175,7 +193,7 @@ You then get a message when a campaign **starts**, when each **batch finishes**,
 once an **hour** with the current run progress, when the campaign **finishes**,
 when it is **uploaded** to the share, and (urgently) on **failure**.
 
-Notifications are optional and best-effort: with no topic set the controller
+Notifications are optional and best-effort: with no topic set the driver
 stays silent, and an unreachable ntfy server never affects the campaign. Pick a
 different topic per user so notifications don't cross over; each message carries
 its campaign id so concurrent campaigns sharing a topic stay distinguishable.
@@ -186,7 +204,7 @@ Manual Deployment (prepare-run)
 
 A **batch-only** debugging aid: generate all manifests and scripts **without
 running them** (e.g. for airgapped clusters, CI pipelines, or to inspect exactly
-what the in-cluster controller would submit):
+what the service would submit):
 
 .. code-block:: bash
 
@@ -456,32 +474,34 @@ and local integration tests.
 Sharing Results
 ---------------
 
-Sharing happens **inside the controller pod**: after the campaign finishes and
-the canonical campaign is published to storage, the controller compresses it
-(streaming from the storage bucket via ``pigz``) and uploads the
-``{campaign_id}.tar.gz`` to the configured share (Nextcloud, GCS, …). No data
-ever reaches the user's machine, and no separate archiver pod is involved.
+The object store is the campaign's durable home and the default delivery path —
+``vast results download`` streams the campaign straight from it, so **no external
+share is required**. Pushing to an external share (Nextcloud, GCS, …) is an
+optional, on-demand step run **in the service**: it compresses the finished
+campaign (streaming from the storage bucket via ``pigz``) and uploads the
+``{campaign_id}.tar.gz`` to the configured share. No data ever reaches the user's
+machine, and no separate archiver pod is involved.
 
 How it works
 ^^^^^^^^^^^^
 
-1. **Pre-flight** — before any batches start, the controller verifies the share
-   credentials work, so a misconfigured share fails fast instead of after a long
-   run.
-2. **Compress + upload** — once the campaign is published to storage, the
-   controller streams it into a ``tar.gz`` and runs the share provider's upload.
-3. **On success** the controller pod completes.
-4. **On failure** the campaign is kept safely in storage and the controller pod
-   stays alive. Retry with ``vast execution cluster upload-to-share`` (no
-   arguments — it reuses the launch-time credentials, or pass corrected ones via
-   ``.env``), or give up with ``vast execution cluster stop``.
+``vast execution cluster upload-to-share`` is a **stateless service call**:
 
-A retry may also target a **different share** — set a new ``ROBOVAST_SHARE_TYPE``
+1. **Pre-flight** — the service verifies the share credentials work before
+   compressing, so a misconfigured share fails fast.
+2. **Compress + upload** — it streams the campaign (read from the object store)
+   into a ``tar.gz`` and runs the share provider's upload.
+3. **On success** it reports the share type.
+4. **On failure** the campaign is untouched in the object store, so you just run
+   the command **again** once the cause is fixed — nothing has to have stayed
+   alive in the meantime (unlike the old controller-pod flow, which parked a pod
+   to await a retry).
+
+A call may also target a **different share** — set a new ``ROBOVAST_SHARE_TYPE``
 (and its variables) in ``.env`` before ``upload-to-share`` to, say, redirect a
-stuck gcs upload to sftp. The retried credentials are pre-flight-checked before
-re-compressing, and the active share type is shown by ``monitor`` while
-uploading. (A missing variable for the new type now fails loudly rather than
-silently reusing the previous destination.)
+stuck gcs upload to sftp. Those settings are sent as overrides for the attempt and
+pre-flight-checked before compressing. (A missing variable for the chosen type
+fails loudly rather than silently reusing the service's destination.)
 
 Configuration via ``.env``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -523,22 +543,22 @@ dialog).
 
 The upload uses the WebDAV public-share endpoint (``/public.php/webdav/``)
 with the share token as the HTTP Basic-Auth username and an empty password.
-Only the standard Python library is used inside the pod — no additional
-packages need to be installed.
+Only the standard Python library is used — no additional packages need to be
+installed.
 
 Retrying a failed upload:
 
 .. code-block:: bash
 
-   # Re-trigger the controller's upload (reuses launch-time credentials)
+   # Repeatable stateless call (uses the service's share settings)
    vast execution cluster upload-to-share
 
 Progress output
 ^^^^^^^^^^^^^^^
 
-Compression and upload run inside the controller pod; a single-line progress
-bar (percentage, transferred size, rate) is written to the controller log —
-view it with ``vast execution cluster monitor`` or ``kubectl logs``:
+Compression and upload run in the service; a single-line progress bar
+(percentage, transferred size, rate) is written to the campaign log —
+view it with ``vast execution cluster monitor`` or the web UI log panel:
 
 .. code-block:: text
 
@@ -548,7 +568,7 @@ view it with ``vast execution cluster monitor`` or ``kubectl logs``:
 Google Cloud Storage (GCS)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The GCS provider uploads archives directly from the controller pod to a GCS
+The GCS provider uploads archives directly from the service to a GCS
 bucket using a service-account key.  Downloads use the public GCS HTTP API
 and **do not require credentials** when the bucket is publicly readable.
 

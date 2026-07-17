@@ -23,7 +23,6 @@ scenario descriptions, run files, transient files, and configurations.
 import logging
 from typing import Any
 
-import yaml
 from fastmcp import FastMCP
 
 from robovast.mcp_server import results_resolver
@@ -145,35 +144,6 @@ def get_campaign_scenario(campaign_id: str) -> str:
     return scenario.read_text(encoding="utf-8")
 
 
-def get_campaign_scenario_parameters(campaign_id: str, max_entries: int = 20) -> dict:
-    """Return scenario parameters and their unique values across all configurations.
-
-    Aggregates scenario parameters from every configuration in the campaign
-    and shows the distinct values each parameter takes, giving a concise
-    overview of what varies across the campaign.
-
-    Args:
-        campaign_id: Campaign name.
-        max_entries: Maximum number of distinct values to return per parameter
-            (default 20). Use a smaller value to limit response size.
-    """
-    campaign_path = results_resolver.resolve_campaign_path(campaign_id)
-    data = read_campaign_metadata(campaign_path)
-    configurations = data.get("configurations", [])
-
-    param_values: dict[str, list] = {}
-    for c in configurations:
-        params = c.get("config", {})
-        if not isinstance(params, dict):
-            continue
-        for key, val in params.items():
-            seen = param_values.setdefault(key, [])
-            if val not in seen:
-                seen.append(val)
-
-    return {key: vals[:max_entries] for key, vals in param_values.items()}
-
-
 def list_campaign_run_files(campaign_id: str) -> list[str]:
     """List files available during every run in every configuration.
 
@@ -209,38 +179,6 @@ def get_campaign_run_file(
     if not path.exists():
         return {"error": f"File not found: {file_name}"}
     return _read_text_paginated(path, lines, offset)
-
-
-def get_campaign_config(
-    campaign_id: str, section: str | None = None,
-) -> str:
-    """Return the YAML-formatted VAST configuration file for a campaign.
-
-    The vast file has four sections:
-    - ``configuration``: defines campaign configurations (parameter variations)
-    - ``execution``: defines how configurations are executed (local/cluster)
-    - ``results_processing``: defines post-execution data handling
-    - ``evaluation``: defines evaluation parameters
-
-    Args:
-        campaign_id: Campaign name.
-        section: Optional section to return. If omitted, the full
-            file is returned.
-    """
-    config_dir = results_resolver.resolve_campaign_path(campaign_id) / "_config"
-    vast_files = list(config_dir.glob("*.vast"))
-    if not vast_files:
-        return "No .vast configuration file found in campaign _config/."
-    content = yaml.safe_load(vast_files[0].read_text(encoding="utf-8"))
-    if section is not None:
-        valid_sections = {"configuration", "execution", "results_processing", "evaluation"}
-        if section not in valid_sections:
-            return f"Invalid section '{section}'. Valid sections: {', '.join(sorted(valid_sections))}"
-        section_data = content.get(section)
-        if section_data is None:
-            return f"Section '{section}' not found in vast file."
-        return yaml.dump(section_data, default_flow_style=False)
-    return yaml.dump(content, default_flow_style=False)
 
 
 def get_campaign_execution_details(campaign_id: str) -> dict:
@@ -314,20 +252,6 @@ def list_campaign_configurations(
     ]
 
 
-def get_campaign_agents(campaign_id: str) -> list[dict]:
-    """Return the agents defined in the campaign and their configuration files.
-
-    Each entry contains an ``id`` and a list of ``configuration_files``
-    used to configure that agent during execution.
-
-    Args:
-        campaign_id: Campaign name.
-    """
-    campaign_path = results_resolver.resolve_campaign_path(campaign_id)
-    data = read_campaign_metadata(campaign_path)
-    return data.get("metadata", {}).get("agents", [])
-
-
 def list_campaign_transient_files(campaign_id: str) -> list[str]:
     """List transient files of a campaign.
 
@@ -363,11 +287,9 @@ def get_campaign_transient_file(
 
 # -- Plugin class ------------------------------------------------------------
 
-# Note: get_campaign_scenario_parameters, get_campaign_config, and
-# get_campaign_agents were dropped from the MCP surface — their data is reachable
-# via get_campaign_scenario (scenario + agents/params), get_configuration_variations
-# (resolved per-config params), and the campaign archive. Query results via the
-# run_data SQL tools.
+# The campaign config/params/agents are reachable via get_campaign_scenario
+# (scenario + agents/params), get_configuration_variations (resolved per-config
+# params), and the run_data SQL tools (campaign.config_json holds the whole .vast).
 _TOOLS = [
     list_campaigns,
     get_campaign_summary,

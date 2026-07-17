@@ -2,32 +2,29 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for the in-controller control channel (state + RPC)."""
+"""Unit tests for the live campaign state (``Status`` + ``ControllerState``).
 
-# Imports follow an importorskip guard for optional fastapi dep.
-# pylint: disable=wrong-import-position
+The controller runs *in the driving process* now (the CLI locally, the
+robovast-service for cluster campaigns), so the service reads ``snapshot()``
+directly. The HTTP ``/status`` + ``/command`` channel this module used to serve —
+along with the command RPC and the upload-to-share retrigger — is gone: it existed
+only to reach a controller that lived in its own pod. Those tests went with it;
+what remains is the state contract every surface still depends on.
+"""
 
 import pytest
 
-fastapi_testclient = pytest.importorskip("fastapi.testclient")
-
-from robovast.execution.control_server import (ControllerState, build_app,
-                                               dispatch, Command, register)
-from fastapi.testclient import TestClient
+from robovast.execution.control_server import ControllerState, Status
 
 
-def _client(state):
-    return TestClient(build_app(state))
-
-
-def test_status_reflects_state_updates():
+def test_snapshot_reflects_state_updates():
     state = ControllerState()
     state.set_phase("running")
     state.update(mode="search", campaign_id="nav-x", batch=2, batches_done=2,
                  budget=[{"label": "batches", "current": 2.0, "limit": 10.0, "done": False}],
                  runs={"completed": 3, "total": 8}, best_objective=0.25,
                  batch_history=[{"idx": 0, "n_units": 4}, {"idx": 1, "n_units": 4}])
-    body = _client(state).get("/status").json()
+    body = state.snapshot().model_dump()
     assert body["phase"] == "running"
     assert body["mode"] == "search"
     assert body["batch"] == 2 and body["batches_done"] == 2
@@ -37,84 +34,55 @@ def test_status_reflects_state_updates():
     assert len(body["batch_history"]) == 2
 
 
+def test_snapshot_is_a_copy():
+    """Readers must not observe half-applied updates from the worker thread."""
+    state = ControllerState()
+    state.update(runs={"completed": 1, "total": 4})
+    snap = state.snapshot()
+    state.update(runs={"completed": 2, "total": 4})
+    assert snap.runs.completed == 1
+
+
 def test_nan_budget_current_serialises_as_null():
     # The controller maps NaN (e.g. target_objective before any result) to None,
-    # so /status stays valid JSON.
+    # so the status stays valid JSON over the service's HTTP contract.
     state = ControllerState()
     state.update(budget=[{"label": "failure_rate", "current": None, "limit": 0.5}])
-    body = _client(state).get("/status").json()
-    assert body["budget"][0]["current"] is None
+    body = state.snapshot().model_dump_json()
+    assert '"current":null' in body
 
 
-def test_stop_command_sets_event():
+def test_request_stop_sets_event():
+    """`stop` is now a direct in-process call from the service, not an HTTP command."""
     state = ControllerState()
     assert state.stop_requested is False
-    resp = _client(state).post("/command", json={"name": "stop"})
-    assert resp.status_code == 200
-    assert resp.json()["ok"] is True
+    state.request_stop()
     assert state.stop_requested is True
 
 
-def test_unknown_command_returns_400():
-    state = ControllerState()
-    resp = _client(state).post("/command", json={"name": "does-not-exist"})
-    assert resp.status_code == 400
-
-
-def test_custom_handler_dispatch_and_error():
-    state = ControllerState()
-
-    @register("echo")
-    def _echo(_state, **args):
-        return args
-
-    assert dispatch(state, Command(name="echo", args={"a": 1})).result == {"a": 1}
-
-    @register("boom")
-    def _boom(_state, **_a):
-        raise RuntimeError("kaboom")
-
-    result = dispatch(state, Command(name="boom"))
-    assert result.ok is False and "kaboom" in (result.error or "")
-
-
-def test_healthz():
-    assert _client(ControllerState()).get("/healthz").json() == {"ok": True}
-
-
-# -- upload-to-share retrigger plumbing -------------------------------------
-
-def test_upload_to_share_command_requests_retrigger():
-    state = ControllerState()
-    resp = _client(state).post(
-        "/command",
-        json={"name": "upload-to-share", "args": {"ROBOVAST_WEBDAV_PASSWORD": "new"}})
-    assert resp.status_code == 200 and resp.json()["ok"] is True
-    action, overrides = state.wait_for_retrigger()
-    assert action == "retrigger"
-    assert overrides == {"ROBOVAST_WEBDAV_PASSWORD": "new"}
-
-
 def test_status_reports_share_provider():
-    # share_provider tracks the current upload attempt (can change on retrigger).
+    # share_provider tracks the current upload attempt; upload-to-share is a
+    # stateless service call now, but the phase/provider it reports is unchanged.
     state = ControllerState()
     state.update(share_provider="sftp")
     state.set_phase("uploading", stage="upload-to-share")
-    body = _client(state).get("/status").json()
-    assert body["share_provider"] == "sftp"
-    assert body["phase"] == "uploading"
+    snap = state.snapshot()
+    assert snap.share_provider == "sftp"
+    assert snap.phase == "uploading" and snap.stage == "upload-to-share"
 
 
-def test_upload_to_share_no_args_reuses_injected_creds():
+def test_error_is_part_of_the_status_contract():
+    """A failed campaign explains itself here — the one place every surface reads."""
     state = ControllerState()
-    state.request_upload()           # manual retrigger with no overrides
-    action, overrides = state.wait_for_retrigger()
-    assert action == "retrigger" and not overrides
+    state.update(error="No configs matched pattern 'typo*'.\nAvailable configs:\n  - a")
+    state.set_phase("failed")
+    snap = state.snapshot()
+    assert snap.phase == "failed"
+    assert "Available configs" in snap.error
 
 
-def test_stop_abandons_pending_upload_wait():
-    # `stop` doubles as "give up on the upload"; wait_for_retrigger returns abandon.
-    state = ControllerState()
-    state.request_stop()
-    action, overrides = state.wait_for_retrigger()
-    assert action == "abandon" and not overrides
+def test_status_defaults():
+    s = Status()
+    assert s.phase == "starting"
+    assert s.error is None
+    assert s.runs.completed == 0

@@ -35,8 +35,9 @@ logger = logging.getLogger(__name__)
 # Flag file name to store the cluster config name that was used for setup
 CLUSTER_CONFIG_FLAG_FILE = ".robovast_cluster_config"
 
-# ServiceAccount the in-cluster controller pod runs as (search campaigns). Must
-# match controller_launcher.CONTROLLER_SERVICE_ACCOUNT.
+# Legacy ServiceAccount name, kept so `cluster setup` still reconciles/removes the
+# RBAC it created before campaigns moved into the service. Nothing runs as it now:
+# the service drives campaigns in-process under its own ServiceAccount.
 CONTROLLER_SERVICE_ACCOUNT = "robovast-controller"
 
 
@@ -51,50 +52,23 @@ def _controller_cluster_role_name(namespace):
 
 
 def _controller_rbac_manifests(namespace):
-    """ServiceAccount + (Cluster)Role + (Cluster)RoleBinding for the controller pod.
+    """Cluster-scoped node access for the **robovast-service**.
 
-    The in-cluster controller (search) creates/monitors/deletes scenario Jobs and
-    reads their pods/logs in its own namespace (namespaced Role).  It also reads
-    node metadata (count/labels/CPU-manager policy) to enrich ``execution.yaml``;
-    nodes are cluster-scoped, so that needs a read-only ClusterRole.
+    Campaigns are driven in-process by the service now, so the namespaced
+    permissions that used to live here (jobs, pods, pods/exec) moved onto the
+    service's own Role in :mod:`.service_deploy` together with its ServiceAccount.
+    What remains is the read-only **ClusterRole** for node metadata (count/labels/
+    CPU-manager policy) that enriches ``execution.yaml``: nodes are cluster-scoped,
+    so they cannot live in that namespaced Role — and it is now bound to the
+    service's ServiceAccount, which is what does the reading.
+
+    The legacy ``robovast-controller`` ServiceAccount/Role are no longer created;
+    :func:`delete_controller_rbac` removes them from clusters set up earlier.
     """
-    role_name = "robovast-controller"
+    from robovast.execution.cluster_execution.service_deploy import \
+        SERVICE_ACCOUNT  # pylint: disable=import-outside-toplevel
     cluster_role_name = _controller_cluster_role_name(namespace)
     return [
-        {
-            "apiVersion": "v1",
-            "kind": "ServiceAccount",
-            "metadata": {"name": CONTROLLER_SERVICE_ACCOUNT, "namespace": namespace},
-        },
-        {
-            "apiVersion": "rbac.authorization.k8s.io/v1",
-            "kind": "Role",
-            "metadata": {"name": role_name, "namespace": namespace},
-            "rules": [
-                {"apiGroups": ["batch"], "resources": ["jobs"],
-                 "verbs": ["create", "get", "list", "watch", "delete", "deletecollection"]},
-                # read_namespaced_job_status hits the jobs/status subresource,
-                # which is a distinct RBAC resource from jobs.
-                {"apiGroups": ["batch"], "resources": ["jobs/status"],
-                 "verbs": ["get", "list", "watch"]},
-                {"apiGroups": [""], "resources": ["pods", "pods/log"],
-                 "verbs": ["get", "list", "watch", "delete", "deletecollection"]},
-                # Variations that declare an auxiliary container run their commands
-                # in a controller-pod sidecar via the pods/exec subresource
-                # (see cluster_execution.container_runner.ClusterContainerRunner).
-                {"apiGroups": [""], "resources": ["pods/exec"],
-                 "verbs": ["create", "get"]},
-            ],
-        },
-        {
-            "apiVersion": "rbac.authorization.k8s.io/v1",
-            "kind": "RoleBinding",
-            "metadata": {"name": role_name, "namespace": namespace},
-            "subjects": [{"kind": "ServiceAccount", "name": CONTROLLER_SERVICE_ACCOUNT,
-                          "namespace": namespace}],
-            "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role",
-                        "name": role_name},
-        },
         {
             "apiVersion": "rbac.authorization.k8s.io/v1",
             "kind": "ClusterRole",
@@ -112,7 +86,7 @@ def _controller_rbac_manifests(namespace):
             "apiVersion": "rbac.authorization.k8s.io/v1",
             "kind": "ClusterRoleBinding",
             "metadata": {"name": cluster_role_name},
-            "subjects": [{"kind": "ServiceAccount", "name": CONTROLLER_SERVICE_ACCOUNT,
+            "subjects": [{"kind": "ServiceAccount", "name": SERVICE_ACCOUNT,
                           "namespace": namespace}],
             "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole",
                         "name": cluster_role_name},
@@ -124,37 +98,22 @@ _CONTROLLER_RBAC_NAME = "robovast-controller"
 
 
 def apply_controller_rbac(namespace="default", kube_context=None):
-    """Create/update the controller ServiceAccount + Role/RoleBinding (idempotent)."""
+    """Create/update the service's node-read ClusterRole + binding (idempotent).
+
+    The namespaced permissions moved onto the service's own Role (see
+    :mod:`.service_deploy`) when campaigns stopped running in their own pod; only
+    the cluster-scoped node access is applied here.
+    """
     from kubernetes import client, config  # pylint: disable=import-outside-toplevel
     from kubernetes.client.rest import \
         ApiException  # pylint: disable=import-outside-toplevel
 
+    from robovast.execution.cluster_execution.service_deploy import \
+        SERVICE_ACCOUNT  # pylint: disable=import-outside-toplevel
+
     config.load_kube_config(context=kube_context)
-    core = client.CoreV1Api()
     rbac = client.RbacAuthorizationV1Api()
-    sa, role, binding, cluster_role, cluster_binding = _controller_rbac_manifests(namespace)
-
-    # ServiceAccount — create, tolerate existing.
-    try:
-        core.create_namespaced_service_account(namespace, sa)
-    except ApiException as exc:
-        if exc.status != 409:
-            raise
-
-    # Role — create, or replace its rules if it exists (so verb changes apply).
-    try:
-        rbac.create_namespaced_role(namespace, role)
-    except ApiException as exc:
-        if exc.status != 409:
-            raise
-        rbac.patch_namespaced_role(_CONTROLLER_RBAC_NAME, namespace, {"rules": role["rules"]})
-
-    # RoleBinding — create, tolerate existing.
-    try:
-        rbac.create_namespaced_role_binding(namespace, binding)
-    except ApiException as exc:
-        if exc.status != 409:
-            raise
+    cluster_role, cluster_binding = _controller_rbac_manifests(namespace)
 
     # ClusterRole (read-only node access) — create, or replace its rules.
     try:
@@ -164,18 +123,29 @@ def apply_controller_rbac(namespace="default", kube_context=None):
             raise
         rbac.patch_cluster_role(cluster_role["metadata"]["name"], {"rules": cluster_role["rules"]})
 
-    # ClusterRoleBinding — create, tolerate existing.
+    # ClusterRoleBinding — create, or replace its subjects (so a binding created
+    # for the old controller ServiceAccount is repointed at the service).
     try:
         rbac.create_cluster_role_binding(cluster_binding)
     except ApiException as exc:
         if exc.status != 409:
             raise
-    logger.debug("Applied controller RBAC (ServiceAccount %s) in namespace %s",
-                 CONTROLLER_SERVICE_ACCOUNT, namespace)
+        rbac.patch_cluster_role_binding(
+            cluster_binding["metadata"]["name"],
+            {"subjects": cluster_binding["subjects"],
+             "roleRef": cluster_binding["roleRef"]})
+    logger.debug("Applied node-read RBAC (ServiceAccount %s) in namespace %s",
+                 SERVICE_ACCOUNT, namespace)
 
 
 def delete_controller_rbac(namespace="default", kube_context=None):
-    """Remove the controller ServiceAccount + Role/RoleBinding (best-effort)."""
+    """Remove the node ClusterRole/binding **and** the legacy controller RBAC.
+
+    The ``robovast-controller`` ServiceAccount/Role/RoleBinding are no longer
+    created (campaigns run inside the service), but they linger on clusters set up
+    before that change — so this still deletes them to leave nothing behind.
+    Best-effort throughout.
+    """
     from kubernetes import client, config  # pylint: disable=import-outside-toplevel
     from kubernetes.client.rest import \
         ApiException  # pylint: disable=import-outside-toplevel

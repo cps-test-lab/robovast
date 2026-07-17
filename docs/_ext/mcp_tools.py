@@ -14,18 +14,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Sphinx extension providing the ``.. mcp-tools::`` directive.
+"""Sphinx extension providing the argument-free ``.. mcp-tools::`` directive.
 
 Usage in ``.rst`` files::
 
-    .. mcp-tools:: robovast.mcp_server.plugin_common._TOOLS
+    .. mcp-tools::
 
-The directive imports the referenced list of functions and renders a
-two-column table (Tool / Description) from each function's name and
-first docstring line.
+The directive loads **every installed MCP plugin via the registry** (the same
+entry-point discovery the server uses at startup) and renders one table per
+plugin — tool name + first docstring line. Because it reads what the server
+actually registers, the docs cannot drift from the tool surface: a new plugin
+shows up automatically, and an unregistered module cannot be documented.
 """
-
-from importlib import import_module
 
 from docutils import nodes
 from docutils.parsers.rst import Directive
@@ -34,38 +34,39 @@ from sphinx.application import Sphinx
 
 
 class MCPToolsDirective(Directive):
-    """Render an MCP tools table from a Python list of functions."""
+    """Render one MCP tools table per registered plugin (registry-driven)."""
 
-    required_arguments = 1  # e.g. "robovast.mcp_server.plugin_common._TOOLS"
+    required_arguments = 0
     has_content = False
 
     def run(self):
-        module_path, attr = self.arguments[0].rsplit(".", 1)
-        mod = import_module(module_path)
-        tools = getattr(mod, attr)
+        from robovast.mcp_server.registry import load_registered_tool_details
 
-        # Build RST for a list-table and parse it so inline markup works.
-        lines = [
-            ".. list-table::",
-            "   :header-rows: 1",
-            "   :widths: 35 65",
-            "",
-            "   * - Tool",
-            "     - Description",
-        ]
-        for fn in tools:
-            doc = (fn.__doc__ or "").strip().split("\n")[0]
-            lines.append(f"   * - ``{fn.__name__}``")
-            lines.append(f"     - {doc}")
+        plugins = load_registered_tool_details()
+        lines: list[str] = []
+        for plugin_name, tools in sorted(plugins.items()):
+            if not tools:  # e.g. the prompts plugin registers prompts, not tools
+                continue
+            lines += [f".. rubric:: {plugin_name}", ""]
+            lines += [
+                ".. list-table::",
+                "   :header-rows: 1",
+                "   :widths: 35 65",
+                "",
+                "   * - Tool",
+                "     - Description",
+            ]
+            for tool in tools:
+                lines.append(f"   * - ``{tool['name']}``")
+                lines.append(f"     - {tool['summary']}")
+            lines.append("")
 
         node = nodes.section()
         node.document = self.state.document
-        self.state.nested_parse(
-            StringList(lines), self.content_offset, node,
-        )
+        self.state.nested_parse(StringList(lines), self.content_offset, node)
         return list(node.children)
 
 
 def setup(app: Sphinx):
     app.add_directive("mcp-tools", MCPToolsDirective)
-    return {"version": "0.1", "parallel_read_safe": True}
+    return {"version": "0.2", "parallel_read_safe": True}

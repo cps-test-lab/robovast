@@ -129,11 +129,11 @@ def get_run_sysinfo(
 def list_run_additional_output_files(
     campaign_id: str, configuration_id: str, run: int,
 ) -> list[str]:
-    """List additional output files of a single run, that are not already provided
-    through other tools like ``list_run_data_tables``, ``query_run_data_tables`` or ``query_run_log``.
+    """List additional output files of a single run, beyond the consolidated
+    metrics already queryable via ``describe_campaign_data`` / ``query_campaign_data_sql``.
 
     These files are produced during execution and postprocessing
-    (e.g. test results, rosbags). 
+    (e.g. test results, rosbags).
 
     Args:
         campaign_id: Campaign name.

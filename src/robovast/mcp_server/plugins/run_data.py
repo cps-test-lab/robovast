@@ -116,9 +116,35 @@ def query_campaign_data_sql(campaign_id: str, sql: str, max_rows: int = 500) -> 
         return {"error": str(e)}
 
 
+def list_campaign_plots(campaign_id: str) -> dict:
+    """List the plots a campaign's author declared in its ``.vast`` ``evaluation.plots``.
+
+    Each plot pairs a **runnable** ``query`` (feed it to
+    :func:`query_campaign_data_sql`) with a **Vega-Lite** spec describing how to
+    chart the result — so this is the fastest way to learn what the campaign author
+    considered worth looking at, and to reproduce those views. Returns declared
+    plots only; you can always write your own SQL beyond them.
+
+    Args:
+        campaign_id: Campaign identifier or an absolute campaign path.
+
+    Returns:
+        ``{campaign_id, plots: [{title, query, vega_lite}]}`` or ``{error}``.
+    """
+    from robovast.service.client import RobovastClient  # noqa: PLC0415
+    try:
+        # Both transports implement this, so the factory (LocalTransport when no
+        # ROBOVAST_SERVICE_URL is set) resolves it with no local special-casing.
+        client = RobovastClient(os.environ.get("ROBOVAST_SERVICE_URL", ""))
+        return client.list_campaign_plots(campaign_id).model_dump()
+    except Exception as e:  # noqa: BLE001 - surface resolution/parse errors to the client
+        return {"error": str(e)}
+
+
 _TOOLS = [
     describe_campaign_data,
     query_campaign_data_sql,
+    list_campaign_plots,
 ]
 
 

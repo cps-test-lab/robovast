@@ -78,3 +78,42 @@ _last_plugin_tools: dict[str, list[str]] = {}
 def get_plugin_tools() -> dict[str, list[str]]:
     """Return the plugin-name → tool-names mapping from the last load."""
     return dict(_last_plugin_tools)
+
+
+def _tools_by_name(mcp: FastMCP) -> dict:
+    """Return ``{tool_name: Tool}`` for every tool registered on *mcp*."""
+    from fastmcp.tools.tool import Tool  # pylint: disable=import-outside-toplevel
+    return {c.name: c for c in mcp._local_provider._components.values()  # pylint: disable=protected-access
+            if isinstance(c, Tool)}
+
+
+def get_plugin_tool_details(mcp: FastMCP) -> dict[str, list[dict]]:
+    """Return ``{plugin_name: [{name, summary}, ...]}`` for the plugins on *mcp*.
+
+    ``summary`` is the first line of each tool's description. Pairs the plugin→tool
+    mapping from :func:`load_plugins` with the registered tool objects, so callers
+    (notably the docs ``.. mcp-tools::`` directive) get a description **without**
+    reaching into FastMCP internals themselves.
+    """
+    by_name = _tools_by_name(mcp)
+
+    def _summary(name: str) -> str:
+        tool = by_name.get(name)
+        text = (getattr(tool, "description", "") or "") if tool else ""
+        return text.strip().split("\n", 1)[0]
+
+    return {
+        plugin: [{"name": n, "summary": _summary(n)} for n in tool_names]
+        for plugin, tool_names in _last_plugin_tools.items()
+    }
+
+
+def load_registered_tool_details() -> dict[str, list[dict]]:
+    """Load all installed plugins into a throwaway server and return their tools.
+
+    A single source of truth for "what tools does the server actually expose",
+    consumed by the docs build so the reference cannot drift from the registry.
+    """
+    mcp = FastMCP("robovast-docs")
+    load_plugins(mcp)
+    return get_plugin_tool_details(mcp)

@@ -16,7 +16,7 @@
 
 """The unified campaign controller.
 
-One controller drives **both** batch and search locally through one
+One controller drives **both** batch and search through one
 :class:`~robovast.execution.backends.ExecutionBackend`, producing a single
 uniform layout (``<results>/<CAMPAIGN_ID>/<config>/<run>/``) plus a live
 ``campaign.db`` for every run:
@@ -28,11 +28,17 @@ uniform layout (``<results>/<CAMPAIGN_ID>/<config>/<run>/``) plus a live
 
 A campaign runs one or more *batches*; the batch is a logical grouping recorded
 in the store, not a directory level, so batch and search share the flat layout.
+
+**Where this runs:** always *in the driving process*, against the backend for
+that deployment — the ``vast`` CLI with a ``DockerBackend`` locally, or the
+``robovast-service`` with a ``KubernetesBackend`` for cluster campaigns (one
+worker thread per campaign). This module is a **library**, not an entrypoint:
+the per-campaign controller *pod* (and its in-pod ``main()`` / control server)
+is gone, so cluster and local now share the same driver-hosting shape.
 """
 
 import logging
 import os
-import sys
 import tempfile
 import threading
 import time
@@ -47,11 +53,10 @@ from robovast.common.store import STORE_FILENAME, CampaignStore
 from .backends import DockerBackend, ExecutionBackend, RunOptions
 from .notify import Notifier
 
-# Use the qualified name rather than __name__: this module is the in-pod cluster
-# entrypoint (``python -m robovast.execution.controller``), where __name__ is
-# "__main__" and would not propagate to the "robovast" logger that
-# add_campaign_log_handler attaches controller.log to — dropping the controller's
-# own lines (banners, progress) from the file while they still reach stderr.
+# Use the qualified name rather than __name__ so this module's records always
+# propagate to the "robovast" logger that add_campaign_log_handler attaches
+# controller.log to — otherwise the controller's own lines (banners, progress)
+# would be dropped from the file while still reaching stderr.
 logger = logging.getLogger("robovast.execution.controller")
 
 _BAR = "=" * 60
@@ -419,32 +424,37 @@ class CampaignController:
 # -- builders ---------------------------------------------------------------
 
 def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
-                          campaign_id: str, state=None) -> None:
-    """Run analysis postprocessing in-cluster, when the service asked for it.
+                          campaign_id: str, state=None,
+                          options: "RunOptions | None" = None) -> None:
+    """Run analysis postprocessing in-cluster, when the caller asked for it.
 
     Called from the builders' ``finally`` **after the store is closed** (so
     ``campaign.db`` is flushed — ``generate_data_db``'s ``runs`` table reads it) and
     **before** :func:`_finalize`, so the resulting ``data.db``/CSVs ride the existing
     campaign upload instead of needing one of their own.
 
-    Opt-in via ``ROBOVAST_POSTPROCESS=1`` (set by ``create_campaign(postprocess=True)``)
-    and a no-op otherwise, so ``vast exec cluster run`` is unchanged. Best-effort: a
-    failure is surfaced on the status channel but never loses the campaign's results.
+    Opt-in via ``RunOptions.postprocess`` (set by ``create_campaign(postprocess=True)``)
+    and a no-op otherwise. This is an **option, not an env var**, because the service
+    drives many campaigns concurrently in one process — a process-global env could not
+    tell them apart. Best-effort: a failure is surfaced on the status channel but never
+    loses the campaign's results.
     """
-    if os.environ.get("ROBOVAST_POSTPROCESS") != "1":
+    options = options or RunOptions()
+    if not options.postprocess:
         return
     cluster_config = getattr(backend, "cluster_config", None)
     if cluster_config is None:  # local backend — the in-process chain handles it
         return
     try:
+        from robovast.common.execution import resolve_controller_image
         from robovast.execution.cluster_execution.postprocess_job import \
             postprocess_campaign
         if state is not None:
             state.set_phase("postprocessing")
         ok, message = postprocess_campaign(
             cluster_config, campaign_id, campaign_root,
-            os.environ.get("ROBOVAST_NAMESPACE", "default"),
-            os.environ.get("ROBOVAST_CONTROLLER_IMAGE", ""),
+            options.namespace or os.environ.get("ROBOVAST_NAMESPACE", "default"),
+            options.controller_image or resolve_controller_image(),
         )
         logger.info("Analysis postprocessing: %s", message)
         if not ok and state is not None:
@@ -496,90 +506,6 @@ def _make_upload_progress_cb(state):
     return _cb
 
 
-def _upload_to_share_with_retrigger(cluster_config, campaign_id: str, provider,
-                                    state, notifier=None) -> int:
-    """Run upload-to-share after a finished campaign; on failure stay alive.
-
-    The campaign is already published to storage (``finalize_campaign``). This
-    compresses it and uploads it to the share. On success the function returns 0
-    (the controller then exits, pod ``Succeeded``). On failure it keeps the
-    controller alive — parking the main thread on the control channel — so the
-    user can retry with ``vast exec cluster upload-to-share`` (optionally with
-    corrected credentials) or abandon with ``stop``.
-
-    Returns a process exit code.
-    """
-    from robovast.execution.cluster_execution import \
-        in_pod_upload  # pylint: disable=import-outside-toplevel
-
-    notifier = notifier or Notifier.from_env(campaign_id)
-
-    if state is not None:
-        state.update(share_provider=provider.SHARE_TYPE)
-        state.set_phase("uploading", stage="upload-to-share")
-
-    if in_pod_upload.upload_campaign(cluster_config, campaign_id, provider,
-                                     progress_cb=_make_upload_progress_cb(state)):
-        if state is not None:
-            state.update(extra={})  # clear the upload progress bar
-            state.set_phase("finished", stage="uploaded")
-        logger.info("Campaign uploaded to share (%s).", provider.SHARE_TYPE)
-        notifier.uploaded(provider.SHARE_TYPE)
-        return 0
-
-    logger.error(
-        "upload-to-share failed. The campaign is safe in storage. The controller "
-        "will stay alive — retry with 'vast exec cluster upload-to-share' (it "
-        "reuses the injected credentials, or pass corrected ones — even a "
-        "different share type), or 'vast exec cluster stop' to give up.")
-    if state is None:
-        notifier.failed("upload-to-share failed (no control channel to retry)")
-        return 1  # no control channel → nothing could retrigger
-    state.update(extra={})  # drop any stale progress bar from the failed attempt
-    state.set_phase("uploading", stage="upload-failed")
-
-    while True:
-        action, overrides = state.wait_for_retrigger()
-        if action == "abandon":
-            logger.warning("Upload abandoned via stop; terminating "
-                           "(campaign already published to storage).")
-            notifier.failed("upload-to-share abandoned via stop")
-            return 1
-        logger.info("Retrying upload-to-share...")
-        # Rebuild the provider (the retrigger may switch type and/or supply
-        # corrected credentials), then re-run the launch-time pre-flight check so
-        # a bad/switched target fails fast instead of after a wasted re-compress.
-        try:
-            retry_provider = in_pod_upload.load_provider_from_env(overrides)
-        except Exception as exc:  # pylint: disable=broad-except
-            logger.error("Cannot build share provider for retry: %s", exc)
-            retry_provider = None
-        if retry_provider is None:
-            logger.error("No usable share provider for retry; waiting again.")
-            state.set_phase("uploading", stage="upload-failed")
-            continue
-        state.update(share_provider=retry_provider.SHARE_TYPE)
-        state.set_phase("uploading", stage="upload-to-share")
-        try:
-            in_pod_upload.verify_share_access(retry_provider)
-        except Exception as exc:  # pylint: disable=broad-except
-            logger.error("Share credential check failed on retry (%s): %s",
-                         retry_provider.SHARE_TYPE, exc)
-            state.set_phase("uploading", stage="upload-failed")
-            continue
-        if in_pod_upload.upload_campaign(
-                cluster_config, campaign_id, retry_provider,
-                progress_cb=_make_upload_progress_cb(state)):
-            state.update(extra={})  # clear the upload progress bar
-            state.set_phase("finished", stage="uploaded")
-            logger.info("Campaign uploaded to share (%s, retry).",
-                        retry_provider.SHARE_TYPE)
-            notifier.uploaded(retry_provider.SHARE_TYPE)
-            return 0
-        state.update(extra={})  # drop stale progress bar from the failed retry
-        state.set_phase("uploading", stage="upload-failed")
-
-
 def run_search_campaign(vast_file, campaign_config, results_dir, runs,
                         backend: ExecutionBackend | None = None,
                         options: RunOptions | None = None, campaign_id=None, state=None,
@@ -598,10 +524,11 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
     runs = runs if runs is not None else campaign_config.execution.runs
     campaign_id = campaign_id or campaign_id_for(campaign_config)
     be = backend or DockerBackend(state=state)
+    opts = options or RunOptions()
     store = CampaignStore(os.path.join(results_dir, campaign_id, STORE_FILENAME))
     controller = CampaignController(
         campaign_id=campaign_id, results_dir=results_dir, runs=runs,
-        backend=be, options=options or RunOptions(),
+        backend=be, options=opts,
         store=store, campaign_config_dump=campaign_config.model_dump(),
         vast_dir=vast_dir, strategy=build_strategy(search_cfg, vast_dir),
         evaluator=Evaluator(search_cfg, vast_dir), compose=Compose(vast_file),
@@ -614,7 +541,7 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
         _campaign_root = os.path.join(results_dir, campaign_id)
         # After store.close() (campaign.db flushed, which data.db's `runs` table
         # reads) and before _finalize, so data.db rides the existing upload.
-        _chain_postprocessing(be, _campaign_root, campaign_id, state)
+        _chain_postprocessing(be, _campaign_root, campaign_id, state, opts)
         _finalize(be, _campaign_root)
 
 
@@ -715,10 +642,11 @@ def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_fil
         campaign_data, _ = build_campaign_data(vast_file, tmp, config_filter)
 
         be = backend or DockerBackend(state=state)
+        opts = options or RunOptions()
         store = CampaignStore(os.path.join(results_dir, campaign_id, STORE_FILENAME))
         controller = CampaignController(
             campaign_id=campaign_id, results_dir=results_dir, runs=runs,
-            backend=be, options=options or RunOptions(),
+            backend=be, options=opts,
             store=store, campaign_config_dump=campaign_config.model_dump(),
             vast_dir=vast_dir, batch_campaign_data=campaign_data, state=state,
             notifier=notifier)
@@ -729,198 +657,5 @@ def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_fil
             _campaign_root = os.path.join(results_dir, campaign_id)
             # After store.close() (campaign.db flushed, which data.db's `runs` table
             # reads) and before _finalize, so data.db rides the existing upload.
-            _chain_postprocessing(be, _campaign_root, campaign_id, state)
+            _chain_postprocessing(be, _campaign_root, campaign_id, state, opts)
             _finalize(be, _campaign_root)
-
-
-# -- in-pod entrypoint ------------------------------------------------------
-
-def _build_cluster_backend(namespace, kube_context, log_tree):
-    """Reconstruct the cluster config from the env and build a KubernetesBackend.
-
-    The host injects ``ROBOVAST_CLUSTER_CONFIG_NAME`` and (optionally)
-    ``ROBOVAST_CLUSTER_CONFIG_KWARGS`` (JSON) when launching the controller pod,
-    so the in-pod controller reuses the very same cluster config object the host
-    uses for storage and scheduling (its ``get_s3_endpoint()`` is the
-    cluster-internal endpoint, so all storage traffic stays in-cluster).
-    """
-    import json
-
-    from robovast.execution.cluster_execution.cluster_setup import \
-        get_cluster_config
-    from robovast.execution.cluster_execution.kubernetes_backend import \
-        KubernetesBackend
-
-    name = os.environ.get("ROBOVAST_CLUSTER_CONFIG_NAME")
-    if not name:
-        raise RuntimeError(
-            "ROBOVAST_CLUSTER_CONFIG_NAME is not set. The controller is meant to be "
-            "launched by 'vast exec cluster run', which injects the cluster config."
-        )
-    cluster_config = get_cluster_config(name)
-    kwargs_json = os.environ.get("ROBOVAST_CLUSTER_CONFIG_KWARGS")
-    if kwargs_json:
-        cluster_config.restore_from_setup_kwargs(json.loads(kwargs_json))
-    return KubernetesBackend(
-        cluster_config=cluster_config, namespace=namespace,
-        kube_context=kube_context, log_tree=log_tree)
-
-
-def main(argv=None):
-    """Run a campaign controller inside the cluster controller pod.
-
-    ``vast exec cluster run`` copies the campaign inputs + the dev wheel into the
-    controller pod and invokes ``python -m robovast.execution.controller`` here.
-    The backend is always :class:`KubernetesBackend` — this entrypoint only runs
-    in the controller pod (which has no Docker); local execution uses the separate
-    ``vast exec local run`` path.
-    """
-    import argparse
-
-    from robovast.common.common import load_config
-    from robovast.common.config import validate_config
-
-    parser = argparse.ArgumentParser(
-        prog="python -m robovast.execution.controller",
-        description="Run a robovast campaign controller (batch or search) in-cluster.",
-    )
-    parser.add_argument("--vast", required=True, help="Path to the .vast campaign file.")
-    parser.add_argument("--results-dir", required=True,
-                        help="Directory where the campaign (results + campaign.db) is written.")
-    parser.add_argument("--runs", type=int, default=None,
-                        help="Override the number of runs from the config.")
-    parser.add_argument("--namespace", default=os.environ.get("ROBOVAST_NAMESPACE", "default"),
-                        help="Kubernetes namespace for the jobs.")
-    parser.add_argument("--kube-context", default=os.environ.get("ROBOVAST_KUBE_CONTEXT"),
-                        help="Host context name, used only to resolve per-cluster resources.")
-    parser.add_argument("--config", default=None,
-                        help="Batch mode only: run configurations matching this glob.")
-    parser.add_argument("--campaign-id", default=None,
-                        help="Campaign id to use (host-generated so it matches the "
-                             "controller pod label). Defaults to a fresh timestamped id.")
-    parser.add_argument("--log-tree", action="store_true", help="Forward the live scenario tree.")
-    args = parser.parse_args(argv)
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
-
-    campaign_config = validate_config(load_config(args.vast))
-    backend = _build_cluster_backend(args.namespace, args.kube_context, args.log_tree)
-    # Variations that declare an auxiliary container are served by a sidecar in
-    # this controller pod (injected by the host launcher); route their commands
-    # through pods/exec instead of the local ``docker run`` default.
-    from robovast.common.config_generation import set_container_runner_factory
-    from robovast.execution.cluster_execution.container_runner import \
-        make_cluster_container_runner_factory
-    set_container_runner_factory(make_cluster_container_runner_factory(args.namespace))
-    options = RunOptions(log_tree=args.log_tree)
-    # The host launcher passes --campaign-id; resolve it here too so we know which
-    # campaign to upload after the run (and so the id is stable for both paths).
-    campaign_id = args.campaign_id or campaign_id_for(campaign_config)
-
-    # ntfy push notifications (no-op unless ROBOVAST_NTFY_TOPIC is set). Bound to
-    # this campaign id so concurrent controller pods report independently.
-    notifier = Notifier.from_env(campaign_id)
-
-    # Start the in-pod control channel (state + RPC) so the host can monitor loop
-    # progress and issue commands. Best-effort: a failure leaves the campaign
-    # running with the monitor falling back to its Kubernetes-only view.
-    state = None
-    try:
-        from robovast.execution.control_server import ControllerState, serve_in_thread
-        port = int(os.environ.get("ROBOVAST_CONTROL_PORT", "0")) or None
-        state = ControllerState()
-        serve_in_thread(state, **({"port": port} if port else {}))
-    except Exception:  # pylint: disable=broad-except
-        logger.warning("Could not start the control channel; continuing without it.",
-                       exc_info=True)
-        state = None
-
-    # Pre-flight: verify the share credentials work *before* burning compute on a
-    # campaign that could never be delivered. The launcher injects the share env
-    # (ROBOVAST_SHARE_TYPE + provider vars) from the host .env.
-    from robovast.execution.cluster_execution import \
-        in_pod_upload  # pylint: disable=import-outside-toplevel
-    # The external share is OPTIONAL when the controller is launched by the
-    # robovast-service (mode 3): results already live in the object store, which
-    # the service pulls from. ROBOVAST_SKIP_SHARE=1 makes a missing share a
-    # non-error. The legacy ``vast exec cluster run`` path leaves it unset and
-    # keeps requiring a share (its ``--wait-and-download`` delivers via the share).
-    skip_share = os.environ.get("ROBOVAST_SKIP_SHARE", "") in ("1", "true", "True")
-    try:
-        share_provider = in_pod_upload.load_provider_from_env()
-    except Exception as exc:  # pylint: disable=broad-except
-        if skip_share:
-            logger.warning("Share provider misconfigured but ROBOVAST_SKIP_SHARE set; "
-                           "results stay in the object store: %s", exc)
-            share_provider = None
-        else:
-            logger.error("Share provider misconfigured: %s", exc)
-            if state is not None:
-                state.set_phase("failed", stage="share-config-error")
-            notifier.failed(f"share provider misconfigured: {exc}")
-            sys.exit(2)
-    if share_provider is None:
-        if not skip_share:
-            # The launcher refuses to start a run without a share destination;
-            # guard here too for standalone/manual invocations.
-            logger.error("No share destination configured (ROBOVAST_SHARE_TYPE unset); "
-                         "refusing to run a campaign whose results have nowhere to go.")
-            if state is not None:
-                state.set_phase("failed", stage="share-config-error")
-            notifier.failed("no share destination configured (ROBOVAST_SHARE_TYPE unset)")
-            sys.exit(2)
-        logger.info("No external share configured; results delivered via the object "
-                    "store (ROBOVAST_SKIP_SHARE set).")
-    else:
-        try:
-            in_pod_upload.verify_share_access(share_provider)
-        except Exception as exc:  # pylint: disable=broad-except
-            logger.error("Pre-flight share credential check failed; aborting "
-                         "before starting any batches: %s", exc)
-            if state is not None:
-                state.set_phase("failed", stage="share-verify-failed")
-            notifier.failed(f"pre-flight share credential check failed: {exc}")
-            sys.exit(3)
-
-    mode = "search" if campaign_config.search is not None else "batch"
-    notifier.started(mode)
-    campaign_root = os.path.join(args.results_dir, campaign_id)
-    try:
-        if campaign_config.search is not None:
-            report = run_search_campaign(args.vast, campaign_config, args.results_dir, args.runs,
-                                         backend=backend, options=options,
-                                         campaign_id=campaign_id, state=state, notifier=notifier)
-            logger.info("Search campaign finished: %s", report)
-        else:
-            report = run_batch_campaign(args.vast, campaign_config, args.results_dir, args.runs,
-                                        config_filter=args.config, backend=backend, options=options,
-                                        campaign_id=campaign_id, state=state, notifier=notifier)
-            logger.info("Batch campaign finished: %s", report)
-    except BaseException as exc:  # noqa: BLE001 - top-level: record why, then die
-        # An uncaught failure here (e.g. a config_filter typo raising in
-        # build_campaign_data, before the store/_finalize exist) would otherwise
-        # only reach the pod's stderr. Record a durable, queryable reason the
-        # service surfaces via get_status, since _finalize's upload is skipped.
-        logger.exception("%s campaign failed", mode)
-        _record_controller_failure(campaign_root, campaign_id, state, exc, backend)
-        notifier.failed(f"{mode} campaign failed: {exc}")
-        sys.exit(1)
-    notifier.finished(f"{mode} campaign complete.")
-
-    # The campaign is now published to the object store. When a share is
-    # configured, also deliver it there (staying alive for a manual retrigger if
-    # the upload fails). With no share (mode 3), the object store IS the delivery
-    # mechanism — the service pulls results from it — so we're done.
-    if share_provider is None:
-        if state is not None:
-            state.set_phase("finished", stage="stored")
-        sys.exit(0)
-    sys.exit(_upload_to_share_with_retrigger(
-        backend.cluster_config, campaign_id, share_provider, state, notifier))
-
-
-if __name__ == "__main__":
-    main()
