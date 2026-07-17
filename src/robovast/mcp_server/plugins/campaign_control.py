@@ -42,7 +42,10 @@ from pathlib import Path
 
 from fastmcp import FastMCP
 
+from robovast.mcp_server import results_resolver
 from robovast.mcp_server.campaign_registry import CampaignRegistry, _proc_start_time
+
+from ..plugin_common import _read_text_paginated
 
 logger = logging.getLogger(__name__)
 
@@ -570,6 +573,32 @@ def get_campaign_status(campaign_id: str) -> dict:
         return {"error": str(e)}
 
 
+def get_campaign_log(campaign_id: str, lines: int = 200, offset: int = 0) -> dict:
+    """Read a campaign's controller log.
+
+    Returns the campaign's ``_execution/controller.log`` — the same log the web
+    UI "Show log" panel streams. For local Docker campaigns this includes the
+    full ``run.sh`` and ``docker compose`` output (image pull, container/simulator
+    stdout, per-job banners) interleaved with the controller's own narrative
+    (batch/search progress, warnings). For cluster campaigns it holds the
+    controller thread's narrative (job creation, per-batch progress); per-pod
+    container logs are not aggregated here.
+
+    Args:
+        campaign_id: The id returned by :func:`start_campaign`.
+        lines: Maximum number of lines to return (default 200).
+        offset: Line offset to start reading from (default 0), for pagination.
+
+    Returns:
+        ``{file_name, total_lines, returned_lines, offset, content}``; ``{error}``
+        if the campaign or its log is unknown.
+    """
+    path = results_resolver.resolve_campaign_path(campaign_id) / "_execution" / "controller.log"
+    if not path.exists():
+        return {"error": f"No controller.log for campaign {campaign_id!r}"}
+    return _read_text_paginated(path, lines, offset)
+
+
 def stop_campaign(campaign_id: str) -> dict:
     """Stop a running campaign.
 
@@ -791,6 +820,7 @@ _TOOLS = [
     init_project,
     start_campaign,
     get_campaign_status,
+    get_campaign_log,
     stop_campaign,
     list_running_campaigns,
     get_postprocessing,

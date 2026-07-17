@@ -211,6 +211,28 @@ def test_inline_extensions_are_vast_and_osc():
     assert set(INLINE_EXTENSIONS) == {".vast", ".osc"}
 
 
+# -- name uniqueness (repeated `workspace init` of the same dir) -------------
+
+
+def test_duplicate_names_get_incrementing_suffix(store):
+    """First keeps the bare name; repeats get -2/-3 so the dropdown stays legible."""
+    names = [store.registry.create(name="ros2_basic")["name"] for _ in range(3)]
+    assert names == ["ros2_basic", "ros2_basic-2", "ros2_basic-3"]
+
+
+def test_suffix_avoids_pinned_name_too(tmp_path):
+    """An init'd copy never shadows a pinned dir by name."""
+    src = tmp_path / "ros2_basic"
+    src.mkdir()
+    reg = WorkspaceRegistry(root=tmp_path / "w", static_dirs=[str(src)])
+    assert reg.create(name="ros2_basic")["name"] == "ros2_basic-2"
+
+
+def test_empty_name_defaults_to_id_without_suffix(store):
+    entry = store.registry.create()
+    assert entry["name"] == entry["workspace_id"]
+
+
 # -- pinned (read-only) workspaces ------------------------------------------
 
 

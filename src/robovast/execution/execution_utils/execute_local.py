@@ -323,6 +323,16 @@ fi
 
 mkdir -p "${RESULTS_DIR}"
 
+# Mirror all run.sh + docker compose output into the campaign's controller.log
+# so the web UI "Show log" (which streams that file) shows the container/compose
+# output alongside the controller narrative. tee still forwards to the original
+# stdout, preserving console / _control/logs output. Skipped for --start-only,
+# which is an interactive TTY shell (a pipe would break its terminal handling).
+if [ "$START_ONLY" != true ]; then
+    mkdir -p "${RESULTS_DIR}/_execution"
+    exec > >(tee -a "${RESULTS_DIR}/_execution/controller.log") 2>&1
+fi
+
 # Pull image if not available locally
 if ! docker image inspect "$DOCKER_IMAGE" > /dev/null 2>&1; then
     echo "Docker image '$DOCKER_IMAGE' not found locally. Downloading..."

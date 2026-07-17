@@ -46,7 +46,10 @@ run files, and author the ``.vast`` in the Monaco editor.
       # then open the Config tab and pick "ros2demo" from the workspace dropdown
 
    ``vast workspace init`` writes ``.vast``/``.osc`` inline and uploads the rest
-   (preserving sub-directories and the executable bit).
+   (preserving sub-directories and the executable bit). Re-running it on the same
+   directory creates a *new* workspace each time; a name that already exists gets
+   an incrementing ``-2``/``-3`` suffix (printed in the command's output) so the
+   copies stay distinguishable in the dropdown.
 
 .. tip::
 

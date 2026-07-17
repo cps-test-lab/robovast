@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import AppBar from '@mui/material/AppBar'
 import Box from '@mui/material/Box'
@@ -14,10 +14,33 @@ import { Launcher } from '@/pages/Launcher'
 import { ConfigEditor } from '@/pages/ConfigEditor'
 import { Eval } from '@/pages/Eval'
 
+// The active tab is mirrored in the URL hash (e.g. #/launcher) so a browser refresh
+// (or a bookmark / back-forward) restores the current page instead of snapping back to
+// Monitor. Order matches the <Tab> list below.
+const TABS = ['monitor', 'launcher', 'config', 'results'] as const
+
+function tabFromHash(): number {
+  const slug = window.location.hash.replace(/^#\/?/, '')
+  const i = TABS.indexOf(slug as (typeof TABS)[number])
+  return i >= 0 ? i : 0
+}
+
 // The whole app: a thin tabbed shell over the two M1 pages. The version chip doubles as the
 // service-connection indicator (green when the handshake succeeds).
 export function App() {
-  const [tab, setTab] = useState(0)
+  const [tab, setTab] = useState(tabFromHash)
+
+  // Follow back/forward (and any external hash change) to the matching tab.
+  useEffect(() => {
+    const onHashChange = () => setTab(tabFromHash())
+    window.addEventListener('hashchange', onHashChange)
+    return () => window.removeEventListener('hashchange', onHashChange)
+  }, [])
+
+  const selectTab = (v: number) => {
+    setTab(v)
+    window.location.hash = `/${TABS[v]}`
+  }
   const version = useQuery({
     queryKey: ['version'],
     queryFn: () => robovast.version(),
@@ -32,7 +55,7 @@ export function App() {
           <Typography variant="h6" sx={{ color: 'primary.main', mr: 3 }}>
             RoboVAST
           </Typography>
-          <Tabs value={tab} onChange={(_, v) => setTab(v)}>
+          <Tabs value={tab} onChange={(_, v) => selectTab(v)}>
             <Tab label="Monitor" />
             <Tab label="Launcher" />
             <Tab label="Config" />
