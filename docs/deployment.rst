@@ -9,6 +9,22 @@ the same FastAPI app runs in-process, on a single host, or in a cluster. This
 page covers the three modes, how a client reaches each, and the v1 security
 boundary.
 
+At a glance — pick how you run, then drive it from the **web UI or the
+command line** (both auto-detect a service on the conventional port
+``127.0.0.1:8800``, so neither needs configuring):
+
+* **Local-only, no service** — ``vast exec local run``. One-shot local Docker
+  run, no persistent service (mode 1). CLI only.
+* **Local service** — ``vast serve`` (or just ``vast ui``). Persistent local
+  service; web UI + CLI + MCP share its state (mode 2).
+* **Cluster service** — ``vast serve --backend cluster`` in-pod, or the deployed
+  Deployment; drive it from ``vast ui --cluster`` or the CLI (mode 3). Run
+  ``vast serve --backend cluster -x <context>`` off-cluster to debug the driver
+  locally against a real cluster.
+* **Tunnel to any of the above** — an ``ssh -N -L 8800:127.0.0.1:8800 <host>`` or
+  ``kubectl port-forward … 8800:8800`` on the conventional port; the web UI and
+  every ``vast`` command then follow it automatically.
+
 .. warning::
 
    The service is **unauthenticated in v1**. It binds ``127.0.0.1`` by default
@@ -69,8 +85,9 @@ Access matrix
    * - Cluster service
      - ``HTTPTransport``
      - ``kubectl port-forward svc/robovast-service 8800:8800`` then talk to
-       ``127.0.0.1:8800``. ``vast mcp serve --cluster`` establishes and
-       supervises the tunnel for you.
+       ``127.0.0.1:8800`` — or let a single command own the tunnel:
+       ``vast ui --cluster`` (holds it open) or ``vast exec cluster … --cluster``
+       (ephemeral, per call).
 
 The deferred hardening for direct remote access (mode 2 remote / mode 3 without a
 tunnel) is a public **Ingress + token/TLS**, decided once for the whole surface.
@@ -84,16 +101,17 @@ On the VM (bound to its own localhost):
 
    vast serve --host 127.0.0.1 --port 8800
 
-On your machine, open the tunnel and point clients at it:
+On your machine, open the tunnel on the **conventional port** and every client
+auto-detects it — nothing to export:
 
 .. code-block:: bash
 
-   ssh -N -L 8800:127.0.0.1:8800 user@vm &          # background tunnel
-   export ROBOVAST_SERVICE_URL=http://127.0.0.1:8800
+   ssh -N -L 8800:127.0.0.1:8800 user@vm &          # background tunnel to :8800
 
-   # the MCP server now drives the remote service:
-   vast mcp serve
-   # ...and the CLI/MCP tools author, run, and query campaigns on the VM.
+   # the CLI, the web UI, and the MCP server all follow the tunnel on :8800:
+   vast mcp serve                                    # drives the remote service
+   vast exec cluster run                             # no flags — auto-detected
+   # ...author, run, and query campaigns on the VM.
 
 Walkthrough — the in-cluster service
 ------------------------------------
@@ -102,11 +120,11 @@ Walkthrough — the in-cluster service
 
    vast exec cluster setup rke2                     # deploys robovast-service
    kubectl port-forward svc/robovast-service 8800:8800 &
-   export ROBOVAST_SERVICE_URL=http://127.0.0.1:8800
 
-``vast mcp serve --cluster`` can own the port-forward instead, so an MCP user
-(an LLM) never deals with tunnelling — it just calls tools. ``vast exec cluster
-run`` uses the same client path.
+Bring the tunnel up on ``:8800`` first, then start MCP and it auto-detects the
+service — an MCP user (an LLM) just calls tools, no URL to configure. ``vast exec
+cluster run`` (and ``ui``/``workspace``/``monitor``) follow the same tunnel; or use
+``--cluster`` on those commands to open an ephemeral per-call tunnel instead.
 
 Keeping the service up to date
 ------------------------------

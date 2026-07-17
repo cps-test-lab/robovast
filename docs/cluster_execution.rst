@@ -15,9 +15,11 @@ Overview
 Every cluster run — batch **and** search — is driven by the
 **robovast-service**, which runs the campaign *in-process* (one worker thread per
 campaign) and creates the scenario Jobs itself. So cluster runs require a deployed
-service (``vast execution cluster setup`` installs it) reachable via
-``ROBOVAST_SERVICE_URL``; ``vast execution cluster run`` pushes the local project
-into a server-side workspace and starts the campaign there. It is *fire-and-forget*
+service (``vast execution cluster setup`` installs it); ``vast execution cluster
+run`` finds it — auto-detected on the conventional local port (a ``vast serve`` /
+``vast ui`` or a tunnel you brought up), or pass ``--cluster`` to open an ephemeral
+``kubectl port-forward`` for the call — pushes the local project into a server-side
+workspace, and starts the campaign there. It is *fire-and-forget*
 — it returns immediately with the campaign id, and the campaign continues in the
 cluster. Internally:
 
@@ -50,9 +52,10 @@ cluster. Internally:
 .. note::
 
    Live status, ``stop``, ``monitor`` and ``upload-to-share`` all go through the
-   service (``ROBOVAST_SERVICE_URL``) — there is no controller pod to ``kubectl
-   port-forward`` into any more. The web UI additionally streams each campaign's
-   ``controller.log`` live from the service.
+   service — auto-detected on the conventional local port, or reached with
+   ``--cluster`` — there is no controller pod to ``kubectl port-forward`` into any
+   more. The web UI additionally streams each campaign's ``controller.log`` live
+   from the service.
 
 
 Prerequisites
@@ -132,9 +135,9 @@ Running Scenarios
 
 ``run`` is fire-and-forget: it starts the campaign on the service and returns
 immediately, printing the campaign id. The campaign continues in the cluster —
-watch it with ``vast execution cluster monitor``. (It requires
-``ROBOVAST_SERVICE_URL`` to point at a deployed service; run ``vast execution
-cluster setup`` first if you have none.)
+watch it with ``vast execution cluster monitor``. (It needs a reachable service:
+auto-detected on the conventional local port, or reached with ``--cluster``; run
+``vast execution cluster setup`` first if you have none.)
 
 
 Monitoring and Results

@@ -30,6 +30,9 @@ from dotenv import load_dotenv
 
 from robovast.common import prepare_campaign_configs
 from robovast.common.cli import get_project_config, handle_cli_exception
+from robovast.common.cli.service_target import echo_target as _echo_target
+from robovast.common.cli.service_target import (detected_service_url,
+                                                service_client, target_options)
 from robovast.common.cluster_context import (get_active_kube_context,
                                              get_config_context_names,
                                              require_context_for_multi_cluster)
@@ -331,24 +334,6 @@ def cluster():
     """
 
 
-def _require_service_client():
-    """A :class:`RobovastClient` for the configured robovast-service.
-
-    Every cluster operation goes through the service — it is the only thing that
-    drives campaigns (there is no controller pod to reach any more), so the CLI is
-    a thin client of it exactly like the MCP server and the web UI.
-    """
-    from robovast.service.client import RobovastClient
-    from robovast.service.project_push import configured_service_url
-    url = configured_service_url()
-    if not url:
-        raise ValueError(
-            "No robovast-service configured. Set ROBOVAST_SERVICE_URL to your "
-            "service (e.g. via 'kubectl port-forward svc/robovast-service 8800:8800'), "
-            "or deploy one with 'vast exec cluster setup <cluster-config>'.")
-    return RobovastClient(url)
-
-
 def _sole_running_campaign(client):
     """The one running campaign's id, or None; errors if several are running.
 
@@ -374,8 +359,7 @@ def _sole_running_campaign(client):
               help='Override the number of runs specified in the config')
 @click.option('--log-tree', '-t', is_flag=True,
               help='Log scenario execution live tree')
-@click.option('--context', '-x', 'kube_context', default=None,
-              help='Kubernetes context to use (default: active context in kubeconfig)')
+@target_options
 @click.option('--wait-and-download', 'wait_and_download', is_flag=True,
               help='Block until the campaign finishes and its results are uploaded, '
                    'then download them into the project results directory — making a '
@@ -384,71 +368,61 @@ def _sole_running_campaign(client):
               help='Seconds between status polls when --wait-and-download is set.')
 @click.option('--campaign-id', default=None,
               help='Launch under this campaign id instead of generating one.')
-def run(config, runs, log_tree, kube_context, wait_and_download, poll_interval,
-        campaign_id):  # pylint: disable=function-redefined,redefined-outer-name
+def run(config, runs, log_tree, cluster, namespace, context, wait_and_download,
+        poll_interval, campaign_id):  # pylint: disable=function-redefined,redefined-outer-name
     """Execute a campaign (batch or search) on a Kubernetes cluster.
 
-    Launches an in-cluster controller pod that drives the whole campaign and
-    creates the per-batch scenario jobs from inside the cluster. By default the
-    command is fire-and-forget: it returns immediately after starting the
-    controller. Track progress with 'vast exec cluster monitor', then retrieve
-    results with 'vast results download'.
+    Runs through the robovast-service, which drives the campaign in-process and
+    creates the per-batch scenario Jobs. The service is auto-detected on the
+    conventional local port, so with a ``vast serve``/``vast ui`` (or an SSH /
+    ``kubectl port-forward`` tunnel) up, this needs **no flags**; otherwise pass
+    ``--cluster`` (with ``-x`` to pick the context) to tunnel to the in-cluster
+    service for this call. By default the command is fire-and-forget: it returns
+    once the campaign is launched. Track it with 'vast exec cluster monitor'.
 
     Pass ``--wait-and-download`` to instead block until the campaign finishes and
-    its results have been uploaded to the share, then download them into the
-    project results directory automatically — one command, results on local disk,
-    exactly like a local run.
+    its results have been uploaded, then download them into the project results
+    directory automatically — one command, results on local disk, like a local run.
 
     Use --config to run only matching configurations (batch campaigns).
-    Use --context to target a specific Kubernetes cluster.
 
     Requires project initialization with ``vast init`` first.
     """
     try:
-        # The robovast-service is the *only* way to run on a cluster: it drives the
-        # campaign in-process and creates the scenario Jobs. (The old fallback —
-        # kubectl-cp'ing a wheel into a per-campaign controller pod — is gone along
-        # with that pod.) So push the local project into a server-side workspace and
-        # launch through the service.
+        from robovast.common.cli.project_config import \
+            get_project_config  # pylint: disable=import-outside-toplevel
+        from robovast.common.cli.service_target import \
+            service_client  # pylint: disable=import-outside-toplevel
         from robovast.execution.execution_utils.cluster_run import \
             wait_for_cluster_campaign  # pylint: disable=import-outside-toplevel
         from robovast.service.project_push import (  # pylint: disable=import-outside-toplevel
-            configured_service_url, download_campaign_via_service,
-            run_project_via_service)
+            download_campaign_via_service, run_project_via_service)
 
-        service_url = configured_service_url()
-        if not service_url:
-            raise click.UsageError(
-                "No robovast-service configured. Cluster runs go through the "
-                "service.\nSet ROBOVAST_SERVICE_URL (e.g. after "
-                "'kubectl port-forward svc/robovast-service 8800:8800'), or deploy "
-                "one with 'vast exec cluster setup <cluster-config>'.")
-
-        from robovast.common.cli.project_config import \
-            get_project_config  # pylint: disable=import-outside-toplevel
         project = get_project_config()
-        cid = run_project_via_service(
-            service_url, project.config_path, config_filter=config or "",
-            runs=runs or 1, feedback=click.echo)
-        if not wait_and_download:
-            click.echo(f"Launched cluster campaign '{cid}' via robovast-service. "
-                       "Track it with 'vast exec cluster monitor' or the service.")
-            return
+        with service_client(cluster, namespace, context,
+                            require_service=True) as (client, target):
+            _echo_target(target)
+            cid = run_project_via_service(
+                client, project.config_path, config_filter=config or "",
+                runs=runs or 1, feedback=click.echo)
+            if not wait_and_download:
+                click.echo(f"Launched cluster campaign '{cid}' via robovast-service. "
+                           "Track it with 'vast exec cluster monitor' or the service.")
+                return
 
-        click.echo(f"Launched cluster campaign '{cid}'. Waiting for it to finish...")
-        outcome = wait_for_cluster_campaign(
-            cid, service_url=service_url, interval=poll_interval, feedback=click.echo)
-        if outcome == "failed":
-            raise click.ClickException(
-                f"Campaign '{cid}' failed. Inspect with 'vast exec cluster monitor' "
-                "(the failure reason is on its status).")
+            click.echo(f"Launched cluster campaign '{cid}'. Waiting for it to finish...")
+            outcome = wait_for_cluster_campaign(
+                cid, client=client, interval=poll_interval, feedback=click.echo)
+            if outcome == "failed":
+                raise click.ClickException(
+                    f"Campaign '{cid}' failed. Inspect with 'vast exec cluster "
+                    "monitor' (the failure reason is on its status).")
 
-        click.echo(f"Campaign '{cid}' finished. Downloading results...")
-        # The service streams the campaign from the object store — no external
-        # share needed for delivery.
-        download_campaign_via_service(
-            service_url, cid, os.getcwd(), feedback=click.echo)
-    except click.UsageError:
+            click.echo(f"Campaign '{cid}' finished. Downloading results...")
+            # The service streams the campaign from the object store — no external
+            # share needed for delivery.
+            download_campaign_via_service(client, cid, os.getcwd(), feedback=click.echo)
+    except (click.UsageError, click.ClickException):
         raise
     except Exception as e:
         handle_cli_exception(e)
@@ -489,13 +463,14 @@ def _monitor_via_service(namespace, kube_context, interval, once):
     Returns ``True`` if it handled the monitoring, ``False`` if no service is
     configured so the caller can fall back to the Kubernetes-only view.
     """
+    from robovast.service.client import RobovastClient
     from robovast.service.interface import ListCampaignsRequest
 
-    try:
-        client = _require_service_client()
-    except Exception:  # pylint: disable=broad-except
-        logging.debug("No robovast-service configured; falling back to K8s view.")
+    url = detected_service_url()
+    if not url:
+        logging.debug("No robovast-service detected; falling back to K8s view.")
         return False
+    client = RobovastClient(url)
 
     def _live():
         """(campaign_id, phase) for everything the service is tracking."""
@@ -864,10 +839,8 @@ def monitor(interval, once, kube_context):
 @cluster.command()
 @click.option('--campaign', '-i', default=None,
               help='Campaign to stop (default: the only running one)')
-@click.option('--context', '-x', 'kube_context', default=None,
-              help='(deprecated) accepted for compatibility; the service is addressed '
-                   'by ROBOVAST_SERVICE_URL')
-def stop(campaign, kube_context):  # pylint: disable=unused-argument
+@target_options
+def stop(campaign, cluster, namespace, context):
     """Ask a running campaign to stop gracefully (after the current batch).
 
     Goes through the robovast-service, which drives the campaign in-process: the
@@ -875,17 +848,81 @@ def stop(campaign, kube_context):  # pylint: disable=unused-argument
     usual. A no-op if nothing is running.
     """
     try:
-        client = _require_service_client()
-        campaign_id = campaign or _sole_running_campaign(client)
-        if campaign_id is None:
-            click.echo("No running campaign found.")
-            return
-        result = client.stop(campaign_id)
-        if result.ok:
-            click.echo(f"Stop requested for '{campaign_id}'. "
-                       "The campaign will end after the current batch.")
-        else:
-            click.echo(f"Stop failed: {result.message}")
+        with service_client(cluster, namespace, context,
+                            require_service=True) as (client, target):
+            _echo_target(target)
+            campaign_id = campaign or _sole_running_campaign(client)
+            if campaign_id is None:
+                click.echo("No running campaign found.")
+                return
+            result = client.stop(campaign_id)
+            if result.ok:
+                click.echo(f"Stop requested for '{campaign_id}'. "
+                           "The campaign will end after the current batch.")
+            else:
+                click.echo(f"Stop failed: {result.message}")
+    except (click.UsageError, click.ClickException):
+        raise
+    except Exception as e:
+        handle_cli_exception(e)
+
+
+@cluster.command()
+@click.option('--campaign', '-i', default=None,
+              help='Campaign to show the log for (default: the only running one)')
+@click.option('--follow', '-f', is_flag=True,
+              help='Stream new output until the campaign finishes')
+@target_options
+def log(campaign, follow, cluster, namespace, context):
+    """Print a campaign's unified infrastructure log.
+
+    The same divider-separated stream the web UI and MCP show — the variation
+    (config-generation), run (controller) and postprocessing phases in order, each
+    under a ``===== PHASE =====`` divider. Goes through the robovast-service when
+    one is reachable (auto-detected, or ``--cluster`` to tunnel in); otherwise
+    reads the campaign from disk (the local project's results dir, or an absolute
+    campaign path).
+    """
+    try:
+        from robovast.service.client import HTTPTransport
+        with service_client(cluster, namespace, context) as (client, target):
+            _echo_target(target)
+            if isinstance(client, HTTPTransport):
+                campaign_id = campaign or _sole_running_campaign(client)
+                if campaign_id is None:
+                    click.echo("No running campaign found; pass --campaign.")
+                    return
+                offset = 0
+                while True:
+                    chunk = client.get_campaign_logs(campaign_id, offset)
+                    if chunk.text:
+                        click.echo(chunk.text, nl=False)
+                        offset = chunk.next_offset
+                    if chunk.eof or not follow:
+                        break
+                    time.sleep(1.5)
+                return
+
+            # No service reachable: read the campaign directory directly.
+            from robovast.common.campaign_logs import assemble_log_from_dir
+            if not campaign:
+                raise ValueError(
+                    "No robovast-service reachable; pass --campaign (name or path) "
+                    "to read a campaign on disk.")
+            if os.path.isabs(campaign):
+                campaign_dir = campaign
+            else:
+                from robovast.common.cli.project_config import ProjectConfig
+                cfg = ProjectConfig.load()
+                if cfg is None or not cfg.results_dir:
+                    raise ValueError(
+                        "Project not initialized; run 'vast init' or pass an "
+                        "absolute campaign path.")
+                campaign_dir = os.path.join(cfg.results_dir, campaign)
+            text, _, _ = assemble_log_from_dir(campaign_dir, offset=0, eof=True)
+            click.echo(text, nl=False)
+    except (click.UsageError, click.ClickException):
+        raise
     except Exception as e:
         handle_cli_exception(e)
 
@@ -893,10 +930,8 @@ def stop(campaign, kube_context):  # pylint: disable=unused-argument
 @cluster.command(name='upload-to-share')
 @click.option('--campaign', '-i', default=None,
               help='Campaign to upload (default: the only running one).')
-@click.option('--context', '-x', 'kube_context', default=None,
-              help='(deprecated) accepted for compatibility; the service is addressed '
-                   'by ROBOVAST_SERVICE_URL')
-def upload_to_share(campaign, kube_context):  # pylint: disable=unused-argument
+@target_options
+def upload_to_share(campaign, cluster, namespace, context):
     """Upload a finished campaign to the configured external share.
 
     The service uploads the campaign straight from the object store, so this is
@@ -951,17 +986,19 @@ def upload_to_share(campaign, kube_context):  # pylint: disable=unused-argument
             overrides["ROBOVAST_SHARE_URL"] = share_url
 
     try:
-        client = _require_service_client()
-        campaign_id = campaign or _sole_running_campaign(client)
-        if campaign_id is None:
-            raise click.UsageError(
-                "No campaign specified and none is running; pass --campaign <id>.")
-        click.echo(f"Uploading {campaign_id} to the share ...")
-        result = client.upload_to_share(campaign_id, overrides or None)
-        if not result.ok:
-            raise click.UsageError(f"upload-to-share failed: {result.message}")
-        click.echo(f"✓ {result.message}")
-    except click.UsageError:
+        with service_client(cluster, namespace, context,
+                            require_service=True) as (client, target):
+            _echo_target(target)
+            campaign_id = campaign or _sole_running_campaign(client)
+            if campaign_id is None:
+                raise click.UsageError(
+                    "No campaign specified and none is running; pass --campaign <id>.")
+            click.echo(f"Uploading {campaign_id} to the share ...")
+            result = client.upload_to_share(campaign_id, overrides or None)
+            if not result.ok:
+                raise click.UsageError(f"upload-to-share failed: {result.message}")
+            click.echo(f"✓ {result.message}")
+    except (click.UsageError, click.ClickException):
         raise
     except Exception as e:
         handle_cli_exception(e)

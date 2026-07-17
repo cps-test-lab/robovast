@@ -14,8 +14,10 @@ It provides four views, one per desktop GUI:
 
 * **Monitor** — lists campaigns and shows each one's live progress (phase, per-batch
   run progress, budget/stopping criteria), with a **Stop** action and a collapsible
-  **live log** panel (streams the campaign's ``controller.log`` from the service, and
-  shows the full log once it finishes). The browser equivalent of
+  **live log** panel. The log is the campaign's unified *infrastructure* log — the
+  variation (config generation), run (controller) and postprocessing phases assembled
+  into one stream with ``===== PHASE =====`` dividers — streamed live from the service
+  and shown in full once it finishes. The browser equivalent of
   ``vast exec cluster monitor``.
 * **Launcher** — starts a campaign from a workspace (which ``.vast``, config filter,
   runs per configuration, postprocess toggle) and watches its live status. The
@@ -93,9 +95,11 @@ run files, and author the ``.vast`` in the Monaco editor.
    reach the cluster when no ``vast ui`` tunnel is up (it opens an ephemeral
    ``kubectl port-forward`` for the call; add ``-x <context>`` / ``-n
    <namespace>`` to pick the cluster). Every command prints the ``Target:`` it
-   resolved — including ``[detected]`` — so the choice is never silent.
-   ``--service-url`` remains the escape hatch for a service that is neither local
-   nor in a cluster (a remote VM behind an SSH tunnel).
+   resolved — including ``[detected]`` — so the choice is never silent. To reach a
+   service that is neither local nor in this cluster (a remote VM), bring up your
+   own tunnel to the conventional port ``127.0.0.1:8800``
+   (``ssh -N -L 8800:127.0.0.1:8800 <vm>``) — the same auto-detect then follows it,
+   no flag needed.
 
 The ``.vast`` JSON Schema
 (from the service) drives completion and inline validation as you type, and the
@@ -144,7 +148,8 @@ switch is the only thing that changes between local and cluster:
   in the foreground, and Ctrl-C closes the tunnel.
 * **Remote VM** — the service binds ``127.0.0.1`` there, so reach it with your
   own SSH tunnel (``ssh -N -L 8800:127.0.0.1:8800 <vm>``) and open
-  ``http://127.0.0.1:8800`` — or point the CLI at it with ``--service-url``.
+  ``http://127.0.0.1:8800``. Because that is the conventional port, ``vast ui``
+  and every other command auto-detect the tunnel — nothing to export.
 
 Because the service serves the **web UI and the REST API on the same port**,
 whatever ``vast ui`` opens is all a browser, the ``vast`` CLI, and the MCP server

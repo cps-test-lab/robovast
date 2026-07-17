@@ -159,8 +159,27 @@ def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,
         logger.info("Campaign %s configures no rosbag conversion; host steps only",
                     campaign_id)
     import os  # noqa: PLC0415
-    return run_host_postprocessing(os.path.dirname(str(campaign_root).rstrip(os.sep)),
-                                   campaign_id, force=force, skip=skip)
+
+    from robovast.common.logging_config import (  # noqa: PLC0415
+        add_campaign_log_handler, remove_campaign_log_handler)
+
+    # Append the pure-Python host stage's narrative to the same postprocessing.log
+    # the conversion Job produced (mode "a"), so both stages form one ordered
+    # POSTPROCESSING section. _finalize (auto-chain) / the re-run then upload it to
+    # {prefix}_execution/postprocessing.log.
+    log_path = os.path.join(str(campaign_root), "_execution", "postprocessing.log")
+    handler = None
+    try:
+        handler = add_campaign_log_handler(log_path)
+    except Exception:  # pylint: disable=broad-except
+        logger.warning("Could not open postprocessing.log; continuing without it.",
+                       exc_info=True)
+    try:
+        return run_host_postprocessing(
+            os.path.dirname(str(campaign_root).rstrip(os.sep)),
+            campaign_id, force=force, skip=skip)
+    finally:
+        remove_campaign_log_handler(handler)
 
 
 def run_host_postprocessing(results_dir: str, campaign_id: str, force: bool = False,
@@ -181,12 +200,24 @@ def run_host_postprocessing(results_dir: str, campaign_id: str, force: bool = Fa
         output_callback=logger.info)
 
 
+#: This Job pod runs in a separate context from the controller, so its stdout is
+#: otherwise only a transient ``kubectl logs``. Teeing the conversion output to this
+#: campaign-relative path lets it ride the wholesale ``/out`` mirror below into the
+#: object store, where :func:`sync_outputs` lands it at
+#: ``<campaign_root>/_execution/postprocessing.log`` — the POSTPROCESSING section of
+#: the unified campaign log (the host stage then appends to the same file).
+_POSTPROC_LOG = "/out/_execution/postprocessing.log"
+
+
 def _conversion_script(rosbag_cmds: list, force: bool) -> str:
-    """The main container's shell: convert each batch, then mirror /out up."""
-    lines = [
-        "set -e",
-        '/tools/mc alias set mystore "$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY"',
-    ]
+    """The main container's shell: convert each batch, then mirror /out up.
+
+    All conversion stdout/stderr is teed into ``_POSTPROC_LOG`` so it becomes the
+    POSTPROCESSING section of the campaign's unified log. ``pipefail`` preserves the
+    conversion's exit status through the ``tee`` pipe, and the ``/out`` mirror runs
+    unconditionally so the log (with any error) is uploaded even on failure.
+    """
+    convert = ["set -e"]
     for params in rosbag_cmds:
         args = [
             "/scripts/ros2_exec.sh", "/scripts/rosbags_process.py",
@@ -202,12 +233,21 @@ def _conversion_script(rosbag_cmds: list, force: bool) -> str:
         if force:
             args.append("--force")
         args.append("/bags")
-        lines.append(" ".join(args))
-    # Wholesale upload of the output tree — no diffing needed (inputs live in /bags).
-    lines.append(
+        convert.append(" ".join(args))
+
+    lines = [
+        "set -eo pipefail",
+        f"mkdir -p $(dirname {_POSTPROC_LOG})",
+        '/tools/mc alias set mystore "$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY"',
+        "rc=0",
+        # Run the conversions in a subshell, teeing their combined output to the log.
+        "( " + "\n".join(convert) + f'\n ) 2>&1 | tee -a "{_POSTPROC_LOG}" || rc=$?',
+        # Wholesale upload of the output tree — no diffing needed (inputs live in
+        # /bags). Unconditional so the log rides up even when a conversion failed.
         '/tools/mc mirror --overwrite /out/ '
-        f'"mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}{POSTPROC_PREFIX}/"'
-    )
+        f'"mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}{POSTPROC_PREFIX}/"',
+        "exit $rc",
+    ]
     return "\n".join(lines)
 
 

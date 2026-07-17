@@ -89,10 +89,12 @@ export function StatusView({ status }: { status: Status }) {
   )
 }
 
-// Live controller.log for one campaign, streamed incrementally. Polls
-// getCampaignLogs from a byte offset and appends the returned slice — the same
-// offset protocol the CLI/service use — so it shows the log live while the
-// campaign runs and the full log once it finishes. Collapsed by default.
+// Live unified infrastructure log for one campaign, streamed incrementally. The
+// service assembles the variation, run and postprocessing phases into one
+// divider-separated stream; this polls getCampaignLogs from a byte offset and
+// appends the returned slice — the same offset protocol the CLI/MCP use — so it
+// shows the log live while the campaign runs and the full log once it finishes.
+// Collapsed by default.
 export function CampaignLog({
   campaignId,
   terminal,

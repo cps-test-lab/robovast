@@ -67,9 +67,12 @@ class ClusterService(LocalTransport):
 
     def __init__(self, namespace=None, cluster_config_name=None,
                  cluster_config_kwargs=None, image=None, store=None,
-                 reap_on_start=True):
+                 reap_on_start=True, kube_context=None):
         super().__init__(store=store)
         self.namespace = namespace or os.environ.get("ROBOVAST_NAMESPACE", "default")
+        # Which kubeconfig context to dispatch into. None off-cluster means the
+        # active context; in-cluster the incluster config is used and this is moot.
+        self.kube_context = kube_context
         self._config_name = cluster_config_name or os.environ.get(
             "ROBOVAST_CLUSTER_CONFIG_NAME")
         self._config_kwargs = cluster_config_kwargs
@@ -109,8 +112,8 @@ class ClusterService(LocalTransport):
         from kubernetes import client, config
         try:
             config.load_incluster_config()
-        except Exception:  # noqa: BLE001 - dev/local fallback
-            config.load_kube_config()
+        except Exception:  # noqa: BLE001 - off-cluster: use the selected context
+            config.load_kube_config(context=self.kube_context)
         return client.CoreV1Api()
 
     # -- launch hooks (see LocalTransport.create_campaign) -------------------
@@ -130,7 +133,8 @@ class ClusterService(LocalTransport):
         from robovast.execution.cluster_execution.kubernetes_backend import \
             KubernetesBackend
         return KubernetesBackend(cluster_config=self._cluster_config(),
-                                 namespace=self.namespace)
+                                 namespace=self.namespace,
+                                 kube_context=self.kube_context)
 
     def _run_options(self, request):
         from robovast.execution.backends import RunOptions
@@ -200,34 +204,49 @@ class ClusterService(LocalTransport):
         return Status(phase="unknown", campaign_id=campaign_id)
 
     def get_campaign_logs(self, campaign_id: str, offset: int = 0):
-        """Serve ``controller.log`` — live file first, object store as fallback.
+        """Serve the unified infrastructure log — live pod scratch, then object store.
 
-        Mirrors ``get_status``: while this process is driving the campaign the log
-        is a local file in the service pod's scratch (the same one the thread-
-        isolated handler writes), read straight from *offset*. Once the campaign is
-        no longer tracked here, the durable copy in the object store is read.
+        Assembles the per-phase files (variation → run → postprocessing) into one
+        divider-separated stream (see
+        :func:`robovast.common.campaign_logs.assemble_log`). While this process is
+        driving the campaign each phase file is a local file in the service pod's
+        scratch (the same one the thread-isolated handlers write), read straight
+        from *offset*. Once the campaign is no longer tracked here, the durable copy
+        of each phase file in the object store is read.
         """
+        from robovast.common.campaign_logs import (EXECUTION_DIR,
+                                                    assemble_log,
+                                                    assemble_log_from_dir)
         from robovast.service.interface import LogChunk
         with self._lock:
             entry = self._campaigns.get(campaign_id)
         if entry is not None:
-            path = Path(entry.results_dir) / campaign_id / Path(*self._CONTROLLER_LOG)
-            return self._read_log_slice(path, offset, eof=self._is_done(entry))
-        # Past / reaped campaign: the durable copy lives in the object store.
+            campaign_dir = Path(entry.results_dir) / campaign_id
+            text, next_offset, eof = assemble_log_from_dir(
+                campaign_dir, offset, eof=self._is_done(entry))
+            return LogChunk(text=text, next_offset=next_offset, eof=eof)
+        # Past / reaped campaign: each phase file's durable copy is in the object store.
         from robovast.execution.cluster_execution import in_pod_storage
         try:
             cfg = self._cluster_config()
             bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
             storage = in_pod_storage.storage_client_for(cfg)
-            raw = storage.read_object(bucket, f"{prefix}_execution/controller.log")
         except Exception as e:  # noqa: BLE001 - best-effort; empty if unavailable
-            logger.debug("could not read controller.log for %s: %s", campaign_id, e)
-            raw = None
-        if not raw:
+            logger.debug("could not resolve object store for %s: %s", campaign_id, e)
             return LogChunk(text="", next_offset=offset, eof=True)
-        data = raw if isinstance(raw, bytes) else raw.encode("utf-8", "replace")
-        return LogChunk(text=data[max(0, offset):].decode("utf-8", "replace"),
-                        next_offset=len(data), eof=True)
+
+        def _object_bytes(filename: str):
+            try:
+                raw = storage.read_object(bucket, f"{prefix}{EXECUTION_DIR}/{filename}")
+            except Exception as e:  # noqa: BLE001 - a missing phase file is normal
+                logger.debug("could not read %s for %s: %s", filename, campaign_id, e)
+                return None
+            if not raw:
+                return None
+            return raw if isinstance(raw, bytes) else raw.encode("utf-8", "replace")
+
+        text, next_offset, eof = assemble_log(_object_bytes, offset, eof=True)
+        return LogChunk(text=text, next_offset=next_offset, eof=eof)
 
     def _read_outcome(self, campaign_id: str) -> "Status | None":
         """Read the campaign's durable terminal outcome from the object store."""

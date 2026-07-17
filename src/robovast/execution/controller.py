@@ -59,7 +59,19 @@ from .notify import Notifier
 # would be dropped from the file while still reaching stderr.
 logger = logging.getLogger("robovast.execution.controller")
 
+# Composition progress is routed here (a child of "robovast", so it propagates to
+# the variation.log handler) instead of the module logger's DEBUG default, so the
+# variation phase's narrative — and the isolated-plugin subprocess output it
+# forwards — is captured into _execution/variation.log at INFO.
+variation_logger = logging.getLogger("robovast.variation")
+
 _BAR = "=" * 60
+
+
+#: Serialises id minting and remembers the last id handed out, so back-to-back
+#: launches of the *same* campaign name never collide (see ``campaign_id_for``).
+_campaign_id_lock = threading.Lock()
+_last_campaign_id: str | None = None
 
 
 def campaign_id_for(campaign_config) -> str:
@@ -69,12 +81,22 @@ def campaign_id_for(campaign_config) -> str:
     matches the cluster's: storage bucket names disallow underscores, so the
     cluster sanitises the name to hyphens — doing it here keeps both identical.
     """
+    global _last_campaign_id
     name = (campaign_config.metadata or {}).get("name", "campaign").replace("_", "-")
     # Hundredths of a second so two launches within the same second get distinct
-    # ids (``is_campaign_dir`` accepts 6-8 trailing digits). This lets a control
-    # plane launch back-to-back campaigns without id collisions.
-    now = datetime.now()
-    return f"{name}-{now.strftime('%Y-%m-%d-%H%M%S')}{now.microsecond // 10000:02d}"
+    # ids (``is_campaign_dir`` accepts 6-8 trailing digits, and HHMMSS + 2 fills
+    # them). That resolution alone is still only 10 ms, so a control plane firing
+    # campaigns back-to-back can land two in the same tick; hold a lock and, on an
+    # exact repeat, wait out the tick — guaranteeing distinct ids (hence distinct
+    # campaign directories) without ever exceeding the 8-digit suffix.
+    with _campaign_id_lock:
+        while True:
+            now = datetime.now()
+            cid = f"{name}-{now.strftime('%Y-%m-%d-%H%M%S')}{now.microsecond // 10000:02d}"
+            if cid != _last_campaign_id:
+                _last_campaign_id = cid
+                return cid
+            time.sleep(0.005)
 
 
 class CampaignController:
@@ -580,7 +602,9 @@ def _record_controller_failure(campaign_root, campaign_id, state, exc, backend):
         storage = in_pod_storage.storage_client_for(cfg)
         bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
         exec_dir = os.path.join(campaign_root, "_execution")
-        for name in ("outcome.json", "controller.log"):
+        # variation.log included: an early config-expansion crash happens before
+        # _finalize's whole-root upload, so its log would otherwise be lost.
+        for name in ("outcome.json", "controller.log", "variation.log"):
             path = os.path.join(exec_dir, name)
             if os.path.isfile(path):
                 storage.upload_file(path, bucket, f"{prefix}_execution/{name}")
@@ -609,18 +633,24 @@ def filter_configs_by_name(configs, config_filter):
     return matched
 
 
-def build_campaign_data(vast_file, output_dir, config_filter=None):
+def build_campaign_data(vast_file, output_dir, config_filter=None,
+                        progress_update_callback=None):
     """Generate the batch campaign data and apply the optional ``--config`` filter.
 
     Shared by :func:`run_batch_campaign` and the host-side ``cluster run``
     pre-flight check so both select configs through exactly the same code path.
     Raises ``ValueError`` if the vast-file yields no configs or the filter matches
     none (the message lists the available config block names).
+
+    *progress_update_callback* receives the composition narrative (and the
+    isolated-plugin subprocess output it forwards); :func:`run_batch_campaign`
+    routes it to ``variation.log`` while the host-side pre-flight leaves it ``None``.
     """
     from robovast.common.config_generation import generate_scenario_variations
 
     campaign_data, transient_files = generate_scenario_variations(
-        variation_file=vast_file, progress_update_callback=None, output_dir=output_dir)
+        variation_file=vast_file, progress_update_callback=progress_update_callback,
+        output_dir=output_dir)
     if not campaign_data["configs"]:
         raise ValueError("No configs found in vast-file")
     if config_filter:
@@ -639,7 +669,25 @@ def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_fil
     campaign_id = campaign_id or campaign_id_for(campaign_config)
 
     with tempfile.TemporaryDirectory(prefix="robovast_batch_") as tmp:
-        campaign_data, _ = build_campaign_data(vast_file, tmp, config_filter)
+        # Capture the variation (config-generation) phase into its own phase file,
+        # which the unified campaign log serves under the VARIATION divider. The
+        # handler is thread-isolated (same worker thread as the composition), so
+        # concurrent service campaigns keep separate variation.log files. It is
+        # attached only around composition — the run phase writes controller.log.
+        campaign_root = os.path.join(results_dir, campaign_id)
+        var_handler = None
+        try:
+            var_handler = add_campaign_log_handler(
+                os.path.join(campaign_root, "_execution", "variation.log"))
+        except Exception:  # pylint: disable=broad-except
+            logger.warning("Could not open variation.log; continuing without it.",
+                           exc_info=True)
+        try:
+            campaign_data, _ = build_campaign_data(
+                vast_file, tmp, config_filter,
+                progress_update_callback=variation_logger.info)
+        finally:
+            remove_campaign_log_handler(var_handler)
 
         be = backend or DockerBackend(state=state)
         opts = options or RunOptions()

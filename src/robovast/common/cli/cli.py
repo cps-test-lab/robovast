@@ -17,7 +17,6 @@
 
 """Main CLI entry point for RoboVAST."""
 
-import contextlib
 import logging
 import os
 import shutil
@@ -33,6 +32,10 @@ from ..logging_config import (get_logger, setup_logging,
                               setup_logging_from_project_config)
 from .checks import check_docker_access
 from .project_config import ProjectConfig, get_project_config
+from .service_target import (_service_alive, _start_port_forward,
+                             _stop_port_forward)
+from .service_target import echo_target as _echo_target
+from .service_target import service_client, target_options
 
 logger = get_logger(__name__)
 
@@ -220,6 +223,11 @@ def _ensure_ui_built(rebuild: bool = False) -> None:
               default='auto', show_default=True,
               help="Execution backend. 'auto' picks 'cluster' when running inside "
                    "a Kubernetes pod, else 'local' Docker.")
+@click.option('--context', '-x', default=None, metavar='NAME',
+              help='With --backend cluster (run off-cluster): which Kubernetes '
+                   'context to dispatch campaigns into (default: the active one). '
+                   "The cluster config is reconstructed from 'vast exec cluster "
+                   "setup' — run that for this context first.")
 @click.option('--rebuild-ui', is_flag=True,
               help='Force a web UI rebuild even if ui/dist looks up to date '
                    '(source checkout only).')
@@ -230,7 +238,7 @@ def _ensure_ui_built(rebuild: bool = False) -> None:
                    'workspace is present the moment the service starts and '
                    'survives restarts (edit the files on disk to change it). '
                    'Local backend only.')
-def serve(host, port, backend, rebuild_ui, workspace_dirs):
+def serve(host, port, backend, context, rebuild_ui, workspace_dirs):
     """Run a persistent robovast-service (and its web UI).
 
     Starts the FastAPI service that the ``vast`` CLI, the MCP server, and the web
@@ -242,8 +250,11 @@ def serve(host, port, backend, rebuild_ui, workspace_dirs):
 
     * **local** (default off-cluster) — local Docker + local filesystem (mode 2);
       run it on your machine or a remote VM reached over an SSH tunnel.
-    * **cluster** (default in-pod) — launches a controller pod per campaign
-      (mode 3); this is what the in-cluster ``robovast-service`` Deployment runs.
+    * **cluster** (default in-pod) — drives each campaign in-process against
+      Kubernetes Jobs (mode 3); this is what the in-cluster ``robovast-service``
+      Deployment runs. Run it **off-cluster** with ``--backend cluster -x <context>``
+      to debug the driver locally while scenarios execute in that cluster — the
+      cluster config is reconstructed from ``vast exec cluster setup``.
 
     Security: unauthenticated in v1, so it binds ``127.0.0.1`` by default and
     must stay behind localhost / SSH tunnel / port-forward (see
@@ -255,8 +266,14 @@ def serve(host, port, backend, rebuild_ui, workspace_dirs):
     # (no-op for a packaged/in-cluster install — see _ensure_ui_built).
     _ensure_ui_built(rebuild=rebuild_ui)
 
+    in_pod = bool(os.environ.get('KUBERNETES_SERVICE_HOST'))
     if backend == 'auto':
-        backend = 'cluster' if os.environ.get('KUBERNETES_SERVICE_HOST') else 'local'
+        backend = 'cluster' if in_pod else 'local'
+
+    if context is not None and backend != 'cluster':
+        raise click.ClickException(
+            "--context/-x only applies to '--backend cluster' — it selects which "
+            "Kubernetes context to dispatch campaigns into.")
 
     if backend == 'cluster':
         if workspace_dirs:
@@ -264,7 +281,24 @@ def serve(host, port, backend, rebuild_ui, workspace_dirs):
                 "--workspace-dir is only supported by the local backend "
                 "(the cluster service stores workspaces in the object store)")
         from robovast.service.cluster_service import ClusterService
-        impl = ClusterService()
+        if in_pod:
+            # The in-cluster Deployment: config and cluster come from the pod env.
+            impl = ClusterService(kube_context=context)
+        else:
+            # Off-cluster driver: reconstruct the exact config that
+            # 'vast exec cluster setup' persisted for this context, so no env exports
+            # are needed to dispatch into it.
+            from robovast.execution.cluster_execution.cluster_setup import \
+                load_cluster_setup_info
+            name, kwargs = load_cluster_setup_info(context_key=context)
+            if not name:
+                for_ctx = f" for context {context!r}" if context else ""
+                x_flag = f" -x {context}" if context else ""
+                raise click.ClickException(
+                    f"no cluster setup found{for_ctx} — run "
+                    f"'vast exec cluster setup <cluster-config>{x_flag}' first.")
+            impl = ClusterService(cluster_config_name=name,
+                                  cluster_config_kwargs=kwargs, kube_context=context)
         storage = "object store"
     else:
         from robovast.service.client import LocalTransport
@@ -278,192 +312,13 @@ def serve(host, port, backend, rebuild_ui, workspace_dirs):
     _serve(impl, host=host, port=port)
 
 
-# ---------------------------------------------------------------------------
-# Talking to a service: which one, and how to reach it
-# ---------------------------------------------------------------------------
-#
-# A campaign, a workspace and the web UI all live in whichever service you talk
-# to, so *every* service-touching command answers one question: local or cluster?
-# That is what ``--cluster`` says, explicitly. ``--context/-x`` does not select
-# the target — it only disambiguates *which* cluster, exactly as it does for
-# ``vast exec cluster run``.
-#
-#   (default)          this machine  — in-process, or a local `vast serve`
-#   --cluster          the in-cluster robovast-service, reached by an ephemeral
-#                      `kubectl port-forward` opened and closed around the call
-#   --service-url URL  an escape hatch for a service that is neither (a remote
-#                      VM behind an SSH tunnel, a custom port)
-
-#: How long to wait for ``kubectl port-forward`` to report the tunnel is up.
-_UI_FORWARD_TIMEOUT = 15.0
-
-
-def _start_port_forward(namespace, context, local_port=0, echo=True):
-    """Start ``kubectl port-forward`` to the service; return ``(proc, url)``.
-
-    Waits (bounded) for kubectl to report the tunnel is up: an unreachable
-    cluster otherwise leaves kubectl blocked with no output, and an unbounded
-    readline would hang the command silently. ``local_port=0`` lets kubectl pick
-    a free port — the actual one is parsed back out of its "Forwarding from"
-    line, which is what makes an ephemeral per-call tunnel possible.
-    """
-    import re  # pylint: disable=import-outside-toplevel
-    import selectors  # pylint: disable=import-outside-toplevel
-    import subprocess  # pylint: disable=import-outside-toplevel
-    import time  # pylint: disable=import-outside-toplevel
-
-    from robovast.execution.cluster_execution.service_deploy import (
-        SERVICE_NAME, SERVICE_PORT)
-
-    cmd = ['kubectl']
-    if context:
-        cmd += ['--context', context]
-    cmd += ['port-forward', '-n', namespace, f'svc/{SERVICE_NAME}',
-            f'{local_port or ""}:{SERVICE_PORT}']
-
-    if echo:
-        click.echo(f"$ {' '.join(cmd)}")
-    try:
-        proc = subprocess.Popen(  # noqa: S603 - args are constructed, not shell
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    except FileNotFoundError:
-        raise click.ClickException(
-            "kubectl not found — it is needed to tunnel to the in-cluster service.")
-
-    port, last_line = 0, ''
-    deadline = time.time() + _UI_FORWARD_TIMEOUT
-    sel = selectors.DefaultSelector()
-    sel.register(proc.stdout, selectors.EVENT_READ)
-    while time.time() < deadline and not port:
-        if proc.poll() is not None:  # kubectl gave up / errored
-            # kubectl's own message is the useful reason — report it rather than
-            # guessing at the cause.
-            detail = (proc.stdout.read() or '').strip() or last_line
-            raise click.ClickException(
-                f"kubectl port-forward failed: {detail[:300] or 'no output'}")
-        if not sel.select(timeout=0.5):
-            continue
-        line = proc.stdout.readline()
-        if not line:
-            continue
-        if echo:
-            click.echo(line.rstrip())
-        last_line = line.strip()
-        match = re.search(r'Forwarding from 127\.0\.0\.1:(\d+)', line)
-        if match:
-            port = int(match.group(1))
-    if not port:
-        _stop_port_forward(proc)
-        raise click.ClickException(
-            f"timed out after {_UI_FORWARD_TIMEOUT:.0f}s forwarding to "
-            f"svc/{SERVICE_NAME} in namespace {namespace!r} — is the cluster "
-            "reachable and the service deployed ('vast exec cluster setup')?")
-    return proc, f'http://127.0.0.1:{port}'
-
-
-def _stop_port_forward(proc):
-    import subprocess  # pylint: disable=import-outside-toplevel
-    proc.terminate()
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-
-
-def target_options(func):
-    """Add the target switches every service-touching command shares."""
-    func = click.option(
-        '--service-url', default='', metavar='URL',
-        help='Escape hatch: talk to a service at this URL (default: '
-             '$ROBOVAST_SERVICE_URL). For a service that is neither local nor '
-             'in this cluster — e.g. a remote VM behind an SSH tunnel.')(func)
-    func = click.option(
-        '--context', '-x', default=None, metavar='NAME',
-        help='With --cluster: which Kubernetes context (default: the active '
-             'one). Only needed to disambiguate between clusters.')(func)
-    func = click.option(
-        '--namespace', '-n', default='default', show_default=True,
-        help='With --cluster: namespace the robovast-service runs in.')(func)
-    func = click.option(
-        '--cluster', is_flag=True,
-        help='Talk to the in-cluster robovast-service (tunnels in for the call). '
-             'Default: this machine.')(func)
-    return func
-
-
-@contextlib.contextmanager
-def service_client(cluster=False, namespace='default', context=None, service_url=''):
-    """Yield ``(client, label)`` for the selected target.
-
-    Resolution — first match wins:
-
-    1. ``--service-url`` — an explicit endpoint.
-    2. ``--cluster`` — open an **ephemeral** port-forward to the in-cluster
-       service for the call and close it after (no tunnel to babysit).
-    3. ``$ROBOVAST_SERVICE_URL`` — an ambient endpoint.
-    4. **a service already answering on the local service port** — a local
-       ``vast serve`` *or* an open ``vast ui`` / ``vast ui --cluster`` tunnel.
-       This is what lets a flagless command **follow whatever the UI is pointed
-       at**: if ``vast ui --cluster`` is up, a plain ``vast workspace list`` rides
-       that same tunnel and hits the cluster, no ``--cluster`` needed.
-    5. otherwise this machine, in-process (same store as a local ``vast serve``).
-
-    ``--cluster`` therefore only matters when you want the cluster and *no*
-    ``vast ui`` tunnel is open. Every caller prints the resolved target (with
-    ``[detected]`` for case 4), so the auto-follow is announced, never silent.
-    """
-    from robovast.service.client import RobovastClient
-    from robovast.service.workspaces import default_workspaces_root
-    from robovast.execution.cluster_execution.service_deploy import SERVICE_PORT
-
-    proc = None
-    detected = False
-    if service_url:
-        url = service_url
-    elif cluster:
-        proc, url = _start_port_forward(namespace, context, echo=False)
-    else:
-        url = os.environ.get('ROBOVAST_SERVICE_URL', '')
-        if not url:
-            probe = f'http://127.0.0.1:{SERVICE_PORT}'
-            if _service_alive(probe):
-                url, detected = probe, True
-
-    if cluster:
-        label = f"in-cluster service ({url})"
-    elif detected:
-        label = f"service ({url}) [detected — following a running vast serve/ui]"
-    elif url:
-        label = f"service ({url})"
-    else:
-        label = f"this machine, in-process (store: {default_workspaces_root()})"
-    try:
-        yield RobovastClient(url), label
-    finally:
-        if proc is not None:
-            _stop_port_forward(proc)
-
-
-def _echo_target(label):
-    """Say which store we resolved.
-
-    Never leave this implicit: a workspace created on this machine is invisible
-    to a web UI served by the cluster, and vice versa — the one trap this whole
-    surface has. Auto-detection (case 4) still prints, so it is announced.
-    """
-    click.echo(f"Target: {label}")
-    if label.startswith('this machine'):
-        click.echo("  (no running service found; pass --cluster to use the "
-                   "in-cluster service — that is the store its web UI reads)")
-
-
 @cli.command()
 @click.option('--port', default=0, type=int, metavar='PORT',
               help='Local port to bind. 0 (default) uses the service port.')
 @click.option('--no-browser', is_flag=True,
               help='Do not launch a browser.')
 @target_options
-def ui(port, no_browser, cluster, namespace, context, service_url):
+def ui(port, no_browser, cluster, namespace, context):
     """Open the RoboVAST web UI in your browser — local or in-cluster.
 
     The one command for "give me a working UI":
@@ -478,14 +333,18 @@ def ui(port, no_browser, cluster, namespace, context, service_url):
     Other commands reach the same place with the same ``--cluster`` switch, so
     nothing needs exporting.
 
+    To reach a remote service, bring up your own tunnel to ``127.0.0.1:8800``
+    (e.g. ``ssh -N -L 8800:127.0.0.1:8800 host``) and run ``vast ui`` — it
+    auto-detects the service already answering there.
+
     Runs in the foreground; Ctrl-C stops the service / closes the tunnel.
     ``--cluster`` needs ``kubectl`` + a kubeconfig (the service is
     unauthenticated in v1, so it stays behind localhost / this tunnel).
     """
     import webbrowser  # pylint: disable=import-outside-toplevel
 
-    if cluster or service_url:
-        _ui_cluster(port, no_browser, namespace, context, service_url, webbrowser)
+    if cluster:
+        _ui_cluster(port, no_browser, namespace, context, webbrowser)
         return
     _ui_local(port, no_browser, webbrowser)
 
@@ -523,15 +382,9 @@ def _ui_local(port, no_browser, webbrowser):
         click.echo("\nStopped.")
 
 
-def _ui_cluster(port, no_browser, namespace, context, service_url, webbrowser):
+def _ui_cluster(port, no_browser, namespace, context, webbrowser):
     """Tunnel to the in-cluster service and browse it."""
     from robovast.execution.cluster_execution.service_deploy import SERVICE_PORT
-
-    if service_url:  # explicit target: nothing to tunnel
-        click.echo(f"✓ robovast-service: {service_url}")
-        if not no_browser:
-            webbrowser.open(service_url)
-        return
 
     # Bind the *conventional* port (not a random free one): this tunnel is
     # held open for a human, so the browser bookmark stays stable and — crucially
@@ -544,8 +397,9 @@ def _ui_cluster(port, no_browser, namespace, context, service_url, webbrowser):
     if local_port == SERVICE_PORT:
         click.echo("  Other commands follow this tunnel automatically — no --cluster needed.")
     else:
-        click.echo(f"  (non-default port {local_port}: point other commands with "
-                   f"--service-url {url})")
+        click.echo(f"  (non-default port {local_port}: other commands look for the "
+                   f"conventional port {SERVICE_PORT}, so keep this at the default "
+                   "for them to auto-detect it)")
     click.echo("  Ctrl-C to close the tunnel")
     if not no_browser:
         webbrowser.open(url)
@@ -557,16 +411,6 @@ def _ui_cluster(port, no_browser, namespace, context, service_url, webbrowser):
         click.echo("\nClosing tunnel...")
     finally:
         _stop_port_forward(proc)
-
-
-def _service_alive(url):
-    import urllib.error  # pylint: disable=import-outside-toplevel
-    import urllib.request  # pylint: disable=import-outside-toplevel
-    try:
-        with urllib.request.urlopen(f'{url}/healthz', timeout=1) as resp:  # noqa: S310
-            return resp.status == 200
-    except (urllib.error.URLError, OSError):
-        return False
 
 
 # ---------------------------------------------------------------------------
@@ -600,7 +444,7 @@ _INIT_EXCLUDE_DIRS = {'results'}
               help='Directory name to skip (repeatable). Adds to the default '
                    f"{sorted(_INIT_EXCLUDE_DIRS)}.")
 @target_options
-def workspace_init(directory, name, excludes, cluster, namespace, context, service_url):
+def workspace_init(directory, name, excludes, cluster, namespace, context):
     """Create a workspace and upload every file from DIRECTORY into it.
 
     ``.vast``/``.osc`` are written inline; all other files go through the upload
@@ -618,7 +462,7 @@ def workspace_init(directory, name, excludes, cluster, namespace, context, servi
                                             WriteFileRequest)
     root = Path(directory).resolve()
     skip_dirs = _INIT_EXCLUDE_DIRS | set(excludes)
-    with service_client(cluster, namespace, context, service_url) as (client, target):
+    with service_client(cluster, namespace, context) as (client, target):
         _echo_target(target)
         requested = name or root.name
         ws = client.create_workspace(CreateWorkspaceRequest(name=requested))
@@ -659,9 +503,9 @@ def workspace_init(directory, name, excludes, cluster, namespace, context, servi
 
 @workspace.command('list')
 @target_options
-def workspace_list(cluster, namespace, context, service_url):
+def workspace_list(cluster, namespace, context):
     """List workspaces (newest first)."""
-    with service_client(cluster, namespace, context, service_url) as (client, target):
+    with service_client(cluster, namespace, context) as (client, target):
         _echo_target(target)
         workspaces = client.list_workspaces().workspaces
         if not workspaces:
@@ -673,13 +517,13 @@ def workspace_list(cluster, namespace, context, service_url):
 @workspace.command('delete')
 @click.argument('workspace', metavar='WORKSPACE')
 @target_options
-def workspace_delete(workspace, cluster, namespace, context, service_url):
+def workspace_delete(workspace, cluster, namespace, context):
     """Delete a workspace and its inputs (existing campaigns are unaffected).
 
     WORKSPACE may be a ``ws-…`` id or a workspace name (unique names resolve;
     ambiguous ones must be deleted by id).
     """
-    with service_client(cluster, namespace, context, service_url) as (client, target):
+    with service_client(cluster, namespace, context) as (client, target):
         _echo_target(target)
         res = client.delete_workspace(workspace)
         click.echo(res.message or ('deleted' if res.ok else 'failed'))

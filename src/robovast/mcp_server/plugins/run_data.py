@@ -28,14 +28,14 @@ wants, so this plugin exposes exactly two tools:
   with ``campaign.db`` attached as schema ``campaign``.
 
 The query logic lives in :mod:`robovast.results_processing.data_query` (shared with
-the ``robovast-service`` interface ops). When ``ROBOVAST_SERVICE_URL`` is set these
-tools **delegate to that service** (so they work against a remote/cluster campaign,
-not just local disk); otherwise they resolve the campaign directory locally via
+the ``robovast-service`` interface ops). When a service is reachable (auto-detected
+on the conventional local port — a ``vast serve`` or a tunnel you brought up) these
+tools **delegate to it** (so they work against a remote/cluster campaign, not just
+local disk); otherwise they resolve the campaign directory locally via
 ``results_resolver`` and query it in-process.
 """
 
 import logging
-import os
 
 from fastmcp import FastMCP
 
@@ -47,8 +47,9 @@ logger = logging.getLogger(__name__)
 
 
 def _service_client():
-    """A ``RobovastClient`` bound to ``ROBOVAST_SERVICE_URL``, or None (query locally)."""
-    url = os.environ.get("ROBOVAST_SERVICE_URL", "")
+    """A ``RobovastClient`` bound to a reachable service, or None (query locally)."""
+    from robovast.common.cli.service_target import detected_service_url
+    url = detected_service_url()
     if not url:
         return None
     from robovast.service.client import RobovastClient
@@ -160,11 +161,12 @@ def list_campaign_plots(campaign_id: str) -> dict:
     Returns:
         ``{campaign_id, plots: [{title, query, vega_lite}]}`` or ``{error}``.
     """
+    from robovast.common.cli.service_target import detected_service_url  # noqa: PLC0415
     from robovast.service.client import RobovastClient  # noqa: PLC0415
     try:
         # Both transports implement this, so the factory (LocalTransport when no
-        # ROBOVAST_SERVICE_URL is set) resolves it with no local special-casing.
-        client = RobovastClient(os.environ.get("ROBOVAST_SERVICE_URL", ""))
+        # service is reachable) resolves it with no local special-casing.
+        client = RobovastClient(detected_service_url())
         return client.list_campaign_plots(campaign_id).model_dump()
     except Exception as e:  # noqa: BLE001 - surface resolution/parse errors to the client
         return {"error": str(e)}

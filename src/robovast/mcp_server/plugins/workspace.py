@@ -20,8 +20,8 @@ A workspace is a server-side folder of editable project *inputs* (no client
 filesystem, so the server may live on another host). These tools map 1:1 onto
 the :class:`~robovast.service.interface.RobovastInterface` workspace ops via a
 :func:`~robovast.service.client.RobovastClient`, so they work whether the server
-is in-process (local Docker) or a remote/cluster ``robovast-service``
-(``ROBOVAST_SERVICE_URL``).
+is in-process (local Docker) or a remote/cluster ``robovast-service`` reached over
+a tunnel auto-detected on the conventional local port.
 
 Token economics (important for an LLM):
 
@@ -41,8 +41,9 @@ logger = logging.getLogger(__name__)
 
 
 def _client():
+    from robovast.common.cli.service_target import detected_service_url
     from robovast.service.client import RobovastClient
-    return RobovastClient()
+    return RobovastClient(detected_service_url())
 
 
 def create_workspace(name: str = "") -> dict:

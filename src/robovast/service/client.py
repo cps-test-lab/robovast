@@ -421,7 +421,19 @@ class LocalTransport(RobovastInterface):
         Advances the phase ``... → postprocessing → finished`` and generates the
         campaign's ``data.db``; a failure surfaces via status (phase ``failed``).
         """
+        from robovast.common.logging_config import (
+            add_campaign_log_handler, remove_campaign_log_handler)
         from robovast.results_processing.postprocessing import run_postprocessing
+        # Capture the postprocessing narrative into its own phase file, which the
+        # unified campaign log serves under the POSTPROCESSING divider. Thread-
+        # isolated (same worker thread), so concurrent campaigns stay separate.
+        log_path = Path(results_dir) / campaign_id / "_execution" / "postprocessing.log"
+        handler = None
+        try:
+            handler = add_campaign_log_handler(str(log_path))
+        except Exception:  # noqa: BLE001 - logging must never abort postprocessing
+            logger.warning("Could not open postprocessing.log for %s", campaign_id,
+                           exc_info=True)
         try:
             state.set_phase("postprocessing")
             ok, message = run_postprocessing(
@@ -440,6 +452,8 @@ class LocalTransport(RobovastInterface):
             state.update(error=failure_detail(e))
             state.set_phase("failed", stage=f"postprocessing: {e}")
             self._record_outcome(campaign_id, results_dir, state)
+        finally:
+            remove_campaign_log_handler(handler)
 
     def _record_outcome(self, campaign_id, results_dir, state):
         """Persist the failed campaign's terminal outcome to _execution/outcome.json.
@@ -462,38 +476,23 @@ class LocalTransport(RobovastInterface):
         # Not tracked in this process — reconstruct from disk (past campaign).
         return self._status_from_disk(campaign_id)
 
-    _CONTROLLER_LOG = ("_execution", "controller.log")
-
-    @staticmethod
-    def _read_log_slice(path: "Path | str", offset: int, eof: bool):
-        """Read a ``controller.log`` from *offset*; return a :class:`LogChunk`.
-
-        Bytes are read (not text) so a mid-file offset can never split a character,
-        then decoded leniently. A missing file is an empty chunk — normal for a
-        campaign that has not written its first line yet.
-        """
-        from robovast.service.interface import LogChunk
-        try:
-            with open(path, "rb") as f:
-                f.seek(max(0, offset))
-                data = f.read()
-        except FileNotFoundError:
-            return LogChunk(text="", next_offset=offset, eof=eof)
-        return LogChunk(text=data.decode("utf-8", "replace"),
-                        next_offset=(max(0, offset) + len(data)), eof=eof)
-
     def get_campaign_logs(self, campaign_id: str, offset: int = 0):
-        """Serve the live ``controller.log`` from the shared campaigns root.
+        """Serve the campaign's unified infrastructure log from the campaigns root.
 
-        Local runs write the file in place and it grows there, so the same read
-        serves a live and a finished campaign; ``eof`` is set once the campaign is
-        no longer being driven here.
+        Assembles the per-phase files (variation → run → postprocessing) under the
+        campaign's ``_execution/`` into one divider-separated stream (see
+        :func:`robovast.common.campaign_logs.assemble_log`). Local runs write those
+        files in place and they grow there, so the same read serves a live and a
+        finished campaign; ``eof`` is set once the campaign is no longer driven here.
         """
-        path = self._campaigns_root() / campaign_id / Path(*self._CONTROLLER_LOG)
+        from robovast.common.campaign_logs import assemble_log_from_dir
+        from robovast.service.interface import LogChunk
+        campaign_dir = self._campaigns_root() / campaign_id
         with self._lock:
             entry = self._campaigns.get(campaign_id)
         eof = entry is None or self._is_done(entry)
-        return self._read_log_slice(path, offset, eof)
+        text, next_offset, eof = assemble_log_from_dir(campaign_dir, offset, eof)
+        return LogChunk(text=text, next_offset=next_offset, eof=eof)
 
     def stop(self, campaign_id: str) -> ActionResult:
         with self._lock:
@@ -980,10 +979,11 @@ def RobovastClient(service_url: str = "", timeout: float = 30.0) -> RobovastInte
     * ``service_url`` set → :class:`HTTPTransport` to that ``robovast-service``.
     * empty (default) → :class:`LocalTransport` (in-process local Docker).
 
-    Selection can also come from ``ROBOVAST_SERVICE_URL`` when ``service_url`` is
-    empty, so a deployment can point every client at a service without code change.
+    Callers resolve *service_url* explicitly (the CLI/MCP auto-detect a service on
+    the conventional local port via
+    :func:`robovast.common.cli.service_target.detected_service_url`); there is no
+    ambient environment-variable selection.
     """
-    url = service_url or os.environ.get("ROBOVAST_SERVICE_URL", "")
-    if url:
-        return HTTPTransport(url, timeout=timeout)
+    if service_url:
+        return HTTPTransport(service_url, timeout=timeout)
     return LocalTransport()

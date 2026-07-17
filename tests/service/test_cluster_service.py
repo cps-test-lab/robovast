@@ -42,6 +42,16 @@ def test_cluster_config_requires_name():
         cs._cluster_config()
 
 
+def test_build_backend_threads_kube_context():
+    """`vast serve --backend cluster -x local` must reach the K8s backend."""
+    cs = ClusterService(namespace="ns2", cluster_config_name="rke2",
+                        cluster_config_kwargs={}, reap_on_start=False,
+                        kube_context="local")
+    backend = cs._build_backend(state=None)
+    assert backend.kube_context == "local"
+    assert backend.namespace == "ns2"
+
+
 # -- launch hooks -----------------------------------------------------------
 
 def test_campaigns_run_in_parallel(cs):

@@ -90,16 +90,14 @@ def push_project_to_workspace(client, config_path: str, name: str = "") -> str:
     return workspace_id
 
 
-def run_project_via_service(service_url: str, config_path: str,
+def run_project_via_service(client, config_path: str,
                             config_filter: str = "", runs: int = 1,
                             feedback=None) -> str:
-    """Push the local project to *service_url* and start a campaign. Returns id."""
-    from robovast.service.client import RobovastClient
+    """Push the local project through *client* and start a campaign. Returns id."""
     from robovast.service.interface import CreateCampaignRequest
 
     say = feedback or logger.info
-    client = RobovastClient(service_url)
-    say(f"Pushing project to robovast-service at {service_url} ...")
+    say("Pushing project to robovast-service ...")
     workspace_id = push_project_to_workspace(client, config_path)
     say(f"Uploaded to workspace {workspace_id}; starting campaign ...")
     ref = client.create_campaign(CreateCampaignRequest(
@@ -108,14 +106,9 @@ def run_project_via_service(service_url: str, config_path: str,
     return ref.campaign_id
 
 
-def configured_service_url() -> str:
-    """The service URL a client should use, from ``ROBOVAST_SERVICE_URL``."""
-    return os.environ.get("ROBOVAST_SERVICE_URL", "")
-
-
-def download_campaign_via_service(service_url: str, campaign_id: str,
+def download_campaign_via_service(client, campaign_id: str,
                                   results_dir: str, feedback=None) -> str:
-    """Download a campaign's ``tar.gz`` from the service and extract it locally.
+    """Download a campaign's ``tar.gz`` through *client* and extract it locally.
 
     The service streams the campaign from the object store (no external share).
     Returns the local campaign directory path.
@@ -127,7 +120,7 @@ def download_campaign_via_service(service_url: str, campaign_id: str,
     from robovast.service.interface import Routes
 
     say = feedback or logger.info
-    url = f"{service_url.rstrip('/')}{Routes.CAMPAIGNS}/{campaign_id}/archive"
+    url = f"{client.base_url}{Routes.CAMPAIGNS}/{campaign_id}/archive"
     say(f"Downloading {campaign_id} from robovast-service ...")
     resp = requests.get(url, timeout=600, stream=True)
     resp.raise_for_status()

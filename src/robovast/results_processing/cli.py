@@ -494,23 +494,29 @@ def download_from_share_cmd(output, campaigns, force, keep_archive, debug):
     ROBOVAST_WEBDAV_USER     — WebDAV username          (when ROBOVAST_SHARE_TYPE=webdav)
     ROBOVAST_WEBDAV_PASSWORD — WebDAV password          (when ROBOVAST_SHARE_TYPE=webdav)
 
-    When a robovast-service is configured (``ROBOVAST_SERVICE_URL``), campaigns
-    are instead streamed from the **service** (which serves them from the object
-    store) — no external share needed.
+    When a robovast-service is reachable (auto-detected on the conventional local
+    port — a ``vast serve``/``vast ui`` or a tunnel), campaigns are instead streamed
+    from the **service** (which serves them from the object store) — no external
+    share needed.
     """
     # Client-server path: pull from the service (object store) instead of a share.
-    from robovast.service.project_push import (  # pylint: disable=import-outside-toplevel
-        configured_service_url, download_campaign_via_service)
-    service_url = configured_service_url()
+    from robovast.common.cli.service_target import \
+        detected_service_url  # pylint: disable=import-outside-toplevel
+    from robovast.service.project_push import \
+        download_campaign_via_service  # pylint: disable=import-outside-toplevel
+    service_url = detected_service_url()
     if service_url:
         from robovast.common.cli.project_config import \
             get_project_config  # pylint: disable=import-outside-toplevel
+        from robovast.service.client import \
+            RobovastClient  # pylint: disable=import-outside-toplevel
         results_dir = output or get_project_config().results_dir
         if not campaigns:
             raise click.ClickException(
                 "Specify at least one campaign id with -i when using a service.")
+        client = RobovastClient(service_url)
         for cid in campaigns:
-            download_campaign_via_service(service_url, cid, results_dir,
+            download_campaign_via_service(client, cid, results_dir,
                                           feedback=click.echo)
         return
 

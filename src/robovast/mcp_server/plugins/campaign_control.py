@@ -45,8 +45,6 @@ from fastmcp import FastMCP
 from robovast.mcp_server import results_resolver
 from robovast.mcp_server.campaign_registry import CampaignRegistry, _proc_start_time
 
-from ..plugin_common import _read_text_paginated
-
 logger = logging.getLogger(__name__)
 
 # Popen handles for local campaigns launched by *this* server process, so we can
@@ -73,18 +71,20 @@ def _load_project():
 
 
 def _service_client():
-    """Return a ``RobovastClient`` bound to a configured robovast-service, or None.
+    """Return a ``RobovastClient`` bound to a reachable robovast-service, or None.
 
-    When ``ROBOVAST_SERVICE_URL`` is set, the control tools drive that service
-    (a local ``vast serve``, a remote VM, or a cluster deployment) through the
+    When a service answers on the conventional local port (a local ``vast serve``,
+    or a tunnel to a remote VM / cluster you brought up before starting MCP), the
+    control tools drive that service through the
     :class:`~robovast.service.interface.RobovastInterface` contract instead of
     spawning ``vast exec`` subprocesses — the client-server path in which the
     service is the execution authority and its own status tracking replaces the
-    local subprocess + ``CampaignRegistry`` machinery. Unset (the default) keeps
-    the in-process subprocess path below, so nothing changes for local/cluster
-    users who have not opted into a service yet.
+    local subprocess + ``CampaignRegistry`` machinery. Nothing there (the default)
+    keeps the in-process subprocess path below, so nothing changes for local users
+    who have not brought a service up yet.
     """
-    url = os.environ.get("ROBOVAST_SERVICE_URL", "")
+    from robovast.common.cli.service_target import detected_service_url
+    url = detected_service_url()
     if not url:
         return None
     from robovast.service.client import RobovastClient
@@ -574,15 +574,19 @@ def get_campaign_status(campaign_id: str) -> dict:
 
 
 def get_campaign_log(campaign_id: str, lines: int = 200, offset: int = 0) -> dict:
-    """Read a campaign's controller log.
+    """Read a campaign's unified infrastructure log.
 
-    Returns the campaign's ``_execution/controller.log`` — the same log the web
-    UI "Show log" panel streams. For local Docker campaigns this includes the
-    full ``run.sh`` and ``docker compose`` output (image pull, container/simulator
-    stdout, per-job banners) interleaved with the controller's own narrative
-    (batch/search progress, warnings). For cluster campaigns it holds the
-    controller thread's narrative (job creation, per-batch progress); per-pod
-    container logs are not aggregated here.
+    Returns the campaign's whole infrastructure log — the same divider-separated
+    stream the web UI log panel shows — assembled from the per-phase files under
+    ``_execution/`` in phase order, each under a ``===== PHASE =====`` divider:
+
+    * **VARIATION** — config generation / composition (incl. plugin subprocess output).
+    * **RUN** — the controller driving batches/runs (``controller.log``). For local
+      Docker campaigns this also includes the ``run.sh`` / ``docker compose`` output.
+    * **POSTPROCESSING** — rosbag→CSV→``data.db`` (on the cluster, the separate
+      conversion Job's output followed by the host stage).
+
+    A phase's section is absent until that phase has produced output.
 
     Args:
         campaign_id: The id returned by :func:`start_campaign`.
@@ -591,12 +595,22 @@ def get_campaign_log(campaign_id: str, lines: int = 200, offset: int = 0) -> dic
 
     Returns:
         ``{file_name, total_lines, returned_lines, offset, content}``; ``{error}``
-        if the campaign or its log is unknown.
+        if the campaign is unknown.
     """
-    path = results_resolver.resolve_campaign_path(campaign_id) / "_execution" / "controller.log"
-    if not path.exists():
-        return {"error": f"No controller.log for campaign {campaign_id!r}"}
-    return _read_text_paginated(path, lines, offset)
+    from robovast.common.campaign_logs import assemble_log_from_dir  # noqa: PLC0415
+    campaign_dir = results_resolver.resolve_campaign_path(campaign_id)
+    # Assemble the full unified text (byte offset 0), then paginate by lines — the
+    # MCP tool's ``offset`` is a line offset, unlike the service's byte offset.
+    text, _, _ = assemble_log_from_dir(campaign_dir, offset=0, eof=True)
+    all_lines = text.splitlines()
+    selected = all_lines[offset:offset + lines]
+    return {
+        "file_name": f"{campaign_id} (infrastructure log)",
+        "total_lines": len(all_lines),
+        "returned_lines": len(selected),
+        "offset": offset,
+        "content": "\n".join(selected),
+    }
 
 
 def stop_campaign(campaign_id: str) -> dict:
@@ -698,8 +712,9 @@ def _cluster_cooperative_stop(campaign_id, entry):
     client = _service_client()
     if client is None:
         raise RuntimeError(
-            "no robovast-service configured (set ROBOVAST_SERVICE_URL); "
-            "cluster campaigns are driven by the service")
+            "no robovast-service reachable (bring up a 'vast serve' or a tunnel to "
+            "the conventional local port before starting MCP); cluster campaigns "
+            "are driven by the service")
     result = client.stop(campaign_id)
     if not result.ok:
         raise RuntimeError(f"stop failed for {campaign_id!r}: {result.message}")
@@ -763,9 +778,10 @@ def get_postprocessing(campaign_id: str) -> dict:
     Returns:
         ``{campaign_id, source, entries, revisions}`` or ``{error}``.
     """
+    from robovast.common.cli.service_target import detected_service_url
     from robovast.service.client import RobovastClient
     try:
-        return RobovastClient(os.environ.get("ROBOVAST_SERVICE_URL", "")) \
+        return RobovastClient(detected_service_url()) \
             .get_postprocessing(campaign_id).model_dump()
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
@@ -782,10 +798,11 @@ def update_postprocessing(campaign_id: str, entries: list) -> dict:
     Returns:
         ``{campaign_id, revision, entries}`` or ``{error}``.
     """
+    from robovast.common.cli.service_target import detected_service_url
     from robovast.service.client import RobovastClient
     from robovast.service.interface import UpdatePostprocessingRequest
     try:
-        return RobovastClient(os.environ.get("ROBOVAST_SERVICE_URL", "")) \
+        return RobovastClient(detected_service_url()) \
             .update_postprocessing(UpdatePostprocessingRequest(
                 campaign_id=campaign_id, entries=entries)).model_dump()
     except Exception as e:  # noqa: BLE001
@@ -804,10 +821,11 @@ def run_postprocessing(campaign_id: str, force: bool = False,
         force: Bypass per-rosbag caches and reprocess all bags.
         skip: Plugin names to skip (e.g. ``["rosbags_to_webm"]``).
     """
+    from robovast.common.cli.service_target import detected_service_url
     from robovast.service.client import RobovastClient
     from robovast.service.interface import RunPostprocessingRequest
     try:
-        return RobovastClient(os.environ.get("ROBOVAST_SERVICE_URL", "")) \
+        return RobovastClient(detected_service_url()) \
             .run_postprocessing(RunPostprocessingRequest(
                 campaign_id=campaign_id, force=force, skip=skip or [])).model_dump()
     except Exception as e:  # noqa: BLE001
