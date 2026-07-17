@@ -141,17 +141,6 @@ export function CampaignLog({
         <Button size="small" variant="text" onClick={() => setOpen((o) => !o)}>
           {open ? 'Hide log' : 'Show log'}
         </Button>
-        <Box flexGrow={1} />
-        <Button
-          size="small"
-          variant="text"
-          component="a"
-          href={`${robovast.baseUrl}/campaigns/${encodeURIComponent(campaignId)}/logs?offset=0`}
-          target="_blank"
-          rel="noreferrer"
-        >
-          Download
-        </Button>
       </Stack>
       {open ? (
         <Box

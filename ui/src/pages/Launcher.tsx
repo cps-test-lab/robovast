@@ -4,6 +4,7 @@ import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import Checkbox from '@mui/material/Checkbox'
+import Chip from '@mui/material/Chip'
 import FormControlLabel from '@mui/material/FormControlLabel'
 import MenuItem from '@mui/material/MenuItem'
 import Paper from '@mui/material/Paper'
@@ -103,6 +104,14 @@ export function Launcher() {
             {(workspaces.data?.workspaces ?? []).map((w) => (
               <MenuItem key={w.workspace_id} value={w.workspace_id}>
                 {w.name || w.workspace_id}
+                {w.read_only ? (
+                  <Chip
+                    label="read-only"
+                    size="small"
+                    variant="outlined"
+                    sx={{ ml: 1, height: 18, fontSize: '0.65rem' }}
+                  />
+                ) : null}
               </MenuItem>
             ))}
           </TextField>

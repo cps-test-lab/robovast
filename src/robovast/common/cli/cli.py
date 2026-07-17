@@ -223,7 +223,14 @@ def _ensure_ui_built(rebuild: bool = False) -> None:
 @click.option('--rebuild-ui', is_flag=True,
               help='Force a web UI rebuild even if ui/dist looks up to date '
                    '(source checkout only).')
-def serve(host, port, backend, rebuild_ui):
+@click.option('--workspace-dir', 'workspace_dirs', multiple=True,
+              type=click.Path(exists=True, file_okay=False),
+              help='Pin a directory as a read-only workspace, used in place '
+                   '(repeatable). Skips the "vast workspace init" upload — the '
+                   'workspace is present the moment the service starts and '
+                   'survives restarts (edit the files on disk to change it). '
+                   'Local backend only.')
+def serve(host, port, backend, rebuild_ui, workspace_dirs):
     """Run a persistent robovast-service (and its web UI).
 
     Starts the FastAPI service that the ``vast`` CLI, the MCP server, and the web
@@ -252,16 +259,22 @@ def serve(host, port, backend, rebuild_ui):
         backend = 'cluster' if os.environ.get('KUBERNETES_SERVICE_HOST') else 'local'
 
     if backend == 'cluster':
+        if workspace_dirs:
+            raise click.ClickException(
+                "--workspace-dir is only supported by the local backend "
+                "(the cluster service stores workspaces in the object store)")
         from robovast.service.cluster_service import ClusterService
         impl = ClusterService()
         storage = "object store"
     else:
         from robovast.service.client import LocalTransport
-        impl = LocalTransport()
+        impl = LocalTransport(workspace_dirs=list(workspace_dirs))
         storage = "local filesystem"
 
     click.echo(f"Starting robovast-service on http://{host}:{port} (OpenAPI at /docs)")
     click.echo(f"Backend: {backend} | storage: {storage} | Ctrl-C to stop")
+    for wid_dir in workspace_dirs:
+        click.echo(f"Pinned read-only workspace: {wid_dir}")
     _serve(impl, host=host, port=port)
 
 
@@ -607,8 +620,11 @@ def workspace_init(directory, name, excludes, cluster, namespace, context, servi
     skip_dirs = _INIT_EXCLUDE_DIRS | set(excludes)
     with service_client(cluster, namespace, context, service_url) as (client, target):
         _echo_target(target)
-        ws = client.create_workspace(CreateWorkspaceRequest(name=name or root.name))
+        requested = name or root.name
+        ws = client.create_workspace(CreateWorkspaceRequest(name=requested))
         wid = ws.workspace_id
+        if ws.name != requested:
+            click.echo(f"note: name {requested!r} already exists — using {ws.name!r}")
 
         count = 0
         for path in sorted(root.rglob('*')):
@@ -637,7 +653,8 @@ def workspace_init(directory, name, excludes, cluster, namespace, context, servi
                         f"cannot upload {rel_str!r}: this client has no upload channel")
             count += 1
             click.echo(f"  + {rel_str}")
-        click.echo(f"workspace {wid} initialized from {root} ({count} files)")
+        click.echo(
+            f"workspace {wid} ({ws.name}) initialized from {root} ({count} files)")
 
 
 @workspace.command('list')

@@ -184,6 +184,9 @@ class WorkspaceInfo(BaseModel):
     workspace_id: str
     name: str = ""
     created_at: Optional[str] = None
+    #: True for a directory pinned read-only with ``vast serve --workspace-dir``:
+    #: used in place, so writes are refused — edit the files on disk instead.
+    read_only: bool = False
 
 
 class ListWorkspacesResponse(BaseModel):

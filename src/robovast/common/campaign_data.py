@@ -45,7 +45,9 @@ def read_execution_metadata(campaign_dir: Path) -> dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"execution.yaml not found in {campaign_dir}")
     with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        # An empty/blank execution.yaml yields ``None`` from safe_load; callers
+        # expect a mapping they can ``.get`` from, so normalize to an empty dict.
+        return yaml.safe_load(f) or {}
 
 
 #: Campaign terminal-outcome record — the final ``Status`` (phase/error/…) serialized

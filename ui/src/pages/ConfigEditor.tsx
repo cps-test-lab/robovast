@@ -155,6 +155,14 @@ export function ConfigEditor() {
           {(workspaces.data?.workspaces ?? []).map((w) => (
             <MenuItem key={w.workspace_id} value={w.workspace_id}>
               {w.name || w.workspace_id}
+              {w.read_only ? (
+                <Chip
+                  label="read-only"
+                  size="small"
+                  variant="outlined"
+                  sx={{ ml: 1, height: 18, fontSize: '0.65rem' }}
+                />
+              ) : null}
             </MenuItem>
           ))}
         </TextField>

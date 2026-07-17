@@ -349,4 +349,39 @@ def serve(impl: RobovastInterface, host: str = "127.0.0.1", port: int = DEFAULT_
 
     app = build_app(impl)
     logger.info("robovast-service listening on %s:%d (OpenAPI at /docs)", host, port)
-    uvicorn.run(app, host=host, port=port, log_level=log_level)
+    uvicorn.run(app, host=host, port=port, log_level=log_level,
+                log_config=_quiet_access_log_config())
+
+
+def _quiet_access_log_config() -> dict:
+    """uvicorn logging config that demotes per-request access logs to DEBUG.
+
+    The default access logger emits every ``"GET /... 200 OK"`` line at INFO,
+    which drowns out the interesting startup/error output. We reclassify those
+    records to DEBUG and raise the access handler to INFO, so they stay hidden
+    at the default level but reappear when serving at ``--log-level debug``.
+    """
+    import copy  # pylint: disable=import-outside-toplevel
+    from uvicorn.config import LOGGING_CONFIG  # pylint: disable=import-outside-toplevel
+
+    config = copy.deepcopy(LOGGING_CONFIG)
+    config.setdefault("filters", {})["demote_access"] = {
+        "()": f"{__name__}._DemoteToDebugFilter",
+    }
+    config["handlers"]["access"]["level"] = "INFO"
+    config["loggers"]["uvicorn.access"].setdefault("filters", []).append("demote_access")
+    return config
+
+
+class _DemoteToDebugFilter(logging.Filter):
+    """Rewrite a log record's level to DEBUG (attached to the access logger).
+
+    Applied on the *logger* (not the handler) so the demoted level is in place
+    before the handler's own INFO threshold is checked, causing the record to
+    be dropped at the default level.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.levelno = logging.DEBUG
+        record.levelname = "DEBUG"
+        return True

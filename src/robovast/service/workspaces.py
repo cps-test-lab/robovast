@@ -68,6 +68,10 @@ PROJECT_DIRNAME = "project"
 #: Default lifetime of an upload token; the PUT must arrive within this window.
 UPLOAD_TTL_SECONDS = 600
 
+#: Dir names hidden from a *pinned* (read-only) workspace listing / .vast lookup —
+#: campaign outputs, not project inputs (mirrors the CLI ``workspace init`` skip).
+PINNED_SKIP_DIRS = {"results"}
+
 
 def default_workspaces_root() -> Path:
     """Root for workspace storage (``ROBOVAST_WORKSPACES_ROOT`` or ``~/.robovast``)."""
@@ -87,12 +91,59 @@ class WorkspaceError(ValueError):
 
 
 class WorkspaceRegistry:
-    """Crash-safe JSON registry of workspaces (flock + atomic rename)."""
+    """Crash-safe JSON registry of workspaces (flock + atomic rename).
 
-    def __init__(self, root=None):
+    Beyond the persisted, editable workspaces it also carries any **static**
+    (pinned, read-only) workspaces given at construction — directories used *in
+    place*, never copied into the store. These are in-memory only (never written
+    to ``registry.json``): a ``vast serve --workspace-dir DIR`` derives them
+    afresh each start with a path-stable id, so links survive a restart without a
+    ``workspace init`` upload. See :meth:`add_static` / :meth:`is_read_only`.
+    """
+
+    def __init__(self, root=None, static_dirs=None):
         self.root = Path(root) if root else default_workspaces_root()
         self.registry_path = self.root / REGISTRY_FILENAME
         self.lock_path = self.root / LOCK_FILENAME
+        #: workspace_id -> registry entry, for pinned read-only dirs (in-memory).
+        self._static: dict[str, dict] = {}
+        #: workspace_id -> on-disk source Path used directly (read-only).
+        self._static_paths: dict[str, Path] = {}
+        for spec in (static_dirs or []):
+            # Accept a bare path or a (path, name) pair.
+            if isinstance(spec, (tuple, list)):
+                self.add_static(spec[0], spec[1] if len(spec) > 1 else "")
+            else:
+                self.add_static(spec)
+
+    def add_static(self, path, name: str = "") -> dict:
+        """Pin *path* as a read-only workspace used in place; return its entry.
+
+        The id is derived from the resolved path (stable across restarts, so the
+        UI link keeps working), and the entry is flagged ``read_only`` so every
+        mutating store op refuses it — the files are edited on disk, not through
+        the service.
+        """
+        import hashlib
+        p = Path(path).expanduser().resolve()
+        if not p.is_dir():
+            raise WorkspaceError(f"workspace dir does not exist: {path}")
+        workspace_id = "ws-" + hashlib.sha1(str(p).encode()).hexdigest()[:12]
+        entry = {
+            "workspace_id": workspace_id,
+            "name": name or p.name,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "read_only": True,
+            "source_dir": str(p),
+        }
+        self._static[workspace_id] = entry
+        self._static_paths[workspace_id] = p
+        logger.info("Pinned read-only workspace %s -> %s", workspace_id, p)
+        return entry
+
+    def is_read_only(self, workspace_id: str) -> bool:
+        """True if *workspace_id* is a pinned, in-place directory (no writes)."""
+        return workspace_id in self._static
 
     def ensure_dirs(self):
         self.root.mkdir(parents=True, exist_ok=True)
@@ -133,30 +184,58 @@ class WorkspaceRegistry:
             raise
 
     def project_dir(self, workspace_id: str) -> Path:
+        # A pinned dir is used in place; everything else lives under project/.
+        if workspace_id in self._static_paths:
+            return self._static_paths[workspace_id]
         return self.root / workspace_id / PROJECT_DIRNAME
 
     def create(self, name: str = "") -> dict:
-        """Create a workspace (id + ``project/`` dir) and register it."""
+        """Create a workspace (id + ``project/`` dir) and register it.
+
+        A requested *name* that already exists gets an incrementing ``-N`` suffix
+        (``foo`` → ``foo-2`` → ``foo-3``) so repeated ``workspace init`` of the same
+        directory stays distinguishable in the UI dropdown instead of piling up
+        identical labels. The suffixing happens under the lock (against both
+        persisted and pinned names) so concurrent creates can't collide; the caller
+        gets back the *final* name in the returned entry.
+        """
         workspace_id = f"ws-{secrets.token_hex(6)}"
-        entry = {
-            "workspace_id": workspace_id,
-            "name": name or workspace_id,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }
         with self._locked():
             data = self._read_unlocked()
+            entry = {
+                "workspace_id": workspace_id,
+                "name": self._unique_name(name or workspace_id, data),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
             data[workspace_id] = entry
             self._write_unlocked(data)
         self.project_dir(workspace_id).mkdir(parents=True, exist_ok=True)
         logger.info("Created workspace %s (%s)", workspace_id, entry["name"])
         return entry
 
+    def _unique_name(self, name: str, data: dict) -> str:
+        """Return *name*, or ``name-2``/``-3``/… if it collides with an existing one.
+
+        Considers both persisted (*data*, already read under the lock) and pinned
+        read-only names, so an init'd copy never shadows-by-name a pinned dir."""
+        taken = {e.get("name") for e in data.values()}
+        taken |= {e.get("name") for e in self._static.values()}
+        if name not in taken:
+            return name
+        n = 2
+        while f"{name}-{n}" in taken:
+            n += 1
+        return f"{name}-{n}"
+
     def list(self) -> list[dict]:
         with self._locked():
             data = self._read_unlocked()
-        return sorted(data.values(), key=lambda e: e.get("created_at", ""), reverse=True)
+        merged = {**data, **self._static}  # pinned dirs shown alongside persisted ones
+        return sorted(merged.values(), key=lambda e: e.get("created_at", ""), reverse=True)
 
     def get(self, workspace_id: str) -> dict | None:
+        if workspace_id in self._static:
+            return self._static[workspace_id]
         with self._locked():
             return self._read_unlocked().get(workspace_id)
 
@@ -169,9 +248,10 @@ class WorkspaceRegistry:
         """
         with self._locked():
             data = self._read_unlocked()
-        if id_or_name in data:
+        merged = {**data, **self._static}
+        if id_or_name in merged:
             return id_or_name
-        matches = [wid for wid, e in data.items() if e.get("name") == id_or_name]
+        matches = [wid for wid, e in merged.items() if e.get("name") == id_or_name]
         if len(matches) == 1:
             return matches[0]
         if not matches:
@@ -191,6 +271,11 @@ class WorkspaceRegistry:
         """
         import shutil
         workspace_id = self.require(id_or_name)["workspace_id"]
+        if workspace_id in self._static:
+            raise WorkspaceError(
+                f"workspace {workspace_id!r} is a read-only pinned directory "
+                "(vast serve --workspace-dir); it cannot be deleted through the "
+                "service — drop the --workspace-dir flag instead")
         with self._locked():
             data = self._read_unlocked()
             data.pop(workspace_id, None)
@@ -246,9 +331,24 @@ class _UploadTokens:
 class WorkspaceStore:
     """File operations on workspaces, with strict path confinement."""
 
-    def __init__(self, registry: WorkspaceRegistry | None = None, tokens=None):
-        self.registry = registry or WorkspaceRegistry()
+    def __init__(self, registry: WorkspaceRegistry | None = None, tokens=None,
+                 workspace_dirs=None):
+        self.registry = registry or WorkspaceRegistry(static_dirs=workspace_dirs)
         self.tokens = tokens or _UploadTokens()
+
+    # -- read-only guard ----------------------------------------------------
+
+    def _require_writable(self, workspace_id: str) -> None:
+        """Refuse a mutation of a pinned, in-place directory.
+
+        The message is deliberately actionable — MCP tools surface it verbatim —
+        so an LLM or user knows to edit the files on disk rather than retry.
+        """
+        if self.registry.is_read_only(workspace_id):
+            raise WorkspaceError(
+                f"workspace {workspace_id!r} is read-only (a directory pinned with "
+                "vast serve --workspace-dir); edit the files on disk instead of "
+                "through the service")
 
     # -- path safety --------------------------------------------------------
 
@@ -285,6 +385,7 @@ class WorkspaceStore:
 
     def write_file(self, workspace_id: str, rel_path: str, content: str) -> dict:
         workspace_id = self.registry.require(workspace_id)["workspace_id"]
+        self._require_writable(workspace_id)
         self._require_inline_type(rel_path)
         target = self._safe_join(workspace_id, rel_path)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -295,6 +396,7 @@ class WorkspaceStore:
                   new_string: str) -> dict:
         """Replace *old_string* once — the token-cheap validate→fix loop."""
         workspace_id = self.registry.require(workspace_id)["workspace_id"]
+        self._require_writable(workspace_id)
         self._require_inline_type(rel_path)
         target = self._safe_join(workspace_id, rel_path)
         if not target.is_file():
@@ -322,14 +424,25 @@ class WorkspaceStore:
         base = self.registry.project_dir(workspace_id)
         if not base.is_dir():
             return []
+        # A pinned dir is a live project tree, so skip what `workspace init` also
+        # skips — hidden files (.git/.cache) and campaign outputs (results/) — which
+        # a normal project/ never contains, so this is a no-op for those.
+        pinned = self.registry.is_read_only(workspace_id)
         out = []
         for p in sorted(base.rglob("*")):
-            if p.is_file():
-                out.append(self._file_meta(p, str(p.relative_to(base))))
+            if not p.is_file():
+                continue
+            rel = p.relative_to(base)
+            if pinned and any(
+                    part.startswith(".") or part in PINNED_SKIP_DIRS
+                    for part in rel.parts):
+                continue
+            out.append(self._file_meta(p, str(rel)))
         return out
 
     def delete_file(self, workspace_id: str, rel_path: str) -> None:
         workspace_id = self.registry.require(workspace_id)["workspace_id"]
+        self._require_writable(workspace_id)
         target = self._safe_join(workspace_id, rel_path)
         if not target.is_file():
             raise WorkspaceError(f"no such file in workspace: {rel_path!r}")
@@ -341,6 +454,7 @@ class WorkspaceStore:
                       executable: bool = False) -> dict:
         """Issue a one-time, TTL-scoped grant for an HTTP PUT of *rel_path*."""
         workspace_id = self.registry.require(workspace_id)["workspace_id"]
+        self._require_writable(workspace_id)
         self._safe_join(workspace_id, rel_path)  # validate up front
         return self.tokens.issue(workspace_id, rel_path, executable=executable)
 

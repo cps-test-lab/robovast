@@ -78,6 +78,14 @@ Two independent identifiers:
 never affects an existing campaign, and there is no campaign→workspace link.
 Results/query operations key on ``campaign_id`` only.
 
+**Pinned (read-only) workspaces.** ``vast serve --workspace-dir DIR`` registers a
+directory as a workspace used *in place* rather than copied into the store: no
+upload, present at start-up, and stable across restarts (the id is derived from
+the resolved path). These entries live only in memory — never in
+``registry.json`` — carry ``read_only=True``, and every mutating store op refuses
+them (``WorkspaceStore._require_writable``); MCP/CLI/HTTP surface that as a clear
+error. Local backend only.
+
 Token-efficient file transfer
 ------------------------------
 

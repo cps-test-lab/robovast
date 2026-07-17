@@ -142,12 +142,12 @@ class LocalTransport(RobovastInterface):
     #: ``robovast``, so two concurrent local campaigns would collide.
     _CONTAINER_NAME = "robovast"
 
-    def __init__(self, store=None):
+    def __init__(self, store=None, workspace_dirs=None):
         self._campaigns: dict[str, _LocalCampaign] = {}
         self._lock = threading.Lock()
         if store is None:
             from robovast.service.workspaces import WorkspaceStore
-            store = WorkspaceStore()
+            store = WorkspaceStore(workspace_dirs=workspace_dirs)
         self.store = store
 
     # -- project resolution -------------------------------------------------
@@ -213,7 +213,15 @@ class LocalTransport(RobovastInterface):
             if not config_path.is_file():
                 raise ValueError(f"no such .vast in workspace {workspace_id!r}: {vast_path!r}")
         else:
-            vasts = sorted(project_dir.rglob("*.vast"))
+            # A pinned dir is a live project tree that may hold campaign-output
+            # snapshots (results/**/_config/*.vast); skip those (and hidden dirs)
+            # so a project with one authored .vast still resolves cleanly. Normal
+            # workspaces never contain results/, so this is a no-op for them.
+            from robovast.service.workspaces import PINNED_SKIP_DIRS
+            vasts = [
+                v for v in sorted(project_dir.rglob("*.vast"))
+                if not any(part.startswith(".") or part in PINNED_SKIP_DIRS
+                           for part in v.relative_to(project_dir).parts)]
             if not vasts:
                 raise ValueError(
                     f"workspace {workspace_id!r} has no .vast file; "

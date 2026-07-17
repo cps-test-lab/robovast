@@ -48,6 +48,23 @@ run files, and author the ``.vast`` in the Monaco editor.
    ``vast workspace init`` writes ``.vast``/``.osc`` inline and uploads the rest
    (preserving sub-directories and the executable bit).
 
+.. tip::
+
+   To skip the upload entirely and always have a project available — even across
+   restarts — pin its directory at launch (local backend only):
+
+   .. code-block:: bash
+
+      vast serve --workspace-dir configs/examples/ros2_basic
+
+   The directory is used **in place** as a **read-only** workspace: it appears in
+   the dropdown the moment the service starts, with a path-stable id so its UI
+   link keeps working after a restart. Edit the files on disk to change it —
+   writes through the service/UI/MCP are refused (campaign outputs still land in
+   the shared results store, never under the pinned dir). Repeat ``--workspace-dir``
+   to pin several; each is named after its directory. Hidden files and ``results/``
+   are skipped, exactly like ``workspace init``.
+
    **It lands wherever the UI is — usually with no flag at all.** A workspace
    lives in the store of whichever service you talk to, and ``vast workspace``
    **follows whatever service is already running**: it probes the local service

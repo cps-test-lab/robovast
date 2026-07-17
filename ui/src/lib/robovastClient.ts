@@ -100,6 +100,9 @@ export interface WorkspaceInfo {
   workspace_id: string
   name: string
   created_at?: string | null
+  /** A directory pinned read-only with `vast serve --workspace-dir`: used in
+   *  place, so it cannot be edited through the service (edit files on disk). */
+  read_only?: boolean
 }
 
 export interface ListWorkspacesResponse {
@@ -260,8 +263,6 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 // -- the interface (Phase-0 subset the M1 UI needs) -------------------------
 
 export const robovast = {
-  baseUrl: BASE,
-
   version: () => request<VersionInfo>('GET', '/version'),
 
   listWorkspaces: () => request<ListWorkspacesResponse>('GET', '/workspaces'),

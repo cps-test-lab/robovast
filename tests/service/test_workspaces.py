@@ -209,3 +209,69 @@ def test_workspace_delete_does_not_touch_campaigns(store, ws, tmp_path):
 
 def test_inline_extensions_are_vast_and_osc():
     assert set(INLINE_EXTENSIONS) == {".vast", ".osc"}
+
+
+# -- pinned (read-only) workspaces ------------------------------------------
+
+
+@pytest.fixture
+def pinned(tmp_path):
+    """A store with a directory pinned read-only in place (vast serve --workspace-dir)."""
+    src = tmp_path / "myproj"
+    (src / "results" / "old-campaign" / "_config").mkdir(parents=True)
+    (src / ".git").mkdir()
+    (src / "demo.vast").write_text("configuration:\n  variations: []\n")
+    (src / "run.sh").write_text("#!/bin/sh\n")
+    (src / "results" / "old-campaign" / "_config" / "snap.vast").write_text("x")
+    (src / ".git" / "config").write_text("x")
+    registry = WorkspaceRegistry(root=tmp_path / "workspaces", static_dirs=[str(src)])
+    store = WorkspaceStore(registry=registry)
+    wid = registry.list()[0]["workspace_id"]
+    return store, wid, src
+
+
+def test_pinned_dir_is_used_in_place_and_listed(pinned):
+    store, wid, src = pinned
+    assert store.registry.is_read_only(wid) is True
+    assert store.registry.project_dir(wid) == src
+    entry = store.registry.get(wid)
+    assert entry["read_only"] is True and entry["name"] == "myproj"
+
+
+def test_pinned_id_is_stable_across_reload(tmp_path):
+    src = tmp_path / "myproj"
+    src.mkdir()
+    a = WorkspaceRegistry(root=tmp_path / "w", static_dirs=[str(src)]).list()[0]
+    b = WorkspaceRegistry(root=tmp_path / "w", static_dirs=[str(src)]).list()[0]
+    assert a["workspace_id"] == b["workspace_id"]
+
+
+def test_pinned_dir_is_not_persisted_to_registry(pinned):
+    store, wid, _ = pinned
+    # A fresh registry over the same root (no static_dirs) must not see the pin.
+    reloaded = WorkspaceRegistry(root=store.registry.root)
+    assert reloaded.get(wid) is None
+
+
+def test_pinned_listing_skips_hidden_and_results(pinned):
+    store, wid, _ = pinned
+    assert sorted(f["path"] for f in store.list_files(wid)) == ["demo.vast", "run.sh"]
+
+
+def test_pinned_reads_but_refuses_writes(pinned):
+    store, wid, _ = pinned
+    assert "configuration" in store.read_file(wid, "demo.vast")
+    with pytest.raises(WorkspaceError, match="read-only"):
+        store.write_file(wid, "x.vast", "y")
+    with pytest.raises(WorkspaceError, match="read-only"):
+        store.edit_file(wid, "demo.vast", "variations", "x")
+    with pytest.raises(WorkspaceError, match="read-only"):
+        store.delete_file(wid, "demo.vast")
+    with pytest.raises(WorkspaceError, match="read-only"):
+        store.create_upload(wid, "a.txt")
+
+
+def test_pinned_dir_cannot_be_deleted_through_service(pinned):
+    store, wid, _ = pinned
+    with pytest.raises(WorkspaceError, match="read-only"):
+        store.registry.delete(wid)
