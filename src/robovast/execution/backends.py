@@ -47,6 +47,17 @@ from robovast.execution.execution_utils.execute_local import \
 logger = logging.getLogger(__name__)
 
 
+class CampaignStopped(Exception):
+    """Raised when a batch is abandoned because a cooperative stop was requested.
+
+    A *clean* terminal signal (Ctrl+C on ``vast serve``, the Stop button, an MCP
+    stop) — distinct from a genuine failure. Callers set the campaign phase to
+    ``"stopped"`` and skip the finish work (result download, postprocessing,
+    finalize upload) that would otherwise fail noisily against a torn-down cluster
+    tunnel and produce misleading tracebacks.
+    """
+
+
 @dataclass
 class RunOptions:
     """Per-run execution options (mostly local docker-compose specific)."""

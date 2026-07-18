@@ -31,7 +31,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 #: Phases that mean the campaign is over, one way or another.
-_TERMINAL = {"finished", "failed"}
+_TERMINAL = {"finished", "failed", "stopped"}
 
 
 def wait_for_cluster_campaign(campaign_id, *, service_url="", interval=5.0,

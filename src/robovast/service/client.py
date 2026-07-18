@@ -393,6 +393,7 @@ class LocalTransport(RobovastInterface):
         options = self._run_options(request)
 
         def _worker():
+            from robovast.execution.backends import CampaignStopped
             backend = None
             try:
                 with self._campaign_context(campaign_id, project):
@@ -407,6 +408,11 @@ class LocalTransport(RobovastInterface):
                             project.config_path, campaign_config, results_dir, runs,
                             config_filter=config_filter, backend=backend,
                             options=options, campaign_id=campaign_id, state=state)
+            except CampaignStopped:
+                # Clean cooperative stop (Ctrl+C / Stop): the controller already set
+                # phase "stopped". Not a failure — no error, no traceback.
+                logger.info("Campaign %s stopped by request", campaign_id)
+                return
             except Exception as e:  # noqa: BLE001 - surfaced via status
                 logger.exception("Campaign %s failed", campaign_id)
                 entry.error = str(e)
@@ -609,6 +615,17 @@ class LocalTransport(RobovastInterface):
         except OSError as e:
             logger.warning("docker rm -f %s failed: %s", self._CONTAINER_NAME, e)
 
+    def _terminate_running_campaigns(self, running) -> None:
+        """Terminate the compute backing *running* campaigns so their workers unblock.
+
+        The cooperative flag alone is not enough — a worker blocked in ``run_batch``
+        must have its compute killed to return. Local override: one scenario
+        container backs whichever campaign is running (single-flight), so a single
+        force-remove covers them all. :class:`ClusterService` overrides this to delete
+        each campaign's Kubernetes Jobs.
+        """
+        self._kill_scenario_container()
+
     def shutdown(self) -> None:
         """Stop any in-flight campaign so Ctrl+C on ``vast serve`` tears it down.
 
@@ -625,8 +642,7 @@ class LocalTransport(RobovastInterface):
         logger.info("Shutting down — stopping %d running campaign(s)", len(running))
         for entry in running:
             entry.state.request_stop()
-        # Single-flight: one scenario container backs whichever campaign is running.
-        self._kill_scenario_container()
+        self._terminate_running_campaigns(running)
         for entry in running:
             if entry.thread is not None:
                 entry.thread.join(timeout=self._SHUTDOWN_JOIN_SECONDS)

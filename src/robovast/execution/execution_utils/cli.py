@@ -339,7 +339,7 @@ def _sole_running_campaign(client):
     """
     from robovast.service.interface import ListCampaignsRequest
     live = [c for c in client.list_campaigns(ListCampaignsRequest(limit=100)).campaigns
-            if c.phase not in ("finished", "failed", "unknown")]
+            if c.phase not in ("finished", "failed", "stopped", "unknown")]
     if not live:
         return None
     if len(live) > 1:
@@ -563,7 +563,7 @@ def _monitor_via_service(namespace, kube_context, interval, once):
                 blocks.append([f"Campaign {cid}  [status unavailable]"])
                 continue
             blocks.append(_campaign_lines(status))
-            if status.get("phase") in ("finished", "failed"):
+            if status.get("phase") in ("finished", "failed", "stopped"):
                 finished.add(cid)
         return blocks, finished
 

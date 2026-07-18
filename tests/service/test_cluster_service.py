@@ -318,6 +318,46 @@ def test_stop_unknown_campaign_touches_no_cluster(cs, monkeypatch):
     assert called["n"] == 0
 
 
+def test_shutdown_tears_down_every_running_campaign(cs, monkeypatch):
+    """Ctrl+C on a cluster ``vast serve`` deletes each running campaign's Jobs.
+
+    Without this, a bare service exit would orphan the in-flight scenario Jobs, which
+    would keep consuming cluster resources.
+    """
+    import types
+    calls = []
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.cluster_execution.cleanup_cluster_campaign",
+        lambda **kw: calls.append(kw))
+    running = [types.SimpleNamespace(campaign_id="camp-a"),
+               types.SimpleNamespace(campaign_id="camp-b")]
+
+    cs._terminate_running_campaigns(running)
+
+    assert [c["campaign"] for c in calls] == ["camp-a", "camp-b"]
+    assert all(c["namespace"] == "ns1" for c in calls)
+
+
+def test_shutdown_teardown_is_best_effort(cs, monkeypatch):
+    """One campaign's teardown failure never blocks the others (or the process exit)."""
+    import types
+    seen = []
+
+    def boom(**kw):
+        seen.append(kw["campaign"])
+        if kw["campaign"] == "camp-a":
+            raise RuntimeError("kube api down")
+
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.cluster_execution.cleanup_cluster_campaign",
+        boom)
+    running = [types.SimpleNamespace(campaign_id="camp-a"),
+               types.SimpleNamespace(campaign_id="camp-b")]
+
+    cs._terminate_running_campaigns(running)  # must not raise
+    assert seen == ["camp-a", "camp-b"]  # continued past the failure
+
+
 # -- driver S3 endpoint (off-cluster host reachability) ---------------------
 
 def test_driver_endpoint_in_cluster_uses_cluster_internal(cs, monkeypatch):

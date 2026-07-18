@@ -76,7 +76,8 @@ from robovast.common.execution import (build_job_parameter_documents,
                                        resolve_robovast_image,
                                        write_job_links_manifest)
 from robovast.common import prepare_campaign_configs
-from robovast.execution.backends import ExecutionBackend, RunOptions
+from robovast.execution.backends import (CampaignStopped, ExecutionBackend,
+                                          RunOptions)
 from robovast.execution.packer import build_jobs
 
 from . import in_pod_storage
@@ -128,9 +129,13 @@ class BatchJobRunner:
     job manifests without touching the API (only :meth:`run_batch_in_pod` does).
     """
 
+    #: Cooperative-stop signal, set by :meth:`for_batch`. Class-level default so a
+    #: runner built another way (offline manifest emit, tests) has no stop wired.
+    _state = None
+
     @classmethod
     def for_batch(cls, *, campaign_data, campaign_id, batch_tag, runs, cluster_config,
-                  namespace, image, kube_context=None, log_tree=False):
+                  namespace, image, kube_context=None, log_tree=False, state=None):
         self = cls()
         self.cluster_config = cluster_config
         self.namespace = namespace
@@ -138,6 +143,8 @@ class BatchJobRunner:
         # Kubernetes API client uses in-cluster config (see _ensure_k8s_initialized).
         self.kube_context = kube_context
         self.log_tree = log_tree
+        # Cooperative-stop signal; ``None`` for offline callers (prepare-run).
+        self._state = state
 
         self.campaign = campaign_id
         self.campaign_data = campaign_data
@@ -615,12 +622,20 @@ class BatchJobRunner:
                     self._batch_tag, len(job_names))
 
         while True:
+            if self._state is not None and self._state.stop_requested:
+                raise CampaignStopped(f"campaign {self.campaign} stopped during batch "
+                                      f"{self._batch_tag}")
             remaining = self.get_remaining_jobs(job_names)
             if not remaining:
                 break
             logger.info("Batch %s: %d/%d job(s) still running...",
                         self._batch_tag, len(remaining), len(job_names))
             time.sleep(2)
+        # A stop that landed while the last jobs were being torn down leaves the loop
+        # via the empty-remaining path; catch it here too before the result download.
+        if self._state is not None and self._state.stop_requested:
+            raise CampaignStopped(f"campaign {self.campaign} stopped during batch "
+                                  f"{self._batch_tag}")
         logger.info("Batch %s: all jobs finished.", self._batch_tag)
 
         # 4. Project this batch's results — and the campaign-level snapshot — from
@@ -697,11 +712,14 @@ class KubernetesBackend(ExecutionBackend):
     """
 
     def __init__(self, *, cluster_config, namespace="default", kube_context=None,
-                 log_tree=False):
+                 log_tree=False, state=None):
         self.cluster_config = cluster_config
         self.namespace = namespace
         self.kube_context = kube_context
         self.log_tree = log_tree
+        # Cooperative-stop signal (Ctrl+C / Stop): lets the batch wait loop abort
+        # cleanly instead of pressing on into a doomed result download.
+        self._state = state
         # Lazily-built read-only storage client for count_run_artifacts (the
         # controller's progress poller); separate from the write path.
         self._progress_storage = None
@@ -724,6 +742,7 @@ class KubernetesBackend(ExecutionBackend):
             image=image,
             kube_context=self.kube_context,
             log_tree=self.log_tree or options.log_tree,
+            state=self._state,
         )
         runner.run_batch_in_pod(campaign_root)
 

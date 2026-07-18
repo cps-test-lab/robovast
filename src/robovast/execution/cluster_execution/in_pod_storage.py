@@ -45,16 +45,32 @@ _EXECUTABLE_META = {"executable": "yes"}
 
 
 def _iter_files(local_dir):
-    """Yield ``(absolute_path, posix_relative_path)`` for every file under *local_dir*."""
+    """Yield ``(absolute_path, posix_relative_path)`` for every file under *local_dir*.
+
+    Skips **broken symlinks** — an interrupted/stopped campaign can leave a ``job``
+    link (``<config>/<run>/job`` → ``_jobs/<batch>/job-<idx>``) whose target was never
+    produced, and a dangling link has nothing to upload. ``os.walk`` reports such a
+    link as a *file* (its target can't be resolved to a directory), so without this
+    guard ``os.stat`` on it would abort the whole upload. A resolvable ``job`` link is
+    a directory and is never yielded as a file, so this changes nothing for a complete
+    campaign.
+    """
     for root, _dirs, files in os.walk(local_dir):
         for name in files:
             abs_path = os.path.join(root, name)
+            if not os.path.exists(abs_path):  # follows symlinks; False for a dangling one
+                logger.warning("Skipping unreadable path during upload: %s", abs_path)
+                continue
             rel = os.path.relpath(abs_path, local_dir).replace(os.sep, "/")
             yield abs_path, rel
 
 
 def _is_executable(path: str) -> bool:
-    return bool(os.stat(path).st_mode & 0o111)
+    try:
+        return bool(os.stat(path).st_mode & 0o111)
+    except OSError:
+        # Raced with a vanishing/dangling path; not executable, and not fatal.
+        return False
 
 
 class StorageClient:

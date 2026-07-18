@@ -50,7 +50,8 @@ from robovast.common.logging_config import (add_campaign_log_handler,
                                             remove_campaign_log_handler)
 from robovast.common.store import STORE_FILENAME, CampaignStore
 
-from .backends import DockerBackend, ExecutionBackend, RunOptions
+from .backends import (CampaignStopped, DockerBackend, ExecutionBackend,
+                       RunOptions)
 from .notify import Notifier
 
 # Use the qualified name rather than __name__ so this module's records always
@@ -177,7 +178,20 @@ class CampaignController:
             if self.state is not None:
                 self.state.set_phase("finished")
             return result
+        except CampaignStopped:
+            # A clean cooperative stop (Ctrl+C / Stop button / MCP stop).
+            if self.state is not None:
+                self.state.set_phase("stopped")
+            logger.info("Campaign %s stopped by request.", self.campaign_id)
+            raise
         except BaseException as exc:
+            # A stop can also surface as an arbitrary error — e.g. the storage tunnel
+            # dies on Ctrl+C mid-operation. If a stop was requested, that is the clean
+            # reason: report "stopped", not a failure with a misleading traceback.
+            if self.state is not None and self.state.stop_requested:
+                self.state.set_phase("stopped")
+                logger.info("Campaign %s stopped by request.", self.campaign_id)
+                raise CampaignStopped(str(exc)) from None
             if self.state is not None:
                 self.state.set_phase("failed")
             self.notifier.failed(f"{type(exc).__name__}: {exc}")
@@ -506,6 +520,23 @@ def _finalize(backend: ExecutionBackend, campaign_root: str) -> None:
     except Exception:  # pylint: disable=broad-except
         logger.warning("Campaign finalize hook failed", exc_info=True)
 
+
+def _finish_campaign(backend: ExecutionBackend, campaign_root: str, campaign_id: str,
+                     state, options: "RunOptions | None") -> None:
+    """The builders' ``finally`` tail: chain postprocessing, then finalize-upload.
+
+    Skipped entirely when a cooperative **stop** was requested: on Ctrl+C the cluster
+    storage tunnel is torn down with the process group, so a download/postprocess/
+    upload here would only fail noisily against a dead endpoint. A stopped campaign's
+    per-run results were already uploaded by its jobs, so there is nothing to salvage.
+    """
+    if state is not None and state.stop_requested:
+        logger.info("Campaign %s stopped — skipping postprocessing and finalize upload.",
+                    campaign_id)
+        return
+    _chain_postprocessing(backend, campaign_root, campaign_id, state, options)
+    _finalize(backend, campaign_root)
+
 def _make_upload_progress_cb(state):
     """Return a ``(bytes_sent, total_bytes)`` callback that publishes throttled
     upload progress into ``Status.extra['upload']``, or ``None`` if there is no
@@ -571,8 +602,7 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
         _campaign_root = os.path.join(results_dir, campaign_id)
         # After store.close() (campaign.db flushed, which data.db's `runs` table
         # reads) and before _finalize, so data.db rides the existing upload.
-        _chain_postprocessing(be, _campaign_root, campaign_id, state, opts)
-        _finalize(be, _campaign_root)
+        _finish_campaign(be, _campaign_root, campaign_id, state, opts)
 
 
 def _record_controller_failure(campaign_root, campaign_id, state, exc, backend):
@@ -713,5 +743,4 @@ def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_fil
             _campaign_root = os.path.join(results_dir, campaign_id)
             # After store.close() (campaign.db flushed, which data.db's `runs` table
             # reads) and before _finalize, so data.db rides the existing upload.
-            _chain_postprocessing(be, _campaign_root, campaign_id, state, opts)
-            _finalize(be, _campaign_root)
+            _finish_campaign(be, _campaign_root, campaign_id, state, opts)

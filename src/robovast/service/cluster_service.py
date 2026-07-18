@@ -179,7 +179,8 @@ class ClusterService(LocalTransport):
             KubernetesBackend
         return KubernetesBackend(cluster_config=self._cluster_config(),
                                  namespace=self.namespace,
-                                 kube_context=self.kube_context)
+                                 kube_context=self.kube_context,
+                                 state=state)
 
     def _run_options(self, request):
         from robovast.execution.backends import RunOptions
@@ -418,17 +419,42 @@ class ClusterService(LocalTransport):
         unblocks (``get_remaining_jobs`` treats a gone Job as finished), and the
         driver winds the campaign down.
         """
-        from robovast.execution.cluster_execution.cluster_execution import \
-            cleanup_cluster_campaign
         with self._lock:
             entry = self._campaigns.get(campaign_id)
         if entry is None:
             return ActionResult(
                 ok=False, message=f"campaign {campaign_id} is not running here")
         entry.state.request_stop()
+        self._teardown_campaign_jobs(campaign_id)
+        return ActionResult(ok=True, message="stop requested; in-flight jobs terminated")
+
+    def _teardown_campaign_jobs(self, campaign_id: str) -> None:
+        """Delete one campaign's in-flight cluster workloads (Kueue-aware, scoped).
+
+        Reuses ``cleanup_cluster_campaign`` — the same teardown ``vast exec cluster
+        run-cleanup`` performs — so the running pods terminate now and the driver's
+        batch wait loop unblocks. Scoped to this campaign (``"Hold"``, not
+        ``"HoldAndDrain"``), so other campaigns are not preempted.
+        """
+        from robovast.execution.cluster_execution.cluster_execution import \
+            cleanup_cluster_campaign
         cleanup_cluster_campaign(namespace=self.namespace, campaign=campaign_id,
                                  context=self.kube_context)
-        return ActionResult(ok=True, message="stop requested; in-flight jobs terminated")
+
+    def _terminate_running_campaigns(self, running) -> None:
+        """On ``vast serve`` shutdown (Ctrl+C), tear down every running campaign's Jobs.
+
+        Overrides the local single-container kill: a cluster campaign's compute is its
+        scenario Jobs, so a bare service exit would orphan them (they keep consuming
+        cluster resources). Each teardown is best-effort so one failure never blocks
+        the others or the process exit.
+        """
+        for entry in running:
+            try:
+                self._teardown_campaign_jobs(entry.campaign_id)
+            except Exception:  # noqa: BLE001 - shutdown must not mask the exit
+                logger.warning("Could not tear down jobs for %s during shutdown",
+                               entry.campaign_id, exc_info=True)
 
     # -- shutdown -----------------------------------------------------------
 
@@ -527,7 +553,7 @@ class ClusterService(LocalTransport):
         running: set = set()
         if request.campaign_id is None or not request.force:
             for c in self.list_campaigns(ListCampaignsRequest(limit=1000)).campaigns:
-                if c.phase not in ("finished", "failed", "unknown"):
+                if c.phase not in ("finished", "failed", "stopped", "unknown"):
                     # Match both the raw id and its sanitised bucket name, since
                     # ``cleanup_campaigns`` compares against object-store names.
                     running.add(c.campaign_id)

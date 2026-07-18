@@ -794,7 +794,7 @@ def list_running_campaigns() -> dict:
         client = _service_client()
         if client is not None:
             resp = client.list_campaigns()
-            terminal = {"finished", "failed", "crashed", "unknown"}
+            terminal = {"finished", "failed", "stopped", "crashed", "unknown"}
             running = [{"campaign_id": c.campaign_id, "backend": "service",
                         "status": c.phase}
                        for c in resp.campaigns if c.phase not in terminal]

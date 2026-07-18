@@ -54,7 +54,20 @@ Kueue-aware, campaign-scoped ``cleanup_cluster_campaign`` (the same cleanup
 ``vast exec cluster run-cleanup`` performs). Deleting the Jobs unblocks the wait
 loop (``get_remaining_jobs`` treats a gone Job as finished) so the campaign winds
 down promptly; the ``"Hold"`` (never ``"HoldAndDrain"``) queue policy means other
-queued/running campaigns are not preempted.
+queued/running campaigns are not preempted. **Service shutdown** (Ctrl+C on
+``vast serve``, e.g. an off-cluster ``--backend cluster -x <context>`` driver) runs
+the same teardown for *every* running campaign via the
+``_terminate_running_campaigns`` hook — the cluster analogue of the local backend's
+single-container kill — so a bare exit never orphans in-flight Jobs on the cluster.
+
+A stopped campaign is reported as a **clean terminal**, not a failure. Ctrl+C also
+tears down the storage port-forward (it shares the process group), so the driver's
+finish work — result download, postprocessing, finalize upload — would otherwise fail
+against a dead endpoint and dump misleading tracebacks. Instead, the batch wait loop
+raises ``CampaignStopped`` the moment it sees the cooperative-stop flag (before any
+download), the controller sets phase ``"stopped"``, and the builders' finish tail
+(``_finish_campaign``) is skipped — the per-run results the jobs already uploaded are
+left as the campaign's output.
 
 .. code-block:: text
 
