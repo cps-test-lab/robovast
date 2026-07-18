@@ -75,7 +75,10 @@ export function App() {
         </Toolbar>
       </AppBar>
 
-      <Container maxWidth={tab === 2 || tab === 3 ? 'xl' : 'md'} sx={{ py: 3 }}>
+      <Container
+        maxWidth={tab === 0 ? false : tab === 2 || tab === 3 ? 'xl' : 'md'}
+        sx={{ py: 3 }}
+      >
         {tab === 0 ? (
           <Monitor />
         ) : tab === 1 ? (

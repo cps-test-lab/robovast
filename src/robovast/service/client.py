@@ -47,10 +47,11 @@ from robovast.service.interface import (ActionResult, CampaignRef,
                                         CampaignSummary, CreateCampaignRequest,
                                         CreateUploadRequest,
                                         CreateWorkspaceRequest, EditFileRequest,
-                                        FileContent, FileMeta,
-                                        ListCampaignsRequest,
-                                        ListCampaignsResponse,
+                                        FileContent, FileMeta, JobCounts,
+                                        JobSummary, ListCampaignsRequest,
+                                        ListCampaignsResponse, ListJobsResponse,
                                         ListFilesResponse, ListWorkspacesResponse,
+                                        LogChunk,
                                         PreviewConfiguration, PreviewResponse,
                                         RobovastInterface, Routes, UploadGrant,
                                         ValidationProblem, ValidationReport,
@@ -115,6 +116,20 @@ def _config_previews(config: dict, remotes: dict) -> list:
 # ---------------------------------------------------------------------------
 # Local (in-process) transport
 # ---------------------------------------------------------------------------
+
+
+def _read_log_slice(path: Path, offset: int, eof: bool) -> LogChunk:
+    """Read a single log file from byte *offset* onward into a :class:`LogChunk`.
+
+    The same offset-poll contract as the campaign log: ``next_offset`` is the new
+    end of file, ``eof`` signals no more bytes will be written. A not-yet-created
+    log (the run just started) reads as an empty, non-terminal chunk.
+    """
+    if not path.is_file():
+        return LogChunk(text="", next_offset=offset, eof=eof)
+    data = path.read_bytes()
+    return LogChunk(text=data[offset:].decode("utf-8", errors="replace"),
+                    next_offset=len(data), eof=eof)
 
 
 class _LocalCampaign:
@@ -493,6 +508,83 @@ class LocalTransport(RobovastInterface):
         eof = entry is None or self._is_done(entry)
         text, next_offset, eof = assemble_log_from_dir(campaign_dir, offset, eof)
         return LogChunk(text=text, next_offset=next_offset, eof=eof)
+
+    #: Directories under a campaign that are not per-configuration results.
+    _RESERVED_DIRS = frozenset({"_config", "_execution", "_transient"})
+
+    def list_jobs(self, campaign_id: str) -> ListJobsResponse:
+        """List the campaign's runs (local Docker fans a batch out into runs).
+
+        Runs are discovered on disk as ``<config>/<run-number>`` directories (the
+        same layout :func:`get_vast_configuration_info` reads); a run is
+        ``completed``/``failed`` by its ``test.xml`` result, or ``running`` when the
+        campaign is still live and the run has not produced one yet (local is
+        sequential, so at most one). Pending (not-yet-started) runs have no directory,
+        so they are counted from the controller's expected total but not listed.
+        """
+        from robovast.common.campaign_data import read_test_result
+        campaign_dir = self._campaigns_root() / campaign_id
+        with self._lock:
+            entry = self._campaigns.get(campaign_id)
+        live = entry is not None and not self._is_done(entry)
+
+        jobs: list[JobSummary] = []
+        if campaign_dir.is_dir():
+            config_dirs = sorted(
+                d for d in campaign_dir.iterdir()
+                if d.is_dir() and d.name not in self._RESERVED_DIRS
+                and not d.name.startswith("."))
+            for config_dir in config_dirs:
+                run_dirs = sorted(
+                    (d for d in config_dir.iterdir() if d.is_dir() and d.name.isdigit()),
+                    key=lambda d: int(d.name))
+                for run_dir in run_dirs:
+                    try:
+                        status = "completed" if read_test_result(run_dir)["success"] \
+                            else "failed"
+                    except FileNotFoundError:
+                        status = "running" if live else "failed"
+                    jobs.append(JobSummary(
+                        job_name=f"{config_dir.name}/{run_dir.name}",
+                        status=status,
+                        display_name=f"{config_dir.name} · run {run_dir.name}"))
+
+        expected_total = 0
+        if entry is not None:
+            snap = entry.state.snapshot()
+            expected_total = snap.runs.total if snap.runs else 0
+        pending = max(0, expected_total - len(jobs)) if live else 0
+        counts = JobCounts(
+            running=sum(1 for j in jobs if j.status == "running"),
+            pending=pending,
+            completed=sum(1 for j in jobs if j.status == "completed"),
+            failed=sum(1 for j in jobs if j.status == "failed"),
+            total=len(jobs) + pending)
+        return ListJobsResponse(jobs=jobs, counts=counts)
+
+    def get_job_log(self, campaign_id: str, job_name: str, offset: int = 0) -> LogChunk:
+        """Serve a run's live ``logs/system.log`` (``job_name`` = ``<config>/<run>``).
+
+        The run writes this file in place as it executes, so the same read serves a
+        running and a finished run; ``eof`` is set once the run has a result or the
+        campaign is no longer driven here.
+        """
+        from robovast.common.campaign_data import read_test_result
+        campaign_dir = self._campaigns_root() / campaign_id
+        run_dir = (campaign_dir / job_name).resolve()
+        # Guard against path traversal via a crafted job_name.
+        if campaign_dir.resolve() not in run_dir.parents or not run_dir.is_dir():
+            raise KeyError(f"job {job_name!r} not found in campaign {campaign_id!r}")
+        with self._lock:
+            entry = self._campaigns.get(campaign_id)
+        live = entry is not None and not self._is_done(entry)
+        try:
+            read_test_result(run_dir)
+            run_done = True
+        except FileNotFoundError:
+            run_done = False
+        return _read_log_slice(run_dir / "logs" / "system.log", offset,
+                               eof=run_done or not live)
 
     def stop(self, campaign_id: str) -> ActionResult:
         with self._lock:
@@ -902,6 +994,14 @@ class HTTPTransport(RobovastInterface):
         from robovast.service.interface import LogChunk
         return LogChunk.model_validate(
             self._get(Routes.campaign_logs(campaign_id), offset=offset))
+
+    def list_jobs(self, campaign_id: str) -> ListJobsResponse:
+        return ListJobsResponse.model_validate(
+            self._get(Routes.campaign_jobs(campaign_id)))
+
+    def get_job_log(self, campaign_id: str, job_name: str, offset: int = 0) -> LogChunk:
+        return LogChunk.model_validate(
+            self._get(Routes.job_log(campaign_id), job_name=job_name, offset=offset))
 
     def stop(self, campaign_id: str) -> ActionResult:
         return ActionResult.model_validate(self._post(Routes.campaign_stop(campaign_id)))

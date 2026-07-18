@@ -103,6 +103,39 @@ class ListCampaignsResponse(BaseModel):
     total: int = 0
 
 
+class JobSummary(BaseModel):
+    """One execution unit of a campaign's current batch.
+
+    A "job" is whatever the backend fans a batch out into: a single **run** on the
+    local Docker backend (sequential, so at most one is ``running``), or a
+    **Kubernetes Job** on the cluster backend (which may pack several runs).
+    ``job_name`` is the id :meth:`RobovastInterface.get_job_log` takes; ``display_name``
+    is an optional human-friendly label (config/run locally, batch/job-index on the
+    cluster).
+    """
+
+    job_name: str
+    status: str = "pending"          # running | pending | completed | failed
+    display_name: Optional[str] = None
+
+
+class JobCounts(BaseModel):
+    """Aggregate job status counts for a campaign's current batch."""
+
+    running: int = 0
+    pending: int = 0
+    completed: int = 0
+    failed: int = 0
+    total: int = 0
+
+
+class ListJobsResponse(BaseModel):
+    """Live per-job list + aggregate counts for one campaign's current batch."""
+
+    jobs: list[JobSummary] = Field(default_factory=list)
+    counts: JobCounts = Field(default_factory=JobCounts)
+
+
 class ActionResult(BaseModel):
     """Generic ``ok``/``message`` result for state-changing actions."""
 
@@ -440,6 +473,16 @@ class Routes:
         return f"/campaigns/{campaign_id}/logs"
 
     @staticmethod
+    def campaign_jobs(campaign_id: str) -> str:
+        return f"/campaigns/{campaign_id}/jobs"
+
+    @staticmethod
+    def job_log(campaign_id: str) -> str:
+        # ``job_name`` is a query param (it may contain '/', e.g. a local
+        # "<config>/<run>" id), so it never has to be path-encoded.
+        return f"/campaigns/{campaign_id}/job-log"
+
+    @staticmethod
     def campaign_upload_to_share(campaign_id: str) -> str:
         return f"/campaigns/{campaign_id}/upload-to-share"
 
@@ -548,6 +591,26 @@ class RobovastInterface(ABC):
         For streaming: poll from ``0``, append :attr:`LogChunk.text`, then poll
         again from the returned :attr:`LogChunk.next_offset`. Serves the live file
         while the campaign runs and the durable copy afterwards.
+        """
+
+    @abstractmethod
+    def list_jobs(self, campaign_id: str) -> ListJobsResponse:
+        """List the campaign's current-batch jobs (live) plus aggregate counts.
+
+        A "job" is one execution unit (a run locally, a Kubernetes Job on the
+        cluster). Reports live status only; pair with :meth:`get_job_log` to read a
+        running job's log.
+        """
+
+    @abstractmethod
+    def get_job_log(self, campaign_id: str, job_name: str,
+                    offset: int = 0) -> LogChunk:
+        """Return a **running** job's live log from byte *offset* onward.
+
+        Same streaming protocol as :meth:`get_campaign_logs` (poll, append
+        :attr:`LogChunk.text`, resume from :attr:`LogChunk.next_offset`). Live source
+        only — the running pod's log on the cluster, the live ``logs/system.log`` file
+        locally. Raises if the job's log source is gone.
         """
 
     @abstractmethod

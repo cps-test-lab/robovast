@@ -146,10 +146,12 @@ once results land, and the live controller phase is visible in the status
 .. note::
 
    The local ``stop`` is an abrupt kill (it terminates the launched process
-   group and reaps the campaign container). The cluster ``stop`` also sends the
-   controller a *cooperative* stop (it finishes the current batch and then
-   stops) before terminating the local waiter — killing the waiter alone would
-   not stop the in-cluster controller.
+   group and reaps the campaign container). The cluster ``stop`` sets the
+   driver's *cooperative* stop flag **and** tears down the campaign's in-flight
+   scenario Jobs (the same Kueue-aware cleanup as ``vast exec cluster
+   run-cleanup``, scoped to that one campaign) — so running work halts promptly
+   rather than only after the current batch. Other queued/running campaigns are
+   left untouched.
 
 .. note::
 
@@ -157,6 +159,17 @@ once results land, and the live controller phase is visible in the status
    and makes no Kubernetes call, so it never blocks on an unreachable cluster.
    For in-cluster detail beyond the local waiter's state, use
    ``vast exec cluster monitor``.
+
+.. note::
+
+   ``list_campaign_jobs`` and ``get_job_log`` give an assistant the same **live
+   per-job** view the web UI Monitor shows: the current batch's jobs with their
+   status (running / pending / completed / failed) and aggregate counts, and the
+   live log of a single **running** job (its scenario container's output — the
+   running pod's log on the cluster, the live ``system.log`` file locally). They
+   are served by the ``robovast-service``, so they need a reachable service
+   (a ``vast serve`` or a tunnel); a finished job whose pod has been
+   garbage-collected has no live log.
 
 .. note::
 

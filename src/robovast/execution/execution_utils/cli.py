@@ -489,14 +489,18 @@ def _monitor_via_service(namespace, kube_context, interval, once):
     prev = [0]
 
     def _live_counts(campaign_id):
-        """Current batch's live Job counts (running/pending) for this campaign."""
+        """Current batch's live job counts (running/pending) for this campaign.
+
+        Read from the service so it works in every deployment mode — including a
+        remote/in-cluster service the CLI host has no Kubernetes access to.
+        """
         if not campaign_id:
             return {}
         try:
-            per_run = get_cluster_job_counts_per_campaign(namespace, context=kube_context)
+            counts = client.list_jobs(campaign_id).counts
         except Exception:  # pylint: disable=broad-except
             return {}
-        return per_run.get(_label_safe_campaign(campaign_id), {})
+        return {"running": counts.running, "pending": counts.pending}
 
     def _campaign_lines(status):
         c = _live_counts(status.get("campaign_id"))

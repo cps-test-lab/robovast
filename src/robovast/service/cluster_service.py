@@ -53,8 +53,10 @@ from pathlib import Path
 from robovast.execution.control_server import Status
 from robovast.service.client import LocalTransport
 from robovast.service.interface import (ActionResult, CampaignSummary,
+                                        JobCounts, JobSummary,
                                         ListCampaignsRequest,
-                                        ListCampaignsResponse, VersionInfo)
+                                        ListCampaignsResponse, ListJobsResponse,
+                                        LogChunk, VersionInfo)
 
 logger = logging.getLogger(__name__)
 
@@ -142,13 +144,22 @@ class ClusterService(LocalTransport):
         from robovast.common.execution import resolve_controller_image
         return self._image or resolve_controller_image()
 
-    def _k8s(self):
-        from kubernetes import client, config
+    def _load_kube(self):
+        from kubernetes import config
         try:
             config.load_incluster_config()
         except Exception:  # noqa: BLE001 - off-cluster: use the selected context
             config.load_kube_config(context=self.kube_context)
+
+    def _k8s(self):
+        from kubernetes import client
+        self._load_kube()
         return client.CoreV1Api()
+
+    def _k8s_batch(self):
+        from kubernetes import client
+        self._load_kube()
+        return client.BatchV1Api()
 
     # -- launch hooks (see LocalTransport.create_campaign) -------------------
 
@@ -282,6 +293,78 @@ class ClusterService(LocalTransport):
         text, next_offset, eof = assemble_log(_object_bytes, offset, eof=True)
         return LogChunk(text=text, next_offset=next_offset, eof=eof)
 
+    # -- jobs (live) --------------------------------------------------------
+
+    def list_jobs(self, campaign_id: str) -> ListJobsResponse:
+        """List the campaign's scenario-run Kubernetes Jobs with live status.
+
+        Selects Jobs by the campaign label the backend stamps on them
+        (``jobgroup=scenario-runs,campaign-id=<label-safe>``) and classifies each
+        with :func:`job_phase` — the same logic as the aggregate counter.
+        ``display_name`` is the pod template's ``job-name-full`` annotation
+        (``<batch>-job-<index>``) for a readable label.
+        """
+        from robovast.execution.cluster_execution.cluster_execution import (
+            _label_safe_campaign, job_phase)
+        label = (f"jobgroup=scenario-runs,"
+                 f"campaign-id={_label_safe_campaign(campaign_id)}")
+        job_list = self._k8s_batch().list_namespaced_job(
+            self.namespace, label_selector=label)
+        jobs = [
+            JobSummary(job_name=job.metadata.name, status=job_phase(job),
+                       display_name=self._job_display_name(campaign_id, job))
+            for job in job_list.items]
+        counts = JobCounts(
+            running=sum(1 for j in jobs if j.status == "running"),
+            pending=sum(1 for j in jobs if j.status == "pending"),
+            completed=sum(1 for j in jobs if j.status == "completed"),
+            failed=sum(1 for j in jobs if j.status == "failed"),
+            total=len(jobs))
+        return ListJobsResponse(jobs=jobs, counts=counts)
+
+    @staticmethod
+    def _job_display_name(campaign_id, job) -> "str | None":
+        """The Job's ``job-name-full`` pod annotation, minus the campaign prefix."""
+        try:
+            full = job.spec.template.metadata.annotations.get("job-name-full")
+        except AttributeError:
+            return None
+        if full and full.startswith(f"{campaign_id}-"):
+            return full[len(campaign_id) + 1:]
+        return full
+
+    def get_job_log(self, campaign_id: str, job_name: str, offset: int = 0) -> LogChunk:
+        """Serve a running Job's live pod log from byte *offset* onward.
+
+        Finds the Job's pod by the auto-added ``job-name`` label and streams its
+        ``robovast`` container log. Live source only: a pod still ``Pending`` has no
+        log yet (empty, non-terminal chunk); a missing pod raises (→ 404).
+        """
+        from kubernetes import client
+        from robovast.execution.cluster_execution.cluster_execution import \
+            _label_safe_campaign
+        core = self._k8s()
+        label = (f"jobgroup=scenario-runs,"
+                 f"campaign-id={_label_safe_campaign(campaign_id)},job-name={job_name}")
+        pods = core.list_namespaced_pod(self.namespace, label_selector=label)
+        if not pods.items:
+            raise KeyError(f"no pod for job {job_name!r} in campaign {campaign_id!r}")
+        pod = pods.items[0]
+        if pod.status and pod.status.phase == "Pending":
+            return LogChunk(text="", next_offset=offset, eof=False)
+        try:
+            text = core.read_namespaced_pod_log(
+                name=pod.metadata.name, namespace=self.namespace, container="robovast")
+        except client.exceptions.ApiException as e:
+            if e.status == 404:
+                raise KeyError(
+                    f"pod for job {job_name!r} is gone (campaign {campaign_id!r})") from e
+            raise
+        raw = text.encode("utf-8", "replace")
+        terminal = bool(pod.status and pod.status.phase in ("Succeeded", "Failed"))
+        return LogChunk(text=raw[offset:].decode("utf-8", "replace"),
+                        next_offset=len(raw), eof=terminal)
+
     def _read_outcome(self, campaign_id: str) -> "Status | None":
         """Read the campaign's durable terminal outcome from the object store."""
         from robovast.execution.cluster_execution import in_pod_storage
@@ -324,20 +407,28 @@ class ClusterService(LocalTransport):
         return ListCampaignsResponse(campaigns=window, total=total)
 
     def stop(self, campaign_id: str) -> ActionResult:
-        """Cooperatively stop a campaign this process is driving.
+        """Stop a campaign this process is driving.
 
-        The driver is in this process, so ``stop`` is a direct state flag rather than
-        an HTTP command to a controller pod. The loop ends after the current batch and
-        the worker's teardown deletes the aux pod; in-flight scenario Jobs are left to
-        finish (``vast exec cluster run-cleanup`` removes them).
+        The driver is in this process, so the cooperative flag is a direct state
+        write. That flag alone only ends a *search* between generations, though — a
+        batch campaign's wait loop blocks until its Jobs finish on their own, so the
+        flag would appear to do nothing. We therefore also tear down the campaign's
+        cluster workloads (the same Kueue-aware cleanup ``vast exec cluster
+        run-cleanup`` performs): the running pods terminate now, the batch wait loop
+        unblocks (``get_remaining_jobs`` treats a gone Job as finished), and the
+        driver winds the campaign down.
         """
+        from robovast.execution.cluster_execution.cluster_execution import \
+            cleanup_cluster_campaign
         with self._lock:
             entry = self._campaigns.get(campaign_id)
         if entry is None:
             return ActionResult(
                 ok=False, message=f"campaign {campaign_id} is not running here")
         entry.state.request_stop()
-        return ActionResult(ok=True, message="cooperative stop requested")
+        cleanup_cluster_campaign(namespace=self.namespace, campaign=campaign_id,
+                                 context=self.kube_context)
+        return ActionResult(ok=True, message="stop requested; in-flight jobs terminated")
 
     # -- shutdown -----------------------------------------------------------
 

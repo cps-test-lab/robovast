@@ -27,6 +27,15 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
     refetchInterval: (q) => (isTerminal((q.state.data as Status | undefined)?.phase) ? false : 1500),
   })
 
+  // Live per-job listing (running count + the clickable jobs list). Polled while the
+  // campaign runs; one final read once it is terminal so the completed jobs still show.
+  const jobs = useQuery({
+    queryKey: ['jobs', id],
+    queryFn: () => robovast.listJobs(id),
+    refetchInterval: () =>
+      isTerminal((status.data as Status | undefined)?.phase) ? false : 2000,
+  })
+
   const stop = useMutation({
     mutationFn: () => robovast.stop(id),
     onSuccess: () => {
@@ -64,6 +73,10 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
         <Alert severity="error" sx={{ mb: 1 }}>
           Stop failed: {(stop.error as Error).message}
         </Alert>
+      ) : stop.data && !stop.data.ok ? (
+        <Alert severity="warning" sx={{ mb: 1 }}>
+          {stop.data.message ?? 'Stop had no effect.'}
+        </Alert>
       ) : null}
 
       {status.isError ? (
@@ -74,7 +87,7 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
           </Typography>
         </Stack>
       ) : status.data ? (
-        <StatusView status={status.data} />
+        <StatusView status={status.data} jobs={jobs.data} />
       ) : (
         <Stack direction="row" spacing={1} alignItems="center">
           <PhaseChip phase={phase} />

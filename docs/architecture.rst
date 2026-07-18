@@ -47,6 +47,15 @@ campaign still runs as their own Kubernetes workloads, because each needs to be
 one: the scenario/postprocessing **Jobs**, and — only for variations that declare
 one — a per-campaign **auxiliary-container pod** the driver execs into.
 
+Because the driver's batch wait loop blocks on the running Jobs and the
+cooperative-stop flag is only checked *between* batches (or search generations),
+``ClusterService.stop`` also tears down that campaign's in-flight Jobs — reusing the
+Kueue-aware, campaign-scoped ``cleanup_cluster_campaign`` (the same cleanup
+``vast exec cluster run-cleanup`` performs). Deleting the Jobs unblocks the wait
+loop (``get_remaining_jobs`` treats a gone Job as finished) so the campaign winds
+down promptly; the ``"Hold"`` (never ``"HoldAndDrain"``) queue policy means other
+queued/running campaigns are not preempted.
+
 .. code-block:: text
 
            MCP tools ─┐
@@ -140,7 +149,13 @@ lives in the ``run_data`` MCP plugin):
   (``.vast``/``.osc`` only) / ``read_project_file`` / ``list_project_files`` /
   ``delete_project_file`` / ``create_upload``.
 * **Campaigns** — ``create_campaign`` (backend implicit in the deployment) /
-  ``get_status`` / ``list_campaigns`` / ``stop`` / ``upload_to_share``.
+  ``get_status`` / ``list_campaigns`` / ``list_jobs`` / ``get_job_log`` / ``stop`` /
+  ``upload_to_share``. ``list_jobs`` + ``get_job_log`` are the **live per-job** view
+  (the current batch's execution units and a single running job's log); each transport
+  implements them over its own source — the local run dirs + their ``logs/system.log``
+  (``LocalTransport``), or the campaign's Kubernetes Jobs + ``read_namespaced_pod_log``
+  (``ClusterService``). They report live state only; the persisted per-run logs remain
+  part of the campaign result data, served by ``get_campaign_logs`` unchanged.
 * **Postprocessing** — ``get_postprocessing`` / ``update_postprocessing`` /
   ``run_postprocessing``.
 * **Data query** (MCP ``run_data``) — ``describe_campaign_data`` /

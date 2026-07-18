@@ -40,6 +40,7 @@ from robovast.service.interface import (ActionResult, CampaignRef,
                                         CreateWorkspaceRequest, EditFileRequest,
                                         FileContent, FileMeta,
                                         ListCampaignsResponse, ListFilesResponse,
+                                        ListJobsResponse,
                                         ListWorkspacesResponse, LogChunk,
                                         PreviewResponse,
                                         RobovastInterface, Routes,
@@ -219,6 +220,14 @@ def build_app(impl: RobovastInterface):
     @app.get("/campaigns/{campaign_id}/logs", response_model=LogChunk)
     def get_campaign_logs(campaign_id: str, offset: int = 0) -> LogChunk:
         return _guard(lambda: impl.get_campaign_logs(campaign_id, offset))
+
+    @app.get(Routes.campaign_jobs("{campaign_id}"), response_model=ListJobsResponse)
+    def list_jobs(campaign_id: str) -> ListJobsResponse:
+        return _guard(lambda: impl.list_jobs(campaign_id))
+
+    @app.get(Routes.job_log("{campaign_id}"), response_model=LogChunk)
+    def get_job_log(campaign_id: str, job_name: str, offset: int = 0) -> LogChunk:
+        return _guard(lambda: impl.get_job_log(campaign_id, job_name, offset))
 
     @app.post("/campaigns/{campaign_id}/stop", response_model=ActionResult)
     def stop(campaign_id: str) -> ActionResult:

@@ -46,6 +46,23 @@ def _label_safe_campaign(campaign: str) -> str:
     return "".join(c for c in s if c.isalnum() or c in "-.")[:63]
 
 
+def job_phase(job) -> str:
+    """Classify a scenario-run Job into ``completed``/``running``/``failed``/``pending``.
+
+    Shared by the aggregate counter and the per-job lister so the two never drift.
+    """
+    status = job.status
+    if status is None:
+        return "pending"
+    if (status.succeeded or 0) >= 1:
+        return "completed"
+    if (status.active or 0) >= 1:
+        return "running"
+    if (status.failed or 0) >= 1:
+        return "failed"
+    return "pending"
+
+
 def cleanup_cluster_campaign(namespace="default", campaign=None, context=None):
     """Clean up scenario run jobs, pods, and Kueue workloads from the cluster.
 
@@ -70,7 +87,11 @@ def cleanup_cluster_campaign(namespace="default", campaign=None, context=None):
         campaign: If given, clean only this run's jobs/pods/workloads.
         context: Kubernetes context name to use. ``None`` uses the active context.
     """
-    kube_config.load_kube_config(context=context)
+    # In-cluster first (the service drives campaigns in-pod), else the host context.
+    try:
+        kube_config.load_incluster_config()
+    except kube_config.ConfigException:
+        kube_config.load_kube_config(context=context)
     k8s_client = client.CoreV1Api()
     k8s_batch_client = client.BatchV1Api()
 
@@ -266,22 +287,6 @@ def get_cluster_job_counts_per_campaign(namespace="default", context=None):
                 except (ValueError, TypeError):
                     pass
 
-        status = job.status
-        if status is None:
-            per_run[campaign]["pending"] += 1
-            continue
-
-        succeeded = status.succeeded or 0
-        failed = status.failed or 0
-        active = status.active or 0
-
-        if succeeded >= 1:
-            per_run[campaign]["completed"] += 1
-        elif active >= 1:
-            per_run[campaign]["running"] += 1
-        elif failed >= 1:
-            per_run[campaign]["failed"] += 1
-        else:
-            per_run[campaign]["pending"] += 1
+        per_run[campaign][job_phase(job)] += 1
 
     return per_run

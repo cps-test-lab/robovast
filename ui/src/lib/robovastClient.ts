@@ -96,6 +96,27 @@ export interface LogChunk {
   eof: boolean
 }
 
+// One execution unit of a campaign's current batch (a run locally, a k8s Job on
+// the cluster). Mirrors interface.py:JobSummary/JobCounts/ListJobsResponse.
+export interface JobSummary {
+  job_name: string
+  status: string // running | pending | completed | failed
+  display_name?: string | null
+}
+
+export interface JobCounts {
+  running: number
+  pending: number
+  completed: number
+  failed: number
+  total: number
+}
+
+export interface ListJobsResponse {
+  jobs: JobSummary[]
+  counts: JobCounts
+}
+
 export interface WorkspaceInfo {
   workspace_id: string
   name: string
@@ -287,6 +308,17 @@ export const robovast = {
       postprocess: true,
       ...req,
     }),
+
+  listJobs: (campaignId: string) =>
+    request<ListJobsResponse>('GET', `/campaigns/${encodeURIComponent(campaignId)}/jobs`),
+
+  getJobLog: (campaignId: string, jobName: string, offset = 0) =>
+    request<LogChunk>(
+      'GET',
+      `/campaigns/${encodeURIComponent(campaignId)}/job-log?job_name=${encodeURIComponent(
+        jobName,
+      )}&offset=${offset}`,
+    ),
 
   stop: (campaignId: string) =>
     request<ActionResult>('POST', `/campaigns/${encodeURIComponent(campaignId)}/stop`),

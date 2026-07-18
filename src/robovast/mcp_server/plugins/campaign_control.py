@@ -613,6 +613,65 @@ def get_campaign_log(campaign_id: str, lines: int = 200, offset: int = 0) -> dic
     }
 
 
+def list_campaign_jobs(campaign_id: str) -> dict:
+    """List a campaign's current-batch jobs (live) with aggregate status counts.
+
+    A "job" is one execution unit of the campaign: a single **run** on the local
+    Docker backend (sequential, so at most one is ``running``), or a **Kubernetes
+    Job** on the cluster backend. Reports live status only — pair with
+    :func:`get_job_log` to read a running job's log.
+
+    Requires a reachable robovast-service (bring up a ``vast serve`` or a tunnel).
+
+    Args:
+        campaign_id: The id returned by :func:`start_campaign`.
+
+    Returns:
+        ``{jobs: [{job_name, status, display_name}], counts: {running, pending,
+        completed, failed, total}}`` where ``status`` is one of ``running`` /
+        ``pending`` / ``completed`` / ``failed``; ``{error}`` if no service is reachable.
+    """
+    client = _service_client()
+    if client is None:
+        return {"error": "no robovast-service reachable (bring up a 'vast serve' or "
+                         "a tunnel before starting MCP); live job listing is served "
+                         "by the service"}
+    try:
+        return client.list_jobs(campaign_id).model_dump()
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
+
+
+def get_job_log(campaign_id: str, job_name: str, offset: int = 0) -> dict:
+    """Read a **running** job's live log (its scenario container's stdout/stderr).
+
+    Streams the live log of one job from :func:`list_campaign_jobs` — the running
+    pod's log on the cluster, or the live ``logs/system.log`` file locally. Live
+    source only: a finished job whose pod has been garbage-collected has no live log.
+    Poll incrementally by passing the previous call's ``next_offset`` back as ``offset``.
+
+    Requires a reachable robovast-service.
+
+    Args:
+        campaign_id: The id returned by :func:`start_campaign`.
+        job_name: A ``job_name`` from :func:`list_campaign_jobs`.
+        offset: Byte offset to resume from (default 0).
+
+    Returns:
+        ``{text, next_offset, eof}``; ``{error}`` if no service is reachable or the
+        job's live log source is gone.
+    """
+    client = _service_client()
+    if client is None:
+        return {"error": "no robovast-service reachable (bring up a 'vast serve' or "
+                         "a tunnel before starting MCP); live job logs are served "
+                         "by the service"}
+    try:
+        return client.get_job_log(campaign_id, job_name, offset).model_dump()
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
+
+
 def stop_campaign(campaign_id: str) -> dict:
     """Stop a running campaign.
 
@@ -870,6 +929,8 @@ _TOOLS = [
     start_campaign,
     get_campaign_status,
     get_campaign_log,
+    list_campaign_jobs,
+    get_job_log,
     stop_campaign,
     list_running_campaigns,
     get_postprocessing,

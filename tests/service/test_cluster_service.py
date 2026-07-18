@@ -163,6 +163,161 @@ def test_unknown_campaign_status_falls_back_to_object_store(cs, monkeypatch):
     assert status.campaign_id == "nope-2026-07-17-120000"
 
 
+# -- jobs (live) ------------------------------------------------------------
+
+def _job(name, *, succeeded=0, active=0, failed=0, full=None):
+    import types
+    ann = {"job-name-full": full} if full is not None else {}
+    return types.SimpleNamespace(
+        metadata=types.SimpleNamespace(name=name),
+        status=types.SimpleNamespace(succeeded=succeeded, active=active, failed=failed),
+        spec=types.SimpleNamespace(template=types.SimpleNamespace(
+            metadata=types.SimpleNamespace(annotations=ann))))
+
+
+def test_list_jobs_classifies_and_counts(cs, monkeypatch):
+    """Per-job status mirrors the aggregate counter; counts sum to the total."""
+    import types
+    jobs = [
+        _job("j-run", active=1, full="camp-2026-07-17-120000-batch-0-job-0"),
+        _job("j-done", succeeded=1),
+        _job("j-fail", failed=1),
+        _job("j-pend"),
+    ]
+    seen = {}
+
+    class _Batch:
+        def list_namespaced_job(self, namespace, label_selector):
+            seen.update(namespace=namespace, label_selector=label_selector)
+            return types.SimpleNamespace(items=jobs)
+
+    monkeypatch.setattr(cs, "_k8s_batch", lambda: _Batch())
+    resp = cs.list_jobs("camp-2026-07-17-120000")
+
+    assert seen["namespace"] == "ns1"
+    assert "jobgroup=scenario-runs" in seen["label_selector"]
+    assert "campaign-id=camp-2026-07-17-120000" in seen["label_selector"]
+    assert (resp.counts.running, resp.counts.completed, resp.counts.failed,
+            resp.counts.pending, resp.counts.total) == (1, 1, 1, 1, 4)
+    running = next(j for j in resp.jobs if j.job_name == "j-run")
+    assert running.status == "running"
+    # campaign prefix stripped from job-name-full for a readable label
+    assert running.display_name == "batch-0-job-0"
+
+
+def _pod(name="pod-1", phase="Running"):
+    import types
+    return types.SimpleNamespace(
+        metadata=types.SimpleNamespace(name=name),
+        status=types.SimpleNamespace(phase=phase))
+
+
+def test_get_job_log_streams_running_pod(cs, monkeypatch):
+    import types
+    seen = {}
+
+    class _Core:
+        def list_namespaced_pod(self, namespace, label_selector):
+            seen["label_selector"] = label_selector
+            return types.SimpleNamespace(items=[_pod(phase="Running")])
+
+        def read_namespaced_pod_log(self, name, namespace, container):
+            seen.update(name=name, container=container)
+            return "hello world\n"
+
+    monkeypatch.setattr(cs, "_k8s", lambda: _Core())
+    chunk = cs.get_job_log("camp-2026-07-17-120000", "j-run")
+
+    assert "job-name=j-run" in seen["label_selector"]
+    assert seen["name"] == "pod-1" and seen["container"] == "robovast"
+    assert chunk.text == "hello world\n"
+    assert chunk.next_offset == len(b"hello world\n")
+    assert chunk.eof is False  # pod still running → keep polling
+    # byte-offset slicing resumes mid-stream
+    assert cs.get_job_log("camp-2026-07-17-120000", "j-run", offset=6).text == "world\n"
+
+
+def test_get_job_log_terminal_pod_sets_eof(cs, monkeypatch):
+    import types
+
+    class _Core:
+        def list_namespaced_pod(self, namespace, label_selector):
+            return types.SimpleNamespace(items=[_pod(phase="Succeeded")])
+
+        def read_namespaced_pod_log(self, name, namespace, container):
+            return "done\n"
+
+    monkeypatch.setattr(cs, "_k8s", lambda: _Core())
+    assert cs.get_job_log("camp", "j").eof is True
+
+
+def test_get_job_log_pending_pod_returns_empty(cs, monkeypatch):
+    """A pod still Pending has no log yet — empty, non-terminal, no log call."""
+    import types
+    called = {"log": False}
+
+    class _Core:
+        def list_namespaced_pod(self, namespace, label_selector):
+            return types.SimpleNamespace(items=[_pod(phase="Pending")])
+
+        def read_namespaced_pod_log(self, *a, **k):
+            called["log"] = True
+            return ""
+
+    monkeypatch.setattr(cs, "_k8s", lambda: _Core())
+    chunk = cs.get_job_log("camp", "j")
+    assert chunk.text == "" and chunk.eof is False
+    assert called["log"] is False
+
+
+def test_get_job_log_missing_pod_raises(cs, monkeypatch):
+    import types
+
+    class _Core:
+        def list_namespaced_pod(self, namespace, label_selector):
+            return types.SimpleNamespace(items=[])
+
+    monkeypatch.setattr(cs, "_k8s", lambda: _Core())
+    with pytest.raises(KeyError):
+        cs.get_job_log("camp", "gone")
+
+
+# -- stop (terminates in-flight cluster workloads) --------------------------
+
+def test_stop_flags_state_and_tears_down_this_campaign(cs, monkeypatch):
+    """Stop sets the cooperative flag AND deletes only this campaign's workloads.
+
+    The batch wait loop never checks the flag, so without the teardown a batch
+    campaign's Stop would do nothing; the teardown is campaign-scoped so other
+    queued/running campaigns are untouched.
+    """
+    import types
+    flagged = {}
+    state = types.SimpleNamespace(request_stop=lambda: flagged.update(stopped=True))
+    cs._campaigns["camp-1"] = types.SimpleNamespace(state=state)
+
+    calls = {}
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.cluster_execution.cleanup_cluster_campaign",
+        lambda **kw: calls.update(kw))
+
+    res = cs.stop("camp-1")
+    assert res.ok and flagged.get("stopped") is True
+    # Scoped to this campaign, in this namespace/context (reuses run-cleanup).
+    assert calls == {"namespace": "ns1", "campaign": "camp-1", "context": None}
+
+
+def test_stop_unknown_campaign_touches_no_cluster(cs, monkeypatch):
+    """A campaign not driven here reports not-tracked and deletes nothing."""
+    called = {"n": 0}
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.cluster_execution.cleanup_cluster_campaign",
+        lambda **kw: called.__setitem__("n", called["n"] + 1))
+    res = cs.stop("nope")
+    assert res.ok is False and "not running here" in res.message
+    assert called["n"] == 0
+
+
 # -- driver S3 endpoint (off-cluster host reachability) ---------------------
 
 def test_driver_endpoint_in_cluster_uses_cluster_internal(cs, monkeypatch):

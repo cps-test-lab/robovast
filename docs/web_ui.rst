@@ -14,11 +14,18 @@ It provides four views, one per desktop GUI:
 
 * **Monitor** — lists campaigns and shows each one's live progress (phase, per-batch
   run progress, budget/stopping criteria), with a **Stop** action and a collapsible
-  **live log** panel. The log is the campaign's unified *infrastructure* log — the
-  variation (config generation), run (controller) and postprocessing phases assembled
-  into one stream with ``===== PHASE =====`` dividers — streamed live from the service
-  and shown in full once it finishes. The browser equivalent of
-  ``vast exec cluster monitor``.
+  **live log** panel. The per-batch run bar also distinguishes **finished** runs (the
+  solid fill) from those **currently running** (a lighter segment on top), with the
+  exact ``running N · pending M`` counts beside it. A collapsible **Jobs** list shows
+  each execution unit of the current batch — a *run* locally, a Kubernetes *Job* on the
+  cluster — with its status; expanding a running one streams that **job's own live log**
+  (its scenario container's output). The campaign **live log** panel below is the
+  campaign's unified *infrastructure* log — the variation (config generation), run
+  (controller) and postprocessing phases assembled into one stream with
+  ``===== PHASE =====`` dividers — streamed live and shown in full once it finishes.
+  **Stop** cooperatively ends the campaign *and* terminates its in-flight jobs, so
+  running work halts promptly (not only after the current batch). The browser
+  equivalent of ``vast exec cluster monitor``.
 * **Launcher** — starts a campaign from a workspace (which ``.vast``, config filter,
   runs per configuration, postprocess toggle) and watches its live status. The
   browser equivalent of ``vast exec cluster run``.
