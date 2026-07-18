@@ -479,8 +479,16 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
             options.controller_image or resolve_controller_image(),
         )
         logger.info("Analysis postprocessing: %s", message)
-        if not ok and state is not None:
-            state.set_phase("failed", stage=f"postprocessing: {message}")
+        if state is not None:
+            if ok:
+                # Success must transition off "postprocessing"; otherwise the
+                # phase (and the webui monitor) stays stuck there — run() set
+                # "finished" before this finally-block chained postprocessing,
+                # and only the failure branch below moved it since. Mirrors the
+                # local path in ClusterService._postprocess.
+                state.set_phase("finished")
+            else:
+                state.set_phase("failed", stage=f"postprocessing: {message}")
     except Exception:  # pylint: disable=broad-except
         logger.warning("Analysis postprocessing failed", exc_info=True)
         if state is not None:
