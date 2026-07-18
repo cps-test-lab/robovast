@@ -52,6 +52,82 @@ def test_build_backend_threads_kube_context():
     assert backend.namespace == "ns2"
 
 
+def test_cleanup_campaign_data_runs_server_side(cs, monkeypatch):
+    """Bucket cleanup goes through the service with its own config/context.
+
+    So the CLI/MCP need no object-store credentials — the service passes its
+    ``_cluster_config()``, namespace and context straight to ``bucket_ops``.
+    """
+    calls = {}
+
+    def fake_cleanup(cluster_config, namespace, context, campaign_id,
+                     running_campaigns):
+        calls.update(namespace=namespace, context=context, campaign_id=campaign_id,
+                     running=running_campaigns)
+        return 3
+
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.bucket_ops.cleanup_campaigns",
+        fake_cleanup)
+    monkeypatch.setattr(cs, "kube_context", "local")
+
+    from robovast.service.interface import CleanupDataRequest
+    res = cs.cleanup_campaign_data(CleanupDataRequest(campaign_id="camp-1"))
+    assert res.ok and "3" in res.message
+    assert calls["namespace"] == "ns1" and calls["context"] == "local"
+    assert calls["campaign_id"] == "camp-1"
+
+
+def test_cleanup_campaign_data_skips_live_campaigns(cs, monkeypatch):
+    """A bulk delete must never remove a campaign the service is still driving."""
+    from robovast.service.interface import (CampaignSummary,
+                                            ListCampaignsResponse)
+
+    monkeypatch.setattr(cs, "list_campaigns", lambda *a, **k: ListCampaignsResponse(
+        total=2, campaigns=[
+            CampaignSummary(campaign_id="live-1", phase="running"),
+            CampaignSummary(campaign_id="done-1", phase="finished")]))
+    seen = {}
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.bucket_ops.cleanup_campaigns",
+        lambda *a, **kw: seen.update(kw) or 1)
+
+    from robovast.service.interface import CleanupDataRequest
+    cs.cleanup_campaign_data(CleanupDataRequest())  # campaign_id=None → bulk
+    assert "live-1" in seen["running_campaigns"]
+    assert "done-1" not in seen["running_campaigns"]
+
+
+def test_read_service_config_from_cluster_parses_env(monkeypatch):
+    """The cluster Deployment's env is the authoritative config source."""
+    import types
+
+    from robovast.execution.cluster_execution import service_deploy
+
+    class _EnvVar:
+        def __init__(self, name, value):
+            self.name, self.value = name, value
+
+    container = types.SimpleNamespace(env=[
+        _EnvVar("ROBOVAST_CLUSTER_CONFIG_NAME", "rke2"),
+        _EnvVar("ROBOVAST_CLUSTER_CONFIG_KWARGS", '{"namespace": "ns9"}')])
+    dep = types.SimpleNamespace(spec=types.SimpleNamespace(
+        template=types.SimpleNamespace(spec=types.SimpleNamespace(
+            containers=[container]))))
+
+    class _Apps:
+        def read_namespaced_deployment(self, name, namespace):
+            return dep
+
+    monkeypatch.setattr(service_deploy, "SERVICE_NAME", "robovast-service")
+    import kubernetes
+    monkeypatch.setattr(kubernetes.config, "load_kube_config", lambda **k: None)
+    monkeypatch.setattr(kubernetes.client, "AppsV1Api", lambda: _Apps())
+
+    name, kwargs = service_deploy.read_service_config_from_cluster("default", "local")
+    assert name == "rke2" and kwargs == {"namespace": "ns9"}
+
+
 # -- launch hooks -----------------------------------------------------------
 
 def test_campaigns_run_in_parallel(cs):
@@ -85,6 +161,64 @@ def test_unknown_campaign_status_falls_back_to_object_store(cs, monkeypatch):
     status = cs._status_from_disk("nope-2026-07-17-120000")
     assert status.phase == "unknown"
     assert status.campaign_id == "nope-2026-07-17-120000"
+
+
+# -- driver S3 endpoint (off-cluster host reachability) ---------------------
+
+def test_driver_endpoint_in_cluster_uses_cluster_internal(cs, monkeypatch):
+    """In-cluster (robovast:9000 resolves) → no override, no port-forward."""
+    opened = []
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.bucket_ops.open_minio_port_forward",
+        lambda ns, ctx: opened.append((ns, ctx)) or (object(), 1))
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
+
+    cfg = cs._cluster_config()
+    assert cfg.get_driver_s3_endpoint() == cfg.get_s3_endpoint() == "http://robovast:9000"
+    assert opened == []  # never port-forwarded in-cluster
+
+
+def test_driver_endpoint_off_cluster_embedded_lazily_forwards(cs, monkeypatch):
+    """Off-cluster + embedded MinIO → localhost port-forward, opened once, reused."""
+    import types
+
+    calls = []
+    alive = types.SimpleNamespace(poll=lambda: None)  # a running port-forward
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.bucket_ops.open_minio_port_forward",
+        lambda ns, ctx: calls.append((ns, ctx)) or (alive, 18099))
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    monkeypatch.setattr(cs, "kube_context", "local")
+
+    cfg = cs._cluster_config()
+    assert calls == []  # lazy: building the config opens nothing
+
+    assert cfg.get_driver_s3_endpoint() == "http://localhost:18099"
+    # A second config's resolver reuses the one shared forward.
+    assert cs._cluster_config().get_driver_s3_endpoint() == "http://localhost:18099"
+    assert calls == [("ns1", "local")]  # opened exactly once
+
+
+def test_shutdown_terminates_port_forward(cs, monkeypatch):
+    """Service teardown closes the shared MinIO port-forward."""
+    import types
+
+    proc = types.SimpleNamespace(_alive=True)
+    proc.poll = lambda: None if proc._alive else 0
+    terminated = {}
+    proc.terminate = lambda: terminated.update(done=True)
+    proc.wait = lambda timeout=None: 0
+
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.bucket_ops.open_minio_port_forward",
+        lambda ns, ctx: (proc, 18099))
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    cs._cluster_config().get_driver_s3_endpoint()  # opens the forward
+    assert cs._minio_pf is proc
+
+    cs.shutdown()
+    assert terminated.get("done") is True
+    assert cs._minio_pf is None
 
 
 # -- aux pod (replaces the controller-pod sidecar) --------------------------

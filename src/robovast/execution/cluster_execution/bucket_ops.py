@@ -68,6 +68,43 @@ def _find_available_port(start_port: int = 18080, max_attempts: int = 100) -> in
     )
 
 
+def open_minio_port_forward(namespace: str, context: Optional[str]):
+    """Open a ``kubectl port-forward`` to the embedded MinIO pod on a free local port.
+
+    Returns ``(proc, local_port)``: the running ``subprocess.Popen`` and the
+    forwarded local port (S3 reachable at ``http://localhost:<local_port>``). The
+    caller owns *proc* and must terminate it. Raises ``RuntimeError`` if the
+    tunnel does not become ready in time.
+
+    Shared between host-side one-shot ops (:func:`_s3_connection`, which tears the
+    forward down after the call) and the off-cluster service, which keeps one
+    forward open for its lifetime.
+    """
+    local_port = _find_available_port()
+    ctx_args = ["--context", context] if context else []
+    cmd = (
+        ["kubectl"] + ctx_args + [
+            "port-forward", "-n", namespace,
+            "pod/robovast", f"{local_port}:{_S3_PORT}",
+        ]
+    )
+    pf_proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    for _ in range(20):
+        time.sleep(0.5)
+        try:
+            with socket.create_connection(("localhost", local_port), timeout=1):
+                return pf_proc, local_port
+        except OSError:
+            continue
+    pf_proc.terminate()
+    raise RuntimeError("kubectl port-forward did not become ready in time")
+
+
 @contextlib.contextmanager
 def _s3_connection(cluster_config, namespace: str, context: Optional[str]):
     """Yield a boto3 S3 client, opening a port-forward for embedded MinIO."""
@@ -78,31 +115,8 @@ def _s3_connection(cluster_config, namespace: str, context: Optional[str]):
 
     pf_proc = None
     if uses_embedded:
-        local_port = _find_available_port()
+        pf_proc, local_port = open_minio_port_forward(namespace, context)
         endpoint = f"http://localhost:{local_port}"
-        ctx_args = ["--context", context] if context else []
-        cmd = (
-            ["kubectl"] + ctx_args + [
-                "port-forward", "-n", namespace,
-                "pod/robovast", f"{local_port}:{_S3_PORT}",
-            ]
-        )
-        pf_proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        for _ in range(20):
-            time.sleep(0.5)
-            try:
-                with socket.create_connection(("localhost", local_port), timeout=1):
-                    break
-            except OSError:
-                continue
-        else:
-            pf_proc.terminate()
-            raise RuntimeError("kubectl port-forward did not become ready in time")
 
     s3 = boto3.client(
         "s3",

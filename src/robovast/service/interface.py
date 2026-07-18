@@ -152,6 +152,19 @@ class UploadToShareRequest(BaseModel):
     overrides: dict = Field(default_factory=dict)
 
 
+class CleanupDataRequest(BaseModel):
+    """Which campaign result buckets to delete from the object store.
+
+    The service holds the cluster config (object-store credentials) and knows which
+    campaigns are live, so bucket cleanup runs server-side — the CLI never needs
+    cluster credentials. ``campaign_id`` None removes **all** finished campaigns
+    (live ones are always skipped); a given id removes just that one, and ``force``
+    removes it even if the service still considers it live.
+    """
+    campaign_id: Optional[str] = None
+    force: bool = False
+
+
 class LogChunk(BaseModel):
     """An incremental slice of a campaign's ``controller.log``.
 
@@ -430,6 +443,10 @@ class Routes:
     def campaign_upload_to_share(campaign_id: str) -> str:
         return f"/campaigns/{campaign_id}/upload-to-share"
 
+    #: Object-store bucket cleanup (server-side; not campaign-scoped in the path
+    #: because it also serves the "all campaigns" case).
+    CLEANUP_DATA = "/campaigns/cleanup-data"
+
     @staticmethod
     def campaign_postprocessing(campaign_id: str) -> str:
         return f"/campaigns/{campaign_id}/postprocessing"
@@ -551,6 +568,15 @@ class RobovastInterface(ABC):
         Stateless and repeatable: it reads the campaign from its durable home (the
         object store), so a failed upload is retried by calling this again — pass
         *overrides* (``{ENV_VAR: value}``) to correct or switch the share settings.
+        """
+
+    @abstractmethod
+    def cleanup_campaign_data(self, request: CleanupDataRequest) -> ActionResult:
+        """Delete campaign result bucket(s) from the object store.
+
+        Runs server-side because the service holds the cluster config (object-store
+        credentials) and the authoritative live-campaign set — so the CLI needs no
+        cluster credentials. Live campaigns are skipped unless ``force`` names one.
         """
 
     # -- postprocessing (editable, re-runnable; never mutates _config) ------

@@ -146,6 +146,60 @@ class BaseConfig(object):
         """
         return None
 
+    def get_driver_s3_endpoint(self) -> str:
+        """Return the S3 endpoint the in-process driver's **own** storage client
+        should use (see :func:`..cluster_execution.in_pod_storage.storage_client_for`).
+
+        Defaults to the cluster-internal endpoint (:meth:`get_s3_endpoint`),
+        correct when the driver runs in-cluster. When the driver runs
+        **off-cluster** (the service on the host), that host installs a resolver via
+        :meth:`set_driver_s3_endpoint_resolver` (typically wrapping
+        :meth:`resolve_driver_s3_endpoint`). Job / init-container manifests keep
+        using :meth:`get_s3_endpoint`.
+
+        The resolver is consulted **here**, lazily, so a host that opens a
+        port-forward pays for it only when the driver actually builds a storage
+        client — not on every config build.
+
+        Returns:
+            str: S3 endpoint URL
+        """
+        resolver = getattr(self, "_driver_s3_endpoint_resolver", None)
+        endpoint = resolver() if resolver is not None else None
+        return endpoint or self.get_s3_endpoint()
+
+    def set_driver_s3_endpoint_resolver(self, resolver) -> None:
+        """Install a zero-arg callable returning the driver endpoint (or ``None``).
+
+        See :meth:`get_driver_s3_endpoint`. ``None`` clears any resolver, restoring
+        the cluster-internal default.
+        """
+        self._driver_s3_endpoint_resolver = resolver
+
+    def resolve_driver_s3_endpoint(self, open_port_forward) -> Optional[str]:
+        """Policy: the host-reachable S3 endpoint for an off-cluster driver.
+
+        This is where each config declares **how its storage is reachable from the
+        host**, so the off-cluster host (the service) needs no per-provider
+        knowledge:
+
+        * embedded MinIO (the default) has no host route, so it calls
+          *open_port_forward* — a zero-arg callback that opens a ``kubectl
+          port-forward`` and returns a ``http://localhost:<port>`` URL;
+        * external S3 / GCS-over-S3 return :meth:`get_host_s3_endpoint` (directly
+          reachable, no tunnel).
+
+        Native-GCS configs never reach here — ``storage_client_for`` builds a GCS
+        client for them, which talks to ``storage.googleapis.com`` from anywhere.
+
+        Args:
+            open_port_forward: Callable opening the tunnel on demand and returning
+                the resulting host URL. Only invoked when a tunnel is needed.
+        """
+        if self.uses_embedded_s3():
+            return open_port_forward()
+        return self.get_host_s3_endpoint()
+
     def get_s3_credentials(self) -> tuple:
         """Return the ``(access_key, secret_key)`` pair for the S3 service.
 
@@ -221,8 +275,9 @@ class BaseConfig(object):
         on a freshly instantiated config object.
 
         Args:
-            kwargs: The ``setup_kwargs`` dict that was persisted to the
-                    cluster flag file by :func:`save_cluster_setup_info`.
+            kwargs: The ``setup_kwargs`` dict recorded at ``setup`` in the deployed
+                    robovast-service's env and read back by
+                    :func:`~robovast.execution.cluster_execution.service_deploy.read_service_config_from_cluster`.
         """
 
     @staticmethod

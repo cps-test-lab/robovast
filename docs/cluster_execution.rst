@@ -172,11 +172,19 @@ Clean up only the job objects (without touching the result storage):
    vast execution cluster run-cleanup
    vast execution cluster run-cleanup --campaign campaign-2025-06-01-120000
 
-Remove result archives from S3 (after uploading or when no longer needed):
+Remove result buckets from the object store (after uploading or when no longer
+needed). This runs **through the robovast-service** — it holds the object-store
+credentials, so no local credentials are needed and a bulk delete never removes a
+campaign that is still running:
 
 .. code-block:: bash
 
    vast execution cluster download-cleanup
+   vast execution cluster download-cleanup --campaign campaign-2025-06-01-120000
+
+The service is auto-detected on the conventional local port, or pass ``--cluster``
+(``-x`` context, ``-n`` namespace) to tunnel to the in-cluster service for the call.
+``run-cleanup --data`` deletes the buckets the same way after removing the Jobs.
 
 
 Push notifications (ntfy)
@@ -216,6 +224,11 @@ what the service would submit):
 The generated Job manifests are produced by the same builder the controller uses
 at run time, so they match what a real run submits. (For search campaigns, use
 ``vast execution cluster run``.)
+
+To bake in credentials, ``prepare-run`` reads the cluster config from the deployed
+robovast-service (so it needs kubeconfig access to that cluster); pass
+``--cluster-config <name>`` with ``-o key=value`` credentials to run fully offline
+against a cluster that isn't up yet.
 
 The output directory contains:
 

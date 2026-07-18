@@ -306,7 +306,7 @@ def storage_client_for(cluster_config) -> StorageClient:
         return _GcsStorageClient(key_json=cluster_config.get_gcs_key_json())
     access_key, secret_key = cluster_config.get_s3_credentials()
     return _S3StorageClient(
-        endpoint=cluster_config.get_s3_endpoint(),
+        endpoint=cluster_config.get_driver_s3_endpoint(),
         access_key=access_key,
         secret_key=secret_key,
         region=cluster_config.get_s3_region(),

@@ -47,6 +47,7 @@ import contextlib
 import json
 import logging
 import os
+import threading
 from pathlib import Path
 
 from robovast.execution.control_server import Status
@@ -80,6 +81,12 @@ class ClusterService(LocalTransport):
             raw = os.environ.get("ROBOVAST_CLUSTER_CONFIG_KWARGS")
             self._config_kwargs = json.loads(raw) if raw else {}
         self._image = image  # resolved lazily
+        # Off-cluster + embedded MinIO: one persistent kubectl port-forward for the
+        # service lifetime, giving the in-process driver's storage client a
+        # host-reachable S3 endpoint (see _driver_s3_endpoint / _cluster_config).
+        self._minio_pf = None
+        self._minio_pf_endpoint = None
+        self._pf_lock = threading.Lock()
         if reap_on_start:
             self.reap_orphans()
 
@@ -102,7 +109,34 @@ class ClusterService(LocalTransport):
         cfg = get_cluster_config(self._config_name)
         if self._config_kwargs:
             cfg.restore_from_setup_kwargs(self._config_kwargs)
+        # Off-cluster the driver's storage client cannot use the cluster-internal
+        # endpoint, so install a resolver giving it a host-reachable one. Every
+        # off-cluster storage_client_for caller uses a cfg built here (the
+        # service's, directly or via backend.cluster_config), so this one line
+        # reaches them all — no arg threading. The config owns the per-provider
+        # policy (embedded → port-forward, else → direct); the service only owns
+        # the port-forward. In-cluster we install nothing: robovast:9000 resolves.
+        # Lazy: the port-forward opens only when a storage client is actually built.
+        if not os.environ.get("KUBERNETES_SERVICE_HOST"):
+            cfg.set_driver_s3_endpoint_resolver(
+                lambda: cfg.resolve_driver_s3_endpoint(self._minio_port_forward_endpoint))
         return cfg
+
+    def _minio_port_forward_endpoint(self) -> str:
+        """Return ``http://localhost:<port>`` for the shared MinIO port-forward,
+        opening (or re-opening a dead) forward under the lock."""
+        from robovast.execution.cluster_execution.bucket_ops import \
+            open_minio_port_forward
+        with self._pf_lock:
+            if self._minio_pf is not None and self._minio_pf.poll() is not None:
+                self._minio_pf = None  # forward died; drop it and reopen below
+            if self._minio_pf is None:
+                self._minio_pf, port = open_minio_port_forward(
+                    self.namespace, self.kube_context)
+                self._minio_pf_endpoint = f"http://localhost:{port}"
+                logger.info("Opened MinIO port-forward for driver S3 at %s",
+                            self._minio_pf_endpoint)
+            return self._minio_pf_endpoint
 
     def _resolve_image(self):
         from robovast.common.execution import resolve_controller_image
@@ -305,6 +339,23 @@ class ClusterService(LocalTransport):
         entry.state.request_stop()
         return ActionResult(ok=True, message="cooperative stop requested")
 
+    # -- shutdown -----------------------------------------------------------
+
+    def shutdown(self) -> None:
+        """Stop running campaigns, then tear down the shared MinIO port-forward."""
+        try:
+            super().shutdown()
+        finally:
+            with self._pf_lock:
+                pf, self._minio_pf = self._minio_pf, None
+                self._minio_pf_endpoint = None
+            if pf is not None and pf.poll() is None:
+                pf.terminate()
+                try:
+                    pf.wait(timeout=5)
+                except Exception:  # noqa: BLE001 - best-effort teardown
+                    pf.kill()
+
     # -- orphan reaping -----------------------------------------------------
 
     def reap_orphans(self) -> int:
@@ -370,6 +421,32 @@ class ClusterService(LocalTransport):
                 message=f"upload to {provider.SHARE_TYPE} failed; the campaign is "
                         "safe in the object store — fix the cause and call again")
         return ActionResult(ok=True, message=f"uploaded to {provider.SHARE_TYPE}")
+
+    def cleanup_campaign_data(self, request) -> ActionResult:
+        """Delete campaign result bucket(s) from the object store.
+
+        Runs here (not on the client) because this process holds the cluster config
+        (object-store credentials) and the authoritative live-campaign set. A bulk
+        delete (``campaign_id`` None) always skips campaigns this service is still
+        driving; a targeted delete honours ``force`` to remove a named one anyway.
+        """
+        from robovast.execution.cluster_execution import bucket_ops
+        from robovast.service.interface import ListCampaignsRequest
+
+        running: set = set()
+        if request.campaign_id is None or not request.force:
+            for c in self.list_campaigns(ListCampaignsRequest(limit=1000)).campaigns:
+                if c.phase not in ("finished", "failed", "unknown"):
+                    # Match both the raw id and its sanitised bucket name, since
+                    # ``cleanup_campaigns`` compares against object-store names.
+                    running.add(c.campaign_id)
+                    running.add(bucket_ops._bucket_name(c.campaign_id))
+        count = bucket_ops.cleanup_campaigns(
+            self._cluster_config(), namespace=self.namespace,
+            context=self.kube_context, campaign_id=request.campaign_id,
+            running_campaigns=running)
+        return ActionResult(
+            ok=True, message=f"Removed {count} bucket(s) from the object store.")
 
     # -- data / results -----------------------------------------------------
 

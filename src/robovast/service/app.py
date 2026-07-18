@@ -35,6 +35,7 @@ import logging
 
 from robovast.service.interface import (ActionResult, CampaignRef,
                                         CreateCampaignRequest,
+                                        CleanupDataRequest,
                                         CreateUploadRequest,
                                         CreateWorkspaceRequest, EditFileRequest,
                                         FileContent, FileMeta,
@@ -229,6 +230,11 @@ def build_app(impl: RobovastInterface):
         # Body is optional: no-arg retries reuse the service's share environment.
         overrides = request.overrides if request else None
         return _guard(lambda: impl.upload_to_share(campaign_id, overrides))
+
+    @app.post(Routes.CLEANUP_DATA, response_model=ActionResult)
+    def cleanup_campaign_data(request: "CleanupDataRequest | None" = None) -> ActionResult:
+        # Body optional: no body means "all finished campaigns" (live ones skipped).
+        return _guard(lambda: impl.cleanup_campaign_data(request or CleanupDataRequest()))
 
     @app.get("/campaigns/{campaign_id}/archive")
     def download_campaign_archive(campaign_id: str):

@@ -160,31 +160,23 @@ def _get_cluster_info(context=None):
         context: Kubernetes context name to use. ``None`` uses the active context.
 
     Returns a dictionary with node_count, node_labels, cpu_manager_policy and
-    cluster_config (loaded from the .robovast_cluster_config flag file) when
-    available.  Failures are logged and result in partial or empty data rather
-    than errors.
+    cluster_config (read from the deployed robovast-service) when available.
+    Failures are logged and result in partial or empty data rather than errors.
     """
     cluster_info = {}
 
-    # Load cluster config info from flag file if available
+    # Best-effort cluster-config metadata, read from the deployed robovast-service
+    # (the authoritative record; there is no local flag file). Non-fatal.
     try:
-        from robovast.execution.cluster_execution.cluster_setup import \
-            get_cluster_config_flag_path  # pylint: disable=import-outside-toplevel
-
-        try:
-            flag_path = get_cluster_config_flag_path()
-            if os.path.exists(flag_path):
-                with open(flag_path, "r", encoding="utf-8") as f:
-                    config_data = yaml.safe_load(f) or {}
-                cluster_info["cluster_config"] = config_data
-        except Exception as exc:  # pragma: no cover - best-effort, non-fatal
-            # Expected in contexts without an initialized project / flag file
-            # (e.g. the in-cluster controller pod), where this info is simply
-            # unavailable. Keep it at debug to avoid noise; it is non-fatal.
-            logger.debug("Cluster config flag file unavailable: %s", exc)
-    except Exception:  # pragma: no cover - import may fail in non-cluster contexts
-        # If cluster modules are not available, silently skip cluster_config
-        pass
+        from robovast.execution.cluster_execution.service_deploy import \
+            read_service_config_from_cluster  # pylint: disable=import-outside-toplevel
+        name, kwargs = read_service_config_from_cluster(kube_context=context)
+        if name is not None:
+            cluster_info["cluster_config"] = {"name": name, "kwargs": kwargs}
+    except Exception as exc:  # pragma: no cover - best-effort, non-fatal
+        # Expected wherever the service is not reachable (no kubeconfig, in-pod
+        # controller, etc.); keep at debug to avoid noise.
+        logger.debug("Cluster config metadata unavailable: %s", exc)
 
     # Collect node information via Kubernetes Python API
     node_count = None

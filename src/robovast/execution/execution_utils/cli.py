@@ -43,10 +43,7 @@ from robovast.execution.cluster_execution.cluster_execution import (
     get_cluster_job_counts_per_campaign)
 from robovast.execution.cluster_execution.cluster_setup import (
     delete_server, get_cluster_config, get_cluster_config_for_context,
-    get_cluster_namespace, get_kubernetes_node_labels_from_config,
-    load_cluster_setup_info,
-    setup_server)
-from robovast.execution.cluster_execution import bucket_ops
+    get_kubernetes_node_labels_from_config, setup_server)
 from robovast.execution.cluster_execution.share_providers import \
     load_share_provider_plugins
 
@@ -598,7 +595,9 @@ def _monitor_via_service(namespace, kube_context, interval, once):
               help='Print job status once and exit')
 @click.option('--context', '-x', 'kube_context', default=None,
               help='Kubernetes context to use (default: active context in kubeconfig)')
-def monitor(interval, once, kube_context):
+@click.option('--namespace', '-n', default='default', show_default=True,
+              help='Kubernetes namespace the scenario Jobs run in.')
+def monitor(interval, once, kube_context, namespace):
     """Monitor scenario execution jobs on the cluster.
 
     Displays progress per run: how many jobs have finished (completed or failed),
@@ -644,10 +643,7 @@ def monitor(interval, once, kube_context):
                 # No per-cluster config — fall back to active context
                 active = get_active_kube_context()
                 contexts_to_monitor = [(active or "(active)", active)]
-            namespace = get_cluster_namespace()
         else:
-            context_key = kube_context
-            namespace = get_cluster_namespace(context_key)
             contexts_to_monitor = [(kube_context, kube_context)]
 
         multi = len(contexts_to_monitor) > 1
@@ -1076,65 +1072,34 @@ def setup(list_configs, namespace, options, force, kube_context, cluster_config)
 @cluster.command(name='download-cleanup')
 @click.option('--campaign', '-i', default=None,
               help='Only remove this campaign\'s bucket (e.g. campaign-2025-02-27-123456). Without this, removes all campaign buckets.')
-@click.option('--option', '-o', 'options', multiple=True,
-              help='Cluster-specific option in key=value format (e.g. gcs_access_key=<key>).')
-@click.option('--context', '-x', 'kube_context', default=None,
-              help='Kubernetes context to use (default: active context in kubeconfig)')
-def download_cleanup(campaign, options, kube_context):
-    """Remove result buckets from cluster S3 without downloading.
+@click.option('--force', is_flag=True,
+              help='Delete a named campaign even if the service still considers it live.')
+@target_options
+def download_cleanup(campaign, force, cluster, namespace, context):
+    """Remove result buckets from the cluster object store (via the service).
 
-    Deletes run result buckets (``campaign-*``) from the MinIO S3 server in the cluster.
+    Deletes run result buckets (``campaign-*``) from the object store. This runs
+    **through the robovast-service**, which holds the object-store credentials and
+    the authoritative live-campaign set — so no local credentials are needed and a
+    bulk delete never removes a campaign that is still running.
 
-    Use --campaign to remove only a specific campaign's bucket.
-    Use ``-o key=value`` to pass credentials not stored in the flag file
-    (e.g. ``-o gcs_access_key=<key> -o gcs_secret_key=<secret>``).
+    The service is auto-detected on the conventional local port (a ``vast serve`` /
+    ``vast ui`` or a tunnel); or pass ``--cluster`` (``-x`` context, ``-n``
+    namespace) to tunnel to the in-cluster service for this call. Use ``--campaign``
+    to remove a single one.
     """
     try:
-        require_context_for_multi_cluster(kube_context)
-        context_key = kube_context
-        cluster_config = get_cluster_config_for_context(context_key)
-        if cluster_config and options:
-            extra_kwargs = {}
-            for option in options:
-                if '=' not in option:
-                    click.echo(f"Error: Invalid option format '{option}'. Expected key=value", err=True)
-                    sys.exit(1)
-                key, value = option.split('=', 1)
-                extra_kwargs[key] = value
-            cluster_config.restore_from_setup_kwargs(extra_kwargs)
-
-        # Determine which campaigns still have running/pending jobs so we
-        # never accidentally delete data that is still being produced.
-        namespace = get_cluster_namespace(context_key)
-        running_campaigns: set = set()
-        try:
-            job_counts = get_cluster_job_counts_per_campaign(
-                namespace=namespace, context=kube_context
-            )
-            for cid, counts in job_counts.items():
-                if counts.get("running", 0) > 0 or counts.get("pending", 0) > 0:
-                    running_campaigns.add(cid)
-        except Exception:  # pylint: disable=broad-except
-            # If we cannot reach the cluster to check job status, refuse to
-            # do a bulk delete — only targeted single-campaign deletion is
-            # allowed.
-            if not campaign:
-                click.echo(
-                    "Error: Cannot determine running campaigns.  "
-                    "Use --campaign to specify which campaign to remove.",
-                    err=True,
-                )
-                sys.exit(1)
-
-        count = bucket_ops.cleanup_campaigns(
-            cluster_config,
-            namespace=namespace,
-            context=kube_context,
-            campaign_id=campaign,
-            running_campaigns=running_campaigns,
-        )
-        click.echo(f"✓ Removed {count} bucket(s) from S3.")
-
+        from robovast.service.interface import CleanupDataRequest
+        with service_client(cluster, namespace, context,
+                            require_service=True) as (client, target):
+            _echo_target(target)
+            res = client.cleanup_campaign_data(
+                CleanupDataRequest(campaign_id=campaign, force=force))
+            if not res.ok:
+                raise click.ClickException(res.message or "cleanup-data failed")
+            click.echo(f"✓ {res.message}")
+    except (click.UsageError, click.ClickException):
+        raise
     except Exception as e:
         handle_cli_exception(e)
 
@@ -1143,38 +1108,29 @@ def download_cleanup(campaign, options, kube_context):
 @click.option('--campaign', '-i', default=None,
               help='Clean only jobs for this campaign (e.g. campaign-2025-02-27-123456). Without this, cleans all scenario-runs jobs.')
 @click.option('--data', is_flag=True,
-              help='Also remove the campaign S3 result bucket(s) from the cluster MinIO server.')
-@click.option('--option', '-o', 'options', multiple=True,
-              help='Cluster-specific option in key=value format (e.g. gcs_access_key=<key>). Used with --data when credentials are not stored in the flag file.')
-@click.option('--context', '-x', 'kube_context', default=None,
-              help='Kubernetes context to use (default: active context in kubeconfig)')
-def run_cleanup(campaign, data, options, kube_context):
+              help='Also delete the campaign result bucket(s) from the object store (via the service).')
+@click.option('--force', is_flag=True,
+              help='With --data: delete a named campaign even if the service still considers it live.')
+@target_options
+def run_cleanup(campaign, data, force, cluster, namespace, context):
     """Clean up jobs and pods from a cluster run.
 
-    Removes scenario execution jobs and their associated pods. By default
-    removes all campaigns. Use --campaign to clean only a specific run.
+    Removes scenario execution Jobs and their pods directly (using your kubeconfig
+    — the ``-x`` context, ``-n`` namespace). By default removes all campaigns; use
+    ``--campaign`` for one.
 
-    Useful after running with --detach to clean up resources once jobs
-    have completed.
-
-    Use ``--data`` to also delete the S3 result bucket(s) from the cluster
-    MinIO server (equivalent to additionally running ``download-cleanup``).
-    Requires the robovast pod to be running.
-
-    Use ``-o key=value`` to pass credentials that are not stored in the flag
-    file (e.g. ``-o gcs_access_key=<key> -o gcs_secret_key=<secret>``).
-    Only needed together with ``--data`` when GCS credentials are missing.
+    Use ``--data`` to **also** delete the campaign result bucket(s) from the object
+    store. That step goes **through the robovast-service** (which holds the
+    object-store credentials), auto-detected on the conventional local port or
+    reached with ``--cluster`` — no local credentials needed.
 
     Usage: vast execution cluster run-cleanup
     Usage: vast execution cluster run-cleanup --campaign campaign-2025-02-27-123456
     Usage: vast execution cluster run-cleanup --campaign campaign-2025-02-27-123456 --data
-    Usage: vast execution cluster run-cleanup --data -o gcs_access_key=<key> -o gcs_secret_key=<secret>
     """
     try:
-        require_context_for_multi_cluster(kube_context)
-        context_key = kube_context
-        namespace = get_cluster_namespace(context_key)
-        k8s_client = get_kubernetes_client(context=kube_context)
+        require_context_for_multi_cluster(context)
+        k8s_client = get_kubernetes_client(context=context)
         click.echo("Checking Kubernetes cluster access...")
         k8s_ok, k8s_msg = check_kubernetes_access(k8s_client, namespace=namespace)
         if not k8s_ok:
@@ -1183,12 +1139,12 @@ def run_cleanup(campaign, data, options, kube_context):
 
         skip_job_cleanup = False
         if campaign:
-            per_run = get_cluster_job_counts_per_campaign(namespace, context=kube_context)
+            per_run = get_cluster_job_counts_per_campaign(namespace, context=context)
             label_safe = _label_safe_campaign(campaign)
             if label_safe not in per_run:
                 available = sorted(per_run.keys())
                 if data:
-                    # Jobs already gone — warn but continue to S3 cleanup
+                    # Jobs already gone — warn but continue to bucket cleanup
                     click.echo(f"Campaign '{campaign}' not found in cluster (jobs already cleaned up).", err=True)
                     skip_job_cleanup = True
                 else:
@@ -1206,49 +1162,24 @@ def run_cleanup(campaign, data, options, kube_context):
             click.echo("Cleaning up all scenario run jobs and pods...")
 
         if not skip_job_cleanup:
-            cleanup_cluster_campaign(namespace=namespace, campaign=campaign, context=kube_context)
+            cleanup_cluster_campaign(namespace=namespace, campaign=campaign, context=context)
             click.echo("✓ Job/pod cleanup completed successfully!")
 
         if data:
-            cluster_config = get_cluster_config_for_context(context_key)
-            if cluster_config and options:
-                extra_kwargs = {}
-                for option in options:
-                    if '=' not in option:
-                        click.echo(f"Error: Invalid option format '{option}'. Expected key=value", err=True)
-                        sys.exit(1)
-                    key, value = option.split('=', 1)
-                    extra_kwargs[key] = value
-                cluster_config.restore_from_setup_kwargs(extra_kwargs)
+            # Bucket cleanup runs server-side: the service owns the object-store
+            # credentials and the authoritative live-campaign guard.
+            from robovast.service.interface import CleanupDataRequest
+            with service_client(cluster, namespace, context,
+                                require_service=True) as (client, target):
+                _echo_target(target)
+                res = client.cleanup_campaign_data(
+                    CleanupDataRequest(campaign_id=campaign, force=force))
+                if not res.ok:
+                    raise click.ClickException(res.message or "cleanup-data failed")
+                click.echo(f"✓ {res.message}")
 
-            # Determine which campaigns still have running/pending jobs so
-            # we never accidentally delete data that is still being produced.
-            running_campaigns: set = set()
-            try:
-                remaining = get_cluster_job_counts_per_campaign(
-                    namespace=namespace, context=kube_context
-                )
-                for cid, counts in remaining.items():
-                    if counts.get("running", 0) > 0 or counts.get("pending", 0) > 0:
-                        running_campaigns.add(cid)
-            except Exception:  # pylint: disable=broad-except
-                if not campaign:
-                    click.echo(
-                        "Error: Cannot determine running campaigns.  "
-                        "Use --campaign to specify which campaign to remove.",
-                        err=True,
-                    )
-                    sys.exit(1)
-
-            count = bucket_ops.cleanup_campaigns(
-                cluster_config,
-                namespace=namespace,
-                context=kube_context,
-                campaign_id=campaign,
-                running_campaigns=running_campaigns,
-            )
-            click.echo(f"✓ Removed {count} S3 bucket(s).")
-
+    except (click.UsageError, click.ClickException):
+        raise
     except Exception as e:
         handle_cli_exception(e)
 
@@ -1355,25 +1286,31 @@ def prepare_run(output, config, runs, cluster_config, options, log_tree, kube_co
             key, value = option.split('=', 1)
             cluster_kwargs[key] = value
 
+        namespace = cluster_kwargs.get("namespace", "default")
+
         if cluster_config is None:
-            cluster_config = get_cluster_config_for_context(context_key)
+            # Auto-detect: read config (with credentials) from the deployed service.
+            cluster_config = get_cluster_config_for_context(context_key, namespace)
             if cluster_config:
-                logging.debug("Auto-detected cluster config (credentials restored from flag file)")
+                logging.debug("Read cluster config from the deployed robovast-service")
             else:
                 raise ValueError(
-                    "No cluster config specified and no saved config found. "
-                    "Use --cluster-config <name> to select a config, or run setup first."
+                    "No cluster config specified and no deployed service found to "
+                    "read it from. Use --cluster-config <name> (with -o for "
+                    "credentials) to run fully offline, or check --context."
                 )
         else:
             try:
-                _, stored_kwargs = load_cluster_setup_info(context_key)
+                from robovast.execution.cluster_execution.service_deploy import \
+                    read_service_config_from_cluster
+                _, stored_kwargs = read_service_config_from_cluster(namespace, context_key)
                 cluster_config = get_cluster_config(cluster_config)
                 if cluster_config and stored_kwargs:
                     cluster_config.restore_from_setup_kwargs(stored_kwargs)
+                if cluster_config and cluster_kwargs:
+                    cluster_config.restore_from_setup_kwargs(cluster_kwargs)
             except Exception as e:
                 raise RuntimeError(f"Failed to get cluster config: {e}") from e
-
-        namespace = cluster_kwargs.get("namespace", get_cluster_namespace(context_key))
 
         # Compose the batch campaign data on the host (the same path the
         # controller uses for batch), then build the manifests with the very

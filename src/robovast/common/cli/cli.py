@@ -226,8 +226,12 @@ def _ensure_ui_built(rebuild: bool = False) -> None:
 @click.option('--context', '-x', default=None, metavar='NAME',
               help='With --backend cluster (run off-cluster): which Kubernetes '
                    'context to dispatch campaigns into (default: the active one). '
-                   "The cluster config is reconstructed from 'vast exec cluster "
-                   "setup' — run that for this context first.")
+                   'The cluster config is read from the deployed robovast-service '
+                   'in that cluster — works from any host with kubeconfig access.')
+@click.option('--namespace', '-n', 'k8s_namespace', default='default',
+              show_default=True,
+              help='With --backend cluster: namespace the robovast-service is '
+                   'deployed in (where its config is read from).')
 @click.option('--rebuild-ui', is_flag=True,
               help='Force a web UI rebuild even if ui/dist looks up to date '
                    '(source checkout only).')
@@ -238,7 +242,7 @@ def _ensure_ui_built(rebuild: bool = False) -> None:
                    'workspace is present the moment the service starts and '
                    'survives restarts (edit the files on disk to change it). '
                    'Local backend only.')
-def serve(host, port, backend, context, rebuild_ui, workspace_dirs):
+def serve(host, port, backend, context, k8s_namespace, rebuild_ui, workspace_dirs):
     """Run a persistent robovast-service (and its web UI).
 
     Starts the FastAPI service that the ``vast`` CLI, the MCP server, and the web
@@ -254,7 +258,8 @@ def serve(host, port, backend, context, rebuild_ui, workspace_dirs):
       Kubernetes Jobs (mode 3); this is what the in-cluster ``robovast-service``
       Deployment runs. Run it **off-cluster** with ``--backend cluster -x <context>``
       to debug the driver locally while scenarios execute in that cluster — the
-      cluster config is reconstructed from ``vast exec cluster setup``.
+      cluster config is read from the deployed robovast-service in that cluster, so
+      it works from any host with kubeconfig access (no local setup needed).
 
     Security: unauthenticated in v1, so it binds ``127.0.0.1`` by default and
     must stay behind localhost / SSH tunnel / port-forward (see
@@ -285,19 +290,21 @@ def serve(host, port, backend, context, rebuild_ui, workspace_dirs):
             # The in-cluster Deployment: config and cluster come from the pod env.
             impl = ClusterService(kube_context=context)
         else:
-            # Off-cluster driver: reconstruct the exact config that
-            # 'vast exec cluster setup' persisted for this context, so no env exports
-            # are needed to dispatch into it.
-            from robovast.execution.cluster_execution.cluster_setup import \
-                load_cluster_setup_info
-            name, kwargs = load_cluster_setup_info(context_key=context)
+            # Off-cluster driver: read the config straight from the deployed
+            # robovast-service in the target cluster (the authoritative record), so
+            # no local setup/flag file and no env exports are needed to dispatch.
+            from robovast.execution.cluster_execution.service_deploy import \
+                read_service_config_from_cluster
+            name, kwargs = read_service_config_from_cluster(k8s_namespace, context)
             if not name:
-                for_ctx = f" for context {context!r}" if context else ""
-                x_flag = f" -x {context}" if context else ""
+                for_ctx = f" in context {context!r}" if context else ""
                 raise click.ClickException(
-                    f"no cluster setup found{for_ctx} — run "
-                    f"'vast exec cluster setup <cluster-config>{x_flag}' first.")
-            impl = ClusterService(cluster_config_name=name,
+                    f"no robovast-service found{for_ctx} (namespace "
+                    f"{k8s_namespace!r}) to read the cluster config from — deploy "
+                    "one with 'vast exec cluster setup <cluster-config>"
+                    f"{f' -x {context}' if context else ''}', or check "
+                    "--context/--namespace.")
+            impl = ClusterService(namespace=k8s_namespace, cluster_config_name=name,
                                   cluster_config_kwargs=kwargs, kube_context=context)
         storage = "object store"
     else:

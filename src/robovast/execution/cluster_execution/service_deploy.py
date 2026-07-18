@@ -328,6 +328,37 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
     return manifests
 
 
+def read_service_config_from_cluster(namespace="default", kube_context=None):
+    """Read ``(config_name, config_kwargs)`` from the deployed service's env.
+
+    Setup writes the cluster config the service reconstructs into the Deployment's
+    env (:func:`_cluster_env`), so **the cluster is the authoritative source** — no
+    local flag file needed. This is what lets ``vast serve --backend cluster -x
+    <ctx>`` and the cluster maintenance commands work from any host with kubeconfig
+    access, including one that never ran ``setup``. Returns ``(None, {})`` when the
+    Deployment (or the config env) is absent.
+    """
+    import json  # pylint: disable=import-outside-toplevel
+
+    from kubernetes import client, config  # pylint: disable=import-outside-toplevel
+    from kubernetes.client.rest import \
+        ApiException  # pylint: disable=import-outside-toplevel
+
+    config.load_kube_config(context=kube_context)
+    apps = client.AppsV1Api()
+    try:
+        dep = apps.read_namespaced_deployment(SERVICE_NAME, namespace)
+    except ApiException as e:
+        if e.status == 404:
+            return None, {}
+        raise
+    containers = dep.spec.template.spec.containers or []
+    env = {e.name: e.value for c in containers for e in (c.env or [])}
+    name = env.get("ROBOVAST_CLUSTER_CONFIG_NAME")
+    raw = env.get("ROBOVAST_CLUSTER_CONFIG_KWARGS")
+    return name, (json.loads(raw) if raw else {})
+
+
 def delete_service(namespace="default", kube_context=None):
     """Remove the robovast-service Deployment + Service + RBAC (best-effort).
 

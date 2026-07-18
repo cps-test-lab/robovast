@@ -37,7 +37,17 @@ Per batch it:
 2. uploads it to the campaign's storage prefix (in-pod, via
    :mod:`.in_pod_storage` — no ``kubectl``/archiver),
 3. creates one Kubernetes Job per packed job and waits for completion, then
-4. downloads that batch's per-config/run results back into ``campaign_root``.
+4. downloads that batch's per-config/run results, its job-artifact dir
+   (``_jobs/<batch_tag>/`` — ``sysinfo.yaml``, resource monitor, logs) **and** the
+   campaign-level snapshot (``_config``/``_transient``) back into ``campaign_root``,
+   materialises the per-run ``job`` symlinks, and records
+   ``_execution/execution.yaml``.
+
+Steps 1–4 leave ``campaign_root`` **complete** — the same shape a local
+(``DockerBackend``) run leaves — so the backend-agnostic analysis postprocessing
+and the canonical publish (:meth:`KubernetesBackend.finalize_campaign`) consume it
+identically. The object store is the source of truth; ``campaign_root`` is its
+projection (the same one the service's ``fetch_campaign`` reconstructs on re-run).
 
 Each batch is isolated under a ``_batches/<batch_tag>/`` storage sub-prefix and
 uses batch-namespaced job names, so batches of one search campaign never
@@ -61,6 +71,7 @@ from robovast.common import (COMPAT_VERSION, get_execution_env_variables,
 from robovast.common.cluster_context import resolve_resources
 from robovast.common.common import get_scenario_parameters
 from robovast.common.execution import (build_job_parameter_documents,
+                                       create_job_links,
                                        dump_multi_document_yaml,
                                        resolve_robovast_image,
                                        write_job_links_manifest)
@@ -569,7 +580,8 @@ class BatchJobRunner:
     # -- in-pod execution ---------------------------------------------------
 
     def run_batch_in_pod(self, campaign_root: str):
-        """Upload, run and download one batch; results land under *campaign_root*."""
+        """Upload, run and download one batch; this batch's results and the
+        campaign-level snapshot (``_config``/``_transient``) land under *campaign_root*."""
         self._ensure_k8s_initialized()
         _, _, _, bucket_name, campaign_prefix = self._s3_settings()
         storage = in_pod_storage.storage_client_for(self.cluster_config)
@@ -611,25 +623,36 @@ class BatchJobRunner:
             time.sleep(2)
         logger.info("Batch %s: all jobs finished.", self._batch_tag)
 
-        # 4. Download this batch's results into the campaign root for scoring.
-        #    The campaign prefix is flat/shared across batches, so we identify this
-        #    batch's results by its config names (self.configs == this batch's
-        #    composed configs) and fetch only those <config>/ dirs — the same
-        #    config names the controller scores at campaign_root/<config>/.
+        # 4. Project this batch's results — and the campaign-level snapshot — from
+        #    the object store into the campaign root, so the host campaign is
+        #    complete (matching a local run and the service's fetch_campaign).
+        #    The campaign prefix is flat/shared across batches, so we fetch by name:
+        #    this batch's <config>/ dirs (self.configs == this batch's composed
+        #    configs, the same names the controller scores at campaign_root/<config>/)
+        #    and its job-artifact dir _jobs/<batch_tag>/ (sysinfo.yaml, resource
+        #    monitor, logs — read via each run's `job` symlink), plus the
+        #    campaign-level _config/ (holds the .vast the auto-chain postprocessing
+        #    reads) and _transient/. Batch-scoping _jobs avoids re-fetching prior
+        #    batches each iteration; the small campaign-level dirs are re-fetched
+        #    (idempotent — download_prefix never deletes, so the locally-accumulated
+        #    _transient/job_links.yaml survives).
         os.makedirs(campaign_root, exist_ok=True)
         got = 0
-        for config_data in self.configs:
-            cn = config_data.get("name")
-            if not cn:
-                continue
+        job_root = f"_jobs/{self._batch_tag}" if self._batch_tag else "_jobs"
+        targets = [c["name"] for c in self.configs if c.get("name")]
+        targets += ["_config", "_transient", job_root]
+        for rel in targets:
             got += storage.download_prefix(
-                bucket_name, f"{campaign_prefix}{cn}", os.path.join(campaign_root, cn))
+                bucket_name, f"{campaign_prefix}{rel}", os.path.join(campaign_root, rel))
         logger.info("Batch %s: downloaded %d result file(s) into %s",
                     self._batch_tag, got, campaign_root)
 
         # 4b. Record this batch's <config>/<run>/job -> _jobs/<batch>/job-<idx>
-        #     links so upload-to-share can materialise the per-run `job` symlinks.
+        #     links, then materialise them as real symlinks now (not only at
+        #     upload-to-share), so downstream readers resolve <run>/job/sysinfo.yaml
+        #     during the driver's own metadata/postprocessing — as in a local run.
         self._write_job_links(campaign_root)
+        create_job_links(campaign_root)
 
         # 5. Clean up this batch's jobs/pods (sequential batches share the
         #    campaign-id label, so only this batch's resources are present).
@@ -679,9 +702,6 @@ class KubernetesBackend(ExecutionBackend):
         self.namespace = namespace
         self.kube_context = kube_context
         self.log_tree = log_tree
-        # Captured from run_batch for finalize_campaign (execution.yaml metadata).
-        self._execution_params: dict = {}
-        self._runs = None
         # Lazily-built read-only storage client for count_run_artifacts (the
         # controller's progress poller); separate from the write path.
         self._progress_storage = None
@@ -689,11 +709,10 @@ class KubernetesBackend(ExecutionBackend):
     def run_batch(self, campaign_data: dict, *, campaign_root: str, batch_tag: str,
                   runs: int, options: RunOptions) -> None:
         campaign_id = os.path.basename(os.path.normpath(campaign_root))
-        self._execution_params = campaign_data.get("execution", {}) or {}
-        self._runs = runs
+        execution_params = campaign_data.get("execution", {}) or {}
         image = resolve_robovast_image(
             explicit=options.image,
-            config_image=self._execution_params.get("image"),
+            config_image=execution_params.get("image"),
         )
         runner = BatchJobRunner.for_batch(
             campaign_data=campaign_data,
@@ -708,30 +727,34 @@ class KubernetesBackend(ExecutionBackend):
         )
         runner.run_batch_in_pod(campaign_root)
 
+        # Record _execution/execution.yaml now (not at finalize), so the campaign
+        # root is complete before the controller chains analysis postprocessing —
+        # which reads the execution image from it. This mirrors the local backend,
+        # whose run.sh writes execution.yaml during the run. Best-effort cluster
+        # info; degrades in-pod. Idempotent across a search's repeated batches.
+        from robovast.common.execution import \
+            create_execution_yaml  # pylint: disable=import-outside-toplevel
+        create_execution_yaml(runs, campaign_root,
+                              execution_params=execution_params,
+                              context=self.kube_context)
+
     def finalize_campaign(self, campaign_root: str) -> None:
         """Publish the canonical campaign to storage so the bucket matches local.
 
         Jobs upload raw per-run results (``<config>/<run>/test.xml`` etc.) and
         ``_jobs/`` *before* the controller runs search postprocessing, and each
-        batch uploads ``_config``/``_transient``. This step publishes the full
-        in-pod ``campaign_root`` — which additionally holds ``campaign.db``,
-        ``_execution/`` and the postprocessing-derived per-run artifacts (e.g.
-        ``metrics.csv``, written next to ``trajectory.csv`` by ``QuadMetrics``) —
-        so ``upload-to-share`` + ``download`` yield a layout identical to a local
-        run. Re-uploading the small raw files is idempotent.
+        batch uploads ``_config``/``_transient`` and records
+        ``_execution/execution.yaml``. This step publishes the full in-pod
+        ``campaign_root`` — which additionally holds ``campaign.db`` and the
+        postprocessing-derived per-run artifacts (e.g. ``metrics.csv``, written next
+        to ``trajectory.csv`` by ``QuadMetrics``) — so ``upload-to-share`` +
+        ``download`` yield a layout identical to a local run. Re-uploading the small
+        raw files is idempotent.
         """
-        from robovast.common.execution import \
-            create_execution_yaml  # pylint: disable=import-outside-toplevel
-
         campaign_id = os.path.basename(os.path.normpath(campaign_root))
         bucket, prefix = in_pod_storage.campaign_storage_location(
             self.cluster_config, campaign_id)
         storage = in_pod_storage.storage_client_for(self.cluster_config)
-
-        # _execution/execution.yaml (best-effort cluster info; degrades in-pod).
-        create_execution_yaml(self._runs or 0, campaign_root,
-                              execution_params=self._execution_params,
-                              context=self.kube_context)
 
         n = storage.upload_dir(campaign_root, bucket, prefix)
         logger.info("Published canonical campaign (%d file(s), incl. campaign.db / "

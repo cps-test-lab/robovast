@@ -138,8 +138,10 @@ def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,
     (auto-chain) and the service (explicit re-run):
 
     1. **conversion Job** — rosbags→CSV in the campaign's own execution image (ROS2);
-    2. **sync** its outputs (`_postproc/`) into *campaign_root*;
-    3. **stage 2** — ``data.db`` + metadata, pure Python, right here.
+    2. **sync** its outputs (`_postproc/`) into *campaign_root* — done **regardless
+       of the Job's outcome**, so a failed conversion's ``postprocessing.log`` (teed
+       and mirrored even on failure) lands in the campaign log the web UI shows;
+    3. **stage 2** — ``data.db`` + metadata, pure Python, right here (success only).
 
     *campaign_root* must already hold the campaign (`_config/`, `campaign.db`,
     `test.xml`s) — true for the controller (it built it) and for the service after
@@ -152,9 +154,25 @@ def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,
         ok, message = run_conversion_job(
             cluster_config, campaign_id, namespace, image, rosbag_cmds,
             controller_image, force=force)
-        if not ok:
-            return False, message
+        # Sync the Job's outputs regardless of outcome. The conversion tees its
+        # stdout/stderr to postprocessing.log and mirrors /out to the object store
+        # even on failure, so this lands the POSTPROCESSING section (with the
+        # conversion error) in the campaign log the web UI shows and finalize
+        # uploads — without it, a failure surfaces only as a terse "kubectl logs"
+        # hint the user cannot act on off-cluster.
         sync_outputs(cluster_config, campaign_id, campaign_root)
+        if not ok:
+            # Echo the conversion error to the service console too. The web UI already
+            # has it via the synced postprocessing.log (POSTPROCESSING section); no
+            # campaign log handler is attached at this point, so this reaches the
+            # ``vast serve`` stdout only — not duplicated into the campaign log.
+            import os  # noqa: PLC0415
+            log_path = os.path.join(campaign_root, "_execution", "postprocessing.log")
+            if os.path.isfile(log_path):
+                with open(log_path, encoding="utf-8") as f:
+                    logger.warning("Postprocessing conversion failed:\n%s",
+                                   f.read().rstrip())
+            return False, message
     else:
         logger.info("Campaign %s configures no rosbag conversion; host steps only",
                     campaign_id)
@@ -403,7 +421,8 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image: 
                 logger.info("Postprocessing job %s succeeded", name)
                 return True, "rosbag conversion complete"
             if status.failed:
-                return False, (f"postprocessing job {name} failed; "
-                               f"inspect: kubectl logs job/{name} -n {namespace}")
+                return False, (f"postprocessing job {name} failed — see the "
+                               f"POSTPROCESSING section of the campaign log for the "
+                               f"conversion error (kubectl logs job/{name} -n {namespace})")
         time.sleep(_POLL_SECONDS)
     return False, f"postprocessing job {name} timed out after {timeout}s"

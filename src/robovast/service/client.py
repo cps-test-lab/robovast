@@ -567,6 +567,12 @@ class LocalTransport(RobovastInterface):
             message="upload_to_share is not supported by the local backend "
                     "(no external share); use 'vast results publish' instead.")
 
+    def cleanup_campaign_data(self, request) -> ActionResult:
+        return ActionResult(
+            ok=False,
+            message="cleanup-data is not supported by the local backend (no object "
+                    "store); it applies to a cluster service.")
+
     # -- postprocessing -----------------------------------------------------
 
     def get_postprocessing(self, campaign_id: str):
@@ -912,6 +918,11 @@ class HTTPTransport(RobovastInterface):
         return ActionResult.model_validate(
             self._post(Routes.campaign_upload_to_share(campaign_id),
                        {"overrides": overrides or {}}))
+
+    def cleanup_campaign_data(self, request) -> ActionResult:
+        return ActionResult.model_validate(
+            self._post(Routes.CLEANUP_DATA,
+                       {"campaign_id": request.campaign_id, "force": request.force}))
 
     def get_postprocessing(self, campaign_id: str):
         from robovast.service.interface import PostprocessingInfo

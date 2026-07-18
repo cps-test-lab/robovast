@@ -832,6 +832,37 @@ def run_postprocessing(campaign_id: str, force: bool = False,
         return {"error": str(e)}
 
 
+def cleanup_campaign_data(campaign_id: str = "", force: bool = False) -> dict:
+    """Delete campaign result data (object-store bucket(s)) for a cluster campaign.
+
+    Frees storage once results have been downloaded or published and are no longer
+    needed. This goes **through the robovast-service**, which owns the object-store
+    credentials and knows which campaigns are still live — so there is **no
+    infrastructure to deal with** here: no kubeconfig, no S3 keys, no namespaces.
+
+    Args:
+        campaign_id: The campaign whose data to delete. Empty string deletes **all**
+            finished campaigns' data (campaigns still running are always skipped).
+        force: Delete a named campaign even if the service still considers it live.
+
+    Returns:
+        ``{ok, message}`` (``message`` reports how many buckets were removed), or
+        ``{error}`` if no service is reachable / the backend has no object store.
+    """
+    from robovast.service.interface import CleanupDataRequest
+    client = _service_client()
+    if client is None:
+        return {"error": "no robovast-service reachable (bring up a 'vast serve' or "
+                         "a tunnel before starting MCP); campaign data lives in the "
+                         "service's object store"}
+    try:
+        res = client.cleanup_campaign_data(
+            CleanupDataRequest(campaign_id=campaign_id or None, force=force))
+        return {"ok": res.ok, "message": res.message}
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
+
+
 _TOOLS = [
     validate_project,
     preview_configurations,
@@ -844,6 +875,7 @@ _TOOLS = [
     get_postprocessing,
     update_postprocessing,
     run_postprocessing,
+    cleanup_campaign_data,
 ]
 
 

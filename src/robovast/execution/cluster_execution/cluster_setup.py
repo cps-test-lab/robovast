@@ -18,11 +18,7 @@
 """Setup utilities for cluster execution."""
 
 import logging
-import os
-import re
 from importlib.metadata import entry_points
-
-import yaml
 
 from robovast.common.cli.project_config import ProjectConfig
 from robovast.common.common import load_config
@@ -31,9 +27,6 @@ from .kubernetes_kueue import (apply_kueue_queues, install_kueue_helm,
                                uninstall_kueue_helm)
 
 logger = logging.getLogger(__name__)
-
-# Flag file name to store the cluster config name that was used for setup
-CLUSTER_CONFIG_FLAG_FILE = ".robovast_cluster_config"
 
 # Legacy ServiceAccount name, kept so `cluster setup` still reconciles/removes the
 # RBAC it created before campaigns moved into the service. Nothing runs as it now:
@@ -175,128 +168,6 @@ def delete_controller_rbac(namespace="default", kube_context=None):
             logger.warning("Failed to delete controller %s: %s", kind, exc)
 
 
-def _sanitize_context_key(key: str) -> str:
-    """Sanitize a context key so it can be used safely as a filename suffix."""
-    return re.sub(r'[^A-Za-z0-9_-]', '_', key)
-
-
-def get_cluster_config_flag_path(context_key=None):
-    """Get the path to the cluster config flag file.
-
-    When *context_key* is given the file is named
-    ``.robovast_cluster_config.<key>`` so separate setups for different
-    clusters coexist.  When it is ``None`` the legacy single-file name
-    ``.robovast_cluster_config`` is used.
-
-    The flag file is stored in the same directory as the project file.
-
-    Returns:
-        str: Path to the cluster config flag file
-
-    Raises:
-        RuntimeError: If no project file is found
-    """
-    project_file = ProjectConfig.find_project_file()
-    if not project_file:
-        raise RuntimeError(
-            "Project not initialized. Run 'vast init <config-file>' first."
-        )
-
-    project_dir = os.path.dirname(project_file)
-    if context_key:
-        filename = f"{CLUSTER_CONFIG_FLAG_FILE}.{_sanitize_context_key(context_key)}"
-    else:
-        filename = CLUSTER_CONFIG_FLAG_FILE
-    return os.path.join(project_dir, filename)
-
-
-def save_cluster_setup_info(config_name, setup_kwargs, context_key=None):
-    """Save the cluster setup info to a flag file.
-
-    Args:
-        config_name (str): Name of the cluster config plugin used for setup
-        setup_kwargs (dict): Arguments passed to the setup function
-        context_key (str, optional): Kubernetes context name for the flag file.
-    """
-    flag_path = get_cluster_config_flag_path(context_key)
-    data = {
-        "name": config_name,
-        "kwargs": setup_kwargs
-    }
-    with open(flag_path, 'w') as f:
-        yaml.dump(data, f, default_flow_style=False)
-
-
-def load_cluster_setup_info(context_key=None):
-    """Load the cluster setup info from the flag file.
-
-    Args:
-        context_key (str, optional): Kubernetes context name.
-
-    Returns:
-        tuple: (config_name, setup_kwargs)
-    """
-    try:
-        flag_path = get_cluster_config_flag_path(context_key)
-        if os.path.exists(flag_path):
-            with open(flag_path, 'r') as f:
-                content = f.read().strip()
-                try:
-                    data = yaml.safe_load(content)
-                    if isinstance(data, dict):
-                        return data.get("name"), data.get("kwargs", {})
-                    # Backward compatibility handling (if it's just the name string)
-                    return str(data) if data else None, {}
-                except yaml.YAMLError:
-                    # Backward compatibility fallback
-                    return content, {}
-    except RuntimeError:
-        # Project not initialized
-        pass
-    return None, {}
-
-
-def load_cluster_config_name(context_key=None):
-    """Load the cluster config name from the flag file.
-
-    Args:
-        context_key (str, optional): Kubernetes context name.
-
-    Returns:
-        str: Name of the cluster config plugin, or None if file doesn't exist
-    """
-    name, _ = load_cluster_setup_info(context_key)
-    return name
-
-
-def get_cluster_namespace(context_key=None):
-    """Load the cluster namespace from the setup flag file.
-
-    Args:
-        context_key (str, optional): Kubernetes context name.
-
-    Returns:
-        str: Kubernetes namespace for cluster execution, or "default" if not set
-    """
-    _, kwargs = load_cluster_setup_info(context_key)
-    return kwargs.get("namespace", "default")
-
-
-def delete_cluster_config_flag(context_key=None):
-    """Delete the cluster config flag file.
-
-    Args:
-        context_key (str, optional): Kubernetes context name.
-    """
-    try:
-        flag_path = get_cluster_config_flag_path(context_key)
-        if os.path.exists(flag_path):
-            os.remove(flag_path)
-    except RuntimeError:
-        # Project not initialized, nothing to delete
-        pass
-
-
 def get_kubernetes_node_labels_from_config(config_path=None):
     """Read job and control pod node labels from the vast config.
 
@@ -390,29 +261,32 @@ def get_cluster_config(config_name):
     return plugins[config_name]()
 
 
-def get_cluster_config_for_context(context_key=None):
-    """Get a cluster config instance with setup kwargs restored from the flag file.
+def get_cluster_config_for_context(context_key=None, namespace="default"):
+    """Get a cluster config instance, reconstructed **from the deployed service**.
 
-    This is the preferred way to obtain a config object for all commands that
-    run *after* ``setup`` (e.g. ``run``, ``download``, ``upload-to-share``).
-    It loads both the config name and the persisted kwargs from the cluster
-    flag file and calls :meth:`~BaseConfig.restore_from_setup_kwargs` on the
-    newly created instance so that credential-dependent methods such as
-    :meth:`~BaseConfig.get_s3_credentials` work correctly without the user
-    having to pass ``-o`` flags again.
+    This is the way to obtain a config object for commands that run *after*
+    ``setup`` (``cleanup``, ``prepare-run``, off-cluster ``serve --backend
+    cluster``). It reads the config name + setup kwargs from the in-cluster
+    ``robovast-service`` Deployment's env — the authoritative record setup wrote
+    there — and calls :meth:`~BaseConfig.restore_from_setup_kwargs` so that
+    credential-dependent methods such as :meth:`~BaseConfig.get_s3_credentials`
+    work without the user re-passing ``-o`` flags, and **from any host** (no local
+    flag file). Bucket cleanup no longer uses this — it runs server-side.
 
     Args:
-        context_key (str | None): Kubernetes context name used to look up the
-            per-context flag file.  ``None`` uses the legacy single-file path.
+        context_key (str | None): Kubernetes context; ``None`` uses the active one.
+        namespace (str): Namespace the service Deployment runs in.
 
     Returns:
-        BaseConfig: Configured cluster config instance, or ``None`` if no flag
-            file exists for the given context.
+        BaseConfig: Configured cluster config instance, or ``None`` if the service
+            is not deployed in that context/namespace.
 
     Raises:
         ValueError: If the stored config name is not found in the available plugins.
     """
-    name, setup_kwargs = load_cluster_setup_info(context_key)
+    from robovast.execution.cluster_execution.service_deploy import \
+        read_service_config_from_cluster
+    name, setup_kwargs = read_service_config_from_cluster(namespace, context_key)
     if name is None:
         return None
     cfg = get_cluster_config(name)
@@ -451,11 +325,15 @@ def setup_server(config_name=None, list_configs=False, force=False, **cluster_kw
             "or --list to see available configs."
         )
 
-    # Check if cluster is already set up
+    # Check if cluster is already set up — the deployed service's env is the
+    # record (no local flag file), so this is correct even from another host.
     kube_context = cluster_kwargs.pop('kube_context', None)
     context_key = kube_context
+    namespace = cluster_kwargs.get("namespace", "default")
 
-    existing_config = load_cluster_config_name(context_key)
+    from robovast.execution.cluster_execution.service_deploy import \
+        read_service_config_from_cluster
+    existing_config, _ = read_service_config_from_cluster(namespace, kube_context)
     if existing_config and not force:
         key_label = f" for context '{context_key}'" if context_key else ""
         raise RuntimeError(
@@ -473,7 +351,6 @@ def setup_server(config_name=None, list_configs=False, force=False, **cluster_kw
         logger.info("Control pod node labels (nodeSelector): %s", control_node_labels)
 
     # Install Kueue and queues first (always)
-    namespace = cluster_kwargs.get("namespace", "default")
     install_kueue_helm(kube_context=kube_context)
     apply_kueue_queues(namespace=namespace, kube_context=kube_context,
                        node_labels=jobs_node_labels, cluster_config=cluster_config)
@@ -492,14 +369,14 @@ def setup_server(config_name=None, list_configs=False, force=False, **cluster_kw
     # `kubectl port-forward svc/robovast-service`. Requires a controller image
     # that contains the `robovast.service` package + `vast serve` (plan 0.7);
     # override with ROBOVAST_CONTROLLER_IMAGE to point at a current dev image.
+    # The Deployment env carries config_name + cluster_kwargs, which is now the
+    # single source of truth for every later command (read back via
+    # read_service_config_from_cluster) — no local flag file to write.
     from robovast.execution.cluster_execution.service_deploy import deploy_service
     deploy_service(namespace=namespace, kube_context=kube_context,
                    config_name=config_name, config_kwargs=cluster_kwargs)
-
-    # Save the config name and kwargs to flag file after successful setup
-    flag_path = get_cluster_config_flag_path(context_key)
-    save_cluster_setup_info(config_name, cluster_kwargs, context_key)
-    logger.debug(f"Cluster config '{config_name}' saved to {flag_path}")
+    logger.debug("Cluster config '%s' recorded in the robovast-service Deployment.",
+                 config_name)
 
 
 def delete_server(config_name=None, **cluster_kwargs_override):
@@ -517,12 +394,15 @@ def delete_server(config_name=None, **cluster_kwargs_override):
     """
     cluster_kwargs = {}
 
-    # Auto-detect config from flag file if not provided
+    # Auto-detect config from the deployed service (read before we tear it down);
+    # the cluster is the source of truth, so this works from any host.
     kube_context = cluster_kwargs_override.get('kube_context')
-    context_key = kube_context
 
     if config_name is None:
-        name, stored_kwargs = load_cluster_setup_info(context_key)
+        from robovast.execution.cluster_execution.service_deploy import \
+            read_service_config_from_cluster
+        ns = cluster_kwargs_override.get("namespace", "default")
+        name, stored_kwargs = read_service_config_from_cluster(ns, kube_context)
         config_name = name
 
         # Use stored kwargs for cleanup; CLI overrides take precedence
@@ -535,8 +415,9 @@ def delete_server(config_name=None, **cluster_kwargs_override):
             logger.debug(f"Auto-detected cluster config: {config_name}")
         else:
             raise ValueError(
-                "No cluster config specified and no saved config found. "
-                "Use --cluster-config <name> to select a config, or run setup first."
+                "No cluster config specified and no deployed service found to read "
+                "it from. Use --cluster-config <name> (with -o for credentials), or "
+                "check the context/namespace."
             )
     else:
         # Explicit config: use only CLI-provided kwargs (e.g. -n namespace)
@@ -566,6 +447,3 @@ def delete_server(config_name=None, **cluster_kwargs_override):
 
     cluster_config = get_cluster_config(config_name)
     cluster_config.cleanup_cluster(kube_context=kube_context, **cluster_kwargs)
-
-    # Delete the flag file after successful cleanup
-    delete_cluster_config_flag(context_key)
