@@ -132,8 +132,8 @@ def test_reap_marks_finished_when_child_exits(project, monkeypatch):
 
 
 def test_cluster_start_is_transparent_and_not_single_flighted(project, monkeypatch):
-    # Cluster start spawns a detached `cluster run --wait-and-download` child,
-    # tracked by pid like local, and is NOT single-flighted.
+    # Cluster start spawns a detached `cluster run` child (fire-and-forget; no
+    # results download onto this host), tracked by pid like local, NOT single-flighted.
     started = cc.start_campaign(backend="cluster")
     assert started["backend"] == "cluster", started
     cid = started["campaign_id"]
@@ -261,3 +261,38 @@ def test_no_service_url_uses_subprocess_path(project):
     assert cc._service_client() is None
     started = cc.start_campaign(backend="local")
     assert started["log_path"].endswith(f"_control/logs/{started['campaign_id']}.log")
+
+
+# ---------------------------------------------------------------------------
+# get_campaign_download — returns a web link, never writes a file
+# ---------------------------------------------------------------------------
+
+def _fake_download_client(backend, base_url="http://127.0.0.1:8800"):
+    from robovast.service.interface import VersionInfo
+    return SimpleNamespace(
+        base_url=base_url,
+        version=lambda: VersionInfo(robovast_version="test", backend=backend))
+
+
+def test_get_campaign_download_cluster_returns_url(monkeypatch):
+    monkeypatch.setattr(cc, "_service_client",
+                        lambda: _fake_download_client("kubernetes"))
+    res = cc.get_campaign_download("camp-2026-01-01-000000")
+    assert res["url"] == "http://127.0.0.1:8800/campaigns/camp-2026-01-01-000000/archive"
+    assert res["path"] == "/campaigns/camp-2026-01-01-000000/archive"
+    assert "web UI" in res["note"]
+    assert "error" not in res
+
+
+def test_get_campaign_download_local_has_no_url(monkeypatch):
+    monkeypatch.setattr(cc, "_service_client",
+                        lambda: _fake_download_client("docker"))
+    res = cc.get_campaign_download("camp-2026-01-01-000000")
+    assert "url" not in res
+    assert "filesystem" in res["note"]
+
+
+def test_get_campaign_download_no_service_errors(monkeypatch):
+    monkeypatch.setattr(cc, "_service_client", lambda: None)
+    res = cc.get_campaign_download("camp-2026-01-01-000000")
+    assert "error" in res and "no robovast-service" in res["error"]

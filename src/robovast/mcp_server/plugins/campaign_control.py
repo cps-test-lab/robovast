@@ -410,10 +410,10 @@ def start_campaign(config_filter: str = "", runs: int = 0,
     * ``local`` — ``vast exec local run`` (Docker on this host). Enforces
       single-flight: if a local campaign is already live, the launch is refused
       with the list of running campaigns.
-    * ``cluster`` — ``vast exec cluster run --wait-and-download`` (Kubernetes):
-      launches the in-cluster controller, waits for it to finish, and downloads
-      the results into the project results directory — so a cluster campaign is
-      as transparent as a local one. Cluster campaigns are not single-flighted.
+    * ``cluster`` — ``vast exec cluster run`` (Kubernetes): launches the campaign and
+      returns; results stay in the object store (they are **not** downloaded onto this
+      host, which the user may not be able to reach). Retrieve them via the web UI or
+      ``get_campaign_download``. Cluster campaigns are not single-flighted.
 
     Args:
         config_filter: Optional glob to run only matching configurations.
@@ -481,9 +481,11 @@ def start_campaign(config_filter: str = "", runs: int = 0,
             registry.reserve_cluster(
                 campaign_id=campaign_id, config_filter=config_filter, runs=runs,
                 expected_total=expected_total, log_path=log_path, context=context)
+            # Fire-and-forget: do NOT --wait-and-download, so a (potentially ~1TB)
+            # results tree never lands on the MCP-server host (which the user may not
+            # be able to reach). Retrieve results via the web UI / get_campaign_download.
             cmd = [sys.executable, "-m", "robovast.common.cli.cli",
-                   "exec", "cluster", "run", "--wait-and-download",
-                   "--campaign-id", campaign_id]
+                   "exec", "cluster", "run", "--campaign-id", campaign_id]
             if context:
                 cmd += ["--context", context]
         if config_filter:
@@ -525,11 +527,11 @@ def _spawn_tracked(registry, campaign_id, backend, cmd, results_dir, log_path):
 def get_campaign_status(campaign_id: str) -> dict:
     """Report the current status and progress of a campaign.
 
-    Reconciles liveness first (a killed run is reported ``crashed``, a completed
-    one ``finished``), then reads progress from the on-disk results. Both
-    backends are handled uniformly: a cluster campaign's results appear locally
-    once its ``--wait-and-download`` child finishes, and its live controller
-    phase is visible in ``log_tail`` meanwhile.
+    When a service is reachable this reports the service's own live status (the
+    normal cluster path). Otherwise it reconciles the local subprocess's liveness
+    (a killed run is reported ``crashed``, a completed one ``finished``) and reads
+    progress from the on-disk results — the local-backend path; a cluster campaign's
+    results stay in the object store (download them via ``get_campaign_download``).
 
     Args:
         campaign_id: The id returned by :func:`start_campaign`.
@@ -686,8 +688,7 @@ def stop_campaign(campaign_id: str) -> dict:
     Both backends terminate the launched process group (SIGTERM, then SIGKILL
     after a grace period). Local additionally reaps the campaign's Docker
     container; cluster additionally sends the controller a cooperative ``stop``
-    (killing the local ``--wait-and-download`` waiter alone would not stop the
-    in-cluster controller).
+    (killing the local launcher alone would not stop the in-cluster controller).
 
     Args:
         campaign_id: The id returned by :func:`start_campaign`.
@@ -930,72 +931,49 @@ def cleanup_campaign_data(campaign_id: str = "", force: bool = False) -> dict:
         return {"error": str(e)}
 
 
-def download_campaign(campaign_id: str, variant: str = "auto") -> dict:
-    """Download a campaign archive into this project's results dir and extract it.
+def get_campaign_download(campaign_id: str) -> dict:
+    """Return **where to download** a campaign — a web link, not a file on this host.
 
-    The archive lands in the **project results directory on the host running this MCP
-    server** (the same place ``start_campaign`` downloads cluster results to) — there
-    is intentionally no caller-chosen path, since the MCP host may differ from the
-    user's machine. Two variants exist, auto-detected from what is reachable (the
-    connection and the project's ``.env`` share config — the same resolution
-    ``vast results download`` uses):
-
-    * ``postprocessed`` — the full campaign (incl. derived data), streamed from a
-      reachable **service** (cluster object store);
-    * ``raw`` — the minimal pre-postprocess snapshot on the configured **share**.
+    Downloading is a browser action: the campaign archive is served by the
+    robovast-service (and its web UI) at a fixed path, so this returns that URL for
+    **you** to open where your robovast web UI runs — it never writes a file onto the
+    MCP-server host (which you may not be able to reach if the server runs elsewhere).
 
     Args:
         campaign_id: The campaign id to download.
-        variant: ``"auto"`` (default), ``"postprocessed"``, or ``"raw"``.
 
     Returns:
-        ``{ok, variant, path}`` on success; ``{error}`` if no source is reachable or
-        the download fails.
+        For a **cluster** service: ``{campaign_id, url, path, note}`` — ``url`` is the
+        postprocessed ``tar.gz`` (full campaign, incl. derived data) streamed from the
+        object store. For a **local** service: ``{campaign_id, note}`` — the results
+        already live on the service host's filesystem, so there is no HTTP download.
+        ``{error}`` when no service is reachable.
     """
-    from robovast.results_processing.cli import \
-        resolve_download_source  # pylint: disable=import-outside-toplevel
-
+    client = _service_client()
+    if client is None:
+        return {"error": "no robovast-service reachable; bring up a 'vast serve' or a "
+                         "tunnel (the campaign lives in the service, not on this host)"}
     try:
-        from robovast.common.cli.project_config import \
-            get_project_config  # pylint: disable=import-outside-toplevel
-        results_dir = str(get_project_config().results_dir)
+        backend = client.version().backend
     except Exception as e:  # noqa: BLE001
-        return {"error": f"could not resolve the project results dir: {e}"}
+        return {"error": f"could not reach the service: {e}"}
 
-    try:
-        source = resolve_download_source(variant)
-    except Exception as e:  # noqa: BLE001 - click.UsageError with actionable text
-        return {"error": str(e)}
-
-    try:
-        if source == "postprocessed":
-            from robovast.common.cli.service_target import \
-                detected_service_url  # pylint: disable=import-outside-toplevel
-            from robovast.service.client import \
-                RobovastClient  # pylint: disable=import-outside-toplevel
-            from robovast.service.project_push import \
-                download_campaign_via_service  # pylint: disable=import-outside-toplevel
-            dest = download_campaign_via_service(
-                RobovastClient(detected_service_url()), campaign_id, results_dir)
-            return {"ok": True, "variant": "postprocessed", "path": dest}
-
-        # raw: pull the pre-postprocess archive from the external share.
-        import tarfile  # pylint: disable=import-outside-toplevel
-
-        from robovast.execution.cluster_execution.share_providers import \
-            load_share_provider_plugins  # pylint: disable=import-outside-toplevel
-        share_type = os.environ.get("ROBOVAST_SHARE_TYPE", "").strip()
-        provider = load_share_provider_plugins()[share_type]()
-        os.makedirs(results_dir, exist_ok=True)
-        tmp_path = os.path.join(results_dir, f".{campaign_id}.tar.gz.part")
-        provider.download_archive(f"{campaign_id}.tar.gz", tmp_path, lambda *a: None)
-        with tarfile.open(tmp_path, "r:gz") as tf:
-            tf.extractall(results_dir)  # noqa: S202 - trusted share, arcname=campaign_id
-        os.remove(tmp_path)
-        return {"ok": True, "variant": "raw",
-                "path": os.path.join(results_dir, campaign_id)}
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    path = f"/campaigns/{campaign_id}/archive"
+    if backend == "kubernetes":
+        return {
+            "campaign_id": campaign_id,
+            "url": f"{client.base_url}{path}",
+            "path": path,
+            "note": ("Open this in the browser where your robovast web UI runs "
+                     "(or Monitor → Download), or run "
+                     f"'vast results download -i {campaign_id}' on your own machine "
+                     "('--variant raw' for the pre-postprocess archive from the share)."),
+        }
+    return {
+        "campaign_id": campaign_id,
+        "note": ("This is a local service — the campaign results are already on the "
+                 "service host's filesystem; there is no HTTP download."),
+    }
 
 
 _TOOLS = [
@@ -1013,7 +991,7 @@ _TOOLS = [
     update_postprocessing,
     run_postprocessing,
     cleanup_campaign_data,
-    download_campaign,
+    get_campaign_download,
 ]
 
 
