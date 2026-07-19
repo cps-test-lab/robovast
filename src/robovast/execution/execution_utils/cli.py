@@ -378,8 +378,9 @@ def run(config, runs, log_tree, cluster, namespace, context, wait_and_download,
 
     Runs through the robovast-service, which drives the campaign in-process and
     creates the per-batch scenario Jobs. The service is auto-detected on the
-    conventional local port, so with a ``vast serve``/``vast ui`` (or an SSH /
-    ``kubectl port-forward`` tunnel) up, this needs **no flags**; otherwise pass
+    conventional local port, so with a ``vast serve`` (or an SSH /
+    ``kubectl port-forward`` / ``vast serve --attach`` tunnel) up, this needs
+    **no flags**; otherwise pass
     ``--cluster`` (with ``-x`` to pick the context) to tunnel to the in-cluster
     service for this call. By default the command is fire-and-forget: it returns
     once the campaign is launched. Track it with 'vast exec cluster monitor'.
@@ -1017,8 +1018,8 @@ def download_cleanup(campaign, force, cluster, namespace, context):
     the authoritative live-campaign set — so no local credentials are needed and a
     bulk delete never removes a campaign that is still running.
 
-    The service is auto-detected on the conventional local port (a ``vast serve`` /
-    ``vast ui`` or a tunnel); or pass ``--cluster`` (``-x`` context, ``-n``
+    The service is auto-detected on the conventional local port (a ``vast serve``
+    or a tunnel); or pass ``--cluster`` (``-x`` context, ``-n``
     namespace) to tunnel to the in-cluster service for this call. Use ``--campaign``
     to remove a single one.
     """

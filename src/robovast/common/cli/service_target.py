@@ -32,13 +32,13 @@ There are exactly two ways in, no environment variables and no fallback chain:
 * ``--cluster`` — open an **ephemeral** port-forward to the in-cluster service for
   the call and close it after (no tunnel to babysit).
 * otherwise — **the service already answering on the conventional local port**: a
-  local ``vast serve`` *or* an open ``vast ui`` / ``vast ui --cluster`` tunnel. This
-  one convention is what lets a flagless command **follow whatever the UI is pointed
-  at**, and it is the only way to reach a remote service — bring up your own tunnel
-  to ``127.0.0.1:8800`` and every command auto-detects it.
+  local ``vast serve`` *or* a ``vast serve --attach`` tunnel to the in-cluster
+  service. This one convention is what lets a flagless command **follow whatever is
+  serving**, and it is the only way to reach a remote service — bring up your own
+  tunnel to ``127.0.0.1:8800`` and every command auto-detects it.
 
-When nothing answers there and ``--cluster`` was not given: ``ui``/``workspace`` act
-on this machine in-process (their local store), while a cluster verb
+When nothing answers there and ``--cluster`` was not given: ``workspace`` acts on
+this machine in-process (its local store), while a cluster verb
 (``require_service=True``) errors rather than silently running local Docker.
 """
 
@@ -135,8 +135,8 @@ def _service_alive(url):
 def detected_service_url():
     """The service answering on the conventional local port, or ``''``.
 
-    The one convention every client shares: a local ``vast serve`` or an open
-    ``vast ui`` / SSH / ``kubectl port-forward`` tunnel binds ``127.0.0.1:8800``,
+    The one convention every client shares: a local ``vast serve``, a ``vast serve
+    --attach`` / SSH / ``kubectl port-forward`` tunnel binds ``127.0.0.1:8800``,
     and everything auto-detects it there. No environment variable, no guessing.
     """
     from robovast.execution.cluster_execution.service_deploy import SERVICE_PORT
@@ -166,9 +166,9 @@ def service_client(cluster=False, namespace='default', context=None, *,
     """Yield ``(client, label)`` for the selected target.
 
     See the module docstring for the two ways in. ``--cluster`` only matters when
-    you want the cluster and *no* ``vast ui`` tunnel is open. Every caller prints the
-    resolved target (with ``[detected]`` for the auto-follow case), so the auto-follow
-    is announced, never silent.
+    you want the cluster and *no* ``vast serve --attach`` tunnel is open. Every caller
+    prints the resolved target (with ``[detected]`` for the auto-follow case), so the
+    auto-follow is announced, never silent.
 
     ``require_service=True`` makes a command that finds no service (and no
     ``--cluster``) raise instead of yielding a local-Docker client — used by the
@@ -189,13 +189,13 @@ def service_client(cluster=False, namespace='default', context=None, *,
         raise click.ClickException(
             "No robovast-service found. Cluster operations go through the service.\n"
             "Bring one up and it is auto-detected — 'vast serve --backend cluster' or "
-            "'vast ui --cluster' — or pass --cluster to tunnel to the in-cluster "
-            "service for this call.")
+            "'vast serve --attach' (tunnel to the deployed service) — or pass "
+            "--cluster to tunnel to the in-cluster service for this call.")
 
     if cluster:
         label = f"in-cluster service ({url})"
     elif detected:
-        label = f"service ({url}) [detected — following a running vast serve/ui]"
+        label = f"service ({url}) [detected — following a running vast serve]"
     else:
         label = f"this machine, in-process (store: {default_workspaces_root()})"
     try:

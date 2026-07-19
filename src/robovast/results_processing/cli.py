@@ -550,7 +550,7 @@ def download_from_share_cmd(output, campaigns, force, keep_archive, variant, deb
     ROBOVAST_WEBDAV_PASSWORD — WebDAV password          (when ROBOVAST_SHARE_TYPE=webdav)
 
     When a robovast-service is reachable (auto-detected on the conventional local
-    port — a ``vast serve``/``vast ui`` or a tunnel), campaigns are instead streamed
+    port — a ``vast serve`` or a tunnel), campaigns are instead streamed
     from the **service** (which serves them from the object store) — no external
     share needed.
     """

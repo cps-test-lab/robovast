@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
@@ -37,6 +37,18 @@ export function Launcher() {
     queryFn: () => robovast.listWorkspaces(),
   })
 
+  // On startup pick a workspace so the form is ready to launch: the most recently
+  // created one if creation times are known, otherwise the first listed.
+  useEffect(() => {
+    if (workspaceId) return
+    const list = workspaces.data?.workspaces
+    if (!list?.length) return
+    const latest = [...list].sort(
+      (a, b) => (Date.parse(b.created_at ?? '') || 0) - (Date.parse(a.created_at ?? '') || 0),
+    )[0]
+    setWorkspaceId(latest.workspace_id)
+  }, [workspaces.data, workspaceId])
+
   // The workspace's .vast files, to pick which one to run when there are several.
   const files = useQuery({
     queryKey: ['files', workspaceId],
@@ -46,6 +58,12 @@ export function Launcher() {
   const vastFiles = (files.data?.files ?? [])
     .map((f) => f.path)
     .filter((p) => p.endsWith('.vast'))
+
+  // Preselect the first .vast file if the user hasn't chosen one yet.
+  useEffect(() => {
+    if (configPath || !vastFiles.length) return
+    setConfigPath(vastFiles[0])
+  }, [configPath, vastFiles])
 
   const create = useMutation({
     mutationFn: () =>

@@ -16,8 +16,8 @@ Every cluster run — batch **and** search — is driven by the
 **robovast-service**, which runs the campaign *in-process* (one worker thread per
 campaign) and creates the scenario Jobs itself. So cluster runs require a deployed
 service (``vast execution cluster setup`` installs it); ``vast execution cluster
-run`` finds it — auto-detected on the conventional local port (a ``vast serve`` /
-``vast ui`` or a tunnel you brought up), or pass ``--cluster`` to open an ephemeral
+run`` finds it — auto-detected on the conventional local port (a ``vast serve``,
+a ``vast serve --attach`` or a tunnel you brought up), or pass ``--cluster`` to open an ephemeral
 ``kubectl port-forward`` for the call — pushes the local project into a server-side
 workspace, and starts the campaign there. It is *fire-and-forget*
 — it returns immediately with the campaign id, and the campaign continues in the

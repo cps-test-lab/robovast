@@ -88,26 +88,27 @@ run files, and author the ``.vast`` in the Monaco editor.
    **It lands wherever the UI is — usually with no flag at all.** A workspace
    lives in the store of whichever service you talk to, and ``vast workspace``
    **follows whatever service is already running**: it probes the local service
-   port, so if ``vast ui`` (local) or ``vast ui --cluster`` (a held-open tunnel)
-   is up, the command rides that same endpoint — the exact one the browser is on:
+   port, so if a local ``vast serve`` or a ``vast serve --attach`` (a held-open
+   tunnel to the cluster) is up, the command rides that same endpoint — the exact
+   one the browser is on:
 
    .. code-block:: bash
 
-      # (a) vast ui --cluster running in another terminal → this follows it:
+      # (a) vast serve --attach running in another terminal → this follows it:
       vast workspace init configs/examples/growth_sim
-      #> Target: service (http://127.0.0.1:8800) [detected — following a running vast serve/ui]
+      #> Target: service (http://127.0.0.1:8800) [detected — following a running vast serve]
 
       # (b) nothing running → this machine, in-process:
       vast workspace init configs/examples/growth_sim
       #> Target: this machine, in-process (store: …)
 
-      # (c) reach the cluster with NO vast ui open → open your own ephemeral tunnel:
+      # (c) reach the cluster with NO service running → open your own ephemeral tunnel:
       vast workspace init configs/examples/growth_sim --cluster
       #> Target: in-cluster service (http://127.0.0.1:…)
 
-   So you rarely type ``--cluster``: keep a ``vast ui --cluster`` open and every
+   So you rarely type ``--cluster``: keep a ``vast serve --attach`` open and every
    ``vast workspace`` command follows it automatically. Use ``--cluster`` only to
-   reach the cluster when no ``vast ui`` tunnel is up (it opens an ephemeral
+   reach the cluster when no service is up (it opens an ephemeral
    ``kubectl port-forward`` for the call; add ``-x <context>`` / ``-n
    <namespace>`` to pick the cluster). Every command prints the ``Target:`` it
    resolved — including ``[detected]`` — so the choice is never silent. To reach a
@@ -143,24 +144,26 @@ ships the same build in its image, so mode 3 needs no extra step.
 Accessing it — ``vast ui``
 --------------------------
 
-``vast ui`` is the one command for "give me a working UI", and the ``--cluster``
-switch is the only thing that changes between local and cluster:
+``vast ui`` is a thin shortcut: it opens a browser at the service on the
+conventional local port and does nothing else. Something must already be serving
+there — you make the service reachable with ``vast serve``, and ``vast ui`` opens
+it:
 
 .. code-block:: bash
 
-   vast ui                    # this machine: starts the service if none is up, opens the browser
-   vast ui --cluster          # the in-cluster service: tunnels in, opens the browser
-   vast ui --cluster -x prod -n robovast   # ...a specific context / namespace
+   vast serve            # this machine: local service on :8800
+   vast serve --attach   # the in-cluster service: holds a tunnel on :8800
+   vast ui               # open a browser at whatever is serving on :8800
 
-* **This machine** (no ``--cluster``) — if a ``vast serve`` is already running
-  here, ``vast ui`` just opens the browser at it; otherwise it **starts the
-  service in-process** (local backend) and serves the UI itself. So you never
-  have to run ``vast serve`` by hand for local use — that command stays as the
-  headless primitive for a VM, a script, or the in-cluster pod.
-* **Cluster** (``--cluster``) — wraps ``kubectl port-forward
-  svc/robovast-service`` and opens the browser at it; ``-x/--context`` and
-  ``-n/--namespace`` pick which cluster. Needs ``kubectl`` + a kubeconfig, runs
-  in the foreground, and Ctrl-C closes the tunnel.
+* **This machine** — run ``vast serve`` (local backend, serves the UI itself),
+  then ``vast ui`` to open it. If nothing is answering on the port, ``vast ui``
+  says so and exits rather than starting anything — ``vast serve`` is the one
+  command that owns the service lifecycle.
+* **Cluster** — deploy with ``vast exec cluster setup``, then ``vast serve
+  --attach`` (``-x/--context``, ``-n/--namespace`` pick which cluster) holds a
+  ``kubectl port-forward`` on :8800; ``vast ui`` then opens it. Needs ``kubectl``
+  + a kubeconfig; the attach process runs in the foreground and Ctrl-C closes the
+  tunnel.
 * **Remote VM** — the service binds ``127.0.0.1`` there, so reach it with your
   own SSH tunnel (``ssh -N -L 8800:127.0.0.1:8800 <vm>``) and open
   ``http://127.0.0.1:8800``. Because that is the conventional port, ``vast ui``

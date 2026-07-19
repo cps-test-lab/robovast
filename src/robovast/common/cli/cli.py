@@ -223,15 +223,23 @@ def _ensure_ui_built(rebuild: bool = False) -> None:
               default='auto', show_default=True,
               help="Execution backend. 'auto' picks 'cluster' when running inside "
                    "a Kubernetes pod, else 'local' Docker.")
+@click.option('--attach', is_flag=True,
+              help='Do not run a service — hold a kubectl port-forward to the '
+                   'already-deployed in-cluster robovast-service and keep it '
+                   'reachable on the local port until Ctrl-C. The tunnel every '
+                   'other client (CLI, MCP, "vast ui") then auto-detects on the '
+                   'conventional port. This is how you "serve" a cluster you '
+                   'deployed with "vast exec cluster setup".')
 @click.option('--context', '-x', default=None, metavar='NAME',
-              help='With --backend cluster (run off-cluster): which Kubernetes '
-                   'context to dispatch campaigns into (default: the active one). '
-                   'The cluster config is read from the deployed robovast-service '
-                   'in that cluster — works from any host with kubeconfig access.')
+              help='With --backend cluster (run off-cluster) or --attach: which '
+                   'Kubernetes context (default: the active one). For --backend '
+                   'cluster the cluster config is read from the deployed '
+                   'robovast-service in that cluster — works from any host with '
+                   'kubeconfig access.')
 @click.option('--namespace', '-n', 'k8s_namespace', default='default',
               show_default=True,
-              help='With --backend cluster: namespace the robovast-service is '
-                   'deployed in (where its config is read from).')
+              help='With --backend cluster or --attach: namespace the '
+                   'robovast-service is deployed in.')
 @click.option('--rebuild-ui', is_flag=True,
               help='Force a web UI rebuild even if ui/dist looks up to date '
                    '(source checkout only).')
@@ -242,29 +250,52 @@ def _ensure_ui_built(rebuild: bool = False) -> None:
                    'workspace is present the moment the service starts and '
                    'survives restarts (edit the files on disk to change it). '
                    'Local backend only.')
-def serve(host, port, backend, context, k8s_namespace, rebuild_ui, workspace_dirs):
-    """Run a persistent robovast-service (and its web UI).
+def serve(host, port, backend, attach, context, k8s_namespace, rebuild_ui,
+          workspace_dirs):
+    """Make a robovast-service reachable on the local port until Ctrl-C.
 
-    Starts the FastAPI service that the ``vast`` CLI, the MCP server, and the web
-    UI drive campaigns through over HTTP — and campaigns survive client exit
-    (unlike ``vast exec local run``). The service also serves the web UI at the
-    same URL, so this is the one command to run it: from a source checkout it
+    This is the one command that puts a service on ``127.0.0.1:8800``; while it
+    runs, the ``vast`` CLI, the MCP server, and ``vast ui`` all work against it,
+    and campaigns survive client exit (unlike ``vast exec local run``). The
+    service serves the web UI at the same URL — from a source checkout this
     (re)builds ``ui/dist`` first when it is missing or stale (needs ``npm``;
-    ``--rebuild-ui`` forces it). One binary, two backends:
+    ``--rebuild-ui`` forces it). Three ways it makes the port live:
 
-    * **local** (default off-cluster) — local Docker + local filesystem (mode 2);
-      run it on your machine or a remote VM reached over an SSH tunnel.
-    * **cluster** (default in-pod) — drives each campaign in-process against
-      Kubernetes Jobs (mode 3); this is what the in-cluster ``robovast-service``
-      Deployment runs. Run it **off-cluster** with ``--backend cluster -x <context>``
-      to debug the driver locally while scenarios execute in that cluster — the
-      cluster config is read from the deployed robovast-service in that cluster, so
-      it works from any host with kubeconfig access (no local setup needed).
+    * **local** (default off-cluster) — runs the app in-process: local Docker +
+      local filesystem (mode 2). Run it on your machine or a remote VM reached
+      over an SSH tunnel.
+    * **cluster** (default in-pod) — runs the app in-process, driving each
+      campaign against Kubernetes Jobs (mode 3); this is what the in-cluster
+      ``robovast-service`` Deployment runs. Run it **off-cluster** with
+      ``--backend cluster -x <context>`` to debug the driver locally while
+      scenarios execute in that cluster — the cluster config is read from the
+      deployed robovast-service in that cluster, so it works from any host with
+      kubeconfig access (no local setup needed).
+    * **--attach** — runs *nothing* locally: just holds a ``kubectl
+      port-forward`` to the service you already deployed with ``vast exec cluster
+      setup`` and keeps it reachable here until Ctrl-C. This is how you drive a
+      deployed cluster from your laptop.
 
     Security: unauthenticated in v1, so it binds ``127.0.0.1`` by default and
     must stay behind localhost / SSH tunnel / port-forward (see
     ``docs/deployment.rst``). Web UI + OpenAPI docs at ``/`` and ``/docs``.
     """
+    if attach:
+        conflicts = [name for name, bad in (
+            ('--backend', backend != 'auto'),
+            ('--host', host != '127.0.0.1'),
+            ('--workspace-dir', bool(workspace_dirs)),
+            ('--rebuild-ui', rebuild_ui),
+        ) if bad]
+        if conflicts:
+            verb = 'does not' if len(conflicts) == 1 else 'do not'
+            raise click.ClickException(
+                f"--attach only tunnels to the already-deployed in-cluster "
+                f"service; it runs no service of its own, so "
+                f"{', '.join(conflicts)} {verb} apply.")
+        _serve_attach(port, k8s_namespace, context)
+        return
+
     from robovast.service.app import serve as _serve
 
     # Build the SPA the service serves, so a source checkout needs one command
@@ -319,97 +350,31 @@ def serve(host, port, backend, context, k8s_namespace, rebuild_ui, workspace_dir
     _serve(impl, host=host, port=port)
 
 
-@cli.command()
-@click.option('--port', default=0, type=int, metavar='PORT',
-              help='Local port to bind. 0 (default) uses the service port.')
-@click.option('--no-browser', is_flag=True,
-              help='Do not launch a browser.')
-@target_options
-def ui(port, no_browser, cluster, namespace, context):
-    """Open the RoboVAST web UI in your browser — local or in-cluster.
+def _serve_attach(port, namespace, context):
+    """Hold a port-forward to the deployed in-cluster service until Ctrl-C.
 
-    The one command for "give me a working UI":
-
-    \b
-      vast ui                    this machine (starts the service if none is up)
-      vast ui --cluster          the in-cluster service (tunnels in)
-      vast ui --cluster -x prod  ...in a specific Kubernetes context
-
-    Because the service serves the **web UI and the REST API on the same port**,
-    what this opens is all a browser, the ``vast`` CLI and the MCP server need.
-    Other commands reach the same place with the same ``--cluster`` switch, so
-    nothing needs exporting.
-
-    To reach a remote service, bring up your own tunnel to ``127.0.0.1:8800``
-    (e.g. ``ssh -N -L 8800:127.0.0.1:8800 host``) and run ``vast ui`` — it
-    auto-detects the service already answering there.
-
-    Runs in the foreground; Ctrl-C stops the service / closes the tunnel.
-    ``--cluster`` needs ``kubectl`` + a kubeconfig (the service is
-    unauthenticated in v1, so it stays behind localhost / this tunnel).
+    Runs no service locally — the deployed ``robovast-service`` Deployment *is*
+    the service; this just keeps it reachable on the conventional local port so
+    the CLI, the MCP server and ``vast ui`` auto-detect it there. This is the
+    ``--attach`` mode of ``vast serve``.
     """
-    import webbrowser  # pylint: disable=import-outside-toplevel
-
-    if cluster:
-        _ui_cluster(port, no_browser, namespace, context, webbrowser)
-        return
-    _ui_local(port, no_browser, webbrowser)
-
-
-def _ui_local(port, no_browser, webbrowser):
-    """Serve the UI from this machine, reusing whatever is already up."""
-    import threading  # pylint: disable=import-outside-toplevel
-
     from robovast.execution.cluster_execution.service_deploy import SERVICE_PORT
 
-    local_port = port or SERVICE_PORT
-    url = f'http://127.0.0.1:{local_port}'
-
-    # A `vast serve` may already be running here; it shares this machine's store,
-    # so attach to it rather than fighting it for the port.
-    if _service_alive(url):
-        click.echo(f"✓ robovast-service already running: {url}")
-        click.echo("  (started elsewhere — Ctrl-C here does not stop it)")
-        if not no_browser:
-            webbrowser.open(url)
-        return
-
-    from robovast.service.app import serve as _serve
-    from robovast.service.client import LocalTransport
-
-    _ensure_ui_built()
-    click.echo(f"✓ robovast-service: {url}   (web UI + REST API + /docs)")
-    click.echo("  Backend: local | storage: local filesystem | Ctrl-C to stop")
-    if not no_browser:
-        # The browser can only connect once uvicorn is accepting; _serve blocks.
-        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
-    try:
-        _serve(LocalTransport(), host='127.0.0.1', port=local_port)
-    except KeyboardInterrupt:
-        click.echo("\nStopped.")
-
-
-def _ui_cluster(port, no_browser, namespace, context, webbrowser):
-    """Tunnel to the in-cluster service and browse it."""
-    from robovast.execution.cluster_execution.service_deploy import SERVICE_PORT
-
-    # Bind the *conventional* port (not a random free one): this tunnel is
-    # held open for a human, so the browser bookmark stays stable and — crucially
-    # — flagless `vast workspace …` auto-detects it by probing this same port.
-    # (The ephemeral per-call `--cluster` on other commands can use a random
-    # port; nothing else needs to find those.)
+    # Bind the *conventional* port (not a random free one): this tunnel is held
+    # open for a human, and flagless `vast workspace …`/`vast ui` auto-detect it
+    # by probing this same port. (The ephemeral per-call `--cluster` on other
+    # commands can use a random port; nothing else needs to find those.)
     local_port = port or SERVICE_PORT
     proc, url = _start_port_forward(namespace, context, local_port)
-    click.echo(f"\n✓ robovast-service: {url}   (web UI + REST API + /docs)")
+    click.echo(f"\n✓ robovast-service (in-cluster): {url}   (web UI + REST API + /docs)")
     if local_port == SERVICE_PORT:
-        click.echo("  Other commands follow this tunnel automatically — no --cluster needed.")
+        click.echo("  Other clients follow this tunnel automatically — no "
+                   "--cluster/--attach needed. Open it with 'vast ui'.")
     else:
-        click.echo(f"  (non-default port {local_port}: other commands look for the "
+        click.echo(f"  (non-default port {local_port}: other clients look for the "
                    f"conventional port {SERVICE_PORT}, so keep this at the default "
                    "for them to auto-detect it)")
     click.echo("  Ctrl-C to close the tunnel")
-    if not no_browser:
-        webbrowser.open(url)
     try:
         for line in iter(proc.stdout.readline, ''):  # keep streaming kubectl output
             click.echo(line.rstrip())
@@ -418,6 +383,54 @@ def _ui_cluster(port, no_browser, namespace, context, webbrowser):
         click.echo("\nClosing tunnel...")
     finally:
         _stop_port_forward(proc)
+
+
+@cli.command()
+@click.option('--port', default=0, type=int, metavar='PORT',
+              help='Service port to open. 0 (default) uses the conventional port.')
+@click.option('--no-browser', is_flag=True,
+              help='Do not launch a browser.')
+@click.option('--cluster', is_flag=True, hidden=True,
+              help='Removed — hold the tunnel with "vast serve --attach" instead.')
+def ui(port, no_browser, cluster):
+    """Open the RoboVAST web UI in your browser.
+
+    A thin shortcut: it opens a browser at the ``robovast-service`` on the
+    conventional local port and does nothing else. Something must already be
+    serving there — start it (in another terminal) with one of:
+
+    \b
+      vast serve            local service on this machine
+      vast serve --attach   tunnel to the in-cluster service you deployed
+      vast ui               ...then open a browser at whatever is serving on :8800
+
+    Any SSH / ``kubectl port-forward`` tunnel to ``127.0.0.1:8800`` works too —
+    ``vast ui`` just auto-detects the service already answering there. Because
+    the service serves the web UI and the REST API on the same port, what this
+    opens is all a browser needs — the same place the CLI and MCP server detect.
+    """
+    import webbrowser  # pylint: disable=import-outside-toplevel
+
+    from robovast.execution.cluster_execution.service_deploy import SERVICE_PORT
+
+    if cluster:
+        raise click.ClickException(
+            "'vast ui' no longer opens tunnels. Hold the tunnel to the "
+            "in-cluster service with 'vast serve --attach' (in another terminal), "
+            "then run 'vast ui'.")
+
+    local_port = port or SERVICE_PORT
+    url = f'http://127.0.0.1:{local_port}'
+    if not _service_alive(url):
+        raise click.ClickException(
+            f"no robovast-service answering at {url}. Start one first (in another "
+            "terminal):\n"
+            "  vast serve            local service\n"
+            "  vast serve --attach   tunnel to the in-cluster service\n"
+            "or bring up your own tunnel to 127.0.0.1:8800.")
+    click.echo(f"✓ robovast-service: {url}   (web UI + REST API + /docs)")
+    if not no_browser:
+        webbrowser.open(url)
 
 
 # ---------------------------------------------------------------------------
@@ -435,8 +448,8 @@ def workspace():
 
     A workspace lives in the store of whichever service you talk to, so every
     command here takes ``--cluster`` and prints the target it resolved. Without
-    it they act on this machine (the store a local ``vast serve`` and ``vast ui``
-    share); with it, on the in-cluster service — the store *its* web UI reads.
+    it they act on this machine (the store a local ``vast serve`` uses); with it,
+    on the in-cluster service — the store *its* web UI reads.
     """
 
 

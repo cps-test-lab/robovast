@@ -1,111 +1,102 @@
 import { useEffect, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import AppBar from '@mui/material/AppBar'
 import Box from '@mui/material/Box'
-import Chip from '@mui/material/Chip'
-import Container from '@mui/material/Container'
-import Tab from '@mui/material/Tab'
-import Tabs from '@mui/material/Tabs'
-import Toolbar from '@mui/material/Toolbar'
-import Typography from '@mui/material/Typography'
-import Tooltip from '@mui/material/Tooltip'
-import { robovast } from '@/lib/robovastClient'
-import { formatUsageLabel } from '@/lib/format'
+import MonitorHeartRoundedIcon from '@mui/icons-material/MonitorHeartRounded'
+import RocketLaunchRoundedIcon from '@mui/icons-material/RocketLaunchRounded'
+import TuneRoundedIcon from '@mui/icons-material/TuneRounded'
+import InsightsRoundedIcon from '@mui/icons-material/InsightsRounded'
+import { Sidebar, type NavTopic } from '@/components/Sidebar'
+import { KeepAlive } from '@/components/KeepAlive'
 import { Monitor } from '@/pages/Monitor'
 import { Launcher } from '@/pages/Launcher'
-import { ConfigEditor } from '@/pages/ConfigEditor'
-import { Eval } from '@/pages/Eval'
+import { ConfigPage } from '@/pages/config/ConfigPage'
+import { ResultsPage } from '@/pages/results/ResultsPage'
 
-// The active tab is mirrored in the URL hash (e.g. #/launcher) so a browser refresh
-// (or a bookmark / back-forward) restores the current page instead of snapping back to
-// Monitor. Order matches the <Tab> list below.
-const TABS = ['monitor', 'launcher', 'config', 'results'] as const
+// The whole navigation lives in the left sidebar: each topic is a top-level entry; a topic with
+// several views (only Config today) expands to show them nested. The active topic/view is mirrored
+// in the URL hash (e.g. #/config/files) so refresh / back-forward / bookmarks restore the view.
+const TOPICS: NavTopic[] = [
+  { id: 'monitor', label: 'Monitor', icon: <MonitorHeartRoundedIcon /> },
+  { id: 'launcher', label: 'Launcher', icon: <RocketLaunchRoundedIcon /> },
+  {
+    id: 'config',
+    label: 'Config',
+    icon: <TuneRoundedIcon />,
+    views: [
+      { id: 'configuration', label: 'Configuration' },
+      { id: 'files', label: 'Files' },
+    ],
+  },
+  {
+    id: 'results',
+    label: 'Results',
+    icon: <InsightsRoundedIcon />,
+    views: [
+      { id: 'explorer', label: 'Explorer' },
+      { id: 'data', label: 'Data browser' },
+    ],
+  },
+]
 
-function tabFromHash(): number {
-  const slug = window.location.hash.replace(/^#\/?/, '')
-  const i = TABS.indexOf(slug as (typeof TABS)[number])
-  return i >= 0 ? i : 0
+interface Nav {
+  topicId: string
+  viewId: string
 }
 
-// The whole app: a thin tabbed shell over the two M1 pages. The usage chip doubles as the
-// service-connection indicator (green when the backend answers). Its tooltip keeps the
-// version/backend discoverable.
-export function App() {
-  const [tab, setTab] = useState(tabFromHash)
+// Parse #/topic/view into a valid {topicId, viewId}, defaulting the view to the topic's first (or ''
+// for leaf topics) and falling back to the first topic when the hash is unknown.
+function navFromHash(): Nav {
+  const [rawTopic, rawView] = window.location.hash.replace(/^#\/?/, '').split('/')
+  const topic = TOPICS.find((t) => t.id === rawTopic) ?? TOPICS[0]
+  const view = topic.views?.find((v) => v.id === rawView)?.id ?? topic.views?.[0]?.id ?? ''
+  return { topicId: topic.id, viewId: view }
+}
 
-  // Follow back/forward (and any external hash change) to the matching tab.
+function hashFor({ topicId, viewId }: Nav): string {
+  return viewId ? `/${topicId}/${viewId}` : `/${topicId}`
+}
+
+export function App() {
+  const [nav, setNav] = useState<Nav>(navFromHash)
+
+  // Follow back/forward (and any external hash change).
   useEffect(() => {
-    const onHashChange = () => setTab(tabFromHash())
+    const onHashChange = () => setNav(navFromHash())
     window.addEventListener('hashchange', onHashChange)
     return () => window.removeEventListener('hashchange', onHashChange)
   }, [])
 
-  const selectTab = (v: number) => {
-    setTab(v)
-    window.location.hash = `/${TABS[v]}`
+  const select = (topicId: string, viewId?: string) => {
+    const topic = TOPICS.find((t) => t.id === topicId) ?? TOPICS[0]
+    const view = viewId ?? topic.views?.[0]?.id ?? ''
+    const next = { topicId: topic.id, viewId: view }
+    setNav(next)
+    window.location.hash = hashFor(next)
   }
-  const usage = useQuery({
-    queryKey: ['usage'],
-    queryFn: () => robovast.resourceUsage(),
-    refetchInterval: 15000,
-    retry: false,
-  })
-  // Version is only used to fill the chip tooltip, so it need not poll often.
-  const version = useQuery({
-    queryKey: ['version'],
-    queryFn: () => robovast.version(),
-    retry: false,
-  })
 
   return (
-    <Box sx={{ minHeight: '100vh' }}>
-      <AppBar position="sticky" color="transparent" elevation={0} sx={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-        <Toolbar>
-          <Typography variant="h6" sx={{ color: 'primary.main', mr: 3 }}>
-            RoboVAST
-          </Typography>
-          <Tabs value={tab} onChange={(_, v) => selectTab(v)}>
-            <Tab label="Monitor" />
-            <Tab label="Launcher" />
-            <Tab label="Config" />
-            <Tab label="Results" />
-          </Tabs>
-          <Box flexGrow={1} />
-          <Tooltip
-            title={
-              version.isSuccess
-                ? `robovast ${version.data.robovast_version}${version.data.backend ? ` · ${version.data.backend}` : ''}${
-                    usage.isSuccess
-                      ? ` · runs ${usage.data.parallel_runs ? 'in parallel' : 'sequentially'}`
-                      : ''
-                  }`
-                : ''
-            }
-          >
-            <Chip
-              size="small"
-              color={usage.isSuccess ? 'success' : 'default'}
-              variant="outlined"
-              label={usage.isSuccess ? formatUsageLabel(usage.data) : 'disconnected'}
-            />
-          </Tooltip>
-        </Toolbar>
-      </AppBar>
-
-      <Container
-        maxWidth={tab === 0 ? false : tab === 2 || tab === 3 ? 'xl' : 'md'}
-        sx={{ py: 3 }}
-      >
-        {tab === 0 ? (
+    <Box sx={{ display: 'flex', minHeight: '100vh' }}>
+      <Sidebar
+        topics={TOPICS}
+        activeTopic={nav.topicId}
+        activeView={nav.viewId}
+        onSelect={select}
+      />
+      {/* Each view is kept alive (mounted-but-hidden) once visited, so its state persists across
+          navigation instead of resetting on unmount. */}
+      <Box component="main" sx={{ flexGrow: 1, minWidth: 0, p: 3 }}>
+        <KeepAlive active={nav.topicId === 'monitor'}>
           <Monitor />
-        ) : tab === 1 ? (
+        </KeepAlive>
+        <KeepAlive active={nav.topicId === 'launcher'}>
           <Launcher />
-        ) : tab === 2 ? (
-          <ConfigEditor />
-        ) : (
-          <Eval />
-        )}
-      </Container>
+        </KeepAlive>
+        <KeepAlive active={nav.topicId === 'config'}>
+          <ConfigPage view={nav.viewId} />
+        </KeepAlive>
+        <KeepAlive active={nav.topicId === 'results'}>
+          <ResultsPage view={nav.viewId} />
+        </KeepAlive>
+      </Box>
     </Box>
   )
 }

@@ -9,21 +9,25 @@ the same FastAPI app runs in-process, on a single host, or in a cluster. This
 page covers the three modes, how a client reaches each, and the v1 security
 boundary.
 
-At a glance — pick how you run, then drive it from the **web UI or the
-command line** (both auto-detect a service on the conventional port
-``127.0.0.1:8800``, so neither needs configuring):
+One command owns reachability: **``vast serve`` is the foreground process that
+makes a service answer on the conventional port ``127.0.0.1:8800``. While it is
+running you can work with it — the web UI, the CLI, and the MCP server all
+auto-detect it there, so none of them needs configuring.** ``vast ui`` is just a
+shortcut that opens a browser at that port; it starts nothing.
 
 * **Local-only, no service** — ``vast exec local run``. One-shot local Docker
   run, no persistent service (mode 1). CLI only.
-* **Local service** — ``vast serve`` (or just ``vast ui``). Persistent local
-  service; web UI + CLI + MCP share its state (mode 2).
-* **Cluster service** — ``vast serve --backend cluster`` in-pod, or the deployed
-  Deployment; drive it from ``vast ui --cluster`` or the CLI (mode 3). Run
-  ``vast serve --backend cluster -x <context>`` off-cluster to debug the driver
-  locally against a real cluster.
-* **Tunnel to any of the above** — an ``ssh -N -L 8800:127.0.0.1:8800 <host>`` or
-  ``kubectl port-forward … 8800:8800`` on the conventional port; the web UI and
-  every ``vast`` command then follow it automatically.
+* **Local service** — ``vast serve``. Persistent local service; web UI + CLI +
+  MCP share its state (mode 2). ``vast ui`` opens it.
+* **Cluster service** — ``vast exec cluster setup`` deploys it (mode 3); then
+  ``vast serve --attach`` from your machine holds a tunnel to it, and while that
+  runs the CLI, MCP, and ``vast ui`` all reach it. In-pod, the Deployment runs
+  ``vast serve --backend cluster``; run ``vast serve --backend cluster -x
+  <context>`` off-cluster to debug the driver locally against a real cluster.
+* **Your own tunnel to any of the above** — an ``ssh -N -L 8800:127.0.0.1:8800
+  <host>`` or ``kubectl port-forward … 8800:8800`` on the conventional port is
+  equivalent to ``vast serve --attach``; the web UI and every ``vast`` command
+  then follow it automatically.
 
 .. warning::
 
@@ -84,10 +88,12 @@ Access matrix
        authentication and encryption. The VM analog of ``kubectl port-forward``.
    * - Cluster service
      - ``HTTPTransport``
-     - ``kubectl port-forward svc/robovast-service 8800:8800`` then talk to
-       ``127.0.0.1:8800`` — or let a single command own the tunnel:
-       ``vast ui --cluster`` (holds it open) or ``vast exec cluster … --cluster``
-       (ephemeral, per call).
+     - ``vast serve --attach`` holds a ``kubectl port-forward`` to the deployed
+       service on ``127.0.0.1:8800`` for as long as it runs (the equivalent of
+       running ``kubectl port-forward svc/robovast-service 8800:8800`` yourself).
+       While it is up, every client — including ``vast ui`` — follows it. Or
+       skip the held tunnel and pass ``vast exec cluster … --cluster`` for an
+       ephemeral per-call tunnel.
 
 The deferred hardening for direct remote access (mode 2 remote / mode 3 without a
 tunnel) is a public **Ingress + token/TLS**, decided once for the whole surface.
@@ -119,12 +125,15 @@ Walkthrough — the in-cluster service
 .. code-block:: bash
 
    vast exec cluster setup rke2                     # deploys robovast-service
-   kubectl port-forward svc/robovast-service 8800:8800 &
+   vast serve --attach                              # holds the tunnel on :8800
 
-Bring the tunnel up on ``:8800`` first, then start MCP and it auto-detects the
-service — an MCP user (an LLM) just calls tools, no URL to configure. ``vast exec
-cluster run`` (and ``ui``/``workspace``/``monitor``) follow the same tunnel; or use
-``--cluster`` on those commands to open an ephemeral per-call tunnel instead.
+``vast serve --attach`` brings the service up on ``:8800`` and holds it there;
+while it runs everything else auto-detects it — ``vast ui`` opens a browser at
+it, an MCP user (an LLM) just calls tools with no URL to configure, and ``vast
+exec cluster run`` (and ``workspace``/``monitor``) need no flags. Prefer your own
+``kubectl port-forward svc/robovast-service 8800:8800`` and it is exactly
+equivalent. To skip the held tunnel entirely, pass ``--cluster`` on a command to
+open an ephemeral per-call tunnel instead.
 
 Keeping the service up to date
 ------------------------------

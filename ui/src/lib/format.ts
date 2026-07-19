@@ -11,18 +11,28 @@ export function formatCores(cores: number): string {
   return Number.isInteger(cores) ? String(cores) : cores.toFixed(1)
 }
 
-/** A compact "used/capacity" resource label, e.g. "cpu 6/16 · mem 22/62 GiB". */
-export function formatUsageLabel(u: {
+interface Usage {
   cpu_capacity: number
   cpu_used: number
   memory_capacity_bytes: number
   memory_used_bytes: number
-}): string {
-  const cpu = `cpu ${formatCores(u.cpu_used)}/${formatCores(u.cpu_capacity)}`
-  const mem = `mem ${bytesToGiB(u.memory_used_bytes).toFixed(0)}/${bytesToGiB(
+}
+
+/** CPU half of the usage label, e.g. "cpu 6/16". */
+export function formatCpuLabel(u: Usage): string {
+  return `cpu ${formatCores(u.cpu_used)}/${formatCores(u.cpu_capacity)}`
+}
+
+/** Memory half of the usage label, e.g. "mem 22/62 GiB". */
+export function formatMemLabel(u: Usage): string {
+  return `mem ${bytesToGiB(u.memory_used_bytes).toFixed(0)}/${bytesToGiB(
     u.memory_capacity_bytes,
   ).toFixed(0)} GiB`
-  return `${cpu} · ${mem}`
+}
+
+/** A compact "used/capacity" resource label, e.g. "cpu 6/16 · mem 22/62 GiB". */
+export function formatUsageLabel(u: Usage): string {
+  return `${formatCpuLabel(u)} · ${formatMemLabel(u)}`
 }
 
 /** Seconds → a coarse human duration: "45s", "12m", "2h 5m", "1d 3h". */
