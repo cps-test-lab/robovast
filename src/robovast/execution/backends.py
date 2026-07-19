@@ -125,6 +125,17 @@ class ExecutionBackend(ABC):
         storage, so the bucket holds a complete, local-equivalent campaign.
         """
 
+    def preflight_upload_to_share(self) -> None:
+        """Validate this backend can honour ``--upload-to-share`` before the campaign runs.
+
+        Called once at campaign start (only when the option is set) so a
+        misconfiguration fails *fast and loud* instead of the whole campaign running
+        and the upload then silently skipping at the finish tail. The default (local
+        :class:`DockerBackend`) always can — it writes a tar.gz to the archive dir, no
+        external provider needed. The :class:`KubernetesBackend` overrides this to
+        raise :class:`CampaignConfigError` when no share provider is configured.
+        """
+
     def share_campaign(self, campaign_root: str, options: "RunOptions") -> None:
         """Produce the pre-postprocess "upload-to-share" artifact for this campaign.
 

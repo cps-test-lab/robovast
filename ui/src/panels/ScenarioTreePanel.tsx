@@ -178,7 +178,7 @@ registerPanel({
     type: 'scenario_tree',
     label: 'Scenario tree',
     defaultPosition: { anchor: 'left', width: 320 },
-    resizable: false,
+    resizable: true,
     minimizable: true,
   },
   component: ScenarioTreePanel,

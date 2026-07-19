@@ -13,6 +13,7 @@ const KNOWN_KEYS = new Set([
   'resizable',
   'minimizable',
   'minimized',
+  'frameless',
   'hidden',
   'fixed',
 ])
@@ -39,6 +40,7 @@ export function parseVastPanels(raw: Record<string, unknown>[]): PanelSpec[] {
       resizable: (r.resizable as boolean | undefined) ?? manifest?.resizable ?? false,
       minimizable: (r.minimizable as boolean | undefined) ?? manifest?.minimizable ?? false,
       minimized: (r.minimized as boolean | undefined) ?? false,
+      frameless: (r.frameless as boolean | undefined) ?? manifest?.frameless ?? false,
       hidden: (r.hidden as boolean | undefined) ?? false,
       fixed: (r.fixed as boolean | undefined) ?? false,
       config,

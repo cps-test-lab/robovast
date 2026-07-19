@@ -611,6 +611,7 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
     campaign_id = campaign_id or campaign_id_for(campaign_config)
     be = backend or DockerBackend(state=state)
     opts = options or RunOptions()
+    _preflight_upload_to_share(be, opts)
     store = CampaignStore(os.path.join(results_dir, campaign_id, STORE_FILENAME))
     controller = CampaignController(
         campaign_id=campaign_id, results_dir=results_dir, runs=runs,
@@ -736,6 +737,17 @@ def build_campaign_data(vast_file, output_dir, config_filter=None,
     return campaign_data, transient_files
 
 
+def _preflight_upload_to_share(backend: ExecutionBackend, opts: RunOptions) -> None:
+    """Reject a misconfigured ``--upload-to-share`` before the campaign starts.
+
+    Run *before* the store/controller and the ``finally: _finish_campaign`` tail are
+    set up, so a raise here is a clean pre-start failure — no half-built campaign, no
+    finish-tail work on nothing — surfaced as ``CampaignConfigError`` to the caller.
+    """
+    if opts.upload_to_share:
+        backend.preflight_upload_to_share()
+
+
 def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_filter=None,
                        backend: ExecutionBackend | None = None,
                        options: RunOptions | None = None, campaign_id=None, state=None,
@@ -768,6 +780,7 @@ def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_fil
 
         be = backend or DockerBackend(state=state)
         opts = options or RunOptions()
+        _preflight_upload_to_share(be, opts)
         store = CampaignStore(os.path.join(results_dir, campaign_id, STORE_FILENAME))
         controller = CampaignController(
             campaign_id=campaign_id, results_dir=results_dir, runs=runs,

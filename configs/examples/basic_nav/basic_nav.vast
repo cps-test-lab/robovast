@@ -48,7 +48,7 @@ visualization:
     - type: playback
     - type: costmap
       title: Nav2 costmaps
-      position: { anchor: top-right, width: 440, height: 440 }
+      position: { anchor: top-right, width: 400, height: 550 }
       minimizable: true
       layers:
         map: { topic: /map }

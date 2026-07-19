@@ -34,6 +34,8 @@ export interface PanelSpec {
   resizable: boolean
   minimizable: boolean
   minimized: boolean
+  /** No Paper chrome (border/elevation/header) -- the panel body floats directly, e.g. the playback bar. */
+  frameless: boolean
   hidden: boolean
   fixed: boolean
   config: Record<string, unknown>
@@ -46,6 +48,7 @@ export interface PanelManifest {
   defaultPosition: PanelPosition
   resizable?: boolean
   minimizable?: boolean
+  frameless?: boolean
 }
 
 export interface PanelProps {

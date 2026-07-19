@@ -28,7 +28,7 @@ import type { PanelProps } from '@/lib/dashboard/types'
 import type { DataProvider } from '@/lib/dashboard/dataProvider'
 import type { CostmapFrame } from '@/lib/robovastClient'
 
-const GLOBAL_ALPHA = 215
+const GLOBAL_ALPHA = 245
 const LOCAL_ALPHA = 150
 const FETCH_INTERVAL_MS = 120 // min wall gap between costmap-frame fetch rounds
 
@@ -431,7 +431,7 @@ registerPanel({
     type: 'costmap',
     label: 'Costmaps',
     defaultPosition: { anchor: 'top-right', width: 420, height: 420 },
-    resizable: false,
+    resizable: true,
     minimizable: true,
   },
   component: CostmapPanel,

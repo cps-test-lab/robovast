@@ -779,6 +779,29 @@ class KubernetesBackend(ExecutionBackend):
         logger.info("Published canonical campaign (%d file(s), incl. campaign.db / "
                     "_execution / metrics) to %s/%s", n, bucket, prefix)
 
+    def preflight_upload_to_share(self) -> None:
+        """Fail fast when ``--upload-to-share`` is set but no share is configured.
+
+        The upload runs in-driver (this same process/env), so the env checked here is
+        exactly the one :meth:`share_campaign` would read at the finish tail. Raising
+        now — before the campaign runs — turns what used to be a silent, end-of-run
+        skip into an up-front, actionable error.
+        """
+        from robovast.execution.backends import \
+            CampaignConfigError  # pylint: disable=import-outside-toplevel
+        from robovast.execution.cluster_execution import \
+            in_pod_upload  # pylint: disable=import-outside-toplevel
+
+        if not in_pod_upload.share_type_configured():
+            raise CampaignConfigError(
+                "--upload-to-share was requested, but no share provider is configured: "
+                "ROBOVAST_SHARE_TYPE is unset in the campaign environment.\n"
+                "Set it (and its provider credentials) in the environment / .env that "
+                "'vast serve' runs with — e.g.\n"
+                "  ROBOVAST_SHARE_TYPE=gcs\n"
+                "  ROBOVAST_GCS_BUCKET=my-robovast-results\n"
+                "— or drop --upload-to-share.")
+
     def share_campaign(self, campaign_root: str, options) -> None:
         """Stream the raw campaign straight to the configured share provider.
 
@@ -793,12 +816,18 @@ class KubernetesBackend(ExecutionBackend):
         from robovast.execution import campaign_archive  # pylint: disable=import-outside-toplevel
         from robovast.execution.cluster_execution import in_pod_upload  # pylint: disable=import-outside-toplevel
 
+        from robovast.execution.backends import \
+            CampaignConfigError  # pylint: disable=import-outside-toplevel
+
         campaign_id = os.path.basename(os.path.normpath(campaign_root))
         provider = in_pod_upload.load_provider_from_env()
         if provider is None:
-            logger.info("upload-to-share enabled but no share provider configured "
-                        "(ROBOVAST_SHARE_TYPE unset); skipping share for %s.", campaign_id)
-            return
+            # Unreachable in normal flow: preflight_upload_to_share() already rejected
+            # this at campaign start. Kept as a loud backstop rather than a silent skip
+            # so a share going unconfigured can never pass unnoticed again.
+            raise CampaignConfigError(
+                "upload-to-share enabled but no share provider is configured "
+                "(ROBOVAST_SHARE_TYPE unset) for %s." % campaign_id)
         in_pod_upload.verify_share_access(provider)
         object_name = f"{campaign_id}.tar.gz"
         logger.info("Streaming raw campaign %s to %s share as %s...",

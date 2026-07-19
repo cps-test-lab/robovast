@@ -59,9 +59,9 @@ function PlaybackPanel({ clock }: PanelProps) {
         onMouseDown={(e) => seekTo(e.clientX)}
         sx={{
           flexGrow: 1,
-          height: 8,
-          borderRadius: 4,
-          bgcolor: 'action.disabledBackground',
+          height: 16,
+          borderRadius: 0.75,
+          bgcolor: 'action.hover',
           cursor: empty ? 'default' : 'pointer',
           position: 'relative',
           overflow: 'hidden',
@@ -88,9 +88,10 @@ registerPanel({
   manifest: {
     type: 'playback',
     label: 'Playback',
-    defaultPosition: { anchor: 'bottom', height: 56 },
+    defaultPosition: { anchor: 'bottom', height: 40 },
     resizable: false,
     minimizable: false,
+    frameless: true,
   },
   component: PlaybackPanel,
 })

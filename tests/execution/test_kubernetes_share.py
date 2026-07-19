@@ -3,16 +3,19 @@
 """KubernetesBackend.share_campaign streams the raw campaign to the share provider.
 
 With a provider configured it must stream (no disk tar) into
-``provider.upload_archive_stream``; with none configured it must skip cleanly
-(not a failure).
+``provider.upload_archive_stream``; with none configured it must fail loudly
+(``preflight_upload_to_share`` rejects it up front, and ``share_campaign`` is a
+defensive backstop) rather than silently skip.
 """
 
 import contextlib
 import io
 import types
 
+import pytest
+
 from robovast.execution import campaign_archive
-from robovast.execution.backends import RunOptions
+from robovast.execution.backends import CampaignConfigError, RunOptions
 from robovast.execution.cluster_execution import in_pod_upload
 from robovast.execution.cluster_execution.kubernetes_backend import KubernetesBackend
 
@@ -49,12 +52,25 @@ def test_share_campaign_streams_to_provider(monkeypatch):
     assert provider.uploaded == ("camp-2026-01-01-000000.tar.gz", b"tar-bytes")
 
 
-def test_share_campaign_no_provider_is_noop(monkeypatch):
+def test_preflight_raises_without_share_configured(monkeypatch):
+    monkeypatch.setattr(in_pod_upload, "share_type_configured", lambda: False)
+    with pytest.raises(CampaignConfigError):
+        _backend().preflight_upload_to_share()
+
+
+def test_preflight_ok_when_share_configured(monkeypatch):
+    monkeypatch.setattr(in_pod_upload, "share_type_configured", lambda: True)
+    # Must not raise when a share type is set.
+    _backend().preflight_upload_to_share()
+
+
+def test_share_campaign_no_provider_raises(monkeypatch):
     monkeypatch.setattr(in_pod_upload, "load_provider_from_env", lambda: None)
 
     def _fail(*a, **k):
         raise AssertionError("must not stream without a provider")
     monkeypatch.setattr(campaign_archive, "campaign_tar_stream", _fail)
 
-    # Does not raise, does not stream.
-    _backend().share_campaign("/scratch/camp-2026-01-01-000000", RunOptions())
+    # Defensive backstop: raises loudly rather than silently skipping.
+    with pytest.raises(CampaignConfigError):
+        _backend().share_campaign("/scratch/camp-2026-01-01-000000", RunOptions())
