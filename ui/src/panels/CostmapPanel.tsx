@@ -28,8 +28,10 @@ import type { PanelProps } from '@/lib/dashboard/types'
 import type { DataProvider } from '@/lib/dashboard/dataProvider'
 import type { CostmapFrame } from '@/lib/robovastClient'
 
-const GLOBAL_ALPHA = 245
-const LOCAL_ALPHA = 150
+// The global costmap covers the whole map, so keep it faint enough that the static map shows
+// through; the local costmap is a small window drawn on top and stays clearly visible/opaque.
+const GLOBAL_ALPHA = 110
+const LOCAL_ALPHA = 210
 const FETCH_INTERVAL_MS = 120 // min wall gap between costmap-frame fetch rounds
 
 interface View {

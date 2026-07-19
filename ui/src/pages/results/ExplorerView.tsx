@@ -92,8 +92,18 @@ export function ExplorerView({ campaigns }: { campaigns: CampaignSummary[] }) {
           No campaigns yet — launch one from the Launcher.
         </Alert>
       ) : (
-        <Box sx={{ display: 'grid', gridTemplateColumns: '380px 1fr', gap: 2, alignItems: 'start' }}>
-          <Paper sx={{ p: 1, overflow: 'auto', maxHeight: 620 }}>
+        <Box
+          sx={{
+            display: 'grid',
+            gridTemplateColumns: '380px 1fr',
+            gap: 2,
+            // Fill the viewport below the sidebar padding + page heading so both columns run full
+            // height; each column scrolls internally rather than growing the page.
+            height: 'calc(100vh - 140px)',
+            minHeight: 0,
+          }}
+        >
+          <Paper sx={{ p: 1, overflow: 'auto', minHeight: 0 }}>
             <RichTreeView
               items={items}
               slots={{ item: StatusTreeItem }}
@@ -122,7 +132,9 @@ function SelectionDetail({ item }: { item?: ResultsTreeItem }) {
     )
   }
   return (
-    <Paper sx={{ p: 2 }}>
+    <Paper
+      sx={{ p: 2, minHeight: 0, overflow: 'auto', display: 'flex', flexDirection: 'column' }}
+    >
       <NotebookPanel item={item} />
     </Paper>
   )
@@ -167,13 +179,13 @@ function NotebookPanel({ item }: { item: ResultsTreeItem }) {
     )
 
   return (
-    <Stack spacing={1}>
+    <Stack spacing={1} sx={{ flex: 1, minHeight: 0 }}>
       <Tabs
         value={active}
         onChange={(_e, v) => setActive(v)}
         variant="scrollable"
         scrollButtons="auto"
-        sx={{ minHeight: 36 }}
+        sx={{ minHeight: 36, flexShrink: 0 }}
       >
         {workloads.map((w) => (
           <Tab key={w.name} value={w.name} label={w.name} sx={{ minHeight: 36, py: 0 }} />
@@ -248,7 +260,9 @@ function NotebookFrame({
       src={blobUrl}
       sx={{
         width: '100%',
-        height: 640,
+        // Grow to fill the detail pane's remaining height (below the tab bar) instead of a fixed box.
+        flex: 1,
+        minHeight: 320,
         border: 0,
         borderRadius: 1,
         // Match the rendered notebook's own background so there's no light/dark flash on load.

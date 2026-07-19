@@ -213,6 +213,26 @@ def _ensure_ui_built(rebuild: bool = False) -> None:
     subprocess.run([npm, 'run', 'build'], cwd=str(ui_dir), check=True)  # noqa: S603
 
 
+def _load_project_dotenv() -> None:
+    """Load the project ``.env`` into ``os.environ`` (share creds, ntfy, etc.).
+
+    Mirrors the results CLI's ``_load_share_dotenv``: prefer the ``.env`` next to
+    the project config, then the discovered project dir, then the CWD. ``override``
+    is left at its default (False) so a real environment variable always wins over
+    a ``.env`` line, and the call is a harmless no-op when no ``.env`` exists.
+    """
+    from dotenv import load_dotenv
+    project_file = ProjectConfig.find_project_file()
+    if project_file:
+        project_dir = os.path.dirname(os.path.abspath(project_file))
+        pc = ProjectConfig.load()
+        if pc and pc.config_path:
+            load_dotenv(os.path.join(os.path.dirname(pc.config_path), ".env"))
+        load_dotenv(os.path.join(project_dir, ".env"))
+    else:
+        load_dotenv()
+
+
 @cli.command()
 @click.option('--host', default='127.0.0.1', show_default=True,
               help='Interface to bind. Keep 127.0.0.1 unless behind a tunnel/proxy: '
@@ -297,6 +317,15 @@ def serve(host, port, backend, attach, context, k8s_namespace, rebuild_ui,
         return
 
     from robovast.service.app import serve as _serve
+
+    # The campaign driver runs in this same process (local backend, or an
+    # off-cluster '--backend cluster' driver), so its share upload reads *this*
+    # os.environ. Load the project .env now — the same convention the results CLI
+    # uses — so ROBOVAST_SHARE_TYPE / provider credentials kept there make
+    # '--upload-to-share' work without exporting them by hand. override=False
+    # keeps real environment variables authoritative; in-pod there is no project
+    # .env, so this is a no-op and the deployment env wins.
+    _load_project_dotenv()
 
     # Build the SPA the service serves, so a source checkout needs one command
     # (no-op for a packaged/in-cluster install — see _ensure_ui_built).

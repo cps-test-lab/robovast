@@ -128,6 +128,27 @@ class SecondaryContainerConfig(BaseModel):
             return {'name': name, 'resources': resources}
         return data
 
+    @classmethod
+    def __get_pydantic_json_schema__(cls, core_schema, handler):
+        # The ``mode='before'`` validator accepts shapes the post-validation model
+        # can't express: a bare string (the container name), or a mapping whose
+        # name is the *key* rather than a ``name`` property (e.g. ``- nav:``).
+        # The default schema would require a literal ``name`` property, so the web
+        # editor flags valid YAML as ``Missing property "name"``. Reflect the real
+        # accepted forms here instead.
+        default = handler(core_schema)
+        resources_schema = default.get('properties', {}).get('resources', {})
+        return {
+            'anyOf': [
+                {'type': 'string'},
+                {
+                    'type': 'object',
+                    'properties': {'resources': resources_schema},
+                    'additionalProperties': True,
+                },
+            ]
+        }
+
 
 def normalize_secondary_containers(secondary_containers) -> list[dict]:
     """Normalize secondary container entries to a uniform dict format with 'name' and 'resources' keys.
@@ -306,7 +327,14 @@ class VisualizationConfig(BaseModel):
     postprocessed campaign over its rosbag timeline. Rendered by the UI from the
     campaign's snapshot ``.vast``; each panel reads existing ``data.db`` tables."""
     model_config = ConfigDict(extra='forbid')
-    panels: list[PanelConfig] = Field(default_factory=list)
+    panels: Optional[list[PanelConfig]] = Field(default_factory=list)
+
+    @field_validator('panels', mode='before')
+    @classmethod
+    def _default_empty(cls, v):
+        # ``panels:`` with no value parses as YAML null; treat it as an empty list
+        # (Optional keeps the served JSON Schema from flagging null inline too).
+        return [] if v is None else v
 
 
 class FloatDim(BaseModel):
