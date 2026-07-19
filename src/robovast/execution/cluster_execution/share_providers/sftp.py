@@ -18,6 +18,7 @@
 """SFTP share provider for ``cluster upload-to-share``."""
 
 import os
+import urllib.parse
 
 import click
 import paramiko
@@ -265,6 +266,21 @@ class SftpShareProvider(BaseShareProvider):
         finally:
             sftp.close()
             ssh.close()
+
+    def archive_url(self, object_name: str) -> str:
+        """Return the ``sftp://`` URI locating *object_name* on the server.
+
+        There is no HTTP download link for SFTP, so this returns the full
+        ``sftp://user@host[:port]/remote_dir/object`` location — usable by
+        ``sftp``/``scp`` clients and file managers that understand the scheme.
+        """
+        host = os.environ["ROBOVAST_SFTP_HOST"]
+        user = os.environ["ROBOVAST_SFTP_USER"]
+        remote_dir = os.environ["ROBOVAST_SFTP_REMOTE_DIR"].rstrip("/")
+        port = os.environ.get("ROBOVAST_SFTP_PORT", "").strip()
+        host_part = f"{host}:{port}" if port and port != "22" else host
+        path = urllib.parse.quote(f"{remote_dir}/{object_name}")
+        return f"sftp://{user}@{host_part}{path}"
 
     def download_archive(
         self,

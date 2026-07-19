@@ -851,6 +851,7 @@ def list_downloads_cmd(campaigns):
     requested = set(campaigns)
     variants: dict[str, set] = {}
     raw_sizes: dict[str, int] = {}
+    raw_urls: dict[str, str] = {}
 
     service_url = detected_service_url()
     if service_url:
@@ -884,6 +885,9 @@ def list_downloads_cmd(campaigns):
                     cid = base[:-len(".tar.gz")] if base.endswith(".tar.gz") else base
                     variants.setdefault(cid, set()).add("raw")
                     raw_sizes[cid] = size
+                    url = provider.archive_url(name)
+                    if url:
+                        raw_urls[cid] = url
             except Exception as exc:  # noqa: BLE001
                 click.echo(f"  (share listing failed: {exc})", err=True)
 
@@ -912,6 +916,11 @@ def list_downloads_cmd(campaigns):
         size = raw_sizes.get(cid)
         extra = f"  (raw {_fmt_size(size)})" if size is not None and size >= 0 else ""
         click.echo(f"  {cid}  [{labels}]{extra}")
+        # For share ("raw") archives, print the full download link so users can
+        # copy it or hand it to a browser / curl without re-deriving it.
+        url = raw_urls.get(cid)
+        if url:
+            click.echo(f"      {url}")
     click.echo()
     click.echo(f"  {len(variants)} campaign(s)")
 

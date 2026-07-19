@@ -15,7 +15,8 @@ scenario test_scenario:
         serial:
             robot.init_nav2(pose_3d())
             bag_record(['/tf', '/tf_static', '/amcl_pose',
-                    '/scenario_execution/snapshots'],
+                    '/scenario_execution/snapshots',
+                    '/map', '/global_costmap/costmap', '/local_costmap/costmap'],
                 use_sim_time: true,
                 timestamp_suffix: false)
             robot.nav_to_pose(goal_pose)

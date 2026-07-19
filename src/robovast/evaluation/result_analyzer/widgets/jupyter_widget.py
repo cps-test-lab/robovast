@@ -19,16 +19,14 @@ import os
 import re
 import tempfile
 
-import nbformat
-from nbconvert import HTMLExporter
-from nbconvert.preprocessors import ExecutePreprocessor
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QPalette
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (QApplication, QFrame, QLabel, QProgressBar,
                                QVBoxLayout, QWidget)
 
-from robovast.common import FileCache
+from robovast.results_processing.notebook_render import (render_notebook_html,
+                                                         scrollbar_css)
 
 from .common import RunType
 from .worker_thread import CancellableWorkload
@@ -59,71 +57,8 @@ def detect_theme() -> str:
         return 'light'
 
 
-def _scrollbar_css(theme: str) -> str:
-    if theme == 'dark':
-        track = "rgba(255, 255, 255, 0.08)"
-        thumb = "rgba(255, 255, 255, 0.25)"
-        thumb_hover = "rgba(255, 255, 255, 0.35)"
-        color_scheme = "dark"
-    else:
-        track = "rgba(0, 0, 0, 0.05)"
-        thumb = "rgba(0, 0, 0, 0.25)"
-        thumb_hover = "rgba(0, 0, 0, 0.35)"
-        color_scheme = "light"
-
-    return f"""
-<style id="robovast-scrollbar-style">
-  html {{
-    font-size: 14px;
-    color-scheme: {color_scheme};
-  }}
-  :root {{
-    --rv-scrollbar-track: {track};
-    --rv-scrollbar-thumb: {thumb};
-    --rv-scrollbar-thumb-hover: {thumb_hover};
-  }}
-  * {{
-    scrollbar-width: thin; /* Firefox */
-    scrollbar-color: var(--rv-scrollbar-thumb) var(--rv-scrollbar-track); /* Firefox */
-  }}
-  *::-webkit-scrollbar {{
-    width: 12px;
-    height: 12px;
-  }}
-  *::-webkit-scrollbar-track {{
-    background: var(--rv-scrollbar-track);
-  }}
-  *::-webkit-scrollbar-thumb {{
-    background-color: var(--rv-scrollbar-thumb);
-    border-radius: 8px;
-    border: 3px solid transparent;
-    background-clip: content-box;
-  }}
-  *::-webkit-scrollbar-thumb:hover {{
-    background-color: var(--rv-scrollbar-thumb-hover);
-  }}
-</style>
-""".strip()
-
-
-def _inject_css_into_html_head(html_text: str, css_block: str) -> str:
-    if not html_text or not css_block:
-        return html_text
-
-    if 'id="robovast-scrollbar-style"' in html_text:
-        return html_text
-
-    head_close = re.search(r"</head\s*>", html_text, flags=re.IGNORECASE)
-    if head_close:
-        idx = head_close.start()
-        return html_text[:idx] + "\n" + css_block + "\n" + html_text[idx:]
-
-    head_open = re.search(r"<head(\s+[^>]*)?>", html_text, flags=re.IGNORECASE)
-    if head_open:
-        idx = head_open.end()
-        return html_text[:idx] + "\n" + css_block + "\n" + html_text[idx:]
-
-    return css_block + "\n" + html_text
+# NOTE: the scrollbar CSS + head-injection helpers now live in the shared render core
+# (``robovast.results_processing.notebook_render``); ``scrollbar_css`` is imported above.
 
 
 def clean_ansi_codes(text: str) -> str:
@@ -333,52 +268,10 @@ class JupyterNotebookRunner(CancellableWorkload):
 
     def __init__(self, name, run_nb, config_nb, campaign_nb, batch_nb=None):
         super().__init__(name)
-        self.notebook_content = None
         self.run_nb = run_nb
         self.config_nb = config_nb
         self.campaign_nb = campaign_nb
         self.batch_nb = batch_nb
-
-    def set_notebook(self, notebook_content: str):
-        """Set the notebook content to execute"""
-        self.notebook_content = notebook_content
-
-    def get_notebook(self, path, run_type, inject=None):
-        """Load and prepare the notebook: inject ``DATA_DIR`` (and any ``inject``
-        variables, e.g. ``BATCH`` for a batch notebook).
-
-        Returns:
-            nbformat.NotebookNode: The prepared notebook object
-        """
-        notebook_content = self._load_external_notebook(run_type)
-        if not notebook_content:
-            return None
-
-        # Parse the notebook as JSON/nbformat object
-        try:
-            notebook = nbformat.reads(notebook_content, as_version=4)
-        except Exception as e:
-            raise ValueError(f"Failed to parse notebook as JSON: {e}") from e
-
-        # Inject DATA_DIR (required) plus any extra variables (optional). Each is a
-        # ``NAME = <repr>`` assignment replaced in-place wherever the notebook
-        # declares it; only DATA_DIR must be present.
-        injections = {"DATA_DIR": repr(os.path.abspath(path))}
-        for name, value in (inject or {}).items():
-            injections[name] = repr(value)
-
-        for var, replacement in injections.items():
-            pattern = re.compile(rf'(?m)^(\s*){var}\s*=\s*.*$')
-            count = 0
-            for cell in notebook.cells:
-                if cell.cell_type == 'code':
-                    cell.source, n = pattern.subn(rf'\1{var} = {replacement}', cell.source)
-                    count += n
-            if var == "DATA_DIR" and count == 0:
-                raise ValueError("Expected at least one 'DATA_DIR' assignment to replace.")
-
-        # Return notebook object directly
-        return notebook
 
     def _get_external_notebook_path(self, run_type) -> str:
         if run_type == RunType.RUN:
@@ -391,197 +284,42 @@ class JupyterNotebookRunner(CancellableWorkload):
             return self.campaign_nb
         return None
 
-    def _load_external_notebook(self, run_type) -> str:
-        """Load and notebook from external file"""
+    def run(self, data_path, run_type, inject=None):
+        """Render this workload's notebook for *data_path* into an HTML file.
+
+        Execution/export/caching is delegated to the shared render core
+        (:func:`robovast.results_processing.notebook_render.render_notebook_html`, also
+        used by the web service). Per-cell progress and campaign-switch cancellation
+        flow through the core's optional hooks. On failure the desktop shows its styled
+        error page — that error-rendering stays here so the core is happy-path only.
+
+        Returns:
+            tuple[bool, str]: ``(ok, html_file_path)`` for the ``QWebEngineView``.
+        """
         notebook_path = self._get_external_notebook_path(run_type)
         if not notebook_path:
-            return None
-
-        # # Make path absolute if it's relative
-        # if not os.path.isabs(notebook_path):
-        #     # Try relative to the script directory first
-        #     base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-        #     notebook_path = os.path.join(base_dir, notebook_path)
-
-        print(f"Loading notebook from {notebook_path}...")
-        try:
-            # Load notebook file
-            if os.path.exists(notebook_path):
-                with open(notebook_path, 'r', encoding='utf-8') as f:
-                    notebook_content = f.read()
-
-                return notebook_content
-            else:
-                print(f"Notebook {notebook_path} does not exist.")
-                return None
-
-        except Exception as e:
-            print(f"Error loading notebook from {notebook_path}: {e}")
-            return None
-
-    def get_cache_file_name(self, run_type):
-        """Determine CSV files and analysis type based on directory structure"""
-        if run_type == RunType.RUN:
-            return "overview_run.html"
-        elif run_type == RunType.CONFIG:
-            return "overview_config.html"
-        elif run_type == RunType.BATCH:
-            return "overview_batch.html"
-        elif run_type == RunType.CAMPAIGN:
-            return "overview_campaign.html"
-        raise ValueError("Unknown run-type")
-
-    def get_hash_files(self, run_type):
-        """Get list of files to hash for caching purposes"""
-        path = self._get_external_notebook_path(run_type)
-        if path:
-            hash_files = [os.path.abspath(path)]
-            return hash_files
-        return []
-
-    def run(self, data_path, run_type, inject=None):
-        if not self._get_external_notebook_path(run_type):
             return False, "Notebook not available"
-        hash_files = self.get_hash_files(run_type)
-        cache_file_name = self.get_cache_file_name(run_type)
-        # A batch node shares its path with the campaign (flat layout); the cache
-        # is keyed by the injected variables too, so each batch caches separately.
-        cache_suffix = "".join(f"_{k}-{v}" for k, v in sorted((inject or {}).items()))
-        if cache_suffix:
-            cache_file_name = cache_file_name.replace(".html", f"{cache_suffix}.html")
-        file_cache = FileCache(data_path, cache_file_name, hash_files, ".html")
-        try:
-            # Check cache first
-            cached_file = file_cache.get_cached_file(hash_files, None, content=False)
-            if cached_file:
-                # Use cached HTML
-                print("Use cached analysis results.")
-                return True, os.path.abspath(cached_file)
 
+        if self.progress_callback:
             self.progress_callback(0, "Creating notebook...")
+        try:
+            html_out = render_notebook_html(
+                notebook_path, str(data_path), inject=inject,
+                theme=detect_theme(), timeout=600,
+                progress_cb=self.progress_callback,
+                is_cancelled=self.is_cancelled)
+            ok = True
+            if self.progress_callback:
+                self.progress_callback(100, "Notebook execution completed!")
+        except Exception as e:  # pylint: disable=broad-except
+            html_out = format_notebook_error_html(str(e))
+            ok = False
 
-            notebook = self.get_notebook(data_path, run_type, inject=inject)
-            if not notebook:
-                raise ValueError("Failed to prepare notebook content.")
-
-            # Configure the executor
-            self.progress_callback(10, "Setting up execution environment...")
-
-            class ProgressExecutePreprocessor(ExecutePreprocessor):
-                def __init__(self, progress_callback=None, is_canceled_callback=None, *args, **kwargs):  # pylint: disable=keyword-arg-before-vararg
-                    super().__init__(*args, **kwargs)
-                    self.current_cell = 0.
-                    self.cells = 1
-                    self.progress = 0.
-                    self.progress_callback = progress_callback
-                    self.is_canceled_callback = is_canceled_callback
-
-                def preprocess(self, nb, resources):
-                    self.cells = len(nb.cells)
-                    return super().preprocess(nb, resources)
-
-                def preprocess_cell(self, cell, resources, index):
-                    self.current_cell += 1
-                    self.progress = self.current_cell / self.cells
-                    if self.progress_callback:
-                        progress_value = 20 + int(self.progress * 60)  # Scale from 20% to 80%
-                        self.progress_callback(progress_value, f"Executing cell {index + 1}/{self.cells}...")
-                    if self.is_canceled_callback and self.is_canceled_callback():
-                        raise RuntimeError("Notebook execution canceled by user.")
-                    try:
-                        return super().preprocess_cell(cell, resources, index)
-                    except Exception as e:
-                        # Re-raise with cell number and source code information
-                        cell_source = cell.get('source', '')
-                        error_msg = f"Error in cell {
-                            index + 1} of {self.cells}: {str(e)}\n\n--- Cell Source ---\n{cell_source}\n--- End Cell Source ---"
-                        raise RuntimeError(error_msg) from e
-
-            executor = ProgressExecutePreprocessor(progress_callback=self.progress_callback,
-                                                   is_canceled_callback=self.is_cancelled, timeout=600, kernel_name='python3')
-            try:
-                executor.preprocess(notebook, {'metadata': {'path': os.path.dirname(data_path)}})
-            except Exception as e:
-                # Export only successfully executed cells (exclude failing cell and later)
-                error_str = str(e)
-                cell_match = re.search(r'Error in cell (\d+) of \d+:', error_str)
-                if cell_match:
-                    failing_cell_1based = int(cell_match.group(1))
-                    # Keep only cells before the failing one (0-based index)
-                    truncate_at = failing_cell_1based - 1
-                    nb_copy = nbformat.v4.new_notebook(metadata=notebook.metadata)
-                    nb_copy.cells = list(notebook.cells[:truncate_at])
-                else:
-                    # Cannot determine failing cell; show only the error
-                    nb_copy = None
-
-                error_html = format_notebook_error_html(str(e))
-                error_body_match = re.search(
-                    r'<body[^>]*>(.*?)</body>', error_html, re.DOTALL | re.IGNORECASE)
-                error_content = (
-                    error_body_match.group(1).strip() if error_body_match else error_html)
-                error_banner = (
-                    '<div class="error-banner" style="background: #dc3545; color: white; '
-                    'padding: 10px 16px; margin: 16px 0; border-radius: 4px; font-size: 13px; font-weight: 600;">'
-                    'Execution stopped due to an error in a cell. Output above shows completed cells.</div>')
-
-                if nb_copy and nb_copy.cells:
-                    html_exporter = HTMLExporter()
-                    html_exporter.template_name = 'lab'
-                    html_exporter.theme = detect_theme()
-                    try:
-                        html_exporter.exclude_input = True
-                        html_exporter.exclude_input_prompt = True
-                        html_exporter.exclude_output_prompt = False
-                    except Exception:
-                        pass
-
-                    (partial_body, _) = html_exporter.from_notebook_node(nb_copy)
-                    partial_body = _inject_css_into_html_head(
-                        partial_body, _scrollbar_css(html_exporter.theme))
-                    combined_html = partial_body.replace(
-                        '</body>', f'\n{error_banner}\n<div style="margin-top: 1em;">{error_content}</div>\n</body>')
-                else:
-                    combined_html = error_html
-
-                with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False) as temp_file:
-                    temp_file.write(combined_html)
-                    temp_file_path = temp_file.name
-                return False, temp_file_path
-            self.progress_callback(90, "Converting to HTML...")
-
-            html_exporter = HTMLExporter()
-            html_exporter.template_name = 'lab'  # Use 'lab' template for full-featured HTML
-            html_exporter.theme = detect_theme()
-            # Hide code cell inputs in the exported HTML
-            try:
-                html_exporter.exclude_input = True
-                html_exporter.exclude_input_prompt = True
-                # Also hide raw input prompt decorations if supported
-                html_exporter.exclude_output_prompt = False
-            except Exception:
-                # Older nbconvert versions may not support these attributes
-                pass
-
-            (body, _) = html_exporter.from_notebook_node(notebook)
-            body = _inject_css_into_html_head(body, _scrollbar_css(html_exporter.theme))
-
-            # Write the HTML content to the cache file
-            with open(cache_file_name, 'w', encoding='utf-8') as cache_file:
-                cache_file.write(body)
-
-            cache_file_path = file_cache.save_file_to_cache(input_files=hash_files, file_content=body)
-
-            self.progress_callback(100, "Notebook execution completed!")
-            return True, os.path.abspath(cache_file_path)
-
-        except Exception as e:
-            # Clean up the error message and create a nice HTML error page
-            error_html = format_notebook_error_html(str(e))
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False) as temp_file:
-                temp_file.write(error_html)
-                temp_file_path = temp_file.name
-            return False, temp_file_path
+        with tempfile.NamedTemporaryFile(
+                mode='w', suffix='.html', delete=False, encoding='utf-8') as temp_file:
+            temp_file.write(html_out)
+            temp_file_path = temp_file.name
+        return ok, os.path.abspath(temp_file_path)
 
 
 class LoadingOverlay(QFrame):
@@ -765,7 +503,7 @@ class DataAnalysisWidget(QWidget):
                     -moz-osx-font-smoothing: grayscale;
                 }}
             </style>
-            {_scrollbar_css(theme)}
+            {scrollbar_css(theme)}
         </head>
         <body>
         </body>
@@ -833,7 +571,7 @@ class DataAnalysisWidget(QWidget):
                     border-radius: 4px;
                 }}
             </style>
-            {_scrollbar_css(theme)}
+            {scrollbar_css(theme)}
         </head>
         <body>
             <div class="error-container">

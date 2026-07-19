@@ -450,6 +450,20 @@ class GcsShareProvider(BaseShareProvider):
 
         return found
 
+    def archive_url(self, object_name: str) -> str:
+        """Return the public ``storage.googleapis.com`` URL for *object_name*.
+
+        *object_name* is the full object key (including any prefix) as returned
+        by :meth:`list_campaign_archives`. The URL downloads directly for a
+        publicly-readable bucket — the same URL :meth:`download_archive` fetches.
+        """
+        bucket = os.environ["ROBOVAST_GCS_BUCKET"]
+        return (
+            f"https://storage.googleapis.com/"
+            f"{urllib.parse.quote(bucket, safe='')}"
+            f"/{urllib.parse.quote(object_name, safe='/')}"
+        )
+
     def download_archive(
         self,
         object_name: str,

@@ -257,6 +257,58 @@ class EvaluationConfig(BaseModel):
     plots: Optional[list[PlotSpec]] = None
 
 
+#: Panel types the web run-view knows how to render. Kept here (rather than only in
+#: the UI) so the ``.vast`` fails fast on a typo instead of silently dropping a panel.
+KNOWN_PANEL_TYPES = frozenset({"playback", "costmap", "scenario_tree"})
+
+
+class PanelPosition(BaseModel):
+    """Where a panel sits in the run-view. ``anchor`` attaches it to an edge/corner
+    (or ``fill`` for a full-view background); ``width``/``height`` are pixels (int) or
+    a percentage string like ``"40%"``. Omitted fields fall back to the panel type's
+    registry default in the UI."""
+    model_config = ConfigDict(extra='forbid')
+    anchor: Optional[Literal[
+        'bottom', 'top', 'left', 'right',
+        'top-left', 'top-right', 'bottom-left', 'bottom-right',
+        'center', 'fill',
+    ]] = None
+    width: Optional[int | str] = None
+    height: Optional[int | str] = None
+
+
+class PanelConfig(BaseModel):
+    """One panel of the web run-view. ``type`` selects the panel plugin; the panel's
+    own data bindings (e.g. ``layers``/``source`` naming ``data.db`` tables) are carried
+    as extra keys (``extra='allow'``) and interpreted by that plugin."""
+    model_config = ConfigDict(extra='allow')
+    type: str
+    title: Optional[str] = None
+    position: Optional[PanelPosition] = None
+    resizable: Optional[bool] = None
+    minimizable: Optional[bool] = None
+    minimized: Optional[bool] = None
+    hidden: Optional[bool] = None
+    fixed: Optional[bool] = None
+
+    @field_validator('type')
+    @classmethod
+    def _known_type(cls, v):
+        if v not in KNOWN_PANEL_TYPES:
+            raise ValueError(
+                f"unknown panel type {v!r}; expected one of "
+                f"{', '.join(sorted(KNOWN_PANEL_TYPES))}")
+        return v
+
+
+class VisualizationConfig(BaseModel):
+    """The web run-view: an ordered list of panels for replaying a single run of a
+    postprocessed campaign over its rosbag timeline. Rendered by the UI from the
+    campaign's snapshot ``.vast``; each panel reads existing ``data.db`` tables."""
+    model_config = ConfigDict(extra='forbid')
+    panels: list[PanelConfig] = Field(default_factory=list)
+
+
 class FloatDim(BaseModel):
     """A continuous search dimension sampled from ``[low, high]``."""
     model_config = ConfigDict(extra='forbid')
@@ -577,6 +629,9 @@ class ConfigV1(BaseModel):
     search: Optional[SearchConfig] = None
     results_processing: Optional[ResultsConfig] = None
     evaluation: Optional[EvaluationConfig] = None
+    #: The web run-view panels (see :class:`VisualizationConfig`). Top-level (distinct
+    #: from ``evaluation.visualization``, which drives the notebook analysis views).
+    visualization: Optional[VisualizationConfig] = None
 
     @field_validator('plugins')
     @classmethod

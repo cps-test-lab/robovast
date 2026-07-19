@@ -43,10 +43,11 @@ export function ConfigView({ workspaceId }: { workspaceId: string }) {
     () => (files.data?.files ?? []).map((f) => f.path).filter(isVast),
     [files.data],
   )
-  // Auto-select the sole .vast; when the selection vanishes (e.g. workspace change) reset it.
+  // Auto-select the first .vast on startup / workspace change; when the selection vanishes
+  // (e.g. workspace change) drop back to the first available so something is always picked.
   useEffect(() => {
-    if (selected && !vastFiles.includes(selected)) setSelected('')
-    else if (!selected && vastFiles.length === 1) setSelected(vastFiles[0])
+    if (selected && !vastFiles.includes(selected)) setSelected(vastFiles[0] ?? '')
+    else if (!selected && vastFiles.length) setSelected(vastFiles[0])
   }, [vastFiles, selected])
 
   const { content, saving, onChange } = useEditableFile(workspaceId, selected, async () => {

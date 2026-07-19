@@ -447,7 +447,8 @@ class LocalTransport(RobovastInterface):
         options = self._run_options(request)
 
         def _worker():
-            from robovast.execution.backends import CampaignStopped
+            from robovast.execution.backends import (
+                CampaignConfigError, CampaignStopped)
             backend = None
             try:
                 with self._campaign_context(campaign_id, project):
@@ -468,6 +469,17 @@ class LocalTransport(RobovastInterface):
                 # outcome so "stopped" survives a service restart.
                 logger.info("Campaign %s stopped by request", campaign_id)
                 self._record_campaign_stopped(campaign_id, results_dir, state, backend)
+                return
+            except CampaignConfigError as e:
+                # Bad user input (e.g. a typo'd --config filter), not a bug. The
+                # message is self-contained and actionable, so surface it as
+                # phase=failed *without* a stack trace, which would only be noise.
+                logger.warning("Campaign %s: %s", campaign_id, e)
+                entry.error = str(e)
+                state.update(error=str(e))
+                state.set_phase("failed", stage=str(e))
+                self._record_campaign_failure(
+                    campaign_id, results_dir, state, e, backend)
                 return
             except Exception as e:  # noqa: BLE001 - surfaced via status
                 logger.exception("Campaign %s failed", campaign_id)
@@ -885,6 +897,100 @@ class LocalTransport(RobovastInterface):
                                   "vega_lite": p.get("vega_lite") or {}})
         return CampaignPlotsResponse(campaign_id=campaign_id, plots=plots)
 
+    def list_campaign_panels(self, campaign_id: str) -> "CampaignPanelsResponse":
+        # Raw-load (not full validation) — reading declared panels must not depend on
+        # the rest of the snapshot config being re-validatable.
+        from robovast.common.config_validation import _safe_load
+        from robovast.service.interface import CampaignPanelsResponse
+        config_dir = Path(self._data_dir(campaign_id)) / "_config"
+        vasts = sorted(config_dir.glob("*.vast")) if config_dir.is_dir() else []
+        panels = []
+        if vasts:
+            cfg, _ = _safe_load(str(vasts[0]))
+            for p in (((cfg or {}).get("visualization") or {}).get("panels") or []):
+                if isinstance(p, dict) and p.get("type"):
+                    panels.append(p)
+        return CampaignPanelsResponse(campaign_id=campaign_id, panels=panels)
+
+    def get_costmap_frame(
+        self, campaign_id: str, config_name: str, run_id: int, topic: str, t: float,
+    ) -> "Optional[CostmapFrame]":
+        from robovast.results_processing.data_query import read_costmap_frame
+        from robovast.service.interface import CostmapFrame
+        frame = read_costmap_frame(
+            self._data_dir(campaign_id), config_name, run_id, topic, t)
+        return CostmapFrame.model_validate(frame) if frame else None
+
+    # Node levels the web Explorer tree can address (campaign → config → run). The
+    # desktop's ``batch`` level is omitted: the web tree has no batch node.
+    _VIS_LEVELS = ("run", "config", "campaign")
+
+    def _visualization_workloads(self, campaign_id: str):
+        """Parse ``evaluation.visualization`` from the snapshot ``.vast``.
+
+        Returns ``({workload_name: {level: notebook_path}}, config_dir)`` — notebook
+        paths are resolved against the ``_config`` snapshot dir, where the campaign's
+        visualization notebooks are copied (see ``common.execution``).
+        """
+        from robovast.common.config_validation import _safe_load
+        config_dir = Path(self._data_dir(campaign_id)) / "_config"
+        vasts = sorted(config_dir.glob("*.vast")) if config_dir.is_dir() else []
+        workloads: dict = {}
+        if vasts:
+            cfg, _ = _safe_load(str(vasts[0]))
+            for view in (((cfg or {}).get("evaluation") or {}).get("visualization") or []):
+                if not isinstance(view, dict):
+                    continue
+                for name, levels in view.items():
+                    if not isinstance(levels, dict):
+                        continue
+                    notebooks = {
+                        lvl: str(config_dir / levels[lvl])
+                        for lvl in self._VIS_LEVELS
+                        if isinstance(levels.get(lvl), str) and levels[lvl]
+                    }
+                    if notebooks:
+                        workloads[name] = notebooks
+        return workloads, config_dir
+
+    def list_campaign_visualizations(
+        self, campaign_id: str
+    ) -> "CampaignVisualizationsResponse":
+        from robovast.service.interface import (CampaignVisualization,
+                                                CampaignVisualizationsResponse)
+        workloads, _ = self._visualization_workloads(campaign_id)
+        return CampaignVisualizationsResponse(
+            campaign_id=campaign_id,
+            workloads=[
+                CampaignVisualization(
+                    name=name,
+                    levels=[lvl for lvl in self._VIS_LEVELS if lvl in notebooks])
+                for name, notebooks in workloads.items()
+            ])
+
+    def render_campaign_notebook(
+        self, campaign_id: str, workload: str, level: str,
+        config_name: str = "", run_id=None, theme: str = "light",
+    ) -> str:
+        from robovast.results_processing.notebook_render import render_notebook_html
+        workloads, _ = self._visualization_workloads(campaign_id)
+        notebooks = workloads.get(workload)
+        if not notebooks or level not in notebooks:
+            raise KeyError(f"No '{level}' notebook for workload '{workload}'.")
+        data_dir = self._node_data_dir(campaign_id, level, config_name, run_id)
+        return render_notebook_html(notebooks[level], data_dir, theme=theme)
+
+    def _node_data_dir(self, campaign_id: str, level: str, config_name: str, run_id):
+        """The ``DATA_DIR`` for a selected node — the campaign/config/run directory."""
+        base = Path(self._data_dir(campaign_id))
+        if level == "campaign":
+            return str(base)
+        if level == "config":
+            return str(base / config_name)
+        if level == "run":
+            return str(base / config_name / str(run_id))
+        raise ValueError(f"Unknown visualization level: {level}")
+
     # -- helpers ------------------------------------------------------------
 
     @staticmethod
@@ -898,7 +1004,11 @@ class LocalTransport(RobovastInterface):
             entry = self._campaigns.get(cid)
         snap = entry.state.snapshot() if entry else None
         phase = snap.phase if snap else "finished"
-        postprocessed = snap.postprocessed if snap else False
+        # A finished campaign discovered from disk (no in-memory entry, e.g. after a service
+        # restart or run out-of-process) has no live snapshot — derive `postprocessed` from the
+        # presence of its built data.db so the Results views still list it as queryable.
+        postprocessed = snap.postprocessed if snap else (
+            campaign_dir / "_execution" / "data.db").is_file()
         try:
             info = get_vast_configuration_info(campaign_dir)
         except (FileNotFoundError, OSError, ValueError, TypeError):
@@ -1156,6 +1266,42 @@ class HTTPTransport(RobovastInterface):
         from robovast.service.interface import CampaignPlotsResponse
         return CampaignPlotsResponse.model_validate(
             self._get(Routes.campaign_plots(campaign_id)))
+
+    def list_campaign_panels(self, campaign_id: str) -> "CampaignPanelsResponse":
+        from robovast.service.interface import CampaignPanelsResponse
+        return CampaignPanelsResponse.model_validate(
+            self._get(Routes.campaign_panels(campaign_id)))
+
+    def get_costmap_frame(
+        self, campaign_id: str, config_name: str, run_id: int, topic: str, t: float,
+    ) -> "Optional[CostmapFrame]":
+        from robovast.service.interface import CostmapFrame
+        data = self._get(Routes.campaign_costmap(campaign_id),
+                         config_name=config_name, run_id=run_id, topic=topic, t=t)
+        return CostmapFrame.model_validate(data) if data else None
+
+    def list_campaign_visualizations(
+        self, campaign_id: str
+    ) -> "CampaignVisualizationsResponse":
+        from robovast.service.interface import CampaignVisualizationsResponse
+        return CampaignVisualizationsResponse.model_validate(
+            self._get(Routes.campaign_visualizations(campaign_id)))
+
+    def render_campaign_notebook(
+        self, campaign_id: str, workload: str, level: str,
+        config_name: str = "", run_id=None, theme: str = "light",
+    ) -> str:
+        import requests
+        params = {"workload": workload, "level": level, "theme": theme}
+        if config_name:
+            params["config_name"] = config_name
+        if run_id is not None:
+            params["run_id"] = run_id
+        resp = requests.get(
+            f"{self.base_url}{Routes.campaign_notebook(campaign_id)}",
+            params=params, timeout=max(self.timeout, 600))
+        resp.raise_for_status()
+        return resp.text
 
 
 # ---------------------------------------------------------------------------

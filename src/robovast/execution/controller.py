@@ -50,8 +50,8 @@ from robovast.common.logging_config import (add_campaign_log_handler,
                                             remove_campaign_log_handler)
 from robovast.common.store import STORE_FILENAME, CampaignStore
 
-from .backends import (CampaignStopped, DockerBackend, ExecutionBackend,
-                       RunOptions)
+from .backends import (CampaignConfigError, CampaignStopped, DockerBackend,
+                       ExecutionBackend, RunOptions)
 from .notify import Notifier
 
 # Use the qualified name rather than __name__ so this module's records always
@@ -696,15 +696,15 @@ def filter_configs_by_name(configs, config_filter):
     ``config1-1-1-1``), so a bare config-block name like ``config1`` matches
     nothing — use ``config1*`` to select the whole block.
 
-    Raises ``ValueError`` listing the available config names when nothing
-    matches, so a typo is reported with actionable choices.
+    Raises ``CampaignConfigError`` listing the available config names when nothing
+    matches, so a typo is reported with actionable choices (and no stack trace).
     """
     import fnmatch
 
     matched = [c for c in configs if fnmatch.fnmatch(c["name"], config_filter)]
     if not matched:
         available = "\n".join(f"  - {c['name']}" for c in configs)
-        raise ValueError(
+        raise CampaignConfigError(
             f"No configs matched pattern '{config_filter}'.\n"
             f"Available configs:\n{available}")
     return matched
@@ -716,8 +716,8 @@ def build_campaign_data(vast_file, output_dir, config_filter=None,
 
     Shared by :func:`run_batch_campaign` and the host-side ``cluster run``
     pre-flight check so both select configs through exactly the same code path.
-    Raises ``ValueError`` if the vast-file yields no configs or the filter matches
-    none (the message lists the available config block names).
+    Raises ``CampaignConfigError`` if the vast-file yields no configs or the filter
+    matches none (the message lists the available config block names).
 
     *progress_update_callback* receives the composition narrative (and the
     isolated-plugin subprocess output it forwards); :func:`run_batch_campaign`
@@ -729,7 +729,7 @@ def build_campaign_data(vast_file, output_dir, config_filter=None,
         variation_file=vast_file, progress_update_callback=progress_update_callback,
         output_dir=output_dir)
     if not campaign_data["configs"]:
-        raise ValueError("No configs found in vast-file")
+        raise CampaignConfigError("No configs found in vast-file")
     if config_filter:
         campaign_data["configs"] = filter_configs_by_name(
             campaign_data["configs"], config_filter)

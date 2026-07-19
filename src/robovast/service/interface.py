@@ -415,6 +415,52 @@ class CampaignPlotsResponse(BaseModel):
     plots: list[dict] = Field(default_factory=list)
 
 
+class CampaignPanelsResponse(BaseModel):
+    """The run-view panels declared for a campaign (its snapshot ``.vast``
+    top-level ``visualization.panels``). Each entry is the raw panel dict
+    (``type`` + ``position`` + panel-specific data bindings), rendered by the
+    web run-view against the campaign's ``data.db``."""
+
+    campaign_id: str
+    panels: list[dict] = Field(default_factory=list)
+
+
+class CostmapFrame(BaseModel):
+    """One nav2 OccupancyGrid frame for the run-view costmap panel: the frame from the
+    ``costmaps`` table nearest a requested time, delivered untruncated. ``data`` is the
+    zlib-compressed, base64-encoded int8 grid (row-major, -1=unknown/0=free/1..100=cost);
+    the map spans ``width*resolution`` by ``height*resolution`` meters, and
+    ``origin_*`` is the pose of cell (0,0)'s corner in ``frame_id``."""
+
+    t: float
+    frame_id: str
+    resolution: float
+    width: int
+    height: int
+    origin_x: float
+    origin_y: float
+    origin_yaw: float
+    data: str
+
+
+class CampaignVisualization(BaseModel):
+    """One ``evaluation.visualization`` notebook workload + the node levels it
+    defines a notebook for (a subset of ``run``/``config``/``campaign`` — ``batch``
+    is omitted, the web tree has no batch node)."""
+
+    name: str
+    levels: list[str] = Field(default_factory=list)
+
+
+class CampaignVisualizationsResponse(BaseModel):
+    """The notebook workloads declared for a campaign (its snapshot ``.vast``
+    ``evaluation.visualization``). The web Explorer renders one tab per workload and
+    fetches the executed HTML per selected node via :meth:`render_campaign_notebook`."""
+
+    campaign_id: str
+    workloads: list[CampaignVisualization] = Field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # The interface
 # ---------------------------------------------------------------------------
@@ -521,6 +567,22 @@ class Routes:
     @staticmethod
     def campaign_plots(campaign_id: str) -> str:
         return f"/campaigns/{campaign_id}/plots"
+
+    @staticmethod
+    def campaign_panels(campaign_id: str) -> str:
+        return f"/campaigns/{campaign_id}/panels"
+
+    @staticmethod
+    def campaign_costmap(campaign_id: str) -> str:
+        return f"/campaigns/{campaign_id}/costmap"
+
+    @staticmethod
+    def campaign_visualizations(campaign_id: str) -> str:
+        return f"/campaigns/{campaign_id}/visualizations"
+
+    @staticmethod
+    def campaign_notebook(campaign_id: str) -> str:
+        return f"/campaigns/{campaign_id}/notebook"
 
 
 class RobovastInterface(ABC):
@@ -721,6 +783,41 @@ class RobovastInterface(ABC):
         """Return the campaign's user-declared plots (``evaluation.plots`` in its
         snapshot ``.vast``): ``{title, query, vega_lite}`` each, rendered by the
         eval viewer against :meth:`query_campaign_data_sql`."""
+
+    @abstractmethod
+    def list_campaign_panels(self, campaign_id: str) -> CampaignPanelsResponse:
+        """Return the campaign's run-view panels (top-level ``visualization.panels``
+        in its snapshot ``.vast``): the raw panel dicts, rendered by the web run-view
+        against the campaign's ``data.db``."""
+
+    @abstractmethod
+    def get_costmap_frame(
+        self, campaign_id: str, config_name: str, run_id: int, topic: str, t: float,
+    ) -> Optional[CostmapFrame]:
+        """Return the ``costmaps`` frame nearest time ``t`` for one run's ``topic``
+        (a nav2 OccupancyGrid layer), delivered untruncated for the run-view costmap
+        panel. ``None`` when the run/topic has no frame."""
+
+    @abstractmethod
+    def list_campaign_visualizations(
+        self, campaign_id: str
+    ) -> CampaignVisualizationsResponse:
+        """Return the campaign's ``evaluation.visualization`` notebook workloads
+        (from its snapshot ``.vast``) + the node levels each defines a notebook for.
+        Drives the Explorer's visualization tabs."""
+
+    @abstractmethod
+    def render_campaign_notebook(
+        self, campaign_id: str, workload: str, level: str,
+        config_name: str = "", run_id: Optional[int] = None, theme: str = "light",
+    ) -> str:
+        """Execute *workload*'s ``level`` notebook for the selected node and return the
+        exported HTML. ``DATA_DIR`` is the node's directory: the campaign root
+        (``campaign``), ``<root>/<config_name>`` (``config``), or
+        ``<root>/<config_name>/<run_id>`` (``run``). The dir is resolved per transport
+        (local disk / object-store fetch), so the same code serves both backends.
+        ``theme`` (``'light'``/``'dark'``) drives the exported HTML's nbconvert theme so
+        the render can match the web UI's colour scheme."""
 
     # -- lifecycle ----------------------------------------------------------
 

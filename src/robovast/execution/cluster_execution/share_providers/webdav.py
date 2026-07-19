@@ -246,6 +246,14 @@ class WebDavShareProvider(BaseShareProvider):
     def _file_url(self, object_name: str) -> str:
         return self._base_url() + urllib.parse.quote(object_name, safe="")
 
+    def archive_url(self, object_name: str) -> str:
+        """Return the full WebDAV URL for *object_name* (the object's location).
+
+        This is the same URL :meth:`download_archive` fetches; on a share that
+        requires credentials it is not pre-authenticated.
+        """
+        return self._file_url(object_name)
+
     # ------------------------------------------------------------------
     # Optional download interface
     # ------------------------------------------------------------------

@@ -259,6 +259,18 @@ class NextcloudShareProvider(BaseShareProvider):
         """Return a list of campaign ``*.tar.gz`` filenames on the share."""
         return [name for name, _ in self.list_campaign_archives_with_size()]
 
+    def archive_url(self, object_name: str) -> str:
+        """Return the public download link for *object_name* on the share.
+
+        Nextcloud serves a single file from a public folder share via
+        ``https://<host>/s/<token>/download?files=<name>`` — a browser- and
+        ``curl``-friendly link that needs no separate authentication when the
+        share is public.
+        """
+        share_url = os.environ["ROBOVAST_SHARE_URL"].rstrip("/")
+        query = urllib.parse.urlencode({"files": object_name})
+        return f"{share_url}/download?{query}"
+
     def download_archive(
         self,
         object_name: str,

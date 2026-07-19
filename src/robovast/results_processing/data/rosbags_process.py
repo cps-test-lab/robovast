@@ -37,12 +37,14 @@ Usage::
 """
 
 import argparse
+import base64
 import contextlib
 import csv
 import hashlib
 import io
 import json
 import math
+import zlib
 import os
 import re
 import subprocess
@@ -318,8 +320,11 @@ class BtToCsvHandler(RosbagHandler):
     """Extract behavior tree status changes to CSV (one file per bag)."""
 
     _SNAPSHOTS_TOPIC = "/scenario_execution/snapshots"
-    _FIELDNAMES = ["timestamp", "behavior_name", "behavior_id", "status", "status_name", "class_name"]
+    _FIELDNAMES = ["timestamp", "behavior_name", "behavior_id", "parent_id",
+                   "status", "status_name", "class_name"]
     _STATUS_NAMES = {1: "INVALID", 2: "RUNNING", 3: "SUCCESS", 4: "FAILURE"}
+    # py_trees' all-zero UUID marks a behaviour with no parent (the tree root).
+    _NO_PARENT = "0" * 32
 
     def __init__(self, csv_filename: str = "behaviors.csv") -> None:
         self._csv_filename = csv_filename
@@ -349,11 +354,10 @@ class BtToCsvHandler(RosbagHandler):
         if topic != self._SNAPSHOTS_TOPIC:
             return
         for behavior in msg.behaviours:
-            uuid_str = str(behavior.own_id)
-            if uuid_str not in self._uuid_to_int:
-                self._uuid_to_int[uuid_str] = self._next_id
-                self._next_id += 1
-            behavior_id = self._uuid_to_int[uuid_str]
+            behavior_id = self._int_id(bytearray(behavior.own_id.uuid).hex())
+            # parent_id lets the web run-view rebuild the tree; the all-zero UUID is the root.
+            parent_hex = bytearray(behavior.parent_id.uuid).hex()
+            parent_id = "" if parent_hex == self._NO_PARENT else self._int_id(parent_hex)
             key = (behavior.name, behavior_id)
             if self._last_status.get(key) == behavior.status:
                 continue
@@ -366,11 +370,19 @@ class BtToCsvHandler(RosbagHandler):
                 "timestamp": timestamp / 1_000_000_000.0,
                 "behavior_name": behavior.name,
                 "behavior_id": behavior_id,
+                "parent_id": parent_id,
                 "status": behavior.status,
                 "status_name": self._STATUS_NAMES.get(behavior.status, "UNKNOWN"),
                 "class_name": behavior.class_name,
             })
             self._record_count += 1
+
+    def _int_id(self, uuid_hex: str) -> int:
+        """Stable small integer id for a behaviour UUID (assigned on first sight)."""
+        if uuid_hex not in self._uuid_to_int:
+            self._uuid_to_int[uuid_hex] = self._next_id
+            self._next_id += 1
+        return self._uuid_to_int[uuid_hex]
 
     def on_end(self) -> Tuple[int, List[str]]:
         if self._csvfile is not None:
@@ -678,13 +690,96 @@ class ToWebmHandler(RosbagHandler):
 # Handler registry
 # ---------------------------------------------------------------------------
 
+class CostmapToCsvHandler(RosbagHandler):
+    """Compactly store nav_msgs/OccupancyGrid frames (costmaps / maps) for the web run-view.
+
+    Each grid's int8 cells (-1..100, row-major) are stored losslessly as zlib-compressed raw
+    bytes, base64-encoded, alongside its pose metadata -- one row per message in ``costmaps.csv``
+    (a ``topic`` column keeps several layers, e.g. global/local/map, in one file). The web costmap
+    panel fetches the frame nearest the playback time and inflates it in the browser. Occupancy
+    grids are highly uniform, so this is far smaller than the per-cell flatten ``to_csv`` would
+    produce (which also blows past SQLite's column limit for any real map) while keeping full
+    precision. Not a batchable-by-default step: enable it with ``rosbags_costmap_to_csv`` naming
+    the costmap topics recorded by the scenario's ``bag_record(...)``.
+    """
+
+    _FIELDNAMES = ["topic", "timestamp", "frame_id", "resolution", "width", "height",
+                   "origin_x", "origin_y", "origin_yaw", "data"]
+
+    def __init__(self, topics_list: List[str], csv_filename: str = "costmaps.csv") -> None:
+        self._topics = list(dict.fromkeys(topics_list))  # dedup, preserve order
+        self._csv_filename = csv_filename
+        self._output_file = ""
+        self._csvfile = None
+        self._writer = None
+        self._record_count = 0
+
+    def topics(self) -> List[str]:
+        return self._topics
+
+    def on_begin(self, bag_path: str, topic_type_map: Dict[str, str]) -> None:
+        self._output_file = os.path.join(self._out_dir(bag_path), self._csv_filename)
+        self._csvfile = None
+        self._writer = None
+        self._record_count = 0
+        missing = [t for t in self._topics if t not in topic_type_map]
+        if missing:
+            print(f"  ℹ {bag_path}: costmap topics not in bag: {missing}")
+
+    def on_message(self, topic: str, msg: Any, timestamp: int) -> None:
+        if topic not in self._topics:
+            return
+        info = msg.info
+        o = info.origin
+        _, _, yaw = quat_to_rpy(o.orientation.x, o.orientation.y,
+                                o.orientation.z, o.orientation.w)
+        # int8 cells -> raw bytes -> zlib -> base64. The browser inflates and reads an Int8Array,
+        # recovering -1..100 exactly (the high bit maps back to the negative "unknown" value).
+        cells = np.asarray(msg.data, dtype=np.int8).tobytes()
+        payload = base64.b64encode(zlib.compress(cells, 9)).decode("ascii")
+        if self._csvfile is None:
+            self._csvfile = open(self._output_file, "w", newline="")
+            self._writer = csv.DictWriter(self._csvfile, fieldnames=self._FIELDNAMES)
+            self._writer.writeheader()
+        self._writer.writerow({
+            "topic": topic,
+            "timestamp": timestamp / 1_000_000_000.0,
+            "frame_id": msg.header.frame_id,
+            "resolution": info.resolution,
+            "width": info.width,
+            "height": info.height,
+            "origin_x": o.position.x,
+            "origin_y": o.position.y,
+            "origin_yaw": yaw,
+            "data": payload,
+        })
+        self._record_count += 1
+
+    def on_end(self) -> Tuple[int, List[str]]:
+        if self._csvfile is not None:
+            self._csvfile.close()
+        if self._record_count > 0:
+            print(f"  ✓ {self._output_file}: {self._record_count} costmap frames")
+            return self._record_count, [self._output_file]
+        print(f"  ✗ {self._output_file}: no costmap frames found")
+        return 0, []
+
+    @classmethod
+    def from_config(cls, config: dict) -> "CostmapToCsvHandler":
+        topics = config.get("topics") or []
+        if not topics:
+            raise ValueError("costmap_to_csv handler requires 'topics' list")
+        return cls(topics, csv_filename=config.get("csv_filename", "costmaps.csv"))
+
+
 HANDLER_REGISTRY: Dict[str, type] = {
-    "to_csv":        ToCsvHandler,
-    "tf_to_csv":     TfToCsvHandler,
-    "bt_to_csv":     BtToCsvHandler,
-    "action_to_csv": ActionToCsvHandler,
-    "rosout_to_csv": RosoutToCsvHandler,
-    "to_webm":       ToWebmHandler,
+    "to_csv":         ToCsvHandler,
+    "tf_to_csv":      TfToCsvHandler,
+    "bt_to_csv":      BtToCsvHandler,
+    "action_to_csv":  ActionToCsvHandler,
+    "rosout_to_csv":  RosoutToCsvHandler,
+    "costmap_to_csv": CostmapToCsvHandler,
+    "to_webm":        ToWebmHandler,
 }
 
 

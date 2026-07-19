@@ -6,6 +6,13 @@ Evaluation
 RoboVAST provides an interactive GUI (``vast eval``) based on Jupyter notebooks
 for exploration and visualization of scenario execution results.
 
+.. note::
+
+   The :doc:`web UI <web_ui>` Results **Explorer** renders these same
+   ``evaluation.visualization`` notebooks per selected node, executed server-side and
+   shown as HTML — so the notebooks written below work in both the desktop GUI and the
+   browser.
+
 
 .. _evaluation-gui:
 

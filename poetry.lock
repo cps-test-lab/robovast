@@ -5693,4 +5693,4 @@ test = ["optuna", "pytest", "ribs", "shapely"]
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.12,<3.14"
-content-hash = "934da67ce27a17bfa178fcf271c6eb89a545aada69dcf7fbce8541e9816a9e08"
+content-hash = "6df532710646954f295605efea36faa1adedd81687e05a25ded7734cf42a9698"

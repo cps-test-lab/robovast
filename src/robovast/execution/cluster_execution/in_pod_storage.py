@@ -73,6 +73,20 @@ def _is_executable(path: str) -> bool:
         return False
 
 
+def _same_size(path: str, size) -> bool:
+    """Whether *path* already exists locally with byte size *size*.
+
+    Used to skip re-downloading immutable objects. ``size`` is ``None`` when the
+    listing did not report one, in which case we can't compare and re-fetch.
+    """
+    if size is None:
+        return False
+    try:
+        return os.path.getsize(path) == size
+    except OSError:
+        return False
+
+
 class StorageClient:
     """Common interface: upload a local dir to / download a prefix from storage."""
 
@@ -82,7 +96,17 @@ class StorageClient:
     def upload_file(self, local_path: str, bucket: str, key: str) -> None:
         raise NotImplementedError
 
-    def download_prefix(self, bucket: str, prefix: str, local_dir: str) -> int:
+    def download_prefix(self, bucket: str, prefix: str, local_dir: str,
+                        force: bool = False) -> int:
+        """Download every object under *prefix* into *local_dir*.
+
+        Objects in the durable home are immutable, so by default a file that
+        already exists locally with a matching size is left untouched — this
+        makes repeat fetches (e.g. re-rendering a campaign's notebooks) a
+        near-noop instead of a full re-download. Pass ``force=True`` to
+        overwrite unconditionally (used after re-postprocessing, which mutates
+        objects in place).
+        """
         raise NotImplementedError
 
     def read_object(self, bucket: str, key: str) -> "bytes | None":
@@ -173,7 +197,8 @@ class _S3StorageClient(StorageClient):
         extra = {"Metadata": dict(_EXECUTABLE_META)} if _is_executable(local_path) else None
         self._s3.upload_file(local_path, bucket, key, ExtraArgs=extra)
 
-    def download_prefix(self, bucket: str, prefix: str, local_dir: str) -> int:
+    def download_prefix(self, bucket: str, prefix: str, local_dir: str,
+                        force: bool = False) -> int:
         prefix = prefix.rstrip("/")
         key_prefix = f"{prefix}/" if prefix else ""
         paginator = self._s3.get_paginator("list_objects_v2")
@@ -185,8 +210,12 @@ class _S3StorageClient(StorageClient):
                 if not rel or key.endswith("/"):
                     continue
                 dst = os.path.join(local_dir, *rel.split("/"))
+                if not force and _same_size(dst, obj.get("Size")):
+                    continue
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
                 self._s3.download_file(bucket, key, dst)
+                # ``head_object`` (an extra round-trip) only to read the
+                # executable flag — done only for files we actually fetched.
                 head = self._s3.head_object(Bucket=bucket, Key=key)
                 if (head.get("Metadata") or {}).get("executable") == "yes":
                     os.chmod(dst, os.stat(dst).st_mode | 0o111)
@@ -257,7 +286,8 @@ class _GcsStorageClient(StorageClient):
             blob.metadata = dict(_EXECUTABLE_META)
         blob.upload_from_filename(local_path)
 
-    def download_prefix(self, bucket: str, prefix: str, local_dir: str) -> int:
+    def download_prefix(self, bucket: str, prefix: str, local_dir: str,
+                        force: bool = False) -> int:
         gbucket = self._client.bucket(bucket)
         prefix = prefix.rstrip("/")
         key_prefix = f"{prefix}/" if prefix else ""
@@ -267,6 +297,8 @@ class _GcsStorageClient(StorageClient):
             if not rel or blob.name.endswith("/"):
                 continue
             dst = os.path.join(local_dir, *rel.split("/"))
+            if not force and _same_size(dst, blob.size):
+                continue
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             blob.download_to_filename(dst)
             if (blob.metadata or {}).get("executable") == "yes":

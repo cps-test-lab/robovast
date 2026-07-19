@@ -13,7 +13,7 @@ import Typography from '@mui/material/Typography'
 import ExpandLess from '@mui/icons-material/ExpandLess'
 import ExpandMore from '@mui/icons-material/ExpandMore'
 import { robovast } from '@/lib/robovastClient'
-import { formatCpuLabel, formatMemLabel } from '@/lib/format'
+import { formatCpuCapacity, formatMemCapacity } from '@/lib/format'
 
 export interface NavView {
   id: string
@@ -172,14 +172,18 @@ function ConnectionStatus() {
           }}
         />
         {connected ? (
-          <Box sx={{ minWidth: 0 }}>
-            <Typography variant="caption" color="text.secondary" display="block" lineHeight={1.35}>
-              {formatCpuLabel(usage.data)}
-            </Typography>
-            <Typography variant="caption" color="text.secondary" display="block" lineHeight={1.35}>
-              {formatMemLabel(usage.data)}
-            </Typography>
-          </Box>
+          <Stack spacing={0.5} sx={{ flexGrow: 1, minWidth: 0 }}>
+            <UsageBar
+              used={usage.data.cpu_used}
+              capacity={usage.data.cpu_capacity}
+              label={formatCpuCapacity(usage.data)}
+            />
+            <UsageBar
+              used={usage.data.memory_used_bytes}
+              capacity={usage.data.memory_capacity_bytes}
+              label={formatMemCapacity(usage.data)}
+            />
+          </Stack>
         ) : (
           <Typography variant="caption" color="text.disabled">
             disconnected
@@ -187,5 +191,49 @@ function ConnectionStatus() {
         )}
       </Stack>
     </Tooltip>
+  )
+}
+
+// A tiny usage bar spanning the sidebar width: a track filled proportional to
+// current usage (green → amber → red as it fills), with the capacity/max text
+// pinned to the right, e.g. a half-full green bar labelled "96 CPUs".
+function UsageBar({ used, capacity, label }: { used: number; capacity: number; label: string }) {
+  const fraction = capacity > 0 ? Math.min(1, Math.max(0, used / capacity)) : 0
+  const color = fraction < 0.7 ? 'success.main' : fraction < 0.9 ? 'warning.main' : 'error.main'
+  return (
+    <Box
+      sx={{
+        position: 'relative',
+        height: 16,
+        borderRadius: 0.75,
+        bgcolor: 'action.hover',
+        overflow: 'hidden',
+      }}
+    >
+      <Box
+        sx={{
+          position: 'absolute',
+          inset: 0,
+          width: `${fraction * 100}%`,
+          bgcolor: color,
+          opacity: 0.55,
+          transition: 'width 0.4s ease',
+        }}
+      />
+      <Typography
+        variant="caption"
+        color="text.secondary"
+        sx={{
+          position: 'absolute',
+          right: 6,
+          top: '50%',
+          transform: 'translateY(-50%)',
+          lineHeight: 1,
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {label}
+      </Typography>
+    </Box>
   )
 }

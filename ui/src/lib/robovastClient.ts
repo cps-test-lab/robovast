@@ -263,6 +263,41 @@ export interface CampaignPlotsResponse {
   plots: PlotSpec[]
 }
 
+// The run-view panels declared for a campaign (its .vast top-level visualization.panels). Each entry
+// is the raw panel dict (type + position + panel-specific data bindings); the UI normalizes it.
+export interface CampaignPanelsResponse {
+  campaign_id: string
+  panels: Record<string, unknown>[]
+}
+
+// One evaluation.visualization notebook workload + the node levels it defines a notebook for
+// (subset of run/config/campaign). The Explorer shows a tab per workload and renders the
+// workload's notebook, executed against the selected node, as HTML.
+export interface CampaignVisualization {
+  name: string
+  levels: string[]
+}
+
+export interface CampaignVisualizationsResponse {
+  campaign_id: string
+  workloads: CampaignVisualization[]
+}
+
+// One nav2 OccupancyGrid frame for the costmap panel (nearest a requested time), delivered
+// untruncated. `data` is zlib-compressed, base64-encoded int8 cells (row-major, -1..100). The map
+// spans width*resolution by height*resolution meters; origin_* is cell (0,0)'s corner pose in frame_id.
+export interface CostmapFrame {
+  t: number
+  frame_id: string
+  resolution: number
+  width: number
+  height: number
+  origin_x: number
+  origin_y: number
+  origin_yaw: number
+  data: string
+}
+
 // -- transport --------------------------------------------------------------
 
 export class RobovastError extends Error {
@@ -420,6 +455,65 @@ export const robovast = {
 
   listCampaignPlots: (campaignId: string) =>
     request<CampaignPlotsResponse>('GET', `/campaigns/${encodeURIComponent(campaignId)}/plots`),
+
+  listCampaignPanels: (campaignId: string) =>
+    request<CampaignPanelsResponse>('GET', `/campaigns/${encodeURIComponent(campaignId)}/panels`),
+
+  // The evaluation.visualization notebook workloads a campaign declares — drives the Explorer tabs.
+  listCampaignVisualizations: (campaignId: string) =>
+    request<CampaignVisualizationsResponse>(
+      'GET',
+      `/campaigns/${encodeURIComponent(campaignId)}/visualizations`,
+    ),
+
+  // Execute a workload's notebook for the selected node and return its HTML (raw text, not JSON —
+  // the Explorer feeds it to an iframe via a Blob URL). A cold render runs the notebook server-side
+  // and can take seconds; FileCache makes repeat views instant.
+  fetchNotebookHtml: async (
+    campaignId: string,
+    opts: {
+      workload: string
+      level: string
+      configName?: string
+      runId?: number | string
+      theme?: 'light' | 'dark'
+    },
+  ): Promise<string> => {
+    const params = new URLSearchParams({ workload: opts.workload, level: opts.level })
+    if (opts.configName) params.set('config_name', opts.configName)
+    if (opts.runId !== undefined) params.set('run_id', String(opts.runId))
+    if (opts.theme) params.set('theme', opts.theme)
+    const res = await fetch(
+      `${BASE}/campaigns/${encodeURIComponent(campaignId)}/notebook?${params.toString()}`,
+    )
+    if (!res.ok) {
+      let detail = res.statusText
+      try {
+        const j = (await res.json()) as { detail?: string }
+        if (j?.detail) detail = j.detail
+      } catch {
+        /* non-JSON body */
+      }
+      throw new RobovastError(res.status, detail)
+    }
+    return res.text()
+  },
+
+  // Nearest costmap frame for one run's layer (topic) at time t. Returns null when the run/topic has
+  // no frame (204). The panel decodes `data` (inflate → Int8Array) and draws it.
+  costmapFrame: (
+    campaignId: string,
+    configName: string,
+    runId: number | string,
+    topic: string,
+    t: number,
+  ) =>
+    request<CostmapFrame | null>(
+      'GET',
+      `/campaigns/${encodeURIComponent(campaignId)}/costmap?config_name=${encodeURIComponent(
+        configName,
+      )}&run_id=${encodeURIComponent(String(runId))}&topic=${encodeURIComponent(topic)}&t=${t}`,
+    ),
 
   runPostprocessing: (campaignId: string, force = false) =>
     request<ActionResult>(

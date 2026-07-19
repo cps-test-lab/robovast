@@ -58,6 +58,16 @@ class CampaignStopped(Exception):
     """
 
 
+class CampaignConfigError(Exception):
+    """Raised when the campaign cannot start because of bad user input.
+
+    A typo'd ``--config`` filter, an empty vast-file, etc. — a user error, not a
+    bug. The message is self-contained and actionable (it lists the available
+    config names), so callers surface it as ``phase=failed`` *without* an
+    accompanying stack trace, which would only be noise here.
+    """
+
+
 @dataclass
 class RunOptions:
     """Per-run execution options (mostly local docker-compose specific)."""

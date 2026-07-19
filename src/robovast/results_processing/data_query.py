@@ -242,6 +242,18 @@ _TABLE_DESCRIPTIONS = {
         "One row per evaluated configuration. objectives_json (all named "
         "objectives) and measures_json (quality-diversity measures) live ONLY here "
         "— runs.objective lifts just the single scalar objective."),
+    ("main", "costmaps"): (
+        "nav2 OccupancyGrid frames (costmaps / the static map) recorded over the run, "
+        "one row per message, written by the rosbags_costmap_to_csv postprocessing step. "
+        "topic distinguishes the layers (e.g. /global_costmap/costmap, /local_costmap/"
+        "costmap, /map); timestamp is rosbag time in seconds. Grid geometry (use for "
+        "spatial reasoning): resolution is meters/cell, width/height are in cells, so the "
+        "map covers width*resolution by height*resolution METERS; origin_x/origin_y/"
+        "origin_yaw is the pose of cell (0,0)'s corner in frame_id. The occupancy cells "
+        "themselves are in 'data' as zlib-compressed, base64-encoded int8 (-1=unknown, "
+        "0=free, 1..100=cost, row-major) — masked/truncated in ordinary query results "
+        "because they are large; the web run-view fetches a full decoded frame nearest a "
+        "time via the campaign 'costmap' endpoint, not via SQL."),
 }
 
 _DESCRIBE_NOTE = (
@@ -359,4 +371,46 @@ def query_data_db(campaign_dir, sql: str, max_rows: int = 500,
         return result
     finally:
         conn.set_authorizer(None)
+        conn.close()
+
+
+def read_costmap_frame(campaign_dir, config_name: str, run_id: int,
+                       topic: str, t: float) -> dict | None:
+    """Return the costmap frame nearest time ``t`` for one run's ``topic``, or ``None``.
+
+    Reads the ``costmaps`` table (from rosbags_costmap_to_csv) directly, WITHOUT the
+    per-cell width cap that :func:`query_data_db` applies — the whole point is to deliver
+    the full compressed grid payload the web run-view decodes. Returns a dict with the
+    pose/geometry metadata and ``data`` (zlib+base64 int8 cells). ``DataQueryError`` if
+    there is no ``costmaps`` table (postprocessing didn't run the costmap step).
+    """
+    conn = _open_db(campaign_dir)
+    try:
+        has = conn.execute(
+            "SELECT 1 FROM main.sqlite_master WHERE type='table' AND name='costmaps'"
+        ).fetchone()
+        if not has:
+            raise DataQueryError(
+                "No 'costmaps' table — add the rosbags_costmap_to_csv postprocessing step "
+                "(and record the costmap topics in the scenario's bag_record).")
+        row = conn.execute(
+            'SELECT timestamp, frame_id, resolution, width, height, '
+            'origin_x, origin_y, origin_yaw, data FROM costmaps '
+            'WHERE config_name = ? AND run_id = ? AND topic = ? '
+            'ORDER BY ABS(CAST(timestamp AS REAL) - ?) LIMIT 1',
+            (config_name, int(run_id), topic, float(t))).fetchone()
+        if row is None:
+            return None
+        return {
+            "t": float(row["timestamp"]),
+            "frame_id": row["frame_id"],
+            "resolution": float(row["resolution"]),
+            "width": int(row["width"]),
+            "height": int(row["height"]),
+            "origin_x": float(row["origin_x"]),
+            "origin_y": float(row["origin_y"]),
+            "origin_yaw": float(row["origin_yaw"]),
+            "data": row["data"],
+        }
+    finally:
         conn.close()

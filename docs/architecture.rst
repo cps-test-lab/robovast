@@ -162,6 +162,45 @@ attached as schema ``campaign``. Joining ``runs`` to any metric table on
 query. The ``vast eval gui`` notebook path reads the same ``data.db`` directly and
 is unaffected.
 
+Run view (web panel framework)
+------------------------------
+
+The web :ref:`Run view <run-view>` is a small **panel framework**, built so it can grow
+(more panels, a future 3D scene, and eventually a live/streaming data source) without
+reworking the core. It has four decoupled contracts, and panels only ever see the bottom
+three:
+
+* **Declaration** — the campaign's ``.vast`` carries a top-level ``visualization.panels``
+  list (:class:`robovast.common.config.VisualizationConfig`), served verbatim to the UI by
+  ``list_campaign_panels`` (the same raw-load pattern as ``list_campaign_plots``). The
+  frontend normalizes it against each panel type's registry defaults
+  (``ui/src/lib/dashboard/parseVastPanels.ts``).
+* **Registry + host** — panel plugins self-register (``ui/src/lib/dashboard/registry.ts``);
+  ``PanelHost`` resolves each spec's anchor/size to CSS and mounts the component. Adding a
+  panel is one ``registerPanel`` call.
+* **Clock** — ``PlaybackClock`` (``ui/src/lib/dashboard/clock.ts``) is the single shared
+  time source (seconds on the rosbag timeline). The playback panel is the only writer; the
+  rest subscribe. It is an external store, so the ~display-rate ``t`` updates while playing
+  don't re-render the tree.
+* **Data seam** — ``DataProvider`` (``ui/src/lib/dashboard/dataProvider.ts``) is how a panel
+  gets rows/frames by table + time, decoupled from transport. Today ``dbDataProvider``
+  reads one run's rows from ``data.db`` through the existing ``query``/``describe`` endpoints,
+  plus the dedicated ``costmap`` endpoint for grids. The interface (``nearest`` / ``series`` /
+  ``timeRange`` / ``has`` / ``costmapFrame``) is shaped so a future ``liveDataProvider`` over a
+  live topic buffer drops in without touching any panel.
+
+**Costmap delivery.** Occupancy grids can't ride the generic CSV flatten (a grid becomes
+thousands of per-cell columns, past SQLite's column limit; and the read path caps a cell at
+2 KB). The ``rosbags_costmap_to_csv`` handler
+(:class:`robovast.results_processing.data.rosbags_process.CostmapToCsvHandler`) instead
+decodes each grid once during postprocessing and re-encodes it compactly — int8 cells
+zlib-compressed, base64 in a ``costmaps`` table row with the pose/geometry metadata. The
+``get_costmap_frame`` interface method + ``/campaigns/{id}/costmap`` endpoint
+(:func:`robovast.results_processing.data_query.read_costmap_frame`) deliver the frame nearest
+a time **untruncated**; the browser inflates it with the native ``DecompressionStream``. The
+``costmaps`` table description in ``describe_data_db`` gives an LLM the map's size in meters,
+resolution, and layers for spatial reasoning without decoding grids.
+
 The interface surface
 ---------------------
 

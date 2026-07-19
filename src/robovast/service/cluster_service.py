@@ -616,7 +616,7 @@ class ClusterService(LocalTransport):
         from robovast.execution.cluster_execution.postprocess_job import \
             postprocess_campaign
 
-        campaign_root = self.fetch_campaign(request.campaign_id)
+        campaign_root = self.fetch_campaign(request.campaign_id, force=True)
         cfg = self._cluster_config()
         ok, message = postprocess_campaign(
             cfg, request.campaign_id, str(campaign_root), self.namespace,
@@ -645,20 +645,44 @@ class ClusterService(LocalTransport):
             lambda tar: cfg.add_campaign_members(
                 tar, campaign_id, exclude_prefixes={"_postproc"}))
 
-    def fetch_campaign(self, campaign_id: str):
+    def fetch_campaign(self, campaign_id: str, force: bool = False):
         """Pull a finished campaign from the object store to a local dir; return it.
 
         The object store is the durable home (the campaign loop published the full
         campaign there via ``finalize_campaign``). The stateless service pulls it
         into ephemeral scratch on demand — to serve a download or re-postprocess.
+
+        Objects are immutable, so files already present locally with a matching
+        size are left untouched (see ``download_prefix``): repeat pulls — e.g. a
+        notebook re-render — become near-noops. Pass ``force=True`` to overwrite
+        the local cache unconditionally.
         """
+        from botocore.exceptions import (  # pylint: disable=import-outside-toplevel
+            ClientError, EndpointConnectionError)
+
         from robovast.execution.cluster_execution import in_pod_storage
         cfg = self._cluster_config()
         bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
         dest = Path("/tmp") / "robovast-campaigns" / campaign_id  # noqa: S108 - pod scratch
         dest.mkdir(parents=True, exist_ok=True)
         storage = in_pod_storage.storage_client_for(cfg)
-        n = storage.download_prefix(bucket, prefix, str(dest))
+        try:
+            n = storage.download_prefix(bucket, prefix, str(dest), force=force)
+        except EndpointConnectionError as exc:
+            # Object store unreachable (e.g. a dropped port-forward). Surface a
+            # clean 4xx instead of letting botocore bubble up as an ASGI 500.
+            raise RuntimeError(
+                f"Object store is unreachable: {exc}") from exc
+        except ClientError as exc:
+            # No bucket for this campaign in the object store: it was never
+            # published (e.g. still running / never finalized) or has been
+            # cleaned up. Surface a clean 404 instead of an ASGI 500.
+            if exc.response.get("Error", {}).get("Code") == "NoSuchBucket":
+                raise KeyError(
+                    f"No stored data for campaign {campaign_id!r}: its object "
+                    f"store bucket does not exist (not yet published or removed)"
+                ) from exc
+            raise
         logger.info("Fetched campaign %s (%d file(s)) from %s/%s to %s",
                     campaign_id, n, bucket, prefix, dest)
         return dest

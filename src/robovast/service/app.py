@@ -50,7 +50,9 @@ from robovast.service.interface import (ActionResult, CampaignRef,
                                         ValidationReport, VariationTypesResponse,
                                         VersionInfo, WorkspaceInfo, WriteFileRequest,
                                         DataDescribe, DataQueryResult,
-                                        CampaignPlotsResponse)
+                                        CampaignPlotsResponse,
+                                        CampaignPanelsResponse, CostmapFrame,
+                                        CampaignVisualizationsResponse)
 
 logger = logging.getLogger(__name__)
 
@@ -302,6 +304,56 @@ def build_app(impl: RobovastInterface):
     @app.get("/campaigns/{campaign_id}/plots", response_model=CampaignPlotsResponse)
     def list_campaign_plots(campaign_id: str) -> CampaignPlotsResponse:
         return _guard(lambda: impl.list_campaign_plots(campaign_id))
+
+    @app.get("/campaigns/{campaign_id}/panels", response_model=CampaignPanelsResponse)
+    def list_campaign_panels(campaign_id: str) -> CampaignPanelsResponse:
+        return _guard(lambda: impl.list_campaign_panels(campaign_id))
+
+    @app.get("/campaigns/{campaign_id}/costmap", response_model=CostmapFrame | None)
+    def get_costmap_frame(
+        campaign_id: str, config_name: str, run_id: int, topic: str, t: float,
+    ) -> CostmapFrame | None:
+        return _guard(lambda: impl.get_costmap_frame(
+            campaign_id, config_name, run_id, topic, t))
+
+    @app.get("/campaigns/{campaign_id}/visualizations",
+             response_model=CampaignVisualizationsResponse)
+    def list_campaign_visualizations(campaign_id: str) -> CampaignVisualizationsResponse:
+        return _guard(lambda: impl.list_campaign_visualizations(campaign_id))
+
+    # Sync ``def`` so Starlette runs the (blocking, multi-second) notebook execution in
+    # the threadpool, off the event loop. Returns the executed notebook's HTML verbatim
+    # for the Explorer's iframe; a cache hit (see notebook_render) makes repeats instant.
+    @app.get("/campaigns/{campaign_id}/notebook")
+    def render_campaign_notebook(
+        campaign_id: str, workload: str, level: str,
+        config_name: str = "", run_id: int | None = None, theme: str = "light",
+    ):
+        from fastapi.responses import \
+            HTMLResponse  # pylint: disable=import-outside-toplevel
+        from nbclient.exceptions import \
+            CellExecutionError  # pylint: disable=import-outside-toplevel
+        from robovast.results_processing.notebook_render import \
+            message_page_html  # pylint: disable=import-outside-toplevel
+
+        def _render():
+            try:
+                return impl.render_campaign_notebook(
+                    campaign_id, workload, level, config_name, run_id, theme)
+            except CellExecutionError as e:
+                # A notebook can `raise SystemExit("...")` to bail cleanly when there's nothing
+                # to show (e.g. no rosbag data for this node). Render that as a neutral empty-state
+                # page in the iframe rather than a red execution error.
+                if getattr(e, "ename", None) == "SystemExit":
+                    return message_page_html(e.evalue or "Nothing to display.", theme)
+                # A real cell failure: surface the concise "<Error>: <message>" as a 422 so the
+                # Explorer shows a readable error instead of a raw 500 ASGI traceback.
+                detail = f"{e.ename}: {e.evalue}" if getattr(e, "ename", None) else str(e)
+                raise HTTPException(status_code=422,
+                                    detail=f"Notebook execution failed — {detail}") from e
+
+        html = _guard(_render)
+        return HTMLResponse(content=html)
 
     _mount_ui(app)
     return app

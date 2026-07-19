@@ -20,7 +20,7 @@ import { FilesView } from './FilesView'
 // either subview gets completion + inline validation.
 export function ConfigPage({ view }: { view: string }) {
   const qc = useQueryClient()
-  const { prompt } = useDialogs()
+  const { prompt, confirm } = useDialogs()
   const [workspaceId, setWorkspaceId] = useState('')
 
   const workspaces = useQuery({ queryKey: ['workspaces'], queryFn: () => robovast.listWorkspaces() })
@@ -59,19 +59,47 @@ export function ConfigPage({ view }: { view: string }) {
     createWs.mutate(name)
   }
 
+  const list = workspaces.data?.workspaces ?? []
+  const selected = list.find((w) => w.workspace_id === workspaceId)
+
+  const deleteWs = useMutation({
+    mutationFn: (id: string) => robovast.deleteWorkspace(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['workspaces'] })
+      setWorkspaceId('')
+    },
+  })
+
+  const removeWorkspace = async () => {
+    if (!selected || selected.read_only) return
+    const ok = await confirm({
+      title: 'Delete workspace',
+      message: (
+        <>
+          Delete workspace <strong>{selected.name || selected.workspace_id}</strong> and all its
+          input files? Existing campaign results are unaffected. This cannot be undone.
+        </>
+      ),
+      confirmLabel: 'Delete',
+      danger: true,
+    })
+    if (!ok) return
+    deleteWs.mutate(selected.workspace_id)
+  }
+
   return (
     <Stack spacing={2}>
       <Stack direction="row" spacing={2} alignItems="center">
         <Typography variant="h6">{view === 'files' ? 'Workspace files' : 'Configuration'}</Typography>
         <TextField
-          select={!!workspaces.data?.workspaces.length}
+          select={!!list.length}
           size="small"
           label="Workspace"
           value={workspaceId}
           onChange={(e) => setWorkspaceId(e.target.value)}
           sx={{ minWidth: 240 }}
         >
-          {(workspaces.data?.workspaces ?? []).map((w) => (
+          {list.map((w) => (
             <MenuItem key={w.workspace_id} value={w.workspace_id}>
               {w.name || w.workspace_id}
               {w.read_only ? (
@@ -87,6 +115,15 @@ export function ConfigPage({ view }: { view: string }) {
         </TextField>
         <Button size="small" onClick={newWorkspace} disabled={createWs.isPending}>
           New workspace
+        </Button>
+        <Button
+          size="small"
+          color="error"
+          onClick={removeWorkspace}
+          disabled={!selected || selected.read_only || deleteWs.isPending}
+          title={selected?.read_only ? 'Read-only workspaces cannot be deleted' : undefined}
+        >
+          Delete workspace
         </Button>
       </Stack>
 

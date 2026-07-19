@@ -32,6 +32,7 @@ const TOPICS: NavTopic[] = [
     icon: <InsightsRoundedIcon />,
     views: [
       { id: 'explorer', label: 'Explorer' },
+      { id: 'run', label: 'Run view' },
       { id: 'data', label: 'Data browser' },
     ],
   },

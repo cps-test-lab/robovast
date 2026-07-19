@@ -30,6 +30,16 @@ export function formatMemLabel(u: Usage): string {
   ).toFixed(0)} GiB`
 }
 
+/** CPU capacity only, e.g. "96 CPUs". */
+export function formatCpuCapacity(u: Usage): string {
+  return `${formatCores(u.cpu_capacity)} CPUs`
+}
+
+/** Memory capacity only, e.g. "32 GiB". */
+export function formatMemCapacity(u: Usage): string {
+  return `${bytesToGiB(u.memory_capacity_bytes).toFixed(0)} GiB`
+}
+
 /** A compact "used/capacity" resource label, e.g. "cpu 6/16 · mem 22/62 GiB". */
 export function formatUsageLabel(u: Usage): string {
   return `${formatCpuLabel(u)} · ${formatMemLabel(u)}`
