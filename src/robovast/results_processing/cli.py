@@ -444,7 +444,7 @@ def list_publication_plugins():
 
 
 def _load_share_dotenv() -> None:
-    """Load ``.env`` using the same search order as ``cluster upload-to-share``."""
+    """Load ``.env`` from the project (share credentials live there, not in the CLI)."""
     project_file = ProjectConfig.find_project_file()
     if project_file:
         project_dir = os.path.dirname(os.path.abspath(project_file))
@@ -454,6 +454,54 @@ def _load_share_dotenv() -> None:
         load_dotenv(os.path.join(project_dir, ".env"), override=False)
     else:
         load_dotenv(override=False)
+
+
+def _share_configured() -> bool:
+    """True if a share provider is configured (``.env`` loaded first)."""
+    _load_share_dotenv()
+    return bool(os.environ.get("ROBOVAST_SHARE_TYPE", "").strip())
+
+
+def resolve_download_source(variant: str) -> str:
+    """Pick where a download reads from, driven by the connection + share config.
+
+    Two archive *variants* exist for a campaign:
+
+    * ``postprocessed`` — the full campaign (incl. derived data), served by a reachable
+      **service** from the object store (cluster);
+    * ``raw`` — the minimal pre-postprocess snapshot on the external **share**.
+
+    ``auto`` (default) prefers ``postprocessed`` when a service is reachable, else falls
+    back to ``raw`` when a share is configured. An explicit variant forces that source
+    and errors if it is not reachable. Returns the resolved variant (``postprocessed``
+    or ``raw``).
+    """
+    from robovast.common.cli.service_target import \
+        detected_service_url  # pylint: disable=import-outside-toplevel
+
+    has_service = bool(detected_service_url())
+    has_share = _share_configured()
+
+    if variant == "postprocessed":
+        if not has_service:
+            raise click.UsageError(
+                "No robovast-service is reachable, so the postprocessed archive cannot "
+                "be served. Start/tunnel a service, or use --variant raw for the share.")
+        return "postprocessed"
+    if variant == "raw":
+        if not has_share:
+            raise click.UsageError(
+                "No share is configured (ROBOVAST_SHARE_TYPE unset in .env), so the raw "
+                "archive is unavailable. Use --variant postprocessed with a service.")
+        return "raw"
+    # auto
+    if has_service:
+        return "postprocessed"
+    if has_share:
+        return "raw"
+    raise click.UsageError(
+        "Nothing to download from: no robovast-service is reachable and no share is "
+        "configured (ROBOVAST_SHARE_TYPE in .env). Start a service or configure a share.")
 
 
 # ---------------------------------------------------------------------------
@@ -470,12 +518,19 @@ def _load_share_dotenv() -> None:
               help='Re-download and re-extract even if the campaign directory already exists')
 @click.option('--keep-archive', is_flag=True,
               help='Keep the downloaded .tar.gz file after extraction')
+@click.option('--variant', type=click.Choice(['auto', 'postprocessed', 'raw']),
+              default='auto', show_default=True,
+              help='Which archive to fetch: postprocessed (full, from a service) or '
+                   'raw (pre-postprocess, from the share). auto picks by what is reachable.')
 @click.option('--debug', is_flag=True,
               help='Print HTTP request/response details (URL, status, headers) for debugging')
-def download_from_share_cmd(output, campaigns, force, keep_archive, debug):
-    """Download campaign archives from the configured share service.
+def download_from_share_cmd(output, campaigns, force, keep_archive, variant, debug):
+    """Download campaign archives — postprocessed (from a service) or raw (from the share).
 
-    Reads the same ``.env`` configuration as ``cluster upload-to-share``.
+    The source is chosen automatically from what is reachable (``--variant`` overrides):
+    a reachable **service** serves the **postprocessed** campaign from the object store;
+    the configured **share** (``.env``) holds the **raw** pre-postprocess snapshot.
+
     For each ``<campaign-name>-<timestamp>.tar.gz`` found on the share the command:
 
     \b
@@ -499,13 +554,14 @@ def download_from_share_cmd(output, campaigns, force, keep_archive, debug):
     from the **service** (which serves them from the object store) — no external
     share needed.
     """
-    # Client-server path: pull from the service (object store) instead of a share.
-    from robovast.common.cli.service_target import \
-        detected_service_url  # pylint: disable=import-outside-toplevel
-    from robovast.service.project_push import \
-        download_campaign_via_service  # pylint: disable=import-outside-toplevel
-    service_url = detected_service_url()
-    if service_url:
+    # Resolve postprocessed (service) vs raw (share) from what is reachable.
+    source = resolve_download_source(variant)
+
+    if source == "postprocessed":
+        from robovast.common.cli.service_target import \
+            detected_service_url  # pylint: disable=import-outside-toplevel
+        from robovast.service.project_push import \
+            download_campaign_via_service  # pylint: disable=import-outside-toplevel
         from robovast.common.cli.project_config import \
             get_project_config  # pylint: disable=import-outside-toplevel
         from robovast.service.client import \
@@ -513,13 +569,17 @@ def download_from_share_cmd(output, campaigns, force, keep_archive, debug):
         results_dir = output or get_project_config().results_dir
         if not campaigns:
             raise click.ClickException(
-                "Specify at least one campaign id with -i when using a service.")
-        client = RobovastClient(service_url)
+                "Specify at least one campaign id with -i to download the postprocessed "
+                "archive from the service.")
+        client = RobovastClient(detected_service_url())
+        click.echo("Downloading postprocessed archive(s) from the service...")
         for cid in campaigns:
             download_campaign_via_service(client, cid, results_dir,
                                           feedback=click.echo)
         return
 
+    # source == "raw": pull from the external share.
+    click.echo("Downloading raw archive(s) from the share...")
     _load_share_dotenv()
 
     if debug:
@@ -772,6 +832,71 @@ def list_share_cmd(campaigns):
         click.echo(f"  {len(archives)} campaign(s)  total {_fmt_size(total_size)}")
     else:
         click.echo(f"  {len(archives)} campaign(s)")
+
+
+@results.command(name='list-downloads')
+@click.option('--campaign', '-i', 'campaigns', multiple=True,
+              help='Only show specific campaigns. Can be given multiple times.')
+def list_downloads_cmd(campaigns):
+    """List downloadable campaigns across the reachable sources.
+
+    Shows, per campaign, which archive variants are available: ``postprocessed`` (full,
+    from a reachable service) and/or ``raw`` (pre-postprocess, from the configured
+    share). The sources are auto-detected from the connection and the ``.env`` share
+    config — the same resolution ``vast results download`` uses.
+    """
+    from robovast.common.cli.service_target import \
+        detected_service_url  # pylint: disable=import-outside-toplevel
+
+    requested = set(campaigns)
+    variants: dict[str, set] = {}
+    raw_sizes: dict[str, int] = {}
+
+    service_url = detected_service_url()
+    if service_url:
+        try:
+            from robovast.service.client import \
+                RobovastClient  # pylint: disable=import-outside-toplevel
+            from robovast.service.interface import \
+                ListCampaignsRequest  # pylint: disable=import-outside-toplevel
+            resp = RobovastClient(service_url).list_campaigns(
+                ListCampaignsRequest(limit=1000))
+            for summary in resp.campaigns:
+                variants.setdefault(summary.campaign_id, set()).add("postprocessed")
+        except Exception as exc:  # noqa: BLE001
+            click.echo(f"  (service listing failed: {exc})", err=True)
+
+    if _share_configured():
+        share_type = os.environ.get("ROBOVAST_SHARE_TYPE", "").strip()
+        providers = load_share_provider_plugins()
+        if share_type in providers:
+            try:
+                provider = providers[share_type]()
+                for name, size in provider.list_campaign_archives_with_size():
+                    base = os.path.basename(name)
+                    cid = base[:-len(".tar.gz")] if base.endswith(".tar.gz") else base
+                    variants.setdefault(cid, set()).add("raw")
+                    raw_sizes[cid] = size
+            except Exception as exc:  # noqa: BLE001
+                click.echo(f"  (share listing failed: {exc})", err=True)
+
+    if not variants:
+        raise click.UsageError(
+            "No sources reachable: start/tunnel a robovast-service (for postprocessed "
+            "archives) or configure a share in .env (for raw archives).")
+
+    if requested:
+        variants = {cid: v for cid, v in variants.items() if cid in requested}
+        if not variants:
+            raise click.UsageError("None of the requested campaigns are downloadable.")
+
+    for cid in sorted(variants):
+        labels = ", ".join(sorted(variants[cid]))
+        size = raw_sizes.get(cid)
+        extra = f"  (raw {_fmt_size(size)})" if size is not None and size >= 0 else ""
+        click.echo(f"  {cid}  [{labels}]{extra}")
+    click.echo()
+    click.echo(f"  {len(variants)} campaign(s)")
 
 
 @results.command(name='remove-from-share')

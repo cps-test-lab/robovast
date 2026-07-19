@@ -743,6 +743,7 @@ uploaded (see :ref:`cluster-sharing`).  To add a new provider:
 
       from robovast.execution.cluster_execution.share_providers.base import (
           BaseShareProvider,
+          StreamProgressReader,
           UploadProgressReader,
       )
 
@@ -768,13 +769,29 @@ uploaded (see :ref:`cluster-sharing`).  To add a new provider:
                       fh, total, progress_callback=progress_callback)
                   ...  # PUT/stream `body` to the share, raising on failure
 
-2. **Implement** :meth:`~robovast.execution.cluster_execution.share_providers.base.BaseShareProvider.upload_archive`.
-   It runs **in-process** in the service (no sidecar, no subprocess), reads
-   credentials from ``os.environ`` (populated by ``build_pod_env()``), and uploads
-   the local ``archive_path``. Wrap the request body in
-   :class:`~robovast.execution.cluster_execution.share_providers.base.UploadProgressReader`
-   so the ``(bytes_sent, total_bytes)`` ``progress_callback`` drives the live
-   upload bar in ``vast exec cluster monitor``.
+          def upload_archive_stream(self, fileobj, object_name, progress_callback=None):
+              # The launch-time upload-to-share path: the campaign is tarred + gzipped
+              # on the fly, so `fileobj` is a readable stream of UNKNOWN length. Use a
+              # chunked/streaming transfer (no Content-Length) and wrap `fileobj` in
+              # StreamProgressReader to report bytes-sent (total is 0/unknown).
+              reader = StreamProgressReader(fileobj, progress_callback=progress_callback)
+              ...  # stream `reader` to the share with chunked transfer, raising on failure
+
+2. **Implement** both upload methods on
+   :class:`~robovast.execution.cluster_execution.share_providers.base.BaseShareProvider`.
+   They run **in-process** in the driver (no sidecar, no subprocess) and read
+   credentials from ``os.environ`` (populated by ``build_pod_env()``):
+
+   * :meth:`~robovast.execution.cluster_execution.share_providers.base.BaseShareProvider.upload_archive`
+     uploads a local ``archive_path`` (the ``download_archive`` counterpart; known
+     size, resumable). Wrap the body in
+     :class:`~robovast.execution.cluster_execution.share_providers.base.UploadProgressReader`.
+   * :meth:`~robovast.execution.cluster_execution.share_providers.base.BaseShareProvider.upload_archive_stream`
+     uploads a **streamed** archive of unknown length (the launch-time
+     upload-to-share, which never writes a ``tar.gz`` to disk — decisive for ~1TB
+     campaigns). Use chunked transfer (no ``Content-Length``; resume is not
+     available) and wrap the body in
+     :class:`~robovast.execution.cluster_execution.share_providers.base.StreamProgressReader`.
 
    Optionally override
    :meth:`~robovast.execution.cluster_execution.share_providers.base.BaseShareProvider.verify_access`
@@ -1075,10 +1092,13 @@ Control operations
 * ``get_campaign_logs`` — serves ``controller.log`` from a byte offset (live file
   while the campaign runs, the object-store copy afterwards). The web UI polls it to
   stream the log; ``vast … monitor`` renders live status from ``get_status``.
-* ``upload_to_share`` — a **stateless** post-campaign push to an external share,
-  reading the finished campaign from the object store. Repeatable with optional
-  credential overrides (which may also switch the share type); no process is kept
-  alive to await a retry.
+* ``upload_to_share`` (launch flag on ``create_campaign``) — when set, the driver
+  streams a raw, pre-postprocessing archive of the campaign to the configured share
+  the moment the runs finish, *before* analysis postprocessing (best-effort; a share
+  failure never loses the campaign). Local backends write the ``tar.gz`` to
+  ``<results>/_archives/`` instead; cluster backends stream it to the share provider
+  with no on-disk copy. The download counterpart is the ``/campaigns/{id}/archive``
+  stream (the postprocessed campaign, tarred on the fly from the object store).
 
 API reference
 ^^^^^^^^^^^^^

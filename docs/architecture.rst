@@ -62,12 +62,17 @@ single-container kill — so a bare exit never orphans in-flight Jobs on the clu
 
 A stopped campaign is reported as a **clean terminal**, not a failure. Ctrl+C also
 tears down the storage port-forward (it shares the process group), so the driver's
-finish work — result download, postprocessing, finalize upload — would otherwise fail
-against a dead endpoint and dump misleading tracebacks. Instead, the batch wait loop
+finish work — upload-to-share (when enabled), postprocessing, finalize upload — would
+otherwise fail against a dead endpoint and dump misleading tracebacks. Instead, the batch wait loop
 raises ``CampaignStopped`` the moment it sees the cooperative-stop flag (before any
 download), the controller sets phase ``"stopped"``, and the builders' finish tail
 (``_finish_campaign``) is skipped — the per-run results the jobs already uploaded are
-left as the campaign's output.
+left as the campaign's output. The ``"stopped"`` outcome is persisted like a failure
+(``_record_controller_outcome`` writes ``_execution/outcome.json`` and, on the cluster,
+publishes it to the object store when the tunnel is still up — a Stop-button stop), so
+the phase survives a service restart instead of reconstructing as an ambiguous
+``"finished"``. Every terminal-phase filter (listings, the ``--wait-and-download``
+waiter, cleanup's live-set) counts ``"stopped"`` as done.
 
 .. code-block:: text
 
@@ -126,10 +131,16 @@ Data flow and result access
 ---------------------------
 
 For cluster campaigns, results live in the **object store** (the durable home);
-the service is a stateless gateway that pulls finished campaigns from it. The
-external ``tar.gz`` share is **optional** (``ROBOVAST_SKIP_SHARE``) — the object
-store is the delivery mechanism. For a local ``vast serve``, the durable home is
-simply the local filesystem.
+the service is a stateless gateway that streams finished campaigns from it —
+``GET /campaigns/{id}/archive`` tars the campaign's objects **on the fly** into the
+response (no scratch on the service, nothing buffered in memory), which is what
+``vast results download`` and the web UI **Download** button use. The external
+``tar.gz`` share is **opt-in at launch** (``upload_to_share``): when set, the driver
+streams a raw, pre-postprocessing archive to the share the moment the runs finish,
+*before* postprocessing — so the shared copy stays minimal while the object store
+(and the postprocessed download) carry the derived data. For a local ``vast serve``,
+the durable home is simply the local filesystem, so it has no share and refuses the
+archive route.
 
 Analysis postprocessing is **editable and re-runnable**: the raw rosbags are
 always preserved, so ``results_processing.postprocessing`` entries can be changed
@@ -161,9 +172,10 @@ lives in the ``run_data`` MCP plugin):
   / ``delete_workspace``; ``write_project_file`` / ``edit_project_file``
   (``.vast``/``.osc`` only) / ``read_project_file`` / ``list_project_files`` /
   ``delete_project_file`` / ``create_upload``.
-* **Campaigns** — ``create_campaign`` (backend implicit in the deployment) /
-  ``get_status`` / ``list_campaigns`` / ``list_jobs`` / ``get_job_log`` / ``stop`` /
-  ``upload_to_share``. ``list_jobs`` + ``get_job_log`` are the **live per-job** view
+* **Campaigns** — ``create_campaign`` (backend implicit in the deployment;
+  ``upload_to_share`` is a per-campaign launch flag on the request, not a separate
+  operation) / ``get_status`` / ``list_campaigns`` / ``list_jobs`` / ``get_job_log``
+  / ``stop`` / the ``/archive`` stream. ``list_jobs`` + ``get_job_log`` are the **live per-job** view
   (the current batch's execution units and a single running job's log); each transport
   implements them over its own source — the local run dirs + their ``logs/system.log``
   (``LocalTransport``), or the campaign's Kubernetes Jobs + ``read_namespaced_pod_log``

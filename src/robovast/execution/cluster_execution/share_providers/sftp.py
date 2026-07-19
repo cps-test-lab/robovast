@@ -191,6 +191,28 @@ class SftpShareProvider(BaseShareProvider):
             sftp.close()
             ssh.close()
 
+    def upload_archive_stream(self, fileobj, object_name, progress_callback=None) -> None:
+        """Stream *fileobj* to the remote directory via SFTP ``putfo`` (no local file).
+
+        ``putfo`` reads the stream to EOF, so no size is needed; progress is driven by
+        a :class:`StreamProgressReader` wrapper rather than paramiko's size-based
+        callback (the archive length is unknown while streaming).
+        """
+        from .base import StreamProgressReader  # pylint: disable=import-outside-toplevel
+
+        remote_dir = os.environ["ROBOVAST_SFTP_REMOTE_DIR"].rstrip("/")
+        remote_path = f"{remote_dir}/{object_name}"
+        reader = StreamProgressReader(fileobj, progress_callback=progress_callback)
+
+        ssh, sftp = self._connect()
+        try:
+            # confirm=False: a post-upload stat would race a just-written streamed file
+            # on some servers; the campaign's canonical copy stays in the object store.
+            sftp.putfo(reader, remote_path, confirm=False)
+        finally:
+            sftp.close()
+            ssh.close()
+
     def verify_access(self) -> None:
         """Confirm the SFTP server accepts the credentials and the remote dir exists.
 

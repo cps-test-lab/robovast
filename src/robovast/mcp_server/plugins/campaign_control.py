@@ -399,7 +399,8 @@ def init_project(config_path: str, project_dir: str, results_dir: str = "",
 
 def start_campaign(config_filter: str = "", runs: int = 0,
                    backend: str = "local", context: str = "",
-                   workspace_id: str = "", config_path: str = "") -> dict:
+                   workspace_id: str = "", config_path: str = "",
+                   upload_to_share: bool = False) -> dict:
     """Start a campaign and return immediately; results land on local disk either way.
 
     Validates the campaign first and refuses if invalid. Both backends run as a
@@ -423,6 +424,10 @@ def start_campaign(config_filter: str = "", runs: int = 0,
             (empty = the CWD project). Independent of the backend.
         config_path: Which ``.vast`` to run when the workspace has several
             (workspace-relative; empty = the sole ``.vast``).
+        upload_to_share: When true, a raw (pre-postprocess) archive of the campaign
+            is delivered to the configured share (cluster) or written to the results
+            ``_archives/`` dir (local) when it finishes. The share target and
+            credentials come from the service/``.env`` config, not this call.
 
     Returns:
         ``{campaign_id, backend, log_path}`` on success; ``{error, ...}`` on
@@ -438,7 +443,8 @@ def start_campaign(config_filter: str = "", runs: int = 0,
             ref = client.create_campaign(CreateCampaignRequest(
                 workspace_id=workspace_id, config_path=config_path,
                 config_filter=config_filter,
-                runs=runs if runs and runs > 0 else 1))
+                runs=runs if runs and runs > 0 else 1,
+                upload_to_share=upload_to_share))
             return {"campaign_id": ref.campaign_id, "backend": "service"}
 
         project = _load_project()
@@ -484,6 +490,8 @@ def start_campaign(config_filter: str = "", runs: int = 0,
             cmd += ["--config", config_filter]
         if runs and runs > 0:
             cmd += ["--runs", str(runs)]
+        if upload_to_share:
+            cmd += ["--upload-to-share"]
 
         return _spawn_tracked(registry, campaign_id, backend, cmd, results_dir, log_path)
     except Exception as e:  # noqa: BLE001
@@ -922,6 +930,74 @@ def cleanup_campaign_data(campaign_id: str = "", force: bool = False) -> dict:
         return {"error": str(e)}
 
 
+def download_campaign(campaign_id: str, variant: str = "auto") -> dict:
+    """Download a campaign archive into this project's results dir and extract it.
+
+    The archive lands in the **project results directory on the host running this MCP
+    server** (the same place ``start_campaign`` downloads cluster results to) — there
+    is intentionally no caller-chosen path, since the MCP host may differ from the
+    user's machine. Two variants exist, auto-detected from what is reachable (the
+    connection and the project's ``.env`` share config — the same resolution
+    ``vast results download`` uses):
+
+    * ``postprocessed`` — the full campaign (incl. derived data), streamed from a
+      reachable **service** (cluster object store);
+    * ``raw`` — the minimal pre-postprocess snapshot on the configured **share**.
+
+    Args:
+        campaign_id: The campaign id to download.
+        variant: ``"auto"`` (default), ``"postprocessed"``, or ``"raw"``.
+
+    Returns:
+        ``{ok, variant, path}`` on success; ``{error}`` if no source is reachable or
+        the download fails.
+    """
+    from robovast.results_processing.cli import \
+        resolve_download_source  # pylint: disable=import-outside-toplevel
+
+    try:
+        from robovast.common.cli.project_config import \
+            get_project_config  # pylint: disable=import-outside-toplevel
+        results_dir = str(get_project_config().results_dir)
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"could not resolve the project results dir: {e}"}
+
+    try:
+        source = resolve_download_source(variant)
+    except Exception as e:  # noqa: BLE001 - click.UsageError with actionable text
+        return {"error": str(e)}
+
+    try:
+        if source == "postprocessed":
+            from robovast.common.cli.service_target import \
+                detected_service_url  # pylint: disable=import-outside-toplevel
+            from robovast.service.client import \
+                RobovastClient  # pylint: disable=import-outside-toplevel
+            from robovast.service.project_push import \
+                download_campaign_via_service  # pylint: disable=import-outside-toplevel
+            dest = download_campaign_via_service(
+                RobovastClient(detected_service_url()), campaign_id, results_dir)
+            return {"ok": True, "variant": "postprocessed", "path": dest}
+
+        # raw: pull the pre-postprocess archive from the external share.
+        import tarfile  # pylint: disable=import-outside-toplevel
+
+        from robovast.execution.cluster_execution.share_providers import \
+            load_share_provider_plugins  # pylint: disable=import-outside-toplevel
+        share_type = os.environ.get("ROBOVAST_SHARE_TYPE", "").strip()
+        provider = load_share_provider_plugins()[share_type]()
+        os.makedirs(results_dir, exist_ok=True)
+        tmp_path = os.path.join(results_dir, f".{campaign_id}.tar.gz.part")
+        provider.download_archive(f"{campaign_id}.tar.gz", tmp_path, lambda *a: None)
+        with tarfile.open(tmp_path, "r:gz") as tf:
+            tf.extractall(results_dir)  # noqa: S202 - trusted share, arcname=campaign_id
+        os.remove(tmp_path)
+        return {"ok": True, "variant": "raw",
+                "path": os.path.join(results_dir, campaign_id)}
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
+
+
 _TOOLS = [
     validate_project,
     preview_configurations,
@@ -937,6 +1013,7 @@ _TOOLS = [
     update_postprocessing,
     run_postprocessing,
     cleanup_campaign_data,
+    download_campaign,
 ]
 
 

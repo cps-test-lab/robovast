@@ -188,6 +188,7 @@ class ClusterService(LocalTransport):
         # drives many campaigns, and an env var could not tell them apart.
         return RunOptions(gui=False,
                           postprocess=bool(request.postprocess),
+                          upload_to_share=bool(getattr(request, "upload_to_share", False)),
                           namespace=self.namespace,
                           controller_image=self._resolve_image())
 
@@ -234,6 +235,20 @@ class ClusterService(LocalTransport):
             _record_controller_failure(campaign_root, campaign_id, state, exc, backend)
         except Exception:  # noqa: BLE001 - never mask the original failure
             logger.warning("Could not record failure for %s", campaign_id, exc_info=True)
+
+    def _record_campaign_stopped(self, campaign_id, results_dir, state, backend) -> None:
+        """Publish a stopped campaign's outcome to the object store (pod disk is scratch).
+
+        Succeeds for a Stop-button stop (the storage tunnel is up); on Ctrl+C the
+        tunnel is already gone, so the upload fails quietly (logged concisely, no
+        traceback) — the process is exiting anyway.
+        """
+        from robovast.execution.controller import _record_controller_outcome
+        campaign_root = os.path.join(results_dir, campaign_id)
+        try:
+            _record_controller_outcome(campaign_root, campaign_id, state, backend)
+        except Exception as e:  # noqa: BLE001 - best-effort; never block the stop
+            logger.warning("Could not record stopped outcome for %s: %s", campaign_id, e)
 
     # -- status / listing ---------------------------------------------------
 
@@ -506,39 +521,6 @@ class ClusterService(LocalTransport):
                         reaped)
         return reaped
 
-    def upload_to_share(self, campaign_id: str, overrides=None) -> ActionResult:
-        """Upload a finished campaign to the external share. Stateless; repeatable.
-
-        Replaces the old "keep the controller pod parked in ``wait_for_retrigger``
-        so the user can retry" dance: the campaign is durable in the object store,
-        which ``upload_campaign`` compresses straight from — so a failed upload is
-        retried by simply calling this again, with *overrides* carrying any
-        corrected (or switched) share credentials. No live process required.
-        """
-        from robovast.execution.cluster_execution import in_pod_upload
-        try:
-            provider = in_pod_upload.load_provider_from_env(overrides)
-        except Exception as e:  # noqa: BLE001 - a misconfigured share is user error
-            return ActionResult(ok=False, message=f"share provider misconfigured: {e}")
-        if provider is None:
-            return ActionResult(
-                ok=False,
-                message="no share destination configured (set ROBOVAST_SHARE_TYPE, "
-                        "or pass overrides); results remain in the object store")
-        try:
-            # Pre-flight the credentials before burning time on the compress step.
-            in_pod_upload.verify_share_access(provider)
-        except Exception as e:  # noqa: BLE001
-            return ActionResult(
-                ok=False, message=f"share credential check failed: {e}")
-        ok = in_pod_upload.upload_campaign(self._cluster_config(), campaign_id, provider)
-        if not ok:
-            return ActionResult(
-                ok=False,
-                message=f"upload to {provider.SHARE_TYPE} failed; the campaign is "
-                        "safe in the object store — fix the cause and call again")
-        return ActionResult(ok=True, message=f"uploaded to {provider.SHARE_TYPE}")
-
     def cleanup_campaign_data(self, request) -> ActionResult:
         """Delete campaign result bucket(s) from the object store.
 
@@ -602,6 +584,21 @@ class ClusterService(LocalTransport):
         n = storage.upload_dir(str(Path(campaign_root) / "_execution"),
                                bucket, f"{prefix}_execution")
         return ActionResult(ok=True, message=f"{message}; published {n} file(s)")
+
+    def campaign_tar_stream(self, campaign_id: str):
+        """Yield a ``tar.gz`` of the postprocessed campaign, streamed from the object store.
+
+        Backs ``GET /campaigns/{id}/archive``. Objects are fetched and tarred on the
+        fly (:func:`campaign_archive.iter_tar`), so **no scratch is used on the service
+        during or after the download** — decisive for ~1TB campaigns. ``_postproc/``
+        internal staging is excluded so the archive is the clean campaign layout.
+        """
+        from robovast.execution import \
+            campaign_archive  # pylint: disable=import-outside-toplevel
+        cfg = self._cluster_config()
+        return campaign_archive.iter_tar(
+            lambda tar: cfg.add_campaign_members(
+                tar, campaign_id, exclude_prefixes={"_postproc"}))
 
     def fetch_campaign(self, campaign_id: str):
         """Pull a finished campaign from the object store to a local dir; return it.

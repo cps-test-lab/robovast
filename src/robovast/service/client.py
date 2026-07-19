@@ -333,7 +333,10 @@ class LocalTransport(RobovastInterface):
 
     def _run_options(self, request) -> "RunOptions":  # noqa: F821
         from robovast.execution.backends import RunOptions
-        return RunOptions(gui=False)
+        # Local backend: upload_to_share just writes a tar.gz to _archives/ (no
+        # external provider). Honour the toggle so it works for a local run too.
+        return RunOptions(gui=False,
+                          upload_to_share=bool(getattr(request, "upload_to_share", False)))
 
     def _campaign_context(self, campaign_id: str, project):
         """Per-campaign setup entered *inside* the worker thread.
@@ -410,8 +413,10 @@ class LocalTransport(RobovastInterface):
                             options=options, campaign_id=campaign_id, state=state)
             except CampaignStopped:
                 # Clean cooperative stop (Ctrl+C / Stop): the controller already set
-                # phase "stopped". Not a failure — no error, no traceback.
+                # phase "stopped". Not a failure — no error, no traceback. Persist the
+                # outcome so "stopped" survives a service restart.
                 logger.info("Campaign %s stopped by request", campaign_id)
+                self._record_campaign_stopped(campaign_id, results_dir, state, backend)
                 return
             except Exception as e:  # noqa: BLE001 - surfaced via status
                 logger.exception("Campaign %s failed", campaign_id)
@@ -488,6 +493,16 @@ class LocalTransport(RobovastInterface):
             write_execution_outcome(Path(results_dir) / campaign_id, state.snapshot())
         except OSError as e:
             logger.warning("Could not write outcome.json for %s: %s", campaign_id, e)
+
+    def _record_campaign_stopped(self, campaign_id, results_dir, state, backend) -> None:
+        """Persist a cooperatively-stopped campaign's terminal ``Status``.
+
+        So the ``stopped`` phase survives a restart — otherwise a stopped campaign
+        reconstructs from disk as an ambiguous ``finished``/``unknown``. The local home
+        is the filesystem, so writing ``outcome.json`` is enough (``ClusterService``
+        overrides this to also publish it to the object store).
+        """
+        self._record_outcome(campaign_id, results_dir, state)
 
     def get_status(self, campaign_id: str) -> Status:
         with self._lock:
@@ -667,13 +682,6 @@ class LocalTransport(RobovastInterface):
         window = dirs[request.offset:request.offset + request.limit]
         summaries = [self._summary_for(d) for d in window]
         return ListCampaignsResponse(campaigns=summaries, total=total)
-
-    def upload_to_share(self, campaign_id: str,
-                        overrides: Optional[dict] = None) -> ActionResult:
-        return ActionResult(
-            ok=False,
-            message="upload_to_share is not supported by the local backend "
-                    "(no external share); use 'vast results publish' instead.")
 
     def cleanup_campaign_data(self, request) -> ActionResult:
         return ActionResult(
@@ -1028,12 +1036,6 @@ class HTTPTransport(RobovastInterface):
         request = request or ListCampaignsRequest()
         return ListCampaignsResponse.model_validate(
             self._get(Routes.CAMPAIGNS, limit=request.limit, offset=request.offset))
-
-    def upload_to_share(self, campaign_id: str,
-                        overrides: Optional[dict] = None) -> ActionResult:
-        return ActionResult.model_validate(
-            self._post(Routes.campaign_upload_to_share(campaign_id),
-                       {"overrides": overrides or {}}))
 
     def cleanup_campaign_data(self, request) -> ActionResult:
         return ActionResult.model_validate(

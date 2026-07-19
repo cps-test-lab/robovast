@@ -779,6 +779,34 @@ class KubernetesBackend(ExecutionBackend):
         logger.info("Published canonical campaign (%d file(s), incl. campaign.db / "
                     "_execution / metrics) to %s/%s", n, bucket, prefix)
 
+    def share_campaign(self, campaign_root: str, options) -> None:
+        """Stream the raw campaign straight to the configured share provider.
+
+        Overrides the local tar.gz-on-disk behaviour: the campaign is already on the
+        driver's scratch (the batch runner downloaded it back for scoring), so it is
+        tarred + gzipped **on the fly** into the provider's request body — no
+        compressed copy ever lands on disk, which matters for ~1TB campaigns. Runs
+        before analysis postprocessing, so the shared archive is the minimal raw
+        snapshot. A share failure is surfaced but never loses the campaign (the
+        controller wraps this call).
+        """
+        from robovast.execution import campaign_archive  # pylint: disable=import-outside-toplevel
+        from robovast.execution.cluster_execution import in_pod_upload  # pylint: disable=import-outside-toplevel
+
+        campaign_id = os.path.basename(os.path.normpath(campaign_root))
+        provider = in_pod_upload.load_provider_from_env()
+        if provider is None:
+            logger.info("upload-to-share enabled but no share provider configured "
+                        "(ROBOVAST_SHARE_TYPE unset); skipping share for %s.", campaign_id)
+            return
+        in_pod_upload.verify_share_access(provider)
+        object_name = f"{campaign_id}.tar.gz"
+        logger.info("Streaming raw campaign %s to %s share as %s...",
+                    campaign_id, provider.SHARE_TYPE, object_name)
+        with campaign_archive.campaign_tar_stream(campaign_root) as stream:
+            provider.upload_archive_stream(stream, object_name)
+        logger.info("Uploaded %s to the %s share.", object_name, provider.SHARE_TYPE)
+
     # Per-run JUnit report each scenario run uploads on completion; counting these
     # under the (flat, campaign-wide) prefix gives cumulative finished runs.
     _RUN_SENTINEL = "/test.xml"

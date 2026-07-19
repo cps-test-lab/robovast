@@ -99,8 +99,11 @@ def local():
 @click.option('--campaign-id', default=None,
               help='Use this campaign id (and directory name) instead of generating '
                    'one. Lets an external launcher know the id up front.')
+@click.option('--upload-to-share', 'upload_to_share', is_flag=True,
+              help='Before postprocessing, write a raw <campaign>.tar.gz to the '
+                   'results _archives/ dir (the local upload-to-share deliverable).')
 def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_failure,
-        use_resource_allocation, log_tree, debug, campaign_id):
+        use_resource_allocation, log_tree, debug, campaign_id, upload_to_share):
     """Execute the project locally using Docker.
 
     Behaviour is selected by the project ``.vast``:
@@ -154,7 +157,8 @@ def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_
         options = RunOptions(
             gui=not no_gui, start_only=start_only, network_host=network_host,
             abort_on_failure=abort_on_failure, image=image, log_tree=log_tree,
-            debug=debug, skip_resource_allocation=not use_resource_allocation)
+            debug=debug, skip_resource_allocation=not use_resource_allocation,
+            upload_to_share=upload_to_share)
 
         if campaign_config.search is not None:
             ignored = [name for name, set_ in (
@@ -365,8 +369,11 @@ def _sole_running_campaign(client):
               help='Seconds between status polls when --wait-and-download is set.')
 @click.option('--campaign-id', default=None,
               help='Launch under this campaign id instead of generating one.')
+@click.option('--upload-to-share', 'upload_to_share', is_flag=True,
+              help='Stream a raw (pre-postprocess) archive to the configured share '
+                   'when the campaign finishes.')
 def run(config, runs, log_tree, cluster, namespace, context, wait_and_download,
-        poll_interval, campaign_id):  # pylint: disable=function-redefined,redefined-outer-name
+        poll_interval, campaign_id, upload_to_share):  # pylint: disable=function-redefined,redefined-outer-name
     """Execute a campaign (batch or search) on a Kubernetes cluster.
 
     Runs through the robovast-service, which drives the campaign in-process and
@@ -401,7 +408,7 @@ def run(config, runs, log_tree, cluster, namespace, context, wait_and_download,
             _echo_target(target)
             cid = run_project_via_service(
                 client, project.config_path, config_filter=config or "",
-                runs=runs or 1, feedback=click.echo)
+                runs=runs or 1, feedback=click.echo, upload_to_share=upload_to_share)
             if not wait_and_download:
                 click.echo(f"Launched cluster campaign '{cid}' via robovast-service. "
                            "Track it with 'vast exec cluster monitor' or the service.")
@@ -921,83 +928,6 @@ def log(campaign, follow, cluster, namespace, context):
                 campaign_dir = os.path.join(cfg.results_dir, campaign)
             text, _, _ = assemble_log_from_dir(campaign_dir, offset=0, eof=True)
             click.echo(text, nl=False)
-    except (click.UsageError, click.ClickException):
-        raise
-    except Exception as e:
-        handle_cli_exception(e)
-
-
-@cluster.command(name='upload-to-share')
-@click.option('--campaign', '-i', default=None,
-              help='Campaign to upload (default: the only running one).')
-@target_options
-def upload_to_share(campaign, cluster, namespace, context):
-    """Upload a finished campaign to the configured external share.
-
-    The service uploads the campaign straight from the object store, so this is
-    **stateless and repeatable**: if an upload fails (e.g. the share was full or
-    briefly unreachable), fix the cause and simply run this again — nothing has to
-    have stayed alive in the meantime.
-
-    With no share settings in your environment the service's own configuration is
-    used. If you set/correct them in your ``.env``, they are sent as overrides for
-    this attempt (and may even switch the share type).
-    """
-    from robovast.common.cli.project_config import \
-        ProjectConfig  # pylint: disable=import-outside-toplevel
-
-    # Load .env (same discovery as ``cluster run``) so any corrected share
-    # credentials can be forwarded as overrides.
-    _vast_override = None
-    _click_ctx = click.get_current_context(silent=True)
-    if _click_ctx and _click_ctx.obj:
-        _vast_override = _click_ctx.obj.get('vast_file')
-    if _vast_override:
-        load_dotenv(os.path.join(os.path.dirname(_vast_override), ".env"), override=False)
-    _project_file = ProjectConfig.find_project_file()
-    if _project_file:
-        _project_dir = os.path.dirname(os.path.abspath(_project_file))
-        _pc = ProjectConfig.load()
-        if _pc and _pc.config_path and not _vast_override:
-            load_dotenv(os.path.join(os.path.dirname(_pc.config_path), ".env"), override=False)
-        load_dotenv(os.path.join(_project_dir, ".env"), override=False)
-    else:
-        load_dotenv(override=False)
-
-    # Credential overrides from the current .env. When ROBOVAST_SHARE_TYPE is set
-    # the user intends to supply (or switch to) a provider, so any missing var is
-    # surfaced rather than swallowed — otherwise a typo would silently fall back
-    # to the service's configured destination. When it is unset, send no overrides
-    # (the documented no-arg path that uses the service's own share settings).
-    overrides: dict = {}
-    share_type = os.environ.get("ROBOVAST_SHARE_TYPE", "").strip()
-    if share_type:
-        providers = load_share_provider_plugins()
-        if share_type not in providers:
-            available = ", ".join(sorted(providers)) or "(none installed)"
-            raise click.UsageError(
-                f"Unknown share type '{share_type}'.\nAvailable providers: {available}")
-        # provider() / build_pod_env() raise click.UsageError listing any missing
-        # vars; let it propagate (caught by the outer `except click.UsageError`).
-        provider = providers[share_type]()
-        overrides = {"ROBOVAST_SHARE_TYPE": share_type, **provider.build_pod_env()}
-        share_url = os.environ.get("ROBOVAST_SHARE_URL", "").strip()
-        if share_url:
-            overrides["ROBOVAST_SHARE_URL"] = share_url
-
-    try:
-        with service_client(cluster, namespace, context,
-                            require_service=True) as (client, target):
-            _echo_target(target)
-            campaign_id = campaign or _sole_running_campaign(client)
-            if campaign_id is None:
-                raise click.UsageError(
-                    "No campaign specified and none is running; pass --campaign <id>.")
-            click.echo(f"Uploading {campaign_id} to the share ...")
-            result = client.upload_to_share(campaign_id, overrides or None)
-            if not result.ok:
-                raise click.UsageError(f"upload-to-share failed: {result.message}")
-            click.echo(f"✓ {result.message}")
     except (click.UsageError, click.ClickException):
         raise
     except Exception as e:

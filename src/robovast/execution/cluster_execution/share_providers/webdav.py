@@ -127,6 +127,38 @@ class WebDavShareProvider(BaseShareProvider):
                 f"WebDAV PUT of '{object_name}' returned HTTP {resp.status_code}: "
                 f"{resp.text[:200]}")
 
+    def upload_archive_stream(self, fileobj, object_name, progress_callback=None) -> None:
+        """Stream *fileobj* to the collection via a chunked WebDAV ``PUT`` (no local file).
+
+        ``requests`` sends ``Transfer-Encoding: chunked`` when ``data`` is a
+        generator, so no ``Content-Length`` is set (the archive length is unknown).
+        Resume is not available on this path.
+        """
+        url = self._file_url(object_name)
+
+        def _chunks():
+            sent = 0
+            while True:
+                block = fileobj.read(256 * 1024)
+                if not block:
+                    break
+                sent += len(block)
+                if progress_callback is not None:
+                    progress_callback(sent, 0)
+                yield block
+
+        try:
+            with self._session() as session:
+                resp = session.put(url, data=_chunks(), timeout=(30, None))
+        except requests.RequestException as exc:
+            raise click.UsageError(
+                f"Upload to WebDAV failed for '{object_name}': {exc}") from exc
+
+        if resp.status_code not in (200, 201, 204):
+            raise click.UsageError(
+                f"WebDAV PUT of '{object_name}' returned HTTP {resp.status_code}: "
+                f"{resp.text[:200]}")
+
     def _remote_size(self, url: str) -> int:
         """Return the size of the remote file in bytes, or 0 if absent/unknown."""
         try:

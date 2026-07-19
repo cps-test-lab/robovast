@@ -2,22 +2,20 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for in-process upload + the monitor's upload-progress plumbing.
+"""Unit tests for the share upload-progress plumbing.
 
-Covers the path that replaced the old upload subprocess: the shared
-``UploadProgressReader``, ``in_pod_upload.upload_campaign`` forwarding a progress
-callback to ``provider.upload_archive``, and the controller callback that
-publishes ``(sent, total, rate)`` into ``Status.extra['upload']``.
+Covers the shared ``UploadProgressReader`` (path-based providers), the
+``StreamProgressReader`` used by the streamed (on-the-fly) upload path, and the
+controller callback that publishes ``(sent, total, rate)`` into
+``Status.extra['upload']``.
 """
 
 # pylint: disable=import-outside-toplevel
 
 import io
-import os
 
-from robovast.execution.cluster_execution import in_pod_upload
-from robovast.execution.cluster_execution.share_providers.base import \
-    UploadProgressReader
+from robovast.execution.cluster_execution.share_providers.base import (
+    StreamProgressReader, UploadProgressReader)
 
 
 # ---------------------------------------------------------------------------
@@ -62,60 +60,31 @@ def test_progress_reader_no_callback_is_noop():
 
 
 # ---------------------------------------------------------------------------
-# in_pod_upload.upload_campaign — forwards the callback, cleans up on success
+# StreamProgressReader — unknown length; reports (sent, 0), no __len__
 # ---------------------------------------------------------------------------
 
-class _FakeConfig:
-    """Cluster config stub that writes a dummy archive on compress."""
-
-    def __init__(self, payload=b"archive-bytes"):
-        self._payload = payload
-
-    def compress_campaign(self, campaign_id, archive_dir):
-        path = os.path.join(archive_dir, f"{campaign_id}.tar.gz")
-        with open(path, "wb") as fh:
-            fh.write(self._payload)
-        return path
-
-
-class _FakeProvider:
-    SHARE_TYPE = "fake"
-
-    def __init__(self, fail=False):
-        self.fail = fail
-        self.calls = []
-
-    def upload_archive(self, archive_path, object_name, progress_callback=None):
-        self.calls.append((archive_path, object_name))
-        if self.fail:
-            raise RuntimeError("boom")
-        if progress_callback:
-            total = os.path.getsize(archive_path)
-            progress_callback(total, total)
+def test_stream_progress_reader_reports_sent_with_zero_total():
+    data = b"a" * 700
+    samples = []
+    reader = StreamProgressReader(
+        io.BytesIO(data), progress_callback=lambda sent, total: samples.append((sent, total)))
+    out = b""
+    while True:
+        chunk = reader.read(256)
+        if not chunk:
+            break
+        out += chunk
+    assert out == data
+    assert samples[-1] == (700, 0)             # cumulative sent, unknown total = 0
+    assert [s for s, _ in samples] == sorted(s for s, _ in samples)
 
 
-def test_upload_campaign_success_forwards_progress_and_cleans_up(monkeypatch, tmp_path):
-    monkeypatch.setenv("ROBOVAST_ARCHIVE_DIR", str(tmp_path))
-    provider = _FakeProvider()
-    seen = []
-    ok = in_pod_upload.upload_campaign(
-        _FakeConfig(), "camp-2026-01-01-000000", provider,
-        progress_cb=lambda sent, total: seen.append((sent, total)))
-    assert ok is True
-    assert provider.calls == [
-        (str(tmp_path / "camp-2026-01-01-000000.tar.gz"),
-         "camp-2026-01-01-000000.tar.gz")]
-    assert seen and seen[-1][0] == seen[-1][1]            # progress forwarded
-    assert not (tmp_path / "camp-2026-01-01-000000.tar.gz").exists()  # cleaned up
-
-
-def test_upload_campaign_failure_returns_false_and_keeps_archive(monkeypatch, tmp_path):
-    monkeypatch.setenv("ROBOVAST_ARCHIVE_DIR", str(tmp_path))
-    ok = in_pod_upload.upload_campaign(
-        _FakeConfig(), "camp-2026-01-01-000000", _FakeProvider(fail=True))
-    assert ok is False
-    # Archive is preserved so a retrigger can reuse it.
-    assert (tmp_path / "camp-2026-01-01-000000.tar.gz").exists()
+def test_stream_progress_reader_has_no_len_or_fileno():
+    # Absence of __len__/fileno is what forces http.client into chunked transfer.
+    reader = StreamProgressReader(io.BytesIO(b"q" * 4))
+    assert not hasattr(reader, "__len__")
+    assert not hasattr(reader, "fileno")
+    assert reader.read() == b"q" * 4          # no callback -> no error
 
 
 # ---------------------------------------------------------------------------

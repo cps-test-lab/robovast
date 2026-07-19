@@ -7,6 +7,7 @@ import Paper from '@mui/material/Paper'
 import Stack from '@mui/material/Stack'
 import StopRoundedIcon from '@mui/icons-material/StopRounded'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
+import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded'
 import Typography from '@mui/material/Typography'
 import { robovast, campaignsNewestFirst, type CampaignSummary, type Status } from '@/lib/robovastClient'
 import { StatusView } from '@/components/StatusView'
@@ -47,6 +48,11 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
   const phase = status.data?.phase ?? summary.phase
   const running = !isTerminal(phase)
 
+  // The postprocessed archive is streamed from the object store — only a cluster
+  // service serves it (a local service's results are already on its filesystem).
+  const version = useQuery({ queryKey: ['version'], queryFn: () => robovast.version() })
+  const canDownload = !running && version.data?.backend === 'kubernetes'
+
   return (
     <Paper sx={{ p: 2 }}>
       <Stack direction="row" spacing={1} alignItems="center" mb={1.5}>
@@ -55,6 +61,18 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
         </Typography>
         <Box flexGrow={1} />
         {status.isFetching ? <CircularProgress size={14} /> : null}
+        {canDownload ? (
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<DownloadRoundedIcon />}
+            component="a"
+            href={robovast.archiveUrl(id)}
+            download={`${id}.tar.gz`}
+          >
+            Download
+          </Button>
+        ) : null}
         {running ? (
           <Button
             size="small"

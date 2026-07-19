@@ -230,6 +230,73 @@ class GcsShareProvider(BaseShareProvider):
 
         self._gcs_delete_session(archive_path)
 
+    #: Resumable-upload chunk size; must be a multiple of 256 KiB per the GCS spec.
+    _STREAM_CHUNK = 8 * 1024 * 1024
+
+    def upload_archive_stream(self, fileobj, object_name, progress_callback=None) -> None:
+        """Stream *fileobj* to the bucket via a chunked resumable upload (no local file).
+
+        The archive length is unknown, so each chunk is PUT with
+        ``Content-Range: bytes X-Y/*`` (GCS replies ``308 Resume Incomplete``) until
+        EOF, when the final chunk carries the now-known total. Not resumable across
+        attempts (there is no on-disk archive to seek back into).
+        """
+        bucket = os.environ["ROBOVAST_GCS_BUCKET"]
+        prefix = os.environ.get("ROBOVAST_GCS_PREFIX", "")
+        remote_name = f"{prefix}{object_name}" if prefix else object_name
+        token = self._access_token_for_verify()
+        session_uri = self._gcs_initiate_resumable(bucket, remote_name, None, token)
+
+        sent = 0
+        buf = self._read_exact(fileobj, self._STREAM_CHUNK)
+        while True:
+            nxt = self._read_exact(fileobj, self._STREAM_CHUNK)
+            is_last = len(nxt) == 0
+            if buf:
+                end = sent + len(buf) - 1
+                total = str(sent + len(buf)) if is_last else "*"
+                crange = f"bytes {sent}-{end}/{total}"
+            else:  # empty campaign — finalize a zero-byte object
+                crange = "bytes */0"
+            self._gcs_put_chunk(session_uri, buf, crange, is_last)
+            sent += len(buf)
+            if progress_callback is not None:
+                progress_callback(sent, 0)
+            if is_last:
+                break
+            buf = nxt
+
+    @staticmethod
+    def _read_exact(fileobj, n: int) -> bytes:
+        """Read exactly *n* bytes (or fewer at EOF) — a pipe read may return short."""
+        chunks = []
+        remaining = n
+        while remaining > 0:
+            block = fileobj.read(remaining)
+            if not block:
+                break
+            chunks.append(block)
+            remaining -= len(block)
+        return b"".join(chunks)
+
+    @staticmethod
+    def _gcs_put_chunk(session_uri: str, data: bytes, content_range: str,
+                       is_last: bool) -> None:
+        """PUT one resumable chunk; treat ``308`` as success for non-final chunks."""
+        req = urllib.request.Request(
+            session_uri, data=data, method="PUT",
+            headers={"Content-Length": str(len(data)), "Content-Range": content_range})
+        try:
+            with urllib.request.urlopen(req, timeout=600):  # nosec B310 - https GCS endpoint
+                return
+        except urllib.error.HTTPError as exc:
+            if not is_last and exc.code == 308:
+                return  # Resume Incomplete — expected between chunks
+            raise click.UsageError(
+                f"HTTP {exc.code} streaming to GCS: {exc.reason}") from exc
+        except urllib.error.URLError as exc:
+            raise click.UsageError(f"Upload to GCS failed: {exc.reason}") from exc
+
     # -- resumable-session management --------------------------------------
 
     @staticmethod
@@ -264,24 +331,27 @@ class GcsShareProvider(BaseShareProvider):
             pass
 
     @staticmethod
-    def _gcs_initiate_resumable(bucket: str, remote_name: str, total: int, token: str) -> str:
-        """POST to the GCS resumable-upload initiation endpoint; return the session URI."""
+    def _gcs_initiate_resumable(bucket: str, remote_name: str, total: "int | None",
+                               token: str) -> str:
+        """POST to the GCS resumable-upload initiation endpoint; return the session URI.
+
+        *total* may be ``None`` for a streamed upload of unknown length — then the
+        ``X-Upload-Content-Length`` hint is omitted and the size is settled by the
+        final chunk's ``Content-Range``.
+        """
         url = (
             f"https://storage.googleapis.com/upload/storage/v1/b/"
             f"{urllib.parse.quote(bucket, safe='')}/o?uploadType=resumable"
         )
         body = json.dumps({"name": remote_name}).encode()
-        req = urllib.request.Request(
-            url,
-            data=body,
-            method="POST",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json; charset=UTF-8",
-                "X-Upload-Content-Type": "application/octet-stream",
-                "X-Upload-Content-Length": str(total),
-            },
-        )
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json; charset=UTF-8",
+            "X-Upload-Content-Type": "application/octet-stream",
+        }
+        if total is not None:
+            headers["X-Upload-Content-Length"] = str(total)
+        req = urllib.request.Request(url, data=body, method="POST", headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=60) as resp:  # nosec B310
                 session_uri = resp.headers.get("Location")

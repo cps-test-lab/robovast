@@ -15,8 +15,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import os
-import subprocess  # nosec B404 - pigz is a fixed, trusted binary
 import tarfile
 from typing import Optional
 
@@ -72,23 +70,26 @@ class BaseConfig(object):
         """
         raise NotImplementedError("prepare_setup_cluster method must be implemented by subclasses.")
 
-    def compress_campaign(self, campaign_id: str, archive_dir: str) -> str:
-        """Compress this campaign's storage into ``<archive_dir>/<campaign_id>.tar.gz``.
+    def add_campaign_members(self, tar, campaign_id: str, exclude_prefixes=()) -> None:
+        """Stream this campaign's stored objects into the open *tar* (no local copy).
 
-        Used by the in-cluster controller's upload-to-share step; returns the
-        archive path. The default reads from the S3/MinIO backend (see
-        :func:`_s3_compress` below); configs backed by a different store (e.g.
-        GCS) override this.
+        Powers the postprocessed-download stream (``/campaigns/{id}/archive``): each
+        object is fetched from storage and added to the streaming tar on the fly, so
+        **no scratch is used on the service during or after the download**.
+        *exclude_prefixes* drops internal staging (e.g. ``_postproc/``) so the archive
+        is the clean campaign layout. The default reads the S3/MinIO backend; configs
+        backed by a different store (e.g. GCS) override this.
         """
         from robovast.execution.cluster_execution import \
             in_pod_storage  # pylint: disable=import-outside-toplevel
         bucket, prefix = in_pod_storage.campaign_storage_location(self, campaign_id)
         access_key, secret_key = self.get_s3_credentials()
-        return _s3_compress(
-            bucket, archive_dir, campaign_id,
+        _s3_add_members(
+            tar, bucket, campaign_id,
             endpoint=self.get_s3_endpoint(),
             access_key=access_key, secret_key=secret_key,
-            prefix=prefix or None, region=self.get_s3_region())
+            prefix=prefix or None, region=self.get_s3_region(),
+            exclude_prefixes=exclude_prefixes)
 
     def verify_cluster_ready(self, k8s_client=None, namespace="default", kube_context=None):
         """Verify the storage infrastructure is ready before launching a run.
@@ -303,9 +304,9 @@ class BaseConfig(object):
 
 
 # ---------------------------------------------------------------------------
-# S3/MinIO download + compress, used by BaseConfig.compress_campaign for the
-# controller's upload-to-share step. Streams the bucket straight into a tar.gz
-# via pigz (parallel gzip). The GCS variant lives in the gcp config.
+# S3/MinIO object streaming, used by BaseConfig.add_campaign_members to stream a
+# campaign's stored objects into an open tar on the fly (the postprocessed
+# download). The GCS variant lives in the gcp config.
 # ---------------------------------------------------------------------------
 
 def _s3_add_job_link_entries(tar, s3, bucket_name, prefix, archive_label):
@@ -330,18 +331,22 @@ def _s3_add_job_link_entries(tar, s3, bucket_name, prefix, archive_label):
         tar.addfile(tarinfo)
 
 
-def _s3_compress(bucket, archive_dir, archive_name, *, endpoint, access_key,
-                 secret_key, prefix=None, region="us-east-1") -> str:
-    """Stream *bucket* (optionally under *prefix*) into a tar.gz; return its path.
+def _s3_add_members(tar, bucket, archive_name, *, endpoint, access_key,
+                    secret_key, prefix=None, region="us-east-1",
+                    exclude_prefixes=()) -> None:
+    """Stream every object of *bucket*/*prefix* into the open *tar*.
 
-    The archive's single top-level folder is *archive_name* (the campaign id), so
-    it expands to ``<campaign>/<config>/<run>/...``.
+    Each object is fetched and added on the fly (no local copy). The archive's single
+    top-level folder is *archive_name* (the campaign id), so it expands to
+    ``<campaign>/<config>/<run>/...``. *exclude_prefixes* are campaign-relative path
+    prefixes to skip (e.g. ``"_postproc"`` — internal staging that is not part of the
+    clean campaign layout).
     """
     import boto3  # pylint: disable=import-outside-toplevel
     from botocore.config import Config  # pylint: disable=import-outside-toplevel
 
     prefix = prefix.rstrip("/") + "/" if prefix else None
-    output_path = os.path.join(archive_dir, f"{archive_name}.tar.gz")
+    excluded = tuple(p.rstrip("/") + "/" for p in exclude_prefixes)
 
     s3 = boto3.client(
         "s3", endpoint_url=endpoint,
@@ -357,28 +362,17 @@ def _s3_compress(bucket, archive_dir, archive_name, *, endpoint, access_key,
         paginate_kwargs["Prefix"] = prefix
     paginator = s3.get_paginator("list_objects_v2")
 
-    # Stream uncompressed tar into pigz for parallel multi-core compression.
-    with open(output_path, "wb") as out_f:
-        pigz = subprocess.Popen(  # nosec B607 B603 - fixed binary, no shell
-            ["pigz", "-c"], stdin=subprocess.PIPE, stdout=out_f)
-        try:
-            with tarfile.open(fileobj=pigz.stdin, mode="w|") as tar:
-                for page in paginator.paginate(**paginate_kwargs):
-                    for obj in page.get("Contents", []):
-                        key = obj["Key"]
-                        relative_key = key[len(prefix):] if prefix else key
-                        tarinfo = tarfile.TarInfo(name=f"{archive_name}/{relative_key}")
-                        tarinfo.size = obj["Size"]
-                        response = s3.get_object(Bucket=bucket, Key=key)
-                        tarinfo.mode = (
-                            0o755 if response.get("Metadata", {}).get("executable") == "yes"
-                            else 0o644)
-                        tar.addfile(tarinfo, response["Body"])
-                _s3_add_job_link_entries(tar, s3, bucket, prefix, archive_name)
-        finally:
-            pigz.stdin.close()
-            pigz.wait()
-
-    if pigz.returncode != 0:
-        raise RuntimeError(f"pigz exited with code {pigz.returncode}")
-    return output_path
+    for page in paginator.paginate(**paginate_kwargs):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            relative_key = key[len(prefix):] if prefix else key
+            if excluded and relative_key.startswith(excluded):
+                continue
+            tarinfo = tarfile.TarInfo(name=f"{archive_name}/{relative_key}")
+            tarinfo.size = obj["Size"]
+            response = s3.get_object(Bucket=bucket, Key=key)
+            tarinfo.mode = (
+                0o755 if response.get("Metadata", {}).get("executable") == "yes"
+                else 0o644)
+            tar.addfile(tarinfo, response["Body"])
+    _s3_add_job_link_entries(tar, s3, bucket, prefix, archive_name)

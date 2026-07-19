@@ -46,6 +46,7 @@ export interface CreateCampaignRequest {
   config_filter?: string
   runs?: number
   postprocess?: boolean
+  upload_to_share?: boolean
 }
 
 export interface CampaignRef {
@@ -286,6 +287,11 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 export const robovast = {
   version: () => request<VersionInfo>('GET', '/version'),
 
+  // Direct URL of a campaign's postprocessed tar.gz (a GET the browser downloads).
+  // Cluster services stream it from the object store; a local service returns 409.
+  archiveUrl: (campaignId: string) =>
+    `${BASE}/campaigns/${encodeURIComponent(campaignId)}/archive`,
+
   listWorkspaces: () => request<ListWorkspacesResponse>('GET', '/workspaces'),
 
   listCampaigns: (limit = 20, offset = 0) =>
@@ -306,6 +312,7 @@ export const robovast = {
       config_filter: '',
       runs: 1,
       postprocess: true,
+      upload_to_share: false,
       ...req,
     }),
 

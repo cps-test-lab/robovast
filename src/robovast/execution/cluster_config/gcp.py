@@ -29,16 +29,12 @@ Required ``-o`` options at ``setup`` time::
         -o gcs_secret_key=<HMAC_SECRET_KEY> \\
         [-o storage_size=50Gi] [-o disk_type=pd-ssd]
 """
-import concurrent.futures
 import json
 import logging
 import os
 import re
-import shutil
 import subprocess
-import sys
-import tempfile
-import threading
+import tarfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -362,14 +358,16 @@ file) have read/write access to it.
         """Return ``'gcs'`` to indicate native GCS storage (not the S3-compat path)."""
         return "gcs"
 
-    def compress_campaign(self, campaign_id: str, archive_dir: str) -> str:
-        """Compress the campaign from GCS into ``<archive_dir>/<campaign_id>.tar.gz``.
+    def add_campaign_members(self, tar, campaign_id: str, exclude_prefixes=()) -> None:
+        """Stream the campaign's GCS objects into the open *tar* (no local copy).
 
-        Overrides the S3 default with the native GCS download+compress path
-        (parallel download, then ``tar | pigz``). See :func:`_gcs_compress`.
+        Native GCS override of the S3 default: each object is fetched and added to the
+        streaming tar on the fly (serial, since a tar is sequential), so no scratch is
+        used during or after the download. See :func:`_gcs_add_members`.
         """
-        return _gcs_compress(
-            campaign_id, self.get_s3_bucket(), self.get_gcs_key_json(), archive_dir)
+        _gcs_add_members(
+            tar, campaign_id, self.get_s3_bucket(), self.get_gcs_key_json(),
+            exclude_prefixes=exclude_prefixes)
 
     def get_gcs_key_file(self) -> Optional[str]:
         """Return the path to the GCS service-account key JSON file, or ``None``."""
@@ -600,9 +598,10 @@ file) have read/write access to it.
 
 
 # ---------------------------------------------------------------------------
-# Native GCS download + compress, used by GcpClusterConfig.compress_campaign for
-# the controller's upload-to-share step. Kept here (GCS is only used by this
-# config) rather than in a shared module. Parallel download then ``tar | pigz``.
+# Native GCS object streaming, used by GcpClusterConfig.add_campaign_members to
+# stream a campaign's objects into an open tar on the fly (the postprocessed
+# download). Kept here (GCS is only used by this config) rather than in a shared
+# module.
 # ---------------------------------------------------------------------------
 
 _GCS_DEFAULT_WORKERS = int(os.environ.get("ROBOVAST_GCS_WORKERS", "16"))
@@ -654,8 +653,8 @@ def _gcs_list_blobs(bucket: str, prefix: str, token: str) -> list:
     return blobs
 
 
-def _gcs_download_blob(bucket: str, blob_name: str, dest_path: str, token: str) -> None:
-    """Download one GCS object to *dest_path*, streaming in 4 MiB chunks."""
+def _gcs_stream_blob(bucket: str, blob_name: str, token: str):
+    """Open a streaming read of one GCS object; returns a file-like (urllib response)."""
     url = (
         f"https://storage.googleapis.com/storage/v1/b/"
         f"{urllib.parse.quote(bucket, safe='')}/o/"
@@ -663,128 +662,47 @@ def _gcs_download_blob(bucket: str, blob_name: str, dest_path: str, token: str) 
         f"?alt=media"
     )
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-    with urllib.request.urlopen(req, timeout=120) as resp:  # nosec B310 - https GCS API
-        with open(dest_path, "wb") as fh:
-            while True:
-                chunk = resp.read(_GCS_CHUNK)
-                if not chunk:
-                    break
-                fh.write(chunk)
+    return urllib.request.urlopen(req, timeout=300)  # nosec B310 - https GCS API
 
 
-def _gcs_create_job_links(campaign_dir: str) -> None:
-    """Materialise ``<config>/<run>/job`` symlinks from the link manifest.
-
-    Reads ``<campaign_dir>/_transient/job_links.yaml`` (a ``{link: target}`` map
-    written by robovast for packed campaigns) and creates each relative symlink
-    so the archived tree is navigable. No-op when the manifest is absent.
-    """
+def _gcs_add_job_link_entries(tar, bucket: str, prefix: str, archive_name: str,
+                              token: str) -> None:
+    """Add ``<config>/<run>/job`` symlink members from the link manifest object."""
     import yaml  # pylint: disable=import-outside-toplevel
-    manifest = os.path.join(campaign_dir, "_transient", "job_links.yaml")
-    if not os.path.isfile(manifest):
-        return
-    with open(manifest) as fh:
-        links = yaml.safe_load(fh) or {}
+    try:
+        with _gcs_stream_blob(bucket, f"{prefix}_transient/job_links.yaml", token) as resp:
+            links = yaml.safe_load(resp.read()) or {}
+    except Exception:  # pylint: disable=broad-except
+        return  # no manifest -> nothing to link
     for link_rel, target in links.items():
-        link_path = os.path.join(campaign_dir, link_rel)
-        os.makedirs(os.path.dirname(link_path), exist_ok=True)
-        if os.path.islink(link_path) or os.path.exists(link_path):
-            try:
-                os.remove(link_path)
-            except OSError:
-                pass
-        try:
-            os.symlink(target, link_path)
-        except OSError as exc:
-            sys.stderr.write(f"WARNING: could not create job link {link_rel}: {exc}\n")
+        tarinfo = tarfile.TarInfo(name=f"{archive_name}/{link_rel}")
+        tarinfo.type = tarfile.SYMTYPE
+        tarinfo.linkname = target
+        tarinfo.mode = 0o777
+        tar.addfile(tarinfo)
 
 
-def _gcs_compress(campaign: str, bucket: str, key_json: str, archive_dir: str,
-                  *, workers: int = _GCS_DEFAULT_WORKERS) -> str:
-    """Download ``<campaign>/`` from *bucket* and compress it to a tar.gz.
+def _gcs_add_members(tar, campaign: str, bucket: str, key_json: str,
+                     *, exclude_prefixes=()) -> None:
+    """Stream every GCS object under ``<campaign>/`` into the open *tar* (no local copy).
 
-    Args:
-        campaign: Campaign id (GCS key prefix and the tar's top-level folder).
-        bucket: GCS bucket name.
-        key_json: Service-account key as a JSON string.
-        archive_dir: Directory to write ``<campaign>.tar.gz`` (and scratch) into.
-        workers: Parallel download threads.
-
-    Returns the output tar.gz path.
+    Each object is fetched and added on the fly (serial, since a tar is sequential), so
+    the postprocessed download uses no scratch on the service. *exclude_prefixes* drops
+    internal staging (e.g. ``_postproc/``). The single top-level folder is *campaign*.
     """
     key_data = json.loads(key_json)
     prefix = f"{campaign}/"
-    output_path = os.path.join(archive_dir, f"{campaign}.tar.gz")
-
+    excluded = tuple(p.rstrip("/") + "/" for p in exclude_prefixes)
     token = _gcs_get_access_token(key_data)
-    blobs = [(name, size) for name, size in _gcs_list_blobs(bucket, prefix, token)
-             if name != prefix]
-    if not blobs:
-        raise RuntimeError(
-            f"No objects found under prefix '{prefix}' in bucket '{bucket}'.")
-
-    total = len(blobs)
-    total_bytes = sum(size for _, size in blobs)
-    sys.stdout.write(
-        f"{campaign}: {total} object(s)  {total_bytes / 1024 / 1024:.1f} MiB"
-        f"  ({workers} parallel workers)\n")
-    sys.stdout.flush()
-
-    # Phase 1: parallel download into a temp directory under the archive dir.
-    tmpdir = tempfile.mkdtemp(dir=archive_dir, prefix=f".gcs_dl_{campaign}_")
-    try:
-        campaign_dir = os.path.join(tmpdir, campaign)
-        os.makedirs(campaign_dir, exist_ok=True)
-
-        done_count = 0
-        lock = threading.Lock()
-
-        def _download_one(blob_name_size):
-            nonlocal done_count
-            blob_name, _size = blob_name_size
-            relative = blob_name[len(prefix):]
-            if not relative:
-                return
-            _gcs_download_blob(bucket, blob_name, os.path.join(campaign_dir, relative), token)
-            with lock:
-                done_count += 1
-                n = done_count
-            sys.stdout.write(f"\r{campaign}  downloading {n}/{total}...")
-            sys.stdout.flush()
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {pool.submit(_download_one, b): b for b in blobs}
-            for fut in concurrent.futures.as_completed(futures):
-                fut.result()  # re-raise any download exception immediately
-
-        sys.stdout.write(f"\r{campaign}  downloaded {total} file(s), compressing...\n")
-        sys.stdout.flush()
-
-        # Materialise per-job artifact symlinks before archiving so the tar.gz
-        # carries them (tar stores symlinks as links — no -h/--dereference).
-        _gcs_create_job_links(campaign_dir)
-
-        # Phase 2: tar + pigz running in parallel via OS pipe.
-        with open(output_path, "wb") as out_f:
-            tar_proc = subprocess.Popen(  # nosec B607 B603 - fixed binary, no shell
-                ["tar", "cf", "-", "-C", tmpdir, campaign],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            pigz_proc = subprocess.Popen(  # nosec B607 B603 - fixed binary, no shell
-                ["pigz", "-c"], stdin=tar_proc.stdout, stdout=out_f,
-                stderr=subprocess.PIPE)
-            tar_proc.stdout.close()  # let tar receive SIGPIPE if pigz exits early
-            _pigz_stderr = pigz_proc.communicate()[1]
-            tar_proc.wait()
-
-        if tar_proc.returncode != 0:
-            raise RuntimeError(f"tar exited with code {tar_proc.returncode}")
-        if pigz_proc.returncode != 0:
-            msg = _pigz_stderr.decode(errors="replace").strip()
-            raise RuntimeError(f"pigz exited with code {pigz_proc.returncode}: {msg}")
-
-        sys.stdout.write(f"{campaign}: wrote {output_path}\n")
-        sys.stdout.flush()
-        return output_path
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
+    for name, size in _gcs_list_blobs(bucket, prefix, token):
+        relative = name[len(prefix):]
+        if not relative or name.endswith("/"):
+            continue
+        if excluded and relative.startswith(excluded):
+            continue
+        tarinfo = tarfile.TarInfo(name=f"{campaign}/{relative}")
+        tarinfo.size = size
+        tarinfo.mode = 0o644
+        with _gcs_stream_blob(bucket, name, token) as resp:
+            tar.addfile(tarinfo, resp)
+    _gcs_add_job_link_entries(tar, bucket, prefix, campaign, token)

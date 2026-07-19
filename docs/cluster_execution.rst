@@ -42,20 +42,23 @@ cluster. Internally:
    ``_execution`` + results) there. The **object store is the durable home and
    the delivery mechanism**: the service streams downloads straight from it
    (``vast results download`` / ``--wait-and-download``), so no external share is
-   required. An external ``tar.gz`` share is optional and on-demand: run ``vast
-   execution cluster upload-to-share`` at any time — it is a stateless service
-   call that reads the finished campaign from the object store, so a failed upload
-   is simply retried (no process has to stay alive). Track progress with ``vast
-   execution cluster monitor``; ``vast execution cluster download-cleanup`` removes
-   the buckets once results have been handled.
+   required. Pushing a copy to an external ``tar.gz`` **share** is opt-in **at
+   launch** — enable *Upload to share when done* in the web UI launcher (or
+   ``--upload-to-share`` / the MCP ``upload_to_share`` flag). When set, the driver
+   streams a **raw, pre-postprocessing** archive to the configured share the moment
+   the runs finish, *before* analysis postprocessing adds derived data — so the
+   shared copy stays minimal and untouched. Track progress with ``vast execution
+   cluster monitor``; ``vast execution cluster download-cleanup`` removes the
+   buckets once results have been handled.
 
 .. note::
 
-   Live status, ``stop``, ``monitor`` and ``upload-to-share`` all go through the
-   service — auto-detected on the conventional local port, or reached with
-   ``--cluster`` — there is no controller pod to ``kubectl port-forward`` into any
-   more. The web UI additionally streams each campaign's ``controller.log`` live
-   from the service.
+   Live status, ``stop`` and ``monitor`` all go through the service — auto-detected
+   on the conventional local port, or reached with ``--cluster`` — there is no
+   controller pod to ``kubectl port-forward`` into any more. The web UI additionally
+   streams each campaign's ``controller.log`` live from the service, and offers a
+   **Download** button (the postprocessed ``tar.gz``, streamed from the object
+   store) on finished campaigns.
 
 
 Prerequisites
@@ -151,19 +154,27 @@ Check the status of a running (or recently completed) run:
 
 The service publishes the finished campaign to the object store automatically,
 and ``vast results download`` (or ``run --wait-and-download``) streams it from
-there — no external share needed. To additionally push the campaign to an external
-share, or to **retry** an upload that failed (e.g. after the share was full or
-briefly unreachable):
+there — no external share needed:
 
 .. code-block:: bash
 
-   vast execution cluster upload-to-share
+   # Postprocessed campaign (full, incl. derived data), streamed from the service:
+   vast results download -i campaign-2025-06-01-120000
 
-This is a **stateless** service call: it reads the finished campaign from the
-object store, so it is safely repeatable — nothing has to have stayed alive since
-the run. It needs no arguments (the service's own share settings are used); if you
-set/correct the share settings in your ``.env`` first, they are sent as overrides
-for this attempt (and may even switch the share type).
+   # List what is downloadable and from where (service = postprocessed, share = raw):
+   vast results list-downloads
+
+``vast results download`` picks its source automatically from what is reachable — a
+running service serves the **postprocessed** archive from the object store; a
+configured external share serves the **raw** (pre-postprocessing) archive that
+*Upload to share when done* produced. Force one with ``--variant postprocessed`` or
+``--variant raw``. Both stream end-to-end, so a ~1TB campaign never has to be
+buffered on the service or in memory.
+
+To push a copy to an external share, enable it **at launch** (*Upload to share when
+done* in the web UI, ``--upload-to-share`` on ``vast execution cluster run``, or the
+MCP ``upload_to_share`` flag). The share/``.env`` settings determine the
+destination; the archive delivered there is the raw pre-postprocessing snapshot.
 
 Clean up only the job objects (without touching the result storage):
 
@@ -293,7 +304,7 @@ the ``--context`` flag to any cluster sub-command to select a specific context
    vast execution cluster run --context gcp-c4
 
 The ``--context`` flag is available on ``setup``, ``run``, ``monitor``,
-``upload-to-share``, ``prepare-run``, ``run-cleanup``, and ``cleanup``.
+``prepare-run``, ``run-cleanup``, and ``cleanup``.
 
 Contexts can be renamed to shorter, human-friendly identifiers:
 
@@ -449,8 +460,8 @@ volume — data persists as long as the pod is alive.
 **Notes:**
 
 * ``emptyDir`` is ephemeral: if the ``robovast`` pod is restarted, all data is
-  lost.  Upload results with ``vast execution cluster upload-to-share`` before
-  modifying or restarting the pod.
+  lost.  Download results with ``vast results download`` (or launch with *Upload
+  to share when done*) before modifying or restarting the pod.
 
 .. _cluster-config-minikube:
 
@@ -492,32 +503,32 @@ Sharing Results
 
 The object store is the campaign's durable home and the default delivery path —
 ``vast results download`` streams the campaign straight from it, so **no external
-share is required**. Pushing to an external share (Nextcloud, GCS, …) is an
-optional, on-demand step run **in the service**: it compresses the finished
-campaign (streaming from the storage bucket via ``pigz``) and uploads the
-``{campaign_id}.tar.gz`` to the configured share. No data ever reaches the user's
-machine, and no separate archiver pod is involved.
+share is required**. Pushing to an external share (Nextcloud, GCS, …) is an opt-in
+**launch-time** step run **in the driver**: enable *Upload to share when done* in
+the web UI, pass ``--upload-to-share`` to ``vast execution cluster run``, or set the
+MCP ``upload_to_share`` flag. No data ever reaches the user's machine, and no
+separate archiver pod is involved.
 
 How it works
 ^^^^^^^^^^^^
 
-``vast execution cluster upload-to-share`` is a **stateless service call**:
+When the toggle is set, the driver — the moment the scenario runs finish and
+**before** analysis postprocessing — streams the campaign to the share:
 
-1. **Pre-flight** — the service verifies the share credentials work before
-   compressing, so a misconfigured share fails fast.
-2. **Compress + upload** — it streams the campaign (read from the object store)
-   into a ``tar.gz`` and runs the share provider's upload.
-3. **On success** it reports the share type.
-4. **On failure** the campaign is untouched in the object store, so you just run
-   the command **again** once the cause is fixed — nothing has to have stayed
-   alive in the meantime (unlike the old controller-pod flow, which parked a pod
-   to await a retry).
+1. **Pre-flight** — the driver verifies the share credentials before streaming, so
+   a misconfigured share fails fast.
+2. **Stream + upload** — the campaign (already on the driver's scratch from the run)
+   is tarred and gzipped **on the fly** straight into the share provider's request
+   body. No compressed copy is written to disk — decisive for ~1TB campaigns — and
+   the archive is the **raw, pre-postprocessing** snapshot, so the shared copy stays
+   minimal and untouched (postprocessing only *adds* derived data, which lands in
+   the object store and the postprocessed download instead).
+3. **On failure** the campaign is untouched in the object store and the run
+   continues normally — the share is best-effort and never loses results.
 
-A call may also target a **different share** — set a new ``ROBOVAST_SHARE_TYPE``
-(and its variables) in ``.env`` before ``upload-to-share`` to, say, redirect a
-stuck gcs upload to sftp. Those settings are sent as overrides for the attempt and
-pre-flight-checked before compressing. (A missing variable for the chosen type
-fails loudly rather than silently reusing the service's destination.)
+The destination is whatever ``ROBOVAST_SHARE_TYPE`` (and its variables) name in the
+service's ``.env`` — the launch flag is a pure on/off switch and carries no
+credentials.
 
 Configuration via ``.env``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -562,23 +573,17 @@ with the share token as the HTTP Basic-Auth username and an empty password.
 Only the standard Python library is used — no additional packages need to be
 installed.
 
-Retrying a failed upload:
-
-.. code-block:: bash
-
-   # Repeatable stateless call (uses the service's share settings)
-   vast execution cluster upload-to-share
-
 Progress output
 ^^^^^^^^^^^^^^^
 
-Compression and upload run in the service; a single-line progress bar
-(percentage, transferred size, rate) is written to the campaign log —
-view it with ``vast execution cluster monitor`` or the web UI log panel:
+The tar+gzip stream and upload run in the driver; a single-line progress bar
+(transferred size and rate — no percentage, since the streamed archive's length is
+not known up front) is written to the campaign log — view it with ``vast execution
+cluster monitor`` or the web UI log panel:
 
 .. code-block:: text
 
-   campaign-2026-03-01-120000  [████████████░░░░░░░░]   60.0%  1.2 MiB/2.0 MiB  3.4 MiB/s
+   campaign-2026-03-01-120000  streaming to share  1.2 MiB  3.4 MiB/s
    campaign-2026-03-01-120000  uploaded (2.0 MiB)  ✓
 
 Google Cloud Storage (GCS)
@@ -595,7 +600,7 @@ and **do not require credentials** when the bucket is publicly readable.
    # GCS bucket name
    ROBOVAST_GCS_BUCKET=my-robovast-results
 
-   # Required for upload (cluster upload-to-share) only.
+   # Required for upload-to-share (launching with the toggle) only.
    # Not needed for results download on public buckets.
    ROBOVAST_GCS_KEY_FILE=/path/to/service-account-key.json
 

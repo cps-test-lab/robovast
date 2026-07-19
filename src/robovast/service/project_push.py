@@ -92,7 +92,7 @@ def push_project_to_workspace(client, config_path: str, name: str = "") -> str:
 
 def run_project_via_service(client, config_path: str,
                             config_filter: str = "", runs: int = 1,
-                            feedback=None) -> str:
+                            feedback=None, upload_to_share: bool = False) -> str:
     """Push the local project through *client* and start a campaign. Returns id."""
     from robovast.service.interface import CreateCampaignRequest
 
@@ -102,7 +102,8 @@ def run_project_via_service(client, config_path: str,
     say(f"Uploaded to workspace {workspace_id}; starting campaign ...")
     ref = client.create_campaign(CreateCampaignRequest(
         workspace_id=workspace_id, config_filter=config_filter,
-        runs=runs if runs and runs > 0 else 1))
+        runs=runs if runs and runs > 0 else 1,
+        upload_to_share=upload_to_share))
     return ref.campaign_id
 
 
@@ -113,7 +114,6 @@ def download_campaign_via_service(client, campaign_id: str,
     The service streams the campaign from the object store (no external share).
     Returns the local campaign directory path.
     """
-    import io
     import tarfile
 
     import requests
@@ -122,11 +122,14 @@ def download_campaign_via_service(client, campaign_id: str,
     say = feedback or logger.info
     url = f"{client.base_url}{Routes.CAMPAIGNS}/{campaign_id}/archive"
     say(f"Downloading {campaign_id} from robovast-service ...")
-    resp = requests.get(url, timeout=600, stream=True)
-    resp.raise_for_status()
     os.makedirs(results_dir, exist_ok=True)
-    with tarfile.open(fileobj=io.BytesIO(resp.content), mode="r:gz") as tar:
-        tar.extractall(results_dir)  # noqa: S202 - trusted service, arcname=campaign_id
+    # Stream-extract straight off the socket (mode "r|gz") so a large (up to ~1TB)
+    # campaign never has to be buffered in memory on the client.
+    with requests.get(url, timeout=600, stream=True) as resp:
+        resp.raise_for_status()
+        resp.raw.decode_content = True
+        with tarfile.open(fileobj=resp.raw, mode="r|gz") as tar:
+            tar.extractall(results_dir)  # noqa: S202 - trusted service, arcname=campaign_id
     dest = os.path.join(results_dir, campaign_id)
     say(f"Extracted to {dest}")
     return dest

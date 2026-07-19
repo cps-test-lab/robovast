@@ -14,35 +14,22 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Compress + upload a campaign to a share, in-process in the controller pod.
+"""Load and pre-flight the configured share provider, in-process on the driver.
 
-This replaces the host-driven ``upload-to-share`` flow that used to ``kubectl
-exec`` into an archiver sidecar. The controller pod already reaches the campaign
-storage in-cluster, so it compresses and uploads itself — no second pod, no
-``kubectl``. Compression is **cluster-specific** and owned by the cluster config
-(:meth:`~robovast.execution.cluster_config.base_config.BaseConfig.compress_campaign`);
-this module stays generic and just orchestrates compress → upload → retry.
+The actual delivery is a **streamed** upload: the campaign is tarred + gzipped on the
+fly from the driver's scratch straight into ``provider.upload_archive_stream`` (see
+:meth:`KubernetesBackend.share_campaign`), so no compressed copy ever lands on disk.
+This module stays generic and just resolves the provider and checks its credentials.
 
 Share credentials come from the service's own environment (its Deployment env), so
-they are already present in ``os.environ`` here. :func:`load_provider_from_env`
-reads them, with optional *overrides* supplied per call — that is how a failed
-upload is retried with corrected (or switched) credentials, now that
-``upload_to_share`` is a stateless service operation rather than a command sent to
-a parked controller pod.
+they are already present in ``os.environ`` here. :func:`load_provider_from_env` reads
+them, with optional *overrides* supplied per call.
 """
 
 import logging
 import os
 
 logger = logging.getLogger(__name__)
-
-#: Directory the tar.gz is written to / read from inside the controller pod.
-#: The launcher injects ``ROBOVAST_ARCHIVE_DIR``; default to a workspace path.
-_DEFAULT_ARCHIVE_DIR = "/workspace/archive"
-
-
-def _archive_dir() -> str:
-    return os.environ.get("ROBOVAST_ARCHIVE_DIR") or _DEFAULT_ARCHIVE_DIR
 
 
 def share_type_configured() -> bool:
@@ -96,55 +83,3 @@ def verify_share_access(provider) -> None:
                 provider.SHARE_TYPE)
     provider.verify_access()
     logger.info("Share credentials OK.")
-
-
-def upload_campaign(cluster_config, campaign_id: str, provider,
-                    progress_cb=None) -> bool:
-    """Compress *campaign_id* from storage and upload it via *provider*.
-
-    1. Compress: ``cluster_config.compress_campaign`` (storage-specific — S3 vs
-       GCS lives in the cluster config) writes
-       ``$ROBOVAST_ARCHIVE_DIR/<campaign>.tar.gz``.
-    2. Upload: call the provider's in-process ``upload_archive``. The provider's
-       resolved env (URLs, tokens, key JSON/PEM) is already in ``os.environ`` —
-       injected at launch (and possibly overridden by a retrigger).
-    3. Remove the local archive on success.
-
-    Args:
-        progress_cb: Optional ``(bytes_sent, total_bytes)`` callable forwarded to
-            the provider so the controller can publish upload progress.
-
-    Returns ``True`` on success; logs and returns ``False`` on any failure (so
-    the controller can keep the pod alive for a retrigger).
-    """
-    archive_dir = _archive_dir()
-    os.makedirs(archive_dir, exist_ok=True)
-
-    # 1. Compress straight from storage into the local archive dir. The cluster
-    #    config owns the storage-specific compression.
-    logger.info("Compressing campaign %s for upload...", campaign_id)
-    try:
-        archive_path = cluster_config.compress_campaign(campaign_id, archive_dir)
-    except Exception:  # pylint: disable=broad-except
-        logger.exception("Campaign compression failed.")
-        return False
-
-    # 2. Upload the archive in-process via the configured share provider.
-    object_name = os.path.basename(archive_path)
-    logger.info("Uploading %s to %s...", object_name, provider.SHARE_TYPE)
-    ok = True
-    try:
-        provider.upload_archive(archive_path, object_name, progress_callback=progress_cb)
-    except Exception:  # pylint: disable=broad-except
-        logger.exception("Upload to %s failed.", provider.SHARE_TYPE)
-        ok = False
-
-    # 3. Best-effort cleanup of the local archive (storage keeps the canonical copy).
-    if ok:
-        try:
-            if os.path.isfile(archive_path):
-                os.remove(archive_path)
-        except OSError:
-            logger.debug("Could not remove local archive %s", archive_path, exc_info=True)
-
-    return ok

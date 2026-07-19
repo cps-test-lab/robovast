@@ -24,11 +24,17 @@ It provides four views, one per desktop GUI:
   (controller) and postprocessing phases assembled into one stream with
   ``===== PHASE =====`` dividers — streamed live and shown in full once it finishes.
   **Stop** cooperatively ends the campaign *and* terminates its in-flight jobs, so
-  running work halts promptly (not only after the current batch). The browser
-  equivalent of ``vast exec cluster monitor``.
+  running work halts promptly (not only after the current batch). A finished cluster
+  campaign also shows a **Download** button that streams its postprocessed
+  ``tar.gz`` straight from the object store (offered only for a cluster service — a
+  local service's results are already on its filesystem). The browser equivalent of
+  ``vast exec cluster monitor``.
 * **Launcher** — starts a campaign from a workspace (which ``.vast``, config filter,
-  runs per configuration, postprocess toggle) and watches its live status. The
-  browser equivalent of ``vast exec cluster run``.
+  runs per configuration, *Postprocess when done* and *Upload to share when done*
+  toggles) and watches its live status. The browser equivalent of ``vast exec
+  cluster run``. *Upload to share when done* streams a raw, pre-postprocessing
+  ``tar.gz`` to the configured external share the moment the runs finish (off by
+  default; the share destination comes from the service's ``.env``).
 * **Config** — a workspace-based ``.vast`` editor with live validation and a
   generated-configuration preview. The browser equivalent of ``vast config gui``.
 * **Results** — browse a campaign's data, run read-only SQL, and chart it. The

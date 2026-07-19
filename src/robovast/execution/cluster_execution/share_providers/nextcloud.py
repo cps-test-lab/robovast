@@ -106,6 +106,36 @@ class NextcloudShareProvider(BaseShareProvider):
                 raise click.UsageError(
                     f"Upload to Nextcloud failed: {exc.reason}") from exc
 
+    def upload_archive_stream(self, fileobj, object_name, progress_callback=None) -> None:
+        """Stream *fileobj* to the public Nextcloud share via a chunked WebDAV ``PUT``.
+
+        No ``Content-Length`` is sent (the archive length is unknown), so
+        ``http.client`` falls back to ``Transfer-Encoding: chunked``. Wrapping the
+        stream in :class:`StreamProgressReader` (which exposes only ``read``) keeps the
+        client from inferring a length.
+        """
+        from .base import StreamProgressReader  # pylint: disable=import-outside-toplevel
+
+        webdav_url, _ = self._parse_share_url()
+        file_url = webdav_url + urllib.parse.quote(object_name, safe="")
+
+        headers = dict(self._auth_headers())
+        headers["X-Requested-With"] = "XMLHttpRequest"
+        headers["Content-Type"] = "application/octet-stream"
+
+        reader = StreamProgressReader(fileobj, progress_callback=progress_callback)
+        req = urllib.request.Request(file_url, data=reader, method="PUT", headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=None):  # nosec B310 - configured share URL
+                pass
+        except urllib.error.HTTPError as exc:
+            raise click.UsageError(
+                f"HTTP {exc.code} uploading {object_name} to Nextcloud: {exc.reason}"
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise click.UsageError(
+                f"Upload to Nextcloud failed: {exc.reason}") from exc
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

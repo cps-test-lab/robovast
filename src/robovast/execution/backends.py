@@ -80,6 +80,13 @@ class RunOptions:
     postprocess: bool = False
     namespace: str | None = None
     controller_image: str | None = None
+    # -- upload-to-share (pre-postprocess minimal snapshot) -------------------
+    # When set, the finish tail produces a raw campaign archive *before* analysis
+    # postprocessing (so the share stays minimal/untouched): the local backend just
+    # writes a tar.gz; the cluster backend streams it to the configured share
+    # provider. Off by default; a per-campaign option (travels with the options, not
+    # the process env) exactly like ``postprocess``.
+    upload_to_share: bool = False
 
 
 class ExecutionBackend(ABC):
@@ -107,6 +114,24 @@ class ExecutionBackend(ABC):
         publish campaign-level artifacts (``campaign.db``, ``_execution/``) to
         storage, so the bucket holds a complete, local-equivalent campaign.
         """
+
+    def share_campaign(self, campaign_root: str, options: "RunOptions") -> None:
+        """Produce the pre-postprocess "upload-to-share" artifact for this campaign.
+
+        Called from the controller's finish tail **before** analysis postprocessing,
+        so the archive is the raw campaign (no derived data). The default (local
+        :class:`DockerBackend`) writes ``<archive_dir>/<campaign>.tar.gz`` — there is
+        no external share locally, so the file is the deliverable. ``archive_dir`` is
+        ``$ROBOVAST_ARCHIVE_DIR`` or a ``_archives/`` sibling of the campaign dirs
+        (kept outside every campaign dir so it can't perturb postprocessing's
+        hash-cache). The :class:`KubernetesBackend` overrides this to stream the
+        archive to the configured share provider instead.
+        """
+        from robovast.execution import campaign_archive
+        results_dir = os.path.dirname(os.path.normpath(campaign_root))
+        archive_dir = os.environ.get("ROBOVAST_ARCHIVE_DIR") or os.path.join(
+            results_dir, "_archives")
+        campaign_archive.make_campaign_tarball(campaign_root, archive_dir)
 
     def count_run_artifacts(self, campaign_id: str) -> int | None:
         """Completed per-run artifacts published so far (controller progress poll).

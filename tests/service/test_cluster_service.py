@@ -150,6 +150,41 @@ def test_run_options_carry_postprocess_out_of_band(cs):
     assert off.postprocess is False
 
 
+def test_run_options_carry_upload_to_share(cs):
+    """The launch toggle flows into RunOptions (default off)."""
+    on = cs._run_options(
+        CreateCampaignRequest(workspace_id="ws-x", upload_to_share=True))
+    assert on.upload_to_share is True
+    default = cs._run_options(CreateCampaignRequest(workspace_id="ws-x"))
+    assert default.upload_to_share is False
+
+
+def test_campaign_tar_stream_streams_object_store_excluding_postproc(cs, monkeypatch):
+    """The download stream tars objects from the config's add_campaign_members,
+    passing the _postproc exclusion — no scratch on the service."""
+    import types
+
+    seen = {}
+
+    def _add_members(tar, campaign_id, exclude_prefixes=()):
+        seen["campaign_id"] = campaign_id
+        seen["exclude"] = set(exclude_prefixes)
+        import io
+        import tarfile
+        info = tarfile.TarInfo(name=f"{campaign_id}/campaign.db")
+        info.size = 2
+        tar.addfile(info, io.BytesIO(b"db"))
+
+    monkeypatch.setattr(
+        cs, "_cluster_config",
+        lambda: types.SimpleNamespace(add_campaign_members=_add_members))
+
+    data = b"".join(cs.campaign_tar_stream("camp-2026-01-01-000000"))
+    assert data  # a real gzip stream
+    assert seen["campaign_id"] == "camp-2026-01-01-000000"
+    assert seen["exclude"] == {"_postproc"}
+
+
 def test_postprocessing_is_chained_by_the_builder_not_the_worker(cs):
     """So data.db rides the campaign's existing upload rather than a second one."""
     assert cs._postprocess_in_process() is False

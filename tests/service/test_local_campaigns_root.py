@@ -97,6 +97,25 @@ def test_started_at_none_without_store(transport):
     assert summary.started_at is None
 
 
+def test_stopped_outcome_persists_across_restart(transport):
+    """A stopped campaign records outcome.json, so its phase survives a restart.
+
+    Without it, an untracked stopped campaign reconstructs from disk as "finished".
+    """
+    from robovast.execution.control_server import ControllerState
+
+    cid = "campaign-2026-07-18-101010"
+    (transport._campaigns_root() / cid).mkdir(parents=True)
+    state = ControllerState()
+    state.update(campaign_id=cid)
+    state.set_phase("stopped")
+
+    transport._record_campaign_stopped(cid, str(transport._campaigns_root()), state, None)
+
+    # A fresh transport (no in-memory entry) resolves the phase from disk.
+    assert transport._status_from_disk(cid).phase == "stopped"
+
+
 def test_deleting_workspace_keeps_campaigns(transport):
     """Campaigns survive deletion of the workspace that authored them."""
     wid = _make_workspace(transport)

@@ -534,8 +534,29 @@ def _finish_campaign(backend: ExecutionBackend, campaign_root: str, campaign_id:
         logger.info("Campaign %s stopped — skipping postprocessing and finalize upload.",
                     campaign_id)
         return
+    if options is not None and options.upload_to_share:
+        _share_campaign(backend, campaign_root, options, state)
     _chain_postprocessing(backend, campaign_root, campaign_id, state, options)
     _finalize(backend, campaign_root)
+
+
+def _share_campaign(backend: ExecutionBackend, campaign_root: str,
+                    options: "RunOptions", state) -> None:
+    """Produce the raw upload-to-share artifact, **before** postprocessing.
+
+    Runs the backend's ``share_campaign`` hook (local: tar.gz on disk; cluster:
+    streamed to the share provider) so the shared archive is the minimal, untouched
+    campaign — postprocessing only *adds* derived data, which stays out of the share.
+    Best-effort: a share failure is logged but never loses the campaign nor blocks
+    postprocessing/finalize.
+    """
+    try:
+        if state is not None:
+            state.set_phase("sharing")
+        backend.share_campaign(campaign_root, options)
+    except Exception:  # pylint: disable=broad-except
+        logger.warning("Upload-to-share failed; continuing with the campaign.",
+                       exc_info=True)
 
 def _make_upload_progress_cb(state):
     """Return a ``(bytes_sent, total_bytes)`` callback that publishes throttled
@@ -614,7 +635,6 @@ def _record_controller_failure(campaign_root, campaign_id, state, exc, backend):
     early config-expansion crash). Best-effort: recording a failure must never mask
     the original one.
     """
-    from robovast.common import campaign_data
     from robovast.execution.control_server import ControllerState, failure_detail
 
     detail = failure_detail(exc)
@@ -623,6 +643,19 @@ def _record_controller_failure(campaign_root, campaign_id, state, exc, backend):
         state.update(campaign_id=campaign_id)
     state.update(error=detail)
     state.set_phase("failed")
+    _record_controller_outcome(campaign_root, campaign_id, state, backend)
+
+
+def _record_controller_outcome(campaign_root, campaign_id, state, backend):
+    """Durably record the campaign's current terminal ``Status`` (outcome + upload).
+
+    Writes ``_execution/outcome.json`` from the live ``state`` — whatever phase it
+    holds (``failed`` for a crash, ``stopped`` for a cooperative stop) — and uploads
+    the control-plane artifacts to the object store, so a **stateless service resolves
+    the terminal state after the pod is gone** (a plain ``_finalize`` upload is skipped
+    for both failures and stops). Best-effort: never masks the caller's flow.
+    """
+    from robovast.common import campaign_data
 
     try:
         campaign_data.write_execution_outcome(campaign_root, state.snapshot())
@@ -646,8 +679,10 @@ def _record_controller_failure(campaign_root, campaign_id, state, exc, backend):
             path = os.path.join(exec_dir, name)
             if os.path.isfile(path):
                 storage.upload_file(path, bucket, f"{prefix}_execution/{name}")
-    except Exception:  # pylint: disable=broad-except
-        logger.warning("Could not upload failure record for %s", campaign_id, exc_info=True)
+    except Exception as e:  # pylint: disable=broad-except
+        # Concise (no traceback): on Ctrl+C the storage tunnel is already gone, so a
+        # connection error here is expected and must not re-clutter the shutdown.
+        logger.warning("Could not upload outcome record for %s: %s", campaign_id, e)
 
 
 def filter_configs_by_name(configs, config_filter):

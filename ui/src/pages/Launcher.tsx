@@ -28,6 +28,7 @@ export function Launcher() {
   const [configFilter, setConfigFilter] = useState('')
   const [runs, setRuns] = useState(1)
   const [postprocess, setPostprocess] = useState(true)
+  const [uploadToShare, setUploadToShare] = useState(false)
   const [campaignId, setCampaignId] = useState<string | null>(null)
   const [configPath, setConfigPath] = useState('')
 
@@ -54,6 +55,7 @@ export function Launcher() {
         config_filter: configFilter,
         runs,
         postprocess,
+        upload_to_share: uploadToShare,
       }),
     onSuccess: (ref) => {
       setCampaignId(ref.campaign_id)
@@ -158,6 +160,15 @@ export function Launcher() {
                 <Checkbox checked={postprocess} onChange={(e) => setPostprocess(e.target.checked)} />
               }
               label="Postprocess when done"
+            />
+            <FormControlLabel
+              control={
+                <Checkbox
+                  checked={uploadToShare}
+                  onChange={(e) => setUploadToShare(e.target.checked)}
+                />
+              }
+              label="Upload to share when done"
             />
           </Stack>
 

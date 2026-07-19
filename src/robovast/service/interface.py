@@ -68,6 +68,7 @@ class CreateCampaignRequest(BaseModel):
     config_filter: str = ""          # optional glob to run only matching configs
     runs: int = 1                    # runs per configuration
     postprocess: bool = True         # trigger analysis postprocessing once when done
+    upload_to_share: bool = False    # stream a raw (pre-postprocess) archive to the share
 
 
 class CampaignRef(BaseModel):
@@ -167,22 +168,6 @@ class RunPostprocessingRequest(BaseModel):
     campaign_id: str
     force: bool = False
     skip: list[str] = Field(default_factory=list)
-
-
-class UploadToShareRequest(BaseModel):
-    """Optional credential overrides for an upload-to-share attempt.
-
-    Upload-to-share is a **stateless, repeatable** operation: the finished campaign
-    lives in the object store, so a failed upload is retried by simply calling this
-    again — optionally with corrected credentials — rather than by keeping a
-    controller process parked and waiting for a retrigger (which is how it used to
-    work, back when the campaign only existed inside that live pod).
-
-    *overrides* are ``{ENV_VAR: value}`` share settings applied to the attempt
-    (e.g. a fixed password, or a different ``ROBOVAST_SHARE_TYPE`` entirely). Empty
-    means "use the service's configured share environment".
-    """
-    overrides: dict = Field(default_factory=dict)
 
 
 class CleanupDataRequest(BaseModel):
@@ -482,10 +467,6 @@ class Routes:
         # "<config>/<run>" id), so it never has to be path-encoded.
         return f"/campaigns/{campaign_id}/job-log"
 
-    @staticmethod
-    def campaign_upload_to_share(campaign_id: str) -> str:
-        return f"/campaigns/{campaign_id}/upload-to-share"
-
     #: Object-store bucket cleanup (server-side; not campaign-scoped in the path
     #: because it also serves the "all campaigns" case).
     CLEANUP_DATA = "/campaigns/cleanup-data"
@@ -622,16 +603,6 @@ class RobovastInterface(ABC):
         self, request: Optional[ListCampaignsRequest] = None
     ) -> ListCampaignsResponse:
         """List campaigns known to this service (global, newest first)."""
-
-    @abstractmethod
-    def upload_to_share(self, campaign_id: str,
-                        overrides: Optional[dict] = None) -> ActionResult:
-        """Upload the finished campaign's ``tar.gz`` to the external share.
-
-        Stateless and repeatable: it reads the campaign from its durable home (the
-        object store), so a failed upload is retried by calling this again — pass
-        *overrides* (``{ENV_VAR: value}``) to correct or switch the share settings.
-        """
 
     @abstractmethod
     def cleanup_campaign_data(self, request: CleanupDataRequest) -> ActionResult:

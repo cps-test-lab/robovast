@@ -46,7 +46,6 @@ from robovast.service.interface import (ActionResult, CampaignRef,
                                         RobovastInterface, Routes,
                                         RunPostprocessingRequest, Status,
                                         UpdatePostprocessingRequest, UploadGrant,
-                                        UploadToShareRequest,
                                         ValidationReport, VariationTypesResponse,
                                         VersionInfo, WorkspaceInfo, WriteFileRequest,
                                         DataDescribe, DataQueryResult,
@@ -233,13 +232,6 @@ def build_app(impl: RobovastInterface):
     def stop(campaign_id: str) -> ActionResult:
         return _guard(lambda: impl.stop(campaign_id))
 
-    @app.post("/campaigns/{campaign_id}/upload-to-share", response_model=ActionResult)
-    def upload_to_share(campaign_id: str,
-                        request: "UploadToShareRequest | None" = None) -> ActionResult:
-        # Body is optional: no-arg retries reuse the service's share environment.
-        overrides = request.overrides if request else None
-        return _guard(lambda: impl.upload_to_share(campaign_id, overrides))
-
     @app.post(Routes.CLEANUP_DATA, response_model=ActionResult)
     def cleanup_campaign_data(request: "CleanupDataRequest | None" = None) -> ActionResult:
         # Body optional: no body means "all finished campaigns" (live ones skipped).
@@ -247,30 +239,32 @@ def build_app(impl: RobovastInterface):
 
     @app.get("/campaigns/{campaign_id}/archive")
     def download_campaign_archive(campaign_id: str):
-        """Stream a ``tar.gz`` of the campaign — the object store is the source.
+        """Stream a ``tar.gz`` of the **postprocessed** campaign from the object store.
 
-        Backs ``vast results download`` when a service is configured: for a
-        cluster service the campaign is pulled from the object store into scratch;
-        for a local service it is already on disk. Delivered without an external
-        share (plan 0.8).
+        Backs the ``postprocessed`` variant of ``vast results download`` for a
+        **cluster** service: objects are fetched from the object store and tarred on
+        the fly (``impl.campaign_tar_stream``) straight into the response — **no
+        scratch is used on the service and nothing is buffered in memory**, decisive
+        for ~1TB campaigns. Internal ``_postproc/`` staging is excluded so the download
+        is the clean campaign layout.
+
+        A **local** service refuses: its results already live on the same filesystem,
+        so there is nothing to download.
         """
-        import io
-        import tarfile
         from fastapi.responses import \
             StreamingResponse  # pylint: disable=import-outside-toplevel
 
-        def _campaign_dir():
-            if hasattr(impl, "fetch_campaign"):          # cluster: pull from object store
-                return impl.fetch_campaign(campaign_id)
-            return impl._campaign_dir(campaign_id)       # local: already on disk
+        if not hasattr(impl, "campaign_tar_stream"):  # local service
+            results_dir = getattr(getattr(impl, "store", None), "root", None)
+            hint = f" under {results_dir}" if results_dir else ""
+            raise HTTPException(
+                status_code=409,
+                detail=(f"this service runs locally; campaign '{campaign_id}' results "
+                        f"are already on this host's filesystem{hint} — no download needed"))
 
-        campaign_dir = _guard(_campaign_dir)
-        buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-            tar.add(str(campaign_dir), arcname=campaign_id)
-        buf.seek(0)
         return StreamingResponse(
-            buf, media_type="application/gzip",
+            _guard(lambda: impl.campaign_tar_stream(campaign_id)),
+            media_type="application/gzip",
             headers={"Content-Disposition": f'attachment; filename="{campaign_id}.tar.gz"'})
 
     @app.get("/campaigns/{campaign_id}/postprocessing")

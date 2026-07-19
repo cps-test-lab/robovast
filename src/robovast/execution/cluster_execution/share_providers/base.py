@@ -25,7 +25,7 @@ import click
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["BaseShareProvider", "UploadProgressReader"]
+__all__ = ["BaseShareProvider", "UploadProgressReader", "StreamProgressReader"]
 
 
 class UploadProgressReader:
@@ -63,6 +63,34 @@ class UploadProgressReader:
         # urllib/requests use this to set Content-Length; only the bytes that
         # will actually be streamed in this session (excludes a resume offset).
         return self._to_send
+
+
+class StreamProgressReader:
+    """Wrap a readable stream of **unknown** length, reporting bytes-sent progress.
+
+    The streaming (on-the-fly) counterpart of :class:`UploadProgressReader`: the
+    campaign is tarred straight to the request body, so there is no total size and
+    no ``__len__`` (deliberately — its absence makes ``urllib``/``http.client`` fall
+    back to ``Transfer-Encoding: chunked`` instead of a bogus ``Content-Length``).
+    ``progress_callback(sent, 0)`` reports cumulative bytes with total ``0`` (the
+    "unknown total" convention the controller's progress publisher already handles).
+    It intentionally exposes **only** ``read`` — no ``fileno``/``tell`` — so the HTTP
+    client cannot infer a length.
+    """
+
+    CHUNK = 256 * 1024  # 256 KiB
+
+    def __init__(self, fileobj, progress_callback=None):
+        self._fh = fileobj
+        self._sent = 0
+        self._cb = progress_callback
+
+    def read(self, n=-1):
+        data = self._fh.read(self.CHUNK if n == -1 else n)
+        self._sent += len(data)
+        if self._cb is not None:
+            self._cb(self._sent, 0)
+        return data
 
 
 class BaseShareProvider(ABC):
@@ -161,6 +189,27 @@ class BaseShareProvider(ABC):
         Raise on failure (the caller treats any exception as a failed upload and
         keeps the controller alive for a retrigger).
         """
+
+    def upload_archive_stream(
+        self,
+        fileobj,
+        object_name: str,
+        progress_callback=None,
+    ) -> None:
+        """Upload a **streamed** archive (unknown length) to the share as *object_name*.
+
+        The on-the-fly counterpart of :meth:`upload_archive`: *fileobj* is a readable
+        binary stream of the ``tar.gz`` (produced by ``campaign_archive``) that must
+        never be materialised to disk — decisive for the ~1TB campaigns this project
+        runs. Because the length is unknown, this path uses chunked transfer and does
+        **not** support resume; ``progress_callback(sent, 0)`` reports bytes sent.
+
+        Default raises :class:`NotImplementedError`; every built-in provider overrides
+        it. Wrap *fileobj* in :class:`StreamProgressReader` (for a file-like body) to
+        drive the callback.
+        """
+        raise NotImplementedError(
+            f"share provider '{self.SHARE_TYPE}' does not support streamed upload")
 
     @abstractmethod
     def build_pod_env(self) -> dict[str, str]:
