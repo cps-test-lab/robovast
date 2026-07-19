@@ -173,6 +173,20 @@ once results land, and the live controller phase is visible in the status
 
 .. note::
 
+   ``resource_usage`` reports the execution backend's CPU/memory capacity and
+   current usage, plus a ``parallel_runs`` flag. It is **backend-agnostic** — the
+   service resolves local (host, via ``psutil``) versus cluster (Kubernetes nodes)
+   itself, so an assistant reads the same fields either way and never branches on
+   the backend. Use it to size a ``.vast`` run against free capacity: with
+   ``free_cpu = cpu_capacity - cpu_used`` (and the same for memory), a run's
+   concurrency is ``1`` when ``parallel_runs`` is false, otherwise
+   ``min(⌊free_cpu / run_cpu⌋, ⌊free_mem / run_mem⌋)`` from the per-run reservations
+   in the ``.vast`` — and the wall time is roughly
+   ``⌈num_runs / concurrency⌉ × per_run_time``. Served by the ``robovast-service``,
+   so it needs a reachable service (a ``vast serve`` or a tunnel).
+
+.. note::
+
    The registry uses file locking (``flock``) and atomic renames, which require
    ``<results_dir>`` to be on a local filesystem. On an NFS share, locking may
    be unreliable.

@@ -29,6 +29,9 @@ def test_manifests_have_expected_kinds_and_names():
         ("ServiceAccount", sd.SERVICE_ACCOUNT),
         ("Role", sd.SERVICE_ACCOUNT),
         ("RoleBinding", sd.SERVICE_ACCOUNT),
+        # Cluster-scoped read for the /usage endpoint (nodes are not namespaced).
+        ("ClusterRole", f"{sd.SERVICE_ACCOUNT}-usage-default"),
+        ("ClusterRoleBinding", f"{sd.SERVICE_ACCOUNT}-usage-default"),
         ("Deployment", sd.SERVICE_NAME),
         ("Service", sd.SERVICE_NAME),
     ]

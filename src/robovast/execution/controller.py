@@ -500,6 +500,10 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
                 # "finished" before this finally-block chained postprocessing,
                 # and only the failure branch below moved it since. Mirrors the
                 # local path in ClusterService._postprocess.
+                from robovast.results_processing.postprocessing import \
+                    campaign_defines_postprocessing
+                if campaign_defines_postprocessing(campaign_root):
+                    state.update(postprocessed=True)
                 state.set_phase("finished")
             else:
                 state.set_phase("failed", stage=f"postprocessing: {message}")

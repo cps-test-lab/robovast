@@ -1163,6 +1163,20 @@ browser same-origin for hot-reload development.
 **Extending.** Add an operation by giving ``robovastClient.ts`` a method mirroring the
 new interface op, then a page/tab that queries it.
 
+**Resource usage (``/usage``).** ``resource_usage`` is a backend-agnostic interface op
+returning :class:`~robovast.service.interface.ResourceUsage` (CPU cores + memory bytes,
+capacity vs. used, and a ``parallel_runs`` flag). The local↔cluster split lives entirely
+in the implementations: ``LocalTransport._compute_resource_usage`` reads the host via
+``psutil``; ``ClusterService`` overrides it to sum node ``allocatable`` (capacity, reusing
+``kubernetes_kueue._parse_resource``) and non-terminal pod requests (used) — so callers (the
+top-bar chip, the ``resource_usage`` MCP tool) never branch on backend. Both share one
+TTL-cached path on the base class (``LocalTransport.resource_usage`` memoises for
+``_USAGE_CACHE_TTL`` under a lock), so many polling clients cost one sampling per window.
+The cluster read needs cluster-scoped RBAC (nodes are not namespaced): setup grants the
+service ServiceAccount a read-only ``ClusterRole`` over ``nodes``/``pods``
+(``service_deploy._service_rbac_manifests``), so **upgrading an already-deployed service to
+this version requires re-running** ``vast exec cluster setup`` to add the grant.
+
 **Config editor** (``ui/src/pages/ConfigEditor.tsx``) is the browser ``vast config gui``:
 a **Monaco** editor (``ui/src/lib/monaco.ts`` bundles the editor + YAML workers and, via
 ``monaco-yaml``, drives completion/inline-validation from ``get_config_schema()``). It edits a

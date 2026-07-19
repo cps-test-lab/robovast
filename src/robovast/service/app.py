@@ -43,6 +43,7 @@ from robovast.service.interface import (ActionResult, CampaignRef,
                                         ListJobsResponse,
                                         ListWorkspacesResponse, LogChunk,
                                         PreviewResponse,
+                                        ResourceUsage,
                                         RobovastInterface, Routes,
                                         RunPostprocessingRequest, Status,
                                         UpdatePostprocessingRequest, UploadGrant,
@@ -100,6 +101,10 @@ def build_app(impl: RobovastInterface):
     @app.get(Routes.VERSION, response_model=VersionInfo)
     def version() -> VersionInfo:
         return _guard(impl.version)
+
+    @app.get(Routes.USAGE, response_model=ResourceUsage)
+    def resource_usage() -> ResourceUsage:
+        return _guard(impl.resource_usage)
 
     # -- authoring help (static; config editor) -----------------------------
 

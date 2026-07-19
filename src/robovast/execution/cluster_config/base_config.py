@@ -77,8 +77,10 @@ class BaseConfig(object):
         object is fetched from storage and added to the streaming tar on the fly, so
         **no scratch is used on the service during or after the download**.
         *exclude_prefixes* drops internal staging (e.g. ``_postproc/``) so the archive
-        is the clean campaign layout. The default reads the S3/MinIO backend; configs
-        backed by a different store (e.g. GCS) override this.
+        is the clean campaign layout. The default reads the S3/MinIO backend via the
+        driver endpoint, so an off-cluster service reaches MinIO through the same
+        host-reachable resolver (port-forward) as every other driver storage client;
+        configs backed by a different store (e.g. GCS) override this.
         """
         from robovast.execution.cluster_execution import \
             in_pod_storage  # pylint: disable=import-outside-toplevel
@@ -86,7 +88,7 @@ class BaseConfig(object):
         access_key, secret_key = self.get_s3_credentials()
         _s3_add_members(
             tar, bucket, campaign_id,
-            endpoint=self.get_s3_endpoint(),
+            endpoint=self.get_driver_s3_endpoint(),
             access_key=access_key, secret_key=secret_key,
             prefix=prefix or None, region=self.get_s3_region(),
             exclude_prefixes=exclude_prefixes)

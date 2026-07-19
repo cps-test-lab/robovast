@@ -862,7 +862,14 @@ def list_downloads_cmd(campaigns):
             resp = RobovastClient(service_url).list_campaigns(
                 ListCampaignsRequest(limit=1000))
             for summary in resp.campaigns:
-                variants.setdefault(summary.campaign_id, set()).add("postprocessed")
+                # A still-running campaign has not been published to the store, so it
+                # has no downloadable archive yet — skip it (same terminal-phase test
+                # the service uses to tell a running campaign apart). The stored data
+                # is the postprocessed archive only once the configured pipelines ran;
+                # otherwise it is the minimal (pre-postprocess) campaign data.
+                if summary.phase in ("finished", "failed", "stopped", "unknown"):
+                    label = "postprocessed" if summary.postprocessed else ""
+                    variants.setdefault(summary.campaign_id, set()).add(label)
         except Exception as exc:  # noqa: BLE001
             click.echo(f"  (service listing failed: {exc})", err=True)
 
@@ -880,10 +887,18 @@ def list_downloads_cmd(campaigns):
             except Exception as exc:  # noqa: BLE001
                 click.echo(f"  (share listing failed: {exc})", err=True)
 
-    if not variants:
+    if not service_url and not _share_configured():
         raise click.UsageError(
             "No sources reachable: start/tunnel a robovast-service (for postprocessed "
             "archives) or configure a share in .env (for raw archives).")
+
+    if not variants:
+        # A source *was* reachable — it just has nothing to download yet (e.g. every
+        # campaign is still running). Say so, rather than the misleading "no sources".
+        click.echo("  No downloadable campaigns yet.")
+        click.echo()
+        click.echo("  0 campaign(s)")
+        return
 
     if requested:
         variants = {cid: v for cid, v in variants.items() if cid in requested}
@@ -891,7 +906,9 @@ def list_downloads_cmd(campaigns):
             raise click.UsageError("None of the requested campaigns are downloadable.")
 
     for cid in sorted(variants):
-        labels = ", ".join(sorted(variants[cid]))
+        # The service's minimal (not-postprocessed) archive carries an empty label;
+        # drop it from the joined list so a minimal-only campaign reads "[]".
+        labels = ", ".join(sorted(lbl for lbl in variants[cid] if lbl))
         size = raw_sizes.get(cid)
         extra = f"  (raw {_fmt_size(size)})" if size is not None and size >= 0 else ""
         click.echo(f"  {cid}  [{labels}]{extra}")

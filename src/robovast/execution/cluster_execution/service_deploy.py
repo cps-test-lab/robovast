@@ -52,8 +52,12 @@ def _service_rbac_manifests(namespace):
     namespace — the host's role today — so it needs pod create/read/delete plus
     the ``pods/log`` subresource. It does not itself create scenario Jobs (the
     controllers do), so no ``batch`` verbs here.
+
+    Plus a cluster-scoped read-only ClusterRole (nodes + pods) backing the
+    ``/usage`` endpoint — see the ClusterRole manifest below.
     """
     role_name = SERVICE_ACCOUNT
+    cluster_role_name = f"{SERVICE_ACCOUNT}-usage-{namespace}"
     return [
         {
             "apiVersion": "v1",
@@ -94,6 +98,28 @@ def _service_rbac_manifests(namespace):
                           "namespace": namespace}],
             "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role",
                         "name": role_name},
+        },
+        # Cluster-scoped read for the /usage endpoint: nodes are cluster resources
+        # (not grantable via a namespaced Role), and cluster-wide pod requests give
+        # the true "used" figure across tenants. Read-only (get/list). The ClusterRole
+        # name is namespaced so parallel robovast deployments don't collide.
+        {
+            "apiVersion": "rbac.authorization.k8s.io/v1",
+            "kind": "ClusterRole",
+            "metadata": {"name": cluster_role_name},
+            "rules": [
+                {"apiGroups": [""], "resources": ["nodes", "pods"],
+                 "verbs": ["get", "list"]},
+            ],
+        },
+        {
+            "apiVersion": "rbac.authorization.k8s.io/v1",
+            "kind": "ClusterRoleBinding",
+            "metadata": {"name": cluster_role_name},
+            "subjects": [{"kind": "ServiceAccount", "name": SERVICE_ACCOUNT,
+                          "namespace": namespace}],
+            "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole",
+                        "name": cluster_role_name},
         },
     ]
 
@@ -298,6 +324,8 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
     sa = by_kind["ServiceAccount"]
     role = by_kind["Role"]
     binding = by_kind["RoleBinding"]
+    cluster_role = by_kind["ClusterRole"]
+    cluster_binding = by_kind["ClusterRoleBinding"]
     deployment = by_kind["Deployment"]
     service = by_kind["Service"]
     secret = by_kind.get("Secret")
@@ -311,6 +339,12 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
                                            {"rules": role["rules"]}, dry_run=dr))
     # RoleBinding
     _create_or_ok(lambda: rbac.create_namespaced_role_binding(namespace, binding, dry_run=dr))
+    # Cluster-scoped read for /usage (replace rules on conflict so grants stay in step)
+    _create_or_replace(
+        lambda: rbac.create_cluster_role(cluster_role, dry_run=dr),
+        lambda: rbac.patch_cluster_role(cluster_role["metadata"]["name"],
+                                        {"rules": cluster_role["rules"]}, dry_run=dr))
+    _create_or_ok(lambda: rbac.create_cluster_role_binding(cluster_binding, dry_run=dr))
     # Git-credentials Secret (present only when a token was provided at setup).
     if secret is not None:
         _create_or_replace(
@@ -328,6 +362,29 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
     return manifests
 
 
+def _load_kube_config(kube_context=None):
+    """Load the local kubeconfig, turning setup problems into a clean error.
+
+    ``kubernetes.config.load_kube_config`` raises noisy, low-level exceptions
+    (``ConfigException``/``FileNotFoundError``) when ``KUBECONFIG`` is unset,
+    points at a missing/invalid file, or names a context that isn't present.
+    Wrap them in a ``click.ClickException`` so the CLI prints a short, actionable
+    message instead of a traceback.
+    """
+    import click  # pylint: disable=import-outside-toplevel
+    from kubernetes import config  # pylint: disable=import-outside-toplevel
+    from kubernetes.config.config_exception import \
+        ConfigException  # pylint: disable=import-outside-toplevel
+
+    try:
+        config.load_kube_config(context=kube_context)
+    except (ConfigException, FileNotFoundError) as exc:
+        hint = (f" (does context {kube_context!r} exist?)"
+                if kube_context else " (is KUBECONFIG set?)")
+        raise click.ClickException(
+            f"could not load Kubernetes config{hint}: {exc}") from exc
+
+
 def read_service_config_from_cluster(namespace="default", kube_context=None):
     """Read ``(config_name, config_kwargs)`` from the deployed service's env.
 
@@ -340,11 +397,11 @@ def read_service_config_from_cluster(namespace="default", kube_context=None):
     """
     import json  # pylint: disable=import-outside-toplevel
 
-    from kubernetes import client, config  # pylint: disable=import-outside-toplevel
+    from kubernetes import client  # pylint: disable=import-outside-toplevel
     from kubernetes.client.rest import \
         ApiException  # pylint: disable=import-outside-toplevel
 
-    config.load_kube_config(context=kube_context)
+    _load_kube_config(kube_context)
     apps = client.AppsV1Api()
     try:
         dep = apps.read_namespaced_deployment(SERVICE_NAME, namespace)
@@ -377,9 +434,12 @@ def delete_service(namespace="default", kube_context=None):
     core = client.CoreV1Api()
     rbac = client.RbacAuthorizationV1Api()
     apps = client.AppsV1Api()
+    cluster_role_name = f"{SERVICE_ACCOUNT}-usage-{namespace}"
     deletions = [
         ("Service", lambda: core.delete_namespaced_service(SERVICE_NAME, namespace)),
         ("Deployment", lambda: apps.delete_namespaced_deployment(SERVICE_NAME, namespace)),
+        ("ClusterRoleBinding", lambda: rbac.delete_cluster_role_binding(cluster_role_name)),
+        ("ClusterRole", lambda: rbac.delete_cluster_role(cluster_role_name)),
         ("RoleBinding", lambda: rbac.delete_namespaced_role_binding(SERVICE_ACCOUNT, namespace)),
         ("Role", lambda: rbac.delete_namespaced_role(SERVICE_ACCOUNT, namespace)),
         ("ServiceAccount", lambda: core.delete_namespaced_service_account(SERVICE_ACCOUNT, namespace)),

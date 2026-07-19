@@ -16,7 +16,9 @@ It provides four views, one per desktop GUI:
   run progress, budget/stopping criteria), with a **Stop** action and a collapsible
   **live log** panel. The per-batch run bar also distinguishes **finished** runs (the
   solid fill) from those **currently running** (a lighter segment on top), with the
-  exact ``running N · pending M`` counts beside it. A collapsible **Jobs** list shows
+  exact ``running N · pending M`` counts beside it. While a fixed-size campaign runs,
+  an **ETA** (``~12m left``) appears next to that count once at least one run has
+  finished, extrapolating from the average time per completed run. A collapsible **Jobs** list shows
   each execution unit of the current batch — a *run* locally, a Kubernetes *Job* on the
   cluster — with its status; expanding a running one streams that **job's own live log**
   (its scenario container's output). The campaign **live log** panel below is the
@@ -169,8 +171,14 @@ whatever ``vast ui`` opens is all a browser, the ``vast`` CLI, and the MCP serve
 need. Other service-touching commands (``vast workspace …``) reach the same place
 with the same ``--cluster`` switch, so nothing needs to be exported.
 
-A connection indicator in the top bar turns green and shows the service version
-once the handshake succeeds.
+A connection indicator in the top bar turns green once the service answers, and
+shows the backend's live **resource usage** — used vs. total CPU cores and memory
+(``cpu 6/16 · mem 22/62 GiB``). The numbers are backend-appropriate: the host
+machine's utilisation for a local ``vast serve``, and the cluster's node
+capacity vs. summed pod requests for an in-cluster service. Hovering the chip
+reveals the RoboVAST version, the backend, and whether runs execute in parallel
+(cluster) or one at a time (local). The reading is sampled at most once every few
+seconds and shared across browser tabs, so it never loads the backend.
 
 .. note::
 

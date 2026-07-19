@@ -17,9 +17,23 @@ export interface VersionInfo {
   backend?: string | null
 }
 
+// Live capacity/usage of the service's execution backend (mirrors
+// interface.py:ResourceUsage). Backend-neutral: `parallel_runs` says whether runs
+// go one-at-a-time (local Docker) or in parallel (cluster); CPU in cores, memory
+// in bytes. `used` is host utilization locally / summed pod requests on the cluster.
+export interface ResourceUsage {
+  backend: string
+  cpu_capacity: number
+  cpu_used: number
+  memory_capacity_bytes: number
+  memory_used_bytes: number
+  parallel_runs: boolean
+}
+
 export interface CampaignSummary {
   campaign_id: string
   phase: string
+  postprocessed: boolean
   num_runs: number
   num_passed: number
   num_failed: number
@@ -286,6 +300,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
 export const robovast = {
   version: () => request<VersionInfo>('GET', '/version'),
+
+  resourceUsage: () => request<ResourceUsage>('GET', '/usage'),
 
   // Direct URL of a campaign's postprocessed tar.gz (a GET the browser downloads).
   // Cluster services stream it from the object store; a local service returns 409.

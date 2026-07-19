@@ -56,7 +56,7 @@ from robovast.service.interface import (ActionResult, CampaignSummary,
                                         JobCounts, JobSummary,
                                         ListCampaignsRequest,
                                         ListCampaignsResponse, ListJobsResponse,
-                                        LogChunk, VersionInfo)
+                                        LogChunk, ResourceUsage, VersionInfo)
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +98,50 @@ class ClusterService(LocalTransport):
         v = super().version()
         v.backend = "kubernetes"
         return v
+
+    def _compute_resource_usage(self) -> ResourceUsage:
+        """Cluster CPU/memory capacity + current usage from the Kubernetes API.
+
+        Capacity is the sum of every node's ``allocatable`` (the same measure Kueue
+        quota is derived from); usage is the sum of resource *requests* of all
+        non-terminal pods cluster-wide (what the scheduler has committed). Both are
+        read behind :meth:`LocalTransport.resource_usage`'s TTL cache, and the pod
+        list is filtered server-side to skip finished pods — so a poll costs at most
+        one ``list_node`` + one filtered ``list_pod`` per cache window.
+
+        Requires the service's ClusterRole (nodes/pods get,list — see
+        ``service_deploy._service_rbac_manifests``).
+        """
+        from robovast.execution.cluster_execution.kubernetes_kueue import \
+            _parse_resource  # pylint: disable=import-outside-toplevel
+        v1 = self._k8s()
+
+        cpu_capacity = 0.0
+        mem_capacity = 0
+        for node in v1.list_node().items:
+            alloc = node.status.allocatable or {}
+            cpu_capacity += _parse_resource(alloc.get("cpu"))
+            mem_capacity += int(_parse_resource(alloc.get("memory")))
+
+        cpu_used = 0.0
+        mem_used = 0
+        pods = v1.list_pod_for_all_namespaces(
+            field_selector="status.phase!=Succeeded,status.phase!=Failed")
+        for pod in pods.items:
+            for container in (pod.spec.containers or []):
+                requests = (container.resources.requests
+                            if container.resources else None) or {}
+                cpu_used += _parse_resource(requests.get("cpu"))
+                mem_used += int(_parse_resource(requests.get("memory")))
+
+        return ResourceUsage(
+            backend="kubernetes",
+            cpu_capacity=cpu_capacity,
+            cpu_used=cpu_used,
+            memory_capacity_bytes=mem_capacity,
+            memory_used_bytes=mem_used,
+            parallel_runs=True,   # runs execute in parallel, bounded only by capacity
+        )
 
     # -- helpers ------------------------------------------------------------
 
@@ -412,11 +456,12 @@ class ClusterService(LocalTransport):
         request = request or ListCampaignsRequest()
         with self._lock:
             entries = list(self._campaigns.values())
-        summaries = [
-            CampaignSummary(campaign_id=e.campaign_id,
-                            phase=e.state.snapshot().phase)
-            for e in entries
-        ]
+        summaries = []
+        for e in entries:
+            snap = e.state.snapshot()
+            summaries.append(CampaignSummary(
+                campaign_id=e.campaign_id, phase=snap.phase,
+                postprocessed=snap.postprocessed))
         summaries.sort(key=lambda s: s.campaign_id, reverse=True)
         total = len(summaries)
         window = summaries[request.offset:request.offset + request.limit]

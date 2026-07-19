@@ -86,6 +86,13 @@ class Status(BaseModel):
     # Share type of the current upload attempt; may change across retriggers
     # (the upload can be retried to a different provider).
     share_provider: Optional[str] = None
+    # True once the campaign's configured analysis-postprocessing pipelines have run
+    # to completion. A dedicated fact, not derivable from ``phase``: the run reaches
+    # "finished" *before* postprocessing is chained (see controller._chain_postprocessing),
+    # and a campaign whose ``.vast`` defines no postprocessing also ends "finished"
+    # with only the minimal (pre-postprocess) data. Drives whether a download is the
+    # postprocessed archive or the minimal campaign data.
+    postprocessed: bool = False
     extra: dict = Field(default_factory=dict)
     updated_at: float = Field(default_factory=time.time)
 

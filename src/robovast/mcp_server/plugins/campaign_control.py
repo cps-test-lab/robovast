@@ -819,6 +819,38 @@ def list_running_campaigns() -> dict:
         return {"error": str(e)}
 
 
+def resource_usage() -> dict:
+    """Report the execution backend's CPU/memory capacity, usage, and parallelism.
+
+    Backend-agnostic: the service resolves local (host, via psutil) vs. cluster
+    (Kubernetes nodes) itself, so the fields mean the same thing either way and you
+    never need to know which backend is running.
+
+    Use this to size a ``.vast`` run against free capacity and estimate its runtime:
+    ``free_cpu = cpu_capacity - cpu_used`` (same for memory). If ``parallel_runs`` is
+    False, runs execute one at a time (concurrency = 1); if True, they run in
+    parallel and ``concurrency = min(floor(free_cpu / run_cpu_request),
+    floor(free_mem / run_mem_request))`` using the per-run reservations declared in
+    the ``.vast``. Then ``wall_time ~= ceil(num_runs / concurrency) * per_run_time``.
+
+    Requires a reachable robovast-service (bring up a ``vast serve`` or a tunnel).
+
+    Returns:
+        ``{backend, cpu_capacity, cpu_used, memory_capacity_bytes, memory_used_bytes,
+        parallel_runs}`` — CPU in cores, memory in bytes; ``{error}`` if no service
+        is reachable.
+    """
+    client = _service_client()
+    if client is None:
+        return {"error": "no robovast-service reachable (bring up a 'vast serve' or "
+                         "a tunnel before starting MCP); resource usage is served by "
+                         "the service"}
+    try:
+        return client.resource_usage().model_dump()
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
+
+
 # -- Small utilities ---------------------------------------------------------
 
 
@@ -987,6 +1019,7 @@ _TOOLS = [
     get_job_log,
     stop_campaign,
     list_running_campaigns,
+    resource_usage,
     get_postprocessing,
     update_postprocessing,
     run_postprocessing,

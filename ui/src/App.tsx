@@ -8,7 +8,9 @@ import Tab from '@mui/material/Tab'
 import Tabs from '@mui/material/Tabs'
 import Toolbar from '@mui/material/Toolbar'
 import Typography from '@mui/material/Typography'
+import Tooltip from '@mui/material/Tooltip'
 import { robovast } from '@/lib/robovastClient'
+import { formatUsageLabel } from '@/lib/format'
 import { Monitor } from '@/pages/Monitor'
 import { Launcher } from '@/pages/Launcher'
 import { ConfigEditor } from '@/pages/ConfigEditor'
@@ -25,8 +27,9 @@ function tabFromHash(): number {
   return i >= 0 ? i : 0
 }
 
-// The whole app: a thin tabbed shell over the two M1 pages. The version chip doubles as the
-// service-connection indicator (green when the handshake succeeds).
+// The whole app: a thin tabbed shell over the two M1 pages. The usage chip doubles as the
+// service-connection indicator (green when the backend answers). Its tooltip keeps the
+// version/backend discoverable.
 export function App() {
   const [tab, setTab] = useState(tabFromHash)
 
@@ -41,10 +44,16 @@ export function App() {
     setTab(v)
     window.location.hash = `/${TABS[v]}`
   }
+  const usage = useQuery({
+    queryKey: ['usage'],
+    queryFn: () => robovast.resourceUsage(),
+    refetchInterval: 15000,
+    retry: false,
+  })
+  // Version is only used to fill the chip tooltip, so it need not poll often.
   const version = useQuery({
     queryKey: ['version'],
     queryFn: () => robovast.version(),
-    refetchInterval: 15000,
     retry: false,
   })
 
@@ -62,16 +71,24 @@ export function App() {
             <Tab label="Results" />
           </Tabs>
           <Box flexGrow={1} />
-          <Chip
-            size="small"
-            color={version.isSuccess ? 'success' : 'default'}
-            variant="outlined"
-            label={
+          <Tooltip
+            title={
               version.isSuccess
-                ? `service ${version.data.robovast_version}${version.data.backend ? ` · ${version.data.backend}` : ''}`
-                : 'disconnected'
+                ? `robovast ${version.data.robovast_version}${version.data.backend ? ` · ${version.data.backend}` : ''}${
+                    usage.isSuccess
+                      ? ` · runs ${usage.data.parallel_runs ? 'in parallel' : 'sequentially'}`
+                      : ''
+                  }`
+                : ''
             }
-          />
+          >
+            <Chip
+              size="small"
+              color={usage.isSuccess ? 'success' : 'default'}
+              variant="outlined"
+              label={usage.isSuccess ? formatUsageLabel(usage.data) : 'disconnected'}
+            />
+          </Tooltip>
         </Toolbar>
       </AppBar>
 

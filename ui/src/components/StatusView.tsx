@@ -13,6 +13,7 @@ import {
   type LogChunk,
   type Status,
 } from '@/lib/robovastClient'
+import { formatDuration } from '@/lib/format'
 import { PhaseChip } from './PhaseChip'
 
 // Renders one campaign's live Status — the browser analog of what `vast exec cluster monitor` prints:
@@ -24,11 +25,47 @@ function pct(done: number, total: number): number {
   return total > 0 ? Math.min(100, (100 * done) / total) : 0
 }
 
-export function StatusView({ status, jobs }: { status: Status; jobs?: ListJobsResponse }) {
+// Estimated seconds until the current batch completes, or null when it can't be
+// stated soundly. `runs` counts only the current batch and resets each batch, and
+// the campaign's `started_at` equals the batch start only for batch 0 — so we
+// estimate exactly when: not terminal, on the first batch, and ≥1 run has finished
+// (needed to have any per-run rate). No fabricated number otherwise.
+function estimateEtaSeconds(
+  status: Status,
+  startedAt: string | null | undefined,
+  terminal: boolean,
+): number | null {
+  const { runs } = status
+  if (terminal || !startedAt || status.batch !== 0) return null
+  if (runs.total <= 0 || runs.completed <= 0) return null
+  const start = Date.parse(startedAt)
+  if (Number.isNaN(start)) return null
+  const elapsed = (Date.now() - start) / 1000
+  if (!(elapsed > 0)) return null
+  const perRun = elapsed / runs.completed
+  return (runs.total - runs.completed) * perRun
+}
+
+export function StatusView({
+  status,
+  jobs,
+  startedAt,
+  hideLog = false,
+}: {
+  status: Status
+  jobs?: ListJobsResponse
+  // Campaign start time (CampaignSummary.started_at), used to estimate the ETA.
+  // Optional — the ETA simply isn't shown when it's absent.
+  startedAt?: string | null
+  // The Launcher hides the campaign log — it's a launch confirmation, not a viewer;
+  // the full log lives in Monitor.
+  hideLog?: boolean
+}) {
   const { runs, budget } = status
   const terminal = ['finished', 'failed', 'stopped', 'error'].includes(status.phase)
   const counts = jobs?.counts
   const running = counts?.running ?? 0
+  const etaSeconds = estimateEtaSeconds(status, startedAt, terminal)
   // Buffer variant: the solid bar is finished runs, the lighter segment on top is
   // what's currently running (with the usual animated dots for the rest).
   const showRunning = runs.total > 0 && running > 0
@@ -58,6 +95,7 @@ export function StatusView({ status, jobs }: { status: Status; jobs?: ListJobsRe
               ? `running ${counts.running} · pending ${counts.pending} · `
               : ''}
             {runs.completed}/{runs.total}
+            {etaSeconds != null ? ` · ~${formatDuration(etaSeconds)} left` : ''}
           </Typography>
         </Stack>
         <LinearProgress
@@ -104,7 +142,7 @@ export function StatusView({ status, jobs }: { status: Status; jobs?: ListJobsRe
       {status.campaign_id && jobs && jobs.jobs.length > 0 ? (
         <JobsSection campaignId={status.campaign_id} jobs={jobs.jobs} />
       ) : null}
-      {status.campaign_id ? (
+      {status.campaign_id && !hideLog ? (
         <CampaignLog campaignId={status.campaign_id} terminal={terminal} />
       ) : null}
     </Stack>

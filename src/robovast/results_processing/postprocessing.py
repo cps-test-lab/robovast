@@ -414,6 +414,23 @@ def _write_postprocessing_provenance_yaml(
 
 
 
+def campaign_defines_postprocessing(campaign_dir: str) -> bool:
+    """True if *campaign_dir*'s snapshotted config defines postprocessing commands.
+
+    Reads the campaign's own ``_config/*.vast`` — the authoritative config
+    ``run_postprocessing`` uses — so the answer is per-campaign, not "some campaign
+    under a results dir". Used to decide whether a finished campaign's stored data is
+    the *postprocessed* archive or the minimal pre-postprocess data: a ``.vast`` with
+    no ``results_processing.postprocessing`` entries yields the minimal data even
+    though the run still reaches ``finished`` (and still builds ``data.db``).
+    """
+    config_dir = os.path.join(campaign_dir, "_config")
+    if not os.path.isdir(config_dir):
+        return False
+    vasts = sorted(str(p) for p in Path(config_dir).glob("*.vast"))
+    return bool(vasts) and bool(get_postprocessing_commands(vasts[0]))
+
+
 def is_postprocessing_needed(
         results_dir: str,
         vast_file: Optional[str] = None,

@@ -210,7 +210,7 @@ export function Launcher() {
             ) : null}
           </Stack>
           {status.data ? (
-            <StatusView status={status.data} />
+            <StatusView status={status.data} hideLog />
           ) : status.isError ? (
             <Typography variant="caption" color="text.secondary">
               waiting for status… ({(status.error as Error).message})

@@ -37,6 +37,9 @@ export function Eval() {
   const [mark, setMark] = useState<'point' | 'line' | 'bar' | 'boxplot'>('point')
 
   const campaigns = useQuery({ queryKey: ['campaigns'], queryFn: () => robovast.listCampaigns(200, 0) })
+  // Only postprocessed campaigns have the derived data (data.db) the eval viewer
+  // queries; a campaign whose pipelines have not run has nothing to browse here.
+  const evalCampaigns = (campaigns.data?.campaigns ?? []).filter((c) => c.postprocessed)
   const describe = useQuery({
     queryKey: ['describe', campaignId],
     queryFn: () => robovast.describeCampaignData(campaignId),
@@ -105,7 +108,7 @@ export function Eval() {
       <Stack direction="row" spacing={2} alignItems="center">
         <Typography variant="h6">Results</Typography>
         <TextField
-          select={!!campaigns.data?.campaigns.length}
+          select={!!evalCampaigns.length}
           size="small"
           label="Campaign"
           value={campaignId}
@@ -116,7 +119,7 @@ export function Eval() {
           }}
           sx={{ minWidth: 340 }}
         >
-          {campaignsNewestFirst(campaigns.data?.campaigns ?? []).map((c) => (
+          {campaignsNewestFirst(evalCampaigns).map((c) => (
             <MenuItem key={c.campaign_id} value={c.campaign_id}>
               {c.campaign_id}
             </MenuItem>

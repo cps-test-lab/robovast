@@ -133,3 +133,10 @@ Controllers are launched per campaign, so execution always tracks the configured
 controller image. The persistent service Deployment is updated by re-running
 ``vast exec cluster setup`` (rolling restart). The client/service exchange a
 version at ``/version`` so a stale service can be surfaced.
+
+Re-running setup also reconciles the service's RBAC. In particular, the
+``/usage`` endpoint (cluster CPU/memory capacity and usage, shown in the web UI
+top bar and via the ``resource_usage`` MCP tool) needs a cluster-scoped
+read-only ``ClusterRole`` over ``nodes``/``pods`` — so a service first deployed
+by an older setup must be re-run through ``vast exec cluster setup`` to gain it,
+otherwise ``/usage`` returns a permissions error.

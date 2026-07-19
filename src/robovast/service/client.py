@@ -37,6 +37,7 @@ import logging
 import os
 import subprocess
 import threading
+import time
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from pathlib import Path
 from typing import Optional
@@ -53,6 +54,7 @@ from robovast.service.interface import (ActionResult, CampaignRef,
                                         ListFilesResponse, ListWorkspacesResponse,
                                         LogChunk,
                                         PreviewConfiguration, PreviewResponse,
+                                        ResourceUsage,
                                         RobovastInterface, Routes, UploadGrant,
                                         ValidationProblem, ValidationReport,
                                         VariationTypeInfo,
@@ -162,9 +164,21 @@ class LocalTransport(RobovastInterface):
     #: SIGTERM grace (``_STOP_GRACE_SECONDS`` = 15s) so the trap can complete.
     _SHUTDOWN_JOIN_SECONDS = 20
 
+    #: How long a :meth:`resource_usage` reading is reused. The UI chip and the MCP
+    #: tool poll this, so the real sampling (a psutil call locally, node/pod lists on
+    #: the cluster) is memoised for this window — N concurrent clients cost one
+    #: sampling per window, not N.
+    _USAGE_CACHE_TTL = 10.0
+
     def __init__(self, store=None, workspace_dirs=None):
         self._campaigns: dict[str, _LocalCampaign] = {}
         self._lock = threading.Lock()
+        self._usage_lock = threading.Lock()
+        self._usage_cache: "tuple[float, ResourceUsage] | None" = None
+        # Prime psutil's non-blocking CPU sampler so the first resource_usage()
+        # reading reflects real load instead of the 0.0 a cold sampler returns.
+        import psutil  # pylint: disable=import-outside-toplevel
+        psutil.cpu_percent(interval=None)
         if store is None:
             from robovast.service.workspaces import WorkspaceStore
             store = WorkspaceStore(workspace_dirs=workspace_dirs)
@@ -303,6 +317,43 @@ class LocalTransport(RobovastInterface):
 
     def version(self) -> VersionInfo:
         return VersionInfo(robovast_version=_robovast_version(), backend="docker")
+
+    def resource_usage(self) -> ResourceUsage:
+        """Backend capacity/usage, cached for ``_USAGE_CACHE_TTL`` seconds.
+
+        The cache (and its lock) live here so both the local and cluster services
+        share one memoisation path; subclasses supply the actual reading by
+        overriding :meth:`_compute_resource_usage`. Computing under the lock means
+        concurrent polls collapse to a single sampling per window.
+        """
+        with self._usage_lock:
+            cached = self._usage_cache
+            if cached is not None and time.monotonic() - cached[0] < self._USAGE_CACHE_TTL:
+                return cached[1]
+            usage = self._compute_resource_usage()
+            self._usage_cache = (time.monotonic(), usage)
+            return usage
+
+    def _compute_resource_usage(self) -> ResourceUsage:
+        """Local host capacity + live utilisation via ``psutil``.
+
+        ``cpu_percent(interval=None)`` is non-blocking — it averages CPU load since
+        the previous call rather than sleeping per request. The first reading after
+        the process starts is ``0.0`` (no prior sample); the TTL cache means that is
+        replaced by a real value on the next window. Overridden by
+        :class:`~robovast.service.cluster_service.ClusterService`.
+        """
+        import psutil  # pylint: disable=import-outside-toplevel
+        vm = psutil.virtual_memory()
+        cores = psutil.cpu_count(logical=True)
+        return ResourceUsage(
+            backend="docker",
+            cpu_capacity=float(cores),
+            cpu_used=cores * psutil.cpu_percent(interval=None) / 100.0,
+            memory_capacity_bytes=vm.total,
+            memory_used_bytes=vm.used,
+            parallel_runs=False,   # Docker backend is single-flight: runs are sequential
+        )
 
     # -- launch hooks (overridden by ClusterService) -------------------------
     #
@@ -466,6 +517,11 @@ class LocalTransport(RobovastInterface):
                 results_dir=results_dir, campaign=campaign_id,
                 output_callback=logger.info)
             if ok:
+                from robovast.results_processing.postprocessing import \
+                    campaign_defines_postprocessing
+                if campaign_defines_postprocessing(
+                        str(Path(results_dir) / campaign_id)):
+                    state.update(postprocessed=True)
                 state.set_phase("finished")
             else:
                 entry.error = message
@@ -840,13 +896,15 @@ class LocalTransport(RobovastInterface):
         cid = campaign_dir.name
         with self._lock:
             entry = self._campaigns.get(cid)
-        phase = entry.state.snapshot().phase if entry else "finished"
+        snap = entry.state.snapshot() if entry else None
+        phase = snap.phase if snap else "finished"
+        postprocessed = snap.postprocessed if snap else False
         try:
             info = get_vast_configuration_info(campaign_dir)
         except (FileNotFoundError, OSError, ValueError, TypeError):
             info = {}
         return CampaignSummary(
-            campaign_id=cid, phase=phase,
+            campaign_id=cid, phase=phase, postprocessed=postprocessed,
             started_at=self._campaign_started_at(campaign_dir),
             num_runs=info.get("num_runs", 0), num_passed=info.get("num_passed", 0),
             num_failed=info.get("num_failed", 0) + info.get("num_errors", 0))
@@ -938,6 +996,9 @@ class HTTPTransport(RobovastInterface):
 
     def version(self) -> VersionInfo:
         return VersionInfo.model_validate(self._get(Routes.VERSION))
+
+    def resource_usage(self) -> ResourceUsage:
+        return ResourceUsage.model_validate(self._get(Routes.USAGE))
 
     def check_compatibility(self) -> dict:
         """Compare this client's robovast version with the service's (handshake).

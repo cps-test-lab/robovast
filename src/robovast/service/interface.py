@@ -85,6 +85,7 @@ class CampaignSummary(BaseModel):
 
     campaign_id: str
     phase: str = "unknown"           # matches Status.phase vocabulary
+    postprocessed: bool = False      # configured postprocessing pipelines have run
     num_runs: int = 0
     num_passed: int = 0
     num_failed: int = 0
@@ -202,6 +203,35 @@ class VersionInfo(BaseModel):
     robovast_version: str
     api_version: str = "0"
     backend: Optional[str] = None    # "docker" | "kubernetes" (informational)
+
+
+class ResourceUsage(BaseModel):
+    """Live compute capacity and current usage of the service's execution backend.
+
+    Backend-neutral by design: the local↔cluster difference is resolved inside the
+    service (``LocalTransport`` reads the host via ``psutil``; ``ClusterService``
+    reads the Kubernetes nodes), so a consumer — the UI chip or the MCP tool — reads
+    the same fields regardless of where it runs and never branches on ``backend``.
+
+    ``cpu_used`` / ``memory_used`` semantics differ by backend but answer the same
+    question ("how much is currently claimed"): on the **cluster** they are the sum
+    of resource *requests* of non-terminal pods (schedulability, matching how Kueue
+    reasons about quota); on **local** they are live host utilisation. ``cpu_*`` are
+    CPU cores; ``memory_*`` are bytes.
+
+    ``parallel_runs`` is a backend-intrinsic flag, **not** a count: ``False`` means
+    scenario runs execute one at a time (local Docker is single-flight), ``True``
+    means they run in parallel bounded only by free capacity (cluster). How many runs
+    actually fit is left to the consumer, which knows each project's per-run
+    reservation — the service does not.
+    """
+
+    backend: str                     # "docker" | "kubernetes" (informational only)
+    cpu_capacity: float              # total cores (cluster allocatable / host logical CPUs)
+    cpu_used: float                  # cores claimed (cluster pod requests / host utilisation)
+    memory_capacity_bytes: int
+    memory_used_bytes: int
+    parallel_runs: bool              # runs execute in parallel? cluster=True, local=False
 
 
 # -- workspaces (editable project inputs; independent of campaigns) ---------
@@ -399,6 +429,7 @@ class Routes:
 
     VERSION = "/version"
     HEALTHZ = "/healthz"
+    USAGE = "/usage"
     CAMPAIGNS = "/campaigns"
     WORKSPACES = "/workspaces"
     #: The file side channel: PUT bytes here with a create_upload token.
@@ -504,6 +535,10 @@ class RobovastInterface(ABC):
     @abstractmethod
     def version(self) -> VersionInfo:
         """Report the implementation's RoboVAST + API version (handshake)."""
+
+    @abstractmethod
+    def resource_usage(self) -> ResourceUsage:
+        """Report the execution backend's CPU/memory capacity + current usage."""
 
     # -- workspaces (editable project inputs) -------------------------------
 
