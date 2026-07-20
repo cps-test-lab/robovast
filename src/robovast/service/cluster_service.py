@@ -45,6 +45,7 @@ accepted trade for running the driver in-process.
 
 import contextlib
 import json
+import time
 import logging
 import os
 import threading
@@ -416,13 +417,15 @@ class ClusterService(LocalTransport):
     def get_job_log(self, campaign_id: str, job_name: str, offset: int = 0) -> LogChunk:
         """Serve a running Job's live pod log from byte *offset* onward.
 
-        Finds the Job's pod by the auto-added ``job-name`` label and streams its
-        ``robovast`` container log. Live source only: a pod still ``Pending`` has no
-        log yet (empty, non-terminal chunk); a missing pod raises (→ 404).
+        Finds the Job's pod by the auto-added ``job-name`` label and streams *all* of
+        its containers' logs merged into one stream (the main ``robovast`` container
+        plus any secondary sim/SUT servers; see :func:`read_pod_logs_merged`). Live
+        source only: a pod still ``Pending`` has no log yet (empty, non-terminal
+        chunk); a missing pod raises (→ 404).
         """
         from kubernetes import client
-        from robovast.execution.cluster_execution.cluster_execution import \
-            _label_safe_campaign
+        from robovast.execution.cluster_execution.cluster_execution import (
+            _label_safe_campaign, read_pod_logs_merged)
         core = self._k8s()
         label = (f"jobgroup=scenario-runs,"
                  f"campaign-id={_label_safe_campaign(campaign_id)},job-name={job_name}")
@@ -433,8 +436,7 @@ class ClusterService(LocalTransport):
         if pod.status and pod.status.phase == "Pending":
             return LogChunk(text="", next_offset=offset, eof=False)
         try:
-            text = core.read_namespaced_pod_log(
-                name=pod.metadata.name, namespace=self.namespace, container="robovast")
+            text = read_pod_logs_merged(core, pod, self.namespace)
         except client.exceptions.ApiException as e:
             if e.status == 404:
                 raise KeyError(
@@ -444,6 +446,236 @@ class ClusterService(LocalTransport):
         terminal = bool(pod.status and pod.status.phase in ("Succeeded", "Failed"))
         return LogChunk(text=raw[offset:].decode("utf-8", "replace"),
                         next_offset=len(raw), eof=terminal)
+
+    # -- image builds (in-cluster BuildKit Job) -----------------------------
+
+    def _image_build_state(self) -> dict:
+        state = getattr(self, "_image_builds_by_id", None)
+        if state is None:
+            state = {}
+            self._image_builds_by_id = state
+        return state
+
+    def _build_context(self, request):
+        """Resolve (spec, project_dir, cfg, registry) for a build request.
+
+        Raises ``ValueError`` (→ 400) with an actionable message when the project
+        has no ``build:`` section, the section is invalid, or the deployment has no
+        registry configured (registry details live only in the cluster config).
+        """
+        from robovast.common.common import load_config
+        from robovast.common.config import validate_config
+        from robovast.service.image_build import (extract_build_spec,
+                                                   validate_build_spec)
+        project = self._resolve_project(request.workspace_id, request.config_path)
+        campaign_config = validate_config(load_config(project.config_path))
+        spec = extract_build_spec(campaign_config)
+        if spec is None:
+            raise ValueError(
+                "project has no 'build:' section — nothing to build (set a build: "
+                "section and execution.image: build:<tag>)")
+        project_dir = Path(project.config_path).resolve().parent
+        problems = validate_build_spec(spec, project_dir)
+        if problems:
+            raise ValueError("invalid build: section:\n  - " + "\n  - ".join(problems))
+        cfg = self._cluster_config()
+        registry = cfg.get_registry_config()
+        if not registry.enabled():
+            raise ValueError(
+                "no container registry is configured for this cluster; in-cluster "
+                "image builds are unavailable. Configure one at 'vast exec cluster "
+                "setup' (or set ROBOVAST_REGISTRY_PREFIX / _PUSH_SECRET / "
+                "_PULL_SECRET on the service).")
+        bucket = cfg.get_s3_bucket()
+        if not bucket:
+            raise ValueError(
+                "in-cluster image builds require a fixed S3 bucket "
+                "(external-S3 mode); this deployment uses per-campaign buckets.")
+        return project, campaign_config, spec, project_dir, cfg, registry, bucket
+
+    def _resolve_build_ref(self, spec, project_dir, registry) -> "tuple[str, str]":
+        """Return (concrete_registry_ref, image_hash) for a project's build image."""
+        from robovast.common.execution import resolve_robovast_image
+        from robovast.execution.cluster_execution.cluster_image_build import \
+            concrete_image_ref
+        from robovast.service.image_build import build_hash
+        base_ref = (spec.base_image or registry.base_experiment_image
+                    or resolve_robovast_image())
+        image_hash = build_hash(spec, project_dir, base_ref)
+        ref = concrete_image_ref(registry.registry_prefix, spec.tag, image_hash)
+        return ref, image_hash
+
+    def build_image(self, request):
+        (_project, _cc, spec, project_dir, cfg, registry, bucket) = \
+            self._build_context(request)
+        return self._start_cluster_build(spec, project_dir, cfg, registry, bucket)
+
+    def _start_cluster_build(self, spec, project_dir, cfg, registry, bucket):
+        """Core (idempotent) launch shared by build_image + the campaign preflight."""
+        from robovast.execution.cluster_execution.cluster_image_build import (
+            build_id_for, build_job_manifest, s3_init_env, stage_context_to_s3)
+        from robovast.execution.cluster_execution import in_pod_storage
+        from robovast.service.image_build import generate_dockerfile
+        from robovast.service.interface import ImageBuildRef, ImageBuildStatus
+        from robovast.common.config import BUILD_IMAGE_PREFIX
+        from robovast.common.execution import resolve_robovast_image
+
+        image_ref, image_hash = self._resolve_build_ref(spec, project_dir, registry)
+        build_id = build_id_for(spec.tag, image_hash)
+        symbolic = f"{BUILD_IMAGE_PREFIX}{spec.tag}"
+        state = self._image_build_state()
+
+        # Idempotent: a completed Job for this exact input hash means the image is
+        # already pushed — reuse it (no new build).
+        existing = self._existing_build_job(build_id)
+        if existing == "succeeded":
+            status = ImageBuildStatus(build_id=build_id, tag=spec.tag, phase="cached",
+                                      done=True, cached=True, image_ref=symbolic,
+                                      digest=image_hash)
+            state[build_id] = {"tag": spec.tag, "image_ref": image_ref,
+                               "hash": image_hash, "status": status}
+            return ImageBuildRef(build_id=build_id, tag=spec.tag, cached=True)
+        if existing == "running":
+            return ImageBuildRef(build_id=build_id, tag=spec.tag, cached=False)
+
+        # Stage the context (project dir + generated Dockerfile) to S3.
+        base_ref = (spec.base_image or registry.base_experiment_image
+                    or resolve_robovast_image())
+        dockerfile = generate_dockerfile(spec, project_dir, base_ref)
+        build_prefix = f"image-builds/{build_id}"
+        storage = in_pod_storage.storage_client_for(cfg)
+        stage_context_to_s3(storage, bucket, build_prefix, project_dir, dockerfile)
+
+        access_key, secret_key = cfg.get_s3_credentials()
+        init_env = s3_init_env(cfg.get_s3_endpoint(), access_key, secret_key,
+                               bucket, build_prefix)
+        manifest = build_job_manifest(
+            build_id=build_id, image_ref=image_ref, campaign_label=build_id,
+            init_env=init_env, push_secret_name=registry.push_secret_name,
+            namespace=self.namespace, insecure=registry.insecure)
+        self._k8s_batch().create_namespaced_job(self.namespace, manifest)
+
+        status = ImageBuildStatus(build_id=build_id, tag=spec.tag, phase="building",
+                                  image_ref=symbolic, digest=image_hash)
+        state[build_id] = {"tag": spec.tag, "image_ref": image_ref,
+                           "hash": image_hash, "status": status}
+        return ImageBuildRef(build_id=build_id, tag=spec.tag, cached=False)
+
+    def _existing_build_job(self, build_id: str) -> "str | None":
+        """Return 'succeeded' | 'failed' | 'running' for an existing Job, else None."""
+        from kubernetes import client
+        batch = self._k8s_batch()
+        try:
+            job = batch.read_namespaced_job(build_id, self.namespace)
+        except client.exceptions.ApiException as e:
+            if e.status == 404:
+                return None
+            raise
+        st = job.status
+        if st and st.succeeded:
+            return "succeeded"
+        if st and st.failed:
+            return "failed"
+        return "running"
+
+    def get_image_build_status(self, build_id: str):
+        from robovast.service.interface import ImageBuildStatus
+        state = self._image_build_state()
+        record = state.get(build_id)
+        if record is None:
+            # Not tracked in-process (e.g. after a restart): derive from the Job.
+            phase = self._existing_build_job(build_id)
+            if phase is None:
+                raise KeyError(f"unknown build '{build_id}'")
+            done = phase in ("succeeded", "failed")
+            return ImageBuildStatus(
+                build_id=build_id, phase=phase, done=done,
+                cached=phase == "succeeded")
+        status: ImageBuildStatus = record["status"]
+        if status.done:
+            return status
+        phase = self._existing_build_job(build_id)
+        if phase == "succeeded":
+            status.phase = "succeeded"
+            status.done = True
+        elif phase == "failed":
+            status.phase = "failed"
+            status.done = True
+            status.error = self._build_error(build_id, record["tag"])
+        return status
+
+    def _build_error(self, build_id: str, tag: str):
+        from robovast.service.image_build import classify_build_error
+        log = self._build_log_text(build_id)
+        return classify_build_error(log)
+
+    def _build_log_text(self, build_id: str) -> str:
+        from kubernetes import client
+        core = self._k8s()
+        pods = core.list_namespaced_pod(
+            self.namespace, label_selector=f"build-id={build_id}")
+        if not pods.items:
+            return ""
+        pod = pods.items[0]
+        try:
+            return core.read_namespaced_pod_log(
+                name=pod.metadata.name, namespace=self.namespace,
+                container="buildkit")
+        except client.exceptions.ApiException:
+            return ""
+
+    def get_image_build_log(self, build_id: str, offset: int = 0):
+        from robovast.service.interface import LogChunk
+        raw = self._build_log_text(build_id).encode("utf-8", "replace")
+        record = self._image_build_state().get(build_id)
+        done = bool(record and record["status"].done)
+        return LogChunk(text=raw[offset:].decode("utf-8", "replace"),
+                        next_offset=len(raw), eof=done)
+
+    def _ensure_build_image(self, project, campaign_config) -> "str | None":
+        """Cluster preflight: build (or reuse) the project's build: image.
+
+        Overrides the LocalTransport (docker) preflight, working directly from the
+        already-resolved project/config. Returns the concrete registry ref to pin as
+        the explicit image, or ``None`` when there is no ``build:`` section. Blocks
+        until the build finishes; raises ``RuntimeError`` on failure.
+        """
+        from robovast.service.image_build import (extract_build_spec,
+                                                   validate_build_spec)
+        spec = extract_build_spec(campaign_config)
+        if spec is None:
+            return None
+        project_dir = Path(project.config_path).resolve().parent
+        problems = validate_build_spec(spec, project_dir)
+        if problems:
+            raise ValueError("invalid build: section:\n  - " + "\n  - ".join(problems))
+        cfg = self._cluster_config()
+        registry = cfg.get_registry_config()
+        if not registry.enabled():
+            raise ValueError(
+                "execution.image is a build:<tag> ref but no container registry is "
+                "configured for this cluster (see 'vast exec cluster setup').")
+        bucket = cfg.get_s3_bucket()
+        if not bucket:
+            raise ValueError(
+                "in-cluster image builds require a fixed S3 bucket (external-S3 mode).")
+        image_ref, _hash = self._resolve_build_ref(spec, project_dir, registry)
+        ref = self._start_cluster_build(spec, project_dir, cfg, registry, bucket)
+        status = self._await_cluster_build(ref.build_id)
+        if status.phase not in ("succeeded", "cached"):
+            err = status.error
+            detail = f" ({err.message})" if err and err.message else ""
+            raise RuntimeError(
+                f"experiment image build '{spec.tag}' failed{detail}; "
+                f"see the build log (build_id={ref.build_id})")
+        return image_ref
+
+    def _await_cluster_build(self, build_id: str):
+        while True:
+            status = self.get_image_build_status(build_id)
+            if status.done:
+                return status
+            time.sleep(3.0)
 
     def _read_outcome(self, campaign_id: str) -> "Status | None":
         """Read the campaign's durable terminal outcome from the object store."""

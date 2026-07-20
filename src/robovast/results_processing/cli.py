@@ -835,10 +835,11 @@ def list_share_cmd(campaigns):
 
 
 @results.command(name='list-downloads')
-@click.option('--campaign', '-i', 'campaigns', multiple=True,
-              help='Only show specific campaigns. Can be given multiple times.')
+@click.argument('campaigns', nargs=-1)
 def list_downloads_cmd(campaigns):
     """List downloadable campaigns across the reachable sources.
+
+    Pass one or more CAMPAIGNS to only show those; omit them to list all.
 
     Shows, per campaign, which archive variants are available: ``postprocessed`` (full,
     from a reachable service) and/or ``raw`` (pre-postprocess, from the configured
@@ -851,7 +852,6 @@ def list_downloads_cmd(campaigns):
     requested = set(campaigns)
     variants: dict[str, set] = {}
     raw_sizes: dict[str, int] = {}
-    raw_urls: dict[str, str] = {}
 
     service_url = detected_service_url()
     if service_url:
@@ -887,9 +887,6 @@ def list_downloads_cmd(campaigns):
                     cid = base[:-len(".tar.gz")] if base.endswith(".tar.gz") else base
                     variants.setdefault(cid, set()).add("raw")
                     raw_sizes[cid] = size
-                    url = provider.archive_url(name)
-                    if url:
-                        raw_urls[cid] = url
             except Exception as exc:  # noqa: BLE001
                 click.echo(f"  (share listing failed: {exc})", err=True)
 
@@ -918,11 +915,6 @@ def list_downloads_cmd(campaigns):
         size = raw_sizes.get(cid)
         extra = f"  (raw {_fmt_size(size)})" if size is not None and size >= 0 else ""
         click.echo(f"  {cid}  [{labels}]{extra}")
-        # For share ("raw") archives, print the full download link so users can
-        # copy it or hand it to a browser / curl without re-deriving it.
-        url = raw_urls.get(cid)
-        if url:
-            click.echo(f"      {url}")
     click.echo()
     click.echo(f"  {len(variants)} campaign(s)")
 

@@ -422,6 +422,37 @@ def _plugin_ref_problems(raw, vast_dir):
     return problems
 
 
+def _build_problems(raw, vast_dir):
+    """Fail-fast checks on a ``build:`` section's workspace-path references.
+
+    A ``build.python_packages`` entry that is a workspace path (a source dir or a
+    ``.whl``) must actually exist in the project; index pins / git URLs are pip
+    specs and are not checked here (not resolvable offline). Tag shape and the
+    ``execution.image`` <-> ``build.tag`` consistency are enforced by the schema.
+    """
+    problems = []
+    build = raw.get("build")
+    if not isinstance(build, dict):
+        return problems
+    for entry in build.get("python_packages", []) or []:
+        if not isinstance(entry, str) or not entry.strip():
+            continue
+        p = os.path.abspath(os.path.join(vast_dir, entry))
+        exists = os.path.isdir(p) or (entry.endswith(".whl") and os.path.isfile(p))
+        if exists:
+            continue
+        is_pip_url = ("git+" in entry or "://" in entry or " @ " in entry)
+        looks_like_path = (entry.startswith((".", "/")) or entry.endswith(".whl")
+                           or ("/" in entry and not is_pip_url))
+        if looks_like_path:
+            problems.append(_problem(
+                "build",
+                f"'{entry}' looks like a workspace path but no such directory/wheel "
+                "exists in the project",
+                field="build.python_packages"))
+    return problems
+
+
 def validate_project_file(config_path):
     """Validate a ``.vast`` project file, collecting *all* problems at once.
 
@@ -454,6 +485,12 @@ def validate_project_file(config_path):
 
     # Custom run-view panel bundles must exist next to the .vast.
     problems.extend(_panel_problems(raw, vast_dir))
+
+    # A build: section's workspace-path python_packages must exist (fail-fast at
+    # submit, before any image build runs). Schema-level checks (tag shape, the
+    # execution.image <-> build.tag consistency) are already covered by the config
+    # model in _schema_problems.
+    problems.extend(_build_problems(raw, vast_dir))
 
     if problems:
         return {"valid": False, "problems": problems,

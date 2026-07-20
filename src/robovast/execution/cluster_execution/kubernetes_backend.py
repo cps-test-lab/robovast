@@ -263,6 +263,16 @@ class BatchJobRunner:
 
         spec = job_manifest['spec']['template']['spec']
 
+        # Pull secret for an agent-built experiment image pushed to a private
+        # registry (see RegistryConfig). Only present when a registry with auth was
+        # configured at setup; a public/insecure registry needs none.
+        try:
+            pull_secret = self.cluster_config.get_registry_config().pull_secret_name
+        except Exception:  # noqa: BLE001 - registry config is optional
+            pull_secret = ""
+        if pull_secret:
+            spec['imagePullSecrets'] = [{'name': pull_secret}]
+
         # Volumes: config (populated by initContainer), out (shared output), dshm (shared /dev/shm),
         # ipc (named sockets between main and secondary containers)
         spec['volumes'] = [

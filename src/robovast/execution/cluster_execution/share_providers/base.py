@@ -285,10 +285,9 @@ class BaseShareProvider(ABC):
         """Return a full, human-shareable link to *object_name* on the share.
 
         *object_name* is a value as returned by :meth:`list_campaign_archives`
-        (a bare object key). The link is for display — e.g. printed by
-        ``results list-downloads`` — so users can copy it or hand it to a
-        browser / ``curl``. It need not be pre-authenticated: for private
-        shares it identifies the object's location, not a signed download.
+        (a bare object key). The link is for display — so users can copy it or
+        hand it to a browser / ``curl``. It need not be pre-authenticated: for
+        private shares it identifies the object's location, not a signed download.
 
         Returns ``None`` (the default) when the provider has no meaningful URL
         form for an object.

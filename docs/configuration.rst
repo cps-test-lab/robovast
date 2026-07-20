@@ -221,6 +221,53 @@ Docker container image to use for execution. Can be a public image or a private 
    execution:
      image: ghcr.io/cps-test-lab/robovast:latest
 
+It may also be a symbolic ``build:<tag>`` reference to an image produced by the
+:ref:`build section <config-build-section>` (built on demand, wherever the
+backend runs). See below.
+
+.. _config-build-section:
+
+build (optional)
+----------------
+
+Most iteration needs **no** image build: the scenario, ``run_files`` and config
+are delivered to the container at runtime. A ``build:`` section is only needed
+when the experiment must **bake code or system packages into the image** — e.g. a
+new or updated Python package (a new robot in ``sim_suite_mobile``), or an Ubuntu
+(apt) dependency. When present, set ``execution.image: build:<tag>``; the service
+builds the image on demand and resolves that symbolic reference to the real
+(registry-qualified) image — you never handle a registry reference or credentials.
+
+.. code-block:: yaml
+
+   build:
+     # base_image is optional: omit for the deployment's default base, or give a
+     # published base *alias* (never a registry URL — you need no registry knowledge).
+     system_packages:                       # apt-get install (Ubuntu deps)
+       - ros-jazzy-nav2-smac-planner
+     python_packages:                       # same vocabulary as top-level `plugins:` ...
+       - packages/sim_suite_mobile          #   • a source dir relative to this .vast (pip install -e)
+       - shapely>=2.0                        #   • an index pin
+       - my_ext @ git+https://github.com/org/repo@v1   # • a git URL
+       - ./plugins/my_ext-1.0-py3-none-any.whl          # • an uploaded workspace wheel
+     tag: sim-suite-mobile                  # a bare name; the registry prefix is added server-side
+   execution:
+     image: build:sim-suite-mobile          # symbolic → the built image
+
+The build is **idempotent** (content-addressed): rebuild only happens when the
+``build:`` section or a referenced source changes. It runs **wherever the backend
+runs** — a local ``docker buildx`` for a local ``vast serve``, an in-cluster
+BuildKit Job on the cluster — so the same ``.vast`` works everywhere. Trigger it
+explicitly with the ``build_experiment_image`` MCP tool / ``vast image build``, or
+implicitly: ``start_campaign`` (re)builds a ``build:<tag>`` image as its first
+step. See :doc:`mcp` and :doc:`cluster_execution`.
+
+The ``build:`` section is distinct from the top-level ``plugins:`` field:
+``plugins:`` installs *variation-type* packages into the **composer** (before
+config generation); ``build:`` bakes code/apt into the **scenario container**
+(before execution). They share the ``python_packages`` vocabulary but scope
+different environments.
+
 runs
 ^^^^
 

@@ -659,12 +659,16 @@ def list_campaign_jobs(campaign_id: str) -> dict:
 
 
 def get_job_log(campaign_id: str, job_name: str, offset: int = 0) -> dict:
-    """Read a **running** job's live log (its scenario container's stdout/stderr).
+    """Read a **running** job's live log (its containers' stdout/stderr).
 
     Streams the live log of one job from :func:`list_campaign_jobs` — the running
-    pod's log on the cluster, or the live ``logs/system.log`` file locally. Live
-    source only: a finished job whose pod has been garbage-collected has no live log.
-    Poll incrementally by passing the previous call's ``next_offset`` back as ``offset``.
+    pod's log on the cluster, or the live ``logs/system.log`` file locally. On the
+    cluster all of the pod's containers are merged into one stream: with more than
+    one container each line is tagged ``[<container>] `` (the main ``robovast``
+    container plus any secondary sim/SUT servers) and merged in timestamp order.
+    Live source only: a finished job whose pod has been garbage-collected has no
+    live log. Poll incrementally by passing the previous call's ``next_offset`` back
+    as ``offset``.
 
     Requires a reachable robovast-service.
 
@@ -1014,11 +1018,107 @@ def get_campaign_download(campaign_id: str) -> dict:
     }
 
 
+def build_experiment_image(workspace_id: str = "", config_path: str = "") -> dict:
+    """Build the experiment container image declared by the project's ``build:`` section.
+
+    Use this when the experiment needs new *code or system packages baked into the
+    image* — e.g. a new/updated ``sim_suite`` package, or an Ubuntu (apt) dependency.
+    Files that ship to ``/config`` at runtime (``run_files``, ``scenario_file``) never
+    need a build.
+
+    Declarative and registry-free. Put a ``build:`` section in the ``.vast``:
+
+        build:
+          system_packages: [ros-jazzy-nav2-smac-planner]   # apt
+          python_packages: [packages/sim_suite_mobile]      # source dir / pip spec / wheel
+          tag: sim-suite-mobile
+        execution:
+          image: build:sim-suite-mobile                     # symbolic ref
+
+    On success the image is wired in automatically — you never handle a registry ref
+    or credentials. **Idempotent**: safe to always call; if nothing changed it is a
+    no-op cache hit. Poll :func:`get_image_build_status` until ``done``; on failure the
+    structured error names the offending ``build:`` entry (or use
+    :func:`get_image_build_log`). You may also skip this and just ``start_campaign`` —
+    a ``build:<tag>`` image is (re)built automatically as the campaign's first step.
+
+    Requires a reachable robovast-service (a local ``vast serve`` or a tunnel).
+
+    Args:
+        workspace_id: Which workspace's project to build (empty = the CWD project).
+        config_path: Which ``.vast`` when the workspace has several (empty = the sole one).
+
+    Returns:
+        ``{build_id, tag, cached}`` on submit; ``{error}`` when no service is reachable
+        or the ``build:`` section is missing/invalid.
+    """
+    client = _service_client()
+    if client is None:
+        return {"error": "no robovast-service reachable; bring up a 'vast serve' or a "
+                         "tunnel (image builds run server-side)"}
+    from robovast.service.interface import BuildImageRequest
+    try:
+        ref = client.build_image(BuildImageRequest(
+            workspace_id=workspace_id, config_path=config_path))
+        return {"build_id": ref.build_id, "tag": ref.tag, "cached": ref.cached}
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
+
+
+def get_image_build_status(build_id: str) -> dict:
+    """Return an image build's status: ``phase``, ``done``, and a structured error.
+
+    On failure ``error_detail`` names the ``phase`` (apt / pip / source-build /
+    base-pull / push / resource), the offending ``build:`` ``entry``, a ``message``,
+    and ``fixable_by`` — ``agent`` (edit the ``build:`` section) or ``infra``
+    (server-side registry/base issue, not fixable by editing the ``.vast``). Use
+    :func:`get_image_build_log` for the raw builder output.
+
+    Args:
+        build_id: The id returned by :func:`build_experiment_image`.
+    """
+    client = _service_client()
+    if client is None:
+        return {"error": "no robovast-service reachable"}
+    try:
+        s = client.get_image_build_status(build_id)
+        out = {"build_id": s.build_id, "tag": s.tag, "phase": s.phase,
+               "done": s.done, "cached": s.cached, "image_ref": s.image_ref}
+        if s.error is not None:
+            out["error_detail"] = s.error.model_dump()
+        return out
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
+
+
+def get_image_build_log(build_id: str, offset: int = 0) -> dict:
+    """Return the raw builder log from byte *offset* onward.
+
+    Streaming: poll from ``0``, append ``text``, resume from the returned
+    ``next_offset``; ``eof`` is true once the build is done.
+
+    Args:
+        build_id: The id returned by :func:`build_experiment_image`.
+        offset: Byte offset to resume from.
+    """
+    client = _service_client()
+    if client is None:
+        return {"error": "no robovast-service reachable"}
+    try:
+        chunk = client.get_image_build_log(build_id, offset)
+        return {"text": chunk.text, "next_offset": chunk.next_offset, "eof": chunk.eof}
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
+
+
 _TOOLS = [
     validate_project,
     preview_configurations,
     init_project,
     start_campaign,
+    build_experiment_image,
+    get_image_build_status,
+    get_image_build_log,
     get_campaign_status,
     get_campaign_log,
     list_campaign_jobs,

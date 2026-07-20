@@ -77,6 +77,61 @@ class CampaignRef(BaseModel):
     campaign_id: str
 
 
+class BuildImageRequest(BaseModel):
+    """Build the experiment image declared by a workspace project's ``build:`` section.
+
+    The declarative content (base image, apt/pip packages, tag) lives in the
+    ``.vast`` ``build:`` section — this request only names the project, so the
+    client stays free of any registry knowledge. Idempotent/content-addressed: if
+    an image for the same inputs already exists it is reused (no build runs).
+    """
+
+    workspace_id: str
+    config_path: str = ""            # which .vast (workspace-relative); "" = the sole .vast
+
+
+class ImageBuildRef(BaseModel):
+    """Identifies a launched (or cache-hit) image build."""
+
+    build_id: str
+    tag: str = ""                    # the bare ``build.tag`` (image = ``build:<tag>``)
+    cached: bool = False             # True if an existing image was reused (no build ran)
+
+
+class ImageBuildError(BaseModel):
+    """Structured, LLM-actionable build failure.
+
+    Registry-free by construction: never carries an endpoint, credential, or
+    registry-qualified ref (see the zero-registry-knowledge invariant).
+    """
+
+    #: base-pull | apt | pip | source-build | push | resource | validate
+    phase: str = ""
+    #: ``agent`` — the failure maps to a ``build:`` entry the agent can change;
+    #: ``infra`` — server-side (base pull / registry push), not agent-fixable.
+    fixable_by: str = "agent"
+    entry: str = ""                  # the offending build: entry, when identifiable
+    message: str = ""                # one-line summary
+    log_tail: str = ""               # last lines of builder output for context
+
+
+class ImageBuildStatus(BaseModel):
+    """Live status of an image build (poll like a campaign's :class:`Status`)."""
+
+    build_id: str
+    tag: str = ""
+    #: pending | validating | building | pushing | succeeded | failed | cached
+    phase: str = "pending"
+    done: bool = False
+    cached: bool = False             # early-exit: image for these inputs already existed
+    #: SYMBOLIC ``build:<tag>`` only — never a registry-qualified ref.
+    image_ref: str = ""
+    digest: str = ""                 # optional short digest for provenance (not a ref)
+    error: Optional[ImageBuildError] = None
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+
+
 class CampaignSummary(BaseModel):
     """One row of :meth:`RobovastInterface.list_campaigns`.
 
@@ -579,6 +634,17 @@ class Routes:
     #: because it also serves the "all campaigns" case).
     CLEANUP_DATA = "/campaigns/cleanup-data"
 
+    #: Experiment image builds (declared by a project's ``build:`` section).
+    IMAGE_BUILDS = "/image-builds"
+
+    @staticmethod
+    def image_build_status(build_id: str) -> str:
+        return f"/image-builds/{build_id}/status"
+
+    @staticmethod
+    def image_build_log(build_id: str) -> str:
+        return f"/image-builds/{build_id}/log"
+
     @staticmethod
     def campaign_postprocessing(campaign_id: str) -> str:
         return f"/campaigns/{campaign_id}/postprocessing"
@@ -747,6 +813,34 @@ class RobovastInterface(ABC):
         Runs server-side because the service holds the cluster config (object-store
         credentials) and the authoritative live-campaign set — so the CLI needs no
         cluster credentials. Live campaigns are skipped unless ``force`` names one.
+        """
+
+    # -- image builds (experiment image, from the project's build: section) --
+
+    @abstractmethod
+    def build_image(self, request: BuildImageRequest) -> ImageBuildRef:
+        """Build the experiment image from the project's ``build:`` section.
+
+        Idempotent/content-addressed: returns immediately with ``cached=True`` when
+        an image for the same inputs already exists; otherwise starts a build and
+        returns its id (poll :meth:`get_image_build_status`). The image is referenced
+        from ``execution.image`` as ``build:<tag>``; the concrete registry-qualified
+        ref is resolved server-side and never crosses this interface. Raises
+        ``ValueError`` if the project has no ``build:`` section or it fails
+        validation (fail-fast at submit).
+        """
+
+    @abstractmethod
+    def get_image_build_status(self, build_id: str) -> ImageBuildStatus:
+        """Return an image build's live status (phase, done, structured error)."""
+
+    @abstractmethod
+    def get_image_build_log(self, build_id: str, offset: int = 0) -> LogChunk:
+        """Return the builder's raw log from byte *offset* onward.
+
+        Same streaming protocol as :meth:`get_campaign_logs` (poll, append
+        :attr:`LogChunk.text`, resume from :attr:`LogChunk.next_offset`). The raw
+        builder output for deep dives when :class:`ImageBuildError` is not enough.
         """
 
     # -- postprocessing (editable, re-runnable; never mutates _config) ------

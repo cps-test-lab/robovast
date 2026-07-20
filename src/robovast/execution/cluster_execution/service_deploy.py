@@ -342,6 +342,74 @@ def _ntfy_env_from_host():
     return out
 
 
+#: Secret holding the registry *config* the in-cluster service reads from its own
+#: env (``envFrom``) to build/ship agent-built experiment images: the registry
+#: prefix, the names of the push/pull dockerconfigjson Secrets, and an optional
+#: default base image. Read back by ``BaseConfig.get_registry_config()``.
+REGISTRY_CONFIG_SECRET_NAME = "robovast-registry-config"
+
+#: dockerconfigjson Secret holding registry push/pull credentials, created only
+#: when ``ROBOVAST_REGISTRY_SERVER``/``_USERNAME``/``_PASSWORD`` are set at setup.
+#: Mounted into the build Job (``docker push``) and referenced as an
+#: ``imagePullSecret`` on campaign pods. An anonymous/insecure registry (e.g. a
+#: cluster-internal one) needs no such Secret — the config Secret then names none.
+REGISTRY_PUSH_SECRET_NAME = "robovast-registry-push"
+
+
+def _registry_env_from_host():
+    """Resolve the registry config env from the host, or ``None`` when unset.
+
+    Reads ``ROBOVAST_REGISTRY_PREFIX`` (required to enable in-cluster builds) plus
+    the optional default base image. When registry auth is also provided (see
+    :func:`_registry_dockerconfig_manifest`) the push/pull Secret names are wired so
+    the build Job and campaign pods use it.
+    """
+    import os
+    _load_setup_dotenv()
+    prefix = os.environ.get("ROBOVAST_REGISTRY_PREFIX", "").strip()
+    if not prefix:
+        return None
+    env = {"ROBOVAST_REGISTRY_PREFIX": prefix}
+    base = os.environ.get("ROBOVAST_BASE_EXPERIMENT_IMAGE", "").strip()
+    if base:
+        env["ROBOVAST_BASE_EXPERIMENT_IMAGE"] = base
+    if (os.environ.get("ROBOVAST_REGISTRY_USERNAME", "").strip()
+            and os.environ.get("ROBOVAST_REGISTRY_PASSWORD", "").strip()):
+        env["ROBOVAST_REGISTRY_PUSH_SECRET"] = REGISTRY_PUSH_SECRET_NAME
+        env["ROBOVAST_REGISTRY_PULL_SECRET"] = REGISTRY_PUSH_SECRET_NAME
+    return env
+
+
+def _registry_dockerconfig_manifest(namespace):
+    """A ``kubernetes.io/dockerconfigjson`` Secret for registry push/pull, or ``None``.
+
+    Created only when ``ROBOVAST_REGISTRY_SERVER`` + ``ROBOVAST_REGISTRY_USERNAME`` +
+    ``ROBOVAST_REGISTRY_PASSWORD`` are set at setup (an existing external registry —
+    the Phase-1 path). The credentials never leave the cluster and never cross the
+    client interface.
+    """
+    import base64
+    import json
+    import os
+    _load_setup_dotenv()
+    server = os.environ.get("ROBOVAST_REGISTRY_SERVER", "").strip()
+    user = os.environ.get("ROBOVAST_REGISTRY_USERNAME", "").strip()
+    password = os.environ.get("ROBOVAST_REGISTRY_PASSWORD", "").strip()
+    if not (server and user and password):
+        return None
+    auth = base64.b64encode(f"{user}:{password}".encode()).decode()
+    dockercfg = {"auths": {server: {"username": user, "password": password,
+                                    "auth": auth}}}
+    return {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {"name": REGISTRY_PUSH_SECRET_NAME, "namespace": namespace,
+                     "labels": {"app": SERVICE_NAME}},
+        "type": "kubernetes.io/dockerconfigjson",
+        "stringData": {".dockerconfigjson": json.dumps(dockercfg)},
+    }
+
+
 def _env_secret_manifest(namespace, name, env):
     """A Secret holding credentials the service reads from its own env (``envFrom``)."""
     return {
@@ -364,6 +432,7 @@ def _env_secret_manifest(namespace, name, env):
 ENV_SECRET_SOURCES = (
     (SHARE_SECRET_NAME, _share_env_from_host),
     (NTFY_SECRET_NAME, _ntfy_env_from_host),
+    (REGISTRY_CONFIG_SECRET_NAME, _registry_env_from_host),
 )
 
 
@@ -425,6 +494,14 @@ def service_manifests(namespace="default", image=None, env=None,
         if resolved:
             extra.append(_env_secret_manifest(namespace, name, resolved))
             env_secret_names.append(name)
+
+    # Registry push/pull credentials (dockerconfigjson) — created only when an
+    # external registry's auth is configured at setup. Not an envFrom secret: it is
+    # mounted into the build Job and referenced as an imagePullSecret by campaign
+    # pods (both by name via the registry config env above).
+    registry_secret = _registry_dockerconfig_manifest(namespace)
+    if registry_secret:
+        extra.append(registry_secret)
 
     return [
         *_service_rbac_manifests(namespace),

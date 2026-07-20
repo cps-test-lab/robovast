@@ -44,11 +44,13 @@ from typing import Optional
 
 from robovast.execution.control_server import (ControllerState, Phase, Status,
                                                failure_detail)
-from robovast.service.interface import (ActionResult, CampaignRef,
+from robovast.service.interface import (ActionResult, BuildImageRequest,
+                                        CampaignRef,
                                         CampaignSummary, CreateCampaignRequest,
                                         CreateUploadRequest,
                                         CreateWorkspaceRequest, EditFileRequest,
-                                        FileContent, FileMeta, JobCounts,
+                                        FileContent, FileMeta, ImageBuildRef,
+                                        ImageBuildStatus, JobCounts,
                                         JobSummary, ListCampaignsRequest,
                                         ListCampaignsResponse, ListJobsResponse,
                                         ListFilesResponse, ListWorkspacesResponse,
@@ -469,6 +471,15 @@ class LocalTransport(RobovastInterface):
         runs = request.runs if request.runs and request.runs > 0 else None
         options = self._run_options(request)
 
+        # Implicit preflight: if execution.image is a symbolic ``build:<tag>`` ref,
+        # ensure the image exists (idempotent build) and pin it as the explicit
+        # image so the backend uses it (explicit wins in resolve_robovast_image).
+        # Blocks until the image is ready — a doomed build surfaces as a build
+        # failure the caller sees before any run starts.
+        built = self._ensure_build_image(project, campaign_config)
+        if built:
+            options.image = built
+
         def _worker():
             from robovast.execution.backends import (
                 CampaignConfigError, CampaignStopped)
@@ -526,6 +537,84 @@ class LocalTransport(RobovastInterface):
         thread.start()
         logger.info("Started campaign %s (search=%s)", campaign_id, is_search)
         return CampaignRef(campaign_id=campaign_id)
+
+    # -- image builds -------------------------------------------------------
+
+    @property
+    def _image_builds(self):
+        """Lazily-created local image-build manager (docker buildx --load)."""
+        mgr = getattr(self, "_image_build_mgr", None)
+        if mgr is None:
+            from pathlib import Path as _Path
+
+            from robovast.service.image_build import LocalImageBuildManager
+            root = os.environ.get("ROBOVAST_BUILDS_ROOT")
+            log_root = _Path(root) if root else _Path.home() / ".robovast" / "builds"
+            mgr = LocalImageBuildManager(log_root)
+            self._image_build_mgr = mgr
+        return mgr
+
+    def _build_spec_for(self, project, campaign_config):
+        """Return (BuildSpec, project_dir) for a project, or (None, None)."""
+        from pathlib import Path as _Path
+
+        from robovast.service.image_build import extract_build_spec
+        spec = extract_build_spec(campaign_config)
+        if spec is None:
+            return None, None
+        project_dir = _Path(project.config_path).resolve().parent
+        return spec, project_dir
+
+    def _ensure_build_image(self, project, campaign_config) -> "str | None":
+        """Build (or reuse) the project's ``build:`` image; return the concrete ref.
+
+        Returns ``None`` when the project has no ``build:`` section. Blocks until
+        the build finishes; raises ``RuntimeError`` on failure (with the structured
+        error message) so the campaign preflight fails loudly.
+        """
+        spec, project_dir = self._build_spec_for(project, campaign_config)
+        if spec is None:
+            return None
+        mgr = self._image_builds
+        ref = mgr.start(spec, project_dir)
+        status = self._await_build(ref.build_id)
+        if status.phase not in ("succeeded", "cached"):
+            err = status.error
+            detail = f" ({err.message})" if err and err.message else ""
+            raise RuntimeError(
+                f"experiment image build '{spec.tag}' failed{detail}; "
+                f"see the build log (build_id={ref.build_id})")
+        return mgr.resolve_ref(spec, project_dir)
+
+    def _await_build(self, build_id: str):
+        mgr = self._image_builds
+        while True:
+            status = mgr.status(build_id)
+            if status.done:
+                return status
+            time.sleep(1.0)
+
+    def build_image(self, request) -> "ImageBuildRef":  # noqa: F821
+        from robovast.common.common import load_config
+        from robovast.common.config import validate_config
+        from robovast.service.image_build import validate_build_spec
+        project = self._resolve_project(request.workspace_id, request.config_path)
+        campaign_config = validate_config(load_config(project.config_path))
+        spec, project_dir = self._build_spec_for(project, campaign_config)
+        if spec is None:
+            raise ValueError(
+                "project has no 'build:' section — nothing to build (set a build: "
+                "section and execution.image: build:<tag>)")
+        problems = validate_build_spec(spec, project_dir)
+        if problems:
+            raise ValueError("invalid build: section:\n  - " + "\n  - ".join(problems))
+        return self._image_builds.start(spec, project_dir)
+
+    def get_image_build_status(self, build_id: str):
+        return self._image_builds.status(build_id)
+
+    def get_image_build_log(self, build_id: str, offset: int = 0):
+        return self._image_builds.log(build_id, offset)
 
     def _postprocess(self, campaign_id, results_dir, state, entry):
         """Run analysis postprocessing for a just-finished local campaign.
@@ -1302,6 +1391,20 @@ class HTTPTransport(RobovastInterface):
         return ActionResult.model_validate(
             self._post(Routes.CLEANUP_DATA,
                        {"campaign_id": request.campaign_id, "force": request.force}))
+
+    # -- image builds -------------------------------------------------------
+
+    def build_image(self, request: BuildImageRequest) -> ImageBuildRef:
+        return ImageBuildRef.model_validate(
+            self._post(Routes.IMAGE_BUILDS, json=request.model_dump()))
+
+    def get_image_build_status(self, build_id: str) -> ImageBuildStatus:
+        return ImageBuildStatus.model_validate(
+            self._get(Routes.image_build_status(build_id)))
+
+    def get_image_build_log(self, build_id: str, offset: int = 0) -> LogChunk:
+        return LogChunk.model_validate(
+            self._get(Routes.image_build_log(build_id), offset=offset))
 
     def get_postprocessing(self, campaign_id: str):
         from robovast.service.interface import PostprocessingInfo

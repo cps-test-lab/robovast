@@ -15,8 +15,38 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import os
 import tarfile
+from dataclasses import dataclass
 from typing import Optional
+
+
+@dataclass
+class RegistryConfig:
+    """Container-registry settings for agent-built experiment images.
+
+    Registry details live **only** here (server-side) — a registry endpoint,
+    credential, or fully-qualified ref never crosses the client interface. The
+    service prepends :attr:`registry_prefix` to a project's bare ``build.tag`` and
+    resolves the concrete ref; the client only ever sees the symbolic ``build:<tag>``.
+    """
+
+    #: e.g. ``"registry.local:5000/robovast"`` or ``"ghcr.io/cps-test-lab"``.
+    registry_prefix: str = ""
+    #: k8s ``dockerconfigjson`` Secret mounted into the build Job for ``docker push``.
+    push_secret_name: str = ""
+    #: k8s ``imagePullSecret`` added to campaign Job pods so they can pull the image.
+    pull_secret_name: str = ""
+    #: Default ``FROM`` when ``build.base_image`` is omitted (or is an alias).
+    base_experiment_image: str = ""
+    #: Push to the registry over plain HTTP / an untrusted cert (e.g. a
+    #: cluster-internal registry). The BuildKit push output gets
+    #: ``registry.insecure=true``.
+    insecure: bool = False
+
+    def enabled(self) -> bool:
+        """True when a registry is configured (in-cluster builds are possible)."""
+        return bool(self.registry_prefix)
 
 
 class BaseConfig(object):
@@ -210,6 +240,28 @@ class BaseConfig(object):
             tuple[str, str]: (access_key, secret_key)
         """
         return ("minioadmin", "minioadmin")
+
+    def get_registry_config(self) -> RegistryConfig:
+        """Return the registry config for agent-built experiment images.
+
+        Configured at ``vast exec cluster setup`` (registry prefix + push/pull
+        Secrets). The default is **disabled** (no registry) — in-cluster image
+        builds are unavailable until a deployment provides one. Environment
+        overrides ease dev/minikube setups (and CI):
+        ``ROBOVAST_REGISTRY_PREFIX``, ``ROBOVAST_REGISTRY_PUSH_SECRET``,
+        ``ROBOVAST_REGISTRY_PULL_SECRET``, ``ROBOVAST_BASE_EXPERIMENT_IMAGE``.
+
+        Registry details never cross the client interface (see
+        :class:`RegistryConfig`).
+        """
+        return RegistryConfig(
+            registry_prefix=os.environ.get("ROBOVAST_REGISTRY_PREFIX", ""),
+            push_secret_name=os.environ.get("ROBOVAST_REGISTRY_PUSH_SECRET", ""),
+            pull_secret_name=os.environ.get("ROBOVAST_REGISTRY_PULL_SECRET", ""),
+            base_experiment_image=os.environ.get("ROBOVAST_BASE_EXPERIMENT_IMAGE", ""),
+            insecure=os.environ.get("ROBOVAST_REGISTRY_INSECURE", "").strip().lower()
+            in ("1", "true", "yes"),
+        )
 
     def get_s3_bucket(self) -> Optional[str]:
         """Return a fixed/shared S3 bucket name, or ``None``.

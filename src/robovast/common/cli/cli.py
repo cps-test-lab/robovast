@@ -737,6 +737,92 @@ def import_results(archive, output, force):
         sys.exit(1)
 
 
+@cli.group()
+def image():
+    """Build the experiment image declared by a project's ``build:`` section.
+
+    Mirrors the ``build_experiment_image`` MCP tools and drives the same interface.
+    Registry-free: you name a project; the service builds from its ``build:`` section
+    and the image is referenced as ``build:<tag>`` in ``execution.image``. Every
+    command takes ``--cluster`` and prints the target it resolved (this machine's
+    ``vast serve`` by default, or the in-cluster service with ``--cluster``).
+    """
+
+
+@image.command('build')
+@click.option('--workspace-id', default='', help='Workspace to build (empty = CWD project).')
+@click.option('--config-path', default='', help='Which .vast when the workspace has several.')
+@click.option('--wait/--no-wait', default=True, help='Wait for the build to finish (default).')
+@target_options
+def image_build(workspace_id, config_path, wait, cluster, namespace, context):
+    """Build (or reuse) the experiment image from the project's ``build:`` section."""
+    import time as _time
+
+    from robovast.service.interface import BuildImageRequest
+    with service_client(cluster, namespace, context) as (client, target):
+        _echo_target(target)
+        ref = client.build_image(BuildImageRequest(
+            workspace_id=workspace_id, config_path=config_path))
+        if ref.cached:
+            click.echo(f"✓ image 'build:{ref.tag}' already up to date (cache hit)")
+            return
+        click.echo(f"building 'build:{ref.tag}' (build_id={ref.build_id}) ...")
+        if not wait:
+            click.echo("started; poll 'vast image status'")
+            return
+        while True:
+            status = client.get_image_build_status(ref.build_id)
+            if status.done:
+                break
+            _time.sleep(2.0)
+        if status.phase in ('succeeded', 'cached'):
+            click.echo(f"✓ built 'build:{status.tag}'")
+        else:
+            err = status.error
+            if err:
+                click.echo(f"✗ build failed [{err.phase}] {err.message}", err=True)
+                if err.entry:
+                    click.echo(f"  offending entry: {err.entry} (fixable_by={err.fixable_by})",
+                               err=True)
+            else:
+                click.echo("✗ build failed", err=True)
+            sys.exit(1)
+
+
+@image.command('status')
+@click.argument('build_id')
+@target_options
+def image_status(build_id, cluster, namespace, context):
+    """Show an image build's status."""
+    with service_client(cluster, namespace, context) as (client, target):
+        _echo_target(target)
+        s = client.get_image_build_status(build_id)
+        click.echo(f"{s.build_id}: phase={s.phase} done={s.done} cached={s.cached} "
+                   f"image={s.image_ref}")
+        if s.error:
+            click.echo(f"  error [{s.error.phase}] {s.error.message} "
+                       f"(entry={s.error.entry!r}, fixable_by={s.error.fixable_by})")
+
+
+@image.command('log')
+@click.argument('build_id')
+@target_options
+def image_log(build_id, cluster, namespace, context):
+    """Print an image build's raw builder log."""
+    with service_client(cluster, namespace, context) as (client, target):
+        _echo_target(target)
+        offset = 0
+        while True:
+            chunk = client.get_image_build_log(build_id, offset)
+            if chunk.text:
+                click.echo(chunk.text, nl=False)
+            offset = chunk.next_offset
+            if chunk.eof:
+                break
+            import time as _time
+            _time.sleep(1.0)
+
+
 def load_plugins():
     """Dynamically load all VAST CLI plugins from entry points."""
     # Map of long plugin names to their short aliases

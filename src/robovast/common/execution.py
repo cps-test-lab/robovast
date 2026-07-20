@@ -49,6 +49,24 @@ DEFAULT_ROBOVAST_IMAGE = "ghcr.io/cps-test-lab/robovast:latest"
 DEFAULT_ROBOVAST_CONTROLLER_IMAGE = "ghcr.io/cps-test-lab/robovast-controller:latest"
 
 
+# A symbolic ``execution.image`` that points at the image produced by the
+# ``build:`` section (see ``robovast.common.config.BUILD_IMAGE_PREFIX``). Kept in
+# sync here so this module needs no import from ``config`` (which would risk a
+# cycle). ``build:<tag>`` is resolved to a concrete image *before* it reaches a
+# pod/compose spec, by the build lifecycle (which knows the registry + digest).
+BUILD_IMAGE_PREFIX = "build:"
+
+
+def is_build_image_ref(image: str | None) -> bool:
+    """True if *image* is a symbolic ``build:<tag>`` ref (an unresolved build)."""
+    return bool(image) and image.strip().startswith(BUILD_IMAGE_PREFIX)
+
+
+def build_image_tag(image: str) -> str:
+    """The bare ``<tag>`` from a ``build:<tag>`` symbolic ref."""
+    return image.strip()[len(BUILD_IMAGE_PREFIX):]
+
+
 def _resolve_image(default: str, env_var: str, *, explicit: str | None = None,
                    config_image: str | None = None) -> str:
     """Resolve a container image with a fixed precedence.
@@ -57,15 +75,24 @@ def _resolve_image(default: str, env_var: str, *, explicit: str | None = None,
     *config_image* (a value from the ``.vast`` file) → the *env_var* environment
     variable (a replacement for the built-in default only, handy for testing a
     dev image pushed to e.g. Docker Hub) → *default*.
+
+    A symbolic ``build:<tag>`` ref must have been resolved to a concrete image by
+    the build lifecycle before it reaches here; if one slips through it would be
+    used verbatim as an (invalid) image name, so we fail loudly instead.
     """
     if explicit:
-        return explicit
-    if config_image:
-        return config_image
-    env_image = os.environ.get(env_var, "").strip()
-    if env_image:
-        return env_image
-    return default
+        resolved = explicit
+    elif config_image:
+        resolved = config_image
+    else:
+        env_image = os.environ.get(env_var, "").strip()
+        resolved = env_image if env_image else default
+    if is_build_image_ref(resolved):
+        raise ValueError(
+            f"unresolved build image ref '{resolved}': the 'build:' image must be "
+            "built (build_experiment_image / the start_campaign preflight) before "
+            "it can be used as a container image")
+    return resolved
 
 
 def resolve_robovast_image(explicit: str | None = None,

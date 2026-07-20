@@ -33,12 +33,14 @@ lazily so importing this module stays cheap.
 
 import logging
 
-from robovast.service.interface import (ActionResult, CampaignRef,
+from robovast.service.interface import (ActionResult, BuildImageRequest,
+                                        CampaignRef,
                                         CreateCampaignRequest,
                                         CleanupDataRequest,
                                         CreateUploadRequest,
                                         CreateWorkspaceRequest, EditFileRequest,
                                         FileContent, FileMeta,
+                                        ImageBuildRef, ImageBuildStatus,
                                         ListCampaignsResponse, ListFilesResponse,
                                         ListJobsResponse,
                                         ListWorkspacesResponse, LogChunk,
@@ -265,6 +267,20 @@ def build_app(impl: RobovastInterface):
     def cleanup_campaign_data(request: "CleanupDataRequest | None" = None) -> ActionResult:
         # Body optional: no body means "all finished campaigns" (live ones skipped).
         return _guard(lambda: impl.cleanup_campaign_data(request or CleanupDataRequest()))
+
+    # -- image builds -------------------------------------------------------
+
+    @app.post(Routes.IMAGE_BUILDS, response_model=ImageBuildRef)
+    def build_image(request: BuildImageRequest) -> ImageBuildRef:
+        return _guard(lambda: impl.build_image(request))
+
+    @app.get(Routes.image_build_status("{build_id}"), response_model=ImageBuildStatus)
+    def get_image_build_status(build_id: str) -> ImageBuildStatus:
+        return _guard(lambda: impl.get_image_build_status(build_id))
+
+    @app.get(Routes.image_build_log("{build_id}"), response_model=LogChunk)
+    def get_image_build_log(build_id: str, offset: int = 0) -> LogChunk:
+        return _guard(lambda: impl.get_image_build_log(build_id, offset))
 
     @app.get("/campaigns/{campaign_id}/archive")
     def download_campaign_archive(campaign_id: str):

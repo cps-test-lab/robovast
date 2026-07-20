@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
@@ -243,6 +243,41 @@ function JobRow({ campaignId, job }: { campaignId: string; job: JobSummary }) {
   )
 }
 
+// A stable, legible color per container name, hashed into a fixed palette. The
+// palette avoids very light/very dark hues so lines stay readable on the log
+// panel's `background.paper` in both light and dark themes.
+const CONTAINER_COLORS = [
+  '#2e9599', // teal
+  '#c9611e', // orange
+  '#8250df', // purple
+  '#2f7d31', // green
+  '#1f6feb', // blue
+  '#c2185b', // pink
+  '#8a6d1a', // olive
+  '#5a6b7a', // slate
+]
+function colorForContainer(name: string): string {
+  let h = 0
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0
+  return CONTAINER_COLORS[Math.abs(h) % CONTAINER_COLORS.length]
+}
+
+// Multi-container job logs arrive with each line tagged `[container] …` (merged
+// server-side). Render those lines colored per container; lines without a tag
+// (campaign log, single-container jobs) render unchanged.
+function renderLogLines(text: string) {
+  return text.split('\n').map((line, i) => {
+    const m = /^(\[[^\]]+\]) ?/.exec(line)
+    const nl = i > 0 ? '\n' : ''
+    if (!m) return <span key={i}>{nl + line}</span>
+    return (
+      <span key={i} style={{ color: colorForContainer(m[1].slice(1, -1)) }}>
+        {nl + line}
+      </span>
+    )
+  })
+}
+
 // Streams a log incrementally: polls `fetchChunk` from a byte offset and appends
 // the returned slice — the same offset protocol the CLI/MCP use — autoscrolling to
 // the newest line. `resetKey` restarts the stream when the source changes; `terminal`
@@ -287,6 +322,8 @@ function LogPanel({
     if (preRef.current) preRef.current.scrollTop = preRef.current.scrollHeight
   }, [text])
 
+  const lines = useMemo(() => (text ? renderLogLines(text) : null), [text])
+
   return (
     <Box
       component="pre"
@@ -308,7 +345,7 @@ function LogPanel({
         overflowY: 'auto',
       }}
     >
-      {text || (eof ? '(no log)' : 'loading…')}
+      {lines || (eof ? '(no log)' : 'loading…')}
     </Box>
   )
 }

@@ -111,6 +111,74 @@ def pod_block_reason(pod) -> "tuple[str, str] | None":
     return None
 
 
+def _loggable_container_names(pod) -> "list[str]":
+    """Names of *pod*'s regular containers (the main ``robovast`` plus any secondary
+    sim/SUT servers), in spec order. Init containers (e.g. ``s3-init``) are startup
+    noise and excluded."""
+    spec = getattr(pod, "spec", None)
+    containers = getattr(spec, "containers", None) or [] if spec else []
+    return [c.name for c in containers if getattr(c, "name", None)]
+
+
+def read_pod_logs_merged(core, pod, namespace) -> str:
+    """Merge every regular container's log of *pod* into one readable stream.
+
+    A scenario-run pod has a main ``robovast`` container plus zero or more named
+    secondary containers (sim / SUT servers). This returns them as a single log:
+
+    * one container → its plain log, unchanged (byte-identical to the old behaviour);
+    * many containers → each line tagged ``[<container>] `` and all lines
+      merge-sorted by the kubelet's per-line RFC3339 timestamp (fetched with
+      ``timestamps=True``). Because every container shares the node clock and logs
+      only ever grow forward in time, the merged text is append-only across repeated
+      reads — which keeps the byte-offset streaming protocol correct.
+
+    A container that has not started yet (``Waiting``) or whose log is otherwise
+    unavailable is skipped rather than failing the whole read.
+    """
+    names = _loggable_container_names(pod)
+    pod_name = pod.metadata.name
+
+    def _read(container, timestamps):
+        try:
+            return core.read_namespaced_pod_log(
+                name=pod_name, namespace=namespace, container=container,
+                timestamps=timestamps)
+        except client.exceptions.ApiException as e:
+            # 404: pod/container gone; 400: container waiting / no log yet.
+            if e.status in (400, 404):
+                return None
+            raise
+
+    if len(names) <= 1:
+        container = names[0] if names else "robovast"
+        return _read(container, timestamps=False) or ""
+
+    width = max(len(n) for n in names)
+    entries = []  # (timestamp, container_order, line_order, rendered_line)
+    for order, name in enumerate(names):
+        text = _read(name, timestamps=True)
+        if not text:
+            continue
+        prefix = f"[{name}]".ljust(width + 2)
+        last_ts = ""
+        for line_order, line in enumerate(text.split("\n")):
+            if not line:
+                continue
+            ts, _, message = line.partition(" ")
+            # kubelet timestamps are RFC3339 and sort lexicographically; a line
+            # without one (rare continuation) inherits its container's last ts so
+            # it stays next to its neighbours instead of jumping to the top.
+            if "T" in ts and (ts[:1].isdigit()):
+                last_ts = ts
+            else:
+                message = line
+            entries.append((last_ts, order, line_order, f"{prefix} {message}"))
+    entries.sort(key=lambda e: (e[0], e[1], e[2]))
+    merged = "\n".join(e[3] for e in entries)
+    return merged + "\n" if merged else ""
+
+
 def _pod_signals(k8s_core, namespace, label_selector) -> "tuple[set, dict]":
     """One pod list → ``(running_job_names, blocked_job_reasons)``.
 

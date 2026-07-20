@@ -192,6 +192,39 @@ once results land, and the live controller phase is visible in the status
    be unreliable.
 
 
+Building experiment images
+---------------------------
+
+When an experiment needs new code or system packages **baked into its container
+image** (a new ``sim_suite`` package, an apt dependency), the assistant declares a
+:ref:`build section <config-build-section>` in the ``.vast`` and sets
+``execution.image: build:<tag>``. The ``campaign_control`` plugin then exposes:
+
+* ``build_experiment_image`` — build (or reuse) the image from the project's
+  ``build:`` section. Returns ``{build_id, tag, cached}``.
+* ``get_image_build_status`` — poll a build: ``phase`` / ``done`` plus, on failure,
+  a **structured** ``error_detail`` (``phase`` = apt / pip / source-build /
+  base-pull / push / resource, the offending ``build:`` ``entry``, and
+  ``fixable_by`` = ``agent`` or ``infra``).
+* ``get_image_build_log`` — the raw builder log for deep dives.
+
+The workflow is three steps and stays entirely in the ``.vast`` the assistant
+already edits:
+
+#. edit the ``build:`` section (and drop in the new package);
+#. ``build_experiment_image`` — **idempotent**, so it is safe to always call (a
+   no-op cache hit when nothing changed);
+#. ``start_campaign`` — the image is wired in automatically.
+
+The assistant may even skip step 2: ``start_campaign`` on a ``build:<tag>`` project
+(re)builds the image as its first step. The build runs **where the backend runs**
+(local ``docker buildx`` for a local ``vast serve``, an in-cluster BuildKit Job on
+the cluster), and the assistant **never handles a registry reference or
+credentials** — the symbolic ``build:<tag>`` is all it ever sees. Requires a
+reachable ``robovast-service`` (a ``vast serve`` or a tunnel); on the cluster it
+also requires a registry configured at ``vast exec cluster setup`` (see
+:doc:`cluster_execution`).
+
 .. _mcp-tools:
 
 Available Tools

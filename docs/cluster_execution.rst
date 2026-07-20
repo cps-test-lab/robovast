@@ -164,6 +164,9 @@ there — no external share needed:
    # List what is downloadable and from where (service = postprocessed, share = raw):
    vast results list-downloads
 
+   # Restrict the listing to specific campaigns (positional, one or more):
+   vast results list-downloads campaign-2025-06-01-120000
+
 ``vast results download`` picks its source automatically from what is reachable — a
 running service serves the **postprocessed** archive from the object store; a
 configured external share serves the **raw** (pre-postprocessing) archive that
@@ -224,6 +227,46 @@ For an **in-cluster** service the ntfy config is read from your ``.env`` at
 ``setup`` time and injected into the service pod (as a Kubernetes Secret, exactly
 like the share credentials), so changing the topic means re-running ``setup`` /
 ``--upgrade`` to redeploy. A local ``vast serve`` reads the ``.env`` live.
+
+
+Experiment image builds (registry)
+-----------------------------------
+
+Agent-built experiment images (a project's :ref:`build section
+<config-build-section>`) are built **in-cluster** by a BuildKit Job and pushed to a
+container registry the cluster can pull from. Point the deployment at a registry in
+your ``.env`` before ``setup`` / ``--upgrade`` — the values are stored in the
+service pod's environment (like the share/ntfy credentials) and read back by the
+cluster config's ``get_registry_config()``; **no registry detail ever reaches a
+client**.
+
+.. code-block:: bash
+
+   ROBOVAST_REGISTRY_PREFIX=ghcr.io/cps-test-lab      # required to enable builds
+   # Optional: registry auth → a dockerconfigjson Secret used for push (build Job)
+   # and pull (campaign pods). Omit for an anonymous/insecure registry.
+   ROBOVAST_REGISTRY_SERVER=ghcr.io
+   ROBOVAST_REGISTRY_USERNAME=<user>
+   ROBOVAST_REGISTRY_PASSWORD=<token>
+   # Optional: a cluster-internal registry over plain HTTP / untrusted TLS.
+   ROBOVAST_REGISTRY_INSECURE=true
+   # Optional: default base image when build.base_image is omitted.
+   ROBOVAST_BASE_EXPERIMENT_IMAGE=ghcr.io/cps-test-lab/sim-suite-nav2-eval:latest
+
+The service prepends ``ROBOVAST_REGISTRY_PREFIX`` to the project's bare
+``build.tag`` and pushes ``<prefix>/<tag>:<hash>``; campaign pods pull it via the
+same credentials (added as an ``imagePullSecret``). Without a registry configured,
+in-cluster builds are unavailable and a ``build:<tag>`` project fails at submit
+with an actionable message.
+
+.. note::
+
+   Rootless BuildKit needs AppArmor **and** seccomp ``Unconfined`` (the build Job
+   sets both). On nodes whose container runtime cannot pull from the registry
+   without host trust (e.g. an in-cluster registry over plain HTTP on RKE2/k3s
+   containerd), the node must be configured to trust it (``registries.yaml``) for
+   campaign pods to pull the built image — an external registry with valid TLS
+   avoids this.
 
 
 Manual Deployment (prepare-run)

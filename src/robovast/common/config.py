@@ -252,6 +252,72 @@ class ExecutionConfig(BaseModel):
         return v
 
 
+#: A symbolic ``execution.image`` value that points at the image produced by the
+#: ``build:`` section. The bare name after the prefix is the ``build.tag``. The
+#: real (registry-qualified, digest-pinned) image is resolved server-side; no
+#: client ever handles a registry ref.
+BUILD_IMAGE_PREFIX = "build:"
+
+#: A bare image name[:version] with no registry host or namespace (no ``/``). The
+#: registry prefix is added server-side, so the agent stays free of registry
+#: knowledge.
+_BUILD_TAG_RE = re.compile(r'^[a-z0-9][a-z0-9._-]*(:[A-Za-z0-9._-]+)?$')
+
+
+class BuildConfig(BaseModel):
+    """Declarative spec for the experiment container image the scenario runs inside.
+
+    Present only when the experiment needs code or system packages *baked into the
+    image* (e.g. new ``sim_suite`` packages, or an apt dependency). Files that ship
+    to ``/config`` at runtime (``run_files``, ``scenario_file``) never require a
+    build. When absent, ``execution.image`` is used verbatim.
+
+    The built image is referenced from ``execution.image`` via a symbolic
+    ``build:<tag>`` ref (see :data:`BUILD_IMAGE_PREFIX`); the service resolves it to
+    the pushed, digest-pinned image. The client/agent never handles a
+    registry-qualified ref, endpoint, or credential -- registry details live only in
+    the cluster config server-side.
+    """
+    model_config = ConfigDict(extra='forbid')
+    #: Base image to build ``FROM``. Optional: omit for the server-provided default
+    #: base, or give a robovast-published base *alias* (e.g. ``"sim-suite"``). Never
+    #: a registry URL from the agent's side.
+    base_image: Optional[str] = None
+    #: apt packages installed into the image (``apt-get install -y``).
+    system_packages: Optional[list[str]] = None
+    #: Python packages installed into the image. Same vocabulary as the top-level
+    #: ``plugins:`` field -- an index pin (``shapely>=2.0``), a git URL
+    #: (``pkg @ git+https://host/repo@ref``), or an uploaded workspace wheel
+    #: (``./plugins/foo.whl``) -- PLUS a source directory relative to this ``.vast``
+    #: (``packages/sim_suite_mobile``, installed with ``pip install -e``). The
+    #: source-dir flavor works here (and not in ``plugins:``) because the build
+    #: copies the workspace project dir into the image build context.
+    python_packages: Optional[list[str]] = None
+    #: Bare image name, optionally ``name:version`` -- no registry host/namespace.
+    #: The registry prefix and a content hash are added server-side.
+    tag: str
+
+    @field_validator('system_packages', 'python_packages')
+    @classmethod
+    def _validate_nonempty_strings(cls, v):
+        if v is None:
+            return v
+        for entry in v:
+            if not isinstance(entry, str) or not entry.strip():
+                raise ValueError("each entry must be a non-empty string")
+        return v
+
+    @field_validator('tag')
+    @classmethod
+    def _validate_tag(cls, v):
+        if not isinstance(v, str) or not _BUILD_TAG_RE.match(v):
+            raise ValueError(
+                "build.tag must be a bare image name (optionally 'name:version') "
+                "with no registry host or '/'; the registry prefix is added "
+                f"server-side. Got '{v}'")
+        return v
+
+
 class ResultsConfig(BaseModel):
     postprocessing: Optional[list[str | dict[str, Any]]] = None
     metadata_processing: Optional[list[str | dict[str, Any]]] = None
@@ -724,6 +790,9 @@ class ConfigV1(BaseModel):
     )
     configuration: Optional[list[ConfigurationConfig]] = None
     execution: ExecutionConfig
+    #: Optional declarative image build (see :class:`BuildConfig`). Present only when
+    #: the experiment needs code/system packages baked into ``execution.image``.
+    build: Optional[BuildConfig] = None
     search: Optional[SearchConfig] = None
     results_processing: Optional[ResultsConfig] = None
     evaluation: Optional[EvaluationConfig] = None
@@ -746,6 +815,31 @@ class ConfigV1(BaseModel):
                 raise ValueError("each 'plugins' entry must be a non-empty string "
                                  "(a pip requirement spec, e.g. a git+https URL)")
         return v
+
+    @model_validator(mode='after')
+    def _build_image_ref_consistency(self):
+        # A symbolic ``execution.image: build:<tag>`` requires a matching build:
+        # section, and vice-versa the section's tag must be the one referenced.
+        # Catch the mismatch at validation time (fail-fast at submit) rather than
+        # only when the build/run starts.
+        image = (self.execution.image or "").strip()
+        if image.startswith(BUILD_IMAGE_PREFIX):
+            ref_tag = image[len(BUILD_IMAGE_PREFIX):]
+            if self.build is None:
+                raise ValueError(
+                    f"execution.image '{image}' references a build, but no 'build:' "
+                    "section is defined")
+            if ref_tag != self.build.tag:
+                raise ValueError(
+                    f"execution.image '{image}' does not match build.tag "
+                    f"'{self.build.tag}'; expected "
+                    f"'{BUILD_IMAGE_PREFIX}{self.build.tag}'")
+        elif self.build is not None:
+            raise ValueError(
+                f"a 'build:' section is defined but execution.image does not "
+                f"reference it; set execution.image: '{BUILD_IMAGE_PREFIX}"
+                f"{self.build.tag}'")
+        return self
 
     @model_validator(mode='after')
     def _search_xor_configuration(self):
