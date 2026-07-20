@@ -88,6 +88,12 @@ def _service_rbac_manifests(namespace):
                 # cluster_execution.container_runner.ClusterContainerRunner).
                 {"apiGroups": [""], "resources": ["pods/exec"],
                  "verbs": ["create", "get"]},
+                # Stopping a campaign tears down its Kueue Workloads: list to find
+                # the ones owned by the campaign's jobs, delete/deletecollection to
+                # remove them, and patch to strip finalizers off any stuck ones
+                # (see cluster_execution.kubernetes_kueue.cleanup_kueue_workloads).
+                {"apiGroups": ["kueue.x-k8s.io"], "resources": ["workloads"],
+                 "verbs": ["get", "list", "watch", "delete", "deletecollection", "patch"]},
             ],
         },
         {
