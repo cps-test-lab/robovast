@@ -220,6 +220,11 @@ stays silent, and an unreachable ntfy server never affects the campaign. Pick a
 different topic per user so notifications don't cross over; each message carries
 its campaign id so concurrent campaigns sharing a topic stay distinguishable.
 
+For an **in-cluster** service the ntfy config is read from your ``.env`` at
+``setup`` time and injected into the service pod (as a Kubernetes Secret, exactly
+like the share credentials), so changing the topic means re-running ``setup`` /
+``--upgrade`` to redeploy. A local ``vast serve`` reads the ``.env`` live.
+
 
 Manual Deployment (prepare-run)
 ---------------------------------

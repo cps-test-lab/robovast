@@ -13,7 +13,13 @@ import Typography from '@mui/material/Typography'
 import ExpandLess from '@mui/icons-material/ExpandLess'
 import ExpandMore from '@mui/icons-material/ExpandMore'
 import { robovast } from '@/lib/robovastClient'
-import { formatCpuCapacity, formatMemCapacity } from '@/lib/format'
+import {
+  bytesToGiB,
+  formatCores,
+  formatCpuUsed,
+  formatMemUsed,
+} from '@/lib/format'
+import { MeterBar } from './MeterBar'
 
 export interface NavView {
   id: string
@@ -134,8 +140,8 @@ export function Sidebar({
 }
 
 // Passive service-connection + usage indicator, pinned to the sidebar footer (moved here from the
-// old top AppBar). A dot goes green when the backend answers; cpu/mem stack on two lines to fit the
-// narrow rail. The tooltip keeps version/backend discoverable.
+// old top AppBar). Three stacked meters — jobs, cpu, mem — each labelled and captioned with its own
+// hover tooltip; the whole block reads "disconnected" until the backend answers.
 function ConnectionStatus() {
   const usage = useQuery({
     queryKey: ['usage'],
@@ -148,92 +154,89 @@ function ConnectionStatus() {
     queryFn: () => robovast.version(),
     retry: false,
   })
-  const connected = usage.isSuccess
+  if (!usage.isSuccess) {
+    return (
+      <Typography variant="caption" color="text.disabled" sx={{ px: 1 }}>
+        disconnected
+      </Typography>
+    )
+  }
+  const u = usage.data
+  const jobsTotal = u.jobs_running + u.jobs_pending
+  const versionTip = version.isSuccess
+    ? `robovast ${version.data.robovast_version}${version.data.backend ? ` · ${version.data.backend}` : ''} · runs ${
+        u.parallel_runs ? 'in parallel' : 'sequentially'
+      }`
+    : ''
   return (
-    <Tooltip
-      placement="right"
-      title={
-        version.isSuccess
-          ? `robovast ${version.data.robovast_version}${version.data.backend ? ` · ${version.data.backend}` : ''}${
-              connected ? ` · runs ${usage.data.parallel_runs ? 'in parallel' : 'sequentially'}` : ''
-            }`
-          : ''
-      }
-    >
-      <Stack direction="row" spacing={1} alignItems="center" sx={{ px: 1 }}>
-        <Box
-          sx={{
-            width: 8,
-            height: 8,
-            borderRadius: '50%',
-            flexShrink: 0,
-            bgcolor: connected ? 'success.main' : 'text.disabled',
-            boxShadow: (t) => (connected ? `0 0 6px ${t.palette.success.main}` : 'none'),
-          }}
-        />
-        {connected ? (
-          <Stack spacing={0.5} sx={{ flexGrow: 1, minWidth: 0 }}>
-            <UsageBar
-              used={usage.data.cpu_used}
-              capacity={usage.data.cpu_capacity}
-              label={formatCpuCapacity(usage.data)}
-            />
-            <UsageBar
-              used={usage.data.memory_used_bytes}
-              capacity={usage.data.memory_capacity_bytes}
-              label={formatMemCapacity(usage.data)}
-            />
-          </Stack>
-        ) : (
-          <Typography variant="caption" color="text.disabled">
-            disconnected
+    <Stack spacing={0.5} sx={{ px: 1 }}>
+      <UsageRow
+        label="Jobs"
+        tip={`${u.jobs_running} running, ${u.jobs_pending} pending`}
+        fraction={jobsTotal > 0 ? u.jobs_running / jobsTotal : 0}
+        color="info.main"
+        text={`${u.jobs_running}/${u.jobs_pending}`}
+      />
+      <UsageRow
+        label="CPU"
+        tip={`${formatCores(u.cpu_used)} out of ${formatCores(u.cpu_capacity)} CPUs used`}
+        fraction={u.cpu_capacity > 0 ? u.cpu_used / u.cpu_capacity : 0}
+        text={formatCpuUsed(u)}
+      />
+      <UsageRow
+        label="Mem"
+        tip={`${bytesToGiB(u.memory_used_bytes).toFixed(0)} GiB out of ${bytesToGiB(
+          u.memory_capacity_bytes,
+        ).toFixed(0)} used`}
+        fraction={u.memory_capacity_bytes > 0 ? u.memory_used_bytes / u.memory_capacity_bytes : 0}
+        text={formatMemUsed(u)}
+      />
+      {versionTip ? (
+        <Tooltip placement="right" title={versionTip}>
+          <Typography
+            variant="caption"
+            color="text.disabled"
+            sx={{ pt: 0.25, cursor: 'default', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+          >
+            {version.data?.backend ?? 'connected'}
           </Typography>
-        )}
-      </Stack>
-    </Tooltip>
+        </Tooltip>
+      ) : null}
+    </Stack>
   )
 }
 
-// A tiny usage bar spanning the sidebar width: a track filled proportional to
-// current usage (green → amber → red as it fills), with the capacity/max text
-// pinned to the right, e.g. a half-full green bar labelled "96 CPUs".
-function UsageBar({ used, capacity, label }: { used: number; capacity: number; label: string }) {
-  const fraction = capacity > 0 ? Math.min(1, Math.max(0, used / capacity)) : 0
-  const color = fraction < 0.7 ? 'success.main' : fraction < 0.9 ? 'warning.main' : 'error.main'
+// One labelled meter row: a fixed-width caption ("Jobs"/"CPU"/"Mem") beside a MeterBar
+// whose in-track text is the compact "used/total". The whole row carries its own hover
+// tooltip spelling the numbers out in words. `color` overrides the auto green→red fill
+// (jobs use a fixed info tint since "full" isn't a warning there).
+function UsageRow({
+  label,
+  tip,
+  fraction,
+  text,
+  color,
+}: {
+  label: string
+  tip: string
+  fraction: number
+  text: string
+  color?: string
+}) {
   return (
-    <Box
-      sx={{
-        position: 'relative',
-        height: 16,
-        borderRadius: 0.75,
-        bgcolor: 'action.hover',
-        overflow: 'hidden',
-      }}
-    >
-      <Box
-        sx={{
-          position: 'absolute',
-          inset: 0,
-          width: `${fraction * 100}%`,
-          bgcolor: color,
-          opacity: 0.55,
-          transition: 'width 0.4s ease',
-        }}
-      />
-      <Typography
-        variant="caption"
-        color="text.secondary"
-        sx={{
-          position: 'absolute',
-          right: 6,
-          top: '50%',
-          transform: 'translateY(-50%)',
-          lineHeight: 1,
-          whiteSpace: 'nowrap',
-        }}
-      >
-        {label}
-      </Typography>
-    </Box>
+    <Tooltip placement="right" title={tip}>
+      <Stack direction="row" spacing={0.75} alignItems="center">
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          sx={{ width: 26, flexShrink: 0, lineHeight: 1 }}
+        >
+          {label}
+        </Typography>
+        <Box sx={{ flexGrow: 1, minWidth: 0 }}>
+          <MeterBar fraction={fraction} text={text} color={color} />
+        </Box>
+      </Stack>
+    </Tooltip>
   )
 }

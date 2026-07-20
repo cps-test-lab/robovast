@@ -46,10 +46,17 @@ def _label_safe_campaign(campaign: str) -> str:
     return "".join(c for c in s if c.isalnum() or c in "-.")[:63]
 
 
-def job_phase(job) -> str:
+def job_phase(job, running_job_names=None) -> str:
     """Classify a scenario-run Job into ``completed``/``running``/``failed``/``pending``.
 
     Shared by the aggregate counter and the per-job lister so the two never drift.
+
+    A Job's ``status.active`` counts pods that are Pending *or* Running, so a Job
+    whose pod is still unscheduled / pulling its image / freshly Kueue-admitted looks
+    "active" while ``k9s`` shows the pod ``Pending``. When *running_job_names* is
+    supplied (the set of Job names that own an actually-``Running`` pod — see
+    :func:`running_scenario_job_names`), an active Job is only reported ``running``
+    if it is in that set; otherwise it is still ``pending``.
     """
     status = job.status
     if status is None:
@@ -57,10 +64,54 @@ def job_phase(job) -> str:
     if (status.succeeded or 0) >= 1:
         return "completed"
     if (status.active or 0) >= 1:
+        if running_job_names is not None:
+            return "running" if job.metadata.name in running_job_names else "pending"
         return "running"
     if (status.failed or 0) >= 1:
         return "failed"
     return "pending"
+
+
+def running_scenario_job_names(k8s_core, namespace, label_selector) -> set:
+    """Set of Job names that currently own a pod in phase ``Running``.
+
+    A Kubernetes Job's ``status.active`` cannot tell Pending from Running pods, so
+    the truth comes from the pods themselves. Pods carry their owning Job's name in
+    the ``batch.kubernetes.io/job-name`` label (older clusters: ``job-name``); a Job
+    is "really running" once at least one of its pods reaches phase ``Running``.
+    Best-effort: on any pod-list error, returns the empty set so classification
+    falls back to the Job-level view rather than failing the whole listing.
+    """
+    try:
+        pods = k8s_core.list_namespaced_pod(namespace, label_selector=label_selector)
+    except Exception as exc:  # noqa: BLE001 - best-effort refinement
+        logger.warning("Could not list pods to refine job status: %s", exc)
+        return set()
+    names = set()
+    for pod in pods.items:
+        if not (pod.status and pod.status.phase == "Running"):
+            continue
+        labels = pod.metadata.labels or {}
+        name = labels.get("batch.kubernetes.io/job-name") or labels.get("job-name")
+        if name:
+            names.add(name)
+    return names
+
+
+def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
+    """List scenario-run Jobs matching *label_selector*, each paired with its phase.
+
+    The one place that turns "Jobs + pods" into an accurate phase, so every consumer
+    (service :meth:`ClusterService.list_jobs`, the CLI monitor, MCP — all of which go
+    through one of those) classifies identically and can never drift. The pod list is
+    fetched once and threaded into :func:`job_phase` so an active-but-Pending pod is
+    reported ``pending`` rather than ``running``.
+
+    Returns a list of ``(job, phase)`` tuples in the order the API returned the Jobs.
+    """
+    job_list = k8s_batch.list_namespaced_job(namespace, label_selector=label_selector)
+    running = running_scenario_job_names(k8s_core, namespace, label_selector)
+    return [(job, job_phase(job, running)) for job in job_list.items]
 
 
 def cleanup_cluster_campaign(namespace="default", campaign=None, context=None):
@@ -256,20 +307,17 @@ def get_cluster_job_counts_per_campaign(namespace="default", context=None):
         context: Kubernetes context name to use. ``None`` uses the active context.
     """
     kube_config.load_kube_config(context=context)
-    k8s_batch_client = client.BatchV1Api()
-
     try:
-        job_list = k8s_batch_client.list_namespaced_job(
-            namespace=namespace,
-            label_selector="jobgroup=scenario-runs",
-        )
+        # Phase reflects true pod state (an active-but-Pending pod counts as pending).
+        jobs = list_jobs_with_phase(
+            client.BatchV1Api(), client.CoreV1Api(), namespace, "jobgroup=scenario-runs")
     except client.rest.ApiException as e:
         logger.error(f"Error listing jobs with label selector: {e}")
         raise
 
     per_run = {}
 
-    for job in job_list.items:
+    for job, phase in jobs:
         campaign = "<legacy>"
         if job.metadata.labels and "campaign-id" in job.metadata.labels:
             campaign = job.metadata.labels["campaign-id"]
@@ -287,6 +335,6 @@ def get_cluster_job_counts_per_campaign(namespace="default", context=None):
                 except (ValueError, TypeError):
                     pass
 
-        per_run[campaign][job_phase(job)] += 1
+        per_run[campaign][phase] += 1
 
     return per_run

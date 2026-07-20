@@ -967,6 +967,12 @@ def setup(list_configs, namespace, options, force, kube_context, cluster_config)
     Node label selectors for job and control pods are read from the ``.vast``
     config file under ``execution.kubernetes.jobs.node_labels`` and
     ``execution.kubernetes.control.node_labels``.
+
+    Share credentials (``ROBOVAST_SHARE_TYPE`` and its provider variables — e.g.
+    ``ROBOVAST_GCS_BUCKET`` / ``ROBOVAST_GCS_KEY_FILE``) are read from the host
+    environment / project ``.env`` at setup and handed to the in-cluster service
+    as a Secret, so ``--upload-to-share`` campaigns work from the cluster. A key
+    *file* is inlined into the Secret; nothing else is needed on the host.
     """
     if list_configs:
         try:

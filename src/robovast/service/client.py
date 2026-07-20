@@ -899,18 +899,32 @@ class LocalTransport(RobovastInterface):
 
     def list_campaign_panels(self, campaign_id: str) -> "CampaignPanelsResponse":
         # Raw-load (not full validation) — reading declared panels must not depend on
-        # the rest of the snapshot config being re-validatable.
+        # the rest of the snapshot config being re-validatable. Reads the *effective*
+        # .vast so in-place run-view visualization edits are reflected.
         from robovast.common.config_validation import _safe_load
         from robovast.service.interface import CampaignPanelsResponse
-        config_dir = Path(self._data_dir(campaign_id)) / "_config"
-        vasts = sorted(config_dir.glob("*.vast")) if config_dir.is_dir() else []
-        panels = []
-        if vasts:
-            cfg, _ = _safe_load(str(vasts[0]))
-            for p in (((cfg or {}).get("visualization") or {}).get("panels") or []):
-                if isinstance(p, dict) and p.get("type"):
-                    panels.append(p)
+        from robovast.service.postprocessing_edit import effective_vast
+        cfg, _ = _safe_load(str(effective_vast(Path(self._data_dir(campaign_id)))))
+        panels = [p for p in (((cfg or {}).get("visualization") or {}).get("panels") or [])
+                  if isinstance(p, dict) and p.get("type")]
         return CampaignPanelsResponse(campaign_id=campaign_id, panels=panels)
+
+    def get_panels_source(self, campaign_id: str) -> "PanelsSource":
+        from robovast.service.interface import PanelsSource
+        from robovast.service.postprocessing_edit import get_visualization
+        info = get_visualization(self._campaign_dir(campaign_id))
+        return PanelsSource(campaign_id=campaign_id, source=info["source"],
+                            content=info["content"])
+
+    def update_panels_source(self, request) -> "PanelsSource":
+        from robovast.service.interface import PanelsSource
+        from robovast.service.postprocessing_edit import (
+            effective_vast, update_visualization)
+        campaign_dir = self._campaign_dir(request.campaign_id)
+        update_visualization(campaign_dir, request.content)
+        return PanelsSource(campaign_id=request.campaign_id,
+                            source=effective_vast(campaign_dir).name,
+                            content=request.content)
 
     def get_costmap_frame(
         self, campaign_id: str, config_name: str, run_id: int, topic: str, t: float,
@@ -1271,6 +1285,17 @@ class HTTPTransport(RobovastInterface):
         from robovast.service.interface import CampaignPanelsResponse
         return CampaignPanelsResponse.model_validate(
             self._get(Routes.campaign_panels(campaign_id)))
+
+    def get_panels_source(self, campaign_id: str) -> "PanelsSource":
+        from robovast.service.interface import PanelsSource
+        return PanelsSource.model_validate(
+            self._get(Routes.campaign_panels_source(campaign_id)))
+
+    def update_panels_source(self, request) -> "PanelsSource":
+        from robovast.service.interface import PanelsSource
+        return PanelsSource.model_validate(self._post(
+            Routes.campaign_panels_source(request.campaign_id),
+            json=request.model_dump()))
 
     def get_costmap_frame(
         self, campaign_id: str, config_name: str, run_id: int, topic: str, t: float,

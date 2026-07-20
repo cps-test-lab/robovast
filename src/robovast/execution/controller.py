@@ -170,6 +170,7 @@ class CampaignController:
             self.state.set_phase("running")
         self._start_progress_poller()
         self.notifier.start_heartbeat(status_fn=self._notify_status)
+        self.notifier.started(self.mode)
         try:
             if self.strategy is None:
                 result = self._run_batch_mode(campaign_id)
@@ -177,6 +178,7 @@ class CampaignController:
                 result = self._run_search(campaign_id)
             if self.state is not None:
                 self.state.set_phase("finished")
+            self.notifier.finished(f"{self.mode} campaign complete.")
             return result
         except CampaignStopped:
             # A clean cooperative stop (Ctrl+C / Stop button / MCP stop).
@@ -526,7 +528,7 @@ def _finalize(backend: ExecutionBackend, campaign_root: str) -> None:
 
 
 def _finish_campaign(backend: ExecutionBackend, campaign_root: str, campaign_id: str,
-                     state, options: "RunOptions | None") -> None:
+                     state, options: "RunOptions | None", notifier=None) -> None:
     """The builders' ``finally`` tail: chain postprocessing, then finalize-upload.
 
     Skipped entirely when a cooperative **stop** was requested: on Ctrl+C the cluster
@@ -539,13 +541,13 @@ def _finish_campaign(backend: ExecutionBackend, campaign_root: str, campaign_id:
                     campaign_id)
         return
     if options is not None and options.upload_to_share:
-        _share_campaign(backend, campaign_root, options, state)
+        _share_campaign(backend, campaign_root, options, state, notifier)
     _chain_postprocessing(backend, campaign_root, campaign_id, state, options)
     _finalize(backend, campaign_root)
 
 
 def _share_campaign(backend: ExecutionBackend, campaign_root: str,
-                    options: "RunOptions", state) -> None:
+                    options: "RunOptions", state, notifier=None) -> None:
     """Produce the raw upload-to-share artifact, **before** postprocessing.
 
     Runs the backend's ``share_campaign`` hook (local: tar.gz on disk; cluster:
@@ -561,6 +563,12 @@ def _share_campaign(backend: ExecutionBackend, campaign_root: str,
     except Exception:  # pylint: disable=broad-except
         logger.warning("Upload-to-share failed; continuing with the campaign.",
                        exc_info=True)
+        return
+    if notifier is not None:
+        # The resolved provider isn't in scope here; the configured share type is what
+        # the service was handed via env (ROBOVAST_SHARE_TYPE), matching the old
+        # controller's ``provider.SHARE_TYPE``.
+        notifier.uploaded(os.environ.get("ROBOVAST_SHARE_TYPE") or "share")
 
 def _make_upload_progress_cb(state):
     """Return a ``(bytes_sent, total_bytes)`` callback that publishes throttled
@@ -612,6 +620,9 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
     be = backend or DockerBackend(state=state)
     opts = options or RunOptions()
     _preflight_upload_to_share(be, opts)
+    # One notifier drives the whole campaign: the controller fires the lifecycle
+    # events, and _finish_campaign (outside the controller) fires `uploaded`.
+    notifier = notifier or Notifier.from_env(campaign_id)
     store = CampaignStore(os.path.join(results_dir, campaign_id, STORE_FILENAME))
     controller = CampaignController(
         campaign_id=campaign_id, results_dir=results_dir, runs=runs,
@@ -628,7 +639,7 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
         _campaign_root = os.path.join(results_dir, campaign_id)
         # After store.close() (campaign.db flushed, which data.db's `runs` table
         # reads) and before _finalize, so data.db rides the existing upload.
-        _finish_campaign(be, _campaign_root, campaign_id, state, opts)
+        _finish_campaign(be, _campaign_root, campaign_id, state, opts, notifier)
 
 
 def _record_controller_failure(campaign_root, campaign_id, state, exc, backend):
@@ -781,6 +792,9 @@ def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_fil
         be = backend or DockerBackend(state=state)
         opts = options or RunOptions()
         _preflight_upload_to_share(be, opts)
+        # One notifier drives the whole campaign: the controller fires the lifecycle
+        # events, and _finish_campaign (outside the controller) fires `uploaded`.
+        notifier = notifier or Notifier.from_env(campaign_id)
         store = CampaignStore(os.path.join(results_dir, campaign_id, STORE_FILENAME))
         controller = CampaignController(
             campaign_id=campaign_id, results_dir=results_dir, runs=runs,
@@ -795,4 +809,4 @@ def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_fil
             _campaign_root = os.path.join(results_dir, campaign_id)
             # After store.close() (campaign.db flushed, which data.db's `runs` table
             # reads) and before _finalize, so data.db rides the existing upload.
-            _finish_campaign(be, _campaign_root, campaign_id, state, opts)
+            _finish_campaign(be, _campaign_root, campaign_id, state, opts, notifier)

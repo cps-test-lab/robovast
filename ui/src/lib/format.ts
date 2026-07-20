@@ -40,6 +40,18 @@ export function formatMemCapacity(u: Usage): string {
   return `${bytesToGiB(u.memory_capacity_bytes).toFixed(0)} GiB`
 }
 
+/** Compact "used/capacity" the sidebar CPU bar shows in-track, e.g. "10/98". */
+export function formatCpuUsed(u: Usage): string {
+  return `${formatCores(u.cpu_used)}/${formatCores(u.cpu_capacity)}`
+}
+
+/** Compact "used/capacity" the sidebar memory bar shows in-track, e.g. "10/20". */
+export function formatMemUsed(u: Usage): string {
+  return `${bytesToGiB(u.memory_used_bytes).toFixed(0)}/${bytesToGiB(
+    u.memory_capacity_bytes,
+  ).toFixed(0)}`
+}
+
 /** A compact "used/capacity" resource label, e.g. "cpu 6/16 · mem 22/62 GiB". */
 export function formatUsageLabel(u: Usage): string {
   return `${formatCpuLabel(u)} · ${formatMemLabel(u)}`

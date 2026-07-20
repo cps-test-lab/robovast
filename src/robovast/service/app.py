@@ -52,6 +52,7 @@ from robovast.service.interface import (ActionResult, CampaignRef,
                                         DataDescribe, DataQueryResult,
                                         CampaignPlotsResponse,
                                         CampaignPanelsResponse, CostmapFrame,
+                                        PanelsSource, UpdatePanelsSourceRequest,
                                         CampaignVisualizationsResponse)
 
 logger = logging.getLogger(__name__)
@@ -308,6 +309,16 @@ def build_app(impl: RobovastInterface):
     @app.get("/campaigns/{campaign_id}/panels", response_model=CampaignPanelsResponse)
     def list_campaign_panels(campaign_id: str) -> CampaignPanelsResponse:
         return _guard(lambda: impl.list_campaign_panels(campaign_id))
+
+    @app.get("/campaigns/{campaign_id}/panels/source", response_model=PanelsSource)
+    def get_panels_source(campaign_id: str) -> PanelsSource:
+        return _guard(lambda: impl.get_panels_source(campaign_id))
+
+    @app.post("/campaigns/{campaign_id}/panels/source", response_model=PanelsSource)
+    def update_panels_source(
+        campaign_id: str, request: UpdatePanelsSourceRequest
+    ) -> PanelsSource:
+        return _guard(lambda: impl.update_panels_source(request))
 
     @app.get("/campaigns/{campaign_id}/costmap", response_model=CostmapFrame | None)
     def get_costmap_frame(

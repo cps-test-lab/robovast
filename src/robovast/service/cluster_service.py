@@ -74,8 +74,10 @@ class ClusterService(LocalTransport):
         super().__init__(store=store)
         self.namespace = namespace or os.environ.get("ROBOVAST_NAMESPACE", "default")
         # Which kubeconfig context to dispatch into. None off-cluster means the
-        # active context; in-cluster the incluster config is used and this is moot.
-        self.kube_context = kube_context
+        # active context; in-cluster the incluster config is used for the API
+        # client, but the context *name* still resolves per-cluster resource
+        # lists — deploy stamps it into ROBOVAST_KUBE_CONTEXT for the in-pod driver.
+        self.kube_context = kube_context or os.environ.get("ROBOVAST_KUBE_CONTEXT")
         self._config_name = cluster_config_name or os.environ.get(
             "ROBOVAST_CLUSTER_CONFIG_NAME")
         self._config_kwargs = cluster_config_kwargs
@@ -125,6 +127,8 @@ class ClusterService(LocalTransport):
 
         cpu_used = 0.0
         mem_used = 0
+        jobs_running = 0
+        jobs_pending = 0
         pods = v1.list_pod_for_all_namespaces(
             field_selector="status.phase!=Succeeded,status.phase!=Failed")
         for pod in pods.items:
@@ -133,6 +137,13 @@ class ClusterService(LocalTransport):
                             if container.resources else None) or {}
                 cpu_used += _parse_resource(requests.get("cpu"))
                 mem_used += int(_parse_resource(requests.get("memory")))
+            # Backend-wide scenario-run tally, pod-accurate (Running vs still-waiting)
+            # so the sidebar's jobs bar matches k9s. Free — same pod list as above.
+            if (pod.metadata.labels or {}).get("jobgroup") == "scenario-runs":
+                if pod.status and pod.status.phase == "Running":
+                    jobs_running += 1
+                else:
+                    jobs_pending += 1
 
         return ResourceUsage(
             backend="kubernetes",
@@ -141,6 +152,8 @@ class ClusterService(LocalTransport):
             memory_capacity_bytes=mem_capacity,
             memory_used_bytes=mem_used,
             parallel_runs=True,   # runs execute in parallel, bounded only by capacity
+            jobs_running=jobs_running,
+            jobs_pending=jobs_pending,
         )
 
     # -- helpers ------------------------------------------------------------
@@ -360,20 +373,22 @@ class ClusterService(LocalTransport):
 
         Selects Jobs by the campaign label the backend stamps on them
         (``jobgroup=scenario-runs,campaign-id=<label-safe>``) and classifies each
-        with :func:`job_phase` — the same logic as the aggregate counter.
-        ``display_name`` is the pod template's ``job-name-full`` annotation
-        (``<batch>-job-<index>``) for a readable label.
+        with :func:`list_jobs_with_phase` — the same pod-accurate logic the CLI
+        monitor's aggregate counter uses, so the two never drift. ``display_name``
+        is the pod template's ``job-name-full`` annotation (``<batch>-job-<index>``)
+        for a readable label.
         """
         from robovast.execution.cluster_execution.cluster_execution import (
-            _label_safe_campaign, job_phase)
+            _label_safe_campaign, list_jobs_with_phase)
         label = (f"jobgroup=scenario-runs,"
                  f"campaign-id={_label_safe_campaign(campaign_id)}")
-        job_list = self._k8s_batch().list_namespaced_job(
-            self.namespace, label_selector=label)
+        # Phase is pod-accurate: a Job whose pod is still Pending (unscheduled /
+        # image-pulling / freshly Kueue-admitted) reports pending, not running.
         jobs = [
-            JobSummary(job_name=job.metadata.name, status=job_phase(job),
+            JobSummary(job_name=job.metadata.name, status=phase,
                        display_name=self._job_display_name(campaign_id, job))
-            for job in job_list.items]
+            for job, phase in list_jobs_with_phase(
+                self._k8s_batch(), self._k8s(), self.namespace, label)]
         counts = JobCounts(
             running=sum(1 for j in jobs if j.status == "running"),
             pending=sum(1 for j in jobs if j.status == "pending"),

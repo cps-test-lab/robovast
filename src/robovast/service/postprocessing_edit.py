@@ -111,10 +111,60 @@ def update_postprocessing(campaign_dir: Path, entries: list) -> dict:
         data["results_processing"] = {}
     data["results_processing"]["postprocessing"] = entries
 
+    return _write_override(campaign_dir, data, "postprocessing",
+                           extra={"entries": entries})
+
+
+# -- run-view visualization (same override chain, display-only) --------------
+#
+# The run view's panels come from the top-level ``visualization:`` block. Editing
+# it is a pure display concern, so — like postprocessing — edits are written as
+# full-`.vast` override revisions (never mutating ``_config/``) and picked up by
+# ``effective_vast``.
+
+
+def get_visualization(campaign_dir: Path) -> dict:
+    """Return the effective ``visualization:`` block as editable YAML text."""
+    vast_path = effective_vast(campaign_dir)
+    data = yaml.safe_load(vast_path.read_text(encoding="utf-8")) or {}
+    section = data.get("visualization") or {}
+    return {
+        "campaign_dir": str(campaign_dir),
+        "source": vast_path.name,
+        "content": yaml.safe_dump({"visualization": section}, sort_keys=False),
+    }
+
+
+def update_visualization(campaign_dir: Path, content: str) -> dict:
+    """Write a new override revision replacing the ``visualization:`` block.
+
+    *content* is the edited YAML document as shown by :func:`get_visualization`:
+    a top-level ``visualization:`` mapping. Copies the current effective `.vast`
+    and replaces its ``visualization`` key; the ``_config/`` snapshot is untouched.
+    """
+    try:
+        parsed = yaml.safe_load(content)
+    except yaml.YAMLError as e:
+        raise ValueError(f"invalid YAML: {e}") from e
+    if not isinstance(parsed, dict) or "visualization" not in parsed:
+        raise ValueError("expected a top-level 'visualization:' mapping")
+    section = parsed["visualization"]
+    if not isinstance(section, dict):
+        raise ValueError("'visualization' must be a mapping")
+
+    base = effective_vast(campaign_dir)
+    data = yaml.safe_load(base.read_text(encoding="utf-8")) or {}
+    data["visualization"] = section
+    return _write_override(campaign_dir, data, "visualization")
+
+
+def _write_override(campaign_dir: Path, data: dict, kind: str,
+                    extra: dict | None = None) -> dict:
+    """Write *data* as the next ``rev-N.vast`` override and return its number."""
     rev_dir = _rev_dir(campaign_dir)
     rev_dir.mkdir(parents=True, exist_ok=True)
     next_n = (_revs(campaign_dir)[-1][0] + 1) if _revs(campaign_dir) else 1
     rev_path = rev_dir / f"rev-{next_n}.vast"
     rev_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
-    logger.info("Wrote postprocessing override %s", rev_path)
-    return {"revision": next_n, "path": str(rev_path), "entries": entries}
+    logger.info("Wrote %s override %s", kind, rev_path)
+    return {"revision": next_n, "path": str(rev_path), **(extra or {})}

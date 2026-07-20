@@ -28,6 +28,9 @@ export interface ResourceUsage {
   memory_capacity_bytes: number
   memory_used_bytes: number
   parallel_runs: boolean
+  // Backend-wide scenario-run counts (0 on backends without Jobs, e.g. local Docker).
+  jobs_running: number
+  jobs_pending: number
 }
 
 export interface CampaignSummary {
@@ -270,6 +273,14 @@ export interface CampaignPanelsResponse {
   panels: Record<string, unknown>[]
 }
 
+// The campaign's run-view `visualization:` block as editable YAML text. `source` names the
+// effective .vast (snapshot or rev-N override); saving writes a new override revision.
+export interface PanelsSource {
+  campaign_id: string
+  source: string
+  content: string
+}
+
 // One evaluation.visualization notebook workload + the node levels it defines a notebook for
 // (subset of run/config/campaign). The Explorer shows a tab per workload and renders the
 // workload's notebook, executed against the selected node, as HTML.
@@ -458,6 +469,20 @@ export const robovast = {
 
   listCampaignPanels: (campaignId: string) =>
     request<CampaignPanelsResponse>('GET', `/campaigns/${encodeURIComponent(campaignId)}/panels`),
+
+  // The run-view `visualization:` block as editable YAML text (the 'edit visualization' dropdown).
+  getPanelsSource: (campaignId: string) =>
+    request<PanelsSource>(
+      'GET',
+      `/campaigns/${encodeURIComponent(campaignId)}/panels/source`,
+    ),
+
+  updatePanelsSource: (campaignId: string, content: string) =>
+    request<PanelsSource>(
+      'POST',
+      `/campaigns/${encodeURIComponent(campaignId)}/panels/source`,
+      { campaign_id: campaignId, content },
+    ),
 
   // The evaluation.visualization notebook workloads a campaign declares — drives the Explorer tabs.
   listCampaignVisualizations: (campaignId: string) =>

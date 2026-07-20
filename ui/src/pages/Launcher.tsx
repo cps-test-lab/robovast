@@ -15,9 +15,34 @@ import TextField from '@mui/material/TextField'
 import Typography from '@mui/material/Typography'
 import { robovast, type Status } from '@/lib/robovastClient'
 import { StatusView } from '@/components/StatusView'
+import { PhaseDot } from '@/components/PhaseChip'
 
 const TERMINAL = ['finished', 'failed', 'stopped', 'error']
 const isTerminal = (phase: string | undefined) => !!phase && TERMINAL.includes(phase)
+
+// Pull the `execution.runs` scalar out of a .vast (YAML) so the launcher can prefill "Runs per config"
+// with whatever the file declares. We scan for the top-level `execution:` block and read the integer
+// `runs:` directly under it. Returns null when runs is absent or a non-literal (e.g. `runs: runs`
+// referencing a variable), in which case the caller keeps the current value.
+function runsFromVast(content: string): number | null {
+  const lines = content.split(/\r?\n/)
+  let inExecution = false
+  for (const line of lines) {
+    const m = line.match(/^(\s*)([\w-]+):(.*)$/)
+    if (!m) continue
+    const [, indent, key, rest] = m
+    if (indent.length === 0) {
+      // A new top-level key starts (or ends) the execution block.
+      inExecution = key === 'execution'
+      continue
+    }
+    if (inExecution && key === 'runs') {
+      const n = Number(rest.trim())
+      return Number.isInteger(n) && n > 0 ? n : null
+    }
+  }
+  return null
+}
 
 // The browser analog of `vast exec cluster run`: a form over CreateCampaignRequest → create_campaign →
 // campaign_id, then poll that campaign's live status (interaction lifted from robosito's CommandPlugin:
@@ -64,6 +89,22 @@ export function Launcher() {
     if (configPath || !vastFiles.length) return
     setConfigPath(vastFiles[0])
   }, [configPath, vastFiles])
+
+  // Read the selected .vast so we can prefill "Runs per config" from its execution.runs.
+  const configFile = useQuery({
+    queryKey: ['file', workspaceId, configPath],
+    queryFn: () => robovast.readProjectFile(workspaceId, configPath),
+    enabled: !!workspaceId && !!configPath,
+  })
+
+  // When the selected .vast changes (or its content is edited), adopt its declared runs count. Keyed
+  // on the content string, so a later manual edit to the Runs field is not clobbered by re-renders.
+  useEffect(() => {
+    const content = configFile.data?.content
+    if (!content) return
+    const declared = runsFromVast(content)
+    if (declared != null) setRuns(declared)
+  }, [configFile.data?.content])
 
   const create = useMutation({
     mutationFn: () =>
@@ -210,6 +251,7 @@ export function Launcher() {
       {campaignId ? (
         <Paper sx={{ p: 2 }}>
           <Stack direction="row" spacing={1} alignItems="center" mb={1.5}>
+            {status.data ? <PhaseDot phase={status.data.phase} /> : null}
             <Typography variant="subtitle2" sx={{ fontFamily: 'monospace' }}>
               {campaignId}
             </Typography>

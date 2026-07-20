@@ -68,3 +68,33 @@ def test_share_failure_still_runs_postprocess_and_finalize(monkeypatch):
         backend, "/root", "camp-1", _state(False), RunOptions(upload_to_share=True))
     # share raised but was isolated; postprocess + finalize still ran.
     assert backend.calls == ["share", "postprocess", "finalize"]
+
+
+class _RecordingNotifier:
+    def __init__(self):
+        self.uploaded_with = []
+
+    def uploaded(self, share_type):
+        self.uploaded_with.append(share_type)
+
+
+def test_notifier_uploaded_fires_on_successful_share(monkeypatch):
+    monkeypatch.setenv("ROBOVAST_SHARE_TYPE", "gcs")
+    backend = _RecordingBackend()
+    _patch_tail(monkeypatch, backend.calls)
+    notifier = _RecordingNotifier()
+    controller._finish_campaign(
+        backend, "/root", "camp-1", _state(False), RunOptions(upload_to_share=True),
+        notifier)
+    assert notifier.uploaded_with == ["gcs"]  # the configured share type
+
+
+def test_notifier_uploaded_not_fired_when_share_fails(monkeypatch):
+    monkeypatch.setenv("ROBOVAST_SHARE_TYPE", "gcs")
+    backend = _RecordingBackend(fail=True)
+    _patch_tail(monkeypatch, backend.calls)
+    notifier = _RecordingNotifier()
+    controller._finish_campaign(
+        backend, "/root", "camp-1", _state(False), RunOptions(upload_to_share=True),
+        notifier)
+    assert notifier.uploaded_with == []  # failed share → no "uploaded" notification

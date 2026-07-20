@@ -73,11 +73,27 @@ WORKDIR /opt/robovast
 # classes import Qt-based helpers at module level, not lazily), so this extra
 # does pull PySide6 into the image despite the controller being otherwise
 # headless — and PySide6 ships no linux-aarch64 wheels.
-COPY pyproject.toml poetry.lock README.md ./
-COPY src ./src
+# Split into two layers so editing robovast/robovast_nav source doesn't force a
+# full reinstall of the (large, slow) third-party dependency set — notably
+# PySide6, pulled in by the nav extra.
+#
+# Layer 1 (heavy, rarely invalidated): install only the third-party dependencies.
+# Its cache key is just pyproject.toml + poetry.lock, so source edits below don't
+# touch it. --no-root skips the robovast project and --no-directory skips the
+# robovast-nav path dependency (src/robovast_nav); both are installed in layer 2.
+COPY pyproject.toml poetry.lock ./
 RUN pip install --no-cache-dir poetry==1.8.2 \
  && poetry config virtualenvs.create false \
- && poetry install --only main --extras "qd optuna nav" --no-cache
+ && poetry install --only main --extras "qd optuna nav" \
+        --no-root --no-directory --no-cache
+
+# Layer 2 (cheap, invalidated by any source edit): copy the source and install
+# the two local packages (robovast root + robovast-nav path dep) on top of the
+# already-present dependencies. Poetry sees the heavy deps as satisfied, so this
+# only builds/installs robovast and robovast-nav — fast.
+COPY README.md ./
+COPY src ./src
+RUN poetry install --only main --extras "qd optuna nav" --no-cache
 
 # The built SPA + the env `robovast.service.app._ui_dist()` reads. The in-image
 # path cannot be derived from the source tree (robovast is installed into

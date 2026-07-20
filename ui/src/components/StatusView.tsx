@@ -3,7 +3,6 @@ import { useQuery } from '@tanstack/react-query'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import Chip from '@mui/material/Chip'
-import LinearProgress from '@mui/material/LinearProgress'
 import Stack from '@mui/material/Stack'
 import Typography from '@mui/material/Typography'
 import {
@@ -14,16 +13,12 @@ import {
   type Status,
 } from '@/lib/robovastClient'
 import { formatDuration } from '@/lib/format'
-import { PhaseChip } from './PhaseChip'
+import { MeterBar } from './MeterBar'
 
 // Renders one campaign's live Status — the browser analog of what `vast exec cluster monitor` prints:
 // phase, run-level progress within the current batch, batch counter, and each budget/stopping
 // criterion. Purely presentational; the caller supplies the (polled) Status and, optionally, the
 // (polled) live jobs listing.
-
-function pct(done: number, total: number): number {
-  return total > 0 ? Math.min(100, (100 * done) / total) : 0
-}
 
 // Estimated seconds until the current batch completes, or null when it can't be
 // stated soundly. `runs` counts only the current batch and resets each batch, and
@@ -66,29 +61,20 @@ export function StatusView({
   const counts = jobs?.counts
   const running = counts?.running ?? 0
   const etaSeconds = estimateEtaSeconds(status, startedAt, terminal)
-  // Buffer variant: the solid bar is finished runs, the lighter segment on top is
-  // what's currently running (with the usual animated dots for the rest).
-  const showRunning = runs.total > 0 && running > 0
+  // Only a search campaign has multiple batches; a plain batch run always has one,
+  // so the "batch N" counter is noise there and is shown for search only.
+  const isSearch = status.mode === 'search'
+  // The lighter buffer segment is what's currently running, layered over the solid
+  // segment of finished runs.
   return (
     <Stack spacing={1.5}>
-      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
-        <PhaseChip phase={status.phase} />
-        {status.stage ? (
-          <Typography variant="caption" color="text.secondary">
-            {status.stage}
-          </Typography>
-        ) : null}
-        <Box flexGrow={1} />
-        <Typography variant="caption" color="text.secondary">
-          batch {status.batch}
-          {status.batches_done ? ` · ${status.batches_done} done` : ''}
-        </Typography>
-      </Stack>
-
       <Box>
         <Stack direction="row" justifyContent="space-between">
           <Typography variant="caption" color="text.secondary">
-            runs (this batch)
+            runs
+            {isSearch
+              ? ` · batch ${status.batch}${status.batches_done ? ` (${status.batches_done} done)` : ''}`
+              : ''}
           </Typography>
           <Typography variant="caption" color="text.secondary">
             {counts && (counts.running > 0 || counts.pending > 0)
@@ -98,13 +84,10 @@ export function StatusView({
             {etaSeconds != null ? ` · ~${formatDuration(etaSeconds)} left` : ''}
           </Typography>
         </Stack>
-        <LinearProgress
-          variant={
-            showRunning ? 'buffer' : runs.total > 0 || terminal ? 'determinate' : 'indeterminate'
-          }
-          value={pct(runs.completed, runs.total)}
-          valueBuffer={pct(runs.completed + running, runs.total)}
-          sx={{ height: 8, borderRadius: 1 }}
+        <MeterBar
+          fraction={runs.total > 0 ? runs.completed / runs.total : 0}
+          buffer={runs.total > 0 ? (runs.completed + running) / runs.total : 0}
+          color="primary.main"
         />
       </Box>
 
@@ -119,11 +102,10 @@ export function StatusView({
               {b.current == null ? '—' : b.current} / {b.limit}
             </Typography>
           </Stack>
-          <LinearProgress
-            variant="determinate"
-            color="secondary"
-            value={b.current == null ? 0 : pct(b.current, b.limit)}
-            sx={{ height: 6, borderRadius: 1 }}
+          <MeterBar
+            height={10}
+            fraction={b.current == null || b.limit <= 0 ? 0 : b.current / b.limit}
+            color="secondary.main"
           />
         </Box>
       ))}

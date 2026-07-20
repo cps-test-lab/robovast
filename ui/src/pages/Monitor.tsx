@@ -11,7 +11,7 @@ import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded'
 import Typography from '@mui/material/Typography'
 import { robovast, campaignsNewestFirst, type CampaignSummary, type Status } from '@/lib/robovastClient'
 import { StatusView } from '@/components/StatusView'
-import { PhaseChip } from '@/components/PhaseChip'
+import { PhaseChip, PhaseDot } from '@/components/PhaseChip'
 
 const TERMINAL = ['finished', 'failed', 'stopped', 'error']
 const isTerminal = (phase: string | undefined) => !!phase && TERMINAL.includes(phase)
@@ -56,6 +56,7 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
   return (
     <Paper sx={{ p: 2 }}>
       <Stack direction="row" spacing={1} alignItems="center" mb={1.5}>
+        <PhaseDot phase={phase} />
         <Typography variant="subtitle2" sx={{ fontFamily: 'monospace' }}>
           {id}
         </Typography>

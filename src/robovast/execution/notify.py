@@ -16,17 +16,20 @@
 
 """Best-effort `ntfy.sh <https://ntfy.sh>`_ push notifications for a campaign.
 
-The in-pod campaign controller pushes a notification for each lifecycle event
-(start, batch finished, finished, uploaded, failure) plus an hourly heartbeat, so
-detached cluster runs are no longer silent. The topic is configured per-user via
-``ROBOVAST_NTFY_TOPIC`` in the project ``.env`` (the host launcher injects it into
-the controller pod), so different users get their own topics.
+The campaign driver pushes a notification for each lifecycle event (start, batch
+finished, finished, uploaded, failure) plus an hourly heartbeat, so detached cluster
+runs are no longer silent. The topic is configured per-user via ``ROBOVAST_NTFY_TOPIC``
+in the project ``.env``, so different users get their own topics. The driver runs
+in-process inside ``robovast-service``; for an in-cluster service the ntfy env is read
+from the host ``.env`` at setup and injected into the service pod via a Secret +
+``envFrom`` (see ``service_deploy.ENV_SECRET_SOURCES``), so :meth:`Notifier.from_env`
+picks it up from ``os.environ`` — a local ``vast serve`` reads the same env directly.
 
 Every send is **best-effort**: it swallows all exceptions and uses a short timeout,
 so a misconfigured/unreachable ntfy server can never break or delay a campaign. When
 ``ROBOVAST_NTFY_TOPIC`` is unset the :class:`Notifier` is a no-op.
 
-Each controller pod builds its own :class:`Notifier` bound to its ``campaign_id`` —
+Each campaign builds its own :class:`Notifier` bound to its ``campaign_id`` —
 concurrent campaigns report independently (no shared state), and every message
 carries the ``campaign_id`` in its title so campaigns sharing one topic stay
 distinguishable.

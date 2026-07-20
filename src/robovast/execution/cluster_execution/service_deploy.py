@@ -124,7 +124,8 @@ def _service_rbac_manifests(namespace):
     ]
 
 
-def _deployment_manifest(namespace, image, env=None, git_secret=False):
+def _deployment_manifest(namespace, image, env=None, git_secret=False,
+                         env_secret_names=()):
     """The robovast-service Deployment (1 replica, stateless — no PVC).
 
     Binds ``0.0.0.0`` inside the pod (reachable only via the ClusterIP Service +
@@ -133,6 +134,12 @@ def _deployment_manifest(namespace, image, env=None, git_secret=False):
     When *git_secret* is set, the GitHub token Secret is mounted **read-only as a
     file** (never exposed as an env var, so it is not inherited by child processes
     or visible to composition code) at :data:`GIT_TOKEN_MOUNT_DIR`.
+
+    *env_secret_names* are the env-secret Secrets (share creds, ntfy creds — see
+    :data:`ENV_SECRET_SOURCES`) pulled in via ``envFrom``. Those *must* be env
+    vars, because the in-driver upload / notifier read them straight from
+    ``os.environ`` (see ``in_pod_upload.load_provider_from_env`` and
+    ``Notifier.from_env``).
     """
     container = {
         "name": SERVICE_NAME,
@@ -149,6 +156,8 @@ def _deployment_manifest(namespace, image, env=None, git_secret=False):
             "httpGet": {"path": "/healthz", "port": SERVICE_PORT},
             "initialDelaySeconds": 15, "periodSeconds": 20},
     }
+    if env_secret_names:
+        container["envFrom"] = [{"secretRef": {"name": n}} for n in env_secret_names]
     pod_spec = {
         "serviceAccountName": SERVICE_ACCOUNT,
         "containers": [container],
@@ -252,11 +261,115 @@ def _git_secret_manifest(namespace, token):
     }
 
 
-def _cluster_env(namespace, config_name, config_kwargs):
+#: Secret holding the resolved share-provider credentials (bucket + inline key
+#: JSON/PEM, URL, user, password, …) that the in-cluster service reads from its
+#: own environment to stream finished campaigns to the configured share
+#: (``--upload-to-share``). Sourced from the host env / ``.env`` at setup and
+#: injected into the service pod via ``envFrom`` — the driver's provider reads
+#: them straight from ``os.environ`` (see ``in_pod_upload.load_provider_from_env``).
+SHARE_SECRET_NAME = "robovast-share-credentials"
+
+
+def _share_env_from_host():
+    """Resolve the configured share provider's pod env from the host, or ``None``.
+
+    Reads ``ROBOVAST_SHARE_TYPE`` (and the provider's own vars) from the host
+    environment / project ``.env`` — the same source ``vast serve`` uses locally
+    — and asks the provider to materialise its **pod** environment via
+    :meth:`~...share_providers.base.BaseShareProvider.build_pod_env`, which
+    resolves host credential *files* (a GCS key file, an SFTP key file) into the
+    inline values a pod can carry. ``ROBOVAST_SHARE_TYPE`` is included so the
+    service picks the same provider back up.
+
+    Returns ``None`` when no share is configured (``ROBOVAST_SHARE_TYPE`` unset).
+    Raises :class:`click.UsageError` when a share type is set but unknown, or its
+    required credentials are missing/unreadable — fail fast at setup, never
+    silently mid-campaign.
+    """
+    import os
+    from .share_providers import \
+        load_share_provider_plugins  # pylint: disable=import-outside-toplevel
+
+    _load_setup_dotenv()
+    share_type = os.environ.get("ROBOVAST_SHARE_TYPE", "").strip()
+    if not share_type:
+        return None
+
+    providers = load_share_provider_plugins()
+    if share_type not in providers:
+        import click  # pylint: disable=import-outside-toplevel
+        available = ", ".join(sorted(providers)) or "(none installed)"
+        raise click.UsageError(
+            f"ROBOVAST_SHARE_TYPE='{share_type}' has no registered provider. "
+            f"Available: {available}.")
+
+    provider = providers[share_type]()  # constructor validates required env vars
+    return {"ROBOVAST_SHARE_TYPE": share_type, **provider.build_pod_env()}
+
+
+#: Secret holding the ntfy.sh push-notification config (``ROBOVAST_NTFY_TOPIC`` and
+#: optional ``ROBOVAST_NTFY_SERVER`` / ``ROBOVAST_NTFY_TOKEN``) the in-service driver's
+#: :class:`~robovast.execution.notify.Notifier` reads from its own environment to push
+#: per-campaign lifecycle notifications. Sourced from the host env / ``.env`` at setup
+#: and injected into the service pod via ``envFrom`` — same shape as the share Secret.
+NTFY_SECRET_NAME = "robovast-ntfy-credentials"
+
+
+def _ntfy_env_from_host():
+    """Resolve the ntfy notification env from the host, or ``None`` when disabled.
+
+    Collects whichever of ``ROBOVAST_NTFY_TOPIC`` / ``ROBOVAST_NTFY_SERVER`` /
+    ``ROBOVAST_NTFY_TOKEN`` are present in the host environment / project ``.env``
+    (the same source ``vast serve`` uses locally). Notifications are **optional**, so
+    — unlike :func:`_share_env_from_host` — this never raises: it returns ``None``
+    when ``ROBOVAST_NTFY_TOPIC`` is unset, leaving the in-pod ``Notifier`` a no-op.
+    """
+    import os
+    _load_setup_dotenv()
+    if not os.environ.get("ROBOVAST_NTFY_TOPIC", "").strip():
+        return None
+    out = {}
+    for var in ("ROBOVAST_NTFY_TOPIC", "ROBOVAST_NTFY_SERVER", "ROBOVAST_NTFY_TOKEN"):
+        val = os.environ.get(var, "").strip()
+        if val:
+            out[var] = val
+    return out
+
+
+def _env_secret_manifest(namespace, name, env):
+    """A Secret holding credentials the service reads from its own env (``envFrom``)."""
+    return {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {"name": name, "namespace": namespace,
+                     "labels": {"app": SERVICE_NAME}},
+        "type": "Opaque",
+        "stringData": dict(env),
+    }
+
+
+#: Env-based credential sources injected into the service pod as Secrets pulled in via
+#: ``envFrom`` (see :func:`_deployment_manifest`). Each is ``(secret_name, resolver)``
+#: where the resolver reads the host env / ``.env`` and returns the pod env dict, or
+#: ``None`` when that credential is not configured. Adding another env-based credential
+#: is a one-line registration here — the deploy, redeploy and teardown paths all iterate
+#: this list. (The git token is deliberately NOT here: it is a read-only file mount, not
+#: env, so it is never inherited by child processes.)
+ENV_SECRET_SOURCES = (
+    (SHARE_SECRET_NAME, _share_env_from_host),
+    (NTFY_SECRET_NAME, _ntfy_env_from_host),
+)
+
+
+def _cluster_env(namespace, config_name, config_kwargs, kube_context=None):
     """Env that tells the in-cluster ClusterService how to reach the object store.
 
     The service (mode 3) reconstructs the same cluster config the controller
     uses, so ``create_campaign`` can stage inputs and controllers can pull them.
+
+    ``kube_context`` records the context this service was deployed with, so the
+    in-pod driver can resolve per-cluster resource lists (keyed by context name)
+    — in-cluster there is no kubeconfig context to fall back on.
     """
     import json
     env = [{"name": "ROBOVAST_NAMESPACE", "value": namespace}]
@@ -264,16 +377,19 @@ def _cluster_env(namespace, config_name, config_kwargs):
         env.append({"name": "ROBOVAST_CLUSTER_CONFIG_NAME", "value": config_name})
         env.append({"name": "ROBOVAST_CLUSTER_CONFIG_KWARGS",
                     "value": json.dumps(config_kwargs or {})})
+    if kube_context:
+        env.append({"name": "ROBOVAST_KUBE_CONTEXT", "value": kube_context})
     return env
 
 
 def service_manifests(namespace="default", image=None, env=None,
-                      config_name=None, config_kwargs=None, git_token=None):
-    """Return all robovast-service manifests (RBAC [+ git Secret] + Deployment + Service)."""
+                      config_name=None, config_kwargs=None, git_token=None,
+                      share_env=None, kube_context=None):
+    """Return all robovast-service manifests (RBAC [+ git/share Secrets] + Deployment + Service)."""
     from robovast.common.execution import resolve_controller_image
     image = image or resolve_controller_image()
     if env is None:
-        env = _cluster_env(namespace, config_name, config_kwargs)
+        env = _cluster_env(namespace, config_name, config_kwargs, kube_context)
     # The service no longer launches controller pods, but it still needs an image
     # that contains robovast: the postprocessing Job mounts the conversion scripts
     # in from it via an initContainer. Default it to the SAME image the service
@@ -291,10 +407,24 @@ def service_manifests(namespace="default", image=None, env=None,
         # service hands it to git only for the plugin-install subprocess.
         extra.append(_git_secret_manifest(namespace, git_token))
 
+    # Env-based credential Secrets (share creds, ntfy config — see ENV_SECRET_SOURCES).
+    # Each resolver reads the host env / .env; when configured it becomes a Secret the
+    # service pulls in via envFrom. Unlike the git token these *are* env vars, because
+    # the in-driver upload / notifier read them from os.environ. ``share_env`` overrides
+    # that one source when given (used by tests / callers passing it explicitly).
+    env_secret_names = []
+    for name, resolver in ENV_SECRET_SOURCES:
+        resolved = share_env if (name == SHARE_SECRET_NAME and share_env is not None) \
+            else resolver()
+        if resolved:
+            extra.append(_env_secret_manifest(namespace, name, resolved))
+            env_secret_names.append(name)
+
     return [
         *_service_rbac_manifests(namespace),
         *extra,
-        _deployment_manifest(namespace, image, env=env, git_secret=have_git_secret),
+        _deployment_manifest(namespace, image, env=env, git_secret=have_git_secret,
+                             env_secret_names=env_secret_names),
         _service_manifest(namespace),
     ]
 
@@ -319,7 +449,8 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
 
     manifests = service_manifests(
         namespace=namespace, image=image, env=env,
-        config_name=config_name, config_kwargs=config_kwargs)
+        config_name=config_name, config_kwargs=config_kwargs,
+        kube_context=kube_context)
     by_kind = {m["kind"]: m for m in manifests}
     sa = by_kind["ServiceAccount"]
     role = by_kind["Role"]
@@ -328,7 +459,9 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
     cluster_binding = by_kind["ClusterRoleBinding"]
     deployment = by_kind["Deployment"]
     service = by_kind["Service"]
-    secret = by_kind.get("Secret")
+    # There may be two Secrets (git token and/or share credentials); by_kind
+    # collapses same-kind entries, so collect them from the full list.
+    secrets = [m for m in manifests if m["kind"] == "Secret"]
 
     # ServiceAccount
     _create_or_ok(lambda: core.create_namespaced_service_account(namespace, sa, dry_run=dr))
@@ -345,12 +478,14 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
         lambda: rbac.patch_cluster_role(cluster_role["metadata"]["name"],
                                         {"rules": cluster_role["rules"]}, dry_run=dr))
     _create_or_ok(lambda: rbac.create_cluster_role_binding(cluster_binding, dry_run=dr))
-    # Git-credentials Secret (present only when a token was provided at setup).
-    if secret is not None:
+    # Git-token / share-credential Secrets (each present only when configured at
+    # setup). Replace on conflict so rotated credentials take effect on re-setup.
+    for secret in secrets:
+        name = secret["metadata"]["name"]
         _create_or_replace(
-            lambda: core.create_namespaced_secret(namespace, secret, dry_run=dr),
-            lambda: core.replace_namespaced_secret(
-                GIT_SECRET_NAME, namespace, secret, dry_run=dr))
+            lambda s=secret: core.create_namespaced_secret(namespace, s, dry_run=dr),
+            lambda s=secret, n=name: core.replace_namespaced_secret(
+                n, namespace, s, dry_run=dr))
     # Deployment (replace spec on conflict → rolling update / --upgrade)
     _create_or_replace(
         lambda: apps.create_namespaced_deployment(namespace, deployment, dry_run=dr),
@@ -438,6 +573,10 @@ def delete_service(namespace="default", kube_context=None):
     deletions = [
         ("Service", lambda: core.delete_namespaced_service(SERVICE_NAME, namespace)),
         ("Deployment", lambda: apps.delete_namespaced_deployment(SERVICE_NAME, namespace)),
+        *[(f"Secret ({name})",
+           lambda n=name: core.delete_namespaced_secret(n, namespace))
+          for name, _ in ENV_SECRET_SOURCES],
+        ("Secret (git)", lambda: core.delete_namespaced_secret(GIT_SECRET_NAME, namespace)),
         ("ClusterRoleBinding", lambda: rbac.delete_cluster_role_binding(cluster_role_name)),
         ("ClusterRole", lambda: rbac.delete_cluster_role(cluster_role_name)),
         ("RoleBinding", lambda: rbac.delete_namespaced_role_binding(SERVICE_ACCOUNT, namespace)),

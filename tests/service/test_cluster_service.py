@@ -226,7 +226,9 @@ def test_list_jobs_classifies_and_counts(cs, monkeypatch):
             seen.update(namespace=namespace, label_selector=label_selector)
             return types.SimpleNamespace(items=jobs)
 
+    # j-run's pod is actually Running, so it counts as running (not just active).
     monkeypatch.setattr(cs, "_k8s_batch", lambda: _Batch())
+    monkeypatch.setattr(cs, "_k8s", lambda: _CoreWithPods([_job_pod("j-run")]))
     resp = cs.list_jobs("camp-2026-07-17-120000")
 
     assert seen["namespace"] == "ns1"
@@ -238,6 +240,77 @@ def test_list_jobs_classifies_and_counts(cs, monkeypatch):
     assert running.status == "running"
     # campaign prefix stripped from job-name-full for a readable label
     assert running.display_name == "batch-0-job-0"
+
+
+def _job_pod(job_name, phase="Running"):
+    import types
+    return types.SimpleNamespace(
+        metadata=types.SimpleNamespace(
+            name=f"{job_name}-pod",
+            labels={"batch.kubernetes.io/job-name": job_name}),
+        status=types.SimpleNamespace(phase=phase))
+
+
+class _CoreWithPods:
+    def __init__(self, pods):
+        import types
+        self._items = types.SimpleNamespace(items=pods)
+
+    def list_namespaced_pod(self, namespace, label_selector):
+        return self._items
+
+
+def test_list_jobs_reports_active_but_pending_pod_as_pending(cs, monkeypatch):
+    """An 'active' Job whose pod is still Pending must not show as running."""
+    import types
+    jobs = [_job("j-admitted", active=1)]
+
+    class _Batch:
+        def list_namespaced_job(self, namespace, label_selector):
+            return types.SimpleNamespace(items=jobs)
+
+    monkeypatch.setattr(cs, "_k8s_batch", lambda: _Batch())
+    monkeypatch.setattr(
+        cs, "_k8s", lambda: _CoreWithPods([_job_pod("j-admitted", phase="Pending")]))
+    resp = cs.list_jobs("camp-2026-07-17-120000")
+
+    assert (resp.counts.running, resp.counts.pending) == (0, 1)
+    assert next(j for j in resp.jobs if j.job_name == "j-admitted").status == "pending"
+
+
+def test_resource_usage_counts_scenario_jobs_pod_accurate(cs, monkeypatch):
+    """Backend-wide jobs tally splits Running from still-waiting scenario-run pods,
+    ignoring non-scenario pods (the service pod, someone else's workload)."""
+    import types
+
+    def _node(cpu, mem):
+        return types.SimpleNamespace(
+            status=types.SimpleNamespace(allocatable={"cpu": cpu, "memory": mem}))
+
+    def _pod_full(labels, phase):
+        return types.SimpleNamespace(
+            metadata=types.SimpleNamespace(labels=labels),
+            status=types.SimpleNamespace(phase=phase),
+            spec=types.SimpleNamespace(containers=[]))
+
+    pods = [
+        _pod_full({"jobgroup": "scenario-runs"}, "Running"),
+        _pod_full({"jobgroup": "scenario-runs"}, "Running"),
+        _pod_full({"jobgroup": "scenario-runs"}, "Pending"),
+        _pod_full({"app": "robovast-service"}, "Running"),  # not a scenario run
+    ]
+
+    class _Core:
+        def list_node(self):
+            return types.SimpleNamespace(items=[_node("4", "8Gi")])
+
+        def list_pod_for_all_namespaces(self, field_selector):
+            return types.SimpleNamespace(items=pods)
+
+    monkeypatch.setattr(cs, "_k8s", lambda: _Core())
+    usage = cs.resource_usage()
+
+    assert (usage.jobs_running, usage.jobs_pending) == (2, 1)
 
 
 def _pod(name="pod-1", phase="Running"):

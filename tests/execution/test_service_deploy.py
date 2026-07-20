@@ -15,10 +15,13 @@ from robovast.execution.cluster_execution import service_deploy as sd
 
 
 @pytest.fixture(autouse=True)
-def _no_host_git_token(monkeypatch):
-    """Keep manifest shape deterministic regardless of a CI GITHUB_TOKEN / .env."""
+def _no_host_secrets(monkeypatch):
+    """Keep manifest shape deterministic regardless of a CI GITHUB_TOKEN / share / .env."""
     monkeypatch.setattr(sd, "_load_setup_dotenv", lambda: None)
     for var in sd._GIT_TOKEN_HOST_ENVS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.delenv("ROBOVAST_SHARE_TYPE", raising=False)
+    for var in ("ROBOVAST_NTFY_TOPIC", "ROBOVAST_NTFY_SERVER", "ROBOVAST_NTFY_TOKEN"):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -68,6 +71,89 @@ def test_git_token_read_from_host_env(monkeypatch):
     assert secret["stringData"][sd.GIT_SECRET_KEY] == "ghp_from_env"
 
 
+def test_share_env_injects_secret_and_envfrom():
+    # An explicit share_env is materialised into a Secret and pulled in via envFrom
+    # (env vars — the in-driver upload reads them from os.environ).
+    share_env = {"ROBOVAST_SHARE_TYPE": "gcs", "ROBOVAST_GCS_BUCKET": "b",
+                 "ROBOVAST_GCS_KEY_JSON": "{}"}
+    ms = sd.service_manifests(namespace="default", image="x", share_env=share_env)
+    secret = next(m for m in ms if m["kind"] == "Secret")
+    assert secret["metadata"]["name"] == sd.SHARE_SECRET_NAME
+    assert secret["stringData"] == share_env
+
+    dep = next(m for m in ms if m["kind"] == "Deployment")
+    container = dep["spec"]["template"]["spec"]["containers"][0]
+    assert container["envFrom"] == [{"secretRef": {"name": sd.SHARE_SECRET_NAME}}]
+
+
+def test_share_env_read_from_host_provider(monkeypatch):
+    # ROBOVAST_SHARE_TYPE + provider vars on the host → resolved via build_pod_env.
+    monkeypatch.setenv("ROBOVAST_SHARE_TYPE", "webdav")
+    monkeypatch.setenv("ROBOVAST_WEBDAV_URL", "https://dav.example/col")
+    monkeypatch.setenv("ROBOVAST_WEBDAV_USER", "u")
+    monkeypatch.setenv("ROBOVAST_WEBDAV_PASSWORD", "p")
+    ms = sd.service_manifests(namespace="default", image="x")
+    secret = next(m for m in ms if m["kind"] == "Secret")
+    assert secret["metadata"]["name"] == sd.SHARE_SECRET_NAME
+    data = secret["stringData"]
+    assert data["ROBOVAST_SHARE_TYPE"] == "webdav"
+    assert data["ROBOVAST_WEBDAV_PASSWORD"] == "p"
+
+
+def test_unknown_share_type_fails_fast(monkeypatch):
+    import click
+    monkeypatch.setenv("ROBOVAST_SHARE_TYPE", "nope-not-a-provider")
+    with pytest.raises(click.UsageError):
+        sd.service_manifests(namespace="default", image="x")
+
+
+def test_no_share_means_no_secret_or_envfrom():
+    ms = sd.service_manifests(namespace="default", image="x")  # env cleared by fixture
+    assert not any(m["kind"] == "Secret" for m in ms)
+    dep = next(m for m in ms if m["kind"] == "Deployment")
+    assert "envFrom" not in dep["spec"]["template"]["spec"]["containers"][0]
+
+
+def test_ntfy_env_injects_secret_and_envfrom(monkeypatch):
+    # ROBOVAST_NTFY_TOPIC (+ optional token) on the host → a ntfy-credentials Secret
+    # pulled in via envFrom, so the in-service Notifier.from_env picks it up.
+    monkeypatch.setenv("ROBOVAST_NTFY_TOPIC", "robovast-alice")
+    monkeypatch.setenv("ROBOVAST_NTFY_TOKEN", "tk_xxx")
+    ms = sd.service_manifests(namespace="default", image="x")
+    secret = next(m for m in ms if m["kind"] == "Secret")
+    assert secret["metadata"]["name"] == sd.NTFY_SECRET_NAME
+    assert secret["stringData"] == {
+        "ROBOVAST_NTFY_TOPIC": "robovast-alice", "ROBOVAST_NTFY_TOKEN": "tk_xxx"}
+
+    dep = next(m for m in ms if m["kind"] == "Deployment")
+    container = dep["spec"]["template"]["spec"]["containers"][0]
+    assert container["envFrom"] == [{"secretRef": {"name": sd.NTFY_SECRET_NAME}}]
+
+
+def test_no_ntfy_topic_means_no_secret_or_envfrom(monkeypatch):
+    # Only the optional server set (no topic) → notifications disabled, no Secret.
+    monkeypatch.setenv("ROBOVAST_NTFY_SERVER", "https://ntfy.sh")
+    ms = sd.service_manifests(namespace="default", image="x")
+    assert not any(m["kind"] == "Secret" for m in ms)
+    dep = next(m for m in ms if m["kind"] == "Deployment")
+    assert "envFrom" not in dep["spec"]["template"]["spec"]["containers"][0]
+
+
+def test_share_and_ntfy_both_configured_carry_both_secretrefs(monkeypatch):
+    monkeypatch.setenv("ROBOVAST_NTFY_TOPIC", "robovast-alice")
+    share_env = {"ROBOVAST_SHARE_TYPE": "gcs", "ROBOVAST_GCS_BUCKET": "b"}
+    ms = sd.service_manifests(namespace="default", image="x", share_env=share_env)
+    secret_names = {m["metadata"]["name"] for m in ms if m["kind"] == "Secret"}
+    assert secret_names == {sd.SHARE_SECRET_NAME, sd.NTFY_SECRET_NAME}
+
+    dep = next(m for m in ms if m["kind"] == "Deployment")
+    container = dep["spec"]["template"]["spec"]["containers"][0]
+    assert container["envFrom"] == [
+        {"secretRef": {"name": sd.SHARE_SECRET_NAME}},
+        {"secretRef": {"name": sd.NTFY_SECRET_NAME}},
+    ]
+
+
 def test_no_git_token_means_no_volume_or_mount():
     ms = sd.service_manifests(namespace="default", image="x")  # env cleared by fixture
     dep = next(m for m in ms if m["kind"] == "Deployment")
@@ -90,6 +176,25 @@ def test_deployment_runs_vast_serve_on_service_port():
     # namespace threaded through every object
     assert all(m["metadata"].get("namespace", "ns1") == "ns1"
                for m in ms if m["kind"] != "ClusterRole")
+
+
+def test_deploy_context_stamped_into_service_env():
+    # Per-cluster resource lists are keyed by kubeconfig context name; in-cluster
+    # there is no kubeconfig, so deploy records the context for the in-pod driver.
+    ms = sd.service_manifests(namespace="default", image="x", config_name="rke2",
+                              kube_context="gcp-c4")
+    dep = next(m for m in ms if m["kind"] == "Deployment")
+    env = {e["name"]: e["value"] for e in
+           dep["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert env["ROBOVAST_KUBE_CONTEXT"] == "gcp-c4"
+
+
+def test_no_context_stamped_when_deploy_uses_active_context():
+    ms = sd.service_manifests(namespace="default", image="x", config_name="rke2")
+    dep = next(m for m in ms if m["kind"] == "Deployment")
+    names = {e["name"] for e in
+             dep["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert "ROBOVAST_KUBE_CONTEXT" not in names
 
 
 def test_service_is_clusterip_selecting_the_deployment():

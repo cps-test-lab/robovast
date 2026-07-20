@@ -165,6 +165,19 @@ class PostprocessingRevision(BaseModel):
     entries: list = Field(default_factory=list)
 
 
+class PanelsSource(BaseModel):
+    """The run-view ``visualization:`` block as editable YAML text."""
+
+    campaign_id: str
+    source: str = ""                 # which .vast is effective (snapshot or rev-N)
+    content: str = ""                # YAML text of the ``visualization:`` block
+
+
+class UpdatePanelsSourceRequest(BaseModel):
+    campaign_id: str
+    content: str
+
+
 class RunPostprocessingRequest(BaseModel):
     campaign_id: str
     force: bool = False
@@ -224,6 +237,12 @@ class ResourceUsage(BaseModel):
     means they run in parallel bounded only by free capacity (cluster). How many runs
     actually fit is left to the consumer, which knows each project's per-run
     reservation — the service does not.
+
+    ``jobs_running`` / ``jobs_pending`` are backend-wide scenario-run counts (every
+    campaign, not one), pod-accurate: ``running`` counts pods actually in phase
+    ``Running`` and ``pending`` the rest still waiting — the same distinction the
+    per-campaign :class:`JobCounts` draws. Both are ``0`` on backends that don't run
+    Jobs (local Docker).
     """
 
     backend: str                     # "docker" | "kubernetes" (informational only)
@@ -232,6 +251,8 @@ class ResourceUsage(BaseModel):
     memory_capacity_bytes: int
     memory_used_bytes: int
     parallel_runs: bool              # runs execute in parallel? cluster=True, local=False
+    jobs_running: int = 0            # scenario-run pods in phase Running, backend-wide
+    jobs_pending: int = 0            # scenario-run pods admitted/queued but not yet Running
 
 
 # -- workspaces (editable project inputs; independent of campaigns) ---------
@@ -573,6 +594,10 @@ class Routes:
         return f"/campaigns/{campaign_id}/panels"
 
     @staticmethod
+    def campaign_panels_source(campaign_id: str) -> str:
+        return f"/campaigns/{campaign_id}/panels/source"
+
+    @staticmethod
     def campaign_costmap(campaign_id: str) -> str:
         return f"/campaigns/{campaign_id}/costmap"
 
@@ -789,6 +814,19 @@ class RobovastInterface(ABC):
         """Return the campaign's run-view panels (top-level ``visualization.panels``
         in its snapshot ``.vast``): the raw panel dicts, rendered by the web run-view
         against the campaign's ``data.db``."""
+
+    @abstractmethod
+    def get_panels_source(self, campaign_id: str) -> PanelsSource:
+        """Return the effective ``visualization:`` block as editable YAML text
+        (drives the run-view 'edit visualization' dropdown)."""
+
+    @abstractmethod
+    def update_panels_source(
+        self, request: UpdatePanelsSourceRequest
+    ) -> PanelsSource:
+        """Persist an edited ``visualization:`` block as a new `.vast` override
+        revision (never mutates ``_config/``). The run view reloads its panels
+        from the effective `.vast` afterwards."""
 
     @abstractmethod
     def get_costmap_frame(
