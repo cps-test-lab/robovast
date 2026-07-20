@@ -906,8 +906,16 @@ class LocalTransport(RobovastInterface):
         from robovast.service.postprocessing_edit import effective_vast
         cfg, _ = _safe_load(str(effective_vast(Path(self._campaign_dir(campaign_id)))))
         raw = ((cfg or {}).get("visualization") or {}).get("panels") or []
-        # A bare string (``- playback``) is shorthand for ``{type: <string>}``.
-        panels = [{"type": p} if isinstance(p, str) else p for p in raw]
+        # Each panel is a single-key mapping ``{<type>: <props-or-null>}`` (``playback:``
+        # for a bare panel); flatten to the ``{type, ...fields}`` the web UI consumes.
+        # A bare ``- playback`` (no colon) parses to the plain string ``"playback"``.
+        panels = []
+        for entry in raw:
+            if isinstance(entry, str):
+                ptype, props = entry, None
+            else:
+                (ptype, props), = entry.items()
+            panels.append({"type": ptype, **(props or {})})
         return CampaignPanelsResponse(campaign_id=campaign_id, panels=panels)
 
     def get_panels_source(self, campaign_id: str) -> "PanelsSource":

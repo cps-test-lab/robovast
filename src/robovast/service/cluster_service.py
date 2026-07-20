@@ -52,11 +52,9 @@ from pathlib import Path
 
 from robovast.execution.control_server import Phase, Status, is_running
 from robovast.service.client import LocalTransport
-from robovast.service.interface import (ActionResult, CampaignSummary,
-                                        JobCounts, JobSummary,
-                                        ListCampaignsRequest,
-                                        ListCampaignsResponse, ListJobsResponse,
-                                        LogChunk, ResourceUsage, VersionInfo)
+from robovast.service.interface import (ActionResult, JobCounts, JobSummary,
+                                        ListJobsResponse, LogChunk,
+                                        ResourceUsage, VersionInfo)
 
 logger = logging.getLogger(__name__)
 
@@ -464,28 +462,11 @@ class ClusterService(LocalTransport):
             logger.debug("malformed outcome.json for %s: %s", campaign_id, e)
             return None
 
-    def list_campaigns(
-        self, request: "ListCampaignsRequest | None" = None
-    ) -> ListCampaignsResponse:
-        """List campaigns this service is driving (newest first).
-
-        Live campaigns come from the in-process registry. Historical campaigns live
-        in the object store; surfacing those is a later enhancement (the previous
-        implementation enumerated controller pods, which no longer exist).
-        """
-        request = request or ListCampaignsRequest()
-        with self._lock:
-            entries = list(self._campaigns.values())
-        summaries = []
-        for e in entries:
-            snap = e.state.snapshot()
-            summaries.append(CampaignSummary(
-                campaign_id=e.campaign_id, phase=snap.phase,
-                postprocessed=snap.postprocessed))
-        summaries.sort(key=lambda s: s.campaign_id, reverse=True)
-        total = len(summaries)
-        window = summaries[request.offset:request.offset + request.limit]
-        return ListCampaignsResponse(campaigns=window, total=total)
+    # list_campaigns is inherited from LocalTransport: off-cluster the driver runs
+    # in this process and writes each campaign under the local results dir, so the
+    # disk scan surfaces both live campaigns and ones from before a `vast serve`
+    # restart. (`_summary_for` uses the in-memory snapshot while a campaign is being
+    # driven and otherwise derives `postprocessed` from the on-disk data.db.)
 
     def stop(self, campaign_id: str) -> ActionResult:
         """Stop a campaign this process is driving.

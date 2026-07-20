@@ -63,17 +63,17 @@ evaluation:
 # The web Run view (Results -> Run view): replay one run over its rosbag timeline.
 visualization:
   panels:
-    - type: playback           # transport bar spanning the bottom (registry defaults)
-    - type: costmap
-      title: Nav2 costmaps
-      position: { anchor: top-right, width: 440, height: 440 }
-      minimizable: true
-      layers:
-        map: { topic: /map }
-        global: { topic: /global_costmap/costmap }
-        local: { topic: /local_costmap/costmap }
-        poses: { table: poses }
-    - type: scenario_tree
-      position: { anchor: left, width: 320 }
-      minimizable: true
-      source: { table: behaviors }
+    - playback:                # transport bar spanning the bottom (registry defaults)
+    - costmap:
+        title: Nav2 costmaps
+        position: { anchor: top-right, width: 440, height: 440 }
+        minimizable: true
+        layers:
+          map: { topic: /map }
+          global: { topic: /global_costmap/costmap }
+          local: { topic: /local_costmap/costmap }
+          poses: { table: poses }
+    - scenario_tree:
+        position: { anchor: left, width: 320 }
+        minimizable: true
+        source: { table: behaviors }

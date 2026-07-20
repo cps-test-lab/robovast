@@ -31,7 +31,9 @@ export function parseVastPanels(raw: Record<string, unknown>[]): PanelSpec[] {
 
     return {
       type,
-      title: r.title != null ? String(r.title) : manifest?.label,
+      // Only an explicitly-declared title; a bare type shows no header (the header text itself
+      // falls back to the manifest label in PanelHost when a header is shown).
+      title: r.title != null ? String(r.title) : undefined,
       position: {
         anchor: (pos.anchor as PanelSpec['position']['anchor']) ?? manifest?.defaultPosition.anchor,
         width: (pos.width as number | string | undefined) ?? manifest?.defaultPosition.width,

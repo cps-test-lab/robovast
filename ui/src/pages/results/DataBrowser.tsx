@@ -11,7 +11,15 @@ import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded'
 import Stack from '@mui/material/Stack'
 import TextField from '@mui/material/TextField'
 import Typography from '@mui/material/Typography'
-import { DataGrid, GridToolbar, type GridColDef } from '@mui/x-data-grid'
+import {
+  DataGrid,
+  GridToolbarContainer,
+  GridToolbarColumnsButton,
+  GridToolbarFilterButton,
+  GridToolbarExport,
+  GridToolbarQuickFilter,
+  type GridColDef,
+} from '@mui/x-data-grid'
 import {
   robovast,
   campaignsNewestFirst,
@@ -32,6 +40,18 @@ const NONE = '(none)'
 export interface SqlRequest {
   sql?: string
   nonce: number
+}
+
+// DataGrid toolbar without the density selector (Columns / Filters / Export / quick filter only).
+function DataGridToolbar() {
+  return (
+    <GridToolbarContainer>
+      <GridToolbarColumnsButton />
+      <GridToolbarFilterButton />
+      <GridToolbarExport />
+      <GridToolbarQuickFilter />
+    </GridToolbarContainer>
+  )
 }
 
 // Results → Data browser: the web equivalent of `vast eval gui`. Browse a campaign's data.db
@@ -306,8 +326,7 @@ export function DataBrowser({
                   columns={gridColumns}
                   density="compact"
                   disableRowSelectionOnClick
-                  slots={{ toolbar: GridToolbar }}
-                  slotProps={{ toolbar: { showQuickFilter: true } }}
+                  slots={{ toolbar: DataGridToolbar }}
                   initialState={{ pagination: { paginationModel: { pageSize: 100 } } }}
                   pageSizeOptions={[25, 100, 500]}
                   sx={{ border: 0, fontFamily: 'monospace', fontSize: 12 }}

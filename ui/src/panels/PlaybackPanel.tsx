@@ -91,7 +91,8 @@ registerPanel({
     defaultPosition: { anchor: 'bottom', height: 40 },
     resizable: false,
     minimizable: false,
-    frameless: true,
+    // Framed (a bordered transport bar at the bottom) but no header: it has no title and isn't
+    // minimizable, so PanelHost renders no header row.
   },
   component: PlaybackPanel,
 })

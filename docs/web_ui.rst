@@ -279,26 +279,27 @@ the view once and every run of the campaign replays through it:
 
    visualization:
      panels:
-       - type: playback                       # transport bar; defaults to full-width bottom
-       - type: costmap
-         title: Nav2 costmaps
-         position: { anchor: top-right, width: 440, height: 440 }
-         minimizable: true
-         layers:
-           map:    { topic: /map }
-           global: { topic: /global_costmap/costmap }
-           local:  { topic: /local_costmap/costmap }
-           poses:  { table: poses }           # TF source for placing/moving layers
-       - type: scenario_tree
-         position: { anchor: left, width: 320 }
-         source: { table: behaviors }
+       - playback:                            # transport bar; defaults to full-width bottom
+       - costmap:
+           title: Nav2 costmaps
+           position: { anchor: top-right, width: 440, height: 440 }
+           minimizable: true
+           layers:
+             map:    { topic: /map }
+             global: { topic: /global_costmap/costmap }
+             local:  { topic: /local_costmap/costmap }
+             poses:  { table: poses }         # TF source for placing/moving layers
+       - scenario_tree:
+           position: { anchor: left, width: 320 }
+           source: { table: behaviors }
 
-Each panel entry has a ``type`` (selecting the panel plugin), an optional ``title``, a
+Each panel entry is a single-key mapping — the key is the panel **type** (selecting the
+panel plugin) and its value holds that panel's fields: an optional ``title``, a
 ``position`` (an ``anchor`` — ``bottom``/``top``/``left``/``right``, a corner, ``center``,
 or ``fill`` for a full-view background — plus ``width``/``height`` in pixels or a ``"40%"``
 string), the toggles ``minimizable``/``minimized``/``hidden``, and panel-specific **data
 bindings** (which ``data.db`` table or recorded topic each piece of data comes from). Any
-field you omit falls back to the panel type's built-in default, so ``- type: playback`` on
+field you omit falls back to the panel type's built-in default, so a bare ``playback:`` on
 its own is a complete panel. In this first version the layout is exactly as the ``.vast``
 declares it (minimize/toggle work; drag-resize is not yet persisted).
 

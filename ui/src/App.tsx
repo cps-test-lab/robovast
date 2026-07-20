@@ -35,7 +35,7 @@ const TOPICS: NavTopic[] = [
     views: [
       { id: 'explorer', label: 'Explorer' },
       { id: 'run', label: 'Run view' },
-      { id: 'data', label: 'Data browser' },
+      { id: 'data', label: 'Data Browser' },
     ],
   },
 ]

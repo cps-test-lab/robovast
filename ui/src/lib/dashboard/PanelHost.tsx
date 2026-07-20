@@ -54,42 +54,62 @@ function handleSx(rz: { x?: 1 | -1; y?: 1 | -1 }): CSSProperties {
   return { ...base, left: 0, right: 0, height: 6, [rz.y === 1 ? 'bottom' : 'top']: 0, cursor: 'ns-resize' }
 }
 
-// Map a panel position to absolute CSS within the (position: relative) host container. When
-// `minimized`, only the header shows, so the panel must collapse to its content height rather than
-// keep the height it would otherwise stretch/fix to -- otherwise a left/right panel stays full-height
-// with an empty body.
-function layoutStyle(pos: PanelPosition, z: number, minimized: boolean): CSSProperties {
-  const w = () => len(pos.width, '360px')
-  const h = () => (minimized ? 'auto' : len(pos.height, '320px'))
+// Full-width top/bottom bars dock at the very edge and reserve their height (`insets`); every other
+// panel is laid out in the band between them, so a docked bar (e.g. the playback transport) is never
+// occluded. A declared width/height is honoured where it fits the band, else the panel fills its
+// column. `center` is centred in the band, `fill` covers it. `minimized` collapses to the header.
+const CORNER_INSET = 12
+
+function layoutStyle(
+  pos: PanelPosition,
+  z: number,
+  minimized: boolean,
+  insets: { top: number; bottom: number },
+): CSSProperties {
   const base: CSSProperties = { position: 'absolute', zIndex: z }
-  switch (pos.anchor ?? 'center') {
+  const anchor = pos.anchor ?? 'center'
+  const w = len(pos.width, '360px')
+  const h = minimized ? 'auto' : len(pos.height, '320px')
+  const { top: T, bottom: B } = insets
+  const bandH = `calc(100% - ${T + B}px)`
+  const cornerBandH = `calc(100% - ${T + B + 2 * CORNER_INSET}px)`
+
+  switch (anchor) {
     case 'fill':
-      return { ...base, inset: 0, zIndex: 0 }
-    case 'bottom':
-      return { ...base, left: 0, right: 0, bottom: 0, height: h() }
+      return { ...base, top: T, bottom: B, left: 0, right: 0, zIndex: 0 }
     case 'top':
-      return { ...base, left: 0, right: 0, top: 0, height: h() }
+      return { ...base, left: 0, right: 0, top: 0, height: h }
+    case 'bottom':
+      return { ...base, left: 0, right: 0, bottom: 0, height: h }
     case 'left':
-      return { ...base, top: 0, bottom: minimized ? 'auto' : 0, left: 0, width: w() }
-    case 'right':
-      return { ...base, top: 0, bottom: minimized ? 'auto' : 0, right: 0, width: w() }
+    case 'right': {
+      const side = anchor === 'right' ? { right: 0 } : { left: 0 }
+      // Column lives inside the band; a declared height caps it (top-anchored), else it fills.
+      const vertical = minimized
+        ? { top: T }
+        : pos.height != null
+          ? { top: T, height: h, maxHeight: bandH }
+          : { top: T, bottom: B }
+      return { ...base, ...side, width: w, ...vertical }
+    }
     case 'top-left':
-      return { ...base, top: 12, left: 12, width: w(), height: h() }
+      return { ...base, top: T + CORNER_INSET, left: CORNER_INSET, width: w, height: h, maxHeight: cornerBandH }
     case 'top-right':
-      return { ...base, top: 12, right: 12, width: w(), height: h() }
+      return { ...base, top: T + CORNER_INSET, right: CORNER_INSET, width: w, height: h, maxHeight: cornerBandH }
     case 'bottom-left':
-      return { ...base, bottom: 12, left: 12, width: w(), height: h() }
+      return { ...base, bottom: B + CORNER_INSET, left: CORNER_INSET, width: w, height: h, maxHeight: cornerBandH }
     case 'bottom-right':
-      return { ...base, bottom: 12, right: 12, width: w(), height: h() }
+      return { ...base, bottom: B + CORNER_INSET, right: CORNER_INSET, width: w, height: h, maxHeight: cornerBandH }
     case 'center':
     default:
       return {
         ...base,
-        top: '50%',
+        top: `calc(${T}px + (100% - ${T + B}px) / 2)`,
         left: '50%',
         transform: 'translate(-50%, -50%)',
-        width: w(),
-        height: h(),
+        width: w,
+        height: h,
+        maxHeight: bandH,
       }
   }
 }
@@ -99,11 +119,13 @@ function PanelFrame({
   z,
   clock,
   data,
+  insets,
 }: {
   spec: PanelSpec
   z: number
   clock: PlaybackClock
   data: DataProvider
+  insets: { top: number; bottom: number }
 }) {
   const [minimized, setMinimized] = useState(spec.minimized)
   const paperRef = useRef<HTMLDivElement | null>(null)
@@ -114,7 +136,7 @@ function PanelFrame({
   })
   const plugin = getPanel(spec.type)
   const isFill = spec.position.anchor === 'fill'
-  // A fill/frameless panel has no Paper chrome and never a header (the playback bar floats directly).
+  // A fill/frameless panel has no Paper chrome and never a header (e.g. a full-view background).
   const frameless = isFill || spec.frameless
   const showHeader = !frameless && (spec.minimizable || !!spec.title)
   const rz = RESIZE[spec.position.anchor ?? 'center']
@@ -158,7 +180,7 @@ function PanelFrame({
       elevation={frameless ? 0 : 3}
       square={frameless}
       sx={{
-        ...layoutStyle(pos, z, minimized),
+        ...layoutStyle(pos, z, minimized, insets),
         display: 'flex',
         flexDirection: 'column',
         overflow: 'hidden',
@@ -210,13 +232,28 @@ export function PanelHost({
   clock: PlaybackClock
   data: DataProvider
 }) {
+  const visible = panels.filter((p) => !p.hidden)
+  // Reserve the height of the full-width top/bottom bars so nothing else overlaps them.
+  const px = (v: number | string | undefined) => (typeof v === 'number' ? v : 0)
+  const insets = { top: 0, bottom: 0 }
+  for (const p of visible) {
+    if (p.position.anchor === 'top') insets.top += px(p.position.height)
+    else if (p.position.anchor === 'bottom') insets.bottom += px(p.position.height)
+  }
   return (
     <Box sx={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden' }}>
-      {panels
-        .filter((p) => !p.hidden)
-        .map((spec, i) => (
-          <PanelFrame key={i} spec={spec} z={i + 1} clock={clock} data={data} />
-        ))}
+      {visible.map((spec, i) => (
+        // Key on the spec so only a panel whose declaration actually changed remounts (and re-fits);
+        // editing one panel must not reset another's view (e.g. the costmap's pan/zoom).
+        <PanelFrame
+          key={`${i}:${JSON.stringify(spec)}`}
+          spec={spec}
+          z={i + 1}
+          clock={clock}
+          data={data}
+          insets={insets}
+        />
+      ))}
     </Box>
   )
 }

@@ -54,6 +54,9 @@ export function RunView({
     queryFn: () => robovast.listCampaignPanels(campaignId),
     enabled: !!campaignId,
     retry: false,
+    // Pick up out-of-band edits to the .vast (edited on disk, or via the editor) when the tab
+    // regains focus — no manual browser refresh needed.
+    refetchOnWindowFocus: true,
   })
 
   const runs = useQuery({
@@ -89,8 +92,6 @@ export function RunView({
   }, [runList]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const runKey = run ? `${campaignId}:${run.config_name}:${run.run_id}` : ''
-  // Bumped when a visualization edit is saved, forcing the PanelHost to remount with fresh specs.
-  const [reloadNonce, setReloadNonce] = useState(0)
 
   // One provider + clock per run. Recreated (and the old clock disposed) when the run changes.
   const provider = useMemo(
@@ -144,7 +145,6 @@ export function RunView({
     // reopen shows the saved text.
     queryClient.invalidateQueries({ queryKey: ['panels', campaignId] })
     queryClient.invalidateQueries({ queryKey: ['panels-source', campaignId] })
-    setReloadNonce((n) => n + 1)
   }
 
   // Mirror buildCampaignChildren's run-node id so the current run highlights in the tree.
@@ -228,8 +228,8 @@ export function RunView({
           This campaign has no runs to replay.
         </Alert>
       ) : (
-        <Box sx={{ flexGrow: 1, minHeight: 0, border: 1, borderColor: 'divider', borderRadius: 1 }}>
-          <PanelHost key={`${runKey}:${reloadNonce}`} panels={specs} clock={clock} data={provider} />
+        <Box sx={{ flexGrow: 1, minHeight: 0 }}>
+          <PanelHost key={runKey} panels={specs} clock={clock} data={provider} />
         </Box>
       )}
     </Stack>
