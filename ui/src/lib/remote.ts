@@ -54,7 +54,11 @@ export function useRemoteComponent<P>(
     ;(async () => {
       try {
         const m = await mf()
-        m.registerRemotes([{ name: remote.name, entry: remote.remote_entry_url }])
+        // `type: 'module'` — our remotes are built by @module-federation/vite, whose remoteEntry.js
+        // is an ES module (loaded via dynamic import()). Without this the runtime defaults to
+        // 'global' (script injection + window[name]), which fails for an ESM entry with
+        // "remoteEntryExports is undefined".
+        m.registerRemotes([{ name: remote.name, entry: remote.remote_entry_url, type: 'module' }])
         const mod = (await m.loadRemote(`${remote.name}/${remote.module.replace(/^\.\//, '')}`)) as
           | { default?: ComponentType<P> }
           | ComponentType<P>
