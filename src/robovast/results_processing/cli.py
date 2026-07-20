@@ -858,6 +858,8 @@ def list_downloads_cmd(campaigns):
         try:
             from robovast.service.client import \
                 RobovastClient  # pylint: disable=import-outside-toplevel
+            from robovast.execution.control_server import \
+                is_terminal  # pylint: disable=import-outside-toplevel
             from robovast.service.interface import \
                 ListCampaignsRequest  # pylint: disable=import-outside-toplevel
             resp = RobovastClient(service_url).list_campaigns(
@@ -868,7 +870,7 @@ def list_downloads_cmd(campaigns):
                 # the service uses to tell a running campaign apart). The stored data
                 # is the postprocessed archive only once the configured pipelines ran;
                 # otherwise it is the minimal (pre-postprocess) campaign data.
-                if summary.phase in ("finished", "failed", "stopped", "unknown"):
+                if is_terminal(summary.phase):
                     label = "postprocessed" if summary.postprocessed else ""
                     variants.setdefault(summary.campaign_id, set()).add(label)
         except Exception as exc:  # noqa: BLE001

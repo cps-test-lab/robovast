@@ -1,35 +1,32 @@
 import { useEffect, useState } from 'react'
 import Box from '@mui/material/Box'
 import RocketLaunchRoundedIcon from '@mui/icons-material/RocketLaunchRounded'
-import TuneRoundedIcon from '@mui/icons-material/TuneRounded'
+import MonitorHeartRoundedIcon from '@mui/icons-material/MonitorHeartRounded'
 import InsightsRoundedIcon from '@mui/icons-material/InsightsRounded'
 import { Sidebar, type NavTopic } from '@/components/Sidebar'
 import { KeepAlive } from '@/components/KeepAlive'
 import { ExecutionPage } from '@/pages/ExecutionPage'
-import { ConfigPage } from '@/pages/config/ConfigPage'
+import { Monitor } from '@/pages/Monitor'
 import { ResultsPage } from '@/pages/results/ResultsPage'
 
 // The whole navigation lives in the left sidebar: each topic is a top-level entry; a topic with
-// several views (only Config today) expands to show them nested. The active topic/view is mirrored
-// in the URL hash (e.g. #/config/files) so refresh / back-forward / bookmarks restore the view.
+// several views expands to show them nested. The active topic/view is mirrored in the URL hash
+// (e.g. #/execution/files) so refresh / back-forward / bookmarks restore the view.
 const TOPICS: NavTopic[] = [
-  {
-    id: 'config',
-    label: 'Config',
-    icon: <TuneRoundedIcon />,
-    views: [
-      { id: 'configuration', label: 'Configuration' },
-      { id: 'files', label: 'Files' },
-    ],
-  },
   {
     id: 'execution',
     label: 'Execution',
     icon: <RocketLaunchRoundedIcon />,
     views: [
-      { id: 'monitor', label: 'Monitor' },
+      { id: 'configuration', label: 'Configuration' },
+      { id: 'files', label: 'Files' },
       { id: 'launcher', label: 'Launcher' },
     ],
+  },
+  {
+    id: 'monitor',
+    label: 'Monitor',
+    icon: <MonitorHeartRoundedIcon />,
   },
   {
     id: 'results',
@@ -97,8 +94,8 @@ export function App() {
         <KeepAlive active={nav.topicId === 'execution'}>
           <ExecutionPage view={nav.viewId} />
         </KeepAlive>
-        <KeepAlive active={nav.topicId === 'config'}>
-          <ConfigPage view={nav.viewId} />
+        <KeepAlive active={nav.topicId === 'monitor'}>
+          <Monitor />
         </KeepAlive>
         <KeepAlive active={nav.topicId === 'results'}>
           <ResultsPage view={nav.viewId} />

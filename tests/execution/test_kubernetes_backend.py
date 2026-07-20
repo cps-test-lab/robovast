@@ -73,6 +73,27 @@ def test_run_batch_in_pod_projects_campaign_level_snapshot(monkeypatch, tmp_path
                                  "_jobs/batch-0"]
 
 
+def test_run_batch_in_pod_whole_campaign_single_prefix_download(monkeypatch, tmp_path):
+    """Batch mode fetches the whole campaign in one prefix download, not per config.
+
+    The per-config enumeration exists only to scope _jobs/ across a search's many
+    batches; in batch mode this one batch *is* the campaign, so a single prefix
+    download avoids the O(configs) sequential list calls that stall a large batch.
+    """
+    storage = _FakeStorage()
+    monkeypatch.setattr(in_pod_storage, "storage_client_for", lambda cfg: storage)
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.kubernetes_backend.prepare_campaign_configs",
+        lambda out_dir, data, cluster=False: None)
+
+    runner = _runner_for_download_test([{"name": "cfgA"}, {"name": "cfgB"}])
+    runner.run_batch_in_pod(str(tmp_path), whole_campaign=True)
+
+    # One download against the (here embedded/empty) campaign prefix — not one per
+    # config plus the campaign-level dirs.
+    assert storage.downloads == [""]
+
+
 def test_run_batch_in_pod_materialises_job_symlinks(monkeypatch, tmp_path):
     """Each run's ``job`` symlink is created so metadata resolves sysinfo.yaml now.
 
@@ -138,7 +159,7 @@ def test_run_batch_records_execution_yaml_before_finalize(monkeypatch, tmp_path)
     monkeypatch.setattr(
         BatchJobRunner, "for_batch",
         classmethod(lambda cls, **kw: types.SimpleNamespace(
-            run_batch_in_pod=lambda campaign_root: None)))
+            run_batch_in_pod=lambda campaign_root, whole_campaign=False: None)))
 
     _backend().run_batch({"execution": {"image": "img:test"}},
                          campaign_root=str(tmp_path), batch_tag="b", runs=3,

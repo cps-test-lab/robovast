@@ -109,11 +109,15 @@ class ExecutionBackend(ABC):
 
     @abstractmethod
     def run_batch(self, campaign_data: dict, *, campaign_root: str, batch_tag: str,
-                  runs: int, options: RunOptions) -> None:
+                  runs: int, options: RunOptions, whole_campaign: bool = False) -> None:
         """Execute the jobs for ``campaign_data`` into ``campaign_root``.
 
         ``batch_tag`` (e.g. ``"batch-3"``) namespaces job-level artifacts so
         multiple batches sharing one campaign root do not collide.
+
+        ``whole_campaign`` marks this batch as the entire campaign (batch mode,
+        no other batches share the prefix), letting a backend that stages results
+        through object storage fetch them in one shot rather than per config.
         """
 
     def finalize_campaign(self, campaign_root: str) -> None:
@@ -222,7 +226,10 @@ class DockerBackend(ExecutionBackend):
         self._state = state
 
     def run_batch(self, campaign_data: dict, *, campaign_root: str, batch_tag: str,
-                  runs: int, options: RunOptions) -> None:
+                  runs: int, options: RunOptions, whole_campaign: bool = False) -> None:
+        # whole_campaign is a cluster-only hint (single-shot result fetch); the
+        # local backend already writes results straight into campaign_root.
+        del whole_campaign
         os.makedirs(campaign_root, exist_ok=True)
         image = resolve_robovast_image(
             explicit=options.image,

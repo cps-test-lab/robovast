@@ -42,7 +42,7 @@ from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from pathlib import Path
 from typing import Optional
 
-from robovast.execution.control_server import (ControllerState, Status,
+from robovast.execution.control_server import (ControllerState, Phase, Status,
                                                failure_detail)
 from robovast.service.interface import (ActionResult, CampaignRef,
                                         CampaignSummary, CreateCampaignRequest,
@@ -477,7 +477,7 @@ class LocalTransport(RobovastInterface):
                 logger.warning("Campaign %s: %s", campaign_id, e)
                 entry.error = str(e)
                 state.update(error=str(e))
-                state.set_phase("failed", stage=str(e))
+                state.set_phase(Phase.FAILED, stage=str(e))
                 self._record_campaign_failure(
                     campaign_id, results_dir, state, e, backend)
                 return
@@ -485,7 +485,7 @@ class LocalTransport(RobovastInterface):
                 logger.exception("Campaign %s failed", campaign_id)
                 entry.error = str(e)
                 state.update(error=failure_detail(e))
-                state.set_phase("failed", stage=str(e))
+                state.set_phase(Phase.FAILED, stage=str(e))
                 self._record_campaign_failure(
                     campaign_id, results_dir, state, e, backend)
                 return
@@ -524,7 +524,7 @@ class LocalTransport(RobovastInterface):
             logger.warning("Could not open postprocessing.log for %s", campaign_id,
                            exc_info=True)
         try:
-            state.set_phase("postprocessing")
+            state.set_phase(Phase.POSTPROCESSING)
             ok, message = run_postprocessing(
                 results_dir=results_dir, campaign=campaign_id,
                 output_callback=logger.info)
@@ -534,17 +534,17 @@ class LocalTransport(RobovastInterface):
                 if campaign_defines_postprocessing(
                         str(Path(results_dir) / campaign_id)):
                     state.update(postprocessed=True)
-                state.set_phase("finished")
+                state.set_phase(Phase.FINISHED)
             else:
                 entry.error = message
                 state.update(error=message)
-                state.set_phase("failed", stage=f"postprocessing failed: {message}")
+                state.set_phase(Phase.FAILED, stage=f"postprocessing failed: {message}")
                 self._record_outcome(campaign_id, results_dir, state)
         except Exception as e:  # noqa: BLE001 - surfaced via status
             logger.exception("Postprocessing for %s failed", campaign_id)
             entry.error = str(e)
             state.update(error=failure_detail(e))
-            state.set_phase("failed", stage=f"postprocessing: {e}")
+            state.set_phase(Phase.FAILED, stage=f"postprocessing: {e}")
             self._record_outcome(campaign_id, results_dir, state)
         finally:
             remove_campaign_log_handler(handler)
@@ -904,9 +904,10 @@ class LocalTransport(RobovastInterface):
         from robovast.common.config_validation import _safe_load
         from robovast.service.interface import CampaignPanelsResponse
         from robovast.service.postprocessing_edit import effective_vast
-        cfg, _ = _safe_load(str(effective_vast(Path(self._data_dir(campaign_id)))))
-        panels = [p for p in (((cfg or {}).get("visualization") or {}).get("panels") or [])
-                  if isinstance(p, dict) and p.get("type")]
+        cfg, _ = _safe_load(str(effective_vast(Path(self._campaign_dir(campaign_id)))))
+        raw = ((cfg or {}).get("visualization") or {}).get("panels") or []
+        # A bare string (``- playback``) is shorthand for ``{type: <string>}``.
+        panels = [{"type": p} if isinstance(p, str) else p for p in raw]
         return CampaignPanelsResponse(campaign_id=campaign_id, panels=panels)
 
     def get_panels_source(self, campaign_id: str) -> "PanelsSource":
@@ -1017,7 +1018,7 @@ class LocalTransport(RobovastInterface):
         with self._lock:
             entry = self._campaigns.get(cid)
         snap = entry.state.snapshot() if entry else None
-        phase = snap.phase if snap else "finished"
+        phase = snap.phase if snap else Phase.FINISHED
         # A finished campaign discovered from disk (no in-memory entry, e.g. after a service
         # restart or run out-of-process) has no live snapshot — derive `postprocessed` from the
         # presence of its built data.db so the Results views still list it as queryable.
@@ -1065,7 +1066,7 @@ class LocalTransport(RobovastInterface):
                                                    read_execution_outcome)
         campaign_dir = self._campaigns_root() / campaign_id
         if not campaign_dir.is_dir():
-            return Status(phase="unknown", campaign_id=campaign_id)
+            return Status(phase=Phase.UNKNOWN, campaign_id=campaign_id)
         # A failed campaign left its terminal outcome (phase + error) here — prefer
         # that over reconstructing an optimistic "finished".
         outcome = read_execution_outcome(campaign_dir)
@@ -1076,7 +1077,7 @@ class LocalTransport(RobovastInterface):
             total = info.get("num_runs", 0)
         except (FileNotFoundError, OSError, ValueError, TypeError):
             total = 0
-        return Status(phase="finished", campaign_id=campaign_id,
+        return Status(phase=Phase.FINISHED, campaign_id=campaign_id,
                       runs={"completed": total, "total": total})
 
 

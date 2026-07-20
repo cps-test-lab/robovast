@@ -24,7 +24,8 @@ export function ExplorerView({ campaigns }: { campaigns: CampaignSummary[] }) {
 
       {!campaigns.length ? (
         <Alert severity="info" variant="outlined">
-          No campaigns yet — launch one from the Launcher.
+          No finished campaigns yet — results appear here once a campaign finishes and is
+          postprocessed.
         </Alert>
       ) : (
         <Box

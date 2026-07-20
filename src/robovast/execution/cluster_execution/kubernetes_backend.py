@@ -586,9 +586,14 @@ class BatchJobRunner:
 
     # -- in-pod execution ---------------------------------------------------
 
-    def run_batch_in_pod(self, campaign_root: str):
+    def run_batch_in_pod(self, campaign_root: str, whole_campaign: bool = False):
         """Upload, run and download one batch; this batch's results and the
-        campaign-level snapshot (``_config``/``_transient``) land under *campaign_root*."""
+        campaign-level snapshot (``_config``/``_transient``) land under *campaign_root*.
+
+        ``whole_campaign`` is set in batch mode, where this batch *is* the entire
+        campaign: the prefix holds no other batch's artifacts, so the results can be
+        fetched with a single prefix download instead of the per-config enumeration
+        that search mode needs to scope ``_jobs/`` to the current batch."""
         self._ensure_k8s_initialized()
         _, _, _, bucket_name, campaign_prefix = self._s3_settings()
         storage = in_pod_storage.storage_client_for(self.cluster_config)
@@ -641,24 +646,33 @@ class BatchJobRunner:
         # 4. Project this batch's results — and the campaign-level snapshot — from
         #    the object store into the campaign root, so the host campaign is
         #    complete (matching a local run and the service's fetch_campaign).
-        #    The campaign prefix is flat/shared across batches, so we fetch by name:
-        #    this batch's <config>/ dirs (self.configs == this batch's composed
-        #    configs, the same names the controller scores at campaign_root/<config>/)
-        #    and its job-artifact dir _jobs/<batch_tag>/ (sysinfo.yaml, resource
-        #    monitor, logs — read via each run's `job` symlink), plus the
-        #    campaign-level _config/ (holds the .vast the auto-chain postprocessing
-        #    reads) and _transient/. Batch-scoping _jobs avoids re-fetching prior
-        #    batches each iteration; the small campaign-level dirs are re-fetched
-        #    (idempotent — download_prefix never deletes, so the locally-accumulated
-        #    _transient/job_links.yaml survives).
         os.makedirs(campaign_root, exist_ok=True)
-        got = 0
-        job_root = f"_jobs/{self._batch_tag}" if self._batch_tag else "_jobs"
-        targets = [c["name"] for c in self.configs if c.get("name")]
-        targets += ["_config", "_transient", job_root]
-        for rel in targets:
-            got += storage.download_prefix(
-                bucket_name, f"{campaign_prefix}{rel}", os.path.join(campaign_root, rel))
+        if whole_campaign:
+            # Batch mode: this batch *is* the whole campaign, so the prefix holds
+            # nothing but its own artifacts. One prefix download does a single
+            # paginated list instead of one list per config — the per-config
+            # enumeration below costs 600+ sequential list calls on a large batch,
+            # during which the campaign sits in "running" with no progress.
+            got = storage.download_prefix(bucket_name, campaign_prefix, campaign_root)
+        else:
+            # Search mode: the campaign prefix is flat/shared across batches, so we
+            #    fetch by name: this batch's <config>/ dirs (self.configs == this
+            #    batch's composed configs, the same names the controller scores at
+            #    campaign_root/<config>/) and its job-artifact dir _jobs/<batch_tag>/
+            #    (sysinfo.yaml, resource monitor, logs — read via each run's `job`
+            #    symlink), plus the campaign-level _config/ (holds the .vast the
+            #    auto-chain postprocessing reads) and _transient/. Batch-scoping
+            #    _jobs avoids re-fetching prior batches each iteration; the small
+            #    campaign-level dirs are re-fetched (idempotent — download_prefix
+            #    never deletes, so the locally-accumulated _transient/job_links.yaml
+            #    survives).
+            got = 0
+            job_root = f"_jobs/{self._batch_tag}" if self._batch_tag else "_jobs"
+            targets = [c["name"] for c in self.configs if c.get("name")]
+            targets += ["_config", "_transient", job_root]
+            for rel in targets:
+                got += storage.download_prefix(
+                    bucket_name, f"{campaign_prefix}{rel}", os.path.join(campaign_root, rel))
         logger.info("Batch %s: downloaded %d result file(s) into %s",
                     self._batch_tag, got, campaign_root)
 
@@ -725,7 +739,7 @@ class KubernetesBackend(ExecutionBackend):
         self._progress_storage = None
 
     def run_batch(self, campaign_data: dict, *, campaign_root: str, batch_tag: str,
-                  runs: int, options: RunOptions) -> None:
+                  runs: int, options: RunOptions, whole_campaign: bool = False) -> None:
         campaign_id = os.path.basename(os.path.normpath(campaign_root))
         execution_params = campaign_data.get("execution", {}) or {}
         image = resolve_robovast_image(
@@ -744,7 +758,7 @@ class KubernetesBackend(ExecutionBackend):
             log_tree=self.log_tree or options.log_tree,
             state=self._state,
         )
-        runner.run_batch_in_pod(campaign_root)
+        runner.run_batch_in_pod(campaign_root, whole_campaign=whole_campaign)
 
         # Record _execution/execution.yaml now (not at finalize), so the campaign
         # root is complete before the controller chains analysis postprocessing —

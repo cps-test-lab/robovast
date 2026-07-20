@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import CircularProgress from '@mui/material/CircularProgress'
-import { robovast, campaignsNewestFirst } from '@/lib/robovastClient'
+import { robovast, campaignsNewestFirst, hasResults } from '@/lib/robovastClient'
 import { KeepAlive } from '@/components/KeepAlive'
 import { ExplorerView } from './ExplorerView'
 import { DataBrowser } from './DataBrowser'
@@ -20,16 +20,16 @@ export function ResultsPage({ view }: { view: string }) {
     queryKey: ['campaigns'],
     queryFn: () => robovast.listCampaigns(200, 0),
   })
-  const list = campaigns.data?.campaigns ?? []
+  // The Results topic only shows campaigns whose results are ready to explore — finished *and*
+  // postprocessed. Everything downstream (Explorer, Run, Data) shares this filtered list, so a
+  // still-running or non-postprocessed campaign never appears in any Results view.
+  const list = (campaigns.data?.campaigns ?? []).filter(hasResults)
 
   const [campaignId, setCampaignId] = useState(() => localStorage.getItem(LAST_CAMPAIGN_KEY) ?? '')
 
-  // Default the Data browser to the newest postprocessed campaign, and self-heal a selection that
-  // no longer exists. Keyed on the available set so a click-selected campaign is never overridden.
-  const evalCampaigns = useMemo(
-    () => campaignsNewestFirst(list.filter((c) => c.postprocessed)),
-    [list],
-  )
+  // Default the Data browser to the newest campaign, and self-heal a selection that no longer
+  // exists. Keyed on the available set so a click-selected campaign is never overridden.
+  const evalCampaigns = useMemo(() => campaignsNewestFirst(list), [list])
   useEffect(() => {
     if (!evalCampaigns.length) return
     if (!evalCampaigns.some((c) => c.campaign_id === campaignId)) {

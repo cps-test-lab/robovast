@@ -15,6 +15,7 @@ import { DataGrid, GridToolbar, type GridColDef } from '@mui/x-data-grid'
 import {
   robovast,
   campaignsNewestFirst,
+  hasResults,
   type CampaignSummary,
   type DataQueryResult,
   type PlotSpec,
@@ -55,8 +56,9 @@ export function DataBrowser({
   const [color, setColor] = useState(NONE)
   const [mark, setMark] = useState<'point' | 'line' | 'bar' | 'boxplot'>('point')
 
-  // Only postprocessed campaigns have the derived data (data.db) this viewer queries.
-  const evalCampaigns = campaigns.filter((c) => c.postprocessed)
+  // Only finished+postprocessed campaigns have the derived data (data.db) this viewer queries.
+  // (The Results container already filters to these; kept defensive since `campaigns` is a prop.)
+  const evalCampaigns = campaigns.filter(hasResults)
   const sortedCampaigns = campaignsNewestFirst(evalCampaigns)
 
   // Apply an Explorer deep-link: set the editor + run its query once per nonce.

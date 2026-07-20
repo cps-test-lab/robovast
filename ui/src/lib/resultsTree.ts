@@ -4,7 +4,7 @@
 // per-run breakdown is derived from rows of the campaign's `data.db` `runs` table (fetched via
 // `queryCampaignDataSql`), since there is no dedicated per-run REST endpoint.
 
-import type { CampaignSummary } from './robovastClient'
+import { isFailed, isRunning, type CampaignSummary } from './robovastClient'
 
 // Pass/fail status of any node, mapped to a theme color by `statusColor`. `neutral` = no verdict
 // yet (e.g. a campaign that hasn't been postprocessed); `running` = still executing.
@@ -28,9 +28,6 @@ export interface ResultsTreeItem {
   children?: ResultsTreeItem[]
 }
 
-// Phases where the campaign is still working, so no final verdict exists yet.
-const RUNNING_PHASES = new Set(['starting', 'running', 'finishing', 'postprocessing'])
-
 // Map a NodeStatus onto a MUI theme palette path (used with `sx` color lookups).
 export function statusColor(status: NodeStatus): string {
   switch (status) {
@@ -51,8 +48,8 @@ export function statusColor(status: NodeStatus): string {
 // finished one is `failed` if the controller failed or any run failed, `passed` if postprocessed
 // with no failures, otherwise `neutral` (nothing to judge yet).
 export function campaignStatus(c: CampaignSummary): NodeStatus {
-  if (RUNNING_PHASES.has(c.phase)) return 'running'
-  if (c.phase === 'failed' || c.num_failed > 0) return 'failed'
+  if (isRunning(c)) return 'running'
+  if (isFailed(c) || c.num_failed > 0) return 'failed'
   if (c.postprocessed && c.num_passed > 0 && c.num_failed === 0) return 'passed'
   return 'neutral'
 }

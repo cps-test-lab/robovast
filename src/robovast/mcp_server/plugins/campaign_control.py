@@ -192,6 +192,9 @@ def _status_to_dict(campaign_id: str, backend, st) -> dict:
         "mode": st.mode,
         "batch_runs_done": st.runs.completed if st.runs else 0,
         "batch_runs_total": st.runs.total if st.runs else 0,
+        # Runs that produced no result once the batch's jobs all reached a terminal
+        # state (0 while the batch is still running). Surfaces partial-batch failures.
+        "batch_runs_failed": st.runs.failed if st.runs else 0,
         "progress": _progress_from_status(st),
     }
     if st.batches_done:
@@ -799,14 +802,14 @@ def list_running_campaigns() -> dict:
         ``{count, running: [entry, ...]}`` where each entry carries at least
         ``campaign_id``, ``backend``, and ``status``.
     """
+    from robovast.execution.control_server import is_running  # noqa: PLC0415
     try:
         client = _service_client()
         if client is not None:
             resp = client.list_campaigns()
-            terminal = {"finished", "failed", "stopped", "crashed", "unknown"}
             running = [{"campaign_id": c.campaign_id, "backend": "service",
                         "status": c.phase}
-                       for c in resp.campaigns if c.phase not in terminal]
+                       for c in resp.campaigns if is_running(c.phase)]
             return {"count": len(running), "running": running}
 
         project = _load_project()

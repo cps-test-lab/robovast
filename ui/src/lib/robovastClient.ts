@@ -57,6 +57,27 @@ export const campaignsNewestFirst = (campaigns: CampaignSummary[]) =>
   [...campaigns].sort((a, b) =>
     sortKey(a) < sortKey(b) ? 1 : sortKey(a) > sortKey(b) ? -1 : 0)
 
+// The campaign lifecycle vocabulary carried by `phase` (mirrors the backend Phase enum). A string
+// union rather than an enum so it stays a plain wire value; `CampaignSummary.phase` is still typed
+// `string`, so an unexpected/future phase never fails to parse.
+export type CampaignPhase =
+  | 'starting' | 'running' | 'finishing' | 'postprocessing' | 'sharing'
+  | 'finished' | 'failed' | 'stopped' | 'crashed' | 'unknown'
+
+// Phases where the campaign is still working, so no final verdict exists yet.
+const RUNNING_PHASES: ReadonlySet<string> = new Set<CampaignPhase>([
+  'starting', 'running', 'finishing', 'postprocessing', 'sharing',
+])
+
+export const isRunning = (c: CampaignSummary) => RUNNING_PHASES.has(c.phase)
+export const isFinished = (c: CampaignSummary) => c.phase === 'finished'
+export const isFailed = (c: CampaignSummary) => c.phase === 'failed'
+// Results are ready to explore only once the run finished AND its configured postprocessing
+// pipelines ran: "finished" alone is reached *before* postprocessing chains, and a campaign that
+// defines no postprocessing never gets the derived data.db the Results views query. The single gate
+// for what the Results topic (Explorer / Run / Data) shows.
+export const hasResults = (c: CampaignSummary) => isFinished(c) && c.postprocessed
+
 export interface CreateCampaignRequest {
   workspace_id: string
   config_path?: string
@@ -79,6 +100,9 @@ export interface ActionResult {
 export interface RunProgress {
   completed: number
   total: number
+  // Runs that produced no result once the batch's jobs all reached a terminal
+  // state (0 while the batch is still running).
+  failed: number
 }
 
 export interface BudgetItem {

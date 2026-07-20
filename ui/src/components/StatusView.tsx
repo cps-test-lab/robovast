@@ -46,6 +46,7 @@ export function StatusView({
   jobs,
   startedAt,
   hideLog = false,
+  liveOnly = false,
 }: {
   status: Status
   jobs?: ListJobsResponse
@@ -55,11 +56,25 @@ export function StatusView({
   // The Launcher hides the campaign log — it's a launch confirmation, not a viewer;
   // the full log lives in Monitor.
   hideLog?: boolean
+  // Monitor cares only about jobs still meaningful right now: show running and failed
+  // jobs (failed ones linger in kubernetes only briefly before cleanup), dropping
+  // pending and completed from both the count summary and the jobs list.
+  liveOnly?: boolean
 }) {
   const { runs, budget } = status
   const terminal = ['finished', 'failed', 'stopped', 'error'].includes(status.phase)
   const counts = jobs?.counts
   const running = counts?.running ?? 0
+  const shownJobs = liveOnly
+    ? jobs?.jobs.filter((j) => j.status === 'running' || j.status === 'failed')
+    : jobs?.jobs
+  // Live-view count summary: running + failed, whichever are present.
+  const liveCountText = [
+    counts && counts.running > 0 ? `running ${counts.running}` : null,
+    counts && counts.failed > 0 ? `failed ${counts.failed}` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ')
   const etaSeconds = estimateEtaSeconds(status, startedAt, terminal)
   // Only a search campaign has multiple batches; a plain batch run always has one,
   // so the "batch N" counter is noise there and is shown for search only.
@@ -77,10 +92,20 @@ export function StatusView({
               : ''}
           </Typography>
           <Typography variant="caption" color="text.secondary">
-            {counts && (counts.running > 0 || counts.pending > 0)
-              ? `running ${counts.running} · pending ${counts.pending} · `
-              : ''}
+            {liveOnly
+              ? liveCountText
+                ? `${liveCountText} · `
+                : ''
+              : counts && (counts.running > 0 || counts.pending > 0)
+                ? `running ${counts.running} · pending ${counts.pending} · `
+                : ''}
             {runs.completed}/{runs.total}
+            {runs.failed > 0 ? (
+              <Box component="span" sx={{ color: 'error.main' }}>
+                {' · '}
+                {runs.failed} failed
+              </Box>
+            ) : null}
             {etaSeconds != null ? ` · ~${formatDuration(etaSeconds)} left` : ''}
           </Typography>
         </Stack>
@@ -121,8 +146,8 @@ export function StatusView({
         </Typography>
       ) : null}
       {status.error ? <FailureBox error={status.error} /> : null}
-      {status.campaign_id && jobs && jobs.jobs.length > 0 ? (
-        <JobsSection campaignId={status.campaign_id} jobs={jobs.jobs} />
+      {status.campaign_id && shownJobs && shownJobs.length > 0 ? (
+        <JobsSection campaignId={status.campaign_id} jobs={shownJobs} />
       ) : null}
       {status.campaign_id && !hideLog ? (
         <CampaignLog campaignId={status.campaign_id} terminal={terminal} />

@@ -35,6 +35,7 @@ since per-batch search runs target different prefixes within a campaign.
 import logging
 import os
 import socket
+import tempfile
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,34 @@ def _same_size(path: str, size) -> bool:
         return os.path.getsize(path) == size
     except OSError:
         return False
+
+
+def _download_atomic(dst: str, fetch) -> None:
+    """Fetch to a unique temp file beside *dst*, then atomically ``os.replace`` it in.
+
+    Several service requests can race to populate the same cache dir — the results
+    explorer fires one ``FROM runs`` query per sub-view on first load, and each
+    re-fetches the campaign. Writing straight to *dst* lets one request open a
+    half-written ``data.db`` that another is still streaming; SQLite then reports
+    "no such table: runs" until the next reload. Renaming a fully-written temp file
+    over *dst* is atomic on a POSIX filesystem, so a reader always sees either the
+    previous complete file or the new complete file, never a partial one.
+
+    *fetch* is a callable that writes the object to the path it is given.
+    """
+    d = os.path.dirname(dst)
+    os.makedirs(d, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".dl-", suffix=".part")
+    os.close(fd)
+    try:
+        fetch(tmp)
+        os.replace(tmp, dst)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 class StorageClient:
@@ -212,8 +241,8 @@ class _S3StorageClient(StorageClient):
                 dst = os.path.join(local_dir, *rel.split("/"))
                 if not force and _same_size(dst, obj.get("Size")):
                     continue
-                os.makedirs(os.path.dirname(dst), exist_ok=True)
-                self._s3.download_file(bucket, key, dst)
+                _download_atomic(
+                    dst, lambda p, k=key: self._s3.download_file(bucket, k, p))
                 # ``head_object`` (an extra round-trip) only to read the
                 # executable flag — done only for files we actually fetched.
                 head = self._s3.head_object(Bucket=bucket, Key=key)
@@ -299,8 +328,7 @@ class _GcsStorageClient(StorageClient):
             dst = os.path.join(local_dir, *rel.split("/"))
             if not force and _same_size(dst, blob.size):
                 continue
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
-            blob.download_to_filename(dst)
+            _download_atomic(dst, blob.download_to_filename)
             if (blob.metadata or {}).get("executable") == "yes":
                 os.chmod(dst, os.stat(dst).st_mode | 0o111)
             count += 1

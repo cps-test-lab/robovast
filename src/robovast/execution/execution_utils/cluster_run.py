@@ -28,10 +28,9 @@ against the service's status contract like every other client surface.
 
 import logging
 
-logger = logging.getLogger(__name__)
+from robovast.execution.control_server import Phase, is_terminal
 
-#: Phases that mean the campaign is over, one way or another.
-_TERMINAL = {"finished", "failed", "stopped"}
+logger = logging.getLogger(__name__)
 
 
 def wait_for_cluster_campaign(campaign_id, *, service_url="", interval=5.0,
@@ -79,10 +78,10 @@ def wait_for_cluster_campaign(campaign_id, *, service_url="", interval=5.0,
             if report != last_report:
                 say(f"{campaign_id}: {report}")
                 last_report = report
-            if status.phase in _TERMINAL:
-                if status.phase == "failed" and status.error:
+            if is_terminal(status.phase):
+                if status.phase == Phase.FAILED and status.error:
                     say(f"{campaign_id}: {status.error}")
-                return "succeeded" if status.phase == "finished" else "failed"
+                return "succeeded" if status.phase == Phase.FINISHED else "failed"
 
         if deadline is not None and time.monotonic() > deadline:
             raise TimeoutError(

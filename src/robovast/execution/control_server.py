@@ -31,6 +31,7 @@ pod-IP hop — those existed only when the controller lived in its own pod).
 import logging
 import threading
 import time
+from enum import StrEnum
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -38,12 +39,70 @@ from pydantic import BaseModel, ConfigDict, Field
 logger = logging.getLogger(__name__)
 
 
+# -- phase vocabulary -------------------------------------------------------
+
+class Phase(StrEnum):
+    """The campaign lifecycle vocabulary carried by ``Status.phase``.
+
+    A ``StrEnum`` so members *are* their plain string value: the wire format is
+    unchanged (JSON still sees ``"finished"``), existing string comparisons keep
+    working, and set membership against raw strings does too. Prefer the group
+    predicates (:func:`is_terminal` / :func:`is_running`) over re-listing phase
+    names at a call site — that re-listing had drifted into several divergent
+    "terminal" sets across the CLI, service, and MCP plugins.
+
+    ``Status.phase`` stays typed ``str`` on purpose (the field is deliberately
+    open, so a future ``stage``-like marker slots in without a schema change);
+    this enum is the *known* vocabulary, not a lock on the field.
+    """
+    # -- live: the campaign is still working ------------------------------
+    STARTING = "starting"
+    RUNNING = "running"
+    FINISHING = "finishing"
+    POSTPROCESSING = "postprocessing"
+    SHARING = "sharing"
+    # -- terminal: the campaign is over, one way or another ---------------
+    FINISHED = "finished"
+    FAILED = "failed"
+    STOPPED = "stopped"
+    CRASHED = "crashed"
+    UNKNOWN = "unknown"
+
+
+#: Phases meaning the campaign is over (no more work will happen). Single source
+#: of truth for the terminal test that was previously re-inlined — with divergent
+#: membership — across the CLI, the service, and the MCP plugins.
+TERMINAL_PHASES: frozenset[str] = frozenset({
+    Phase.FINISHED, Phase.FAILED, Phase.STOPPED, Phase.CRASHED, Phase.UNKNOWN,
+})
+
+#: Phases meaning the campaign is still live/working (the complement).
+RUNNING_PHASES: frozenset[str] = frozenset(set(Phase) - TERMINAL_PHASES)
+
+
+def is_terminal(phase: str) -> bool:
+    """True when ``phase`` means the campaign is over (see :data:`TERMINAL_PHASES`)."""
+    return phase in TERMINAL_PHASES
+
+
+def is_running(phase: str) -> bool:
+    """True when the campaign is still live/working (the complement of terminal)."""
+    return not is_terminal(phase)
+
+
 # -- wire models ------------------------------------------------------------
 
 class RunProgress(BaseModel):
-    """Completed vs expected per-run artifacts for the current batch."""
+    """Per-run progress for the current batch.
+
+    ``completed`` counts runs that produced results (their result artifact reached
+    storage); ``total`` is the number expected. ``failed`` is only meaningful once
+    the batch's jobs have all reached a terminal state — then it is the count of
+    expected runs that produced no result (``total - completed``); it stays 0 while
+    the batch is still running (an unfinished run is not yet a failed one)."""
     completed: int = 0
     total: int = 0
+    failed: int = 0
 
 
 class BudgetItem(BaseModel):
@@ -68,7 +127,7 @@ class Status(BaseModel):
     # sub-fields (``runs``, ``budget``) and they coerce to the models.
     model_config = ConfigDict(validate_assignment=True)
 
-    phase: str = "starting"
+    phase: str = Phase.STARTING          # open vocabulary; see the Phase enum
     stage: Optional[str] = None
     mode: Optional[str] = None
     campaign_id: Optional[str] = None

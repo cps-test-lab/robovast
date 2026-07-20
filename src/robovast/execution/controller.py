@@ -52,6 +52,7 @@ from robovast.common.store import STORE_FILENAME, CampaignStore
 
 from .backends import (CampaignConfigError, CampaignStopped, DockerBackend,
                        ExecutionBackend, RunOptions)
+from .control_server import Phase
 from .notify import Notifier
 
 # Use the qualified name rather than __name__ so this module's records always
@@ -167,7 +168,7 @@ class CampaignController:
             config_dir="_config")
         if self.state is not None:
             self.state.update(mode=self.mode, campaign_id=self.campaign_id)
-            self.state.set_phase("running")
+            self.state.set_phase(Phase.RUNNING)
         self._start_progress_poller()
         self.notifier.start_heartbeat(status_fn=self._notify_status)
         self.notifier.started(self.mode)
@@ -177,13 +178,13 @@ class CampaignController:
             else:
                 result = self._run_search(campaign_id)
             if self.state is not None:
-                self.state.set_phase("finished")
+                self.state.set_phase(Phase.FINISHED)
             self.notifier.finished(f"{self.mode} campaign complete.")
             return result
         except CampaignStopped:
             # A clean cooperative stop (Ctrl+C / Stop button / MCP stop).
             if self.state is not None:
-                self.state.set_phase("stopped")
+                self.state.set_phase(Phase.STOPPED)
             logger.info("Campaign %s stopped by request.", self.campaign_id)
             raise
         except BaseException as exc:
@@ -191,11 +192,11 @@ class CampaignController:
             # dies on Ctrl+C mid-operation. If a stop was requested, that is the clean
             # reason: report "stopped", not a failure with a misleading traceback.
             if self.state is not None and self.state.stop_requested:
-                self.state.set_phase("stopped")
+                self.state.set_phase(Phase.STOPPED)
                 logger.info("Campaign %s stopped by request.", self.campaign_id)
                 raise CampaignStopped(str(exc)) from None
             if self.state is not None:
-                self.state.set_phase("failed")
+                self.state.set_phase(Phase.FAILED)
             self.notifier.failed(f"{type(exc).__name__}: {exc}")
             raise
         finally:
@@ -270,7 +271,24 @@ class CampaignController:
         if self.state is None or self._poller is None:
             return
         self._batch_active.clear()
-        self.state.update(runs={"completed": self._batch_total, "total": self._batch_total})
+        # The batch's jobs have all reached a terminal state. Any expected run that
+        # never produced a result artifact by now has failed, so report the real
+        # completed count and the failed remainder — rather than optimistically
+        # claiming completed == total, which would hide partial-batch failures.
+        try:
+            done = self.backend.count_run_artifacts(self.campaign_id)
+        except Exception:  # pylint: disable=broad-except
+            done = None
+        if done is None:
+            completed = self._batch_total
+        else:
+            completed = min(max(0, done - self._batch_baseline), self._batch_total)
+        failed = max(0, self._batch_total - completed)
+        if failed:
+            logger.warning("Batch complete: %d/%d run(s) produced results; %d failed.",
+                           completed, self._batch_total, failed)
+        self.state.update(runs={"completed": completed, "total": self._batch_total,
+                                "failed": failed})
 
     # -- batch mode ---------------------------------------------------------
 
@@ -285,7 +303,8 @@ class CampaignController:
         try:
             self.backend.run_batch(
                 self.batch_campaign_data, campaign_root=self.campaign_root,
-                batch_tag="batch-0", runs=self.runs, options=self.options)
+                batch_tag="batch-0", runs=self.runs, options=self.options,
+                whole_campaign=True)
         finally:
             self._end_batch_progress()
 
@@ -351,7 +370,7 @@ class CampaignController:
                                     reason="stop requested via control API")
             if result:
                 if self.state is not None:
-                    self.state.set_phase("finishing")
+                    self.state.set_phase(Phase.FINISHING)
                     self.state.update(stop={"kind": result.kind, "reason": result.reason})
                 logger.info("\n%s\n⏹  Stopping — %s\n%s", _BAR, result.reason, _BAR)
                 break
@@ -488,7 +507,7 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
         from robovast.execution.cluster_execution.postprocess_job import \
             postprocess_campaign
         if state is not None:
-            state.set_phase("postprocessing")
+            state.set_phase(Phase.POSTPROCESSING)
         ok, message = postprocess_campaign(
             cluster_config, campaign_id, campaign_root,
             options.namespace or os.environ.get("ROBOVAST_NAMESPACE", "default"),
@@ -506,13 +525,13 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
                     campaign_defines_postprocessing
                 if campaign_defines_postprocessing(campaign_root):
                     state.update(postprocessed=True)
-                state.set_phase("finished")
+                state.set_phase(Phase.FINISHED)
             else:
-                state.set_phase("failed", stage=f"postprocessing: {message}")
+                state.set_phase(Phase.FAILED, stage=f"postprocessing: {message}")
     except Exception:  # pylint: disable=broad-except
         logger.warning("Analysis postprocessing failed", exc_info=True)
         if state is not None:
-            state.set_phase("failed", stage="postprocessing failed")
+            state.set_phase(Phase.FAILED, stage="postprocessing failed")
 
 
 def _finalize(backend: ExecutionBackend, campaign_root: str) -> None:
@@ -558,7 +577,7 @@ def _share_campaign(backend: ExecutionBackend, campaign_root: str,
     """
     try:
         if state is not None:
-            state.set_phase("sharing")
+            state.set_phase(Phase.SHARING)
         backend.share_campaign(campaign_root, options)
     except Exception:  # pylint: disable=broad-except
         logger.warning("Upload-to-share failed; continuing with the campaign.",
@@ -658,7 +677,7 @@ def _record_controller_failure(campaign_root, campaign_id, state, exc, backend):
         state = ControllerState()
         state.update(campaign_id=campaign_id)
     state.update(error=detail)
-    state.set_phase("failed")
+    state.set_phase(Phase.FAILED)
     _record_controller_outcome(campaign_root, campaign_id, state, backend)
 
 

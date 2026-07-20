@@ -1,7 +1,6 @@
 import type { ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import Box from '@mui/material/Box'
-import Collapse from '@mui/material/Collapse'
 import Drawer from '@mui/material/Drawer'
 import List from '@mui/material/List'
 import ListItemButton from '@mui/material/ListItemButton'
@@ -10,8 +9,6 @@ import ListItemText from '@mui/material/ListItemText'
 import Stack from '@mui/material/Stack'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
-import ExpandLess from '@mui/icons-material/ExpandLess'
-import ExpandMore from '@mui/icons-material/ExpandMore'
 import { robovast } from '@/lib/robovastClient'
 import {
   bytesToGiB,
@@ -47,8 +44,8 @@ const selectedSx = {
 }
 
 // The whole app navigation: one permanent left rail with a tree menu. A topic with a single view is
-// a leaf; a topic with several views expands to show them nested beneath it (auto-expanded while it
-// is the active topic). Branding sits at the top, the live connection/usage chip at the footer.
+// a leaf; a topic with several views renders them always nested beneath it (the active view is
+// highlighted). Branding sits at the top, the live connection/usage chip at the footer.
 export function Sidebar({
   topics,
   activeTopic,
@@ -111,24 +108,21 @@ export function Sidebar({
                   {topic.icon}
                 </ListItemIcon>
                 <ListItemText primaryTypographyProps={{ fontWeight: 600 }}>{topic.label}</ListItemText>
-                {isActiveTopic ? <ExpandLess /> : <ExpandMore />}
               </ListItemButton>
-              <Collapse in={isActiveTopic} unmountOnExit>
-                <List disablePadding sx={{ mt: 0.5 }}>
-                  {topic.views!.map((view) => (
-                    <ListItemButton
-                      key={view.id}
-                      selected={isActiveTopic && activeView === view.id}
-                      onClick={() => onSelect(topic.id, view.id)}
-                      sx={{ ...selectedSx, pl: 3, py: 0.5, mb: 0.25 }}
-                    >
-                      <ListItemText primaryTypographyProps={{ variant: 'body2' }}>
-                        {view.label}
-                      </ListItemText>
-                    </ListItemButton>
-                  ))}
-                </List>
-              </Collapse>
+              <List disablePadding sx={{ mt: 0.5 }}>
+                {topic.views!.map((view) => (
+                  <ListItemButton
+                    key={view.id}
+                    selected={isActiveTopic && activeView === view.id}
+                    onClick={() => onSelect(topic.id, view.id)}
+                    sx={{ ...selectedSx, pl: 3, py: 0.5, mb: 0.25 }}
+                  >
+                    <ListItemText primaryTypographyProps={{ variant: 'body2' }}>
+                      {view.label}
+                    </ListItemText>
+                  </ListItemButton>
+                ))}
+              </List>
             </Box>
           )
         })}
@@ -149,11 +143,6 @@ function ConnectionStatus() {
     refetchInterval: 15000,
     retry: false,
   })
-  const version = useQuery({
-    queryKey: ['version'],
-    queryFn: () => robovast.version(),
-    retry: false,
-  })
   if (!usage.isSuccess) {
     return (
       <Typography variant="caption" color="text.disabled" sx={{ px: 1 }}>
@@ -163,11 +152,6 @@ function ConnectionStatus() {
   }
   const u = usage.data
   const jobsTotal = u.jobs_running + u.jobs_pending
-  const versionTip = version.isSuccess
-    ? `robovast ${version.data.robovast_version}${version.data.backend ? ` · ${version.data.backend}` : ''} · runs ${
-        u.parallel_runs ? 'in parallel' : 'sequentially'
-      }`
-    : ''
   return (
     <Stack spacing={0.5} sx={{ px: 1 }}>
       <UsageRow
@@ -185,23 +169,12 @@ function ConnectionStatus() {
       />
       <UsageRow
         label="Mem"
-        tip={`${bytesToGiB(u.memory_used_bytes).toFixed(0)} GiB out of ${bytesToGiB(
+        tip={`${bytesToGiB(u.memory_used_bytes).toFixed(0)} out of ${bytesToGiB(
           u.memory_capacity_bytes,
-        ).toFixed(0)} used`}
+        ).toFixed(0)} GiB used`}
         fraction={u.memory_capacity_bytes > 0 ? u.memory_used_bytes / u.memory_capacity_bytes : 0}
         text={formatMemUsed(u)}
       />
-      {versionTip ? (
-        <Tooltip placement="right" title={versionTip}>
-          <Typography
-            variant="caption"
-            color="text.disabled"
-            sx={{ pt: 0.25, cursor: 'default', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
-          >
-            {version.data?.backend ?? 'connected'}
-          </Typography>
-        </Tooltip>
-      ) : null}
     </Stack>
   )
 }

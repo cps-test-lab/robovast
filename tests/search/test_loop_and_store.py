@@ -49,7 +49,8 @@ class FakeBackend(ExecutionBackend):
     def __init__(self):
         self.batch_runs = []  # reps requested per run_batch call
 
-    def run_batch(self, campaign_data, *, campaign_root, batch_tag, runs, options):
+    def run_batch(self, campaign_data, *, campaign_root, batch_tag, runs, options,
+                  whole_campaign=False):
         self.batch_runs.append(runs)
         for i, cfg in enumerate(campaign_data["configs"]):
             failures = i % 2  # alternate failing / passing configs
@@ -166,6 +167,33 @@ def test_n_reps_override_groups_runs(tmp_path):
     assert sorted(backend.batch_runs) == [2, 5]
     by_x = {ev.params.values["x"]: ev.n_samples for ev in report.evaluations}
     assert by_x[0.1] == 5 and by_x[0.2] == 5 and by_x[0.3] == 2
+    store.close()
+
+
+def test_end_batch_progress_reports_failed_runs(tmp_path):
+    """When some runs produce no result, the batch-end progress reports the split.
+
+    Previously it optimistically set completed == total, hiding partial-batch
+    failures; now it reads the real produced-result count and reports the failed
+    remainder so the monitor / MCP can surface it.
+    """
+    from robovast.execution.control_server import ControllerState
+
+    store = CampaignStore(tmp_path / "camp" / STORE_FILENAME)
+    backend = FakeBackend()
+    backend.count_run_artifacts = lambda cid: 3   # 3 of the 4 expected runs produced results
+    state = ControllerState()
+    controller = CampaignController(
+        campaign_id="camp", results_dir=str(tmp_path), runs=2, backend=backend,
+        options=RunOptions(), store=store, campaign_config_dump={"version": 1},
+        vast_dir=str(tmp_path), batch_campaign_data={"configs": []}, state=state)
+    controller._poller = object()   # enable the progress path without a live thread
+    controller._batch_baseline = 0
+    controller._batch_total = 4
+    controller._end_batch_progress()
+
+    runs = state.snapshot().runs
+    assert (runs.completed, runs.total, runs.failed) == (3, 4, 1)
     store.close()
 
 

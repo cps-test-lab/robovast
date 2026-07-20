@@ -341,9 +341,10 @@ def _sole_running_campaign(client):
     Campaigns run in parallel now, so a bare ``stop`` is only unambiguous when
     exactly one is live.
     """
+    from robovast.execution.control_server import is_running
     from robovast.service.interface import ListCampaignsRequest
     live = [c for c in client.list_campaigns(ListCampaignsRequest(limit=100)).campaigns
-            if c.phase not in ("finished", "failed", "stopped", "unknown")]
+            if is_running(c.phase)]
     if not live:
         return None
     if len(live) > 1:
@@ -562,6 +563,7 @@ def _monitor_via_service(namespace, kube_context, interval, once):
 
     def _blocks_for(ids):
         """Render blocks for *ids*, and report which have reached a terminal phase."""
+        from robovast.execution.control_server import is_terminal
         blocks, finished = [], set()
         for cid in ids:
             try:
@@ -571,7 +573,7 @@ def _monitor_via_service(namespace, kube_context, interval, once):
                 blocks.append([f"Campaign {cid}  [status unavailable]"])
                 continue
             blocks.append(_campaign_lines(status))
-            if status.get("phase") in ("finished", "failed", "stopped"):
+            if is_terminal(status.get("phase")):
                 finished.add(cid)
         return blocks, finished
 

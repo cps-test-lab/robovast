@@ -47,7 +47,7 @@ from pydantic import BaseModel, Field
 # Reused verbatim — the controller's live status model. (The old ``Command`` /
 # ``CommandResult`` RPC envelopes are gone: the controller runs in-process now, so
 # ``stop`` is a direct call rather than an HTTP command to a controller pod.)
-from robovast.execution.control_server import Status  # noqa: F401
+from robovast.execution.control_server import Phase, Status  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Request / response models
@@ -84,7 +84,7 @@ class CampaignSummary(BaseModel):
     """
 
     campaign_id: str
-    phase: str = "unknown"           # matches Status.phase vocabulary
+    phase: str = Phase.UNKNOWN       # open vocabulary; see the Phase enum
     postprocessed: bool = False      # configured postprocessing pipelines have run
     num_runs: int = 0
     num_passed: int = 0

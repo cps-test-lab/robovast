@@ -50,7 +50,7 @@ import os
 import threading
 from pathlib import Path
 
-from robovast.execution.control_server import Status
+from robovast.execution.control_server import Phase, Status, is_running
 from robovast.service.client import LocalTransport
 from robovast.service.interface import (ActionResult, CampaignSummary,
                                         JobCounts, JobSummary,
@@ -91,6 +91,11 @@ class ClusterService(LocalTransport):
         self._minio_pf = None
         self._minio_pf_endpoint = None
         self._pf_lock = threading.Lock()
+        # Per-campaign locks so concurrent data queries don't each re-download the
+        # same campaign into the shared cache dir (the results explorer fires one
+        # query per sub-view on first load). Guarded by ``_fetch_locks_guard``.
+        self._fetch_locks: dict[str, threading.Lock] = {}
+        self._fetch_locks_guard = threading.Lock()
         if reap_on_start:
             self.reap_orphans()
 
@@ -319,7 +324,7 @@ class ClusterService(LocalTransport):
         outcome = self._read_outcome(campaign_id)
         if outcome is not None:
             return outcome
-        return Status(phase="unknown", campaign_id=campaign_id)
+        return Status(phase=Phase.UNKNOWN, campaign_id=campaign_id)
 
     def get_campaign_logs(self, campaign_id: str, offset: int = 0):
         """Serve the unified infrastructure log — live pod scratch, then object store.
@@ -595,7 +600,7 @@ class ClusterService(LocalTransport):
         running: set = set()
         if request.campaign_id is None or not request.force:
             for c in self.list_campaigns(ListCampaignsRequest(limit=1000)).campaigns:
-                if c.phase not in ("finished", "failed", "stopped", "unknown"):
+                if is_running(c.phase):
                     # Match both the raw id and its sanitised bucket name, since
                     # ``cleanup_campaigns`` compares against object-store names.
                     running.add(c.campaign_id)
@@ -681,23 +686,30 @@ class ClusterService(LocalTransport):
         dest = Path("/tmp") / "robovast-campaigns" / campaign_id  # noqa: S108 - pod scratch
         dest.mkdir(parents=True, exist_ok=True)
         storage = in_pod_storage.storage_client_for(cfg)
-        try:
-            n = storage.download_prefix(bucket, prefix, str(dest), force=force)
-        except EndpointConnectionError as exc:
-            # Object store unreachable (e.g. a dropped port-forward). Surface a
-            # clean 4xx instead of letting botocore bubble up as an ASGI 500.
-            raise RuntimeError(
-                f"Object store is unreachable: {exc}") from exc
-        except ClientError as exc:
-            # No bucket for this campaign in the object store: it was never
-            # published (e.g. still running / never finalized) or has been
-            # cleaned up. Surface a clean 404 instead of an ASGI 500.
-            if exc.response.get("Error", {}).get("Code") == "NoSuchBucket":
-                raise KeyError(
-                    f"No stored data for campaign {campaign_id!r}: its object "
-                    f"store bucket does not exist (not yet published or removed)"
-                ) from exc
-            raise
+        with self._fetch_locks_guard:
+            lock = self._fetch_locks.setdefault(campaign_id, threading.Lock())
+        # Serialize fetches of the same campaign: the first request populates the
+        # cache while the rest wait, then find it complete and skip re-downloading
+        # (immutable objects, matching size). Different campaigns still fetch in
+        # parallel.
+        with lock:
+            try:
+                n = storage.download_prefix(bucket, prefix, str(dest), force=force)
+            except EndpointConnectionError as exc:
+                # Object store unreachable (e.g. a dropped port-forward). Surface a
+                # clean 4xx instead of letting botocore bubble up as an ASGI 500.
+                raise RuntimeError(
+                    f"Object store is unreachable: {exc}") from exc
+            except ClientError as exc:
+                # No bucket for this campaign in the object store: it was never
+                # published (e.g. still running / never finalized) or has been
+                # cleaned up. Surface a clean 404 instead of an ASGI 500.
+                if exc.response.get("Error", {}).get("Code") == "NoSuchBucket":
+                    raise KeyError(
+                        f"No stored data for campaign {campaign_id!r}: its object "
+                        f"store bucket does not exist (not yet published or removed)"
+                    ) from exc
+                raise
         logger.info("Fetched campaign %s (%d file(s)) from %s/%s to %s",
                     campaign_id, n, bucket, prefix, dest)
         return dest

@@ -32,8 +32,9 @@ export function ResultsTree({
   const [expandedItems, setExpandedItems] = useState<string[]>([])
 
   // Lazy-load each expanded campaign's runs (config ids also land in expandedItems, so filter to
-  // real, postprocessed campaigns). A single query per campaign feeds its whole subtree.
-  const expandedCampaigns = expandedItems.filter((id) => byId.get(id)?.postprocessed)
+  // real campaigns — all are finished+postprocessed here). A single query per campaign feeds its
+  // whole subtree.
+  const expandedCampaigns = expandedItems.filter((id) => byId.has(id))
   const runQueries = useQueries({
     queries: expandedCampaigns.map((id) => ({
       queryKey: ['runs', id],
@@ -48,25 +49,23 @@ export function ResultsTree({
   // once loaded, otherwise a single placeholder (loading / no-data hint).
   const items: ResultsTreeItem[] = sorted.map((c) => {
     const base = campaignItem(c)
+    // Every campaign here is finished+postprocessed, so it always has a queryable data.db; go
+    // straight to the loading / real-subtree path.
     let children: ResultsTreeItem[]
-    if (!c.postprocessed) {
-      children = [placeholderChild(c.campaign_id, 'No results yet — run postprocessing')]
+    const q = runByCampaign.get(c.campaign_id)
+    if (!q || q.isPending) {
+      children = [placeholderChild(c.campaign_id, 'Loading…')]
+    } else if (q.isError) {
+      const msg = (q.error as Error).message
+      children = [
+        placeholderChild(
+          c.campaign_id,
+          /data\.db/i.test(msg) ? 'No results yet — run postprocessing' : msg,
+        ),
+      ]
     } else {
-      const q = runByCampaign.get(c.campaign_id)
-      if (!q || q.isPending) {
-        children = [placeholderChild(c.campaign_id, 'Loading…')]
-      } else if (q.isError) {
-        const msg = (q.error as Error).message
-        children = [
-          placeholderChild(
-            c.campaign_id,
-            /data\.db/i.test(msg) ? 'No results yet — run postprocessing' : msg,
-          ),
-        ]
-      } else {
-        const built = buildCampaignChildren(c.campaign_id, q.data.rows)
-        children = built.length ? built : [placeholderChild(c.campaign_id, 'No runs recorded')]
-      }
+      const built = buildCampaignChildren(c.campaign_id, q.data.rows)
+      children = built.length ? built : [placeholderChild(c.campaign_id, 'No runs recorded')]
     }
     return { ...base, children }
   })
