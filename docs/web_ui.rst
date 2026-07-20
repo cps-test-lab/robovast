@@ -268,7 +268,8 @@ Run view
 The **Run view** replays a *single run* of a postprocessed campaign over its **rosbag
 timeline**. You pick a campaign and a run; the view then lays out a set of **panels**
 that a shared **playback clock** drives — dragging the timeline moves every panel to
-the same instant. All panels read only the run's postprocessed ``data.db`` (there is no
+the same instant. All panels read only the run's recorded results — its postprocessed
+``data.db``, plus per-run artifact files such as the 3D scene descriptor (there is no
 live connection to the system-under-test).
 
 Which panels appear, where they sit, and where each gets its data are declared in the
@@ -316,13 +317,144 @@ marker, all at the current time (scroll to zoom, drag to pan). Each ``layers`` e
 binds a name to a costmap **topic**; ``poses`` (the TF table) both places the layers into
 the map frame and provides the driven-path trail + robot pose. It requires the
 :ref:`costmap postprocessing step <costmap-delivery>` — if the ``costmaps`` data is
-missing the panel says so rather than drawing nothing.
+missing the panel says so rather than drawing nothing. *This panel ships with the*
+``robovast_nav`` *package* (not the core UI) as a package-provided panel — see below — so
+it is available whenever ``robovast_nav`` is installed; the ``.vast`` still references it
+as plain ``- costmap:``.
 
 **Scenario tree** (``scenario_tree``) — an rviz-scenario-execution-style behaviour tree
 that colours each node by its status (running / success / failure) at the current time.
 It reads the ``behaviors`` table, which comes from ``rosbags_bt_to_csv`` on the
 ``/scenario_execution/snapshots`` topic. If that topic was not recorded in the scenario's
-``bag_record(...)`` action, the panel shows exactly that, with the fix.
+``bag_record(...)`` action, the panel shows exactly that, with the fix. The panel renders
+*any* table in the ``behaviors`` schema — point it at a different one with
+``source: { table: <name> }`` (this is how the nav2 tree below is displayed).
+
+**Nav2 behavior tree** (``nav2_behavior_tree``) — the same live, node-coloured tree for
+**nav2's own** behavior tree. It reads the ``nav2_behaviors`` table produced by the
+:ref:`nav2 BT postprocessing <configuration>` (``rosbags_nav2bt_to_csv`` +
+``nav2_bt_tree``): node status over time comes from nav2's ``/behavior_tree_log`` topic,
+and the tree structure from the BT XML nav2 ran. *This panel ships with the*
+``robovast_nav`` *package* as a package-provided (Module-Federation) panel, so it is
+available whenever ``robovast_nav`` is installed; the ``.vast`` references it as
+``- nav2_behavior_tree:`` with ``source: { table: nav2_behaviors }``. See
+:repo_link:`configs/examples/basic_nav_sim_suite` for a complete campaign using it.
+
+**3D scene** (``scene3d``) — the 3D world view, typically the run view's full-bleed
+**base layer** (``position: { anchor: fill }``): the simulated world's actual geometry
+(floor, walls, furniture, the robot's meshes) rendered in the browser (orbit/zoom with the
+mouse), with the robot replayed along its recorded trajectory — at every clock instant the
+recorded map-frame pose nearest ``t`` seats the robot's base body. Bindings: ``scene.path``
+(the run-relative descriptor path, default ``scene/scene.json``) and ``robot`` — the scene
+``body`` to drive (default ``base_link``) and the pose ``source``
+(``{ table: poses, filter: { frame: base_link } }``, the ``rosbags_tf_to_csv`` output). It
+requires the :ref:`scene descriptor <scene-descriptor-delivery>` run artifact — when a run
+has none, the panel says so and shows an empty viewport. See
+:repo_link:`configs/examples/basic_nav_sim_suite` for a complete campaign using it.
+
+**2D scene** (``scene``) — a top-down/side 2D plot of "where the thing is right now": one
+column against another (e.g. a quadrotor's ``x`` vs altitude ``z``) from any table with a
+time column (``source``, ``x``, ``y``; ``trail: false`` disables the driven path).
+
+**Time series** (``timeseries``) — a chart of one or more numeric columns over the run's
+timeline with a cursor at the current time (``source`` + a ``series`` list of
+``{ column, label }``).
+
+**State** (``state``) — the current numeric values of selected columns as labelled
+read-outs (``source`` + ``fields`` of ``{ column, label, unit }``).
+
+Custom and package-provided panels
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The panel types above are the ones bundled into the core UI, but the run view is not
+limited to them. A panel can also be loaded **at runtime** from outside the core UI as a
+`Module-Federation <https://module-federation.io/>`_ remote — a small pre-built JavaScript
+bundle. This is how the ``costmap`` panel ships from ``robovast_nav`` rather than the core
+UI, and it is also how *you* can add a bespoke visualization to a run view. Either way, in
+the ``.vast`` a panel is always referenced by a **type name** the same way — where the
+code lives is invisible to the config:
+
+* **Package-provided** — an installed plugin package registers a panel in the
+  ``robovast.panel_types`` entry-point group and ships its built bundle as package data.
+  Reference it by its registered type name (``- costmap:``); it is available to every
+  campaign once the package is installed.
+* **User-authored** (``custom``) — you build your own panel bundle and drop it next to the
+  ``.vast``, referencing it by path:
+
+  .. code-block:: yaml
+
+     visualization:
+       panels:
+         - custom:
+             remote: panels/my_panel        # dir (or remoteEntry.js) relative to the .vast
+             module: ./myPanel              # the exposed module (default ./panel)
+             title: My view
+             position: { anchor: right, width: 420 }
+             # any further keys are panel-specific data bindings (as for built-ins)
+
+**Writing a panel.** A panel is a React component implementing the same contract the
+built-ins use — ``({ spec, clock, data }) => JSX`` — so it is time-synced and reads the
+run's ``data.db`` exactly like a built-in: ``clock.t`` / ``clock.subscribe(...)`` for the
+current playback time, ``data.series(table)`` / ``data.nearest(table, t)`` for run rows,
+``spec.config`` for the panel's ``.vast`` bindings. A panel needing a specialized endpoint
+(as the costmap panel needs nav2 grids) reaches it through the generic run-scoped
+``data.fetchRun(endpoint, params)`` — the run view core stays free of panel-specific
+knowledge. Build the component as a Module-Federation remote exposing that module, with
+``react``/``react-dom`` marked as **shared singletons** pinned to the host's version
+(``^18``); a broken or missing bundle shows an inline error, never a silent blank. See
+:repo_link:`src/robovast_nav/web` for the reference build (the costmap panel) to copy from,
+and the developer guide for the internals.
+
+**Several panels in one package.** A package that ships more than one panel (as
+``robovast_nav`` ships both ``costmap`` and ``nav2_behavior_tree``) builds them into a
+**single Module-Federation container** exposing one module per panel, and each panel's
+type class sets a shared ``REMOTE_NAME`` (the container name) so the service points every
+type at the one bundle. Adding a panel is then one more ``exposes`` entry plus one panel
+class — no new build, and React/vendor chunks stay shared.
+
+**Serving a panel's data.** A panel reads the run's postprocessed ``data.db`` through ``data``
+(``fetchRun`` for anything beyond plain table rows). When that data comes from a table your own
+**postprocessing** step produced and needs custom serving (untruncated blobs, nearest-frame
+selection, …), a package can also ship the endpoint: a small class registered in the
+``robovast.service_endpoints`` entry-point group, serving ``GET /campaigns/{id}/<name>`` from the
+campaign's data — no core change, and it works the same on local ``vast serve`` and the in-cluster
+service. So an analysis package can own the whole chain end-to-end — *postprocessing step →
+service endpoint → panel* — with nothing in core. The costmap panel is exactly this: its
+``rosbags_costmap_to_csv`` step, its ``costmap`` endpoint, and its panel all ship in
+``robovast_nav``. (Large binary per-run artifacts don't even need an endpoint — serve them as
+ordinary run files via ``data.runFileUrl(path)``, as the ``scene3d`` panel does.) See the developer
+guide for the endpoint contract.
+
+.. _scene-descriptor-delivery:
+
+**3D scene data delivery.** The ``scene3d`` panel renders a **scene descriptor** —
+``scene.json`` + ``scene.bin`` (+ textures), a compact browser-renderable export of the
+simulated world — produced by the simulation as an ordinary run artifact. For sim-suite
+(MuJoCo) campaigns, set the ``SIM_SUITE_SCENE_EXPORT_DIR`` environment variable in the
+``.vast`` and every run exports its *exact* compiled world (per-configuration
+``world_overrides`` included) into that run-relative directory:
+
+.. code-block:: yaml
+
+   execution:
+     simulation: sim_suite.scenario_adapter:MujocoSim
+     env:
+     - SIM_SUITE_WORLD: "/config/files/turtlebot_nav2.yaml"
+     - SIM_SUITE_SCENE_EXPORT_DIR: "scene"          # -> <run dir>/scene/scene.json
+
+   visualization:
+     panels:
+     - scene3d:
+         position: { anchor: fill }
+         scene: { path: scene/scene.json }
+         robot:
+           body: base_link
+           source: { table: poses, filter: { frame: base_link } }
+
+Any other simulator works the same way by emitting the same descriptor format (defined by
+sim-suite's ``sim_suite/export_web.py``; ``sim-suite-export-web --world ... --out ...``
+produces one offline). The browser fetches the descriptor through the campaign
+``run-files`` endpoint, which serves any per-run artifact file by its run-relative path.
 
 .. _costmap-delivery:
 

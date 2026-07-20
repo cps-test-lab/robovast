@@ -56,9 +56,9 @@ export function StatusView({
   // The Launcher hides the campaign log — it's a launch confirmation, not a viewer;
   // the full log lives in Monitor.
   hideLog?: boolean
-  // Monitor cares only about jobs still meaningful right now: show running and failed
-  // jobs (failed ones linger in kubernetes only briefly before cleanup), dropping
-  // pending and completed from both the count summary and the jobs list.
+  // Monitor cares only about jobs still meaningful right now: show running, failed and
+  // blocked jobs (failed ones linger in kubernetes only briefly; blocked ones can't
+  // start), dropping pending and completed from both the count summary and jobs list.
   liveOnly?: boolean
 }) {
   const { runs, budget } = status
@@ -66,12 +66,15 @@ export function StatusView({
   const counts = jobs?.counts
   const running = counts?.running ?? 0
   const shownJobs = liveOnly
-    ? jobs?.jobs.filter((j) => j.status === 'running' || j.status === 'failed')
+    ? jobs?.jobs.filter(
+        (j) => j.status === 'running' || j.status === 'failed' || j.status === 'blocked',
+      )
     : jobs?.jobs
-  // Live-view count summary: running + failed, whichever are present.
+  // Live-view count summary: running + failed + blocked, whichever are present.
   const liveCountText = [
     counts && counts.running > 0 ? `running ${counts.running}` : null,
     counts && counts.failed > 0 ? `failed ${counts.failed}` : null,
+    counts && counts.blocked > 0 ? `blocked ${counts.blocked}` : null,
   ]
     .filter(Boolean)
     .join(' · ')
@@ -163,6 +166,7 @@ const JOB_STATUS_COLOR: Record<string, 'default' | 'info' | 'success' | 'error' 
   pending: 'warning',
   completed: 'success',
   failed: 'error',
+  blocked: 'error',
 }
 
 // The campaign's current-batch jobs. Collapsed by default; each job row expands its
@@ -196,7 +200,10 @@ function JobsSection({ campaignId, jobs }: { campaignId: string; jobs: JobSummar
 
 function JobRow({ campaignId, job }: { campaignId: string; job: JobSummary }) {
   const [open, setOpen] = useState(false)
-  const terminal = job.status === 'completed' || job.status === 'failed'
+  // A blocked job has no running pod, so its log never streams — treat it as terminal
+  // (stop polling) like completed/failed; the reason lives in job.detail below.
+  const terminal =
+    job.status === 'completed' || job.status === 'failed' || job.status === 'blocked'
   return (
     <Box>
       <Stack direction="row" spacing={1} alignItems="center">
@@ -215,6 +222,16 @@ function JobRow({ campaignId, job }: { campaignId: string; job: JobSummary }) {
           {job.display_name || job.job_name}
         </Button>
       </Stack>
+      {/* Why a job is stuck — e.g. a Kubernetes ImagePullBackOff reason + message —
+          so a job that can never start is legible instead of silently pending. */}
+      {job.detail ? (
+        <Typography
+          variant="caption"
+          sx={{ display: 'block', color: 'error.main', pl: 0.5, wordBreak: 'break-word' }}
+        >
+          {job.detail}
+        </Typography>
+      ) : null}
       {open ? (
         <LogPanel
           resetKey={`${campaignId}/${job.job_name}`}

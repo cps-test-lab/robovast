@@ -222,6 +222,18 @@ def _open_db(campaign_dir, extra_dirs: dict | None = None) -> sqlite3.Connection
     return conn
 
 
+def open_data_db(campaign_dir, extra_dirs: dict | None = None) -> sqlite3.Connection:
+    """Open a campaign's queryable databases **read-only** — the public seam.
+
+    Thin public wrapper over the internal opener, for package-provided service endpoints
+    (``robovast.service_endpoints``) that read a campaign's ``data.db``/``campaign.db``
+    directly (e.g. to serve a postprocessed table untruncated). The caller must ``close()``
+    the returned connection (or use :meth:`RunDataContext.open_db`, which does). Raises
+    :class:`DataQueryError` when the campaign has neither database.
+    """
+    return _open_db(campaign_dir, extra_dirs)
+
+
 # Human-readable meaning for the non-obvious tables an LLM will otherwise see as
 # bare names. Metric tables (one per CSV stem) are self-describing by their columns.
 _TABLE_DESCRIPTIONS = {
@@ -374,43 +386,7 @@ def query_data_db(campaign_dir, sql: str, max_rows: int = 500,
         conn.close()
 
 
-def read_costmap_frame(campaign_dir, config_name: str, run_id: int,
-                       topic: str, t: float) -> dict | None:
-    """Return the costmap frame nearest time ``t`` for one run's ``topic``, or ``None``.
-
-    Reads the ``costmaps`` table (from rosbags_costmap_to_csv) directly, WITHOUT the
-    per-cell width cap that :func:`query_data_db` applies — the whole point is to deliver
-    the full compressed grid payload the web run-view decodes. Returns a dict with the
-    pose/geometry metadata and ``data`` (zlib+base64 int8 cells). ``DataQueryError`` if
-    there is no ``costmaps`` table (postprocessing didn't run the costmap step).
-    """
-    conn = _open_db(campaign_dir)
-    try:
-        has = conn.execute(
-            "SELECT 1 FROM main.sqlite_master WHERE type='table' AND name='costmaps'"
-        ).fetchone()
-        if not has:
-            raise DataQueryError(
-                "No 'costmaps' table — add the rosbags_costmap_to_csv postprocessing step "
-                "(and record the costmap topics in the scenario's bag_record).")
-        row = conn.execute(
-            'SELECT timestamp, frame_id, resolution, width, height, '
-            'origin_x, origin_y, origin_yaw, data FROM costmaps '
-            'WHERE config_name = ? AND run_id = ? AND topic = ? '
-            'ORDER BY ABS(CAST(timestamp AS REAL) - ?) LIMIT 1',
-            (config_name, int(run_id), topic, float(t))).fetchone()
-        if row is None:
-            return None
-        return {
-            "t": float(row["timestamp"]),
-            "frame_id": row["frame_id"],
-            "resolution": float(row["resolution"]),
-            "width": int(row["width"]),
-            "height": int(row["height"]),
-            "origin_x": float(row["origin_x"]),
-            "origin_y": float(row["origin_y"]),
-            "origin_yaw": float(row["origin_yaw"]),
-            "data": row["data"],
-        }
-    finally:
-        conn.close()
+# NOTE: the costmap-frame reader lived here; it moved to ``robovast_nav`` as a
+# package-provided service endpoint (``robovast_nav/service_endpoints.py:CostmapEndpoint``),
+# which reads the ``costmaps`` table via :func:`open_data_db`. Core keeps only the generic
+# read-only opener above.

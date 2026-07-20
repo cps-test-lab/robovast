@@ -19,7 +19,8 @@
 import types
 
 from robovast.execution.cluster_execution.cluster_execution import (
-    job_phase, list_jobs_with_phase, running_scenario_job_names)
+    blocked_job_reasons, job_phase, list_jobs_with_phase,
+    running_scenario_job_names)
 
 
 def _job(name, *, succeeded=0, active=0, failed=0):
@@ -28,11 +29,22 @@ def _job(name, *, succeeded=0, active=0, failed=0):
         status=types.SimpleNamespace(succeeded=succeeded, active=active, failed=failed))
 
 
-def _pod(job_name, phase="Running"):
+def _pod(job_name, phase="Running", *, waiting=None):
+    """A pod for *job_name*. ``waiting=(reason, message)`` puts its container in that
+    ``waiting`` state (as ImagePullBackOff would), with the pod phase Pending."""
+    container_statuses = None
+    if waiting is not None:
+        reason, message = waiting
+        phase = "Pending"
+        container_statuses = [types.SimpleNamespace(
+            state=types.SimpleNamespace(
+                waiting=types.SimpleNamespace(reason=reason, message=message)))]
     return types.SimpleNamespace(
         metadata=types.SimpleNamespace(
             name=f"{job_name}-pod", labels={"batch.kubernetes.io/job-name": job_name}),
-        status=types.SimpleNamespace(phase=phase))
+        status=types.SimpleNamespace(
+            phase=phase, container_statuses=container_statuses,
+            init_container_statuses=None))
 
 
 class _Batch:
@@ -86,6 +98,34 @@ def test_list_jobs_with_phase_uses_pod_truth():
     core = _Core([_pod("running-job", "Running"), _pod("pending-job", "Pending")])
 
     phases = dict((j.metadata.name, p)
-                  for j, p in list_jobs_with_phase(batch, core, "ns", "sel"))
+                  for j, p, _ in list_jobs_with_phase(batch, core, "ns", "sel"))
     assert phases == {"running-job": "running", "pending-job": "pending",
                       "done-job": "completed"}
+
+
+def test_blocked_job_reasons_reports_image_pull_failures():
+    """A pod stuck pulling its image is reported with Kubernetes' reason + message."""
+    core = _Core([
+        _pod("good", "Running"),
+        _pod("bad", waiting=("ImagePullBackOff",
+                             'Back-off pulling image "ghcr.io/x/y:nope"')),
+    ])
+    reasons = blocked_job_reasons(core, "ns", "sel")
+    assert reasons == {
+        "bad": 'ImagePullBackOff: Back-off pulling image "ghcr.io/x/y:nope"'}
+
+
+def test_list_jobs_with_phase_marks_stuck_job_blocked_with_detail():
+    """A Job whose pod can't start is reported ``blocked`` (its own status, not
+    ``failed`` or a forever-``pending``) with a detail carrying the Kubernetes
+    message — the signal every consumer surfaces."""
+    jobs = [_job("running-job", active=1), _job("stuck-job", active=1)]
+    batch = _Batch(jobs)
+    core = _Core([
+        _pod("running-job", "Running"),
+        _pod("stuck-job", waiting=("ErrImagePull", "not found")),
+    ])
+    result = {j.metadata.name: (p, d)
+              for j, p, d in list_jobs_with_phase(batch, core, "ns", "sel")}
+    assert result["running-job"] == ("running", None)
+    assert result["stuck-job"] == ("blocked", "ErrImagePull: not found")

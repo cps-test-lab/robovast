@@ -72,26 +72,49 @@ def _robovast_version() -> str:
         return "0.0.0+unknown"
 
 
-def _variation_remotes() -> dict:
-    """Map variation-type name → a Module-Federation remote descriptor, for the
-    types that ship a web preview asset (declare ``WEB_PREVIEW``). Built-in types
-    return nothing (they render host-native in the editor). Best-effort; a plugin
-    that fails to import is simply skipped."""
+def _plugin_remotes(group: str, asset_attr: str, url_builder,
+                    module_attr: str = "", module_default: str = "./preview") -> dict:
+    """Map entry-point name → a Module-Federation remote descriptor, for the plugins in
+    *group* that ship a web asset (declare *asset_attr*). ``module`` is read from the
+    class's *module_attr* when given, else *module_default*. Best-effort; a plugin that
+    fails to import is skipped. Shared by variation-type previews and run-view panels."""
     from importlib.metadata import entry_points
     remotes = {}
-    for ep in entry_points(group="robovast.variation_types"):
+    for ep in entry_points(group=group):
         try:
-            asset = getattr(ep.load(), "WEB_PREVIEW", None)
+            cls = ep.load()
+            asset = getattr(cls, asset_attr, None)
         except Exception as e:  # noqa: BLE001 - skip a broken plugin
-            logger.debug("variation %s failed to load for web preview: %s", ep.name, e)
+            logger.debug("%s plugin %s failed to load for web asset: %s", group, ep.name, e)
             continue
         if asset:
+            module = getattr(cls, module_attr, module_default) if module_attr else module_default
+            # The Module-Federation container name defaults to the entry-point name (one
+            # container per type). A plugin that ships several panels from one shared bundle
+            # sets REMOTE_NAME to a common container name (e.g. "robovast_nav") on each class;
+            # the asset URL still uses ep.name, so every type resolves to the same bundle.
             remotes[ep.name] = {
-                "name": ep.name,
-                "remote_entry_url": Routes.variation_asset(ep.name, "remoteEntry.js"),
-                "module": "./preview",
+                "name": getattr(cls, "REMOTE_NAME", ep.name),
+                "remote_entry_url": url_builder(ep.name, "remoteEntry.js"),
+                "module": module,
             }
     return remotes
+
+
+def _variation_remotes() -> dict:
+    """Variation-type name → MF remote descriptor for types shipping a ``WEB_PREVIEW``
+    (built-in types return nothing; they render host-native). See :func:`_plugin_remotes`."""
+    return _plugin_remotes("robovast.variation_types", "WEB_PREVIEW",
+                           Routes.variation_asset, module_default="./preview")
+
+
+def _panel_remotes() -> dict:
+    """Package-provided panel type name → MF remote descriptor for types shipping a
+    ``WEB_PANEL`` (e.g. ``robovast_nav``'s ``costmap``). See :func:`_plugin_remotes`."""
+    from robovast.common.config import PANEL_TYPES_GROUP  # pylint: disable=import-outside-toplevel
+    return _plugin_remotes(PANEL_TYPES_GROUP, "WEB_PANEL",
+                           Routes.panel_types_asset, module_attr="PANEL_MODULE",
+                           module_default="./panel")
 
 
 def _config_previews(config: dict, remotes: dict) -> list:
@@ -881,6 +904,13 @@ class LocalTransport(RobovastInterface):
         object store (``ClusterService`` overrides this)."""
         return self._campaign_dir(campaign_id)
 
+    def resolve_data_dir(self, campaign_id: str):
+        """Public seam: resolve a campaign's data dir (local disk or, on the cluster,
+        an object-store fetch — ``ClusterService`` overrides ``_data_dir``). Used by the
+        service's package-provided endpoint dispatch (see ``endpoint_plugin``) so plugins
+        get local/cluster transparency without touching the private resolver."""
+        return self._data_dir(campaign_id)
+
     def list_campaign_plots(self, campaign_id: str) -> "CampaignPlotsResponse":
         # Raw-load (not full validation) — reading declared plots must not depend on
         # the rest of the snapshot config being re-validatable.
@@ -904,21 +934,51 @@ class LocalTransport(RobovastInterface):
         from robovast.common.config_validation import _safe_load
         from robovast.service.interface import CampaignPanelsResponse
         from robovast.service.postprocessing_edit import effective_vast
+        from robovast.common.config import CUSTOM_PANEL_TYPE
         cfg, _ = _safe_load(str(effective_vast(Path(self._campaign_dir(campaign_id)))))
         viz = (cfg or {}).get("visualization") or {}
         raw = viz.get("panels") or []
         # Each panel is a single-key mapping ``{<type>: <props-or-null>}`` (``playback:``
         # for a bare panel); flatten to the ``{type, ...fields}`` the web UI consumes.
         # A bare ``- playback`` (no colon) parses to the plain string ``"playback"``.
+        # Attach a Module-Federation ``remote`` descriptor to panels rendered as remotes:
+        # package panels (entry-point types shipping WEB_PANEL) and user ``custom`` panels.
+        pkg_remotes = _panel_remotes()
         panels = []
-        for entry in raw:
+        for i, entry in enumerate(raw):
             if isinstance(entry, str):
                 ptype, props = entry, None
             else:
                 (ptype, props), = entry.items()
-            panels.append({"type": ptype, **(props or {})})
+            props = props or {}
+            panel = {"type": ptype, **props}
+            if ptype == CUSTOM_PANEL_TYPE:
+                remote = props.get("remote")
+                if remote:
+                    rel = remote if remote.endswith(".js") \
+                        else f"{remote.rstrip('/')}/remoteEntry.js"
+                    panel["remote"] = {
+                        "name": f"panel_{i}",
+                        "remote_entry_url": Routes.campaign_panel_asset(campaign_id, rel),
+                        "module": props.get("module") or "./panel",
+                    }
+            elif ptype in pkg_remotes:
+                panel["remote"] = pkg_remotes[ptype]
+            panels.append(panel)
         return CampaignPanelsResponse(
             campaign_id=campaign_id, panels=panels, timeline=viz.get("timeline"))
+
+    def resolve_campaign_panel_asset(self, campaign_id: str, rel_path: str) -> str:
+        """Resolve a ``custom`` panel's staged bundle file, confined to the campaign's
+        immutable ``_config/`` snapshot. Raises ``ValueError`` (→ 400) on a path escape,
+        ``KeyError`` (→ 404) if the file is missing."""
+        base = (Path(self._data_dir(campaign_id)) / "_config").resolve()
+        target = (base / rel_path).resolve()
+        if target != base and not str(target).startswith(str(base) + os.sep):
+            raise ValueError("path escapes the campaign config directory")
+        if not target.is_file():
+            raise KeyError(f"panel asset not found: {rel_path}")
+        return str(target)
 
     def get_panels_source(self, campaign_id: str) -> "PanelsSource":
         from robovast.service.interface import PanelsSource
@@ -937,14 +997,19 @@ class LocalTransport(RobovastInterface):
                             source=effective_vast(campaign_dir).name,
                             content=request.content)
 
-    def get_costmap_frame(
-        self, campaign_id: str, config_name: str, run_id: int, topic: str, t: float,
-    ) -> "Optional[CostmapFrame]":
-        from robovast.results_processing.data_query import read_costmap_frame
-        from robovast.service.interface import CostmapFrame
-        frame = read_costmap_frame(
-            self._data_dir(campaign_id), config_name, run_id, topic, t)
-        return CostmapFrame.model_validate(frame) if frame else None
+    def get_run_file(
+        self, campaign_id: str, config_name: str, run_id: int, path: str,
+    ) -> bytes:
+        # Confine the lookup to the run directory: the path comes from the URL, so a
+        # ``..``/absolute path must not read outside the run's artifacts.
+        run_dir = (Path(self._data_dir(campaign_id)) / config_name / str(run_id)).resolve()
+        target = (run_dir / path).resolve()
+        if not str(target).startswith(str(run_dir) + os.sep):
+            raise ValueError("path escapes the run directory")
+        if not target.is_file():
+            raise KeyError(
+                f"no file {path!r} in run {config_name}/{run_id} of campaign {campaign_id}")
+        return target.read_bytes()
 
     # Node levels the web Explorer tree can address (campaign → config → run). The
     # desktop's ``batch`` level is omitted: the web tree has no batch node.
@@ -1308,13 +1373,16 @@ class HTTPTransport(RobovastInterface):
             Routes.campaign_panels_source(request.campaign_id),
             json=request.model_dump()))
 
-    def get_costmap_frame(
-        self, campaign_id: str, config_name: str, run_id: int, topic: str, t: float,
-    ) -> "Optional[CostmapFrame]":
-        from robovast.service.interface import CostmapFrame
-        data = self._get(Routes.campaign_costmap(campaign_id),
-                         config_name=config_name, run_id=run_id, topic=topic, t=t)
-        return CostmapFrame.model_validate(data) if data else None
+    def get_run_file(
+        self, campaign_id: str, config_name: str, run_id: int, path: str,
+    ) -> bytes:
+        import requests
+        resp = requests.get(
+            f"{self.base_url}"
+            f"{Routes.campaign_run_file(campaign_id, config_name, run_id, path)}",
+            timeout=self.timeout)
+        resp.raise_for_status()
+        return resp.content
 
     def list_campaign_visualizations(
         self, campaign_id: str

@@ -117,8 +117,12 @@ class JobSummary(BaseModel):
     """
 
     job_name: str
-    status: str = "pending"          # running | pending | completed | failed
+    status: str = "pending"          # running | pending | completed | failed | blocked
     display_name: Optional[str] = None
+    # Why a job is in its state, when there is something to say — currently the
+    # Kubernetes reason + message for a ``blocked`` job (e.g.
+    # ``"ImagePullBackOff: Back-off pulling image ..."``). ``None`` for a healthy job.
+    detail: Optional[str] = None
 
 
 class JobCounts(BaseModel):
@@ -128,6 +132,10 @@ class JobCounts(BaseModel):
     pending: int = 0
     completed: int = 0
     failed: int = 0
+    # Jobs that cannot start and will not recover on their own (image pull / config
+    # error). Distinct from ``failed``: Kubernetes still counts them active, but they
+    # make no progress — see ``JobSummary.detail`` for the reason.
+    blocked: int = 0
     total: int = 0
 
 
@@ -449,22 +457,10 @@ class CampaignPanelsResponse(BaseModel):
     timeline: Optional[dict] = None
 
 
-class CostmapFrame(BaseModel):
-    """One nav2 OccupancyGrid frame for the run-view costmap panel: the frame from the
-    ``costmaps`` table nearest a requested time, delivered untruncated. ``data`` is the
-    zlib-compressed, base64-encoded int8 grid (row-major, -1=unknown/0=free/1..100=cost);
-    the map spans ``width*resolution`` by ``height*resolution`` meters, and
-    ``origin_*`` is the pose of cell (0,0)'s corner in ``frame_id``."""
-
-    t: float
-    frame_id: str
-    resolution: float
-    width: int
-    height: int
-    origin_x: float
-    origin_y: float
-    origin_yaw: float
-    data: str
+# NOTE: the costmap frame endpoint (``CostmapFrame`` model + ``get_costmap_frame`` +
+# ``Routes.campaign_costmap``) moved out of core: it is now a package-provided service
+# endpoint shipped by ``robovast_nav`` (``robovast.service_endpoints`` group). See
+# ``robovast.service.endpoint_plugin`` for the generic mechanism.
 
 
 class CampaignVisualization(BaseModel):
@@ -543,6 +539,17 @@ class Routes:
         return f"/variation_types/{name}/assets/{path}"
 
     @staticmethod
+    def panel_types_asset(name: str, path: str) -> str:
+        # A package-provided run-view panel's web asset (Module Federation remoteEntry +
+        # chunks), served from the providing plugin's ``WEB_PANEL`` dir.
+        return f"/panel_types/{name}/assets/{path}"
+
+    @staticmethod
+    def campaign_panel_asset(campaign_id: str, path: str) -> str:
+        # A user-authored ``custom`` panel's bundle, staged into the campaign's _config/.
+        return f"/campaigns/{campaign_id}/panel_assets/{path}"
+
+    @staticmethod
     def upload(token: str) -> str:
         return f"/uploads/{token}"
 
@@ -601,8 +608,12 @@ class Routes:
         return f"/campaigns/{campaign_id}/panels/source"
 
     @staticmethod
-    def campaign_costmap(campaign_id: str) -> str:
-        return f"/campaigns/{campaign_id}/costmap"
+    def campaign_run_file(campaign_id: str, config_name: str, run_id: int,
+                          path: str) -> str:
+        # Path-style (not query params) so a browser resource that fetches siblings by
+        # *relative* URL (e.g. scene.json -> scene.bin, tex_0.png) resolves within the
+        # same run directory.
+        return (f"/campaigns/{campaign_id}/run-files/{config_name}/{run_id}/{path}")
 
     @staticmethod
     def campaign_visualizations(campaign_id: str) -> str:
@@ -831,13 +842,18 @@ class RobovastInterface(ABC):
         revision (never mutates ``_config/``). The run view reloads its panels
         from the effective `.vast` afterwards."""
 
+
     @abstractmethod
-    def get_costmap_frame(
-        self, campaign_id: str, config_name: str, run_id: int, topic: str, t: float,
-    ) -> Optional[CostmapFrame]:
-        """Return the ``costmaps`` frame nearest time ``t`` for one run's ``topic``
-        (a nav2 OccupancyGrid layer), delivered untruncated for the run-view costmap
-        panel. ``None`` when the run/topic has no frame."""
+    def get_run_file(
+        self, campaign_id: str, config_name: str, run_id: int, path: str,
+    ) -> bytes:
+        """Return the raw bytes of one run artifact file,
+        ``<campaign_root>/<config_name>/<run_id>/<path>`` — e.g. the browser scene
+        descriptor (``scene/scene.json`` + its sibling ``scene.bin``/textures) the
+        run-view's scene3d panel renders. The campaign root is resolved per transport
+        (local disk / object-store fetch), like the data-query endpoints. Raises
+        ``ValueError`` for a ``path`` that escapes the run directory (→ 400) and
+        ``KeyError`` when the file does not exist (→ 404)."""
 
     @abstractmethod
     def list_campaign_visualizations(

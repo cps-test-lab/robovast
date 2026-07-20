@@ -389,14 +389,16 @@ class ClusterService(LocalTransport):
         # image-pulling / freshly Kueue-admitted) reports pending, not running.
         jobs = [
             JobSummary(job_name=job.metadata.name, status=phase,
-                       display_name=self._job_display_name(campaign_id, job))
-            for job, phase in list_jobs_with_phase(
+                       display_name=self._job_display_name(campaign_id, job),
+                       detail=detail)
+            for job, phase, detail in list_jobs_with_phase(
                 self._k8s_batch(), self._k8s(), self.namespace, label)]
         counts = JobCounts(
             running=sum(1 for j in jobs if j.status == "running"),
             pending=sum(1 for j in jobs if j.status == "pending"),
             completed=sum(1 for j in jobs if j.status == "completed"),
             failed=sum(1 for j in jobs if j.status == "failed"),
+            blocked=sum(1 for j in jobs if j.status == "blocked"),
             total=len(jobs))
         return ListJobsResponse(jobs=jobs, counts=counts)
 

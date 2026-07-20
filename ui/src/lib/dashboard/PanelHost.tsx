@@ -11,9 +11,10 @@ import Typography from '@mui/material/Typography'
 import RemoveRoundedIcon from '@mui/icons-material/RemoveRounded'
 import AddRoundedIcon from '@mui/icons-material/AddRounded'
 import { getPanel } from './registry'
-import type { Anchor, PanelSpec, PanelPosition } from './types'
+import type { Anchor, PanelSpec, PanelPosition, PanelProps } from './types'
 import type { PlaybackClock } from './clock'
 import type { DataProvider } from './dataProvider'
+import { useRemoteComponent } from '@/lib/remote'
 
 const len = (v: number | string | undefined, fallback: string): string =>
   v == null ? fallback : typeof v === 'number' ? `${v}px` : v
@@ -114,6 +115,24 @@ function layoutStyle(
   }
 }
 
+// Loads a Module-Federation remote panel and mounts it with the full PanelProps contract
+// (spec + clock + data), exactly like a built-in panel — so a remote panel is time-synced and
+// queries the run's data.db the same way. Guarded loading/error states, never a silent drop.
+function RemotePanel({ spec, clock, data }: PanelProps) {
+  const { Comp, err } = useRemoteComponent<PanelProps>(spec.remote!)
+  if (err) {
+    return (
+      <Box sx={{ p: 2, color: 'error.main', fontSize: 13 }}>
+        Panel “{spec.remote!.name}” failed to load ({err}). Check the panel bundle / its providing plugin.
+      </Box>
+    )
+  }
+  if (!Comp) {
+    return <Box sx={{ p: 2, color: 'text.secondary', fontSize: 13 }}>loading panel “{spec.remote!.name}”…</Box>
+  }
+  return <Comp spec={spec} clock={clock} data={data} />
+}
+
 function PanelFrame({
   spec,
   z,
@@ -166,7 +185,12 @@ function PanelFrame({
 
   const pos: PanelPosition = { ...spec.position, width: size.w, height: size.h }
 
-  const body = plugin ? (
+  // A remote panel (package-provided or user-authored `custom`) is loaded at runtime via
+  // Module Federation; a built-in panel comes from the static registry; anything else is an
+  // explicit error (never a silent drop).
+  const body = spec.remote ? (
+    <RemotePanel spec={spec} clock={clock} data={data} />
+  ) : plugin ? (
     <plugin.component spec={spec} clock={clock} data={data} />
   ) : (
     <Box sx={{ p: 2, color: 'error.main', fontSize: 13 }}>

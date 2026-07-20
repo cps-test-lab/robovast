@@ -5,6 +5,18 @@
 
 import { getPanel } from './registry'
 import type { PanelSpec } from './types'
+import type { RemoteDescriptor } from '@/lib/remote'
+
+/** A well-formed service-attached MF descriptor (name + entry url + module). */
+function asRemote(v: unknown): RemoteDescriptor | undefined {
+  if (v && typeof v === 'object') {
+    const r = v as Record<string, unknown>
+    if (typeof r.name === 'string' && typeof r.remote_entry_url === 'string' && typeof r.module === 'string') {
+      return { name: r.name, remote_entry_url: r.remote_entry_url, module: r.module }
+    }
+  }
+  return undefined
+}
 
 const KNOWN_KEYS = new Set([
   'type',
@@ -16,6 +28,10 @@ const KNOWN_KEYS = new Set([
   'frameless',
   'hidden',
   'fixed',
+  // Remote-panel plumbing: the service-attached MF descriptor and the raw `module`/`remote`
+  // authoring keys. Kept out of `config` so a remote panel's bindings stay clean.
+  'remote',
+  'module',
 ])
 
 export function parseVastPanels(raw: Record<string, unknown>[]): PanelSpec[] {
@@ -45,6 +61,7 @@ export function parseVastPanels(raw: Record<string, unknown>[]): PanelSpec[] {
       frameless: (r.frameless as boolean | undefined) ?? manifest?.frameless ?? false,
       hidden: (r.hidden as boolean | undefined) ?? false,
       fixed: (r.fixed as boolean | undefined) ?? false,
+      remote: asRemote(r.remote),
       config,
     }
   })

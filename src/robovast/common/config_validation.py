@@ -177,6 +177,59 @@ def _scenario_file_problems(raw, vast_dir):
     return problems, scenario_file
 
 
+def _panel_entry(entry):
+    """Extract ``(type, fields)`` from a raw ``visualization.panels`` entry, accepting the
+    key-as-type shorthand (``- costmap: {...}`` / bare ``- playback``) as well as the
+    flattened ``{type, ...}`` form. Returns ``(None, {})`` for an unrecognized shape."""
+    if isinstance(entry, str):
+        return entry, {}
+    if isinstance(entry, dict):
+        if "type" in entry:
+            return entry.get("type"), entry
+        if len(entry) == 1:
+            (ptype, props), = entry.items()
+            return ptype, (props or {})
+    return None, {}
+
+
+def _panel_problems(raw, vast_dir):
+    """Validate ``visualization.panels`` beyond the schema: a ``custom`` panel's built
+    bundle must exist next to the ``.vast``. Package panels (entry-point types) are only
+    name-checked by the schema — their built assets ship with the plugin and may be absent
+    in a source checkout, so they are not required here."""
+    from robovast.common.config import \
+        CUSTOM_PANEL_TYPE  # pylint: disable=import-outside-toplevel
+    from robovast.common.config_generation import \
+        _validate_relative_path  # pylint: disable=import-outside-toplevel
+
+    problems = []
+    viz = raw.get("visualization") or {}
+    if not isinstance(viz, dict):
+        return problems
+    for i, entry in enumerate(viz.get("panels") or []):
+        ptype, props = _panel_entry(entry)
+        if ptype != CUSTOM_PANEL_TYPE:
+            continue
+        remote = props.get("remote") if isinstance(props, dict) else None
+        if not remote:
+            continue  # schema already flags a custom panel missing 'remote'
+        field = f"visualization.panels[{i}].remote"
+        try:
+            _validate_relative_path(remote, field)
+        except ValueError as e:
+            problems.append(_problem("panel", str(e), field=field))
+            continue
+        path = os.path.join(vast_dir, remote)
+        entry_js = path if path.endswith(".js") else os.path.join(path, "remoteEntry.js")
+        if not os.path.exists(entry_js):
+            problems.append(_problem(
+                "panel",
+                f"custom panel bundle not found: {entry_js} (build the panel and place its "
+                f"remoteEntry.js under {remote!r} relative to the .vast)",
+                field=field))
+    return problems
+
+
 def _scenario_parameter_names(scenario_file):
     """Return the parameter names declared by the scenario, or None if unreadable."""
     from robovast.common.common import \
@@ -398,6 +451,9 @@ def validate_project_file(config_path):
 
     # Top-level plugin refs (postprocessing / search strategy / extractor).
     problems.extend(_plugin_ref_problems(raw, vast_dir))
+
+    # Custom run-view panel bundles must exist next to the .vast.
+    problems.extend(_panel_problems(raw, vast_dir))
 
     if problems:
         return {"valid": False, "problems": problems,

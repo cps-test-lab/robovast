@@ -76,12 +76,12 @@ from robovast.common.execution import (build_job_parameter_documents,
                                        resolve_robovast_image,
                                        write_job_links_manifest)
 from robovast.common import prepare_campaign_configs
-from robovast.execution.backends import (CampaignStopped, ExecutionBackend,
-                                          RunOptions)
+from robovast.execution.backends import (CampaignConfigError, CampaignStopped,
+                                          ExecutionBackend, RunOptions)
 from robovast.execution.packer import build_jobs
 
 from . import in_pod_storage
-from .cluster_execution import _label_safe_campaign
+from .cluster_execution import _label_safe_campaign, blocked_job_reasons
 from .manifests import JOB_TEMPLATE
 
 logger = logging.getLogger(__name__)
@@ -132,6 +132,11 @@ class BatchJobRunner:
     #: Cooperative-stop signal, set by :meth:`for_batch`. Class-level default so a
     #: runner built another way (offline manifest emit, tests) has no stop wired.
     _state = None
+
+    #: How long a batch tolerates jobs stuck unable to start (image pull / config
+    #: error) before failing with the Kubernetes reason. A short grace absorbs a
+    #: transient registry blip while never letting a doomed image hang the campaign.
+    _BLOCKED_GRACE_SECONDS = 60.0
 
     @classmethod
     def for_batch(cls, *, campaign_data, campaign_id, batch_tag, runs, cluster_config,
@@ -626,6 +631,8 @@ class BatchJobRunner:
         logger.info("Batch %s: created %d job(s); waiting for completion...",
                     self._batch_tag, len(job_names))
 
+        job_label = f"jobgroup=scenario-runs,campaign-id={_label_safe_campaign(self.campaign)}"
+        blocked_since = None
         while True:
             if self._state is not None and self._state.stop_requested:
                 raise CampaignStopped(f"campaign {self.campaign} stopped during batch "
@@ -633,6 +640,26 @@ class BatchJobRunner:
             remaining = self.get_remaining_jobs(job_names)
             if not remaining:
                 break
+            # A Job whose pod can't start (bad/missing image, no pull creds, ...) stays
+            # "active" with a Pending pod forever, so this loop would otherwise spin
+            # indefinitely with no progress. Detect it and, after a short grace window
+            # (a transient registry blip may clear on its own), fail the batch with
+            # Kubernetes' own message so the campaign reports *why* instead of hanging.
+            blocked = blocked_job_reasons(self.k8s_client, self.namespace, job_label)
+            if blocked:
+                reasons = "; ".join(sorted(set(blocked.values())))
+                if blocked_since is None:
+                    blocked_since = time.monotonic()
+                    logger.warning("Batch %s: %d job(s) cannot start: %s",
+                                   self._batch_tag, len(blocked), reasons)
+                elif time.monotonic() - blocked_since >= self._BLOCKED_GRACE_SECONDS:
+                    raise CampaignConfigError(
+                        f"{len(blocked)} scenario job(s) cannot start after "
+                        f"{self._BLOCKED_GRACE_SECONDS:.0f}s and will not recover — "
+                        f"Kubernetes reports: {reasons}. Check the execution image "
+                        f"reference and pull credentials.")
+            else:
+                blocked_since = None
             logger.info("Batch %s: %d/%d job(s) still running...",
                         self._batch_tag, len(remaining), len(job_names))
             time.sleep(2)

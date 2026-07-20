@@ -640,9 +640,12 @@ def list_campaign_jobs(campaign_id: str) -> dict:
         campaign_id: The id returned by :func:`start_campaign`.
 
     Returns:
-        ``{jobs: [{job_name, status, display_name}], counts: {running, pending,
-        completed, failed, total}}`` where ``status`` is one of ``running`` /
-        ``pending`` / ``completed`` / ``failed``; ``{error}`` if no service is reachable.
+        ``{jobs: [{job_name, status, display_name, detail}], counts: {running,
+        pending, completed, failed, blocked, total}}`` where ``status`` is one of
+        ``running`` / ``pending`` / ``completed`` / ``failed`` / ``blocked``. A
+        ``blocked`` job cannot start and will not recover on its own (e.g. an image
+        that can't be pulled); ``detail`` carries the Kubernetes reason + message.
+        Returns ``{error}`` if no service is reachable.
     """
     client = _service_client()
     if client is None:

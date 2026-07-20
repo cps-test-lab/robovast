@@ -7,7 +7,7 @@
 // A run in data.db is keyed by (config_name, run_id); a provider is bound to one such run, so every
 // query is scoped to it. All data.db columns are TEXT, so callers coerce numerics themselves.
 
-import { robovast, type DataDescribe, type CostmapFrame } from '@/lib/robovastClient'
+import { robovast, type DataDescribe } from '@/lib/robovastClient'
 
 export type DataRow = Record<string, unknown>
 
@@ -31,8 +31,14 @@ export interface DataProvider {
   series(table: string, opts?: SeriesOptions): Promise<DataRow[]>
   /** The single row whose `timeCol` is nearest `t`, or null if the table is empty. */
   nearest(table: string, t: number, timeCol?: string): Promise<DataRow | null>
-  /** The costmap grid frame for `topic` nearest `t` (heavy payload, dedicated endpoint), or null. */
-  costmapFrame(topic: string, t: number): Promise<CostmapFrame | null>
+  /** GET a run-scoped JSON endpoint under the campaign (`config_name`+`run_id` applied), for a panel
+   *  needing a specialized endpoint the generic provider doesn't model. This is how an external panel
+   *  (e.g. robovast_nav's costmap, via `fetchRun('costmap', {topic, t})`) reaches its own data without
+   *  the generic seam knowing anything nav-specific. */
+  fetchRun<T>(endpoint: string, params?: Record<string, string | number>): Promise<T>
+  /** URL of one of the run's artifact files (e.g. the scene3d panel's `scene/scene.json`), fetched
+   *  directly by the consumer. Path-style so relative sibling fetches stay within the run. */
+  runFileUrl(path: string): string
 }
 
 /** Quote a value as a SQL string literal (single-quote escaped). */
@@ -101,8 +107,12 @@ export function dbDataProvider(
       return res.rows[0] ?? null
     },
 
-    costmapFrame(topic, t) {
-      return robovast.costmapFrame(campaignId, configName, runId, topic, t)
+    fetchRun(endpoint, params = {}) {
+      return robovast.runEndpoint(campaignId, configName, runId, endpoint, params)
+    },
+
+    runFileUrl(path) {
+      return robovast.runFileUrl(campaignId, configName, runId, path)
     },
   }
 }

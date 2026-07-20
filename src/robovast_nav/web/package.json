@@ -1,0 +1,23 @@
+{
+  "name": "robovast-nav-panels",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "robovast_nav's run-view panels, built as a Module-Federation remote consumed by the robovast web UI.",
+  "scripts": {
+    "build": "tsc --noEmit && vite build",
+    "dev": "vite"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@module-federation/vite": "^1.18.2",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.2",
+    "typescript": "^5.6.2",
+    "vite": "^5.4.8"
+  }
+}

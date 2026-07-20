@@ -72,46 +72,113 @@ def job_phase(job, running_job_names=None) -> str:
     return "pending"
 
 
-def running_scenario_job_names(k8s_core, namespace, label_selector) -> set:
-    """Set of Job names that currently own a pod in phase ``Running``.
+# Container ``waiting`` reasons that mean a pod will **not** start on its own: the
+# image cannot be pulled, or the container cannot be created. Unlike a crash (which
+# counts against the Job's ``backoffLimit`` and is eventually marked ``failed``),
+# these keep the pod ``Pending`` and the Job ``active`` indefinitely — so a campaign
+# hangs with no progress unless the reason is surfaced. Kubernetes' own message
+# (attached to each) names the offending image / registry error.
+POD_BLOCKED_REASONS = frozenset({
+    "ImagePullBackOff", "ErrImagePull", "InvalidImageName",
+    "ErrImageNeverPull", "CreateContainerConfigError", "RegistryUnavailable",
+})
 
-    A Kubernetes Job's ``status.active`` cannot tell Pending from Running pods, so
-    the truth comes from the pods themselves. Pods carry their owning Job's name in
-    the ``batch.kubernetes.io/job-name`` label (older clusters: ``job-name``); a Job
-    is "really running" once at least one of its pods reaches phase ``Running``.
-    Best-effort: on any pod-list error, returns the empty set so classification
-    falls back to the Job-level view rather than failing the whole listing.
+
+def _pod_job_name(pod) -> "str | None":
+    """The owning Job's name off a pod's label (``batch.kubernetes.io/job-name``,
+    older clusters: ``job-name``)."""
+    labels = (pod.metadata.labels or {}) if pod.metadata else {}
+    return labels.get("batch.kubernetes.io/job-name") or labels.get("job-name")
+
+
+def pod_block_reason(pod) -> "tuple[str, str] | None":
+    """``(reason, message)`` if a container of *pod* is stuck in an unrecoverable
+    ``waiting`` state (see :data:`POD_BLOCKED_REASONS`), else ``None``.
+
+    Checks init *and* regular containers; ``message`` is Kubernetes' own text (the
+    failed image ref + registry error), possibly empty.
+    """
+    status = pod.status
+    if status is None:
+        return None
+    statuses = list(getattr(status, "init_container_statuses", None) or []) + \
+        list(getattr(status, "container_statuses", None) or [])
+    for cs in statuses:
+        state = getattr(cs, "state", None)
+        waiting = getattr(state, "waiting", None) if state else None
+        if waiting and getattr(waiting, "reason", None) in POD_BLOCKED_REASONS:
+            return waiting.reason, (getattr(waiting, "message", None) or "").strip()
+    return None
+
+
+def _pod_signals(k8s_core, namespace, label_selector) -> "tuple[set, dict]":
+    """One pod list → ``(running_job_names, blocked_job_reasons)``.
+
+    ``running_job_names``: Jobs owning a pod in phase ``Running`` (the truth a Job's
+    ``status.active`` can't give — it counts Pending pods too). ``blocked_job_reasons``:
+    Job name → ``"<reason>: <message>"`` for pods that cannot start (image pull /
+    container-config errors). Best-effort: on any pod-list error, returns empties so
+    callers fall back to the Job-level view rather than failing the whole listing.
     """
     try:
-        pods = k8s_core.list_namespaced_pod(namespace, label_selector=label_selector)
+        pods = k8s_core.list_namespaced_pod(namespace, label_selector=label_selector).items
     except Exception as exc:  # noqa: BLE001 - best-effort refinement
         logger.warning("Could not list pods to refine job status: %s", exc)
-        return set()
-    names = set()
-    for pod in pods.items:
-        if not (pod.status and pod.status.phase == "Running"):
+        return set(), {}
+    running, blocked = set(), {}
+    for pod in pods:
+        name = _pod_job_name(pod)
+        if not name:
             continue
-        labels = pod.metadata.labels or {}
-        name = labels.get("batch.kubernetes.io/job-name") or labels.get("job-name")
-        if name:
-            names.add(name)
-    return names
+        if pod.status and pod.status.phase == "Running":
+            running.add(name)
+        reason = pod_block_reason(pod)
+        if reason:
+            r, msg = reason
+            blocked[name] = f"{r}: {msg}" if msg else r
+    return running, blocked
+
+
+def running_scenario_job_names(k8s_core, namespace, label_selector) -> set:
+    """Set of Job names that currently own a pod in phase ``Running`` (see
+    :func:`_pod_signals`)."""
+    return _pod_signals(k8s_core, namespace, label_selector)[0]
+
+
+def blocked_job_reasons(k8s_core, namespace, label_selector) -> dict:
+    """Job name → ``"<reason>: <message>"`` for Jobs whose pod cannot start (image
+    pull / container-config errors); see :func:`_pod_signals`. Empty when nothing is
+    blocked, so a truthy result means "these jobs will never start on their own"."""
+    return _pod_signals(k8s_core, namespace, label_selector)[1]
 
 
 def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
-    """List scenario-run Jobs matching *label_selector*, each paired with its phase.
+    """List scenario-run Jobs matching *label_selector*, each with its phase + detail.
 
     The one place that turns "Jobs + pods" into an accurate phase, so every consumer
     (service :meth:`ClusterService.list_jobs`, the CLI monitor, MCP — all of which go
     through one of those) classifies identically and can never drift. The pod list is
-    fetched once and threaded into :func:`job_phase` so an active-but-Pending pod is
-    reported ``pending`` rather than ``running``.
+    fetched once (:func:`_pod_signals`) so an active-but-Pending pod is reported
+    ``pending`` rather than ``running``, and a pod that cannot start (image pull /
+    config error) is reported ``blocked`` with a human ``detail`` (Kubernetes' own
+    message) instead of sitting ``pending`` forever.
 
-    Returns a list of ``(job, phase)`` tuples in the order the API returned the Jobs.
+    ``blocked`` is its own status, distinct from ``failed``: Kubernetes still counts
+    the Job active (it keeps retrying the pull), so it has neither completed nor been
+    marked failed — it simply cannot make progress. The campaign-level escalation
+    (fail the batch after a grace window) lives in the run loop, not here.
+
+    Returns a list of ``(job, phase, detail)`` tuples in the order the API returned
+    the Jobs; ``detail`` is ``None`` unless the Job is blocked.
     """
     job_list = k8s_batch.list_namespaced_job(namespace, label_selector=label_selector)
-    running = running_scenario_job_names(k8s_core, namespace, label_selector)
-    return [(job, job_phase(job, running)) for job in job_list.items]
+    running, blocked = _pod_signals(k8s_core, namespace, label_selector)
+    out = []
+    for job in job_list.items:
+        detail = blocked.get(job.metadata.name)
+        phase = "blocked" if detail else job_phase(job, running)
+        out.append((job, phase, detail))
+    return out
 
 
 def cleanup_cluster_campaign(namespace="default", campaign=None, context=None):

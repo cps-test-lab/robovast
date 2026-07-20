@@ -51,7 +51,7 @@ from robovast.service.interface import (ActionResult, CampaignRef,
                                         VersionInfo, WorkspaceInfo, WriteFileRequest,
                                         DataDescribe, DataQueryResult,
                                         CampaignPlotsResponse,
-                                        CampaignPanelsResponse, CostmapFrame,
+                                        CampaignPanelsResponse,
                                         PanelsSource, UpdatePanelsSourceRequest,
                                         CampaignVisualizationsResponse)
 
@@ -130,6 +130,27 @@ def build_app(impl: RobovastInterface):
         from fastapi.responses import \
             FileResponse  # pylint: disable=import-outside-toplevel
         return FileResponse(str(_guard(lambda: _resolve_variation_asset(name, path))))
+
+    @app.get("/panel_types/{name}/assets/{path:path}")
+    def panel_type_asset(name: str, path: str):
+        """Serve a package-provided run-view panel's web asset (Module Federation remote).
+
+        A panel plugin (entry-point group ``robovast.panel_types``) ships a built
+        ``remoteEntry.js`` + chunks as package data under its ``WEB_PANEL`` dir; the run
+        view loads them at runtime. Core built-in panels have no assets (host-native)."""
+        from fastapi.responses import \
+            FileResponse  # pylint: disable=import-outside-toplevel
+        return FileResponse(str(_guard(
+            lambda: _resolve_plugin_asset("robovast.panel_types", name, path, "WEB_PANEL"))))
+
+    @app.get("/campaigns/{campaign_id}/panel_assets/{path:path}")
+    def campaign_panel_asset(campaign_id: str, path: str):
+        """Serve a user-authored ``custom`` panel's bundle, staged into the campaign's
+        immutable ``_config/`` snapshot (Module Federation remoteEntry + chunks)."""
+        from fastapi.responses import \
+            FileResponse  # pylint: disable=import-outside-toplevel
+        return FileResponse(str(_guard(
+            lambda: impl.resolve_campaign_panel_asset(campaign_id, path))))
 
     # -- workspaces ---------------------------------------------------------
 
@@ -320,12 +341,19 @@ def build_app(impl: RobovastInterface):
     ) -> PanelsSource:
         return _guard(lambda: impl.update_panels_source(request))
 
-    @app.get("/campaigns/{campaign_id}/costmap", response_model=CostmapFrame | None)
-    def get_costmap_frame(
-        campaign_id: str, config_name: str, run_id: int, topic: str, t: float,
-    ) -> CostmapFrame | None:
-        return _guard(lambda: impl.get_costmap_frame(
-            campaign_id, config_name, run_id, topic, t))
+    # Path-style (not query params) so browser resources that fetch siblings by
+    # *relative* URL (scene.json -> scene.bin / tex_0.png) resolve within the run dir.
+    @app.get("/campaigns/{campaign_id}/run-files/{config_name}/{run_id}/{path:path}")
+    def get_run_file(campaign_id: str, config_name: str, run_id: int, path: str):
+        """One run artifact file (e.g. the scene3d panel's ``scene/scene.json``)."""
+        import mimetypes  # pylint: disable=import-outside-toplevel
+
+        from fastapi.responses import \
+            Response  # pylint: disable=import-outside-toplevel
+
+        data = _guard(lambda: impl.get_run_file(campaign_id, config_name, run_id, path))
+        media_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
+        return Response(content=data, media_type=media_type)
 
     @app.get("/campaigns/{campaign_id}/visualizations",
              response_model=CampaignVisualizationsResponse)
@@ -366,15 +394,41 @@ def build_app(impl: RobovastInterface):
         html = _guard(_render)
         return HTMLResponse(content=html)
 
+    # -- package-provided run-data endpoints --------------------------------
+    # Installed ``robovast.service_endpoints`` plugins each get a route
+    # ``GET /campaigns/{id}/<name>?config_name&run_id&…`` → JSON, dispatched to the plugin
+    # handler with a RunDataContext. Registered after the core routes and before the SPA
+    # catch-all mount. Cluster-transparent: dispatch resolves the campaign dir via
+    # ``impl.resolve_data_dir`` (ClusterService fetches from the object store).
+    from robovast.service.endpoint_plugin import (  # pylint: disable=import-outside-toplevel
+        RunDataContext, load_service_endpoints)
+
+    def _make_endpoint_route(endpoint):
+        def route(campaign_id: str, request: Request):
+            ctx = RunDataContext(
+                campaign_id=campaign_id,
+                params=dict(request.query_params),
+                data_dir=str(impl.resolve_data_dir(campaign_id)))
+            return _guard(lambda: endpoint.handle(ctx))
+        return route
+
+    for _name, _endpoint in load_service_endpoints().items():
+        # ``_name`` may contain '/' (namespacing, e.g. "nav/costmap") → a nested path.
+        app.add_api_route(
+            f"/campaigns/{{campaign_id}}/{_name}",
+            _make_endpoint_route(_endpoint), methods=["GET"])
+
     _mount_ui(app)
     return app
 
 
-def _resolve_variation_asset(name: str, rel_path: str):
-    """Resolve a variation type's web-preview asset file, confined to its asset dir.
+def _resolve_plugin_asset(group: str, name: str, rel_path: str, asset_attr: str):
+    """Resolve a plugin's web asset file (Module Federation bundle), confined to the
+    asset dir the plugin class declares via *asset_attr* (relative to the class's module).
 
-    Raises ``KeyError`` (→ 404) for an unknown type / no ``WEB_PREVIEW`` / missing
-    file, ``ValueError`` (→ 400) if *rel_path* escapes the asset directory.
+    Shared by variation-type web previews (``WEB_PREVIEW``) and package-provided run-view
+    panels (``WEB_PANEL``). Raises ``KeyError`` (→ 404) for an unknown *name* / no asset
+    attr / missing file, ``ValueError`` (→ 400) if *rel_path* escapes the asset directory.
     """
     import inspect  # pylint: disable=import-outside-toplevel
     import os  # pylint: disable=import-outside-toplevel
@@ -382,13 +436,13 @@ def _resolve_variation_asset(name: str, rel_path: str):
         entry_points  # pylint: disable=import-outside-toplevel
     from pathlib import Path  # pylint: disable=import-outside-toplevel
 
-    cls = next((ep.load() for ep in entry_points(group="robovast.variation_types")
+    cls = next((ep.load() for ep in entry_points(group=group)
                 if ep.name == name), None)
     if cls is None:
-        raise KeyError(f"unknown variation type {name!r}")
-    asset_rel = getattr(cls, "WEB_PREVIEW", None)
+        raise KeyError(f"unknown {group} entry {name!r}")
+    asset_rel = getattr(cls, asset_attr, None)
     if not asset_rel:
-        raise KeyError(f"variation type {name!r} has no web preview")
+        raise KeyError(f"{group} entry {name!r} has no {asset_attr}")
     asset_root = (Path(inspect.getfile(cls)).resolve().parent / asset_rel).resolve()
     target = (asset_root / rel_path).resolve()
     if target != asset_root and not str(target).startswith(str(asset_root) + os.sep):
@@ -396,6 +450,11 @@ def _resolve_variation_asset(name: str, rel_path: str):
     if not target.is_file():
         raise KeyError(f"asset not found: {rel_path}")
     return target
+
+
+def _resolve_variation_asset(name: str, rel_path: str):
+    """A variation type's web-preview asset (see :func:`_resolve_plugin_asset`)."""
+    return _resolve_plugin_asset("robovast.variation_types", name, rel_path, "WEB_PREVIEW")
 
 
 def _ui_dist() -> "Optional[Path]":

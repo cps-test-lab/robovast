@@ -448,6 +448,36 @@ def _collect_analysis_input_files(parameters, base_dir=None):
     # The search extract plugin itself may be a local file ref.
     _collect_ref(search_extract_plugin)
 
+    # Custom run-view panels ship a built Module-Federation bundle next to the .vast
+    # (``visualization.panels: - custom: {remote: <dir-or-remoteEntry.js>}``). Stage every
+    # file in each bundle dir so remoteEntry.js + its chunks land in _config/ and are served
+    # per campaign at runtime. Package panels (entry-point types) ship their own assets and
+    # are not collected here.
+    visualization = parameters.get('visualization')
+    panels = visualization.get('panels') if isinstance(visualization, dict) else None
+    if base_dir and panels:
+        for entry in panels:
+            if isinstance(entry, dict) and 'type' not in entry and len(entry) == 1:
+                (ptype, props), = entry.items()
+            elif isinstance(entry, dict):
+                ptype, props = entry.get('type'), entry
+            else:
+                continue
+            if ptype != 'custom' or not isinstance(props, dict):
+                continue
+            remote = props.get('remote')
+            if not isinstance(remote, str) or os.path.isabs(remote):
+                continue
+            bundle_dir = os.path.dirname(remote) if remote.endswith('.js') else remote
+            abs_bundle = os.path.join(base_dir, bundle_dir) if bundle_dir else base_dir
+            if not os.path.isdir(abs_bundle):
+                continue
+            for root, _dirs, files in os.walk(abs_bundle):
+                for fn in files:
+                    rel = os.path.relpath(os.path.join(root, fn), base_dir)
+                    if rel not in analysis_files:
+                        analysis_files.append(rel)
+
     # Collect files declared by class-based postprocessing plugins via
     # get_files_to_copy().  This is how e.g. the ``command`` plugin ensures
     # that the referenced script ends up in _config/ so it is available at

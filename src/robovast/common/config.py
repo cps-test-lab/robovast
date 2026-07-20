@@ -278,11 +278,23 @@ class EvaluationConfig(BaseModel):
     plots: Optional[list[PlotSpec]] = None
 
 
-#: Panel types the web run-view knows how to render. Kept here (rather than only in
-#: the UI) so the ``.vast`` fails fast on a typo instead of silently dropping a panel.
-KNOWN_PANEL_TYPES = frozenset({
-    "playback", "costmap", "scenario_tree", "scene", "timeseries", "state",
+#: Core built-in panel types bundled into the web UI itself (statically imported in
+#: ``ui/src/panels``). Kept here (rather than only in the UI) so the ``.vast`` fails fast
+#: on a typo instead of silently dropping a panel. Package-provided panels (e.g.
+#: ``robovast_nav``'s ``costmap``) register in the ``robovast.panel_types`` entry-point
+#: group and are accepted in addition to these (see ``PanelConfig._known_type``).
+BUILTIN_PANEL_TYPES = frozenset({
+    "playback", "scenario_tree", "scene", "scene3d", "timeseries", "state",
 })
+
+#: Entry-point group for package-provided run-view panels (loaded as Module-Federation
+#: remotes). Mirrors ``robovast.variation_types`` for variation-type web previews.
+PANEL_TYPES_GROUP = "robovast.panel_types"
+
+#: The panel type for a user-authored panel shipped as a built bundle next to the
+#: ``.vast`` (referenced by its ``remote``/``module`` fields rather than by a registered
+#: type name).
+CUSTOM_PANEL_TYPE = "custom"
 
 
 class PanelPosition(BaseModel):
@@ -303,7 +315,14 @@ class PanelPosition(BaseModel):
 class PanelConfig(BaseModel):
     """One panel of the web run-view. ``type`` selects the panel plugin; the panel's
     own data bindings (e.g. ``layers``/``source`` naming ``data.db`` tables) are carried
-    as extra keys (``extra='allow'``) and interpreted by that plugin."""
+    as extra keys (``extra='allow'``) and interpreted by that plugin.
+
+    ``type`` is one of the core built-ins (:data:`BUILTIN_PANEL_TYPES`), a package-provided
+    panel registered in the :data:`PANEL_TYPES_GROUP` entry-point group, or
+    :data:`CUSTOM_PANEL_TYPE` for a user-authored panel shipped as a built bundle next to
+    the ``.vast``. A ``custom`` panel names its bundle via ``remote`` (a path relative to
+    the ``.vast`` directory, to the bundle dir or its ``remoteEntry.js``) and ``module``
+    (the exposed Module-Federation module, default ``./panel``)."""
     model_config = ConfigDict(extra='allow')
     type: str
     title: Optional[str] = None
@@ -313,15 +332,53 @@ class PanelConfig(BaseModel):
     minimized: Optional[bool] = None
     hidden: Optional[bool] = None
     fixed: Optional[bool] = None
+    #: For ``type: custom`` -- path (relative to the ``.vast``) to the built panel bundle.
+    remote: Optional[str] = None
+    #: For ``type: custom`` -- the exposed Module-Federation module to render.
+    module: Optional[str] = None
+
+    @model_validator(mode='before')
+    @classmethod
+    def _flatten_shorthand(cls, v):
+        # The .vast authors panels in shorthand -- ``- playback:`` / ``- costmap: {...}`` (a
+        # single-key mapping keyed by the type) or a bare ``- playback`` string -- which the
+        # service flattens to ``{type, ...fields}`` for the UI (see list_campaign_panels).
+        # Accept the same shorthand here so validation matches what the runtime serves.
+        if isinstance(v, str):
+            return {'type': v}
+        if isinstance(v, dict) and 'type' not in v and len(v) == 1:
+            (ptype, props), = v.items()
+            if props is None or isinstance(props, dict):
+                return {'type': ptype, **(props or {})}
+        return v
 
     @field_validator('type')
     @classmethod
     def _known_type(cls, v):
-        if v not in KNOWN_PANEL_TYPES:
+        # Valid types: core built-ins + installed package panels (entry points) + ``custom``.
+        # Package types come from the entry-point group so validation matches what the runtime
+        # can actually serve; e.g. ``costmap`` is valid only when ``robovast_nav`` is installed.
+        from robovast.common.plugin_ref import \
+            list_ref_names  # pylint: disable=import-outside-toplevel
+        allowed = BUILTIN_PANEL_TYPES | list_ref_names(PANEL_TYPES_GROUP) | {CUSTOM_PANEL_TYPE}
+        if v not in allowed:
             raise ValueError(
-                f"unknown panel type {v!r}; expected one of "
-                f"{', '.join(sorted(KNOWN_PANEL_TYPES))}")
+                f"unknown panel type {v!r}; expected one of {', '.join(sorted(allowed))} "
+                f"(package panels require the providing plugin, e.g. 'robovast_nav', installed)")
         return v
+
+    @model_validator(mode='after')
+    def _custom_needs_remote(self):
+        # A ``custom`` panel is referenced by its bundle location, not a registered name.
+        if self.type == CUSTOM_PANEL_TYPE and not self.remote:
+            raise ValueError(
+                "a 'custom' panel must set 'remote' (path to its built bundle relative to "
+                "the .vast); 'module' is optional (default './panel')")
+        # ``remote``/``module`` only mean something for a custom panel.
+        if self.type != CUSTOM_PANEL_TYPE and (self.remote or self.module):
+            raise ValueError(
+                f"'remote'/'module' are only valid on a 'custom' panel, not {self.type!r}")
+        return self
 
 
 class TimelineConfig(BaseModel):

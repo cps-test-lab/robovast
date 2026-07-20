@@ -25,6 +25,7 @@ Handler types (specified via --config JSON):
   to_csv          Extract arbitrary ROS topics to CSV
   tf_to_csv       Extract TF transforms to CSV
   bt_to_csv       Extract behavior tree snapshots to CSV
+  nav2_bt_to_csv  Extract nav2 /behavior_tree_log status transitions to CSV
   action_to_csv   Extract ROS2 action feedback/status to CSV
   rosout_to_csv   Extract /rosout log messages to CSV
 
@@ -254,8 +255,17 @@ class TfToCsvHandler(RosbagHandler):
             return
         if not hasattr(msg, "transforms"):
             return
+        # Feed /tf_static as static so it is valid for all time (tf2's own contract): otherwise a
+        # latched transform like a static map->odom is stored at its single publish stamp, and any
+        # later lookup_transform through it (e.g. map->base_link at a dynamic odom->base_link stamp)
+        # raises ExtrapolationException and silently drops every sample. Setups whose whole chain is
+        # dynamic (e.g. AMCL publishing map->odom on /tf) were unaffected; a static map->odom is.
+        is_static = topic == "/tf_static"
         for transform in msg.transforms:
-            self._tf_buffer.set_transform(transform, "default_authority")
+            if is_static:
+                self._tf_buffer.set_transform_static(transform, "default_authority")
+            else:
+                self._tf_buffer.set_transform(transform, "default_authority")
             self._found_tfs.add(
                 f"{transform.header.frame_id} -> {transform.child_frame_id}"
             )
@@ -396,6 +406,81 @@ class BtToCsvHandler(RosbagHandler):
     @classmethod
     def from_config(cls, config: dict) -> "BtToCsvHandler":
         return cls(csv_filename=config.get("csv_filename", "behaviors.csv"))
+
+
+# ---------------------------------------------------------------------------
+# Nav2BtLogToCsvHandler
+# ---------------------------------------------------------------------------
+
+class Nav2BtLogToCsvHandler(RosbagHandler):
+    """Extract nav2's behavior-tree status transitions to CSV (one file per bag).
+
+    nav2's ``bt_navigator`` publishes ``/behavior_tree_log``
+    (``nav2_msgs/msg/BehaviorTreeLog``): each message carries a ``timestamp`` and a
+    repeated ``event_log[]`` of status changes ``{timestamp, node_name,
+    previous_status, current_status}``. We explode that array to one CSV row per
+    transition — the generic ``to_csv`` handler can't: it writes one row per published
+    message and smears the variable-length ``event_log`` across indexed columns, which
+    is the wrong grain for a per-node, per-time status timeline.
+
+    The log is topology-free (transitions keyed by ``node_name`` only); tree structure is
+    reconstructed downstream from the BT XML (see robovast_nav's ``Nav2BtTree``), which
+    joins against this table's ``node_name`` column.
+    """
+
+    _BT_LOG_TOPIC = "/behavior_tree_log"
+    _FIELDNAMES = ["timestamp", "node_name", "previous_status", "current_status"]
+
+    def __init__(self, csv_filename: str = "nav2_behavior_tree.csv") -> None:
+        self._csv_filename = csv_filename
+        self._csvfile = None
+        self._writer = None
+        self._record_count: int = 0
+        self._output_file: str = ""
+
+    def topics(self) -> List[str]:
+        return [self._BT_LOG_TOPIC]
+
+    def on_begin(self, bag_path: str, topic_type_map: Dict[str, str]) -> None:
+        self._csvfile = None
+        self._writer = None
+        self._record_count = 0
+        self._output_file = os.path.join(self._out_dir(bag_path), self._csv_filename)
+
+    def on_message(self, topic: str, msg: Any, timestamp: int) -> None:
+        if topic != self._BT_LOG_TOPIC:
+            return
+        for event in msg.event_log:
+            # Prefer the event's own timestamp; fall back to the bag receive time.
+            event_stamp = getattr(event, "timestamp", None)
+            if event_stamp is not None and (event_stamp.sec or event_stamp.nanosec):
+                ts = event_stamp.sec + event_stamp.nanosec / 1_000_000_000.0
+            else:
+                ts = timestamp / 1_000_000_000.0
+            if self._csvfile is None:
+                self._csvfile = open(self._output_file, "w", newline="")
+                self._writer = csv.DictWriter(self._csvfile, fieldnames=self._FIELDNAMES)
+                self._writer.writeheader()
+            self._writer.writerow({
+                "timestamp": ts,
+                "node_name": event.node_name,
+                "previous_status": str(event.previous_status).upper(),
+                "current_status": str(event.current_status).upper(),
+            })
+            self._record_count += 1
+
+    def on_end(self) -> Tuple[int, List[str]]:
+        if self._csvfile is not None:
+            self._csvfile.close()
+        if self._record_count > 0:
+            print(f"  ✓ {self._output_file}: {self._record_count} BT status transitions")
+            return self._record_count, [self._output_file]
+        print(f"  ✗ {self._output_file}: no /behavior_tree_log records found")
+        return 0, []
+
+    @classmethod
+    def from_config(cls, config: dict) -> "Nav2BtLogToCsvHandler":
+        return cls(csv_filename=config.get("csv_filename", "nav2_behavior_tree.csv"))
 
 
 # ---------------------------------------------------------------------------
@@ -776,6 +861,7 @@ HANDLER_REGISTRY: Dict[str, type] = {
     "to_csv":         ToCsvHandler,
     "tf_to_csv":      TfToCsvHandler,
     "bt_to_csv":      BtToCsvHandler,
+    "nav2_bt_to_csv": Nav2BtLogToCsvHandler,
     "action_to_csv":  ActionToCsvHandler,
     "rosout_to_csv":  RosoutToCsvHandler,
     "costmap_to_csv": CostmapToCsvHandler,

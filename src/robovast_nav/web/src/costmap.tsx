@@ -1,18 +1,17 @@
 // CostmapPanel: an rviz-style top-down view of what nav2 saw during a run -- the static map, the global
 // and local costmaps, the actual path the robot drove, and the robot marker -- all at the current
-// playback time. It reuses the ported, dependency-free grid/geometry helpers from lib/nav and the
-// canvas-draw approach from robosito's nav-map, but sources data from the postprocessed run instead of
-// live rosbridge:
-//   * costmap grids   -> data.costmapFrame(topic, t) (nearest frame; zlib payload inflated in-browser)
+// playback time. Sources data from the postprocessed run via the injected DataProvider:
+//   * costmap grids   -> data.fetchRun('costmap', {topic, t}) (nearest frame; zlib payload inflated in-browser)
 //   * frame -> map TF  -> the `poses` table (each recorded frame's pose is already in the map frame)
 //   * driven path      -> the base_link trail from `poses` up to the current time
 //
-// The high-rate clock drives an imperative redraw (no React re-render); grid frames are re-fetched on a
-// throttle as time moves. Report-if-missing: if the costmaps endpoint has no data the panel says so.
+// This is the first package-provided run-view panel: it ships with robovast_nav (not the core UI) as a
+// Module-Federation remote, because it is the only panel that needs nav2 costmap grids + the occupancy-
+// grid helpers. It implements the host's PanelProps contract, so it is time-synced and queries the run's
+// data.db exactly like a built-in panel. Relocated verbatim from ui/src/panels/CostmapPanel.tsx, with
+// `data.costmapFrame(...)` replaced by the generic `data.fetchRun('costmap', ...)` seam.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import Box from '@mui/material/Box'
-import Alert from '@mui/material/Alert'
 import {
   costmapColor,
   decodeGrid,
@@ -22,11 +21,22 @@ import {
   mapColor,
   type OccupancyGrid,
   type Planar,
-} from '@/lib/nav/occupancyGrid'
-import { registerPanel } from '@/lib/dashboard/registry'
-import type { PanelProps } from '@/lib/dashboard/types'
-import type { DataProvider } from '@/lib/dashboard/dataProvider'
-import type { CostmapFrame } from '@/lib/robovastClient'
+} from './occupancyGrid'
+import type { DataProvider, PanelProps } from './contract'
+
+// One nav2 OccupancyGrid frame (nearest a requested time), from the service's /costmap endpoint.
+// `data` is zlib-compressed, base64-encoded int8 cells (row-major, -1..100).
+interface CostmapFrame {
+  t: number
+  frame_id: string
+  resolution: number
+  width: number
+  height: number
+  origin_x: number
+  origin_y: number
+  origin_yaw: number
+  data: string
+}
 
 // The global costmap covers the whole map, so keep it faint enough that the static map shows
 // through; the local costmap is a small window drawn on top and stays clearly visible/opaque.
@@ -137,7 +147,7 @@ function poseAt(poses: Pose[] | undefined, t: number): Pose | null {
   return best
 }
 
-function CostmapPanel({ spec, clock, data }: PanelProps) {
+export default function CostmapPanel({ spec, clock, data }: PanelProps) {
   const { layers, posesTable } = useMemo(() => parseLayers(spec.config), [spec.config])
   const robotFrame = (spec.config.robot_frame as string) ?? 'base_link'
 
@@ -265,7 +275,7 @@ function CostmapPanel({ spec, clock, data }: PanelProps) {
       fetchingRef.current = true
       try {
         for (const rt of layersRef.current) {
-          const frame = await data.costmapFrame(rt.cfg.topic, t)
+          const frame = await data.fetchRun<CostmapFrame | null>('costmap', { topic: rt.cfg.topic, t })
           if (!frame) continue
           const grid = frameToGrid(frame)
           const cells = await inflateCells(frame.data)
@@ -410,33 +420,35 @@ function CostmapPanel({ spec, clock, data }: PanelProps) {
 
   if (layers.length === 0)
     return (
-      <Alert severity="info" sx={{ m: 1 }}>
+      <div style={{ padding: 12, fontSize: 13, color: '#9aa4b2' }}>
         No costmap layers configured. Add a <code>layers</code> map (each with a <code>topic</code>) to
         this panel in the vast <code>visualization.panels</code>.
-      </Alert>
+      </div>
     )
 
   return (
-    <Box ref={containerRef} sx={{ position: 'relative', width: '100%', height: '100%', bgcolor: '#12171f' }}>
+    <div
+      ref={containerRef}
+      style={{ position: 'relative', width: '100%', height: '100%', background: '#12171f' }}
+    >
       <canvas ref={canvasRef} style={{ display: 'block', cursor: 'grab' }} />
       {error ? (
-        <Alert severity="warning" sx={{ position: 'absolute', bottom: 8, left: 8, right: 8, py: 0 }}>
+        <div
+          style={{
+            position: 'absolute',
+            bottom: 8,
+            left: 8,
+            right: 8,
+            padding: '4px 8px',
+            fontSize: 12,
+            color: '#fff',
+            background: 'rgba(180,83,9,0.9)',
+            borderRadius: 4,
+          }}
+        >
           {error}
-        </Alert>
+        </div>
       ) : null}
-    </Box>
+    </div>
   )
 }
-
-registerPanel({
-  manifest: {
-    type: 'costmap',
-    label: 'Costmaps',
-    defaultPosition: { anchor: 'top-right', width: 420, height: 420 },
-    resizable: true,
-    minimizable: true,
-  },
-  component: CostmapPanel,
-})
-
-export default CostmapPanel

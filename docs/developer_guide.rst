@@ -1215,6 +1215,118 @@ results identically, local or cluster. User-declared plots (``evaluation.plots``
 :class:`robovast.common.config.PlotSpec`) are surfaced by ``list_campaign_plots`` and rendered by
 the same Vega-Lite component.
 
+**Run view panel framework** (``ui/src/lib/dashboard/``) — the Run view (user guide:
+:ref:`web_ui`) is a small plugin framework with three deliberate seams, all designed so a
+future **live view** (watching a running system instead of replaying a rosbag) slots in
+without touching any panel:
+
+* **Panels** are plugins with **two delivery mechanisms behind one contract**. A
+  ``PanelPlugin`` = manifest (type name + layout defaults) + React component implementing
+  ``PanelProps`` (``{spec, clock, data}``). *Core built-in* panels self-register via
+  ``registerPanel`` (``registry.ts``) by importing ``ui/src/panels/index.ts``. *Remote*
+  panels — package-provided or user-authored — are loaded at runtime as Module-Federation
+  remotes (see below) and never touch the static registry. The ``.vast``'s
+  ``visualization.panels`` specs are normalized by ``parseVastPanels.ts`` (single-key
+  shorthand → ``{type, ...fields}``; the same shorthand is accepted by the Pydantic schema,
+  see ``PanelConfig._flatten_shorthand``). Valid ``type`` values are the core built-ins
+  (``BUILTIN_PANEL_TYPES``) ∪ installed ``robovast.panel_types`` entry-point names ∪
+  ``custom`` — validated in ``PanelConfig._known_type`` in :mod:`robovast.common.config`
+  (so a package panel is valid only when its plugin is installed). Adding a core built-in
+  is still one file + one ``BUILTIN_PANEL_TYPES`` entry.
+* **Data** comes only through ``DataProvider`` (``dataProvider.ts``): rows by table+time,
+  nearest-sample lookups, a **generic run-scoped** ``fetchRun(endpoint, params)`` (GET a
+  campaign endpoint with ``config_name``+``run_id`` applied — how a panel reaches a
+  specialized endpoint without the generic seam knowing about it, e.g. the costmap panel's
+  nav grids), and ``runFileUrl`` for per-run artifact files — today implemented over the
+  read-only data-query endpoints (``dbDataProvider``); a live implementation would wrap a
+  rosbridge buffer. ``timeSeries.ts`` wraps one table as a time-indexed ``TimeSeriesSource``
+  (``at(t)``/``upTo(t)``).
+* **Time** comes only from the shared ``PlaybackClock`` (``clock.ts``), an external store
+  (not React state) so display-rate updates don't re-render the tree; canvas panels
+  subscribe imperatively via ``useCanvasClock``.
+
+**Package-provided & user-authored panels (Module Federation).** A remote panel is loaded
+at runtime by exactly the seam the variation-preview path uses (above) — the two now share
+their machinery. Server side, ``_resolve_plugin_asset(group, name, rel, asset_attr)`` (in
+``service/app.py``) and ``_plugin_remotes(group, asset_attr, url_builder, module_attr)`` (in
+``service/client.py``) are the generalized forms of the old variation-only helpers;
+``_variation_remotes`` and ``_panel_remotes`` are thin wrappers. A **package panel** is a
+class in the ``robovast.panel_types`` entry-point group declaring ``WEB_PANEL`` (its built
+bundle dir, shipped as package data) + ``PANEL_MODULE``; the service serves it at
+``GET /panel_types/{name}/assets/{path}`` and ``list_campaign_panels`` attaches its ``remote``
+descriptor. A **user-authored** ``custom`` panel names a bundle path relative to the ``.vast``;
+``_collect_analysis_input_files`` stages the bundle into the campaign's ``_config/`` and it is
+served at ``GET /campaigns/{id}/panel_assets/{path}`` (``resolve_campaign_panel_asset``,
+path-confined). Both descriptors are ``{name, remote_entry_url, module}``; on the client,
+``useRemoteComponent`` (``ui/src/lib/remote.ts``, factored out of ``RemotePreview.tsx``) loads
+the module — seeding the host's React singletons — and ``PanelHost`` mounts it with the full
+``PanelProps``. **Reference example:** the ``costmap`` panel, relocated out of the core UI into
+``robovast_nav`` — Python descriptor in ``robovast_nav/panels.py``, build sources in
+:repo_link:`src/robovast_nav/web` (a ``@module-federation/vite`` remote exposing ``./costmap``,
+built into ``robovast_nav/web/dist``). It is the first real remote, and validates the (formerly
+untested) variation-preview loading path too. Its **data endpoint** is likewise package-provided —
+see *Package-provided service data endpoints* below — so both halves of the costmap panel live in
+``robovast_nav``.
+
+A panel type may also declare an optional ``REMOTE_NAME`` — the Module-Federation *container*
+name, defaulting to the entry-point name (one container per type). Panels that share a single
+built bundle set the same ``REMOTE_NAME`` so ``_plugin_remotes`` emits that shared name while each
+type keeps its own asset URL (``/panel_types/<name>/assets/...`` all resolve to the one bundle).
+``robovast_nav`` uses this to host ``costmap`` and ``nav2_behavior_tree`` in one ``robovast_nav``
+container (see ``robovast_nav/web/vite.config.ts``), sharing React/vendor chunks.
+
+**Nav2 behavior tree (a second reference panel).** The ``nav2_behavior_tree`` panel shows nav2's
+*internal* behavior tree, live-coloured by node status. nav2's ``/behavior_tree_log`` is the only
+generic, always-on source of BT state, but it is **topology-free** — a flat stream of status
+transitions keyed by ``node_name``. So the feature splits across the two extension seams the same
+way costmap does: the core rosbag handler ``nav2_bt_to_csv`` (``rosbags_process.py``; core because
+``HANDLER_REGISTRY`` isn't plugin-extensible and it needs the in-container ``rosbags_process`` step)
+writes the raw ``nav2_behavior_tree`` transitions table, and ``robovast_nav``'s ``nav2_bt_tree``
+postprocessing plugin (a ``robovast.postprocessing_commands`` entry point) reconstructs structure
+from the BT **XML** nav2 ran and joins it into a ``nav2_behaviors`` table. That table uses the
+**same schema as scenario_execution's** ``behaviors`` table, which is the point: the panel is the
+built-in ``scenario_tree`` rendering re-implemented as a remote, and *any* tree expressible as
+``(behavior_id, parent_id, name, status, class)`` rows reuses it via ``source: { table }`` — no
+bespoke data path. Because the data is plain table rows, this panel needs **no** service endpoint
+(unlike costmap's binary grids); it reads ``nav2_behaviors`` through the generic ``data.series``.
+
+**Package-provided service data endpoints** (``robovast.service_endpoints``,
+:mod:`robovast.service.endpoint_plugin`) — an installed package contributes a run-scoped data
+endpoint served at ``GET /campaigns/{id}/<name>?config_name=…&run_id=…&…`` → JSON, with **no core
+edit and no frontend change** (the run view already reaches any such endpoint via
+``data.fetchRun(name, params)``, ``ui/src/lib/dashboard/dataProvider.ts``). This closes the last
+core-coupling for a self-contained analysis package: it ships a **postprocessing** plugin (writes a
+``data.db`` table), a **service endpoint** (serves it), and a **panel** (renders it) — all via entry
+points. The mechanism mirrors the MCP-plugin loader: a ``ServiceEndpoint`` ``Protocol``
+(``name`` + ``handle(ctx)``) and ``load_service_endpoints()``; ``build_app`` registers one route per
+plugin (before the SPA mount) and dispatches to ``handle`` with a **``RunDataContext``** facade —
+``ctx.open_db()`` (read-only sqlite over ``data.db``, from the public ``data_query.open_data_db``),
+``ctx.run_dir(config, run)``, ``ctx.params``. Handlers raise ``KeyError``/``ValueError``/
+``DataQueryError`` → 404/400 via the shared ``_guard``. **Cluster-transparent** because dispatch
+resolves the campaign dir through the public ``impl.resolve_data_dir(campaign_id)`` seam, which
+``ClusterService`` overrides to fetch from the object store — so a plugin endpoint works on both
+deployments unchanged. Endpoint names should be **package-namespaced** (``nav/foo``) to avoid
+collisions; core route names are reserved (``RESERVED_CAMPAIGN_ENDPOINTS``). **Scope:** run-scoped
+GET→JSON only — *binary/large per-run artifacts* already have the generic
+``GET /campaigns/{id}/run-files/{config}/{run}/{path}`` endpoint (``DataProvider.runFileUrl``), and
+*producing* data is a postprocessing plugin's job. **Reference:** ``robovast_nav``'s
+``CostmapEndpoint`` (``robovast_nav/service_endpoints.py``), relocated verbatim from core's old
+``read_costmap_frame`` — it reads the ``costmaps`` table via ``ctx.open_db()`` and returns the frame
+dict the costmap panel decodes.
+
+**3D scene viewer core** (``ui/src/lib/scene3d/``) — renders sim-suite's browser scene
+descriptor (``scene.json``/``scene.bin``; exporter: ``sim_suite/export_web.py``, per-run
+export: the ``MujocoSim`` adapter's ``SIM_SUITE_SCENE_EXPORT_DIR`` hook). ``sceneLoader.ts``
+builds a three.js ``Group`` and returns an imperative animation API (``jointMap`` /
+``basePose``); ``viewport.ts`` is a plain-three viewport (renderer/camera/lights/grid/orbit
+controls + the Z-up wrapper). **Extractability rule: files in this directory import only
+``three`` — never ``@/…``** (see its README) — it is shared-candidate code, so all
+robovast-specific wiring lives in the consumer, ``ui/src/panels/Scene3DPanel.tsx``, which
+binds the vast spec, fetches the descriptor via ``DataProvider.runFileUrl`` (the
+``GET /campaigns/{id}/run-files/{config}/{run}/{path}`` endpoint — path-style so the
+loader's *relative* sibling fetches, ``scene.bin``/textures, stay in the run dir), and
+drives ``basePose`` from the clock.
+
 Deferred: web notebook execution (a server-side kernel; the desktop ``vast eval gui`` keeps that
 role) and a bundle code-split (Monaco + Plotly + Vega + Module Federation make the SPA large).
 

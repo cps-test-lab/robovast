@@ -97,3 +97,16 @@ def load_ref(ref: str, group: str, base_dir: str = "") -> Any:
     if is_file_ref(ref):
         return _load_from_file(ref, base_dir)
     return _load_from_entry_point(ref, group)
+
+
+def list_ref_names(group: str) -> set:
+    """Names of every plugin registered in entry-point ``group``.
+
+    Best-effort: returns an empty set (rather than raising) if entry points can't
+    be read, so callers can union it with a static built-in set for validation.
+    """
+    try:
+        return {ep.name for ep in entry_points().select(group=group)}
+    except Exception:  # noqa: BLE001 - enumeration must never break validation
+        logger.debug("could not enumerate entry-point group %r", group)
+        return set()

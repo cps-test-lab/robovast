@@ -1,11 +1,16 @@
 [tool.poetry]
 name = "robovast-nav"
-version = "1.0.0"
+version = "2.0.0"
 description = "Navigation-specific variation types for RoboVAST"
 authors = ["Frederik Pasch <fred-labs@mailbox.org>"]
 license = "Apache-2.0"
 readme = "README.md"
 packages = [{include = "robovast_nav"}]
+# The costmap run-view panel ships as a built Module-Federation remote (see web/), served by the
+# robovast service from this package data. Built by `npm --prefix web install && npm --prefix web run
+# build` into robovast_nav/web/dist. The web/ build sources are excluded from the distribution.
+include = [{path = "robovast_nav/web/dist/**/*", format = ["sdist", "wheel"]}]
+exclude = ["web"]
 
 [tool.poetry.dependencies]
 python = ">=3.12,<3.14"
@@ -25,6 +30,16 @@ opencv-python-headless = ">=4.8"
 "PathVariationRasterized" = "robovast_nav.variation.path_variation:PathVariationRasterized"
 "ObstacleVariation" = "robovast_nav.variation.obstacle_variation:ObstacleVariation"
 "ObstacleVariationWithDistanceTrigger" = "robovast_nav.variation.obstacle_variation_with_distance_trigger:ObstacleVariationWithDistanceTrigger"
+
+[tool.poetry.plugins."robovast.panel_types"]
+costmap = "robovast_nav.panels:CostmapPanelType"
+nav2_behavior_tree = "robovast_nav.panels:Nav2BehaviorTreePanelType"
+
+[tool.poetry.plugins."robovast.service_endpoints"]
+costmap = "robovast_nav.service_endpoints:CostmapEndpoint"
+
+[tool.poetry.plugins."robovast.postprocessing_commands"]
+nav2_bt_tree = "robovast_nav.postprocessing:Nav2BtTree"
 
 [tool.poetry.plugins."robovast.mcp_plugins"]
 nav = "robovast_nav.mcp_plugin:NavMCPPlugin"

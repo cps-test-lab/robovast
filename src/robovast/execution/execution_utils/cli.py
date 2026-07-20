@@ -509,7 +509,8 @@ def _monitor_via_service(namespace, kube_context, interval, once):
             counts = client.list_jobs(campaign_id).counts
         except Exception:  # pylint: disable=broad-except
             return {}
-        return {"running": counts.running, "pending": counts.pending}
+        return {"running": counts.running, "pending": counts.pending,
+                "blocked": counts.blocked}
 
     def _campaign_lines(status):
         c = _live_counts(status.get("campaign_id"))
@@ -532,6 +533,10 @@ def _monitor_via_service(namespace, kube_context, interval, once):
         run_line = f"  Runs (this batch): [{bar_str}] {pct:5.1f}%  {completed}/{total}"
         if c:
             run_line += f"   Running: {c.get('running', 0)}  Pending: {c.get('pending', 0)}"
+            if c.get("blocked"):
+                # Jobs that cannot start (e.g. ImagePullBackOff). The reason rides on
+                # each job's detail; the campaign fails with it after a grace window.
+                run_line += f"  Blocked: {c['blocked']}"
         lines.append(run_line)
         up = (status.get("extra") or {}).get("upload")
         if status.get("phase") == "uploading" and up:

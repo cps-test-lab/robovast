@@ -144,6 +144,9 @@ export interface JobSummary {
   job_name: string
   status: string // running | pending | completed | failed
   display_name?: string | null
+  // Why a job is in its state when there's something to say — currently the Kubernetes
+  // reason + message for a job that cannot start (e.g. ImagePullBackOff). null if healthy.
+  detail?: string | null
 }
 
 export interface JobCounts {
@@ -151,6 +154,9 @@ export interface JobCounts {
   pending: number
   completed: number
   failed: number
+  // Jobs that cannot start and won't recover on their own (e.g. ImagePullBackOff);
+  // distinct from failed — Kubernetes still counts them active. See JobSummary.detail.
+  blocked: number
   total: number
 }
 
@@ -318,21 +324,6 @@ export interface CampaignVisualization {
 export interface CampaignVisualizationsResponse {
   campaign_id: string
   workloads: CampaignVisualization[]
-}
-
-// One nav2 OccupancyGrid frame for the costmap panel (nearest a requested time), delivered
-// untruncated. `data` is zlib-compressed, base64-encoded int8 cells (row-major, -1..100). The map
-// spans width*resolution by height*resolution meters; origin_* is cell (0,0)'s corner pose in frame_id.
-export interface CostmapFrame {
-  t: number
-  frame_id: string
-  resolution: number
-  width: number
-  height: number
-  origin_x: number
-  origin_y: number
-  origin_yaw: number
-  data: string
 }
 
 // -- transport --------------------------------------------------------------
@@ -550,21 +541,23 @@ export const robovast = {
     return res.text()
   },
 
-  // Nearest costmap frame for one run's layer (topic) at time t. Returns null when the run/topic has
-  // no frame (204). The panel decodes `data` (inflate → Int8Array) and draws it.
-  costmapFrame: (
+  // GET a run-scoped JSON endpoint under a campaign, with `config_name`+`run_id` and the given
+  // params applied. Generic seam for panels (incl. external ones) that need a specialized endpoint
+  // the generic DataProvider doesn't model -- e.g. robovast_nav's costmap panel hits `costmap`.
+  runEndpoint: <T>(
     campaignId: string,
     configName: string,
     runId: number | string,
-    topic: string,
-    t: number,
-  ) =>
-    request<CostmapFrame | null>(
+    endpoint: string,
+    params: Record<string, string | number> = {},
+  ) => {
+    const qs = new URLSearchParams({ config_name: configName, run_id: String(runId) })
+    for (const [k, v] of Object.entries(params)) qs.set(k, String(v))
+    return request<T>(
       'GET',
-      `/campaigns/${encodeURIComponent(campaignId)}/costmap?config_name=${encodeURIComponent(
-        configName,
-      )}&run_id=${encodeURIComponent(String(runId))}&topic=${encodeURIComponent(topic)}&t=${t}`,
-    ),
+      `/campaigns/${encodeURIComponent(campaignId)}/${endpoint}?${qs.toString()}`,
+    )
+  },
 
   runPostprocessing: (campaignId: string, force = false) =>
     request<ActionResult>(
@@ -572,4 +565,15 @@ export const robovast = {
       `/campaigns/${encodeURIComponent(campaignId)}/postprocessing/run`,
       { campaign_id: campaignId, force, skip: [] },
     ),
+
+  // URL of one run artifact file (fetched directly, e.g. by the scene3d loader). Path-style so a
+  // resource that fetches siblings by *relative* URL (scene.json -> scene.bin) stays in the run dir;
+  // the path's own '/' separators are therefore NOT encoded.
+  runFileUrl: (campaignId: string, configName: string, runId: number | string, path: string) =>
+    `${BASE}/campaigns/${encodeURIComponent(campaignId)}/run-files/${encodeURIComponent(
+      configName,
+    )}/${encodeURIComponent(String(runId))}/${path
+      .split('/')
+      .map(encodeURIComponent)
+      .join('/')}`,
 }

@@ -6,6 +6,7 @@
 import type { ComponentType } from 'react'
 import type { PlaybackClock } from './clock'
 import type { DataProvider } from './dataProvider'
+import type { RemoteDescriptor } from '@/lib/remote'
 
 export type Anchor =
   | 'bottom'
@@ -38,6 +39,10 @@ export interface PanelSpec {
   frameless: boolean
   hidden: boolean
   fixed: boolean
+  /** When set, this panel is loaded at runtime as a Module-Federation remote (a package-provided
+   *  panel like robovast_nav's `costmap`, or a user-authored `custom` panel) rather than from the
+   *  built-in registry. The service attaches this descriptor in GET /campaigns/{id}/panels. */
+  remote?: RemoteDescriptor
   config: Record<string, unknown>
 }
 
