@@ -440,10 +440,13 @@ class CampaignPanelsResponse(BaseModel):
     """The run-view panels declared for a campaign (its snapshot ``.vast``
     top-level ``visualization.panels``). Each entry is the raw panel dict
     (``type`` + ``position`` + panel-specific data bindings), rendered by the
-    web run-view against the campaign's ``data.db``."""
+    web run-view against the campaign's ``data.db``. ``timeline`` (optional,
+    ``visualization.timeline``) names the table + column that defines the
+    playback range for non-ROS runs."""
 
     campaign_id: str
     panels: list[dict] = Field(default_factory=list)
+    timeline: Optional[dict] = None
 
 
 class CostmapFrame(BaseModel):

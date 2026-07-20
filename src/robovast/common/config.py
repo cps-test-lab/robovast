@@ -280,7 +280,9 @@ class EvaluationConfig(BaseModel):
 
 #: Panel types the web run-view knows how to render. Kept here (rather than only in
 #: the UI) so the ``.vast`` fails fast on a typo instead of silently dropping a panel.
-KNOWN_PANEL_TYPES = frozenset({"playback", "costmap", "scenario_tree"})
+KNOWN_PANEL_TYPES = frozenset({
+    "playback", "costmap", "scenario_tree", "scene", "timeseries", "state",
+})
 
 
 class PanelPosition(BaseModel):
@@ -322,11 +324,22 @@ class PanelConfig(BaseModel):
         return v
 
 
+class TimelineConfig(BaseModel):
+    """Which ``data.db`` table + column defines the run's playback timeline. Set this
+    for non-ROS runs whose time lives in a table other than the nav defaults (e.g. a
+    sim's ``trajectory`` table with a ``t`` column); when omitted the UI derives the
+    range from the standard ``poses``/``behaviors``/``scenario_timestamps`` tables."""
+    model_config = ConfigDict(extra='forbid')
+    table: str
+    time_column: str = 'timestamp'
+
+
 class VisualizationConfig(BaseModel):
     """The web run-view: an ordered list of panels for replaying a single run of a
-    postprocessed campaign over its rosbag timeline. Rendered by the UI from the
-    campaign's snapshot ``.vast``; each panel reads existing ``data.db`` tables."""
+    postprocessed campaign over its timeline. Rendered by the UI from the campaign's
+    snapshot ``.vast``; each panel reads existing ``data.db`` tables."""
     model_config = ConfigDict(extra='forbid')
+    timeline: Optional[TimelineConfig] = None
     panels: Optional[list[PanelConfig]] = Field(default_factory=list)
 
     @field_validator('panels', mode='before')

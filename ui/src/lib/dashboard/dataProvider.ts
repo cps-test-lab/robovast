@@ -17,6 +17,9 @@ export interface SeriesOptions {
   t1?: number
   columns?: string[] // defaults to '*'
   maxRows?: number
+  // Equality filters (col = value) ANDed onto the run scope -- isolate one series from a
+  // multi-keyed table (e.g. poses keyed by `frame`, costmaps by `topic`).
+  match?: Record<string, string | number>
 }
 
 export interface DataProvider {
@@ -80,6 +83,9 @@ export function dbDataProvider(
       const clauses = [where]
       if (opts.t0 != null) clauses.push(`CAST("${timeCol}" AS REAL) >= ${opts.t0}`)
       if (opts.t1 != null) clauses.push(`CAST("${timeCol}" AS REAL) <= ${opts.t1}`)
+      for (const [col, val] of Object.entries(opts.match ?? {})) {
+        clauses.push(`"${col}" = ${typeof val === 'number' ? val : sqlStr(String(val))}`)
+      }
       const sql =
         `SELECT ${cols(opts.columns)} FROM "${table}" WHERE ${clauses.join(' AND ')} ` +
         `ORDER BY CAST("${timeCol}" AS REAL)`

@@ -45,3 +45,34 @@ evaluation:
       run: analysis/analysis_run.ipynb
       config: analysis/analysis_config.ipynb
       campaign: analysis/analysis_campaign.ipynb
+# Web run-view: replay one run over its own (non-ROS) timeline. The sim writes
+# trajectory.csv (t,x,z,vx,vz,tilt), which postprocessing loads into the `trajectory`
+# table; `timeline` points the playback clock at its `t` column. The same generic panels
+# that render nav runs render this one -- no source-specific code.
+visualization:
+  timeline: { table: trajectory, time_column: t }
+  panels:
+  - playback:
+  - scene:
+      title: Descent (x vs altitude)
+      position: { anchor: center, width: 460, height: 420 }
+      source: { table: trajectory, time_column: t }
+      x: x
+      y: z
+      trail: true
+  - timeseries:
+      title: Signals
+      position: { anchor: bottom-right, width: 480, height: 240 }
+      source: { table: trajectory, time_column: t }
+      series:
+      - { column: z, label: altitude }
+      - { column: tilt, label: tilt }
+      - { column: vz, label: descent vel }
+  - state:
+      title: Now
+      position: { anchor: top-left, width: 240 }
+      source: { table: trajectory, time_column: t }
+      fields:
+      - { column: z, label: height, unit: m }
+      - { column: tilt, label: tilt, unit: rad }
+      - { column: vz, label: descent, unit: m/s }

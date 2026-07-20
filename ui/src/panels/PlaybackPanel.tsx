@@ -37,6 +37,21 @@ function PlaybackPanel({ clock }: PanelProps) {
     clock.seekFraction((clientX - rect.left) / rect.width)
   }
 
+  // Press-and-drag scrubbing: seek on mouse-down, then follow the pointer until it's released.
+  // Listeners go on the window so the drag keeps tracking even when the cursor leaves the bar.
+  const startScrub = (e: React.MouseEvent) => {
+    if (span <= 0) return
+    e.preventDefault()
+    seekTo(e.clientX)
+    const onMove = (ev: MouseEvent) => seekTo(ev.clientX)
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
   const empty = span <= 0
 
   return (
@@ -56,7 +71,7 @@ function PlaybackPanel({ clock }: PanelProps) {
 
       <Box
         ref={barRef}
-        onMouseDown={(e) => seekTo(e.clientX)}
+        onMouseDown={startScrub}
         sx={{
           flexGrow: 1,
           height: 16,

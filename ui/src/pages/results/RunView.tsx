@@ -101,13 +101,19 @@ export function RunView({
   const clock = useMemo(() => new PlaybackClock(), [runKey])
   useEffect(() => () => clock.dispose(), [clock])
 
-  // Discover the timeline range from whichever time tables exist, and set it on the clock.
+  // Discover the timeline range and set it on the clock. Prefer the explicit
+  // `visualization.timeline` (for non-ROS runs, e.g. a sim's `trajectory` table with a `t`
+  // column); otherwise fall back to the union of the standard nav time tables.
+  // Depend on the timeline's fields (not the object identity, which churns on each panels refetch).
+  const tlTable = panels.data?.timeline?.table
+  const tlCol = panels.data?.timeline?.time_column
   useEffect(() => {
     if (!provider) return
     let alive = true
-    Promise.all(
-      TIME_TABLES.map((t) => provider.timeRange(t).catch(() => null)),
-    ).then((ranges) => {
+    const lookups: Promise<[number, number] | null>[] = tlTable
+      ? [provider.timeRange(tlTable, tlCol).catch(() => null)]
+      : TIME_TABLES.map((t) => provider.timeRange(t).catch(() => null))
+    Promise.all(lookups).then((ranges) => {
       if (!alive) return
       const valid = ranges.filter((r): r is [number, number] => !!r)
       if (!valid.length) return
@@ -118,7 +124,7 @@ export function RunView({
     return () => {
       alive = false
     }
-  }, [provider, clock])
+  }, [provider, clock, tlTable, tlCol])
 
   const specs = useMemo(
     () => (panels.data ? parseVastPanels(panels.data.panels) : []),

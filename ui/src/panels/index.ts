@@ -3,3 +3,6 @@
 import './PlaybackPanel'
 import './CostmapPanel'
 import './ScenarioTreePanel'
+import './ScenePanel'
+import './TimeSeriesPanel'
+import './StatePanel'

@@ -295,6 +295,8 @@ export interface CampaignPlotsResponse {
 export interface CampaignPanelsResponse {
   campaign_id: string
   panels: Record<string, unknown>[]
+  // Optional visualization.timeline: which table/column defines the run's playback range.
+  timeline?: { table: string; time_column?: string }
 }
 
 // The campaign's run-view `visualization:` block as editable YAML text. `source` names the

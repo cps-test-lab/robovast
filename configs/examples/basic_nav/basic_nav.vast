@@ -59,3 +59,15 @@ visualization:
         position: { anchor: left, width: 320 }
         minimizable: true
         source: { table: behaviors }
+    # The same generic timeseries panel the quadrotor example uses, here over a
+    # rosbag-derived table: the base_link pose from `poses` (filtered to that frame,
+    # since the table also holds odom/ground-truth frames).
+    - timeseries:
+        title: base_link pose
+        position: { anchor: bottom-right, width: 460, height: 220 }
+        minimizable: true
+        source: { table: poses, filter: { frame: base_link } }
+        series:
+        - { column: position.x, label: x }
+        - { column: position.y, label: y }
+        - { column: orientation.yaw, label: yaw }
