@@ -366,6 +366,17 @@ def serve(host, port, backend, attach, context, k8s_namespace, rebuild_ui,
                     "--context/--namespace.")
             impl = ClusterService(namespace=k8s_namespace, cluster_config_name=name,
                                   cluster_config_kwargs=kwargs, kube_context=context)
+            # Off-cluster the driver reaches the cluster's object store through a
+            # kubectl port-forward, which is fragile under the large per-file result
+            # transfers a big campaign produces. This mode is a dev convenience; the
+            # deployed in-cluster service reads the store directly (no tunnel).
+            click.secho(
+                "WARNING: running the cluster backend off-cluster — campaigns are "
+                "driven from this host through a kubectl port-forward to the cluster "
+                "object store, which is fragile under large result transfers. This "
+                "mode is a dev convenience; run large campaigns via the deployed "
+                "in-cluster robovast-service.",
+                fg="yellow")
         storage = "object store"
     else:
         from robovast.service.client import LocalTransport
@@ -542,6 +553,14 @@ def workspace_init(directory, name, excludes, cluster, namespace, context):
         ws = client.create_workspace(CreateWorkspaceRequest(name=requested))
         wid = ws.workspace_id
         if ws.name != requested:
+            # Server auto-suffixes a colliding name (foo → foo-2). Let the user
+            # accept the suggestion (default) or back out; on decline, drop the
+            # just-created workspace so nothing half-initialized is left behind.
+            if sys.stdin.isatty() and not click.confirm(
+                    f"name {requested!r} already exists — use {ws.name!r} instead?",
+                    default=True):
+                client.delete_workspace(wid)
+                raise click.ClickException("aborted; workspace not created")
             click.echo(f"note: name {requested!r} already exists — using {ws.name!r}")
 
         count = 0

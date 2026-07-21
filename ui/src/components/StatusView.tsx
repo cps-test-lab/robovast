@@ -65,6 +65,9 @@ export function StatusView({
   const terminal = ['finished', 'failed', 'stopped', 'error'].includes(status.phase)
   const counts = jobs?.counts
   const running = counts?.running ?? 0
+  // Failures for the bar's red segment: prefer the live job count so a failure shows
+  // in real time (runs.failed stays 0 until the whole batch reaches a terminal state).
+  const failed = counts?.failed ?? runs.failed
   const shownJobs = liveOnly
     ? jobs?.jobs.filter(
         (j) => j.status === 'running' || j.status === 'failed' || j.status === 'blocked',
@@ -122,7 +125,7 @@ export function StatusView({
             runs.total > 0
               ? [
                   { fraction: runs.completed / runs.total, color: 'success.main' },
-                  { fraction: runs.failed / runs.total, color: 'error.main' },
+                  { fraction: failed / runs.total, color: 'error.main' },
                   { fraction: running / runs.total, color: 'info.main', striped: true },
                 ]
               : []

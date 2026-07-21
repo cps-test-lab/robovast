@@ -25,6 +25,7 @@ toolkit that actually builds/submits Jobs lives in
 """
 
 import logging
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -177,6 +178,121 @@ def read_pod_logs_merged(core, pod, namespace) -> str:
     entries.sort(key=lambda e: (e[0], e[1], e[2]))
     merged = "\n".join(e[3] for e in entries)
     return merged + "\n" if merged else ""
+
+
+def _after_last(lines, needle):
+    """Lines after the last occurrence of *needle* in *lines*, or ``None`` if absent."""
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i] == needle:
+            return lines[i + 1:]
+    return None
+
+
+class PodLogTail:
+    """Incremental, cache-backed reader for a running pod's merged container logs.
+
+    Backs the byte-offset streaming protocol (:meth:`ClusterService.get_job_log`)
+    *without* re-reading the whole pod log on every poll — the pathology that made a
+    long-running job's log panel pull megabytes from the kube API every 1.5s. The
+    full assembled text is kept in :attr:`buf` so a client's byte offset still maps
+    straight onto it, but each :meth:`read` only pulls a small trailing window from
+    the API (``since_seconds``) and appends the lines it has not seen yet.
+
+    Same append-only assumption as :func:`read_pod_logs_merged`: a pod's containers
+    share the node clock and logs only grow forward, so lines fetched in a later poll
+    always sort after everything already buffered. Dedup across the overlapping
+    ``since_seconds`` windows is by exact last-consumed line per container, which is
+    unique because kubelet stamps every line with a nanosecond timestamp.
+    """
+
+    #: Slack (seconds) added to the since-window so a poll never misses lines written
+    #: in the same second as the previous read — ``since_seconds`` is second-granular.
+    _SINCE_SLACK = 2
+
+    def __init__(self):
+        self.buf = bytearray()          # full merged log so far (offset maps onto it)
+        self.terminal = False
+        self._last_line = {}            # container -> last raw "<ts> msg" line consumed
+        self._last_ts = {}              # container -> last seen ts (for continuation lines)
+        self._last_wall = None          # time.time() of last successful fetch
+        self.lock = threading.Lock()    # serialize concurrent reads of the same job
+
+    def read(self, core, pod, namespace, now) -> bool:
+        """Fetch the delta since the last read, append it, and return ``terminal``."""
+        names = _loggable_container_names(pod) or ["robovast"]
+        multi = len(names) > 1
+        width = max(len(n) for n in names) if multi else 0
+        # First read pulls the whole log; later reads only the elapsed window + slack.
+        since = None
+        if self._last_wall is not None:
+            since = int(now - self._last_wall) + self._SINCE_SLACK
+
+        def _fetch(container, since_seconds):
+            try:
+                return core.read_namespaced_pod_log(
+                    name=pod.metadata.name, namespace=namespace, container=container,
+                    timestamps=True, since_seconds=since_seconds)
+            except client.exceptions.ApiException as e:
+                # 404: pod/container gone; 400: container waiting / no log yet.
+                if e.status in (400, 404):
+                    return None
+                raise
+
+        def _lines(raw):
+            out = (raw or "").split("\n")
+            if out and out[-1] == "":
+                out.pop()  # trailing newline from the API is not a real line
+            return out
+
+        new = []  # (ts, container_order, line_order, rendered_line)
+        for order, name in enumerate(names):
+            lines = _lines(_fetch(name, since))
+            last = self._last_line.get(name)
+            if last is not None:
+                fresh = _after_last(lines, last)
+                if fresh is None and since is not None:
+                    # The window slid past the boundary line (a long gap between
+                    # polls). Re-anchor with a full read so no lines are dropped.
+                    lines = _lines(_fetch(name, None))
+                    fresh = _after_last(lines, last)
+                if fresh is None:
+                    # Anchor gone even from the full log: kubelet rotated it out of
+                    # the retained window (a very chatty job). We can't tell which
+                    # fetched lines are already buffered, so skip forward to the
+                    # newest line rather than risk duplicating the whole buffer — a
+                    # few lines may be missed, but the stream stays consistent.
+                    if lines:
+                        newest = lines[-1].partition(" ")[0]
+                        if "T" in newest and newest[:1].isdigit():
+                            self._last_ts[name] = newest
+                        self._last_line[name] = lines[-1]
+                    continue
+                lines = fresh
+            if not lines:
+                continue
+            self._last_line[name] = lines[-1]
+            for line_order, line in enumerate(lines):
+                ts, _, message = line.partition(" ")
+                if "T" in ts and ts[:1].isdigit():
+                    self._last_ts[name] = ts
+                else:
+                    message = line  # continuation line: keep it whole, inherit last ts
+                cur_ts = self._last_ts.get(name, "")
+                if multi:
+                    prefix = f"[{name}]".ljust(width + 2)
+                    new.append((cur_ts, order, line_order, f"{prefix} {message}"))
+                else:
+                    new.append((cur_ts, order, line_order, message))
+
+        new.sort(key=lambda e: (e[0], e[1], e[2]))
+        text = "\n".join(e[3] for e in new)
+        if text:
+            if self.buf and not self.buf.endswith(b"\n"):
+                self.buf += b"\n"
+            self.buf += text.encode("utf-8", "replace") + b"\n"
+        self._last_wall = now
+        self.terminal = bool(pod.status and pod.status.phase in ("Succeeded", "Failed"))
+        return self.terminal
 
 
 def _pod_signals(k8s_core, namespace, label_selector) -> "tuple[set, dict]":

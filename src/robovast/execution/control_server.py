@@ -187,6 +187,7 @@ class ControllerState:
         self._lock = threading.Lock()
         self._status = Status(**initial)
         self._stop_event = threading.Event()
+        self._progress_suspend = threading.Event()
 
     def snapshot(self) -> Status:
         with self._lock:
@@ -211,3 +212,20 @@ class ControllerState:
     @property
     def stop_requested(self) -> bool:
         return self._stop_event.is_set()
+
+    def suspend_progress(self) -> None:
+        """Pause the run-progress poller (see CampaignController._poll).
+
+        The poller lists the whole campaign prefix every few seconds. During a batch's
+        result download over the same (off-cluster) storage tunnel, those extra list
+        calls compound tunnel contention; suspending the poller for the download keeps
+        the single transfer uncontended.
+        """
+        self._progress_suspend.set()
+
+    def resume_progress(self) -> None:
+        self._progress_suspend.clear()
+
+    @property
+    def progress_suspended(self) -> bool:
+        return self._progress_suspend.is_set()

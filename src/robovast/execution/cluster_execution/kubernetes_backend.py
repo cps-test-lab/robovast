@@ -770,34 +770,44 @@ class BatchJobRunner:
         logger.info("Batch %s: downloading result files from object store...",
                     self._batch_tag)
         on_file = _download_progress_logger(self._batch_tag)
-        if whole_campaign:
-            # Batch mode: this batch *is* the whole campaign, so the prefix holds
-            # nothing but its own artifacts. One prefix download does a single
-            # paginated list instead of one list per config — the per-config
-            # enumeration below costs 600+ sequential list calls on a large batch,
-            # during which the campaign sits in "running" with no progress.
-            got = storage.download_prefix(bucket_name, campaign_prefix, campaign_root,
-                                          on_file=on_file)
-        else:
-            # Search mode: the campaign prefix is flat/shared across batches, so we
-            #    fetch by name: this batch's <config>/ dirs (self.configs == this
-            #    batch's composed configs, the same names the controller scores at
-            #    campaign_root/<config>/) and its job-artifact dir _jobs/<batch_tag>/
-            #    (sysinfo.yaml, resource monitor, logs — read via each run's `job`
-            #    symlink), plus the campaign-level _config/ (holds the .vast the
-            #    auto-chain postprocessing reads) and _transient/. Batch-scoping
-            #    _jobs avoids re-fetching prior batches each iteration; the small
-            #    campaign-level dirs are re-fetched (idempotent — download_prefix
-            #    never deletes, so the locally-accumulated _transient/job_links.yaml
-            #    survives).
-            got = 0
-            job_root = f"_jobs/{self._batch_tag}" if self._batch_tag else "_jobs"
-            targets = [c["name"] for c in self.configs if c.get("name")]
-            targets += ["_config", "_transient", job_root]
-            for rel in targets:
-                got += storage.download_prefix(
-                    bucket_name, f"{campaign_prefix}{rel}",
-                    os.path.join(campaign_root, rel), on_file=on_file)
+        # The 3s run-progress poller lists the whole campaign prefix over this same
+        # (off-cluster) storage tunnel; pause it for the duration of the download so
+        # the transfer runs uncontended. Resumed in the finally so a download error
+        # (or an early return) can never leave the poller permanently off.
+        got = 0
+        if self._state is not None:
+            self._state.suspend_progress()
+        try:
+            if whole_campaign:
+                # Batch mode: this batch *is* the whole campaign, so the prefix holds
+                # nothing but its own artifacts. One prefix download does a single
+                # paginated list instead of one list per config — the per-config
+                # enumeration below costs 600+ sequential list calls on a large batch,
+                # during which the campaign sits in "running" with no progress.
+                got = storage.download_prefix(bucket_name, campaign_prefix, campaign_root,
+                                              on_file=on_file)
+            else:
+                # Search mode: the campaign prefix is flat/shared across batches, so we
+                #    fetch by name: this batch's <config>/ dirs (self.configs == this
+                #    batch's composed configs, the same names the controller scores at
+                #    campaign_root/<config>/) and its job-artifact dir _jobs/<batch_tag>/
+                #    (sysinfo.yaml, resource monitor, logs — read via each run's `job`
+                #    symlink), plus the campaign-level _config/ (holds the .vast the
+                #    auto-chain postprocessing reads) and _transient/. Batch-scoping
+                #    _jobs avoids re-fetching prior batches each iteration; the small
+                #    campaign-level dirs are re-fetched (idempotent — download_prefix
+                #    never deletes, so the locally-accumulated _transient/job_links.yaml
+                #    survives).
+                job_root = f"_jobs/{self._batch_tag}" if self._batch_tag else "_jobs"
+                targets = [c["name"] for c in self.configs if c.get("name")]
+                targets += ["_config", "_transient", job_root]
+                for rel in targets:
+                    got += storage.download_prefix(
+                        bucket_name, f"{campaign_prefix}{rel}",
+                        os.path.join(campaign_root, rel), on_file=on_file)
+        finally:
+            if self._state is not None:
+                self._state.resume_progress()
         logger.info("Batch %s: downloaded %d result file(s) into %s",
                     self._batch_tag, got, campaign_root)
 

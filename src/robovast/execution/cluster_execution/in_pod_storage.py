@@ -181,6 +181,11 @@ class _S3StorageClient(StorageClient):
         self._access_key = access_key
         self._secret_key = secret_key
         self._region = region
+        # The endpoint this client is currently bound to; passed back to the resolver
+        # on a forced reconnect so a shared port-forward is torn down only once per
+        # stall (see ClusterService._minio_port_forward_endpoint). ``None`` until the
+        # first connect, so that first resolve behaves exactly as before.
+        self._endpoint = None
         socket.setdefaulttimeout(120)
         self._connect(force_reconnect=False)
 
@@ -188,7 +193,13 @@ class _S3StorageClient(StorageClient):
         import boto3  # pylint: disable=import-outside-toplevel
         from botocore.config import Config  # pylint: disable=import-outside-toplevel
 
-        endpoint = self._endpoint_resolver(force_reconnect)
+        # Tell the resolver which endpoint we were using: concurrent clients that all
+        # timed out on the same stalled forward would otherwise each tear down the
+        # fresh tunnel a sibling just opened (thundering-herd mutual teardown →
+        # "connection refused"). The resolver no-ops a restart that another client
+        # already performed since ``self._endpoint`` was issued.
+        endpoint = self._endpoint_resolver(force_reconnect, self._endpoint)
+        self._endpoint = endpoint
         self._s3 = boto3.client(
             "s3",
             endpoint_url=endpoint,

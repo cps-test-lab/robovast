@@ -33,9 +33,10 @@ class _GcsConfig(BaseConfig):
 
 
 def test_s3_client_uses_the_driver_endpoint_override(monkeypatch):
-    """The driver's S3 client is built against ``get_driver_s3_endpoint``.
+    """The driver's S3 client resolves its endpoint through ``get_driver_s3_endpoint``.
 
-    So an off-cluster host redirecting to a port-forward is honoured, while the
+    The client is handed a *lazy* resolver (not a baked-in endpoint), so an
+    off-cluster host redirecting to a port-forward is honoured, while the
     cluster-internal ``get_s3_endpoint`` stays reserved for job manifests.
     """
     seen = {}
@@ -43,18 +44,20 @@ def test_s3_client_uses_the_driver_endpoint_override(monkeypatch):
                         lambda **kw: seen.update(kw) or "s3-client")
 
     cfg = _S3Config()
-    cfg.set_driver_s3_endpoint_resolver(lambda: "http://localhost:18099")
+    cfg.set_driver_s3_endpoint_resolver(
+        lambda force_reconnect=False, current=None: "http://localhost:18099")
     assert in_pod_storage.storage_client_for(cfg) == "s3-client"
-    assert seen["endpoint"] == "http://localhost:18099"
+    # Invoking the resolver the client was given yields the host-reachable override.
+    assert seen["endpoint_resolver"]() == "http://localhost:18099"
 
 
 def test_s3_client_defaults_to_cluster_endpoint(monkeypatch):
-    """With no resolver installed (in-cluster) the endpoint is cluster-internal."""
+    """With no resolver installed (in-cluster) the resolver returns the cluster endpoint."""
     seen = {}
     monkeypatch.setattr(in_pod_storage, "_S3StorageClient",
                         lambda **kw: seen.update(kw))
     in_pod_storage.storage_client_for(_S3Config())
-    assert seen["endpoint"] == "http://robovast:9000"
+    assert seen["endpoint_resolver"]() == "http://robovast:9000"
 
 
 def test_gcs_client_ignores_the_s3_endpoint_path(monkeypatch):
@@ -77,7 +80,9 @@ def test_gcs_client_ignores_the_s3_endpoint_path(monkeypatch):
 def test_resolve_driver_endpoint_embedded_opens_the_tunnel():
     """Embedded MinIO has no host route → the port-forward opener is invoked."""
     cfg = _S3Config()  # uses_embedded_s3() defaults to True
-    assert cfg.resolve_driver_s3_endpoint(lambda: "http://localhost:1") \
+    # The opener is called with (force_reconnect, current) — see
+    # ClusterService._minio_port_forward_endpoint.
+    assert cfg.resolve_driver_s3_endpoint(lambda *a, **k: "http://localhost:1") \
         == "http://localhost:1"
 
 

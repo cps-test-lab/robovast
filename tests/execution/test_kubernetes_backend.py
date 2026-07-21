@@ -25,7 +25,7 @@ class _FakeStorage:
     def __init__(self):
         self.downloads = []
 
-    def download_prefix(self, bucket, prefix, local_dir, force=False):
+    def download_prefix(self, bucket, prefix, local_dir, force=False, on_file=None):
         self.downloads.append(prefix)
         return 1
 

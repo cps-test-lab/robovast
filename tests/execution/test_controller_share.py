@@ -12,11 +12,13 @@ import types
 
 from robovast.execution import controller
 from robovast.execution.backends import RunOptions
+from robovast.execution.control_server import Phase
 
 
-def _state(stop_requested):
+def _state(stop_requested, phase=Phase.RUNNING):
     return types.SimpleNamespace(stop_requested=stop_requested,
-                                 set_phase=lambda *a, **k: None)
+                                 set_phase=lambda *a, **k: None,
+                                 snapshot=lambda: types.SimpleNamespace(phase=phase))
 
 
 class _RecordingBackend:

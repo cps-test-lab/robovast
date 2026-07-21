@@ -329,7 +329,7 @@ def test_get_job_log_streams_running_pod(cs, monkeypatch):
             seen["label_selector"] = label_selector
             return types.SimpleNamespace(items=[_pod(phase="Running")])
 
-        def read_namespaced_pod_log(self, name, namespace, container):
+        def read_namespaced_pod_log(self, name, namespace, container, **_kw):
             seen.update(name=name, container=container)
             return "hello world\n"
 
@@ -352,7 +352,7 @@ def test_get_job_log_terminal_pod_sets_eof(cs, monkeypatch):
         def list_namespaced_pod(self, namespace, label_selector):
             return types.SimpleNamespace(items=[_pod(phase="Succeeded")])
 
-        def read_namespaced_pod_log(self, name, namespace, container):
+        def read_namespaced_pod_log(self, name, namespace, container, **_kw):
             return "done\n"
 
     monkeypatch.setattr(cs, "_k8s", lambda: _Core())
@@ -388,6 +388,44 @@ def test_get_job_log_missing_pod_raises(cs, monkeypatch):
     monkeypatch.setattr(cs, "_k8s", lambda: _Core())
     with pytest.raises(KeyError):
         cs.get_job_log("camp", "gone")
+
+
+def test_get_job_log_reads_incrementally_across_polls(cs, monkeypatch):
+    """A second poll fetches only a trailing window, not the whole log, yet the
+    byte-offset stream continues seamlessly as the pod log grows."""
+    import types
+    calls = []  # since_seconds seen per read_namespaced_pod_log call
+
+    def line(sec, nano, msg):
+        return f"2026-07-21T10:00:{sec:02d}.{nano:09d}Z {msg}"
+
+    class _Core:
+        def __init__(self):
+            self.rows = [(0, line(0, 1, "boot"))]  # (wall_second, timestamped line)
+
+        def list_namespaced_pod(self, namespace, label_selector):
+            return types.SimpleNamespace(items=[_pod(phase="Running")])
+
+        def read_namespaced_pod_log(self, name, namespace, container,
+                                    timestamps=False, since_seconds=None):
+            calls.append(since_seconds)
+            sel = self.rows if since_seconds is None else self.rows[-1:]
+            text = "\n".join(r[1] for r in sel)
+            return text + "\n" if text else ""
+
+    core = _Core()
+    monkeypatch.setattr(cs, "_k8s", lambda: core)
+
+    first = cs.get_job_log("camp", "j")
+    assert first.text == "boot\n"          # timestamp stripped for a single container
+    assert calls[0] is None                # first poll reads the whole log
+
+    core.rows.append((0, line(0, 2, "step 1")))  # log grows
+    second = cs.get_job_log("camp", "j", offset=first.next_offset)
+    assert second.text == "step 1\n"       # only the delta crosses the wire
+    assert calls[1] is not None            # later polls read a bounded window
+    # Full assembled text is still addressable from offset 0.
+    assert cs.get_job_log("camp", "j", offset=0).text == "boot\nstep 1\n"
 
 
 # -- stop (terminates in-flight cluster workloads) --------------------------

@@ -225,7 +225,7 @@ class CampaignController:
 
         def _poll() -> None:
             while not self._poller_stop.is_set():
-                if self._batch_active.is_set():
+                if self._batch_active.is_set() and not self.state.progress_suspended:
                     try:
                         done = self.backend.count_run_artifacts(self.campaign_id)
                         if done is not None:
@@ -561,7 +561,16 @@ def _finish_campaign(backend: ExecutionBackend, campaign_root: str, campaign_id:
         return
     if options is not None and options.upload_to_share:
         _share_campaign(backend, campaign_root, options, state, notifier)
-    _chain_postprocessing(backend, campaign_root, campaign_id, state, options)
+    # A failed campaign (run() set Phase.FAILED before re-raising into this finally)
+    # never finished projecting its results, so campaign_root is missing pieces
+    # postprocessing needs — e.g. _config/*.vast. Running it anyway only raises a
+    # second, misleading error ("no .vast under _config") that masks the real failure.
+    # Skip only the derived-data step; _finalize still runs below so the failure
+    # outcome is published (as does _record_campaign_failure).
+    if state is not None and state.snapshot().phase == Phase.FAILED:
+        logger.info("Campaign %s failed — skipping analysis postprocessing.", campaign_id)
+    else:
+        _chain_postprocessing(backend, campaign_root, campaign_id, state, options)
     _finalize(backend, campaign_root)
 
 

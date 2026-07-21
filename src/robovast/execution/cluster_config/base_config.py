@@ -183,7 +183,8 @@ class BaseConfig(object):
         """
         return None
 
-    def get_driver_s3_endpoint(self, force_reconnect: bool = False) -> str:
+    def get_driver_s3_endpoint(self, force_reconnect: bool = False,
+                               current: Optional[str] = None) -> str:
         """Return the S3 endpoint the in-process driver's **own** storage client
         should use (see :func:`..cluster_execution.in_pod_storage.storage_client_for`).
 
@@ -202,7 +203,7 @@ class BaseConfig(object):
             str: S3 endpoint URL
         """
         resolver = getattr(self, "_driver_s3_endpoint_resolver", None)
-        endpoint = resolver(force_reconnect) if resolver is not None else None
+        endpoint = resolver(force_reconnect, current) if resolver is not None else None
         return endpoint or self.get_s3_endpoint()
 
     def set_driver_s3_endpoint_resolver(self, resolver) -> None:
@@ -215,7 +216,8 @@ class BaseConfig(object):
         self._driver_s3_endpoint_resolver = resolver
 
     def resolve_driver_s3_endpoint(self, open_port_forward,
-                                   force_reconnect: bool = False) -> Optional[str]:
+                                   force_reconnect: bool = False,
+                                   current: Optional[str] = None) -> Optional[str]:
         """Policy: the host-reachable S3 endpoint for an off-cluster driver.
 
         This is where each config declares **how its storage is reachable from the
@@ -238,9 +240,12 @@ class BaseConfig(object):
                 opens a fresh one (the driver's storage client requests this after a
                 network timeout).
             force_reconnect: Forwarded to *open_port_forward* as *force_restart*.
+            current: The endpoint the caller was using; forwarded so a shared forward
+                is torn down only once per stall (concurrent callers that already
+                rotated past *current* get the fresh endpoint back untouched).
         """
         if self.uses_embedded_s3():
-            return open_port_forward(force_reconnect)
+            return open_port_forward(force_reconnect, current)
         return self.get_host_s3_endpoint()
 
     def get_s3_credentials(self) -> tuple:
