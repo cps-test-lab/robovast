@@ -126,7 +126,7 @@ class StorageClient:
         raise NotImplementedError
 
     def download_prefix(self, bucket: str, prefix: str, local_dir: str,
-                        force: bool = False) -> int:
+                        force: bool = False, on_file=None) -> int:
         """Download every object under *prefix* into *local_dir*.
 
         Objects in the durable home are immutable, so by default a file that
@@ -135,6 +135,11 @@ class StorageClient:
         near-noop instead of a full re-download. Pass ``force=True`` to
         overwrite unconditionally (used after re-postprocessing, which mutates
         objects in place).
+
+        *on_file*, if given, is a no-argument callable invoked once per file
+        actually fetched (skipped same-size files don't count) — used by the
+        controller to log download progress during an otherwise-silent fetch of
+        a large batch.
         """
         raise NotImplementedError
 
@@ -160,17 +165,36 @@ class StorageClient:
 class _S3StorageClient(StorageClient):
     """boto3-backed client for MinIO / S3 reachable from inside the cluster."""
 
-    def __init__(self, *, endpoint, access_key, secret_key, region):
+    # boto's own ``retries`` re-run a request against the *same* connection, which
+    # is useless when an off-cluster driver's ``kubectl port-forward`` tunnel has
+    # gone stalled-but-alive — every attempt then read-times-out identically. On
+    # these errors we instead rebuild the client against a freshly-restarted
+    # forward (``_reconnect``) and re-run the whole operation, up to this many times.
+    _RECONNECT_ATTEMPTS = 3
+
+    def __init__(self, *, endpoint_resolver, access_key, secret_key, region):
+        # ``endpoint_resolver(force_reconnect=False)`` returns the host-reachable S3
+        # endpoint; passing ``True`` tears down a stalled port-forward and opens a
+        # fresh one (see BaseConfig.get_driver_s3_endpoint). In-cluster it is a
+        # constant, so reconnecting is a cheap no-op that just rebuilds the client.
+        self._endpoint_resolver = endpoint_resolver
+        self._access_key = access_key
+        self._secret_key = secret_key
+        self._region = region
+        socket.setdefaulttimeout(120)
+        self._connect(force_reconnect=False)
+
+    def _connect(self, *, force_reconnect: bool) -> None:
         import boto3  # pylint: disable=import-outside-toplevel
         from botocore.config import Config  # pylint: disable=import-outside-toplevel
 
-        socket.setdefaulttimeout(120)
+        endpoint = self._endpoint_resolver(force_reconnect)
         self._s3 = boto3.client(
             "s3",
             endpoint_url=endpoint,
-            aws_access_key_id=access_key,
-            aws_secret_access_key=secret_key,
-            region_name=region,
+            aws_access_key_id=self._access_key,
+            aws_secret_access_key=self._secret_key,
+            region_name=self._region,
             config=Config(
                 signature_version="s3v4",
                 s3={"addressing_style": "path"},
@@ -189,6 +213,34 @@ class _S3StorageClient(StorageClient):
         # single response. Registered on ``before-send`` (after signing) so the
         # header is removed regardless of when botocore added it.
         self._s3.meta.events.register("before-send.s3.*", self._strip_expect_header)
+
+    def _resilient(self, op):
+        """Run ``op()``, reconnecting to a fresh port-forward on a network timeout.
+
+        The whole operation is re-run after a reconnect, not the single failed
+        request — every S3 op here is idempotent (uploads overwrite,
+        ``download_prefix`` skips same-size files, reads/lists are pure), so a
+        clean re-run is safe and, for downloads, near-free for what already landed.
+        """
+        from botocore.exceptions import (  # pylint: disable=import-outside-toplevel
+            ConnectionClosedError, ConnectTimeoutError, EndpointConnectionError,
+            ReadTimeoutError)
+        transient = (ReadTimeoutError, ConnectTimeoutError,
+                     EndpointConnectionError, ConnectionClosedError)
+        last = None
+        for attempt in range(self._RECONNECT_ATTEMPTS):
+            try:
+                return op()
+            except transient as exc:
+                last = exc
+                if attempt + 1 >= self._RECONNECT_ATTEMPTS:
+                    break
+                logger.warning(
+                    "S3 endpoint timed out (%s); restarting port-forward and "
+                    "retrying (attempt %d/%d)",
+                    type(exc).__name__, attempt + 2, self._RECONNECT_ATTEMPTS)
+                self._connect(force_reconnect=True)
+        raise last
 
     @staticmethod
     def _strip_expect_header(request, **kwargs):
@@ -210,75 +262,92 @@ class _S3StorageClient(StorageClient):
                 raise
 
     def upload_dir(self, local_dir: str, bucket: str, prefix: str = "") -> int:
-        self._ensure_bucket(bucket)
-        prefix = prefix.rstrip("/")
-        count = 0
-        for abs_path, rel in _iter_files(local_dir):
-            key = f"{prefix}/{rel}" if prefix else rel
-            extra = {"Metadata": dict(_EXECUTABLE_META)} if _is_executable(abs_path) else None
-            self._s3.upload_file(abs_path, bucket, key, ExtraArgs=extra)
-            count += 1
-        logger.debug("Uploaded %d files to s3://%s/%s", count, bucket, prefix)
-        return count
+        def op():
+            self._ensure_bucket(bucket)
+            clean = prefix.rstrip("/")
+            count = 0
+            for abs_path, rel in _iter_files(local_dir):
+                key = f"{clean}/{rel}" if clean else rel
+                extra = ({"Metadata": dict(_EXECUTABLE_META)}
+                         if _is_executable(abs_path) else None)
+                self._s3.upload_file(abs_path, bucket, key, ExtraArgs=extra)
+                count += 1
+            logger.debug("Uploaded %d files to s3://%s/%s", count, bucket, clean)
+            return count
+        return self._resilient(op)
 
     def upload_file(self, local_path: str, bucket: str, key: str) -> None:
-        self._ensure_bucket(bucket)
-        extra = {"Metadata": dict(_EXECUTABLE_META)} if _is_executable(local_path) else None
-        self._s3.upload_file(local_path, bucket, key, ExtraArgs=extra)
+        def op():
+            self._ensure_bucket(bucket)
+            extra = ({"Metadata": dict(_EXECUTABLE_META)}
+                     if _is_executable(local_path) else None)
+            self._s3.upload_file(local_path, bucket, key, ExtraArgs=extra)
+        self._resilient(op)
 
     def download_prefix(self, bucket: str, prefix: str, local_dir: str,
-                        force: bool = False) -> int:
-        prefix = prefix.rstrip("/")
-        key_prefix = f"{prefix}/" if prefix else ""
-        paginator = self._s3.get_paginator("list_objects_v2")
-        count = 0
-        for page in paginator.paginate(Bucket=bucket, Prefix=key_prefix):
-            for obj in page.get("Contents", []) or []:
-                key = obj["Key"]
-                rel = key[len(key_prefix):] if key_prefix else key
-                if not rel or key.endswith("/"):
-                    continue
-                dst = os.path.join(local_dir, *rel.split("/"))
-                if not force and _same_size(dst, obj.get("Size")):
-                    continue
-                _download_atomic(
-                    dst, lambda p, k=key: self._s3.download_file(bucket, k, p))
-                # ``head_object`` (an extra round-trip) only to read the
-                # executable flag — done only for files we actually fetched.
-                head = self._s3.head_object(Bucket=bucket, Key=key)
-                if (head.get("Metadata") or {}).get("executable") == "yes":
-                    os.chmod(dst, os.stat(dst).st_mode | 0o111)
-                count += 1
-        logger.debug("Downloaded %d files from s3://%s/%s", count, bucket, prefix)
-        return count
+                        force: bool = False, on_file=None) -> int:
+        clean = prefix.rstrip("/")
+        key_prefix = f"{clean}/" if clean else ""
+
+        def op():
+            paginator = self._s3.get_paginator("list_objects_v2")
+            count = 0
+            for page in paginator.paginate(Bucket=bucket, Prefix=key_prefix):
+                for obj in page.get("Contents", []) or []:
+                    key = obj["Key"]
+                    rel = key[len(key_prefix):] if key_prefix else key
+                    if not rel or key.endswith("/"):
+                        continue
+                    dst = os.path.join(local_dir, *rel.split("/"))
+                    if not force and _same_size(dst, obj.get("Size")):
+                        continue
+                    _download_atomic(
+                        dst, lambda p, k=key: self._s3.download_file(bucket, k, p))
+                    # ``head_object`` (an extra round-trip) only to read the
+                    # executable flag — done only for files we actually fetched.
+                    head = self._s3.head_object(Bucket=bucket, Key=key)
+                    if (head.get("Metadata") or {}).get("executable") == "yes":
+                        os.chmod(dst, os.stat(dst).st_mode | 0o111)
+                    count += 1
+                    if on_file is not None:
+                        on_file()
+            logger.debug("Downloaded %d files from s3://%s/%s", count, bucket, clean)
+            return count
+        return self._resilient(op)
 
     def read_object(self, bucket: str, key: str) -> "bytes | None":
         from botocore.exceptions import ClientError  # pylint: disable=import-outside-toplevel
-        try:
-            return self._s3.get_object(Bucket=bucket, Key=key)["Body"].read()
-        except ClientError as exc:
-            code = exc.response.get("Error", {}).get("Code", "")
-            if code in ("404", "NoSuchKey", "NoSuchBucket"):
-                return None
-            raise
+
+        def op():
+            try:
+                return self._s3.get_object(Bucket=bucket, Key=key)["Body"].read()
+            except ClientError as exc:
+                code = exc.response.get("Error", {}).get("Code", "")
+                if code in ("404", "NoSuchKey", "NoSuchBucket"):
+                    return None
+                raise
+        return self._resilient(op)
 
     def list_keys(self, bucket: str, prefix: str = "") -> list[str]:
         from botocore.exceptions import ClientError  # pylint: disable=import-outside-toplevel
-        prefix = prefix.rstrip("/")
-        key_prefix = f"{prefix}/" if prefix else ""
-        paginator = self._s3.get_paginator("list_objects_v2")
-        keys = []
-        try:
-            for page in paginator.paginate(Bucket=bucket, Prefix=key_prefix):
-                for obj in page.get("Contents", []) or []:
-                    if not obj["Key"].endswith("/"):
-                        keys.append(obj["Key"])
-        except ClientError as exc:
-            code = exc.response.get("Error", {}).get("Code", "")
-            if code in ("404", "NoSuchBucket"):
-                return []
-            raise
-        return keys
+        clean = prefix.rstrip("/")
+        key_prefix = f"{clean}/" if clean else ""
+
+        def op():
+            paginator = self._s3.get_paginator("list_objects_v2")
+            keys = []
+            try:
+                for page in paginator.paginate(Bucket=bucket, Prefix=key_prefix):
+                    for obj in page.get("Contents", []) or []:
+                        if not obj["Key"].endswith("/"):
+                            keys.append(obj["Key"])
+            except ClientError as exc:
+                code = exc.response.get("Error", {}).get("Code", "")
+                if code in ("404", "NoSuchBucket"):
+                    return []
+                raise
+            return keys
+        return self._resilient(op)
 
 
 class _GcsStorageClient(StorageClient):
@@ -316,7 +385,7 @@ class _GcsStorageClient(StorageClient):
         blob.upload_from_filename(local_path)
 
     def download_prefix(self, bucket: str, prefix: str, local_dir: str,
-                        force: bool = False) -> int:
+                        force: bool = False, on_file=None) -> int:
         gbucket = self._client.bucket(bucket)
         prefix = prefix.rstrip("/")
         key_prefix = f"{prefix}/" if prefix else ""
@@ -332,6 +401,8 @@ class _GcsStorageClient(StorageClient):
             if (blob.metadata or {}).get("executable") == "yes":
                 os.chmod(dst, os.stat(dst).st_mode | 0o111)
             count += 1
+            if on_file is not None:
+                on_file()
         logger.debug("Downloaded %d files from gs://%s/%s", count, bucket, prefix)
         return count
 
@@ -382,7 +453,7 @@ def storage_client_for(cluster_config) -> StorageClient:
         return _GcsStorageClient(key_json=cluster_config.get_gcs_key_json())
     access_key, secret_key = cluster_config.get_s3_credentials()
     return _S3StorageClient(
-        endpoint=cluster_config.get_driver_s3_endpoint(),
+        endpoint_resolver=cluster_config.get_driver_s3_endpoint,
         access_key=access_key,
         secret_key=secret_key,
         region=cluster_config.get_s3_region(),

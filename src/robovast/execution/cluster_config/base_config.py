@@ -41,8 +41,12 @@ class RegistryConfig:
     base_experiment_image: str = ""
     #: Push to the registry over plain HTTP / an untrusted cert (e.g. a
     #: cluster-internal registry). The BuildKit push output gets
-    #: ``registry.insecure=true``.
+    #: ``registry.insecure=true``. Prefer :attr:`ca_configmap_name` for real registries.
     insecure: bool = False
+    #: ConfigMap (key ``ca.pem``) holding the registry's CA, mounted into the build
+    #: Job so BuildKit trusts a self-signed / private-CA registry. Pull-side trust
+    #: for such a registry is node-level (containerd), configured by the operator.
+    ca_configmap_name: str = ""
 
     def enabled(self) -> bool:
         """True when a registry is configured (in-cluster builds are possible)."""
@@ -179,7 +183,7 @@ class BaseConfig(object):
         """
         return None
 
-    def get_driver_s3_endpoint(self) -> str:
+    def get_driver_s3_endpoint(self, force_reconnect: bool = False) -> str:
         """Return the S3 endpoint the in-process driver's **own** storage client
         should use (see :func:`..cluster_execution.in_pod_storage.storage_client_for`).
 
@@ -198,18 +202,20 @@ class BaseConfig(object):
             str: S3 endpoint URL
         """
         resolver = getattr(self, "_driver_s3_endpoint_resolver", None)
-        endpoint = resolver() if resolver is not None else None
+        endpoint = resolver(force_reconnect) if resolver is not None else None
         return endpoint or self.get_s3_endpoint()
 
     def set_driver_s3_endpoint_resolver(self, resolver) -> None:
-        """Install a zero-arg callable returning the driver endpoint (or ``None``).
+        """Install a callable ``resolver(force_reconnect=False)`` returning the driver
+        endpoint (or ``None``).
 
         See :meth:`get_driver_s3_endpoint`. ``None`` clears any resolver, restoring
         the cluster-internal default.
         """
         self._driver_s3_endpoint_resolver = resolver
 
-    def resolve_driver_s3_endpoint(self, open_port_forward) -> Optional[str]:
+    def resolve_driver_s3_endpoint(self, open_port_forward,
+                                   force_reconnect: bool = False) -> Optional[str]:
         """Policy: the host-reachable S3 endpoint for an off-cluster driver.
 
         This is where each config declares **how its storage is reachable from the
@@ -226,11 +232,15 @@ class BaseConfig(object):
         client for them, which talks to ``storage.googleapis.com`` from anywhere.
 
         Args:
-            open_port_forward: Callable opening the tunnel on demand and returning
-                the resulting host URL. Only invoked when a tunnel is needed.
+            open_port_forward: Callable ``(force_restart=False)`` opening the tunnel
+                on demand and returning the resulting host URL. Only invoked when a
+                tunnel is needed. *force_restart* tears down a stalled forward and
+                opens a fresh one (the driver's storage client requests this after a
+                network timeout).
+            force_reconnect: Forwarded to *open_port_forward* as *force_restart*.
         """
         if self.uses_embedded_s3():
-            return open_port_forward()
+            return open_port_forward(force_reconnect)
         return self.get_host_s3_endpoint()
 
     def get_s3_credentials(self) -> tuple:
@@ -261,6 +271,7 @@ class BaseConfig(object):
             base_experiment_image=os.environ.get("ROBOVAST_BASE_EXPERIMENT_IMAGE", ""),
             insecure=os.environ.get("ROBOVAST_REGISTRY_INSECURE", "").strip().lower()
             in ("1", "true", "yes"),
+            ca_configmap_name=os.environ.get("ROBOVAST_REGISTRY_CA_CONFIGMAP", ""),
         )
 
     def get_s3_bucket(self) -> Optional[str]:

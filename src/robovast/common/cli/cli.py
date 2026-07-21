@@ -387,6 +387,8 @@ def _serve_attach(port, namespace, context):
     the CLI, the MCP server and ``vast ui`` auto-detect it there. This is the
     ``--attach`` mode of ``vast serve``.
     """
+    import time  # pylint: disable=import-outside-toplevel
+
     from robovast.execution.cluster_execution.service_deploy import SERVICE_PORT
 
     # Bind the *conventional* port (not a random free one): this tunnel is held
@@ -404,10 +406,33 @@ def _serve_attach(port, namespace, context):
                    f"conventional port {SERVICE_PORT}, so keep this at the default "
                    "for them to auto-detect it)")
     click.echo("  Ctrl-C to close the tunnel")
+
+    # kubectl port-forward drops its tunnel on any transient network hiccup or
+    # pod-side reset ("connection reset by peer" → "lost connection to pod").
+    # This is held open for a human, so a drop should *reconnect*, not end the
+    # command. Loop: stream kubectl output until the tunnel dies, then rebuild
+    # it (with backoff while the cluster stays unreachable). Only Ctrl-C exits.
+    backoff = 1.0
     try:
-        for line in iter(proc.stdout.readline, ''):  # keep streaming kubectl output
-            click.echo(line.rstrip())
-        proc.wait()
+        while True:
+            for line in iter(proc.stdout.readline, ''):  # stream until it dies
+                click.echo(line.rstrip())
+            proc.wait()
+            # Tunnel dropped (a Ctrl-C would have raised instead). Rebuild it.
+            click.echo("  ⚠ tunnel dropped — reconnecting…")
+            _stop_port_forward(proc)
+            while True:
+                try:
+                    proc, _ = _start_port_forward(
+                        namespace, context, local_port, echo=False)
+                    break
+                except click.ClickException as exc:
+                    click.echo(f"  reconnect failed ({exc.message}); retrying "
+                               f"in {backoff:.0f}s…")
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2, 15.0)
+            backoff = 1.0
+            click.echo(f"  ✓ tunnel re-established: {url}")
     except KeyboardInterrupt:
         click.echo("\nClosing tunnel...")
     finally:

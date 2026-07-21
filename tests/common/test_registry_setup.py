@@ -15,7 +15,8 @@ from robovast.execution.cluster_execution import service_deploy as sd
 
 _REG_VARS = ["ROBOVAST_REGISTRY_PREFIX", "ROBOVAST_REGISTRY_SERVER",
              "ROBOVAST_REGISTRY_USERNAME", "ROBOVAST_REGISTRY_PASSWORD",
-             "ROBOVAST_BASE_EXPERIMENT_IMAGE"]
+             "ROBOVAST_BASE_EXPERIMENT_IMAGE", "ROBOVAST_REGISTRY_CA_FILE",
+             "ROBOVAST_REGISTRY_INSECURE"]
 
 
 @pytest.fixture(autouse=True)
@@ -55,3 +56,24 @@ def test_external_registry_with_auth(monkeypatch):
     assert secret["metadata"]["name"] == sd.REGISTRY_PUSH_SECRET_NAME
     auths = json.loads(secret["stringData"][".dockerconfigjson"])["auths"]
     assert "ghcr.io" in auths
+
+
+def test_registry_ca_configmap(monkeypatch, tmp_path):
+    ca = tmp_path / "ca.pem"
+    ca.write_text("-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----\n")
+    monkeypatch.setenv("ROBOVAST_REGISTRY_PREFIX", "harbor.example/robovast")
+    monkeypatch.setenv("ROBOVAST_REGISTRY_CA_FILE", str(ca))
+    # env references the CA ConfigMap so the service's get_registry_config picks it up
+    env = sd._registry_env_from_host()
+    assert env["ROBOVAST_REGISTRY_CA_CONFIGMAP"] == sd.REGISTRY_CA_CONFIGMAP_NAME
+    # and the ConfigMap carries the CA under key ca.pem
+    cm = sd._registry_ca_manifest("default")
+    assert cm["kind"] == "ConfigMap"
+    assert cm["metadata"]["name"] == sd.REGISTRY_CA_CONFIGMAP_NAME
+    assert "BEGIN CERTIFICATE" in cm["data"]["ca.pem"]
+
+
+def test_registry_insecure_passthrough(monkeypatch):
+    monkeypatch.setenv("ROBOVAST_REGISTRY_PREFIX", "reg.local:5000/rv")
+    monkeypatch.setenv("ROBOVAST_REGISTRY_INSECURE", "true")
+    assert sd._registry_env_from_host()["ROBOVAST_REGISTRY_INSECURE"] == "true"

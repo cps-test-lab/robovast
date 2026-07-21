@@ -78,6 +78,11 @@ export function StatusView({
   ]
     .filter(Boolean)
     .join(' · ')
+  // This is a progress view, so a run is "done" whether it produced a result or
+  // failed to — both have reached a terminal state. Count failed runs toward the
+  // numerator (and the bar) so `done/total` reaches total when the batch is over;
+  // the failure count is still called out separately below.
+  const done = runs.completed + runs.failed
   const etaSeconds = estimateEtaSeconds(status, startedAt, terminal)
   // Only a search campaign has multiple batches; a plain batch run always has one,
   // so the "batch N" counter is noise there and is shown for search only.
@@ -102,7 +107,7 @@ export function StatusView({
               : counts && (counts.running > 0 || counts.pending > 0)
                 ? `running ${counts.running} · pending ${counts.pending} · `
                 : ''}
-            {runs.completed}/{runs.total}
+            {done}/{runs.total}
             {runs.failed > 0 ? (
               <Box component="span" sx={{ color: 'error.main' }}>
                 {' · '}
@@ -113,9 +118,15 @@ export function StatusView({
           </Typography>
         </Stack>
         <MeterBar
-          fraction={runs.total > 0 ? runs.completed / runs.total : 0}
-          buffer={runs.total > 0 ? (runs.completed + running) / runs.total : 0}
-          color="primary.main"
+          segments={
+            runs.total > 0
+              ? [
+                  { fraction: runs.completed / runs.total, color: 'success.main' },
+                  { fraction: runs.failed / runs.total, color: 'error.main' },
+                  { fraction: running / runs.total, color: 'info.main', striped: true },
+                ]
+              : []
+          }
         />
       </Box>
 
@@ -263,16 +274,20 @@ function colorForContainer(name: string): string {
 }
 
 // Multi-container job logs arrive with each line tagged `[container] …` (merged
-// server-side). Render those lines colored per container; lines without a tag
-// (campaign log, single-container jobs) render unchanged.
+// server-side). Color only the `[container]` prefix per container; the rest of the
+// line keeps the default text color. Lines without a tag render unchanged.
 function renderLogLines(text: string) {
   return text.split('\n').map((line, i) => {
     const m = /^(\[[^\]]+\]) ?/.exec(line)
     const nl = i > 0 ? '\n' : ''
     if (!m) return <span key={i}>{nl + line}</span>
+    const prefix = m[0]
+    const rest = line.slice(prefix.length)
     return (
-      <span key={i} style={{ color: colorForContainer(m[1].slice(1, -1)) }}>
-        {nl + line}
+      <span key={i}>
+        {nl}
+        <span style={{ color: colorForContainer(m[1].slice(1, -1)) }}>{prefix}</span>
+        {rest}
       </span>
     )
   })

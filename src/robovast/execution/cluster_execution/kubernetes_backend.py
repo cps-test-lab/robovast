@@ -82,9 +82,35 @@ from robovast.execution.packer import build_jobs
 
 from . import in_pod_storage
 from .cluster_execution import _label_safe_campaign, blocked_job_reasons
+from .kubernetes_kueue import KUEUE_QUEUE_NAME
 from .manifests import JOB_TEMPLATE
 
 logger = logging.getLogger(__name__)
+
+# How often (seconds) the result-download progress logger emits a running count.
+_DOWNLOAD_PROGRESS_INTERVAL = 5.0
+
+
+def _download_progress_logger(batch_tag, interval=_DOWNLOAD_PROGRESS_INTERVAL):
+    """Return a no-argument callback that logs the running download count.
+
+    Passed to ``StorageClient.download_prefix`` as ``on_file`` — it is called
+    once per fetched file and emits a throttled ``downloaded N so far`` line so a
+    large batch's projection shows progress instead of sitting silent. The count
+    is cumulative across the several ``download_prefix`` calls a search-mode batch
+    makes (the callback is shared), so the log reads as one continuous total.
+    """
+    state = {"count": 0, "last": time.monotonic()}
+
+    def on_file():
+        state["count"] += 1
+        now = time.monotonic()
+        if now - state["last"] >= interval:
+            state["last"] = now
+            logger.info("Batch %s: downloaded %d result file(s) so far...",
+                        batch_tag, state["count"])
+
+    return on_file
 
 
 def _short_job_name(campaign: str, config_name: str, run_number: int) -> str:
@@ -574,9 +600,12 @@ class BatchJobRunner:
                                        compat_version=COMPAT_VERSION)
         manifest = yaml.safe_load(yaml_str)
 
-        manifest.setdefault("metadata", {}).setdefault("annotations", {})[
+        # Kueue keys queue membership off the label (not an annotation); an
+        # annotation is not honored by Kueue 0.16.x, so the job would never be
+        # suspended/admitted and would run unmanaged.
+        manifest.setdefault("metadata", {}).setdefault("labels", {})[
             "kueue.x-k8s.io/queue-name"
-        ] = "robovast"
+        ] = KUEUE_QUEUE_NAME
 
         main_container = manifest['spec']['template']['spec']['containers'][0]
         main_container.setdefault('securityContext', {})['runAsUser'] = run_as_user
@@ -684,13 +713,21 @@ class BatchJobRunner:
         #    the object store into the campaign root, so the host campaign is
         #    complete (matching a local run and the service's fetch_campaign).
         os.makedirs(campaign_root, exist_ok=True)
+        # A large batch's download is otherwise silent between "all jobs finished"
+        # and the final "downloaded N" line — potentially minutes on hundreds of
+        # files. Announce the start and log a running count every few seconds so
+        # the campaign log shows progress instead of appearing hung.
+        logger.info("Batch %s: downloading result files from object store...",
+                    self._batch_tag)
+        on_file = _download_progress_logger(self._batch_tag)
         if whole_campaign:
             # Batch mode: this batch *is* the whole campaign, so the prefix holds
             # nothing but its own artifacts. One prefix download does a single
             # paginated list instead of one list per config — the per-config
             # enumeration below costs 600+ sequential list calls on a large batch,
             # during which the campaign sits in "running" with no progress.
-            got = storage.download_prefix(bucket_name, campaign_prefix, campaign_root)
+            got = storage.download_prefix(bucket_name, campaign_prefix, campaign_root,
+                                          on_file=on_file)
         else:
             # Search mode: the campaign prefix is flat/shared across batches, so we
             #    fetch by name: this batch's <config>/ dirs (self.configs == this
@@ -709,7 +746,8 @@ class BatchJobRunner:
             targets += ["_config", "_transient", job_root]
             for rel in targets:
                 got += storage.download_prefix(
-                    bucket_name, f"{campaign_prefix}{rel}", os.path.join(campaign_root, rel))
+                    bucket_name, f"{campaign_prefix}{rel}",
+                    os.path.join(campaign_root, rel), on_file=on_file)
         logger.info("Batch %s: downloaded %d result file(s) into %s",
                     self._batch_tag, got, campaign_root)
 

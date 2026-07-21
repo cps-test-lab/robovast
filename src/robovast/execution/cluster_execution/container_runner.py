@@ -77,14 +77,21 @@ def aux_pod_name(campaign_id: str) -> str:
 def required_container_specs(config_path):
     """Collect the distinct auxiliary ContainerSpecs a campaign's variations need.
 
-    Loads the ``.vast`` file and asks each declared variation plugin (via
-    ``get_required_container``) whether it needs a helper image while it runs.
-    Returns a list of ``ContainerSpec`` deduplicated by container name.
-    Best-effort: a plugin that fails to load is skipped (the run surfaces the real
-    error later), so a launch is never blocked by container discovery.
+    Asks each declared variation (via ``get_required_container``) whether it needs a
+    helper image while it runs, and returns a list of ``ContainerSpec`` deduplicated
+    by container name. Best-effort: a plugin that fails to load is skipped (the run
+    surfaces the real error later), so a launch is never blocked by discovery.
+
+    When the ``.vast`` declares ``plugins:`` (or a staged ``.robovast_plugins/`` is
+    present), the variation names resolve only through the plugin's entry points, and
+    those must be imported to call ``get_required_container``. Importing plugin code
+    in this long-lived service is forbidden (its pinned deps — e.g. a forked
+    ``rdflib`` — would win over the service's), so discovery for that case runs in a
+    fresh subprocess (parity with ``config_generation._compose_isolated``). A pure
+    built-in ``.vast`` needs no plugin import and is resolved in-process.
     """
     from robovast.common.common import load_config
-    from robovast.common.config_generation import _get_variation_classes
+    from robovast.common.config_plugins import PLUGIN_DIRNAME
 
     vast_dir = os.path.dirname(os.path.abspath(config_path))
     try:
@@ -92,6 +99,37 @@ def required_container_specs(config_path):
     except Exception as exc:  # pylint: disable=broad-except
         logger.warning("Could not inspect '%s' for aux containers: %s", config_path, exc)
         return []
+
+    needs_plugins = bool(parameters.get("plugins")) or \
+        os.path.isdir(os.path.join(vast_dir, PLUGIN_DIRNAME))
+    if needs_plugins:
+        return _discover_specs_subprocess(config_path)
+    return _discover_specs(config_path)
+
+
+def _discover_specs(config_path):
+    """Resolve the campaign's aux ContainerSpecs in the current process.
+
+    Prepends any declared/staged variation plugins to ``sys.path`` first, so plugin
+    variation names resolve via their entry points. Only safe to call in-process for
+    a built-in-only ``.vast`` (see :func:`required_container_specs`); otherwise it is
+    the body run inside the discovery subprocess (``aux_discovery_worker``).
+    """
+    from robovast.common.common import load_config
+    from robovast.common.config_generation import _get_variation_classes
+    from robovast.common.config_plugins import ensure_workspace_plugins
+
+    vast_dir = os.path.dirname(os.path.abspath(config_path))
+    try:
+        parameters = load_config(config_path)
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning("Could not inspect '%s' for aux containers: %s", config_path, exc)
+        return []
+
+    # Put the .vast's variation plugins on sys.path (no-op for a built-in-only .vast:
+    # no ``plugins:`` and no staged dir). A matching ``.installed`` marker makes this
+    # sys.path-only — no pip, no network.
+    ensure_workspace_plugins(vast_dir, parameters.get("plugins"))
 
     # Batch campaigns declare variations under top-level ``configuration`` blocks;
     # search campaigns declare them once as ``search.variations`` (compose expands
@@ -120,6 +158,47 @@ def required_container_specs(config_path):
             if spec is not None:
                 specs.setdefault(spec.container_name(), spec)
     return list(specs.values())
+
+
+def _discover_specs_subprocess(config_path):
+    """Run :func:`_discover_specs` in a fresh subprocess and rebuild the specs.
+
+    Isolates plugin imports from the long-lived service. Best-effort: if the worker
+    cannot start, fails, or yields no result, discovery is skipped (empty list) so a
+    launch is never blocked — the run surfaces any real plugin error at compose time.
+    """
+    import json
+    import sys
+
+    with tempfile.TemporaryDirectory(prefix="robovast_aux_discovery_") as jobdir:
+        result_path = os.path.join(jobdir, "result.json")
+        job_path = os.path.join(jobdir, "job.json")
+        with open(job_path, "w", encoding="utf-8") as f:
+            json.dump({"config_path": os.path.abspath(config_path),
+                       "result_path": result_path}, f)
+
+        cmd = [sys.executable, "-m",
+               "robovast.execution.cluster_execution.aux_discovery_worker", job_path]
+        try:
+            # nosec B603 - fixed module, config-derived job file
+            proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("Aux-container discovery subprocess could not start: %s", exc)
+            return []
+        if proc.returncode != 0:
+            tail = (proc.stdout + proc.stderr)[-1000:]
+            logger.warning("Aux-container discovery failed (exit %s); proceeding "
+                           "without an aux pod:\n%s", proc.returncode, tail)
+            return []
+        try:
+            with open(result_path, encoding="utf-8") as f:
+                raw = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("Aux-container discovery produced no result: %s", exc)
+            return []
+
+    from robovast.common.variation.container_runner import ContainerSpec
+    return [ContainerSpec(**spec) for spec in raw]
 
 
 def cleanup_aux_pods(namespace="default", kube_context=None, campaign=None):

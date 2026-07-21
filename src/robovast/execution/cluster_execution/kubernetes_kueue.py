@@ -503,7 +503,12 @@ def _wait_for_kueue_crds(ctx_kubectl, timeout=120):
     Args:
         ctx_kubectl: list of kubectl context flags, e.g. ``["--context", "my-ctx"]``.
         timeout: seconds to wait per CRD.
+
+    Returns:
+        list[str]: the CRDs that did **not** become established within *timeout*
+        (missing, or still Terminating).  An empty list means all are ready.
     """
+    not_ready = []
     for crd in _KUEUE_CRDS:
         result = subprocess.run(
             ["kubectl"] + ctx_kubectl + [
@@ -520,6 +525,87 @@ def _wait_for_kueue_crds(ctx_kubectl, timeout=120):
                 "kubectl wait for CRD '%s' returned non-zero (may not exist yet): %s",
                 crd, result.stderr,
             )
+            not_ready.append(crd)
+    return not_ready
+
+
+def _force_apply_kueue_crds(ctx_helm, ctx_kubectl):
+    """Server-side apply the chart's CRDs from the installed release manifest.
+
+    Works around occasional partial installs where ``helm install`` reports
+    success but one CRD (in practice the large ``clusterqueues`` CRD) never
+    lands — e.g. because a stale copy from a prior teardown was still
+    Terminating when Helm tried to create it.  Server-side apply re-creates any
+    missing CRD without disturbing the running controller.
+
+    Returns:
+        bool: True if the apply was attempted and succeeded.
+    """
+    manifest = subprocess.run(
+        ["helm"] + ctx_helm + [
+            "get", "manifest", KUEUE_HELM_RELEASE, "-n", KUEUE_NAMESPACE,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if manifest.returncode != 0 or not manifest.stdout.strip():
+        logger.warning(
+            "Could not fetch Kueue chart manifest for CRD recovery: %s",
+            manifest.stderr,
+        )
+        return False
+    crd_docs = [
+        doc for doc in manifest.stdout.split("\n---\n")
+        if "kind: CustomResourceDefinition" in doc
+    ]
+    if not crd_docs:
+        logger.warning("No CRDs found in Kueue chart manifest; cannot recover.")
+        return False
+    applied = subprocess.run(
+        ["kubectl"] + ctx_kubectl + [
+            "apply", "--server-side", "--force-conflicts", "-f", "-",
+        ],
+        input="\n---\n".join(crd_docs),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if applied.returncode != 0:
+        logger.warning(
+            "Force server-side apply of Kueue CRDs failed: %s", applied.stderr
+        )
+        return False
+    logger.info("Force-applied %d Kueue CRD(s) from chart manifest", len(crd_docs))
+    return True
+
+
+def _ensure_kueue_crds(ctx_helm, ctx_kubectl, timeout=120):
+    """Verify all critical Kueue CRDs are established, self-healing if not.
+
+    Turns a silent partial install into a deterministic outcome: wait for the
+    CRDs, force-apply them from the chart manifest if any are missing, and raise
+    a clear, actionable error if they still cannot be established.  Without this,
+    a missing ``clusterqueues`` CRD lets ``setup`` finish "successfully" while
+    the ClusterQueue never gets created — so every job runs unmanaged with no
+    admission control.
+    """
+    not_ready = _wait_for_kueue_crds(ctx_kubectl, timeout=timeout)
+    if not_ready:
+        logger.warning(
+            "Kueue CRD(s) not established after Helm operation: %s. "
+            "Force-applying CRDs from the chart manifest...",
+            not_ready,
+        )
+        _force_apply_kueue_crds(ctx_helm, ctx_kubectl)
+        not_ready = _wait_for_kueue_crds(ctx_kubectl, timeout=60)
+    if not_ready:
+        raise RuntimeError(
+            "Kueue installation incomplete: CRD(s) missing or not established "
+            f"even after recovery: {not_ready}. The ClusterQueue cannot be "
+            "created, so jobs would run unmanaged (no admission control). "
+            "Run `vast execution cluster cleanup` and then `setup` again."
+        )
 
 
 def _run_helm(args, check=True):
@@ -606,9 +692,10 @@ def install_kueue_helm(kube_context=None):
             )
         finally:
             os.unlink(values_path)
-        # Wait for CRDs after upgrade (upgrade may update CRDs)
-        # Wait for ALL critical Kueue CRDs after upgrade too.
-        _wait_for_kueue_crds(ctx_kubectl, timeout=60)
+        # Wait for CRDs after upgrade (upgrade may update CRDs).
+        # Verify ALL critical Kueue CRDs and self-heal / fail loudly if any are
+        # missing, rather than proceeding with a broken queue.
+        _ensure_kueue_crds(ctx_helm, ctx_kubectl, timeout=60)
         return
 
     logger.info("Installing Kueue via Helm in namespace %s...", KUEUE_NAMESPACE)
@@ -632,10 +719,11 @@ def install_kueue_helm(kube_context=None):
     finally:
         os.unlink(values_path)
     logger.info("Kueue installed successfully. Waiting for controller and CRDs...")
-    # Wait for ALL critical Kueue CRDs to be established.
-    # This also covers the case where a previous uninstall left CRDs in a
-    # Terminating state – kubectl wait blocks until they are fully re-created.
-    _wait_for_kueue_crds(ctx_kubectl, timeout=120)
+    # Verify ALL critical Kueue CRDs are established; self-heal a partial install
+    # (e.g. a missing clusterqueues CRD) by force-applying the chart CRDs, and
+    # fail loudly if that still cannot establish them.  This also covers the case
+    # where a previous uninstall left CRDs Terminating when helm tried to create.
+    _ensure_kueue_crds(ctx_helm, ctx_kubectl, timeout=120)
     # Wait for deployment to be ready
     subprocess.run(
         ["kubectl"] + ctx_kubectl + [

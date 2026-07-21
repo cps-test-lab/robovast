@@ -41,6 +41,8 @@ import json
 import logging
 import time
 
+from .kubernetes_kueue import KUEUE_QUEUE_NAME
+
 logger = logging.getLogger(__name__)
 
 SIDECAR_IMAGE = "ghcr.io/cps-test-lab/robovast-sidecar:latest"
@@ -307,8 +309,12 @@ def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
         "metadata": {
             "name": f"robovast-postproc-{safe}",
             "namespace": namespace,
-            "labels": {"jobgroup": "postprocessing", "campaign-id": safe},
-            "annotations": {"kueue.x-k8s.io/queue-name": "robovast"},
+            "labels": {
+                "jobgroup": "postprocessing",
+                "campaign-id": safe,
+                # Kueue keys queue membership off the label, not an annotation.
+                "kueue.x-k8s.io/queue-name": KUEUE_QUEUE_NAME,
+            },
         },
         "spec": {
             "backoffLimit": 0,

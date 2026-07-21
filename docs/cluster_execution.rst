@@ -248,7 +248,11 @@ client**.
    ROBOVAST_REGISTRY_SERVER=ghcr.io
    ROBOVAST_REGISTRY_USERNAME=<user>
    ROBOVAST_REGISTRY_PASSWORD=<token>
-   # Optional: a cluster-internal registry over plain HTTP / untrusted TLS.
+   # Optional: trust a self-signed / private-CA registry. The CA is stored in a
+   # ConfigMap and mounted into the build Job (BuildKit trusts the registry API AND
+   # its auth/token endpoint). Preferred over INSECURE for anything real.
+   ROBOVAST_REGISTRY_CA_FILE=/path/to/registry-ca.pem
+   # Optional: skip TLS verification instead (plain HTTP / throwaway registry).
    ROBOVAST_REGISTRY_INSECURE=true
    # Optional: default base image when build.base_image is omitted.
    ROBOVAST_BASE_EXPERIMENT_IMAGE=ghcr.io/cps-test-lab/sim-suite-nav2-eval:latest

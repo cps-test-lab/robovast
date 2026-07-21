@@ -471,10 +471,10 @@ def resolve_download_source(variant: str) -> str:
       **service** from the object store (cluster);
     * ``raw`` — the minimal pre-postprocess snapshot on the external **share**.
 
-    ``auto`` (default) prefers ``postprocessed`` when a service is reachable, else falls
-    back to ``raw`` when a share is configured. An explicit variant forces that source
-    and errors if it is not reachable. Returns the resolved variant (``postprocessed``
-    or ``raw``).
+    ``auto`` (default) prefers ``raw`` from the share whenever one is configured (even
+    if a service is reachable), and only falls back to ``postprocessed`` from the service
+    when no share is available. An explicit variant forces that source and errors if it
+    is not reachable. Returns the resolved variant (``postprocessed`` or ``raw``).
     """
     from robovast.common.cli.service_target import \
         detected_service_url  # pylint: disable=import-outside-toplevel
@@ -494,11 +494,11 @@ def resolve_download_source(variant: str) -> str:
                 "No share is configured (ROBOVAST_SHARE_TYPE unset in .env), so the raw "
                 "archive is unavailable. Use --variant postprocessed with a service.")
         return "raw"
-    # auto
-    if has_service:
-        return "postprocessed"
+    # auto: prefer the share (raw) when possible, even if a service is reachable.
     if has_share:
         return "raw"
+    if has_service:
+        return "postprocessed"
     raise click.UsageError(
         "Nothing to download from: no robovast-service is reachable and no share is "
         "configured (ROBOVAST_SHARE_TYPE in .env). Start a service or configure a share.")
@@ -511,9 +511,7 @@ def resolve_download_source(variant: str) -> str:
 @results.command(name='download')
 @click.option('--output', '-o', default=None,
               help='Directory to extract results into (uses project results dir if not specified)')
-@click.option('--campaign', '-i', 'campaigns', multiple=True,
-              help='Only download this campaign (e.g. dynamic_obstacle-2025-02-27-123456 or campaign-2025-02-27-123456). '
-                   'Can be specified multiple times. Without this, downloads all campaigns.')
+@click.argument('campaigns', nargs=-1)
 @click.option('--force', '-f', is_flag=True,
               help='Re-download and re-extract even if the campaign directory already exists')
 @click.option('--keep-archive', is_flag=True,
@@ -569,7 +567,7 @@ def download_from_share_cmd(output, campaigns, force, keep_archive, variant, deb
         results_dir = output or get_project_config().results_dir
         if not campaigns:
             raise click.ClickException(
-                "Specify at least one campaign id with -i to download the postprocessed "
+                "Specify at least one campaign id to download the postprocessed "
                 "archive from the service.")
         client = RobovastClient(detected_service_url())
         click.echo("Downloading postprocessed archive(s) from the service...")

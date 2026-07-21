@@ -377,7 +377,41 @@ def _registry_env_from_host():
             and os.environ.get("ROBOVAST_REGISTRY_PASSWORD", "").strip()):
         env["ROBOVAST_REGISTRY_PUSH_SECRET"] = REGISTRY_PUSH_SECRET_NAME
         env["ROBOVAST_REGISTRY_PULL_SECRET"] = REGISTRY_PUSH_SECRET_NAME
+    insecure = os.environ.get("ROBOVAST_REGISTRY_INSECURE", "").strip()
+    if insecure:
+        env["ROBOVAST_REGISTRY_INSECURE"] = insecure
+    # A registry CA file → a ConfigMap the build Job mounts so BuildKit trusts a
+    # self-signed / private-CA registry (see _registry_ca_manifest).
+    if os.environ.get("ROBOVAST_REGISTRY_CA_FILE", "").strip():
+        env["ROBOVAST_REGISTRY_CA_CONFIGMAP"] = REGISTRY_CA_CONFIGMAP_NAME
     return env
+
+
+#: ConfigMap (key ``ca.pem``) holding the registry CA, created when
+#: ``ROBOVAST_REGISTRY_CA_FILE`` is set at setup. Mounted into the build Job.
+REGISTRY_CA_CONFIGMAP_NAME = "robovast-registry-ca"
+
+
+def _registry_ca_manifest(namespace):
+    """A ConfigMap holding the registry CA, or ``None`` when no CA file is set."""
+    import os
+    _load_setup_dotenv()
+    ca_path = os.environ.get("ROBOVAST_REGISTRY_CA_FILE", "").strip()
+    if not ca_path:
+        return None
+    try:
+        ca = open(ca_path, encoding="utf-8").read()
+    except OSError as e:
+        import click  # pylint: disable=import-outside-toplevel
+        raise click.UsageError(
+            f"ROBOVAST_REGISTRY_CA_FILE='{ca_path}' is unreadable: {e}") from e
+    return {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {"name": REGISTRY_CA_CONFIGMAP_NAME, "namespace": namespace,
+                     "labels": {"app": SERVICE_NAME}},
+        "data": {"ca.pem": ca},
+    }
 
 
 def _registry_dockerconfig_manifest(namespace):
@@ -502,6 +536,9 @@ def service_manifests(namespace="default", image=None, env=None,
     registry_secret = _registry_dockerconfig_manifest(namespace)
     if registry_secret:
         extra.append(registry_secret)
+    registry_ca = _registry_ca_manifest(namespace)
+    if registry_ca:
+        extra.append(registry_ca)
 
     return [
         *_service_rbac_manifests(namespace),
@@ -542,9 +579,11 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
     cluster_binding = by_kind["ClusterRoleBinding"]
     deployment = by_kind["Deployment"]
     service = by_kind["Service"]
-    # There may be two Secrets (git token and/or share credentials); by_kind
-    # collapses same-kind entries, so collect them from the full list.
+    # There may be several Secrets (git token, share/ntfy/registry creds) and
+    # ConfigMaps (registry CA); by_kind collapses same-kind entries, so collect
+    # these from the full list.
     secrets = [m for m in manifests if m["kind"] == "Secret"]
+    configmaps = [m for m in manifests if m["kind"] == "ConfigMap"]
 
     # ServiceAccount
     _create_or_ok(lambda: core.create_namespaced_service_account(namespace, sa, dry_run=dr))
@@ -569,6 +608,13 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
             lambda s=secret: core.create_namespaced_secret(namespace, s, dry_run=dr),
             lambda s=secret, n=name: core.replace_namespaced_secret(
                 n, namespace, s, dry_run=dr))
+    # ConfigMaps (registry CA). Replace on conflict so a rotated CA takes effect.
+    for cm in configmaps:
+        name = cm["metadata"]["name"]
+        _create_or_replace(
+            lambda c=cm: core.create_namespaced_config_map(namespace, c, dry_run=dr),
+            lambda c=cm, n=name: core.replace_namespaced_config_map(
+                n, namespace, c, dry_run=dr))
     # Deployment (replace spec on conflict → rolling update / --upgrade)
     _create_or_replace(
         lambda: apps.create_namespaced_deployment(namespace, deployment, dry_run=dr),

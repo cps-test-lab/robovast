@@ -182,16 +182,28 @@ class ClusterService(LocalTransport):
         # Lazy: the port-forward opens only when a storage client is actually built.
         if not os.environ.get("KUBERNETES_SERVICE_HOST"):
             cfg.set_driver_s3_endpoint_resolver(
-                lambda: cfg.resolve_driver_s3_endpoint(self._minio_port_forward_endpoint))
+                lambda force_reconnect=False: cfg.resolve_driver_s3_endpoint(
+                    self._minio_port_forward_endpoint, force_reconnect))
         return cfg
 
-    def _minio_port_forward_endpoint(self) -> str:
+    def _minio_port_forward_endpoint(self, force_restart: bool = False) -> str:
         """Return ``http://localhost:<port>`` for the shared MinIO port-forward,
-        opening (or re-opening a dead) forward under the lock."""
+        opening (or re-opening) the forward under the lock.
+
+        A ``kubectl port-forward`` frequently goes *stalled-but-alive* under a large
+        transfer (e.g. downloading a whole campaign's rosbags): the process keeps
+        running while its tunnel stops proxying, so every S3 request then read-times
+        out. ``poll()`` cannot see this — it only reports a *dead process*. So the
+        driver's storage client, on a network timeout, re-resolves with
+        *force_restart=True*, which tears the current forward down and opens a fresh
+        one on a new port; the client then rebuilds itself against the new endpoint.
+        """
         from robovast.execution.cluster_execution.bucket_ops import \
             open_minio_port_forward
         with self._pf_lock:
-            if self._minio_pf is not None and self._minio_pf.poll() is not None:
+            if force_restart:
+                self._close_minio_pf_locked()
+            elif self._minio_pf is not None and self._minio_pf.poll() is not None:
                 self._minio_pf = None  # forward died; drop it and reopen below
             if self._minio_pf is None:
                 self._minio_pf, port = open_minio_port_forward(
@@ -200,6 +212,17 @@ class ClusterService(LocalTransport):
                 logger.info("Opened MinIO port-forward for driver S3 at %s",
                             self._minio_pf_endpoint)
             return self._minio_pf_endpoint
+
+    def _close_minio_pf_locked(self) -> None:
+        """Terminate the current MinIO port-forward. Caller must hold ``_pf_lock``."""
+        pf, self._minio_pf = self._minio_pf, None
+        self._minio_pf_endpoint = None
+        if pf is not None and pf.poll() is None:
+            pf.terminate()
+            try:
+                pf.wait(timeout=5)
+            except Exception:  # noqa: BLE001 - best-effort teardown
+                pf.kill()
 
     def _resolve_image(self):
         from robovast.common.execution import resolve_controller_image
@@ -552,7 +575,8 @@ class ClusterService(LocalTransport):
         manifest = build_job_manifest(
             build_id=build_id, image_ref=image_ref, campaign_label=build_id,
             init_env=init_env, push_secret_name=registry.push_secret_name,
-            namespace=self.namespace, insecure=registry.insecure)
+            namespace=self.namespace, insecure=registry.insecure,
+            ca_configmap_name=registry.ca_configmap_name)
         self._k8s_batch().create_namespaced_job(self.namespace, manifest)
 
         status = ImageBuildStatus(build_id=build_id, tag=spec.tag, phase="building",
@@ -759,14 +783,7 @@ class ClusterService(LocalTransport):
             super().shutdown()
         finally:
             with self._pf_lock:
-                pf, self._minio_pf = self._minio_pf, None
-                self._minio_pf_endpoint = None
-            if pf is not None and pf.poll() is None:
-                pf.terminate()
-                try:
-                    pf.wait(timeout=5)
-                except Exception:  # noqa: BLE001 - best-effort teardown
-                    pf.kill()
+                self._close_minio_pf_locked()
 
     # -- orphan reaping -----------------------------------------------------
 

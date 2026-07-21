@@ -1,6 +1,5 @@
 import Box from '@mui/material/Box'
 import Chip from '@mui/material/Chip'
-import Tooltip from '@mui/material/Tooltip'
 
 // The controller's phase vocabulary (control_server.Status): starting → running → finishing →
 // finished / failed / stopped. Map to MUI colors; unknown phases stay neutral.
@@ -21,21 +20,37 @@ export function PhaseChip({ phase, size = 'small' }: { phase: string; size?: 'sm
   return <Chip size={size} label={phase} color={COLOR[phase] ?? 'default'} />
 }
 
-// The compact form of PhaseChip: a small phase-colored dot that sits in front of a
-// campaign name. Pulses while the campaign is live so a running campaign is obvious at
-// a glance; the tooltip names the phase for the exact word.
+// The compact form of PhaseChip: a phase-colored bullet pill with the phase name
+// inside, sitting in front of a campaign name. The leading dot pulses while the
+// campaign is live so a running campaign is obvious at a glance.
 export function PhaseDot({ phase }: { phase: string }) {
   const live = LIVE_PHASES.includes(phase)
+  const color =
+    COLOR[phase] && COLOR[phase] !== 'default' ? `${COLOR[phase]}.main` : 'text.disabled'
   return (
-    <Tooltip title={phase} placement="top">
+    <Box
+      component="span"
+      sx={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 0.75,
+        px: 1,
+        py: 0.25,
+        borderRadius: 999,
+        border: 1,
+        borderColor: color,
+        color,
+        bgcolor: (t) => t.palette.action.hover,
+      }}
+    >
       <Box
         component="span"
         sx={{
-          width: 9,
-          height: 9,
+          width: 8,
+          height: 8,
           borderRadius: '50%',
           flexShrink: 0,
-          bgcolor: COLOR[phase] && COLOR[phase] !== 'default' ? `${COLOR[phase]}.main` : 'text.disabled',
+          bgcolor: color,
           animation: live ? 'phaseDotPulse 1.4s ease-in-out infinite' : 'none',
           '@keyframes phaseDotPulse': {
             '0%, 100%': { opacity: 1 },
@@ -43,6 +58,9 @@ export function PhaseDot({ phase }: { phase: string }) {
           },
         }}
       />
-    </Tooltip>
+      <Box component="span" sx={{ fontSize: '0.75rem', fontWeight: 600, lineHeight: 1 }}>
+        {phase}
+      </Box>
+    </Box>
   )
 }

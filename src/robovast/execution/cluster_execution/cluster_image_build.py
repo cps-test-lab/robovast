@@ -119,20 +119,39 @@ def s3_init_env(s3_endpoint, s3_access_key, s3_secret_key, bucket, build_prefix)
     ]
 
 
+#: Where the registry CA (for a self-signed / private-CA registry) is mounted.
+_CA_MOUNT = "/certs"
+#: Rootless BuildKit reads its config from ``$HOME/.config/buildkit`` (HOME=/home/user).
+_BUILDKIT_CONF_DIR = "/home/user/.config/buildkit"
+
+
+def _registry_host(image_ref: str) -> str:
+    """The registry host[:port] from a full image ref (``host/path:tag`` → ``host``)."""
+    return image_ref.split("/", 1)[0]
+
+
 def build_job_manifest(*, build_id: str, image_ref: str, campaign_label: str,
                        init_env: list, push_secret_name: str,
-                       namespace: str, insecure: bool = False) -> dict:
+                       namespace: str, insecure: bool = False,
+                       ca_configmap_name: str = "") -> dict:
     """A rootless BuildKit Job that fetches the S3 context and builds+pushes *image_ref*.
 
     An init container (``robovast-sidecar``) mirrors the context to an emptyDir; the
     BuildKit container builds ``Dockerfile`` from it and pushes with the mounted
     push credential. ``push_secret_name`` is a ``kubernetes.io/dockerconfigjson``
     Secret provisioned at ``vast exec cluster setup`` — the only place registry
-    credentials live. ``insecure`` pushes over plain HTTP / untrusted TLS (e.g. a
-    cluster-internal registry).
+    credentials live.
+
+    TLS to a private registry: ``ca_configmap_name`` mounts a CA (key ``ca.pem``) and
+    points BuildKit at it via ``buildkitd.toml`` (proper trust — covers both the
+    registry API and the auth/token endpoint). ``insecure`` instead skips TLS verify
+    (plain HTTP / untrusted cert), e.g. a throwaway cluster-internal registry. Prefer
+    a CA over ``insecure`` for anything real. (Pull-side trust for a self-signed
+    registry is node-level — the operator configures containerd — and is out of
+    scope of this Job.)
     """
     output = f"type=image,name={image_ref},push=true"
-    if insecure:
+    if insecure and not ca_configmap_name:
         output += ",registry.insecure=true"
     buildctl = (
         "buildctl-daemonless.sh build "
@@ -157,6 +176,22 @@ def build_job_manifest(*, build_id: str, image_ref: str, campaign_label: str,
         build_mounts.append({
             'name': 'docker-config', 'mountPath': _DOCKER_CONFIG_MOUNT, 'readOnly': True})
         build_env.append({'name': 'DOCKER_CONFIG', 'value': _DOCKER_CONFIG_MOUNT})
+
+    command = ['sh', '-c', buildctl]
+    if ca_configmap_name:
+        # Mount the CA and generate a buildkitd.toml pointing the registry at it, so
+        # BuildKit trusts the self-signed/private-CA registry (data plane + token
+        # endpoint). Heredoc keeps the shell quoting trivial.
+        volumes.append({'name': 'registry-ca',
+                        'configMap': {'name': ca_configmap_name}})
+        build_mounts.append({'name': 'registry-ca', 'mountPath': _CA_MOUNT,
+                             'readOnly': True})
+        toml = (f'[registry."{_registry_host(image_ref)}"]\n'
+                f'  ca=["{_CA_MOUNT}/ca.pem"]\n')
+        command = ['sh', '-c',
+                   f"mkdir -p {_BUILDKIT_CONF_DIR} && "
+                   f"cat > {_BUILDKIT_CONF_DIR}/buildkitd.toml <<'BKEOF'\n"
+                   f"{toml}BKEOF\n{buildctl}"]
 
     return {
         'apiVersion': 'batch/v1',
@@ -198,7 +233,7 @@ def build_job_manifest(*, build_id: str, image_ref: str, campaign_label: str,
                     'containers': [{
                         'name': 'buildkit',
                         'image': BUILDKIT_IMAGE,
-                        'command': ['sh', '-c', buildctl],
+                        'command': command,
                         'env': build_env,
                         'securityContext': {
                             'runAsUser': 1000, 'runAsGroup': 1000,
