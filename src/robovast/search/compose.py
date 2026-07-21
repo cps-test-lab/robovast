@@ -57,6 +57,14 @@ from .types import ParamSet
 
 logger = logging.getLogger(__name__)
 
+# Composition progress (and the pip-install output the isolated-plugin compose
+# subprocess forwards) is routed here — a child of "robovast" logged at INFO — so
+# it reaches the campaign log's active phase file, exactly as the batch path does
+# via ``run_batch_campaign``. Without this the composition falls back to
+# ``generate_scenario_variations``'s ``logger.debug`` default, which the campaign
+# log handler (gated at INFO) drops — leaving a plugin install silent.
+variation_logger = logging.getLogger("robovast.variation")
+
 
 def config_name_for(param_set: ParamSet) -> str:
     """Deterministic, schema-valid config/result-dir name for a param set.
@@ -161,6 +169,7 @@ class Compose:
                 variation_file=temp_vast,
                 output_dir=output_dir,
                 use_cache=False,
+                progress_update_callback=variation_logger.info,
             )
             # Repoint "vast" at the persistent original (same dir, so relative
             # scenario_file/run_files still resolve) so downstream consumers that
