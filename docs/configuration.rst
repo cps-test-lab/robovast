@@ -324,9 +324,11 @@ timeout
 Maximum wall-clock time (in seconds) allowed for a single run.
 
 - **Local (Docker Compose):** Currently not enforced; local runs will continue past this timeout and must be stopped manually.
-- **Cluster (Kubernetes):** Sets ``activeDeadlineSeconds`` on the Job spec; Kubernetes terminates the pod when the deadline expires.
+- **Cluster (Kubernetes):** Sets ``activeDeadlineSeconds`` on the Job spec so Kubernetes force-terminates the Job (marking it ``DeadlineExceeded``) when the deadline expires — this is the backstop that stops a scenario that never shuts itself down. Because ``timeout`` is *per run* and a Job may pack several runs (see ``runs_per_job``), the Job's ``activeDeadlineSeconds`` is set to ``timeout * runs_per_job``.
 
-If omitted (or ``null``), there is no time limit.
+If omitted (or ``null``), cluster runs fall back to a **default of 1 hour per run** (``activeDeadlineSeconds = 3600 * runs_per_job``) so a hung Job is always eventually killed rather than hanging the campaign indefinitely. Set ``timeout`` explicitly to override this default. (Local runs still have no enforced limit.)
+
+A Job hard-killed on its deadline is logged with ``HARD-KILLED by activeDeadlineSeconds`` in the service log for later analysis.
 
 .. code-block:: yaml
 

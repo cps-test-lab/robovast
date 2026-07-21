@@ -159,10 +159,21 @@ class BatchJobRunner:
     #: runner built another way (offline manifest emit, tests) has no stop wired.
     _state = None
 
+    #: Effective per-Job ``activeDeadlineSeconds`` and the set of Jobs already logged
+    #: as hard-killed on it. Class-level defaults for runners not built via
+    #: :meth:`for_batch`.
+    _deadline_seconds = None
+    _deadline_killed = frozenset()
+
     #: How long a batch tolerates jobs stuck unable to start (image pull / config
     #: error) before failing with the Kubernetes reason. A short grace absorbs a
     #: transient registry blip while never letting a doomed image hang the campaign.
     _BLOCKED_GRACE_SECONDS = 60.0
+
+    #: Fallback wall-clock cap *per run* when ``execution.timeout`` is unset, so a
+    #: scenario Job that never shuts itself down is always force-killed by Kubernetes
+    #: (via ``activeDeadlineSeconds``) rather than hanging the campaign forever. 1 hour.
+    DEFAULT_RUN_DEADLINE_SECONDS = 60 * 60
 
     @classmethod
     def for_batch(cls, *, campaign_data, campaign_id, batch_tag, runs, cluster_config,
@@ -198,9 +209,18 @@ class BatchJobRunner:
             self.run_as_user,
             execution_params.get("secondary_containers") or [],
         )
+        # Always cap a Job's wall-clock time so a scenario that never shuts itself
+        # down is force-killed by Kubernetes (``DeadlineExceeded``) instead of hanging
+        # the campaign forever. ``execution.timeout`` is a *per-run* limit; scale by
+        # the number of runs packed into a Job (default 1) so a packed Job isn't killed
+        # prematurely. Falls back to ``DEFAULT_RUN_DEADLINE_SECONDS`` when unset.
         timeout = execution_params.get("timeout")
-        if timeout:
-            self.manifest["spec"]["activeDeadlineSeconds"] = int(timeout)
+        per_run = int(timeout) if timeout else self.DEFAULT_RUN_DEADLINE_SECONDS
+        self._deadline_seconds = per_run * self._runs_per_job()
+        self.manifest["spec"]["activeDeadlineSeconds"] = self._deadline_seconds
+        # Jobs already logged as hard-killed on the deadline, so the wait loop warns
+        # once per job rather than every poll.
+        self._deadline_killed = set()
 
         self.k8s_client = None
         self.k8s_batch_client = None
@@ -520,6 +540,8 @@ class BatchJobRunner:
                     continue
                 raise
 
+            self._log_if_deadline_killed(job_name, job_status.status)
+
             # Check if job is still active/running
             if job_status.status.active is not None and job_status.status.active >= 1:
                 running_jobs.append(job_name)
@@ -527,6 +549,29 @@ class BatchJobRunner:
             elif job_status.status.completion_time is None and (job_status.status.failed is None or job_status.status.failed == 0):
                 running_jobs.append(job_name)
         return running_jobs
+
+    def _log_if_deadline_killed(self, job_name, status):
+        """Emit a clear, greppable WARNING the first time *job_name* is seen to have
+        been force-killed by ``activeDeadlineSeconds``.
+
+        Kubernetes marks such a Job with a ``Failed`` condition whose reason is
+        ``DeadlineExceeded``. These runs typically produce no ``/test.xml`` artifact,
+        so this log line is the record that the job was hung and hard-stopped — for
+        later analysis (grep ``HARD-KILLED by activeDeadlineSeconds``)."""
+        if status is None or job_name in self._deadline_killed:
+            return
+        for cond in (status.conditions or []):
+            if cond.type == "Failed" and cond.reason == "DeadlineExceeded":
+                # ``_deadline_killed`` is a class-level frozenset for offline runners;
+                # promote to an instance set before recording.
+                if not isinstance(self._deadline_killed, set):
+                    self._deadline_killed = set()
+                self._deadline_killed.add(job_name)
+                logger.warning(
+                    "Campaign %s batch %s: job %s HARD-KILLED by activeDeadlineSeconds "
+                    "(%ss) — likely hung, no self-shutdown.",
+                    self.campaign, self._batch_tag, job_name, self._deadline_seconds)
+                return
 
     def cleanup_jobs(self, campaign=None):
         """Delete jobs. If campaign is given, only delete jobs with that campaign-id label."""
@@ -708,6 +753,11 @@ class BatchJobRunner:
             raise CampaignStopped(f"campaign {self.campaign} stopped during batch "
                                   f"{self._batch_tag}")
         logger.info("Batch %s: all jobs finished.", self._batch_tag)
+        if self._deadline_killed:
+            logger.warning(
+                "Batch %s: %d job(s) hard-killed on the %ss deadline: %s",
+                self._batch_tag, len(self._deadline_killed), self._deadline_seconds,
+                ", ".join(sorted(self._deadline_killed)))
 
         # 4. Project this batch's results — and the campaign-level snapshot — from
         #    the object store into the campaign root, so the host campaign is
