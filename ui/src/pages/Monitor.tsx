@@ -1,17 +1,27 @@
+import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import CircularProgress from '@mui/material/CircularProgress'
+import IconButton from '@mui/material/IconButton'
+import ListItemIcon from '@mui/material/ListItemIcon'
+import ListItemText from '@mui/material/ListItemText'
+import Menu from '@mui/material/Menu'
+import MenuItem from '@mui/material/MenuItem'
 import Paper from '@mui/material/Paper'
 import Stack from '@mui/material/Stack'
 import StopRoundedIcon from '@mui/icons-material/StopRounded'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded'
+import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded'
+import ReplayRoundedIcon from '@mui/icons-material/ReplayRounded'
+import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import Typography from '@mui/material/Typography'
 import { robovast, campaignsNewestFirst, type CampaignSummary, type Status } from '@/lib/robovastClient'
 import { StatusView } from '@/components/StatusView'
 import { PhaseChip, PhaseDot } from '@/components/PhaseChip'
+import { useDialogs } from '@/components/DialogProvider'
 
 const TERMINAL = ['finished', 'failed', 'stopped', 'error']
 const isTerminal = (phase: string | undefined) => !!phase && TERMINAL.includes(phase)
@@ -45,6 +55,45 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
     },
   })
 
+  const { confirm } = useDialogs()
+  const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null)
+  const closeMenu = () => setMenuAnchor(null)
+
+  const reprocess = useMutation({
+    mutationFn: () => robovast.runPostprocessing(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['status', id] })
+      qc.invalidateQueries({ queryKey: ['campaigns'] })
+    },
+  })
+
+  const del = useMutation({
+    mutationFn: () => robovast.deleteCampaign(id),
+    // The row (and every cached query for this campaign) is gone on success.
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['campaigns'] }),
+  })
+
+  const onReprocess = () => {
+    closeMenu()
+    reprocess.mutate()
+  }
+
+  const onDelete = async () => {
+    closeMenu()
+    const ok = await confirm({
+      title: 'Delete campaign?',
+      message: (
+        <>
+          Permanently delete <code>{id}</code> and all its data. This cannot be undone.
+          Any copy on the external share is left untouched.
+        </>
+      ),
+      confirmLabel: 'Delete',
+      danger: true,
+    })
+    if (ok) del.mutate()
+  }
+
   const phase = status.data?.phase ?? summary.phase
   const running = !isTerminal(phase)
 
@@ -62,6 +111,36 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
         </Typography>
         <Box flexGrow={1} />
         {status.isFetching ? <CircularProgress size={14} /> : null}
+        {!running ? (
+          <>
+            <IconButton
+              size="small"
+              aria-label="campaign actions"
+              onClick={(e) => setMenuAnchor(e.currentTarget)}
+              disabled={reprocess.isPending || del.isPending}
+            >
+              {reprocess.isPending || del.isPending ? (
+                <CircularProgress size={16} />
+              ) : (
+                <SettingsRoundedIcon fontSize="small" />
+              )}
+            </IconButton>
+            <Menu anchorEl={menuAnchor} open={!!menuAnchor} onClose={closeMenu}>
+              <MenuItem onClick={onReprocess}>
+                <ListItemIcon>
+                  <ReplayRoundedIcon fontSize="small" />
+                </ListItemIcon>
+                <ListItemText>Retrigger postprocessing</ListItemText>
+              </MenuItem>
+              <MenuItem onClick={onDelete} sx={{ color: 'error.main' }}>
+                <ListItemIcon>
+                  <DeleteOutlineRoundedIcon fontSize="small" color="error" />
+                </ListItemIcon>
+                <ListItemText>Delete</ListItemText>
+              </MenuItem>
+            </Menu>
+          </>
+        ) : null}
         {canDownload ? (
           <Button
             size="small"
@@ -95,6 +174,22 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
       ) : stop.data && !stop.data.ok ? (
         <Alert severity="warning" sx={{ mb: 1 }}>
           {stop.data.message ?? 'Stop had no effect.'}
+        </Alert>
+      ) : null}
+
+      {reprocess.isError ? (
+        <Alert severity="error" sx={{ mb: 1 }}>
+          Postprocessing failed: {(reprocess.error as Error).message}
+        </Alert>
+      ) : reprocess.data ? (
+        <Alert severity={reprocess.data.ok ? 'success' : 'warning'} sx={{ mb: 1 }}>
+          {reprocess.data.message ?? (reprocess.data.ok ? 'Postprocessing complete.' : 'No effect.')}
+        </Alert>
+      ) : null}
+
+      {del.isError ? (
+        <Alert severity="error" sx={{ mb: 1 }}>
+          Delete failed: {(del.error as Error).message}
         </Alert>
       ) : null}
 

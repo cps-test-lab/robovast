@@ -268,6 +268,12 @@ def build_app(impl: RobovastInterface):
         # Body optional: no body means "all finished campaigns" (live ones skipped).
         return _guard(lambda: impl.cleanup_campaign_data(request or CleanupDataRequest()))
 
+    @app.delete(Routes.campaign("{campaign_id}"), response_model=ActionResult)
+    def delete_campaign(campaign_id: str) -> ActionResult:
+        # Wholesale delete of one campaign's durable home. Refuses a running
+        # campaign (409 via _guard's RuntimeError mapping); idempotent otherwise.
+        return _guard(lambda: impl.delete_campaign(campaign_id))
+
     # -- image builds -------------------------------------------------------
 
     @app.post(Routes.IMAGE_BUILDS, response_model=ImageBuildRef)

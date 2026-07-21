@@ -609,6 +609,12 @@ class Routes:
         return f"/uploads/{token}"
 
     @staticmethod
+    def campaign(campaign_id: str) -> str:
+        # The campaign resource itself — DELETE removes it wholesale (local dir /
+        # cluster object-store data). GET is not served; use the sub-resources below.
+        return f"/campaigns/{campaign_id}"
+
+    @staticmethod
     def campaign_status(campaign_id: str) -> str:
         return f"/campaigns/{campaign_id}/status"
 
@@ -813,6 +819,21 @@ class RobovastInterface(ABC):
         Runs server-side because the service holds the cluster config (object-store
         credentials) and the authoritative live-campaign set — so the CLI needs no
         cluster credentials. Live campaigns are skipped unless ``force`` names one.
+        """
+
+    @abstractmethod
+    def delete_campaign(self, campaign_id: str) -> ActionResult:
+        """Permanently delete **one** campaign wholesale — its durable home.
+
+        Locally that is the campaign's directory under the results root; on a
+        cluster it is the campaign's object-store data (plus any leftover Jobs and
+        the service's local cache). Distinct from :meth:`cleanup_campaign_data`,
+        which is a bulk object-store bucket sweep: this removes a single named
+        campaign in full, whatever backend holds it.
+
+        Refuses a campaign that is still running (raises so it surfaces as a 409);
+        stop it first. A campaign that is already gone deletes idempotently. The
+        external share copy (if any) is never touched — it is a separate system.
         """
 
     # -- image builds (experiment image, from the project's build: section) --

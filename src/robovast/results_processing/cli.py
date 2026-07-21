@@ -1045,3 +1045,82 @@ def remove_from_share_cmd(campaigns, yes):
 
     click.echo()
     click.echo(f"✓ Removed {removed} campaign archive(s) from {share_type}.")
+
+
+def _require_service_client():
+    """Resolve the reachable robovast-service client, or raise a clean UsageError.
+
+    The service-routed campaign operations (reprocess, delete) all go through it —
+    it owns the backend (local Docker / cluster + object store), so the CLI needs
+    no kubeconfig or object-store credentials of its own.
+    """
+    from robovast.common.cli.service_target import \
+        detected_service_url  # pylint: disable=import-outside-toplevel
+    url = detected_service_url()
+    if not url:
+        raise click.UsageError(
+            "No robovast-service is reachable. Start one with 'vast serve' (local) "
+            "or tunnel to a cluster service first.")
+    from robovast.service.client import \
+        RobovastClient  # pylint: disable=import-outside-toplevel
+    return RobovastClient(url)
+
+
+@results.command(name='reprocess')
+@click.argument('campaign', metavar='CAMPAIGN')
+@click.option('--force', '-f', is_flag=True,
+              help='Bypass per-rosbag caches and reprocess all bags.')
+@click.option('--skip', 'skip_plugins', multiple=True, metavar='PLUGIN',
+              help='Skip a postprocessing plugin (repeatable), e.g. --skip rosbags_to_webm.')
+def reprocess_cmd(campaign, force, skip_plugins):
+    """(Re)run analysis postprocessing for one CAMPAIGN via the robovast-service.
+
+    The backend-neutral counterpart of ``vast results postprocess`` (which runs
+    in-process against a local results dir): this is campaign-scoped and routes
+    through the service, so it also drives a **cluster** campaign — the rosbag→CSV
+    step runs in-cluster and ``data.db`` is rebuilt. Mirrors the web "Retrigger
+    postprocessing" action and the MCP ``run_postprocessing`` tool.
+    """
+    from robovast.service.interface import \
+        RunPostprocessingRequest  # pylint: disable=import-outside-toplevel
+    client = _require_service_client()
+    try:
+        res = client.run_postprocessing(RunPostprocessingRequest(
+            campaign_id=campaign, force=force, skip=list(skip_plugins)))
+    except Exception as exc:
+        handle_cli_exception(exc)
+        return
+    if not res.ok:
+        raise click.ClickException(res.message or "postprocessing failed")
+    click.echo(f"✓ {res.message or 'postprocessing complete'}")
+
+
+@results.command(name='delete')
+@click.argument('campaign', metavar='CAMPAIGN')
+@click.option('--yes', '-y', is_flag=True, help='Skip the confirmation prompt.')
+def delete_campaign_cmd(campaign, yes):
+    """Permanently delete one CAMPAIGN wholesale via the robovast-service.
+
+    Removes the campaign's durable home — its directory under the results root on a
+    local service, or its object-store data (plus any leftover Kubernetes Jobs and
+    the service's cache) on a cluster service. This is the full "forget this
+    campaign" action; ``vast execution cluster download-cleanup`` only frees
+    object-store buckets, and ``vast results remove-from-share`` only touches the
+    external share (which this command leaves untouched).
+
+    The service refuses a campaign that is still running — stop it first. This is
+    irreversible.
+    """
+    if not yes and not click.confirm(
+            f"Permanently delete campaign '{campaign}'? This cannot be undone."):
+        click.echo("Aborted.")
+        return
+    client = _require_service_client()
+    try:
+        res = client.delete_campaign(campaign)
+    except Exception as exc:
+        handle_cli_exception(exc)
+        return
+    if not res.ok:
+        raise click.ClickException(res.message or "delete failed")
+    click.echo(f"✓ {res.message or f'Deleted {campaign}'}")

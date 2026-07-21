@@ -973,6 +973,36 @@ def cleanup_campaign_data(campaign_id: str = "", force: bool = False) -> dict:
         return {"error": str(e)}
 
 
+def delete_campaign(campaign_id: str) -> dict:
+    """Permanently delete **one** campaign wholesale, through the robovast-service.
+
+    Removes the campaign's durable home — its local directory on a local service,
+    or its object-store data (plus any leftover Kubernetes Jobs and the service's
+    cache) on a cluster service. This is the full "forget this campaign" action, as
+    opposed to :func:`cleanup_campaign_data`, which only frees object-store buckets.
+
+    The service refuses a campaign that is still running — stop it first with
+    :func:`stop_campaign`. The external share copy (if any) is never touched. This
+    is irreversible.
+
+    Args:
+        campaign_id: The campaign to delete.
+
+    Returns:
+        ``{ok, message}`` on success, or ``{error}`` if no service is reachable or
+        the campaign is still running.
+    """
+    client = _service_client()
+    if client is None:
+        return {"error": "no robovast-service reachable (bring up a 'vast serve' or "
+                         "a tunnel before starting MCP)"}
+    try:
+        res = client.delete_campaign(campaign_id)
+        return {"ok": res.ok, "message": res.message}
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
+
+
 def get_campaign_download(campaign_id: str) -> dict:
     """Return **where to download** a campaign — a web link, not a file on this host.
 
@@ -1130,6 +1160,7 @@ _TOOLS = [
     update_postprocessing,
     run_postprocessing,
     cleanup_campaign_data,
+    delete_campaign,
     get_campaign_download,
 ]
 

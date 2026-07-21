@@ -49,6 +49,7 @@ import time
 import logging
 import os
 import threading
+from collections import OrderedDict
 from pathlib import Path
 
 from robovast.execution.control_server import Phase, Status, is_running
@@ -95,6 +96,11 @@ class ClusterService(LocalTransport):
         # query per sub-view on first load). Guarded by ``_fetch_locks_guard``.
         self._fetch_locks: dict[str, threading.Lock] = {}
         self._fetch_locks_guard = threading.Lock()
+        # Incremental, cache-backed job-log tails so a polling log panel fetches only
+        # the delta each 1.5s instead of re-reading the whole pod log (see get_job_log
+        # / PodLogTail). LRU-bounded so long-lived services don't accumulate buffers.
+        self._job_log_tails: "OrderedDict[tuple, object]" = OrderedDict()
+        self._job_log_guard = threading.Lock()
         if reap_on_start:
             self.reap_orphans()
 
@@ -182,11 +188,12 @@ class ClusterService(LocalTransport):
         # Lazy: the port-forward opens only when a storage client is actually built.
         if not os.environ.get("KUBERNETES_SERVICE_HOST"):
             cfg.set_driver_s3_endpoint_resolver(
-                lambda force_reconnect=False: cfg.resolve_driver_s3_endpoint(
-                    self._minio_port_forward_endpoint, force_reconnect))
+                lambda force_reconnect=False, current=None: cfg.resolve_driver_s3_endpoint(
+                    self._minio_port_forward_endpoint, force_reconnect, current))
         return cfg
 
-    def _minio_port_forward_endpoint(self, force_restart: bool = False) -> str:
+    def _minio_port_forward_endpoint(self, force_restart: bool = False,
+                                     current: "str | None" = None) -> str:
         """Return ``http://localhost:<port>`` for the shared MinIO port-forward,
         opening (or re-opening) the forward under the lock.
 
@@ -197,11 +204,22 @@ class ClusterService(LocalTransport):
         driver's storage client, on a network timeout, re-resolves with
         *force_restart=True*, which tears the current forward down and opens a fresh
         one on a new port; the client then rebuilds itself against the new endpoint.
+
+        *current* is the endpoint the caller was using. When many storage clients
+        share this one forward, a stall makes them **all** time out and request a
+        restart at once; honoring every request would make each teardown kill the
+        forward a sibling just opened, and the sibling's next request would then hit
+        "connection refused". So a forced restart is coalesced: if *current* no longer
+        matches the live endpoint, another caller already rotated the forward since —
+        return the fresh endpoint untouched instead of tearing it down again.
         """
         from robovast.execution.cluster_execution.bucket_ops import \
             open_minio_port_forward
         with self._pf_lock:
             if force_restart:
+                if (current is not None and self._minio_pf is not None
+                        and current != self._minio_pf_endpoint):
+                    return self._minio_pf_endpoint
                 self._close_minio_pf_locked()
             elif self._minio_pf is not None and self._minio_pf.poll() is not None:
                 self._minio_pf = None  # forward died; drop it and reopen below
@@ -437,18 +455,38 @@ class ClusterService(LocalTransport):
             return full[len(campaign_id) + 1:]
         return full
 
+    #: Cap on cached job-log tails; oldest (LRU) are dropped past this.
+    _JOB_LOG_CACHE_MAX = 128
+
+    def _job_log_tail(self, campaign_id: str, job_name: str):
+        """The cached :class:`PodLogTail` for a job, created on first use (LRU-bounded)."""
+        from robovast.execution.cluster_execution.cluster_execution import PodLogTail
+        key = (campaign_id, job_name)
+        with self._job_log_guard:
+            tail = self._job_log_tails.get(key)
+            if tail is None:
+                tail = PodLogTail()
+                self._job_log_tails[key] = tail
+                while len(self._job_log_tails) > self._JOB_LOG_CACHE_MAX:
+                    self._job_log_tails.popitem(last=False)
+            else:
+                self._job_log_tails.move_to_end(key)
+            return tail
+
     def get_job_log(self, campaign_id: str, job_name: str, offset: int = 0) -> LogChunk:
         """Serve a running Job's live pod log from byte *offset* onward.
 
         Finds the Job's pod by the auto-added ``job-name`` label and streams *all* of
         its containers' logs merged into one stream (the main ``robovast`` container
-        plus any secondary sim/SUT servers; see :func:`read_pod_logs_merged`). Live
-        source only: a pod still ``Pending`` has no log yet (empty, non-terminal
-        chunk); a missing pod raises (→ 404).
+        plus any secondary sim/SUT servers; see :class:`PodLogTail`). Reads are
+        incremental: a cached tail keeps the full assembled text so the byte offset
+        still maps onto it, but each poll only pulls the delta from the kube API
+        rather than the whole log. Live source only: a pod still ``Pending`` has no
+        log yet (empty, non-terminal chunk); a missing pod raises (→ 404).
         """
         from kubernetes import client
-        from robovast.execution.cluster_execution.cluster_execution import (
-            _label_safe_campaign, read_pod_logs_merged)
+        from robovast.execution.cluster_execution.cluster_execution import \
+            _label_safe_campaign
         core = self._k8s()
         label = (f"jobgroup=scenario-runs,"
                  f"campaign-id={_label_safe_campaign(campaign_id)},job-name={job_name}")
@@ -458,15 +496,16 @@ class ClusterService(LocalTransport):
         pod = pods.items[0]
         if pod.status and pod.status.phase == "Pending":
             return LogChunk(text="", next_offset=offset, eof=False)
+        tail = self._job_log_tail(campaign_id, job_name)
         try:
-            text = read_pod_logs_merged(core, pod, self.namespace)
+            with tail.lock:
+                terminal = tail.read(core, pod, self.namespace, time.time())
+                raw = bytes(tail.buf)
         except client.exceptions.ApiException as e:
             if e.status == 404:
                 raise KeyError(
                     f"pod for job {job_name!r} is gone (campaign {campaign_id!r})") from e
             raise
-        raw = text.encode("utf-8", "replace")
-        terminal = bool(pod.status and pod.status.phase in ("Succeeded", "Failed"))
         return LogChunk(text=raw[offset:].decode("utf-8", "replace"),
                         next_offset=len(raw), eof=terminal)
 
@@ -843,6 +882,49 @@ class ClusterService(LocalTransport):
             running_campaigns=running)
         return ActionResult(
             ok=True, message=f"Removed {count} bucket(s) from the object store.")
+
+    def delete_campaign(self, campaign_id: str) -> ActionResult:
+        """Delete one cluster campaign wholesale: object-store data, leftover Jobs,
+        and the service's local caches (see :meth:`RobovastInterface.delete_campaign`).
+
+        The object store is the durable home here, so it is the primary target; the
+        Job reap catches anything a crashed/orphaned campaign left behind, and the
+        cache wipe mirrors the local transport. The external share copy is untouched.
+        """
+        import shutil
+
+        from botocore.exceptions import ClientError
+
+        from robovast.execution.cluster_execution import bucket_ops
+        from robovast.execution.cluster_execution.cluster_execution import \
+            cleanup_cluster_campaign
+
+        self._ensure_deletable(campaign_id)  # refuse while this service still drives it
+        cfg = self._cluster_config()
+        # 1. Durable home: object-store bucket / shared prefix. Tolerate an
+        #    already-absent bucket so a repeated delete is idempotent.
+        try:
+            bucket_ops.delete_campaign(campaign_id, cfg, namespace=self.namespace,
+                                       context=self.kube_context)
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") != "NoSuchBucket":
+                raise
+        # 2. Reap any leftover Jobs/pods (best-effort — the data is already gone).
+        try:
+            cleanup_cluster_campaign(namespace=self.namespace, campaign=campaign_id,
+                                     context=self.kube_context)
+        except Exception:  # noqa: BLE001 - cleanup is best-effort
+            logger.warning("Leftover-Job cleanup for %s failed", campaign_id,
+                           exc_info=True)
+        # 3. Service-local caches: the fetch scratch and any in-pod driver dir.
+        shutil.rmtree(Path("/tmp") / "robovast-campaigns" / campaign_id,  # noqa: S108
+                      ignore_errors=True)
+        shutil.rmtree(self._campaign_dir(campaign_id), ignore_errors=True)
+        with self._lock:
+            self._campaigns.pop(campaign_id, None)
+        return ActionResult(
+            ok=True,
+            message=f"Deleted campaign {campaign_id!r} (object store, jobs, cache).")
 
     # -- data / results -----------------------------------------------------
 

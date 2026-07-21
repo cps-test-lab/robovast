@@ -409,6 +409,11 @@ export const robovast = {
   stop: (campaignId: string) =>
     request<ActionResult>('POST', `/campaigns/${encodeURIComponent(campaignId)}/stop`),
 
+  // Permanently delete one campaign wholesale (local dir / cluster object-store data +
+  // leftover Jobs + cache). Refused by the service while the campaign is still running.
+  deleteCampaign: (campaignId: string) =>
+    request<ActionResult>('DELETE', `/campaigns/${encodeURIComponent(campaignId)}`),
+
   // -- workspaces & files ---------------------------------------------------
 
   createWorkspace: (name = '') => request<WorkspaceInfo>('POST', '/workspaces', { name }),

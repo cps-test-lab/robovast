@@ -869,6 +869,42 @@ class LocalTransport(RobovastInterface):
             message="cleanup-data is not supported by the local backend (no object "
                     "store); it applies to a cluster service.")
 
+    def _ensure_deletable(self, campaign_id: str) -> None:
+        """Validate that *campaign_id* is safe to delete, or raise.
+
+        Two guards shared by the local and cluster transports before anything is
+        removed:
+
+        * The id must match the campaign naming pattern — this blocks a traversal
+          value like ``..`` from ever reaching the ``rmtree`` / bucket delete and
+          taking out the results root or an unrelated bucket (``ValueError`` → 400).
+        * No live in-memory driver entry may exist — the authoritative "still
+          running here" signal. Stop the campaign first (``RuntimeError`` → 409).
+        """
+        from robovast.common.execution import is_campaign_dir
+        if not campaign_id or not is_campaign_dir(campaign_id):
+            raise ValueError(
+                f"Refusing to delete {campaign_id!r}: not a valid campaign id.")
+        with self._lock:
+            entry = self._campaigns.get(campaign_id)
+        if entry is not None and not self._is_done(entry):
+            raise RuntimeError(
+                f"Campaign {campaign_id!r} is still running; stop it before deleting.")
+
+    def delete_campaign(self, campaign_id: str) -> ActionResult:
+        """Delete the campaign's directory under the results root (see interface)."""
+        import shutil
+        self._ensure_deletable(campaign_id)
+        campaign_dir = self._campaign_dir(campaign_id)
+        existed = campaign_dir.is_dir()
+        shutil.rmtree(campaign_dir, ignore_errors=True)
+        with self._lock:
+            self._campaigns.pop(campaign_id, None)
+        return ActionResult(
+            ok=True,
+            message=(f"Deleted campaign {campaign_id!r}." if existed
+                     else f"Campaign {campaign_id!r} had no local data; nothing to delete."))
+
     # -- postprocessing -----------------------------------------------------
 
     def get_postprocessing(self, campaign_id: str):
@@ -1391,6 +1427,9 @@ class HTTPTransport(RobovastInterface):
         return ActionResult.model_validate(
             self._post(Routes.CLEANUP_DATA,
                        {"campaign_id": request.campaign_id, "force": request.force}))
+
+    def delete_campaign(self, campaign_id: str) -> ActionResult:
+        return ActionResult.model_validate(self._delete(Routes.campaign(campaign_id)))
 
     # -- image builds -------------------------------------------------------
 

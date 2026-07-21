@@ -37,8 +37,10 @@ Two properties matter:
   without ever re-uploading a rosbag.
 """
 
+import hashlib
 import json
 import logging
+import re
 import time
 
 from .kubernetes_kueue import KUEUE_QUEUE_NAME
@@ -276,6 +278,25 @@ def _shquote(value: str) -> str:
     return shlex.quote(value)
 
 
+def _short_job_name(prefix: str, campaign: str) -> str:
+    """Build a Kubernetes Job name ``<prefix><campaign>`` capped at 63 chars.
+
+    Kubernetes copies the Job's ``metadata.name`` verbatim into the pod template's
+    ``job-name`` label, and label values may be at most 63 chars — so the *name*
+    itself (not just the label-safe campaign) has to fit, otherwise the Job is
+    rejected with ``spec.template.labels: ... must be no more than 63 characters``.
+    Keep the readable head of the campaign and append a short hash so distinct
+    campaigns that share a truncated head still map to distinct Job names.
+    """
+    safe = re.sub(r"[^a-z0-9.-]", "", campaign.lower().replace("_", "-"))
+    full = f"{prefix}{safe}"
+    if len(full) <= 63:
+        return full
+    digest = hashlib.sha256(campaign.encode()).hexdigest()[:8]
+    head = safe[: 63 - len(prefix) - 1 - len(digest)].rstrip("-.")
+    return f"{prefix}{head}-{digest}"
+
+
 def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
                    namespace: str, controller_image: str, force: bool = False) -> dict:
     """Build the conversion Job manifest.
@@ -307,7 +328,7 @@ def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
         "apiVersion": "batch/v1",
         "kind": "Job",
         "metadata": {
-            "name": f"robovast-postproc-{safe}",
+            "name": _short_job_name("robovast-postproc-", campaign_id),
             "namespace": namespace,
             "labels": {
                 "jobgroup": "postprocessing",
