@@ -211,12 +211,13 @@ def execute_postprocessing_plugin(
 # Plugin names that can be transparently batched into a single rosbags_process call.
 # Maps plugin name → (handler_type, default_bag_dir).
 _ROSBAG_BATCH_MAP: Dict[str, Tuple[str, str]] = {
-    "rosbags_to_csv":        ("to_csv",         "rosbag2"),
-    "rosbags_tf_to_csv":     ("tf_to_csv",       "rosbag2"),
-    "rosbags_bt_to_csv":     ("bt_to_csv",       "rosbag2"),
-    "rosbags_action_to_csv": ("action_to_csv",   "rosbag2"),
-    "rosbags_rosout_to_csv": ("rosout_to_csv",   "logs/rosout_bag"),
-    "rosbags_to_webm":       ("to_webm",         "rosbag2"),
+    "rosbags_to_csv":          ("to_csv",          "rosbag2"),
+    "rosbags_tf_to_csv":       ("tf_to_csv",        "rosbag2"),
+    "rosbags_bt_to_csv":       ("bt_to_csv",        "rosbag2"),
+    "rosbags_nav2_bt_to_csv":  ("nav2_bt_to_csv",   "rosbag2"),
+    "rosbags_action_to_csv":   ("action_to_csv",    "rosbag2"),
+    "rosbags_rosout_to_csv":   ("rosout_to_csv",    "logs/rosout_bag"),
+    "rosbags_to_webm":         ("to_webm",          "rosbag2"),
 }
 
 
@@ -472,6 +473,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         else:
             print(msg)
 
+    results_dir = os.path.abspath(results_dir)
     # Validate results directory
     if not os.path.exists(results_dir):
         return False, f"Results directory does not exist: {results_dir}"
