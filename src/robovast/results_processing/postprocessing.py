@@ -473,6 +473,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         else:
             print(msg)
 
+    results_dir = os.path.abspath(results_dir)
     # Validate results directory
     if not os.path.exists(results_dir):
         return False, f"Results directory does not exist: {results_dir}"

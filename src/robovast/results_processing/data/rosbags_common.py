@@ -97,7 +97,9 @@ def find_rosbags(directory, bag_dir_name="rosbag2"):
     Returns:
         Sorted list of found rosbag directory paths.
     """
-    prune_top = bag_dir_name.split("/")[0]
+    parts = bag_dir_name.split("/")
+    prune_top = parts[0]
+    prune_rest = "/".join(parts[1:]) if len(parts) > 1 else None
     found: List[str] = []
 
     def _scan(path: str):
@@ -110,7 +112,13 @@ def find_rosbags(directory, bag_dir_name="rosbag2"):
                     if not entry.is_dir(follow_symlinks=False):
                         continue
                     if entry.name == prune_top or entry.name.startswith(prune_top + "_"):
-                        if entry.is_dir(follow_symlinks=False):
+                        if prune_rest:
+                            candidate = os.path.join(entry.path, prune_rest)
+                            if os.path.isdir(candidate):
+                                bags.append(candidate)
+                            else:
+                                subdirs.append(entry.path)
+                        else:
                             bags.append(entry.path)
                         # do not recurse into bag dir
                     else:
