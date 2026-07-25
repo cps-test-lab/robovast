@@ -239,7 +239,7 @@ export function LaunchBar() {
               control={
                 <Checkbox checked={postprocess} onChange={(e) => setPostprocess(e.target.checked)} />
               }
-              label="Postprocess when done"
+              label="Postprocess"
             />
             <FormControlLabel
               control={
@@ -248,7 +248,7 @@ export function LaunchBar() {
                   onChange={(e) => setUploadToShare(e.target.checked)}
                 />
               }
-              label="Upload to share when done"
+              label="Upload to share"
             />
           </Stack>
         </Collapse>
