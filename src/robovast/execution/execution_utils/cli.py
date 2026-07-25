@@ -99,11 +99,14 @@ def local():
 @click.option('--campaign-id', default=None,
               help='Use this campaign id (and directory name) instead of generating '
                    'one. Lets an external launcher know the id up front.')
+@click.option('--campaign-name', default=None,
+              help='Override the campaign name; the id becomes <name>-<timestamp>. '
+                   'Ignored when --campaign-id is given (that sets the whole id).')
 @click.option('--upload-to-share', 'upload_to_share', is_flag=True,
               help='Before postprocessing, write a raw <campaign>.tar.gz to the '
                    'results _archives/ dir (the local upload-to-share deliverable).')
 def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_failure,
-        use_resource_allocation, log_tree, debug, campaign_id, upload_to_share):
+        use_resource_allocation, log_tree, debug, campaign_id, campaign_name, upload_to_share):
     """Execute the project locally using Docker.
 
     Behaviour is selected by the project ``.vast``:
@@ -128,12 +131,18 @@ def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_
     """
     try:
         from robovast.execution.backends import RunOptions
-        from robovast.execution.controller import (run_batch_campaign,
+        from robovast.execution.controller import (campaign_id_for,
+                                                   run_batch_campaign,
                                                    run_search_campaign)
 
         project_config = get_project_config()
         campaign_config = validate_config(load_config(project_config.config_path))
         results_dir = output or project_config.results_dir
+
+        # --campaign-name overrides the name half of the auto id; an explicit
+        # --campaign-id still wins (it sets the whole id, timestamp included).
+        if campaign_id is None and campaign_name:
+            campaign_id = campaign_id_for(campaign_config, campaign_name)
 
         # --start-only is an interactive debugging shell (drops into a container,
         # produces no campaign) → keep the legacy direct run.sh path for it.
@@ -370,11 +379,13 @@ def _sole_running_campaign(client):
               help='Seconds between status polls when --wait-and-download is set.')
 @click.option('--campaign-id', default=None,
               help='Launch under this campaign id instead of generating one.')
+@click.option('--campaign-name', default=None,
+              help='Override the campaign name; the id becomes <name>-<timestamp>.')
 @click.option('--upload-to-share', 'upload_to_share', is_flag=True,
               help='Stream a raw (pre-postprocess) archive to the configured share '
                    'when the campaign finishes.')
 def run(config, runs, log_tree, cluster, namespace, context, wait_and_download,
-        poll_interval, campaign_id, upload_to_share):  # pylint: disable=function-redefined,redefined-outer-name
+        poll_interval, campaign_id, campaign_name, upload_to_share):  # pylint: disable=function-redefined,redefined-outer-name
     """Execute a campaign (batch or search) on a Kubernetes cluster.
 
     Runs through the robovast-service, which drives the campaign in-process and
@@ -410,7 +421,8 @@ def run(config, runs, log_tree, cluster, namespace, context, wait_and_download,
             _echo_target(target)
             cid = run_project_via_service(
                 client, project.config_path, config_filter=config or "",
-                runs=runs or 1, feedback=click.echo, upload_to_share=upload_to_share)
+                runs=runs or 1, feedback=click.echo, upload_to_share=upload_to_share,
+                campaign_name=campaign_name or "")
             if not wait_and_download:
                 click.echo(f"Launched cluster campaign '{cid}' via robovast-service. "
                            "Track it with 'vast exec cluster monitor' or the service.")

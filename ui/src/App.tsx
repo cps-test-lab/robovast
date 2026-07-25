@@ -2,12 +2,10 @@ import { useEffect, useState } from 'react'
 import Box from '@mui/material/Box'
 import TuneRoundedIcon from '@mui/icons-material/TuneRounded'
 import RocketLaunchRoundedIcon from '@mui/icons-material/RocketLaunchRounded'
-import MonitorHeartRoundedIcon from '@mui/icons-material/MonitorHeartRounded'
 import InsightsRoundedIcon from '@mui/icons-material/InsightsRounded'
 import { Sidebar, type NavTopic } from '@/components/Sidebar'
 import { KeepAlive } from '@/components/KeepAlive'
 import { ConfigPage } from '@/pages/config/ConfigPage'
-import { Launcher } from '@/pages/Launcher'
 import { Monitor } from '@/pages/Monitor'
 import { ResultsPage } from '@/pages/results/ResultsPage'
 
@@ -25,14 +23,12 @@ const TOPICS: NavTopic[] = [
     ],
   },
   {
+    // Launch + monitor merged into one page: the launch form is a bar atop the live campaign list,
+    // so a launched campaign lives only in that list — never in a second, page-local copy that can
+    // linger after it is deleted. `id: 'execution'` is kept so DEFAULT_NAV and #/execution resolve.
     id: 'execution',
-    label: 'Execution',
+    label: 'Campaigns',
     icon: <RocketLaunchRoundedIcon />,
-  },
-  {
-    id: 'monitor',
-    label: 'Monitor',
-    icon: <MonitorHeartRoundedIcon />,
   },
   {
     id: 'results',
@@ -51,7 +47,8 @@ interface Nav {
   viewId: string
 }
 
-// The view shown on a fresh load (no/unknown hash): the Launcher, so the app opens ready to run.
+// The view shown on a fresh load (no/unknown hash): the merged Campaigns page, so the app opens
+// ready to launch and watch runs.
 const DEFAULT_NAV: Nav = { topicId: 'execution', viewId: '' }
 
 // Parse #/topic/view into a valid {topicId, viewId}, defaulting the view to the topic's first (or ''
@@ -101,9 +98,6 @@ export function App() {
           <ConfigPage view={nav.viewId} />
         </KeepAlive>
         <KeepAlive active={nav.topicId === 'execution'}>
-          <Launcher />
-        </KeepAlive>
-        <KeepAlive active={nav.topicId === 'monitor'}>
           <Monitor />
         </KeepAlive>
         <KeepAlive active={nav.topicId === 'results'}>

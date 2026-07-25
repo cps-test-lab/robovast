@@ -39,6 +39,7 @@ is gone, so cluster and local now share the same driver-hosting shape.
 
 import logging
 import os
+import re
 import tempfile
 import threading
 import time
@@ -76,15 +77,33 @@ _campaign_id_lock = threading.Lock()
 _last_campaign_id: str | None = None
 
 
-def campaign_id_for(campaign_config) -> str:
-    """``<metadata.name>-<timestamp>`` — the campaign directory id (both modes).
+def _sanitise_campaign_name(name: str) -> str:
+    """Bucket/dir-safe slug for a user-supplied campaign name.
 
-    Underscores in the name are normalised to hyphens so a local campaign id
-    matches the cluster's: storage bucket names disallow underscores, so the
-    cluster sanitises the name to hyphens — doing it here keeps both identical.
+    Storage bucket names disallow underscores and other punctuation, so an
+    override coming from a human (UI field, ``--campaign-name``, MCP arg) is
+    normalised to ``[A-Za-z0-9-]`` and collapsed — keeping local and cluster ids
+    identical. Falls back to ``campaign`` if nothing usable remains.
+    """
+    slug = re.sub(r"[^A-Za-z0-9-]+", "-", name).strip("-")
+    return slug or "campaign"
+
+
+def campaign_id_for(campaign_config, name_override: str | None = None) -> str:
+    """``<name>-<timestamp>`` — the campaign directory id (both modes).
+
+    ``name`` is ``name_override`` when a caller supplies one (the UI/CLI/MCP
+    "campaign name" knob), otherwise ``metadata.name``. Underscores in the
+    latter are normalised to hyphens so a local campaign id matches the
+    cluster's: storage bucket names disallow underscores, so the cluster
+    sanitises the name to hyphens — doing it here keeps both identical. A
+    human-supplied override goes through the stricter ``_sanitise_campaign_name``.
     """
     global _last_campaign_id
-    name = (campaign_config.metadata or {}).get("name", "campaign").replace("_", "-")
+    if name_override and name_override.strip():
+        name = _sanitise_campaign_name(name_override)
+    else:
+        name = (campaign_config.metadata or {}).get("name", "campaign").replace("_", "-")
     # Hundredths of a second so two launches within the same second get distinct
     # ids (``is_campaign_dir`` accepts 6-8 trailing digits, and HHMMSS + 2 fills
     # them). That resolution alone is still only 10 ms, so a control plane firing

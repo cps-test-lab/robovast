@@ -447,7 +447,7 @@ class LocalTransport(RobovastInterface):
         project = self._resolve_project(request.workspace_id, request.config_path)
         campaign_config = validate_config(load_config(project.config_path))
         results_dir = str(project.results_dir)
-        campaign_id = campaign_id_for(campaign_config)
+        campaign_id = campaign_id_for(campaign_config, request.campaign_name or None)
         is_search = campaign_config.search is not None
         config_filter = request.config_filter or None
 

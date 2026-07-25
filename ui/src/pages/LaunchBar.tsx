@@ -5,20 +5,15 @@ import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import Checkbox from '@mui/material/Checkbox'
 import Chip from '@mui/material/Chip'
+import Collapse from '@mui/material/Collapse'
 import FormControlLabel from '@mui/material/FormControlLabel'
 import MenuItem from '@mui/material/MenuItem'
 import Paper from '@mui/material/Paper'
 import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded'
-import StopRoundedIcon from '@mui/icons-material/StopRounded'
+import TuneRoundedIcon from '@mui/icons-material/TuneRounded'
 import Stack from '@mui/material/Stack'
 import TextField from '@mui/material/TextField'
-import Typography from '@mui/material/Typography'
-import { robovast, type Status } from '@/lib/robovastClient'
-import { StatusView } from '@/components/StatusView'
-import { PhaseDot } from '@/components/PhaseChip'
-
-const TERMINAL = ['finished', 'failed', 'stopped', 'error']
-const isTerminal = (phase: string | undefined) => !!phase && TERMINAL.includes(phase)
+import { robovast } from '@/lib/robovastClient'
 
 // Pull the `execution.runs` scalar out of a .vast (YAML) so the launcher can prefill "Runs per config"
 // with whatever the file declares. We scan for the top-level `execution:` block and read the integer
@@ -44,18 +39,20 @@ function runsFromVast(content: string): number | null {
   return null
 }
 
-// The browser analog of `vast exec cluster run`: a form over CreateCampaignRequest → create_campaign →
-// campaign_id, then poll that campaign's live status (the launch → watch → stop interaction pattern).
-// Backend is implicit in whichever service this UI is served by.
-export function Launcher() {
+// The browser analog of `vast exec cluster run`: a compact form over CreateCampaignRequest →
+// create_campaign, sitting at the top of the Campaigns page. On success it only invalidates the
+// ['campaigns'] list — the launched campaign then shows up as a card below like any other, so there
+// is no second, page-local copy of campaign state to drift out of sync with a delete.
+export function LaunchBar() {
   const qc = useQueryClient()
   const [workspaceId, setWorkspaceId] = useState('')
   const [configFilter, setConfigFilter] = useState('')
+  const [campaignName, setCampaignName] = useState('')
   const [runs, setRuns] = useState(1)
   const [postprocess, setPostprocess] = useState(true)
   const [uploadToShare, setUploadToShare] = useState(true)
-  const [campaignId, setCampaignId] = useState<string | null>(null)
   const [configPath, setConfigPath] = useState('')
+  const [showOptions, setShowOptions] = useState(false)
 
   const workspaces = useQuery({
     queryKey: ['workspaces'],
@@ -112,37 +109,26 @@ export function Launcher() {
         workspace_id: workspaceId,
         config_path: configPath,
         config_filter: configFilter,
+        campaign_name: campaignName.trim(),
         runs,
         postprocess,
         upload_to_share: uploadToShare,
       }),
-    onSuccess: (ref) => {
-      setCampaignId(ref.campaign_id)
-      qc.invalidateQueries({ queryKey: ['campaigns'] })
-    },
+    // The launched campaign becomes a card in the list below; nothing else to hold onto here.
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['campaigns'] }),
   })
 
-  const status = useQuery({
-    queryKey: ['status', campaignId],
-    queryFn: () => robovast.getStatus(campaignId!),
-    enabled: !!campaignId,
-    refetchInterval: (q) => (isTerminal((q.state.data as Status | undefined)?.phase) ? false : 1500),
-  })
-
-  const stop = useMutation({
-    mutationFn: () => robovast.stop(campaignId!),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['status', campaignId] }),
-  })
-
-  const running = !!campaignId && !isTerminal(status.data?.phase)
   const canLaunch = !!workspaceId && !create.isPending
 
   return (
-    <Stack spacing={2} sx={{ maxWidth: 640 }}>
-      <Typography variant="h6">Launch campaign</Typography>
-
-      <Paper sx={{ p: 2 }}>
-        <Stack spacing={2}>
+    <Paper sx={{ p: 2 }}>
+      <Stack spacing={1.5}>
+        <Stack
+          direction="row"
+          spacing={2}
+          alignItems="flex-end"
+          sx={{ flexWrap: 'wrap', rowGap: 1.5 }}
+        >
           <TextField
             select={!!workspaces.data?.workspaces.length}
             label="Workspace"
@@ -155,12 +141,12 @@ export function Launcher() {
               workspaces.isError
                 ? `could not list workspaces: ${(workspaces.error as Error).message}`
                 : workspaces.data?.workspaces.length
-                  ? 'editable project inputs to run'
+                  ? undefined
                   : 'no workspaces found — enter an id (or empty for the CWD project)'
             }
             error={workspaces.isError}
             size="small"
-            fullWidth
+            sx={{ minWidth: 200 }}
           >
             {(workspaces.data?.workspaces ?? []).map((w) => (
               <MenuItem key={w.workspace_id} value={w.workspace_id}>
@@ -183,9 +169,8 @@ export function Launcher() {
               label="Config file (.vast)"
               value={configPath}
               onChange={(e) => setConfigPath(e.target.value)}
-              helperText="this workspace has several .vast files — pick which to run"
               size="small"
-              fullWidth
+              sx={{ minWidth: 200 }}
             >
               {vastFiles.map((p) => (
                 <MenuItem key={p} value={p}>
@@ -195,24 +180,60 @@ export function Launcher() {
             </TextField>
           ) : null}
 
-          <TextField
-            label="Config filter (glob, optional)"
-            value={configFilter}
-            onChange={(e) => setConfigFilter(e.target.value)}
-            placeholder="run only matching configs"
-            size="small"
-            fullWidth
-          />
+          <Button
+            variant="contained"
+            startIcon={<PlayArrowRoundedIcon />}
+            disabled={!canLaunch}
+            onClick={() => create.mutate()}
+          >
+            Launch
+          </Button>
 
-          <Stack direction="row" spacing={2} alignItems="center">
+          <Box flexGrow={1} />
+
+          <Button
+            size="small"
+            color="inherit"
+            startIcon={<TuneRoundedIcon />}
+            onClick={() => setShowOptions((v) => !v)}
+          >
+            Options
+          </Button>
+        </Stack>
+
+        <Collapse in={showOptions} unmountOnExit>
+          <Stack
+            direction="row"
+            spacing={2}
+            alignItems="center"
+            sx={{ flexWrap: 'wrap', rowGap: 1 }}
+          >
+            <TextField
+              label="Campaign name override (optional)"
+              value={campaignName}
+              onChange={(e) => setCampaignName(e.target.value)}
+              placeholder="overrides the .vast name"
+              size="small"
+              sx={{ minWidth: 260 }}
+              slotProps={{ inputLabel: { shrink: true } }}
+            />
             <TextField
               label="Runs per config"
               type="number"
               value={runs}
               onChange={(e) => setRuns(Math.max(1, Number(e.target.value) || 1))}
               size="small"
-              sx={{ width: 160 }}
+              sx={{ width: 140 }}
               slotProps={{ htmlInput: { min: 1 } }}
+            />
+            <TextField
+              label="Config filter (glob, optional)"
+              value={configFilter}
+              onChange={(e) => setConfigFilter(e.target.value)}
+              placeholder="run only matching configs"
+              size="small"
+              sx={{ minWidth: 240 }}
+              slotProps={{ inputLabel: { shrink: true } }}
             />
             <FormControlLabel
               control={
@@ -230,58 +251,12 @@ export function Launcher() {
               label="Upload to share when done"
             />
           </Stack>
+        </Collapse>
 
-          <Box>
-            <Button
-              variant="contained"
-              startIcon={<PlayArrowRoundedIcon />}
-              disabled={!canLaunch}
-              onClick={() => create.mutate()}
-            >
-              Launch
-            </Button>
-          </Box>
-
-          {create.isError ? (
-            <Alert severity="error">Launch failed: {(create.error as Error).message}</Alert>
-          ) : null}
-        </Stack>
-      </Paper>
-
-      {campaignId ? (
-        <Paper sx={{ p: 2 }}>
-          <Stack direction="row" spacing={1} alignItems="center" mb={1.5}>
-            {status.data ? <PhaseDot phase={status.data.phase} /> : null}
-            <Typography variant="subtitle2" sx={{ fontFamily: 'monospace' }}>
-              {campaignId}
-            </Typography>
-            <Box flexGrow={1} />
-            {running ? (
-              <Button
-                size="small"
-                variant="outlined"
-                color="error"
-                startIcon={<StopRoundedIcon />}
-                disabled={stop.isPending}
-                onClick={() => stop.mutate()}
-              >
-                Stop
-              </Button>
-            ) : null}
-          </Stack>
-          {status.data ? (
-            <StatusView status={status.data} hideLog />
-          ) : status.isError ? (
-            <Typography variant="caption" color="text.secondary">
-              waiting for status… ({(status.error as Error).message})
-            </Typography>
-          ) : (
-            <Typography variant="caption" color="text.secondary">
-              starting…
-            </Typography>
-          )}
-        </Paper>
-      ) : null}
-    </Stack>
+        {create.isError ? (
+          <Alert severity="error">Launch failed: {(create.error as Error).message}</Alert>
+        ) : null}
+      </Stack>
+    </Paper>
   )
 }

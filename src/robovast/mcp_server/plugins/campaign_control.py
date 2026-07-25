@@ -403,7 +403,7 @@ def init_project(config_path: str, project_dir: str, results_dir: str = "",
 def start_campaign(config_filter: str = "", runs: int = 0,
                    backend: str = "local", context: str = "",
                    workspace_id: str = "", config_path: str = "",
-                   upload_to_share: bool = False) -> dict:
+                   campaign_name: str = "", upload_to_share: bool = False) -> dict:
     """Start a campaign and return immediately; results land on local disk either way.
 
     Validates the campaign first and refuses if invalid. Both backends run as a
@@ -427,6 +427,8 @@ def start_campaign(config_filter: str = "", runs: int = 0,
             (empty = the CWD project). Independent of the backend.
         config_path: Which ``.vast`` to run when the workspace has several
             (workspace-relative; empty = the sole ``.vast``).
+        campaign_name: Override the campaign name; the id becomes
+            ``<name>-<timestamp>``. Empty uses the ``.vast`` ``metadata.name``.
         upload_to_share: When true, a raw (pre-postprocess) archive of the campaign
             is delivered to the configured share (cluster) or written to the results
             ``_archives/`` dir (local) when it finishes. The share target and
@@ -445,7 +447,7 @@ def start_campaign(config_filter: str = "", runs: int = 0,
             from robovast.service.interface import CreateCampaignRequest
             ref = client.create_campaign(CreateCampaignRequest(
                 workspace_id=workspace_id, config_path=config_path,
-                config_filter=config_filter,
+                config_filter=config_filter, campaign_name=campaign_name,
                 runs=runs if runs and runs > 0 else 1,
                 upload_to_share=upload_to_share))
             return {"campaign_id": ref.campaign_id, "backend": "service"}
@@ -460,7 +462,7 @@ def start_campaign(config_filter: str = "", runs: int = 0,
             return {"error": f"unknown backend {backend!r}; use 'local' or 'cluster'"}
 
         from robovast.execution.controller import campaign_id_for
-        campaign_id = campaign_id_for(campaign_config)
+        campaign_id = campaign_id_for(campaign_config, campaign_name or None)
         runs_arg = runs if runs and runs > 0 else info["runs_per_config"]
         expected_total = info["configs"] * runs_arg
 

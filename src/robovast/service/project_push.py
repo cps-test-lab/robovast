@@ -92,7 +92,8 @@ def push_project_to_workspace(client, config_path: str, name: str = "") -> str:
 
 def run_project_via_service(client, config_path: str,
                             config_filter: str = "", runs: int = 1,
-                            feedback=None, upload_to_share: bool = False) -> str:
+                            feedback=None, upload_to_share: bool = False,
+                            campaign_name: str = "") -> str:
     """Push the local project through *client* and start a campaign. Returns id."""
     from robovast.service.interface import CreateCampaignRequest
 
@@ -102,6 +103,7 @@ def run_project_via_service(client, config_path: str,
     say(f"Uploaded to workspace {workspace_id}; starting campaign ...")
     ref = client.create_campaign(CreateCampaignRequest(
         workspace_id=workspace_id, config_filter=config_filter,
+        campaign_name=campaign_name,
         runs=runs if runs and runs > 0 else 1,
         upload_to_share=upload_to_share))
     return ref.campaign_id

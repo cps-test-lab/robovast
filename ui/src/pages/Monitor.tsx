@@ -22,6 +22,7 @@ import { robovast, campaignsNewestFirst, type CampaignSummary, type Status } fro
 import { StatusView } from '@/components/StatusView'
 import { PhaseChip, PhaseDot } from '@/components/PhaseChip'
 import { useDialogs } from '@/components/DialogProvider'
+import { LaunchBar } from './LaunchBar'
 
 const TERMINAL = ['finished', 'failed', 'stopped', 'error']
 const isTerminal = (phase: string | undefined) => !!phase && TERMINAL.includes(phase)
@@ -224,6 +225,8 @@ export function Monitor() {
 
   return (
     <Stack spacing={2}>
+      <LaunchBar />
+
       <Stack direction="row" alignItems="center" spacing={1}>
         <Typography variant="h6">Campaigns</Typography>
         <Box flexGrow={1} />

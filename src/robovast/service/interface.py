@@ -66,6 +66,7 @@ class CreateCampaignRequest(BaseModel):
     workspace_id: str
     config_path: str = ""            # which .vast to run (workspace-relative); "" = the one .vast
     config_filter: str = ""          # optional glob to run only matching configs
+    campaign_name: str = ""          # override the campaign name (id = <name>-<timestamp>); "" = metadata.name
     runs: int = 1                    # runs per configuration
     postprocess: bool = True         # trigger analysis postprocessing once when done
     upload_to_share: bool = False    # stream a raw (pre-postprocess) archive to the share

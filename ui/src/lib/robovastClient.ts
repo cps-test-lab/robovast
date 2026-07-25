@@ -82,6 +82,7 @@ export interface CreateCampaignRequest {
   workspace_id: string
   config_path?: string
   config_filter?: string
+  campaign_name?: string
   runs?: number
   postprocess?: boolean
   upload_to_share?: boolean
@@ -389,6 +390,7 @@ export const robovast = {
     request<CampaignRef>('POST', '/campaigns', {
       config_path: '',
       config_filter: '',
+      campaign_name: '',
       runs: 1,
       postprocess: true,
       upload_to_share: false,
