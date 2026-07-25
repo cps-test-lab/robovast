@@ -45,8 +45,8 @@ function runsFromVast(content: string): number | null {
 }
 
 // The browser analog of `vast exec cluster run`: a form over CreateCampaignRequest → create_campaign →
-// campaign_id, then poll that campaign's live status (interaction lifted from robosito's CommandPlugin:
-// launch, watch, stop). Backend is implicit in whichever service this UI is served by.
+// campaign_id, then poll that campaign's live status (the launch → watch → stop interaction pattern).
+// Backend is implicit in whichever service this UI is served by.
 export function Launcher() {
   const qc = useQueryClient()
   const [workspaceId, setWorkspaceId] = useState('')

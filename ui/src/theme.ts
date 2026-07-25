@@ -1,7 +1,6 @@
 import { createTheme } from '@mui/material/styles'
 
-// Look lifted from robosito's rso_web theme (teal/amber on near-black) — the shared visual identity,
-// not shared code.
+// Teal/amber on near-black — a shared visual identity across our web UIs, not shared code.
 export const appTheme = createTheme({
   palette: {
     mode: 'dark',

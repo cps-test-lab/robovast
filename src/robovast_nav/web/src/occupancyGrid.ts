@@ -4,9 +4,9 @@
 // (view transform, compositing, interaction) lives in the CostmapPanel. No `three` dependency:
 // everything is 2D (ground-plane) so a small planar transform (x, y, yaw) suffices.
 //
-// Ported verbatim from robosito's rso_web_mobile/src/lib/occupancyGrid.ts. In robosito the grids arrive
-// live over rosbridge; here the CostmapPanel builds the same OccupancyGrid shape from a data.db row, so
-// these functions are unchanged. Keep it in sync if the upstream copy evolves.
+// These are generic OccupancyGrid rendering helpers: whether the grid arrives live over rosbridge or,
+// as here, is rebuilt into the same OccupancyGrid shape from a data.db row by the CostmapPanel, the
+// functions are identical.
 
 // --- ROS message shapes (only the fields we read) ---
 
