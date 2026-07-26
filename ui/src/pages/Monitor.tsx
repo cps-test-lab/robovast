@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
@@ -18,11 +18,19 @@ import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded'
 import ReplayRoundedIcon from '@mui/icons-material/ReplayRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import Typography from '@mui/material/Typography'
-import { robovast, campaignsNewestFirst, type CampaignSummary, type Status } from '@/lib/robovastClient'
+import {
+  robovast,
+  campaignsNewestFirst,
+  type CampaignSummary,
+  type ListCampaignsResponse,
+  type Status,
+} from '@/lib/robovastClient'
+import { formatLocalTime } from '@/lib/time'
 import { StatusView } from '@/components/StatusView'
 import { PhaseChip, PhaseDot } from '@/components/PhaseChip'
 import { useDialogs } from '@/components/DialogProvider'
 import { LaunchBar } from './LaunchBar'
+import { PostprocessingDialog } from './PostprocessingDialog'
 
 const TERMINAL = ['finished', 'failed', 'stopped', 'error']
 const isTerminal = (phase: string | undefined) => !!phase && TERMINAL.includes(phase)
@@ -59,14 +67,7 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
   const { confirm } = useDialogs()
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null)
   const closeMenu = () => setMenuAnchor(null)
-
-  const reprocess = useMutation({
-    mutationFn: () => robovast.runPostprocessing(id),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['status', id] })
-      qc.invalidateQueries({ queryKey: ['campaigns'] })
-    },
-  })
+  const [ppOpen, setPpOpen] = useState(false)
 
   const del = useMutation({
     mutationFn: () => robovast.deleteCampaign(id),
@@ -76,7 +77,7 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
 
   const onReprocess = () => {
     closeMenu()
-    reprocess.mutate()
+    setPpOpen(true)
   }
 
   const onDelete = async () => {
@@ -110,6 +111,11 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
         <Typography variant="subtitle2" sx={{ fontFamily: 'monospace' }}>
           {id}
         </Typography>
+        {summary.started_at ? (
+          <Typography variant="caption" color="text.secondary">
+            {formatLocalTime(summary.started_at)}
+          </Typography>
+        ) : null}
         <Box flexGrow={1} />
         {status.isFetching ? <CircularProgress size={14} /> : null}
         {!running ? (
@@ -118,9 +124,9 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
               size="small"
               aria-label="campaign actions"
               onClick={(e) => setMenuAnchor(e.currentTarget)}
-              disabled={reprocess.isPending || del.isPending}
+              disabled={del.isPending}
             >
-              {reprocess.isPending || del.isPending ? (
+              {del.isPending ? (
                 <CircularProgress size={16} />
               ) : (
                 <SettingsRoundedIcon fontSize="small" />
@@ -178,16 +184,6 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
         </Alert>
       ) : null}
 
-      {reprocess.isError ? (
-        <Alert severity="error" sx={{ mb: 1 }}>
-          Postprocessing failed: {(reprocess.error as Error).message}
-        </Alert>
-      ) : reprocess.data ? (
-        <Alert severity={reprocess.data.ok ? 'success' : 'warning'} sx={{ mb: 1 }}>
-          {reprocess.data.message ?? (reprocess.data.ok ? 'Postprocessing complete.' : 'No effect.')}
-        </Alert>
-      ) : null}
-
       {del.isError ? (
         <Alert severity="error" sx={{ mb: 1 }}>
           Delete failed: {(del.error as Error).message}
@@ -212,16 +208,46 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
           </Typography>
         </Stack>
       )}
+
+      <PostprocessingDialog campaignId={id} open={ppOpen} onClose={() => setPpOpen(false)} />
     </Paper>
   )
 }
 
+// Live campaign list over SSE. The server pushes the full list on connect and on
+// every change (a server-side loop over list_campaigns), so this is the single
+// source for the list — no polling. EventSource reconnects on its own after a
+// dropped connection; `reconnect` forces a fresh connection (the Refresh button).
+function useCampaignStream(reconnect: number) {
+  const [data, setData] = useState<ListCampaignsResponse | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [live, setLive] = useState(false)
+
+  useEffect(() => {
+    const es = new EventSource(robovast.campaignsStreamUrl())
+    es.onopen = () => setLive(true)
+    es.onmessage = (e) => {
+      setData(JSON.parse(e.data) as ListCampaignsResponse)
+      setError(null)
+      setLive(true)
+    }
+    es.addEventListener('streamerror', (e) => {
+      setError(JSON.parse((e as MessageEvent).data))
+    })
+    es.onerror = () => {
+      // Transport-level drop: EventSource retries on its own; reflect the gap but
+      // keep showing the last list until the next frame lands.
+      if (es.readyState !== EventSource.CLOSED) setLive(false)
+    }
+    return () => es.close()
+  }, [reconnect])
+
+  return { data, error, live }
+}
+
 export function Monitor() {
-  const campaigns = useQuery({
-    queryKey: ['campaigns'],
-    queryFn: () => robovast.listCampaigns(100, 0),
-    refetchInterval: 5000,
-  })
+  const [reconnect, setReconnect] = useState(0)
+  const { data, error, live } = useCampaignStream(reconnect)
 
   return (
     <Stack spacing={2}>
@@ -229,29 +255,31 @@ export function Monitor() {
 
       <Stack direction="row" alignItems="center" spacing={1}>
         <Typography variant="h6">Campaigns</Typography>
+        {data && !live ? (
+          <Typography variant="caption" color="text.secondary">
+            reconnecting…
+          </Typography>
+        ) : null}
         <Box flexGrow={1} />
         <Button
           size="small"
           startIcon={<RefreshRoundedIcon />}
-          onClick={() => campaigns.refetch()}
-          disabled={campaigns.isFetching}
+          onClick={() => setReconnect((n) => n + 1)}
         >
           Refresh
         </Button>
       </Stack>
 
-      {campaigns.isError ? (
-        <Alert severity="error">
-          Could not reach the service: {(campaigns.error as Error).message}
-        </Alert>
-      ) : campaigns.isLoading ? (
+      {error ? (
+        <Alert severity="error">Could not reach the service: {error}</Alert>
+      ) : !data ? (
         <CircularProgress size={24} />
-      ) : !campaigns.data?.campaigns.length ? (
+      ) : !data.campaigns.length ? (
         <Alert severity="info" variant="outlined">
           No campaigns yet — start one from the Launcher.
         </Alert>
       ) : (
-        campaignsNewestFirst(campaigns.data.campaigns).map((c) => (
+        campaignsNewestFirst(data.campaigns).map((c) => (
           <CampaignCard key={c.campaign_id} summary={c} />
         ))
       )}

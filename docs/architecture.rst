@@ -220,7 +220,20 @@ lives in the ``run_data`` MCP plugin):
   (``LocalTransport``), or the campaign's Kubernetes Jobs + ``read_namespaced_pod_log``
   (``ClusterService``). They report live state only; the persisted per-run logs remain
   part of the campaign result data, served by ``get_campaign_logs`` unchanged.
+  ``GET /campaigns/events`` is a **browser-only** Server-Sent-Events transport over
+  the same ``list_campaigns`` pull (the same server-side-loop idiom as the campaign
+  log stream, so there is no second enumeration to drift): it pushes the full list on
+  connect and on every change, which is how the webui shows a launched campaign — and
+  its ``building`` / ``variation`` / ``running`` / … phase — the instant it is
+  registered, without polling. ``list_campaigns`` stays the authoritative pull for
+  MCP and the CLI. Both draw from one rule: a campaign tracked in the in-process
+  registry reports its live ``ControllerState``; an untracked one is reconstructed
+  from disk (``reconstruct_status_from_disk``) — the same precedence ``get_status``
+  uses.
 * **Postprocessing** — ``get_postprocessing`` / ``update_postprocessing`` /
-  ``run_postprocessing``.
+  ``run_postprocessing``. The structured ``*_postprocessing`` pair is the programmatic
+  API (MCP, CLI); ``get_postprocessing_source`` / ``update_postprocessing_source`` are
+  the YAML-text twin the web UI re-run dialog edits in Monaco (mirroring the run-view
+  ``*_panels_source`` visualization editor). Both write the same versioned override.
 * **Data query** (MCP ``run_data``) — ``describe_campaign_data`` /
   ``query_campaign_data_sql``.

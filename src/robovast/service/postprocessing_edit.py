@@ -115,6 +115,48 @@ def update_postprocessing(campaign_dir: Path, entries: list) -> dict:
                            extra={"entries": entries})
 
 
+# -- postprocessing as editable YAML text (webui rerun dialog) ---------------
+#
+# The structured ``get_postprocessing``/``update_postprocessing`` above are the
+# programmatic API (MCP tools, CLI). The webui edits the same block as YAML text
+# in a Monaco editor — exactly like the visualization editor below — so these two
+# wrap the structured helpers with the text (de)serialization the editor needs.
+
+
+def get_postprocessing_source(campaign_dir: Path) -> dict:
+    """Return the effective ``results_processing.postprocessing`` block as YAML text."""
+    info = get_postprocessing(campaign_dir)
+    content = yaml.safe_dump(
+        {"results_processing": {"postprocessing": info["entries"]}},
+        sort_keys=False)
+    return {
+        "campaign_dir": str(campaign_dir),
+        "source": info["source"],
+        "content": content,
+    }
+
+
+def update_postprocessing_source(campaign_dir: Path, content: str) -> dict:
+    """Write a new override revision from an edited postprocessing YAML document.
+
+    *content* is the document as shown by :func:`get_postprocessing_source`: a
+    top-level ``results_processing:`` mapping carrying a ``postprocessing:`` list.
+    The entries are validated and persisted via :func:`update_postprocessing`, so
+    the ``_config/`` snapshot is untouched and only the ``postprocessing`` sub-key
+    is replaced (any siblings under ``results_processing`` are preserved).
+    """
+    try:
+        parsed = yaml.safe_load(content)
+    except yaml.YAMLError as e:
+        raise ValueError(f"invalid YAML: {e}") from e
+    if not isinstance(parsed, dict) or "results_processing" not in parsed:
+        raise ValueError("expected a top-level 'results_processing:' mapping")
+    section = parsed["results_processing"]
+    if not isinstance(section, dict) or "postprocessing" not in section:
+        raise ValueError("expected a 'postprocessing:' list under 'results_processing:'")
+    return update_postprocessing(campaign_dir, section["postprocessing"])
+
+
 # -- run-view visualization (same override chain, display-only) --------------
 #
 # The run view's panels come from the top-level ``visualization:`` block. Editing

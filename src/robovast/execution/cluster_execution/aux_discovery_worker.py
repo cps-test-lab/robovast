@@ -63,5 +63,6 @@ def main(argv) -> int:
 
 if __name__ == "__main__":
     # Let any exception propagate: Python prints the full traceback to stderr (which
-    # the parent captures) and exits non-zero, so the parent skips discovery.
+    # the parent captures) and exits non-zero, so the parent raises AuxDiscoveryError
+    # with that traceback rather than proceeding with no aux pod.
     sys.exit(main(sys.argv))

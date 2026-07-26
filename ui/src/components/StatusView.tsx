@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import Chip from '@mui/material/Chip'
@@ -9,10 +8,10 @@ import {
   robovast,
   type JobSummary,
   type ListJobsResponse,
-  type LogChunk,
   type Status,
 } from '@/lib/robovastClient'
 import { formatDuration } from '@/lib/format'
+import { formatLocalClock } from '@/lib/time'
 import { MeterBar } from './MeterBar'
 
 // Renders one campaign's live Status — the browser analog of what `vast exec cluster monitor` prints:
@@ -117,7 +116,9 @@ export function StatusView({
                 {runs.failed} failed
               </Box>
             ) : null}
-            {etaSeconds != null ? ` · ~${formatDuration(etaSeconds)} left` : ''}
+            {etaSeconds != null
+              ? ` · ~${formatDuration(etaSeconds)} left (≈ ${formatLocalClock(etaSeconds)})`
+              : ''}
           </Typography>
         </Stack>
         <MeterBar
@@ -167,7 +168,7 @@ export function StatusView({
         <JobsSection campaignId={status.campaign_id} jobs={shownJobs} />
       ) : null}
       {status.campaign_id && !hideLog ? (
-        <CampaignLog campaignId={status.campaign_id} terminal={terminal} />
+        <CampaignLog campaignId={status.campaign_id} />
       ) : null}
     </Stack>
   )
@@ -214,10 +215,6 @@ function JobsSection({ campaignId, jobs }: { campaignId: string; jobs: JobSummar
 
 function JobRow({ campaignId, job }: { campaignId: string; job: JobSummary }) {
   const [open, setOpen] = useState(false)
-  // A blocked job has no running pod, so its log never streams — treat it as terminal
-  // (stop polling) like completed/failed; the reason lives in job.detail below.
-  const terminal =
-    job.status === 'completed' || job.status === 'failed' || job.status === 'blocked'
   return (
     <Box>
       <Stack direction="row" spacing={1} alignItems="center">
@@ -249,8 +246,7 @@ function JobRow({ campaignId, job }: { campaignId: string; job: JobSummary }) {
       {open ? (
         <LogPanel
           resetKey={`${campaignId}/${job.job_name}`}
-          terminal={terminal}
-          fetchChunk={(offset) => robovast.getJobLog(campaignId, job.job_name, offset)}
+          streamUrl={robovast.jobLogStreamUrl(campaignId, job.job_name)}
         />
       ) : null}
     </Box>
@@ -296,51 +292,76 @@ function renderLogLines(text: string) {
   })
 }
 
-// Streams a log incrementally: polls `fetchChunk` from a byte offset and appends
-// the returned slice — the same offset protocol the CLI/MCP use — autoscrolling to
-// the newest line. `resetKey` restarts the stream when the source changes; `terminal`
-// lets it stop after one final empty read. Always streams while mounted (callers gate
-// visibility by mounting/unmounting it).
-function LogPanel({
-  resetKey,
-  terminal,
-  fetchChunk,
-}: {
-  resetKey: string
-  terminal: boolean
-  fetchChunk: (offset: number) => Promise<LogChunk>
-}) {
+type StreamState = 'connecting' | 'open' | 'reconnecting' | 'eof' | 'error'
+
+// Streams a log live over Server-Sent Events (see robovast.*StreamUrl). The browser's
+// EventSource appends each delta, auto-reconnects on a dropped connection, and resends
+// Last-Event-ID so the server resumes from the exact byte offset (no gap, no dupe) — so
+// the panel is never a silently-frozen poll loop: a blip shows `reconnecting…` and heals
+// itself; a server-side application error (e.g. pod gone, no durable copy) shows verbatim;
+// a terminal log ends cleanly on `eof`. `resetKey` restarts the stream when the source
+// changes; callers gate visibility by mounting/unmounting.
+function LogPanel({ resetKey, streamUrl }: { resetKey: string; streamUrl: string }) {
   const [text, setText] = useState('')
-  const [eof, setEof] = useState(false)
-  const offset = useRef(0)
+  const [state, setState] = useState<StreamState>('connecting')
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const preRef = useRef<HTMLPreElement>(null)
 
   useEffect(() => {
-    offset.current = 0
     setText('')
-    setEof(false)
-  }, [resetKey])
-
-  useQuery({
-    queryKey: ['logpanel', resetKey],
-    enabled: !eof,
-    queryFn: async () => {
-      const chunk = await fetchChunk(offset.current)
-      if (chunk.text) {
-        offset.current = chunk.next_offset
-        setText((t) => t + chunk.text)
+    setState('connecting')
+    setErrorMsg(null)
+    const es = new EventSource(streamUrl)
+    es.onopen = () => setState((s) => (s === 'eof' || s === 'error' ? s : 'open'))
+    es.onmessage = (e) => {
+      try {
+        const delta = JSON.parse(e.data) as string
+        if (delta) setText((t) => t + delta)
+        setState((s) => (s === 'eof' || s === 'error' ? s : 'open'))
+      } catch {
+        /* keep-alive comment or malformed frame — ignore */
       }
-      if (chunk.eof || (terminal && !chunk.text)) setEof(true)
-      return chunk
-    },
-    refetchInterval: () => (eof ? false : 1500),
-  })
+    }
+    // Transport-level drop: EventSource retries on its own (resending Last-Event-ID),
+    // so reflect "reconnecting" and keep the accumulated text — never a dead panel.
+    es.onerror = () => {
+      if (es.readyState !== EventSource.CLOSED) setState('reconnecting')
+    }
+    // Application error the server chose to surface (pod gone, upload missing, …).
+    es.addEventListener('streamerror', (e) => {
+      try {
+        setErrorMsg(JSON.parse((e as MessageEvent).data) as string)
+      } catch {
+        setErrorMsg('log stream error')
+      }
+      setState('error')
+    })
+    // Terminal log — nothing more will be written; stop cleanly.
+    es.addEventListener('eof', () => {
+      setState((s) => (s === 'error' ? 'error' : 'eof'))
+      es.close()
+    })
+    return () => es.close()
+  }, [resetKey, streamUrl])
 
   useEffect(() => {
     if (preRef.current) preRef.current.scrollTop = preRef.current.scrollHeight
   }, [text])
 
   const lines = useMemo(() => (text ? renderLogLines(text) : null), [text])
+
+  // Footer status shown under the log body: nothing while healthily streaming, an
+  // explicit note while reconnecting / errored / (when empty) connecting or ended.
+  const footer =
+    state === 'reconnecting'
+      ? 'reconnecting…'
+      : state === 'error'
+        ? `stream error: ${errorMsg ?? 'unknown'}`
+        : !lines
+          ? state === 'eof'
+            ? '(no log)'
+            : 'loading…'
+          : null
 
   return (
     <Box
@@ -363,14 +384,27 @@ function LogPanel({
         overflowY: 'auto',
       }}
     >
-      {lines || (eof ? '(no log)' : 'loading…')}
+      {lines}
+      {footer ? (
+        <Box
+          component="span"
+          sx={{
+            display: 'block',
+            color: state === 'error' ? 'error.main' : 'text.secondary',
+            opacity: 0.85,
+          }}
+        >
+          {lines ? '\n' : ''}
+          {footer}
+        </Box>
+      ) : null}
     </Box>
   )
 }
 
 // Live unified infrastructure log for one campaign (variation + run + postprocessing
-// phases, divider-separated) via getCampaignLogs. Collapsed by default.
-export function CampaignLog({ campaignId, terminal }: { campaignId: string; terminal: boolean }) {
+// phases, divider-separated), streamed over SSE. Collapsed by default.
+export function CampaignLog({ campaignId }: { campaignId: string }) {
   const [open, setOpen] = useState(false)
   return (
     <Box>
@@ -378,11 +412,7 @@ export function CampaignLog({ campaignId, terminal }: { campaignId: string; term
         {open ? 'Hide log' : 'Show log'}
       </Button>
       {open ? (
-        <LogPanel
-          resetKey={campaignId}
-          terminal={terminal}
-          fetchChunk={(offset) => robovast.getCampaignLogs(campaignId, offset)}
-        />
+        <LogPanel resetKey={campaignId} streamUrl={robovast.campaignLogStreamUrl(campaignId)} />
       ) : null}
     </Box>
   )

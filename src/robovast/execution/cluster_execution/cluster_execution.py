@@ -112,6 +112,39 @@ def pod_block_reason(pod) -> "tuple[str, str] | None":
     return None
 
 
+# Pod-level termination reasons that a user would otherwise dig out of ``kubectl
+# describe`` / k9s: the node evicted the pod (memory/disk pressure) or the Job's
+# ``activeDeadlineSeconds`` fired. Unlike a normal non-zero scenario exit (whose
+# cause is in the run's own log), these truncate the log with no in-log explanation.
+POD_TERMINATED_REASONS = frozenset({"Evicted", "DeadlineExceeded"})
+
+
+def pod_termination_reason(pod) -> "tuple[str, str] | None":
+    """``(reason, message)`` explaining an *abnormal* end of *pod*, else ``None``.
+
+    Surfaces only the causes that leave the scenario log unexplained — an
+    ``OOMKilled`` container, or a pod-level ``Evicted`` / ``DeadlineExceeded`` — so a
+    failed job says *why* without a trip to k9s. A plain non-zero exit is deliberately
+    not reported here: that is an ordinary scenario failure whose reason is in the
+    run's own log, not an infrastructure event.
+    """
+    status = pod.status
+    if status is None:
+        return None
+    pod_reason = getattr(status, "reason", None)
+    if pod_reason in POD_TERMINATED_REASONS:
+        return pod_reason, (getattr(status, "message", None) or "").strip()
+    statuses = list(getattr(status, "init_container_statuses", None) or []) + \
+        list(getattr(status, "container_statuses", None) or [])
+    for cs in statuses:
+        state = getattr(cs, "state", None)
+        term = getattr(state, "terminated", None) if state else None
+        if term and getattr(term, "reason", None) == "OOMKilled":
+            cname = getattr(cs, "name", None) or "?"
+            return "OOMKilled", f"container {cname} exceeded its memory limit"
+    return None
+
+
 def _loggable_container_names(pod) -> "list[str]":
     """Names of *pod*'s regular containers (the main ``robovast`` plus any secondary
     sim/SUT servers), in spec order. Init containers (e.g. ``s3-init``) are startup
@@ -295,21 +328,24 @@ class PodLogTail:
         return self.terminal
 
 
-def _pod_signals(k8s_core, namespace, label_selector) -> "tuple[set, dict]":
-    """One pod list → ``(running_job_names, blocked_job_reasons)``.
+def _pod_signals(k8s_core, namespace, label_selector) -> "tuple[set, dict, dict]":
+    """One pod list → ``(running_job_names, blocked_job_reasons, terminated_reasons)``.
 
     ``running_job_names``: Jobs owning a pod in phase ``Running`` (the truth a Job's
     ``status.active`` can't give — it counts Pending pods too). ``blocked_job_reasons``:
     Job name → ``"<reason>: <message>"`` for pods that cannot start (image pull /
-    container-config errors). Best-effort: on any pod-list error, returns empties so
-    callers fall back to the Job-level view rather than failing the whole listing.
+    container-config errors). ``terminated_reasons``: Job name → reason string for a
+    pod that ended abnormally (OOMKilled / evicted / deadline — see
+    :func:`pod_termination_reason`), so a *failed* job can explain itself. Best-effort:
+    on any pod-list error, returns empties so callers fall back to the Job-level view
+    rather than failing the whole listing.
     """
     try:
         pods = k8s_core.list_namespaced_pod(namespace, label_selector=label_selector).items
     except Exception as exc:  # noqa: BLE001 - best-effort refinement
         logger.warning("Could not list pods to refine job status: %s", exc)
-        return set(), {}
-    running, blocked = set(), {}
+        return set(), {}, {}
+    running, blocked, terminated = set(), {}, {}
     for pod in pods:
         name = _pod_job_name(pod)
         if not name:
@@ -320,7 +356,11 @@ def _pod_signals(k8s_core, namespace, label_selector) -> "tuple[set, dict]":
         if reason:
             r, msg = reason
             blocked[name] = f"{r}: {msg}" if msg else r
-    return running, blocked
+        term = pod_termination_reason(pod)
+        if term:
+            r, msg = term
+            terminated[name] = f"{r}: {msg}" if msg else r
+    return running, blocked, terminated
 
 
 def running_scenario_job_names(k8s_core, namespace, label_selector) -> set:
@@ -353,14 +393,20 @@ def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
     (fail the batch after a grace window) lives in the run loop, not here.
 
     Returns a list of ``(job, phase, detail)`` tuples in the order the API returned
-    the Jobs; ``detail`` is ``None`` unless the Job is blocked.
+    the Jobs; ``detail`` is ``None`` unless the Job is blocked (image pull / config
+    error) or failed for an infrastructure reason (OOMKilled / evicted / deadline),
+    in which case it carries Kubernetes' own explanation.
     """
     job_list = k8s_batch.list_namespaced_job(namespace, label_selector=label_selector)
-    running, blocked = _pod_signals(k8s_core, namespace, label_selector)
+    running, blocked, terminated = _pod_signals(k8s_core, namespace, label_selector)
     out = []
     for job in job_list.items:
         detail = blocked.get(job.metadata.name)
         phase = "blocked" if detail else job_phase(job, running)
+        # A failed job whose pod was OOM-killed / evicted / deadline-exceeded would
+        # otherwise show no cause (its scenario log is truncated) — surface it.
+        if phase == "failed" and not detail:
+            detail = terminated.get(job.metadata.name)
         out.append((job, phase, detail))
     return out
 

@@ -94,8 +94,11 @@ def _service_client():
 def _classify_dead_local_for(results_dir):
     """Return a ``entry -> status`` classifier for dead local entries.
 
-    Authoritative when the child's exit code was captured; otherwise falls back
-    to the on-disk signal (``campaign.db`` present + enough terminal runs).
+    Precedence: the child's captured exit code (authoritative when present); else
+    the canonical durable record ``_execution/outcome.json`` (so a run the child's
+    controller finished / failed / *stopped* is classified as the controller
+    itself recorded it, not collapsed to finished/crashed); else the on-disk
+    signal (``campaign.db`` present + enough terminal runs).
     """
     def classify(entry):
         exit_code = entry.get("exit_code")
@@ -105,6 +108,13 @@ def _classify_dead_local_for(results_dir):
             return "crashed"
         campaign_id = entry.get("campaign_id")
         campaign_dir = os.path.join(results_dir, campaign_id)
+        # No exit code (e.g. reaped by a liveness sweep, or MCP restarted): trust the
+        # controller's own durable terminal record over re-inferring from artifacts.
+        from robovast.common.campaign_data import read_execution_outcome
+        from robovast.execution.control_server import is_terminal
+        outcome = read_execution_outcome(Path(campaign_dir))
+        if outcome is not None and is_terminal(outcome.phase):
+            return outcome.phase
         from robovast.common.store import STORE_FILENAME
         if not os.path.exists(os.path.join(campaign_dir, STORE_FILENAME)):
             return "crashed"
@@ -208,24 +218,6 @@ def _status_to_dict(campaign_id: str, backend, st) -> dict:
     if st.error:
         result["error"] = st.error
     return result
-
-
-def _campaign_mode(campaign_dir) -> str | None:
-    """Best-effort read of ``campaign.mode`` ('search'/'batch') from campaign.db."""
-    import sqlite3  # noqa: PLC0415
-    from robovast.common.store import STORE_FILENAME  # noqa: PLC0415
-    db = Path(campaign_dir) / STORE_FILENAME
-    if not db.exists():
-        return None
-    try:
-        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-        try:
-            row = conn.execute("SELECT mode FROM campaign LIMIT 1").fetchone()
-            return row[0] if row else None
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        return None
 
 
 def _log_tail(log_path, max_lines=40):
@@ -565,19 +557,15 @@ def get_campaign_status(campaign_id: str) -> dict:
             return {"error": f"campaign {campaign_id!r} not tracked"}
         campaign_dir = os.path.join(results_dir, campaign_id)
 
-        # Prefer the durable full Status a finished/failed campaign leaves behind
-        # (rich search state on both backends, at the same path); otherwise
-        # synthesize a live Status from the registry + on-disk batch progress.
-        from robovast.common.campaign_data import read_execution_outcome  # noqa: PLC0415
-        st = read_execution_outcome(Path(campaign_dir))
-        done, passed, failed = _read_progress(campaign_dir)
-        if st is None:
-            from robovast.execution.control_server import Status  # noqa: PLC0415
-            st = Status(phase=entry.get("status") or "running",
-                        campaign_id=campaign_id,
-                        mode=_campaign_mode(campaign_dir),
-                        runs={"completed": done,
-                              "total": entry.get("expected_total") or 0})
+        # The one disk reconstruction (durable outcome.json, else derived from
+        # artifacts) — shared with the service's own past-campaign lookup. The
+        # registry supplies only the expected run total for the derived case; it is
+        # no longer a second source of the campaign's phase.
+        from robovast.execution.status_recovery import \
+            reconstruct_status_from_disk  # noqa: PLC0415
+        st = reconstruct_status_from_disk(
+            campaign_dir, expected_total=entry.get("expected_total"))
+        _done, passed, failed = _read_progress(campaign_dir)
         result = _status_to_dict(campaign_id, entry.get("backend"), st)
         # Local extras beyond the Status model: cumulative pass/fail + a real log tail.
         result["passed"] = passed

@@ -14,10 +14,20 @@ It provides four views, one per desktop GUI:
 
 * **Monitor** — lists campaigns and shows each one's live progress (phase, per-batch
   run progress, budget/stopping criteria), with a **Stop** action and a collapsible
-  **live log** panel. The per-batch run bar also distinguishes **finished** runs (the
+  **live log** panel. The campaign list itself is **streamed** over Server-Sent Events
+  (``GET /campaigns/events``), not polled: a launched campaign appears in the list
+  immediately — with its true live phase and its **start time** (shown in your
+  browser's locale and timezone) — and every phase change is pushed within a second.
+  The phase reflects the whole lifecycle, including the two pre-run steps that used to
+  be invisible: ``building`` (the experiment image is being built) and ``variation``
+  (the campaign's configurations are being expanded), then ``running`` →
+  ``finishing`` → ``postprocessing`` → ``finished`` (or ``failed`` / ``stopped``). A
+  build that fails is shown as a ``failed`` campaign in the list rather than
+  vanishing. The per-batch run bar also distinguishes **finished** runs (the
   solid fill) from those **currently running** (a lighter segment on top), with the
   exact ``running N · pending M`` counts beside it. While a fixed-size campaign runs,
-  an **ETA** (``~12m left``) appears next to that count once at least one run has
+  an **ETA** (``~12m left (≈ 14:35)``, the estimated finish time in your locale)
+  appears next to that count once at least one run has
   finished, extrapolating from the average time per completed run. A collapsible **Jobs** list shows
   each execution unit of the current batch — a *run* locally, a Kubernetes *Job* on the
   cluster — with its status; expanding a running one streams that **job's own live log**
@@ -29,8 +39,14 @@ It provides four views, one per desktop GUI:
   running work halts promptly (not only after the current batch). A finished cluster
   campaign also shows a **Download** button that streams its postprocessed
   ``tar.gz`` straight from the object store (offered only for a cluster service — a
-  local service's results are already on its filesystem). The browser equivalent of
-  ``vast exec cluster monitor``.
+  local service's results are already on its filesystem). A finished campaign's
+  actions menu offers **Retrigger postprocessing**, which opens a dialog to *adapt
+  the* ``results_processing.postprocessing`` *block* (in a Monaco YAML editor) and
+  re-run the analysis against the preserved raw rosbags — to compute different metrics
+  after the fact without a new run. Because a campaign is self-contained (it carries
+  the ``.vast`` that ran), the edit is saved as a *new versioned override* of that
+  file (``_control/postprocess/rev-N.vast``); the immutable ``_config/`` snapshot is
+  never touched. The browser equivalent of ``vast exec cluster monitor``.
 * **Launcher** — starts a campaign from a workspace (which ``.vast``, config filter,
   runs per configuration, *Postprocess when done* and *Upload to share when done*
   toggles) and watches its live status. The browser equivalent of ``vast exec
@@ -223,7 +239,9 @@ table on ``(config_name, run_id)`` to answer "how does *<param>* affect *<metric
    builds ``data.db`` from the raw rosbags. Launching with **Postprocess when done**
    (the default) runs it automatically on both backends; otherwise the Results tab
    offers a **Run postprocessing** button, and the CLI equivalent is
-   ``vast results postprocess --campaign <id>``. The rosbag→CSV step always runs in
+   ``vast results postprocess --campaign <id>``. To *change* the postprocessing
+   parameters and re-run, use **Retrigger postprocessing** in the Monitor view's
+   campaign actions menu (see above). The rosbag→CSV step always runs in
    the campaign's own execution image (locally in a container, in a cluster as a Job),
    because rosbags only deserialize where the system-under-test's ROS2 message types
    are defined.
@@ -338,7 +356,7 @@ and the tree structure from the BT XML nav2 ran. *This panel ships with the*
 ``robovast_nav`` *package* as a package-provided (Module-Federation) panel, so it is
 available whenever ``robovast_nav`` is installed; the ``.vast`` references it as
 ``- nav2_behavior_tree:`` with ``source: { table: nav2_behaviors }``. See
-:repo_link:`configs/examples/basic_nav_sim_suite` for a complete campaign using it.
+:repo_link:`configs/examples/basic_nav_rst` for a complete campaign using it.
 
 **3D scene** (``scene3d``) — the 3D world view, typically the run view's full-bleed
 **base layer** (``position: { anchor: fill }``): the simulated world's actual geometry
@@ -350,7 +368,7 @@ recorded map-frame pose nearest ``t`` seats the robot's base body. Bindings: ``s
 (``{ table: poses, filter: { frame: base_link } }``, the ``rosbags_tf_to_csv`` output). It
 requires the :ref:`scene descriptor <scene-descriptor-delivery>` run artifact — when a run
 has none, the panel says so and shows an empty viewport. See
-:repo_link:`configs/examples/basic_nav_sim_suite` for a complete campaign using it.
+:repo_link:`configs/examples/basic_nav_rst` for a complete campaign using it.
 
 **2D scene** (``scene``) — a top-down/side 2D plot of "where the thing is right now": one
 column against another (e.g. a quadrotor's ``x`` vs altitude ``z``) from any table with a
@@ -429,7 +447,7 @@ guide for the endpoint contract.
 
 **3D scene data delivery.** The ``scene3d`` panel renders a **scene descriptor** —
 ``scene.json`` + ``scene.bin`` (+ textures), a compact browser-renderable export of the
-simulated world — produced by the simulation as an ordinary run artifact. For sim-suite
+simulated world — produced by the simulation as an ordinary run artifact. For rst
 (MuJoCo) campaigns, set the ``SIM_SUITE_SCENE_EXPORT_DIR`` environment variable in the
 ``.vast`` and every run exports its *exact* compiled world (per-configuration
 ``world_overrides`` included) into that run-relative directory:
@@ -437,7 +455,7 @@ simulated world — produced by the simulation as an ordinary run artifact. For 
 .. code-block:: yaml
 
    execution:
-     simulation: sim_suite.scenario_adapter:MujocoSim
+     simulation: rst.scenario_adapter:MujocoSim
      env:
      - SIM_SUITE_WORLD: "/config/files/turtlebot_nav2.yaml"
      - SIM_SUITE_SCENE_EXPORT_DIR: "scene"          # -> <run dir>/scene/scene.json
@@ -452,7 +470,7 @@ simulated world — produced by the simulation as an ordinary run artifact. For 
            source: { table: poses, filter: { frame: base_link } }
 
 Any other simulator works the same way by emitting the same descriptor format (defined by
-sim-suite's ``sim_suite/export_web.py``; ``sim-suite-export-web --world ... --out ...``
+rst's ``rst/export_web.py``; ``rst-export-web --world ... --out ...``
 produces one offline). The browser fetches the descriptor through the campaign
 ``run-files`` endpoint, which serves any per-run artifact file by its run-relative path.
 

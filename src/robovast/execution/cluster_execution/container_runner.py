@@ -74,13 +74,25 @@ def aux_pod_name(campaign_id: str) -> str:
     return f"robovast-aux-{_label_safe_campaign(campaign_id)}"
 
 
+class AuxDiscoveryError(RuntimeError):
+    """Aux-container discovery could not determine what a campaign needs.
+
+    Raised instead of silently returning an empty spec list, so a campaign that
+    requires a helper image aborts before dispatch rather than launching with no
+    aux pod. An *empty* result is only ever "this campaign declares no aux
+    container", never "we could not tell".
+    """
+
+
 def required_container_specs(config_path):
     """Collect the distinct auxiliary ContainerSpecs a campaign's variations need.
 
     Asks each declared variation (via ``get_required_container``) whether it needs a
     helper image while it runs, and returns a list of ``ContainerSpec`` deduplicated
-    by container name. Best-effort: a plugin that fails to load is skipped (the run
-    surfaces the real error later), so a launch is never blocked by discovery.
+    by container name. An empty list means the campaign genuinely declares no aux
+    container. Discovery never *silently* yields an empty list: any failure to load
+    the ``.vast``, resolve a variation, or run the discovery subprocess propagates,
+    so a launch that needs a helper image fails loudly instead of running without it.
 
     When the ``.vast`` declares ``plugins:`` (or a staged ``.robovast_plugins/`` is
     present), the variation names resolve only through the plugin's entry points, and
@@ -94,11 +106,7 @@ def required_container_specs(config_path):
     from robovast.common.config_plugins import PLUGIN_DIRNAME
 
     vast_dir = os.path.dirname(os.path.abspath(config_path))
-    try:
-        parameters = load_config(config_path)
-    except Exception as exc:  # pylint: disable=broad-except
-        logger.warning("Could not inspect '%s' for aux containers: %s", config_path, exc)
-        return []
+    parameters = load_config(config_path)
 
     needs_plugins = bool(parameters.get("plugins")) or \
         os.path.isdir(os.path.join(vast_dir, PLUGIN_DIRNAME))
@@ -120,11 +128,7 @@ def _discover_specs(config_path):
     from robovast.common.config_plugins import ensure_workspace_plugins
 
     vast_dir = os.path.dirname(os.path.abspath(config_path))
-    try:
-        parameters = load_config(config_path)
-    except Exception as exc:  # pylint: disable=broad-except
-        logger.warning("Could not inspect '%s' for aux containers: %s", config_path, exc)
-        return []
+    parameters = load_config(config_path)
 
     # Put the .vast's variation plugins on sys.path (no-op for a built-in-only .vast:
     # no ``plugins:`` and no staged dir). A matching ``.installed`` marker makes this
@@ -141,20 +145,14 @@ def _discover_specs(config_path):
     if search_variations:
         blocks.append({"variations": search_variations})
 
+    # A failure to resolve a variation or compute its container requirement aborts
+    # discovery (propagates): we cannot know whether the campaign needs a helper
+    # image, so we must not proceed as if it needs none.
     specs = {}
     for config_block in blocks:
-        try:
-            classes = _get_variation_classes(config_block, vast_dir)
-        except Exception as exc:  # pylint: disable=broad-except
-            logger.warning("Skipping aux-container discovery for a config block: %s", exc)
-            continue
+        classes = _get_variation_classes(config_block, vast_dir)
         for variation_class, variation_parameters in classes:
-            try:
-                spec = variation_class.get_required_container(variation_parameters)
-            except Exception as exc:  # pylint: disable=broad-except
-                logger.warning("get_required_container failed for %s: %s",
-                               getattr(variation_class, "__name__", variation_class), exc)
-                continue
+            spec = variation_class.get_required_container(variation_parameters)
             if spec is not None:
                 specs.setdefault(spec.container_name(), spec)
     return list(specs.values())
@@ -163,9 +161,11 @@ def _discover_specs(config_path):
 def _discover_specs_subprocess(config_path):
     """Run :func:`_discover_specs` in a fresh subprocess and rebuild the specs.
 
-    Isolates plugin imports from the long-lived service. Best-effort: if the worker
-    cannot start, fails, or yields no result, discovery is skipped (empty list) so a
-    launch is never blocked — the run surfaces any real plugin error at compose time.
+    Isolates plugin imports from the long-lived service. If the worker cannot start,
+    exits non-zero, or yields no readable result, that is raised as
+    :class:`AuxDiscoveryError` — the campaign then fails loudly instead of launching
+    with no aux pod. The worker's captured traceback is included so the real plugin
+    error is visible at the failure site, not deferred to compose time.
     """
     import json
     import sys
@@ -182,20 +182,19 @@ def _discover_specs_subprocess(config_path):
         try:
             # nosec B603 - fixed module, config-derived job file
             proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        except Exception as exc:  # pylint: disable=broad-except
-            logger.warning("Aux-container discovery subprocess could not start: %s", exc)
-            return []
+        except Exception as exc:
+            raise AuxDiscoveryError(
+                f"aux-container discovery subprocess could not start: {exc}") from exc
         if proc.returncode != 0:
-            tail = (proc.stdout + proc.stderr)[-1000:]
-            logger.warning("Aux-container discovery failed (exit %s); proceeding "
-                           "without an aux pod:\n%s", proc.returncode, tail)
-            return []
+            tail = (proc.stdout + proc.stderr)[-2000:]
+            raise AuxDiscoveryError(
+                f"aux-container discovery failed (exit {proc.returncode}):\n{tail}")
         try:
             with open(result_path, encoding="utf-8") as f:
                 raw = json.load(f)
         except (OSError, json.JSONDecodeError) as exc:
-            logger.warning("Aux-container discovery produced no result: %s", exc)
-            return []
+            raise AuxDiscoveryError(
+                f"aux-container discovery produced no readable result: {exc}") from exc
 
     from robovast.common.variation.container_runner import ContainerSpec
     return [ContainerSpec(**spec) for spec in raw]

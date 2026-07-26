@@ -55,6 +55,8 @@ from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         CampaignPlotsResponse,
                                         CampaignPanelsResponse,
                                         PanelsSource, UpdatePanelsSourceRequest,
+                                        PostprocessingSource,
+                                        UpdatePostprocessingSourceRequest,
                                         CampaignVisualizationsResponse)
 
 logger = logging.getLogger(__name__)
@@ -98,6 +100,97 @@ def build_app(impl: RobovastInterface):
             raise HTTPException(status_code=404, detail=str(e)) from e
         except RuntimeError as e:          # conflict (e.g. single-flight)
             raise HTTPException(status_code=409, detail=str(e)) from e
+
+    # -- SSE log streaming --------------------------------------------------
+    # The browser streams logs over Server-Sent Events; MCP/CLI keep the pull
+    # endpoints (``.../logs``, ``.../job-log``). Both share the one assembly seam:
+    # an SSE stream is just a server-side loop over the same ``LogChunk`` pull, so
+    # there is no second implementation of assembly/offset to drift.
+    import json as _json  # pylint: disable=import-outside-toplevel
+
+    from fastapi.responses import \
+        StreamingResponse  # pylint: disable=import-outside-toplevel
+
+    #: Poll cadence of the server-side tail loop. Sub-second, so lines reach the
+    #: browser far faster than the old 1.5 s client poll, without N clients issuing
+    #: their own HTTP round-trips.
+    _SSE_POLL_S = 0.5
+    #: Disable proxy/CDN buffering so events are delivered as they are produced.
+    _SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+    def _last_event_offset(request: Request) -> int:
+        """Resume offset from the browser's ``Last-Event-ID`` (0 on first connect)."""
+        raw = request.headers.get("last-event-id")
+        try:
+            return int(raw) if raw else 0
+        except (TypeError, ValueError):
+            return 0
+
+    async def _sse_log_stream(request: Request, fetch, start_offset: int):
+        """SSE generator tailing a ``fetch(offset) -> LogChunk`` pull.
+
+        Each non-empty delta is one ``message`` event whose ``id`` is the byte
+        offset to resume from — the browser echoes it as ``Last-Event-ID`` on an
+        automatic reconnect, so a dropped connection resumes exactly (no gap, no
+        dupe). A terminal log ends with an ``eof`` event; an application error (e.g.
+        the pod is gone with no durable copy) is sent as a ``streamerror`` event so
+        the client renders it instead of the panel silently freezing. Deltas are
+        JSON-encoded so embedded newlines can never break SSE framing.
+        """
+        offset = max(0, start_offset)
+        yield ": open\n\n"  # prompt proxies to flush the response headers
+        while True:
+            if await request.is_disconnected():
+                return
+            try:
+                chunk = await anyio.to_thread.run_sync(fetch, offset)
+            except Exception as e:  # noqa: BLE001 - surface, never 500 the stream
+                yield f"event: streamerror\ndata: {_json.dumps(str(e))}\n\n"
+                yield "event: eof\ndata: {}\n\n"
+                return
+            if chunk.text:
+                offset = chunk.next_offset
+                yield f"id: {offset}\ndata: {_json.dumps(chunk.text)}\n\n"
+            if chunk.eof:
+                yield "event: eof\ndata: {}\n\n"
+                return
+            await anyio.sleep(_SSE_POLL_S)
+
+    #: Poll cadence of the campaign-list stream's server-side loop.
+    _SSE_LIST_POLL_S = 1.0
+
+    async def _sse_campaign_list(request: Request):
+        """SSE generator pushing the campaign list whenever it changes.
+
+        A server-side loop over the same ``list_campaigns`` pull the CLI/MCP use, so
+        the list has one source of truth (no second enumeration to drift). The full
+        list is sent on connect — that is the client's initial state — and again on
+        every change; quiet ticks send a heartbeat comment so proxies hold the
+        connection. A dropped connection is resumed by the browser's native
+        ``EventSource`` reconnect, which re-runs this handler and re-sends the list,
+        so no client-side polling fallback is needed.
+        """
+        from robovast.service.interface import \
+            ListCampaignsRequest  # pylint: disable=import-outside-toplevel
+        yield ": open\n\n"
+        last = None
+        while True:
+            if await request.is_disconnected():
+                return
+            try:
+                resp = await anyio.to_thread.run_sync(
+                    lambda: impl.list_campaigns(
+                        ListCampaignsRequest(limit=100, offset=0)))
+                encoded = _json.dumps(resp.model_dump(), default=str)
+            except Exception as e:  # noqa: BLE001 - surface, never 500 the stream
+                yield f"event: streamerror\ndata: {_json.dumps(str(e))}\n\n"
+                return
+            if encoded != last:
+                last = encoded
+                yield f"data: {encoded}\n\n"
+            else:
+                yield ": heartbeat\n\n"
+            await anyio.sleep(_SSE_LIST_POLL_S)
 
     @app.get(Routes.HEALTHZ)
     def healthz() -> dict:
@@ -243,6 +336,12 @@ def build_app(impl: RobovastInterface):
         return _guard(
             lambda: impl.list_campaigns(ListCampaignsRequest(limit=limit, offset=offset)))
 
+    @app.get(Routes.CAMPAIGNS_STREAM)
+    async def stream_campaigns(request: Request):
+        return StreamingResponse(
+            _sse_campaign_list(request),
+            media_type="text/event-stream", headers=_SSE_HEADERS)
+
     @app.get("/campaigns/{campaign_id}/status", response_model=Status)
     def get_status(campaign_id: str) -> Status:
         return _guard(lambda: impl.get_status(campaign_id))
@@ -258,6 +357,24 @@ def build_app(impl: RobovastInterface):
     @app.get(Routes.job_log("{campaign_id}"), response_model=LogChunk)
     def get_job_log(campaign_id: str, job_name: str, offset: int = 0) -> LogChunk:
         return _guard(lambda: impl.get_job_log(campaign_id, job_name, offset))
+
+    @app.get(Routes.campaign_logs_stream("{campaign_id}"))
+    async def stream_campaign_logs(campaign_id: str, request: Request):
+        return StreamingResponse(
+            _sse_log_stream(
+                request,
+                lambda off: impl.get_campaign_logs(campaign_id, off),
+                _last_event_offset(request)),
+            media_type="text/event-stream", headers=_SSE_HEADERS)
+
+    @app.get(Routes.job_log_stream("{campaign_id}"))
+    async def stream_job_log(campaign_id: str, request: Request, job_name: str):
+        return StreamingResponse(
+            _sse_log_stream(
+                request,
+                lambda off: impl.get_job_log(campaign_id, job_name, off),
+                _last_event_offset(request)),
+            media_type="text/event-stream", headers=_SSE_HEADERS)
 
     @app.post("/campaigns/{campaign_id}/stop", response_model=ActionResult)
     def stop(campaign_id: str) -> ActionResult:
@@ -325,6 +442,18 @@ def build_app(impl: RobovastInterface):
     @app.post("/campaigns/{campaign_id}/postprocessing")
     def update_postprocessing(campaign_id: str, request: UpdatePostprocessingRequest):
         return _guard(lambda: impl.update_postprocessing(request))
+
+    @app.get("/campaigns/{campaign_id}/postprocessing/source",
+             response_model=PostprocessingSource)
+    def get_postprocessing_source(campaign_id: str) -> PostprocessingSource:
+        return _guard(lambda: impl.get_postprocessing_source(campaign_id))
+
+    @app.post("/campaigns/{campaign_id}/postprocessing/source",
+              response_model=PostprocessingSource)
+    def update_postprocessing_source(
+        campaign_id: str, request: UpdatePostprocessingSourceRequest
+    ) -> PostprocessingSource:
+        return _guard(lambda: impl.update_postprocessing_source(request))
 
     @app.post("/campaigns/{campaign_id}/postprocessing/run", response_model=ActionResult)
     def run_postprocessing(campaign_id: str, request: RunPostprocessingRequest) -> ActionResult:

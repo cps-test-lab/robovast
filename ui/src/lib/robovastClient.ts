@@ -61,12 +61,13 @@ export const campaignsNewestFirst = (campaigns: CampaignSummary[]) =>
 // union rather than an enum so it stays a plain wire value; `CampaignSummary.phase` is still typed
 // `string`, so an unexpected/future phase never fails to parse.
 export type CampaignPhase =
-  | 'starting' | 'running' | 'finishing' | 'postprocessing' | 'sharing'
+  | 'building' | 'starting' | 'variation' | 'running' | 'finishing'
+  | 'postprocessing' | 'sharing'
   | 'finished' | 'failed' | 'stopped' | 'crashed' | 'unknown'
 
 // Phases where the campaign is still working, so no final verdict exists yet.
 const RUNNING_PHASES: ReadonlySet<string> = new Set<CampaignPhase>([
-  'starting', 'running', 'finishing', 'postprocessing', 'sharing',
+  'building', 'starting', 'variation', 'running', 'finishing', 'postprocessing', 'sharing',
 ])
 
 export const isRunning = (c: CampaignSummary) => RUNNING_PHASES.has(c.phase)
@@ -314,6 +315,16 @@ export interface PanelsSource {
   content: string
 }
 
+// The campaign's `results_processing.postprocessing` block as editable YAML text (the same
+// shape as PanelsSource — see the postprocessing rerun dialog). `source` names the effective
+// .vast (snapshot or rev-N override); saving writes a new override revision. The raw rosbags
+// are preserved, so postprocessing can be edited and re-run any number of times.
+export interface PostprocessingSource {
+  campaign_id: string
+  source: string
+  content: string
+}
+
 // One evaluation.visualization notebook workload + the node levels it defines a notebook for
 // (subset of run/config/campaign). The Explorer shows a tab per workload and renders the
 // workload's notebook, executed against the selected node, as HTML.
@@ -407,6 +418,22 @@ export const robovast = {
         jobName,
       )}&offset=${offset}`,
     ),
+
+  // SSE stream URLs for live logs. `new EventSource(url)` streams deltas, auto-reconnects,
+  // and resumes from the last byte offset via Last-Event-ID — see LogPanel. The pull methods
+  // above stay for MCP/CLI parity; the browser prefers these.
+  campaignLogStreamUrl: (campaignId: string) =>
+    `${BASE}/campaigns/${encodeURIComponent(campaignId)}/logs/stream`,
+
+  // SSE stream of the campaign list itself: the server pushes the full list on
+  // connect and on every change (a server-side loop over listCampaigns). The
+  // Monitor page consumes this instead of polling; EventSource reconnects natively.
+  campaignsStreamUrl: () => `${BASE}/campaigns/events`,
+
+  jobLogStreamUrl: (campaignId: string, jobName: string) =>
+    `${BASE}/campaigns/${encodeURIComponent(campaignId)}/job-log/stream?job_name=${encodeURIComponent(
+      jobName,
+    )}`,
 
   stop: (campaignId: string) =>
     request<ActionResult>('POST', `/campaigns/${encodeURIComponent(campaignId)}/stop`),
@@ -565,6 +592,21 @@ export const robovast = {
       `/campaigns/${encodeURIComponent(campaignId)}/${endpoint}?${qs.toString()}`,
     )
   },
+
+  // The campaign's `results_processing.postprocessing` block as editable YAML text (the rerun
+  // dialog). `source` names the effective .vast; saving writes a new override revision.
+  getPostprocessingSource: (campaignId: string) =>
+    request<PostprocessingSource>(
+      'GET',
+      `/campaigns/${encodeURIComponent(campaignId)}/postprocessing/source`,
+    ),
+
+  updatePostprocessingSource: (campaignId: string, content: string) =>
+    request<PostprocessingSource>(
+      'POST',
+      `/campaigns/${encodeURIComponent(campaignId)}/postprocessing/source`,
+      { campaign_id: campaignId, content },
+    ),
 
   runPostprocessing: (campaignId: string, force = false) =>
     request<ActionResult>(

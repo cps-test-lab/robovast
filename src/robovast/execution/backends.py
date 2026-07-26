@@ -67,6 +67,10 @@ class CampaignConfigError(Exception):
     accompanying stack trace, which would only be noise here.
     """
 
+    # Read by failure_detail(): a clean user error carries no traceback into the
+    # durable failure record, matching how the worker already logs it.
+    include_traceback = False
+
 
 @dataclass
 class RunOptions:

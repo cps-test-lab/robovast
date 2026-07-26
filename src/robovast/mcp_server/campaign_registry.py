@@ -37,10 +37,12 @@ Design:
   reconciles a killed sweep to a terminal state so it never blocks forever.
 
 The registry is deliberately free of any Kubernetes / MCP imports so it is
-unit-testable on its own. Finished-vs-crashed classification of a dead local
-entry is delegated to a ``classify_dead_local`` callback supplied by the caller
-(the plugin reads ``campaign.db`` / on-disk aggregates); the default is
-``"crashed"``.
+unit-testable on its own (its one non-stdlib import, ``control_server`` for the
+terminal-phase vocabulary, pulls in only pydantic — no cluster/MCP surface).
+Finished-vs-crashed classification of a dead local entry is delegated to a
+``classify_dead_local`` callback supplied by the caller (the plugin prefers the
+controller's durable ``outcome.json``, then ``campaign.db`` / on-disk
+aggregates); the default is ``"crashed"``.
 """
 
 import contextlib
@@ -56,7 +58,16 @@ REGISTRY_FILENAME = "registry.json"
 LOCK_FILENAME = "registry.lock"
 LOGS_DIRNAME = "logs"
 
-TERMINAL_STATUSES = {"finished", "failed", "crashed"}
+# A dead process's status is one of the canonical terminal phases (finished /
+# failed / stopped / crashed / unknown). Derive the terminal set from that single
+# vocabulary so the registry and the controller can never drift — an earlier hand
+# maintained ``{finished, failed, crashed}`` had already lost ``stopped``, which
+# silently reclassified a cooperatively-stopped campaign. ``control_server`` pulls
+# in only pydantic/stdlib, so importing it keeps this module unit-testable without
+# any Kubernetes/MCP dependency (the property this registry is careful to preserve).
+from robovast.execution.control_server import TERMINAL_PHASES
+
+TERMINAL_STATUSES = frozenset(TERMINAL_PHASES)
 
 #: A ``launching`` entry (placeholder inserted before the child's pid is known)
 #: counts as live for this many seconds. Beyond that, a launch that never

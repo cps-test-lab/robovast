@@ -1,5 +1,5 @@
 // Scene3DPanel (type `scene3d`): the 3D world view -- the run view's full-bleed base layer. It
-// renders the run's exported scene descriptor (sim-suite's `scene.json`/`scene.bin` run artifact,
+// renders the run's exported scene descriptor (rst's `scene.json`/`scene.bin` run artifact,
 // see ui/src/lib/scene3d/README.md) in a plain-three viewport and replays the robot: on every clock
 // change the recorded map-frame pose nearest `t` drives the robot's base body.
 //

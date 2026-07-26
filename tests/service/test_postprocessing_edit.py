@@ -9,7 +9,9 @@ import yaml
 
 from robovast.service.postprocessing_edit import (effective_vast,
                                                   get_postprocessing,
-                                                  update_postprocessing)
+                                                  get_postprocessing_source,
+                                                  update_postprocessing,
+                                                  update_postprocessing_source)
 
 
 @pytest.fixture
@@ -62,3 +64,50 @@ def test_invalid_entries_rejected(campaign):
 def test_unknown_plugin_rejected(campaign):
     with pytest.raises(ValueError, match="Unknown postprocessing plugin"):
         update_postprocessing(campaign, ["no-such-plugin-xyz"])
+
+
+# -- YAML-text variants driving the webui rerun dialog -----------------------
+
+
+def test_get_source_serializes_effective_block(campaign):
+    src = get_postprocessing_source(campaign)
+    assert src["source"] == "demo.vast"
+    parsed = yaml.safe_load(src["content"])
+    assert parsed == {"results_processing": {"postprocessing": ["rosbags_to_csv"]}}
+
+
+def test_update_source_writes_override_and_round_trips(campaign):
+    snapshot_before = (campaign / "_config" / "demo.vast").read_text()
+    content = yaml.safe_dump(
+        {"results_processing": {"postprocessing": ["rosbags_to_csv", "compress"]}})
+    res = update_postprocessing_source(campaign, content)
+    assert res["revision"] == 1
+    # the immutable snapshot is unchanged
+    assert (campaign / "_config" / "demo.vast").read_text() == snapshot_before
+    info = get_postprocessing(campaign)
+    assert info["source"] == "rev-1.vast"
+    assert info["entries"] == ["rosbags_to_csv", "compress"]
+
+
+def test_update_source_preserves_other_results_processing_keys(campaign):
+    # A sibling key under results_processing must survive an edit of postprocessing.
+    cfg = campaign / "_config" / "demo.vast"
+    data = yaml.safe_load(cfg.read_text())
+    data["results_processing"]["evaluation"] = {"metric": "x"}
+    cfg.write_text(yaml.safe_dump(data))
+    content = yaml.safe_dump(
+        {"results_processing": {"postprocessing": ["compress"]}})
+    update_postprocessing_source(campaign, content)
+    effective = yaml.safe_load(effective_vast(campaign).read_text())
+    assert effective["results_processing"]["evaluation"] == {"metric": "x"}
+    assert effective["results_processing"]["postprocessing"] == ["compress"]
+
+
+def test_update_source_missing_key_rejected(campaign):
+    with pytest.raises(ValueError, match="results_processing"):
+        update_postprocessing_source(campaign, yaml.safe_dump({"visualization": {}}))
+
+
+def test_update_source_invalid_yaml_rejected(campaign):
+    with pytest.raises(ValueError, match="invalid YAML"):
+        update_postprocessing_source(campaign, "results_processing: [oops: :")

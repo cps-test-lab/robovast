@@ -829,6 +829,12 @@ def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_fil
         except Exception:  # pylint: disable=broad-except
             logger.warning("Could not open variation.log; continuing without it.",
                            exc_info=True)
+        # Config-variation expansion is a distinct pre-run step (it can be slow for
+        # a large campaign); surface it as its own phase so the campaign is not stuck
+        # showing "starting" while it expands. run() advances to RUNNING once the
+        # controller loop begins, so variation → running is automatic.
+        if state is not None:
+            state.set_phase(Phase.VARIATION)
         try:
             campaign_data, _ = build_campaign_data(
                 vast_file, tmp, config_filter,

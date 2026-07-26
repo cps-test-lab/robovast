@@ -49,10 +49,6 @@ KUEUE_RESOURCE_FLAVOR_NAME = "default-flavor"
 KUEUE_VALIDATING_WEBHOOK_CONFIG = "kueue-validating-webhook-configuration"
 KUEUE_MUTATING_WEBHOOK_CONFIG = "kueue-mutating-webhook-configuration"
 
-# Fallback quotas when cluster resources cannot be queried
-DEFAULT_CPU_QUOTA = 8
-DEFAULT_MEMORY_QUOTA = "32Gi"
-
 # values.yaml applied on every Kueue Helm install/upgrade
 KUEUE_HELM_VALUES = """
 controllerManager:
@@ -413,10 +409,15 @@ def get_cluster_allocatable_resources(kube_context=None, cluster_config=None):
        ``cluster_config.get_cluster_allocatable_resources(kube_context)``.
        A provider-specific override (e.g. GCP) can query the autoscaler for
        the true *maximum* capacity, which is correct for autoscaling clusters.
-    2. Fall back to querying the Kubernetes node API: sums the **total
-       allocatable** resources across all current nodes (no subtracting of
-       current pod requests — Kueue manages quota itself).
-    3. If neither succeeds, return ``DEFAULT_*`` constants.
+    2. Otherwise query the Kubernetes node API: sums the **total allocatable**
+       resources across all current nodes (no subtracting of current pod
+       requests — Kueue manages quota itself).
+
+    Fails loudly if capacity cannot be determined. There is deliberately no
+    hard-coded default: silently provisioning a tiny quota (the previous 8 CPU /
+    32Gi) would throttle every future campaign's admission to a fraction of a
+    large cluster with only a log line. A cluster whose capacity cannot be read
+    is a setup error to fix, not to paper over.
 
     Args:
         kube_context: Kubernetes context to use. None uses the active context.
@@ -425,7 +426,9 @@ def get_cluster_allocatable_resources(kube_context=None, cluster_config=None):
 
     Returns:
         tuple: (cpu_quota: int, memory_quota: str) e.g. (64, "256Gi").
-               Uses DEFAULT_* if cluster cannot be queried.
+
+    Raises:
+        RuntimeError: if allocatable capacity cannot be determined.
     """
     # 1. Provider-specific override (e.g. GKE autoscaler max capacity)
     if cluster_config is not None:
@@ -460,10 +463,10 @@ def get_cluster_allocatable_resources(kube_context=None, cluster_config=None):
             total_allocatable_mem += int(_parse_resource(alloc.get("memory")))
 
         if total_allocatable_cpu <= 0:
-            logger.warning(
-                "No allocatable CPU found on cluster nodes. Using defaults."
+            raise RuntimeError(
+                f"No allocatable CPU found across {len(nodes.items)} cluster "
+                "node(s); cannot size the Kueue quota."
             )
-            return DEFAULT_CPU_QUOTA, DEFAULT_MEMORY_QUOTA
 
         cpu_quota = max(1, int(total_allocatable_cpu))
         memory_gi = max(1, total_allocatable_mem // (1024**3))
@@ -478,11 +481,9 @@ def get_cluster_allocatable_resources(kube_context=None, cluster_config=None):
         return cpu_quota, memory_quota
 
     except Exception as e:
-        logger.warning(
-            "Failed to query cluster resources: %s. Using defaults.",
-            e,
-        )
-        return DEFAULT_CPU_QUOTA, DEFAULT_MEMORY_QUOTA
+        raise RuntimeError(
+            f"Failed to query cluster resources for the Kueue quota: {e}"
+        ) from e
 
 
 # CRDs that must be established before we can create queue resources
@@ -828,8 +829,8 @@ def prepare_kueue_setup(output_dir, namespace="default", kube_context=None, node
                         cluster_config=None):
     """Write Kueue queue manifests and README to output_dir.
 
-    Quotas are set from cluster allocatable CPU and memory when cluster is
-    accessible, otherwise defaults are used.
+    Quotas are set from cluster allocatable CPU and memory; raises if the cluster
+    capacity cannot be read (no silent default quota).
 
     Args:
         output_dir: Directory to write files

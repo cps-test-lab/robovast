@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Optional
 
 from robovast.execution.control_server import (ControllerState, Phase, Status,
-                                               failure_detail)
+                                               failure_detail, is_terminal)
 from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         CampaignRef,
                                         CampaignSummary, CreateCampaignRequest,
@@ -162,14 +162,20 @@ def _read_log_slice(path: Path, offset: int, eof: bool) -> LogChunk:
 class _LocalCampaign:
     """Bookkeeping for one in-process campaign: its live state + worker thread."""
 
-    __slots__ = ("campaign_id", "results_dir", "state", "thread", "error")
+    __slots__ = ("campaign_id", "results_dir", "state", "thread", "error", "created_at")
 
     def __init__(self, campaign_id: str, results_dir: str, state: ControllerState):
+        from datetime import datetime, timezone
         self.campaign_id = campaign_id
         self.results_dir = results_dir
         self.state = state
         self.thread: Optional[threading.Thread] = None
         self.error: Optional[str] = None
+        # Real launch time, recorded the instant the campaign is registered — so a
+        # just-launched campaign has a start time before the controller writes the
+        # ``campaign`` DB row (seconds later). Same ISO-8601 UTC shape as
+        # ``_campaign_started_at`` reads back from disk, so both format identically.
+        self.created_at: str = datetime.now(timezone.utc).isoformat()
 
 
 class LocalTransport(RobovastInterface):
@@ -466,19 +472,49 @@ class LocalTransport(RobovastInterface):
 
         self._guard_new_campaign()
 
+        # Fail loudly rather than silently adopt an existing campaign's directory.
+        # Ids are timestamp-unique (see campaign_id_for), so this only fires on a
+        # genuine collision (e.g. a hand-copied dir) — never in normal operation.
+        campaign_root = os.path.join(results_dir, campaign_id)
+        if os.path.exists(campaign_root):
+            raise RuntimeError(
+                f"campaign {campaign_id} already exists at {campaign_root}")
+
         state = ControllerState()
         entry = _LocalCampaign(campaign_id, results_dir, state)
         runs = request.runs if request.runs and request.runs > 0 else None
         options = self._run_options(request)
 
+        # Register the instant the campaign is accepted — before the (possibly slow)
+        # image build — so it is listed with a live phase from t=0 rather than only
+        # appearing once the worker creates its directory. The single-flight guard
+        # ran first, so registering our own not-yet-started entry here cannot race a
+        # second launch past that guard (_is_done treats a non-terminal entry as
+        # running regardless of whether its thread exists yet).
+        with self._lock:
+            self._campaigns[campaign_id] = entry
+
         # Implicit preflight: if execution.image is a symbolic ``build:<tag>`` ref,
         # ensure the image exists (idempotent build) and pin it as the explicit
         # image so the backend uses it (explicit wins in resolve_robovast_image).
-        # Blocks until the image is ready — a doomed build surfaces as a build
-        # failure the caller sees before any run starts.
-        built = self._ensure_build_image(project, campaign_config)
+        # Blocks until the image is ready — the campaign shows phase ``building``
+        # meanwhile. A doomed build is recorded as ``failed`` (so it stays visible
+        # in the list and does not wedge the single-flight guard) and re-raised so
+        # the caller sees it before any run starts.
+        spec, _ = self._build_spec_for(project, campaign_config)
+        if spec is not None:
+            state.set_phase(Phase.BUILDING)
+        try:
+            built = self._ensure_build_image(project, campaign_config)
+        except Exception as e:  # noqa: BLE001 - recorded via status, then re-raised
+            logger.exception("Campaign %s image build failed", campaign_id)
+            entry.error = str(e)
+            state.update(error=failure_detail(e))
+            state.set_phase(Phase.FAILED, stage=str(e))
+            raise
         if built:
             options.image = built
+        state.set_phase(Phase.STARTING)
 
         def _worker():
             from robovast.execution.backends import (
@@ -532,8 +568,6 @@ class LocalTransport(RobovastInterface):
         thread = threading.Thread(
             target=_worker, name=f"robovast-{campaign_id}", daemon=True)
         entry.thread = thread
-        with self._lock:
-            self._campaigns[campaign_id] = entry
         thread.start()
         logger.info("Started campaign %s (search=%s)", campaign_id, is_search)
         return CampaignRef(campaign_id=campaign_id)
@@ -851,16 +885,20 @@ class LocalTransport(RobovastInterface):
     ) -> ListCampaignsResponse:
         request = request or ListCampaignsRequest()
         results_dir = self._campaigns_root()
-        if not results_dir.is_dir():
-            return ListCampaignsResponse(campaigns=[], total=0)
         from robovast.common.execution import is_campaign_dir
-        dirs = sorted(
-            (d for d in results_dir.iterdir()
-             if d.is_dir() and is_campaign_dir(d.name)),
-            key=lambda d: d.name, reverse=True)
-        total = len(dirs)
-        window = dirs[request.offset:request.offset + request.limit]
-        summaries = [self._summary_for(d) for d in window]
+        # Which campaigns exist = those persisted on disk ∪ those being driven now
+        # (registered in-memory, perhaps without a directory yet — a just-launched
+        # one is still building/starting). Not two sources of truth: each id is
+        # resolved to a summary by the same precedence get_status uses (live
+        # snapshot if tracked, else reconstruct from disk).
+        disk = {d.name for d in results_dir.iterdir()
+                if d.is_dir() and is_campaign_dir(d.name)} if results_dir.is_dir() else set()
+        with self._lock:
+            mem = set(self._campaigns)
+        all_ids = sorted(disk | mem, reverse=True)  # newest first (id ends in timestamp)
+        total = len(all_ids)
+        window = all_ids[request.offset:request.offset + request.limit]
+        summaries = [self._summary_for(cid) for cid in window]
         return ListCampaignsResponse(campaigns=summaries, total=total)
 
     def cleanup_campaign_data(self, request) -> ActionResult:
@@ -921,6 +959,23 @@ class LocalTransport(RobovastInterface):
                                     request.entries)
         return PostprocessingRevision(campaign_id=request.campaign_id,
                                       revision=res["revision"], entries=res["entries"])
+
+    def get_postprocessing_source(self, campaign_id: str):
+        from robovast.service.interface import PostprocessingSource
+        from robovast.service.postprocessing_edit import get_postprocessing_source
+        info = get_postprocessing_source(self._campaign_dir(campaign_id))
+        return PostprocessingSource(campaign_id=campaign_id, source=info["source"],
+                                    content=info["content"])
+
+    def update_postprocessing_source(self, request):
+        from robovast.service.interface import PostprocessingSource
+        from robovast.service.postprocessing_edit import (
+            effective_vast, update_postprocessing_source)
+        campaign_dir = self._campaign_dir(request.campaign_id)
+        update_postprocessing_source(campaign_dir, request.content)
+        return PostprocessingSource(campaign_id=request.campaign_id,
+                                    source=effective_vast(campaign_dir).name,
+                                    content=request.content)
 
     def run_postprocessing(self, request) -> ActionResult:
         from robovast.results_processing.postprocessing import run_postprocessing
@@ -1210,27 +1265,46 @@ class LocalTransport(RobovastInterface):
 
     @staticmethod
     def _is_done(entry: _LocalCampaign) -> bool:
-        return entry.thread is None or not entry.thread.is_alive()
+        """Whether a campaign is over — no more work will happen on it.
 
-    def _summary_for(self, campaign_dir: Path) -> CampaignSummary:
+        An entry is registered *before* its worker thread exists (create_campaign
+        registers eagerly so the campaign lists from t=0, and shows phase
+        ``building``/``starting`` during the image-build preflight). So "thread is
+        None" no longer means "done" — a not-yet-started campaign is still live.
+        Done means either a terminal phase, or a thread that existed and has ended
+        (covering a crashed worker that never recorded a terminal phase)."""
+        return is_terminal(entry.state.snapshot().phase) or (
+            entry.thread is not None and not entry.thread.is_alive())
+
+    def _summary_for(self, cid: str) -> CampaignSummary:
         from robovast.common.campaign_data import get_vast_configuration_info
-        cid = campaign_dir.name
+        from robovast.execution.status_recovery import \
+            reconstruct_status_from_disk
+        campaign_dir = self._campaigns_root() / cid
         with self._lock:
             entry = self._campaigns.get(cid)
-        snap = entry.state.snapshot() if entry else None
-        phase = snap.phase if snap else Phase.FINISHED
-        # A finished campaign discovered from disk (no in-memory entry, e.g. after a service
-        # restart or run out-of-process) has no live snapshot — derive `postprocessed` from the
-        # presence of its built data.db so the Results views still list it as queryable.
-        postprocessed = snap.postprocessed if snap else (
-            campaign_dir / "_execution" / "data.db").is_file()
+        # One precedence rule, shared with get_status: a tracked campaign's live
+        # ControllerState wins; otherwise reconstruct the Status from disk (the one
+        # documented recovery path — it also derives `postprocessed` from data.db).
+        # `started_at` follows the same rule: the entry's launch time when tracked,
+        # else the campaign.db creation time; a recovered campaign with no readable
+        # store has a genuinely unknown start time (None), not a swallowed error.
+        if entry is not None:
+            snap = entry.state.snapshot()
+            started_at = entry.created_at
+        else:
+            snap = reconstruct_status_from_disk(campaign_dir)
+            started_at = self._campaign_started_at(campaign_dir)
+        # Pass/fail counts are a disk-only analysis (test outcomes), distinct from
+        # the controller's live progress — an empty {} for a fresh campaign with no
+        # results yet is the correct value, not a masked error.
         try:
             info = get_vast_configuration_info(campaign_dir)
         except (FileNotFoundError, OSError, ValueError, TypeError):
             info = {}
         return CampaignSummary(
-            campaign_id=cid, phase=phase, postprocessed=postprocessed,
-            started_at=self._campaign_started_at(campaign_dir),
+            campaign_id=cid, phase=snap.phase, postprocessed=snap.postprocessed,
+            started_at=started_at,
             num_runs=info.get("num_runs", 0), num_passed=info.get("num_passed", 0),
             num_failed=info.get("num_failed", 0) + info.get("num_errors", 0))
 
@@ -1262,23 +1336,9 @@ class LocalTransport(RobovastInterface):
         return datetime.fromtimestamp(row[0], tz=timezone.utc).isoformat()
 
     def _status_from_disk(self, campaign_id: str) -> Status:
-        from robovast.common.campaign_data import (get_vast_configuration_info,
-                                                   read_execution_outcome)
-        campaign_dir = self._campaigns_root() / campaign_id
-        if not campaign_dir.is_dir():
-            return Status(phase=Phase.UNKNOWN, campaign_id=campaign_id)
-        # A failed campaign left its terminal outcome (phase + error) here — prefer
-        # that over reconstructing an optimistic "finished".
-        outcome = read_execution_outcome(campaign_dir)
-        if outcome is not None:
-            return outcome
-        try:
-            info = get_vast_configuration_info(campaign_dir)
-            total = info.get("num_runs", 0)
-        except (FileNotFoundError, OSError, ValueError, TypeError):
-            total = 0
-        return Status(phase=Phase.FINISHED, campaign_id=campaign_id,
-                      runs={"completed": total, "total": total})
+        from robovast.execution.status_recovery import \
+            reconstruct_status_from_disk
+        return reconstruct_status_from_disk(self._campaigns_root() / campaign_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1454,6 +1514,17 @@ class HTTPTransport(RobovastInterface):
         from robovast.service.interface import PostprocessingRevision
         return PostprocessingRevision.model_validate(self._post(
             Routes.campaign_postprocessing(request.campaign_id),
+            json=request.model_dump()))
+
+    def get_postprocessing_source(self, campaign_id: str):
+        from robovast.service.interface import PostprocessingSource
+        return PostprocessingSource.model_validate(
+            self._get(Routes.campaign_postprocessing_source(campaign_id)))
+
+    def update_postprocessing_source(self, request):
+        from robovast.service.interface import PostprocessingSource
+        return PostprocessingSource.model_validate(self._post(
+            Routes.campaign_postprocessing_source(request.campaign_id),
             json=request.model_dump()))
 
     def run_postprocessing(self, request) -> ActionResult:

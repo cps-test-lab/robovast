@@ -16,8 +16,12 @@
 
 """Tests for the unified campaign infrastructure-log assembler."""
 
+import logging
+
 from robovast.common.campaign_logs import (assemble_log, assemble_log_from_dir,
                                            phase_banner)
+from robovast.common.logging_config import (add_campaign_log_handler,
+                                             remove_campaign_log_handler)
 
 
 def _store_reader(store):
@@ -74,6 +78,31 @@ def test_offset_past_end_does_not_move_backwards():
     tail, off, _ = assemble_log(_store_reader(store), offset=end + 100)
     assert tail == ""
     assert off == end + 100
+
+
+def test_written_line_is_live_before_handler_close(tmp_path):
+    """Liveness invariant that the SSE stream depends on: a record written through
+    the real controller-log handler is observable by the assembler *immediately* —
+    without closing the handler — because the ``FileHandler`` flushes per record. If
+    a change ever buffered these writes, the web UI's live log would go dark and this
+    test would fail."""
+    log_path = tmp_path / "_execution" / "controller.log"
+    robovast_logger = logging.getLogger("robovast")
+    prev_level = robovast_logger.level
+    robovast_logger.setLevel(logging.INFO)  # runtime configures this; a bare test doesn't
+    handler = add_campaign_log_handler(str(log_path))
+    try:
+        logging.getLogger("robovast.execution.controller").info("live line one")
+        text, _, _ = assemble_log_from_dir(tmp_path, offset=0)
+        assert "live line one" in text
+        # A second record appends and is visible on the next poll — still no close.
+        logging.getLogger("robovast.execution.controller").info("live line two")
+        text2, _, _ = assemble_log_from_dir(tmp_path, offset=0)
+        assert "live line two" in text2
+        assert text2.index("live line one") < text2.index("live line two")
+    finally:
+        remove_campaign_log_handler(handler)
+        robovast_logger.setLevel(prev_level)
 
 
 def test_assemble_from_dir_reads_execution_files(tmp_path):

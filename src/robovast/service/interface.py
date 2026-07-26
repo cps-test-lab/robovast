@@ -242,6 +242,22 @@ class UpdatePanelsSourceRequest(BaseModel):
     content: str
 
 
+class PostprocessingSource(BaseModel):
+    """The ``results_processing.postprocessing`` block as editable YAML text.
+
+    The webui rerun dialog edits this text and saves it as a new override
+    revision — the text twin of the structured :class:`PostprocessingInfo`."""
+
+    campaign_id: str
+    source: str = ""                 # which .vast is effective (snapshot or rev-N)
+    content: str = ""                # YAML text of the ``results_processing:`` block
+
+
+class UpdatePostprocessingSourceRequest(BaseModel):
+    campaign_id: str
+    content: str
+
+
 class RunPostprocessingRequest(BaseModel):
     campaign_id: str
     force: bool = False
@@ -553,6 +569,10 @@ class Routes:
     HEALTHZ = "/healthz"
     USAGE = "/usage"
     CAMPAIGNS = "/campaigns"
+    #: SSE stream of the campaign list — a server-side loop over the same
+    #: ``list_campaigns`` pull (``CAMPAIGNS`` above stays the authoritative read for
+    #: MCP / the CLI), pushing the full list on connect and on every change.
+    CAMPAIGNS_STREAM = "/campaigns/events"
     WORKSPACES = "/workspaces"
     #: The file side channel: PUT bytes here with a create_upload token.
     UPLOAD = "/uploads/{token}"
@@ -628,6 +648,13 @@ class Routes:
         return f"/campaigns/{campaign_id}/logs"
 
     @staticmethod
+    def campaign_logs_stream(campaign_id: str) -> str:
+        # SSE transport over the same assembly seam as ``campaign_logs``: the browser
+        # streams live, resuming from the byte offset it carries in ``Last-Event-ID``.
+        # The pull endpoint above stays the authoritative read for MCP / the CLI.
+        return f"/campaigns/{campaign_id}/logs/stream"
+
+    @staticmethod
     def campaign_jobs(campaign_id: str) -> str:
         return f"/campaigns/{campaign_id}/jobs"
 
@@ -636,6 +663,11 @@ class Routes:
         # ``job_name`` is a query param (it may contain '/', e.g. a local
         # "<config>/<run>" id), so it never has to be path-encoded.
         return f"/campaigns/{campaign_id}/job-log"
+
+    @staticmethod
+    def job_log_stream(campaign_id: str) -> str:
+        # SSE transport over ``job_log`` (same ``job_name`` query param + offset seam).
+        return f"/campaigns/{campaign_id}/job-log/stream"
 
     #: Object-store bucket cleanup (server-side; not campaign-scoped in the path
     #: because it also serves the "all campaigns" case).
@@ -659,6 +691,10 @@ class Routes:
     @staticmethod
     def campaign_postprocessing_run(campaign_id: str) -> str:
         return f"/campaigns/{campaign_id}/postprocessing/run"
+
+    @staticmethod
+    def campaign_postprocessing_source(campaign_id: str) -> str:
+        return f"/campaigns/{campaign_id}/postprocessing/source"
 
     @staticmethod
     def campaign_describe(campaign_id: str) -> str:
@@ -876,6 +912,18 @@ class RobovastInterface(ABC):
         self, request: UpdatePostprocessingRequest
     ) -> PostprocessingRevision:
         """Write a new versioned postprocessing override (validated)."""
+
+    @abstractmethod
+    def get_postprocessing_source(self, campaign_id: str) -> PostprocessingSource:
+        """Return the effective ``results_processing.postprocessing`` block as
+        editable YAML text (drives the campaigns-view rerun dialog)."""
+
+    @abstractmethod
+    def update_postprocessing_source(
+        self, request: UpdatePostprocessingSourceRequest
+    ) -> PostprocessingSource:
+        """Persist an edited postprocessing block as a new `.vast` override
+        revision (validated; never mutates ``_config/``)."""
 
     @abstractmethod
     def run_postprocessing(self, request: RunPostprocessingRequest) -> ActionResult:

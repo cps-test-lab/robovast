@@ -87,6 +87,16 @@ def _resolve_image(default: str, env_var: str, *, explicit: str | None = None,
     else:
         env_image = os.environ.get(env_var, "").strip()
         resolved = env_image if env_image else default
+        if not env_image:
+            # Nothing configured the image (no explicit flag, no execution.image,
+            # no {env_var}). We fall through to the built-in default, which is a
+            # mutable ``:latest`` tag — the exact code that runs is then whatever
+            # was last pushed. Never let that be silent: a reproducible run must
+            # pin an image via --image / execution.image / {env_var}.
+            logger.warning(
+                "No container image configured (checked --image, execution.image, "
+                "%s); using the built-in default %r. This is a mutable tag — pin an "
+                "explicit image for a reproducible run.", env_var, resolved)
     if is_build_image_ref(resolved):
         raise ValueError(
             f"unresolved build image ref '{resolved}': the 'build:' image must be "
@@ -168,7 +178,10 @@ def _check_static_cpu_manager(k8s_client, node_name):
         node_name: Name of the node to query
 
     Returns:
-        str or None: The cpuManagerPolicy value (e.g. "static", "none"), or None on failure
+        str or None: The cpuManagerPolicy value (e.g. "static", "none") when it
+        could be read, or ``None`` when the query failed. ``None`` means *unknown*,
+        never "policy is none" — the two are recorded and warned about differently,
+        so a failed configz read is never silently logged as pinning-disabled.
     """
     try:
         response = k8s_client.connect_get_node_proxy_with_path(node_name, "configz")
@@ -177,7 +190,7 @@ def _check_static_cpu_manager(k8s_client, node_name):
         return kubelet_config.get("cpuManagerPolicy")
     except Exception as exc:
         logger.debug("Could not retrieve kubelet configz for node %s: %s", node_name, exc)
-        return "none"
+        return None
 
 
 def _get_cluster_info(context=None):
@@ -231,13 +244,24 @@ def _get_cluster_info(context=None):
             if name:
                 node_labels[name] = labels
                 policy = _check_static_cpu_manager(v1, name)
-                if policy is not None:
+                if policy is None:
+                    # Query failed: unknown, not "none". Surface it — a node whose
+                    # policy we cannot read may lack the pinning that deterministic
+                    # scenario timing needs, and we must not record it as "none".
+                    logger.warning(
+                        "Could not determine CPU manager policy for node %s; "
+                        "deterministic scenario timing is not guaranteed.", name)
+                else:
                     cpu_manager_policies[name] = policy
 
-        # Warn if any node does not have the Static CPU Manager policy enabled
-        if cpu_manager_policies:
-            logger.debug(f"Static CPU Manager policy is enabled on {
-                         len(cpu_manager_policies)} node(s): {', '.join(cpu_manager_policies.keys())}")
+        # Warn about nodes without static CPU pinning (recorded provenance keeps
+        # only the policies we could actually read).
+        non_static = [n for n, p in cpu_manager_policies.items() if p != "static"]
+        if non_static:
+            logger.warning(
+                "Static CPU Manager policy is NOT enabled on %d node(s): %s; "
+                "scenario timing may be non-deterministic.",
+                len(non_static), ", ".join(non_static))
 
     except Exception as exc:  # pragma: no cover - best-effort, non-fatal
         logger.warning("Failed to collect cluster node information: %s", exc)

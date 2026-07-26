@@ -56,7 +56,13 @@ class Phase(StrEnum):
     this enum is the *known* vocabulary, not a lock on the field.
     """
     # -- live: the campaign is still working ------------------------------
+    # Ordered by when they occur: image build (if any) → registration →
+    # config-variation expansion (batch) → the run loop → finish → postprocess
+    # → share. ``building`` and ``variation`` precede ``running`` and exist so
+    # the two pre-run steps are observable rather than a blank "starting".
+    BUILDING = "building"
     STARTING = "starting"
+    VARIATION = "variation"
     RUNNING = "running"
     FINISHING = "finishing"
     POSTPROCESSING = "postprocessing"
@@ -117,8 +123,9 @@ class Status(BaseModel):
     """The controller's live state, served by ``GET /campaigns/{id}/status``.
 
     ``phase`` is an **open** string the controller advances through a documented
-    vocabulary (``starting`` → ``running`` → ``finishing`` → ``finished`` /
-    ``failed``); ``stage`` and ``extra`` exist so future markers (e.g.
+    vocabulary (``building`` → ``starting`` → ``variation`` → ``running`` →
+    ``finishing`` → ``postprocessing`` → ``sharing`` → ``finished`` / ``failed``);
+    ``stage`` and ``extra`` exist so future markers (e.g.
     ``"upload-to-share-done"``) slot in without a schema change. ``share_provider``
     names the share type of the current upload attempt; it can change across
     retriggers (a failed upload may be retried to a different provider).
@@ -166,6 +173,11 @@ def failure_detail(exc: BaseException, tail_lines: int = 20) -> str:
     """
     import traceback
     message = str(exc) or exc.__class__.__name__
+    # A clean user error (e.g. CampaignConfigError) opts out of the traceback tail
+    # via ``include_traceback = False``; its message is self-contained, so a stack
+    # trace in the durable record would only be noise.
+    if not getattr(exc, "include_traceback", True):
+        return message
     tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
     tb_tail = "".join(tb.splitlines(keepends=True)[-tail_lines:])
     return f"{message}\n\n{tb_tail}".strip()

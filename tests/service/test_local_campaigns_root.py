@@ -116,6 +116,47 @@ def test_stopped_outcome_persists_across_restart(transport):
     assert transport._status_from_disk(cid).phase == "stopped"
 
 
+def test_in_memory_campaign_listed_before_directory_exists(transport):
+    """A just-launched campaign (registered in-memory, no directory yet) is listed
+    with its live phase — the fix for the launch→list lag."""
+    from robovast.execution.control_server import ControllerState, Phase
+    from robovast.service.client import _LocalCampaign
+
+    cid = "campaign-2026-07-20-090000"
+    state = ControllerState()
+    state.set_phase(Phase.BUILDING)
+    entry = _LocalCampaign(cid, str(transport._campaigns_root()), state)
+    transport._campaigns[cid] = entry
+
+    assert not (transport._campaigns_root() / cid).exists()  # no dir yet
+
+    summary = next(
+        (c for c in transport.list_campaigns().campaigns if c.campaign_id == cid),
+        None)
+    assert summary is not None                    # listed despite having no directory
+    assert summary.phase == "building"            # true live phase, not a default
+    assert summary.started_at == entry.created_at  # start time available from t=0
+
+
+def test_tracked_campaign_phase_wins_over_disk(transport):
+    """A campaign both tracked and on disk is reported once, with its live phase
+    (the same precedence get_status uses), not the disk-reconstructed 'finished'."""
+    from robovast.execution.control_server import ControllerState, Phase
+    from robovast.service.client import _LocalCampaign
+
+    root = transport._campaigns_root()
+    cid = "campaign-2026-07-20-091500"
+    (root / cid).mkdir(parents=True)              # on disk → would reconstruct "finished"
+    state = ControllerState()
+    state.set_phase(Phase.RUNNING)
+    transport._campaigns[cid] = _LocalCampaign(cid, str(root), state)
+
+    summaries = transport.list_campaigns().campaigns
+    ids = [c.campaign_id for c in summaries]
+    assert ids.count(cid) == 1                    # union deduplicates disk ∪ memory
+    assert next(c for c in summaries if c.campaign_id == cid).phase == "running"
+
+
 def test_deleting_workspace_keeps_campaigns(transport):
     """Campaigns survive deletion of the workspace that authored them."""
     wid = _make_workspace(transport)

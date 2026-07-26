@@ -15,13 +15,21 @@ from robovast.service.client import LocalTransport, _LocalCampaign
 
 
 class _State:
-    """Minimal stand-in for ControllerState — just tracks stop_requested."""
+    """Minimal stand-in for ControllerState — tracks stop + a phase snapshot.
 
-    def __init__(self):
+    ``_is_done`` reads ``snapshot().phase`` (a not-yet-started campaign registered
+    before its thread exists is still live), so the fake must carry a phase."""
+
+    def __init__(self, phase="running"):
         self.stopped = threading.Event()
+        self.phase = phase
 
     def request_stop(self):
         self.stopped.set()
+
+    def snapshot(self):
+        from types import SimpleNamespace
+        return SimpleNamespace(phase=self.phase)
 
 
 def _transport() -> LocalTransport:
@@ -61,8 +69,10 @@ def test_shutdown_stops_running_campaign_and_kills_container():
 def test_shutdown_skips_finished_campaigns():
     """A campaign whose worker already exited is not touched (no docker call)."""
     lt = _transport()
-    done = _LocalCampaign("campaign-done", "/tmp", _State())
-    done.thread = None  # _is_done -> True
+    # A finished campaign reads terminal (its worker recorded a terminal phase);
+    # _is_done -> True regardless of the thread handle, so shutdown skips it.
+    done = _LocalCampaign("campaign-done", "/tmp", _State(phase="finished"))
+    done.thread = None
     lt._campaigns["campaign-done"] = done
 
     with mock.patch("subprocess.run") as run:

@@ -16,10 +16,17 @@
 
 """Persistent sqlite store for campaigns (search and batch).
 
-A single writer records the campaign, so status is live-queryable while it runs
-and the schema is the seam an in-cluster controller / web UI can later read. It
-is the single source of truth the results GUI reads. The schema is intentionally
-simple:
+A single writer records the campaign, so its scientific data is live-queryable
+while it runs and the schema is the seam an in-cluster controller / web UI can
+later read. This store is the source of truth for the campaign's **results data**
+(the params/objectives/measures/results the GUI reads), *not* for its live
+execution status: the run's phase/error/progress live in the controller's
+:class:`~robovast.execution.control_server.Status` while a process drives it, and
+its durable terminal record is ``_execution/outcome.json`` (which survives even a
+crash that never creates this database). The one way to recover a Status when no
+process is driving a campaign is
+:func:`robovast.execution.status_recovery.reconstruct_status_from_disk`. The
+schema is intentionally simple:
 
     campaign (1) --< batch (1) --< unit (one per param set / config)
 
@@ -244,3 +251,22 @@ class CampaignStore:
         return list(self._conn.execute(
             "SELECT * FROM unit WHERE batch_id = ? ORDER BY id", (batch_id,)
         ).fetchall())
+
+
+def read_campaign_mode(campaign_dir: str | Path) -> Optional[str]:
+    """Best-effort read of ``campaign.mode`` ('search'/'batch') from ``campaign.db``.
+
+    Returns ``None`` when the store is absent or unreadable. A read-only helper for
+    status reconstruction (see
+    :func:`robovast.execution.status_recovery.reconstruct_status_from_disk`), so it
+    never creates or migrates the store — it opens it read-only or gives up.
+    """
+    db = Path(campaign_dir) / STORE_FILENAME
+    if not db.is_file():
+        return None
+    try:
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+            row = conn.execute("SELECT mode FROM campaign LIMIT 1").fetchone()
+    except sqlite3.Error:
+        return None
+    return row[0] if row else None
