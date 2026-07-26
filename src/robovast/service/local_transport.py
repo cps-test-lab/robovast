@@ -341,15 +341,18 @@ class LocalTransport(RobovastInterface):
     # -- interface ----------------------------------------------------------
 
     def version(self) -> VersionInfo:
-        return VersionInfo(robovast_version=_robovast_version(), backend="docker")
+        return VersionInfo(robovast_version=_robovast_version(), backend="docker",
+                           backends=["local"])
 
-    def resource_usage(self) -> ResourceUsage:
+    def resource_usage(self, backend: Optional[str] = None) -> ResourceUsage:
         """Backend capacity/usage, cached for ``_USAGE_CACHE_TTL`` seconds.
 
         The cache (and its lock) live here so both the local and cluster services
         share one memoisation path; subclasses supply the actual reading by
         overriding :meth:`_compute_resource_usage`. Computing under the lock means
-        concurrent polls collapse to a single sampling per window.
+        concurrent polls collapse to a single sampling per window. ``backend`` is a
+        no-op here (this is a single-lane service); a multi-backend service uses it
+        to pick the lane.
         """
         with self._usage_lock:
             cached = self._usage_cache

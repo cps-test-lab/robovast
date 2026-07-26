@@ -36,9 +36,26 @@ export interface ConfirmOptions {
   danger?: boolean
 }
 
+/** One button in a `choose` dialog: its `value` is what the promise resolves to. */
+export interface Choice {
+  label: string
+  value: string
+  color?: 'primary' | 'error' | 'inherit'
+  /** Render as the filled/primary button (the default action). */
+  primary?: boolean
+}
+
+export interface ChooseOptions {
+  title: string
+  message?: ReactNode
+  choices: Choice[]
+}
+
 interface DialogsApi {
   prompt: (opts: PromptOptions) => Promise<string | null>
   confirm: (opts: ConfirmOptions) => Promise<boolean>
+  /** Ask the user to pick one of N buttons; resolves to the chosen `value` (or null on Esc/close). */
+  choose: (opts: ChooseOptions) => Promise<string | null>
 }
 
 const DialogsContext = createContext<DialogsApi | null>(null)
@@ -47,6 +64,7 @@ const DialogsContext = createContext<DialogsApi | null>(null)
 type ActiveState =
   | { kind: 'prompt'; opts: PromptOptions; resolve: (v: string | null) => void }
   | { kind: 'confirm'; opts: ConfirmOptions; resolve: (v: boolean) => void }
+  | { kind: 'choose'; opts: ChooseOptions; resolve: (v: string | null) => void }
   | null
 
 export function DialogProvider({ children }: { children: ReactNode }) {
@@ -85,7 +103,17 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     [],
   )
 
-  const api = useMemo<DialogsApi>(() => ({ prompt, confirm }), [prompt, confirm])
+  const choose = useCallback(
+    (opts: ChooseOptions) =>
+      new Promise<string | null>((resolve) => {
+        resolveRef.current?.(null as never)
+        resolveRef.current = resolve as (v: never) => void
+        setActive({ kind: 'choose', opts, resolve })
+      }),
+    [],
+  )
+
+  const api = useMemo<DialogsApi>(() => ({ prompt, confirm, choose }), [prompt, confirm, choose])
 
   const submitPrompt = () => {
     if (active?.kind !== 'prompt') return
@@ -103,7 +131,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
       {children}
       <Dialog
         open={active !== null}
-        onClose={() => settle(active?.kind === 'prompt' ? null : false)}
+        onClose={() => settle(active?.kind === 'confirm' ? false : null)}
         maxWidth="xs"
         fullWidth
         // Submit on Enter for the prompt input; MUI already closes on Esc via onClose.
@@ -137,27 +165,43 @@ export function DialogProvider({ children }: { children: ReactNode }) {
                 }}
               />
             </>
-          ) : active?.kind === 'confirm' ? (
+          ) : active?.kind === 'confirm' || active?.kind === 'choose' ? (
             <DialogContentText>{active.opts.message}</DialogContentText>
           ) : null}
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => settle(active?.kind === 'prompt' ? null : false)} color="inherit">
-            {active?.kind === 'confirm' ? active.opts.cancelLabel ?? 'Cancel' : 'Cancel'}
-          </Button>
-          {active?.kind === 'prompt' ? (
-            <Button onClick={submitPrompt} variant="contained">
-              {active.opts.confirmLabel ?? 'OK'}
-            </Button>
-          ) : active?.kind === 'confirm' ? (
-            <Button
-              onClick={() => settle(true)}
-              variant="contained"
-              color={active.opts.danger ? 'error' : 'primary'}
-            >
-              {active.opts.confirmLabel ?? 'Confirm'}
-            </Button>
-          ) : null}
+          {active?.kind === 'choose' ? (
+            // Fully caller-defined button set; each resolves to its own value.
+            active.opts.choices.map((c) => (
+              <Button
+                key={c.value}
+                onClick={() => settle(c.value)}
+                variant={c.primary ? 'contained' : 'text'}
+                color={c.color ?? (c.primary ? 'primary' : 'inherit')}
+              >
+                {c.label}
+              </Button>
+            ))
+          ) : (
+            <>
+              <Button onClick={() => settle(active?.kind === 'confirm' ? false : null)} color="inherit">
+                {active?.kind === 'confirm' ? active.opts.cancelLabel ?? 'Cancel' : 'Cancel'}
+              </Button>
+              {active?.kind === 'prompt' ? (
+                <Button onClick={submitPrompt} variant="contained">
+                  {active.opts.confirmLabel ?? 'OK'}
+                </Button>
+              ) : active?.kind === 'confirm' ? (
+                <Button
+                  onClick={() => settle(true)}
+                  variant="contained"
+                  color={active.opts.danger ? 'error' : 'primary'}
+                >
+                  {active.opts.confirmLabel ?? 'Confirm'}
+                </Button>
+              ) : null}
+            </>
+          )}
         </DialogActions>
       </Dialog>
     </DialogsContext.Provider>

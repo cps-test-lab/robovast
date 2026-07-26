@@ -2,18 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Integration tests for the ``campaign_control`` MCP tools.
+"""Tests for the ``campaign_control`` MCP tools.
 
-These exercise the plugin's orchestration (validate gate, single-flight guard,
-liveness tracking, reap, stop) without Docker or real config generation: config
-counting is stubbed and the launched process is replaced by a harmless sleeper
-that carries the campaign id in its argv (so the registry's cmdline fingerprint
-matches, exactly as the real ``--campaign-id`` child would).
+The control tools are a **strict client** of a running ``robovast-service``: there
+is no local subprocess path. These tests cover the read-only preview tool, routing
+through a fake service client (including per-campaign ``backend`` selection), and
+that every control tool fails loudly when no service is reachable.
 """
 
-import subprocess
-import sys
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -24,42 +20,8 @@ from robovast.mcp_server.plugins import campaign_control as cc
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _GROWTH_SIM = _REPO_ROOT / "configs" / "examples" / "growth_sim" / "growth_sim.vast"
 
-_real_popen = subprocess.Popen
 
-
-@pytest.fixture
-def project(tmp_path, monkeypatch):
-    """A fake initialized project rooted at a temp results dir, with stubs."""
-    results_dir = tmp_path / "results"
-    results_dir.mkdir()
-    fake = SimpleNamespace(
-        config_path=str(tmp_path / "demo.vast"),
-        results_dir=str(results_dir))
-    monkeypatch.setattr(cc, "_load_project", lambda: fake)
-
-    # Stub validation/counting (no scenario generation).
-    campaign_config = SimpleNamespace(metadata={"name": "itest"})
-    monkeypatch.setattr(cc, "_validate", lambda _p, _f: (
-        campaign_config,
-        {"valid": True, "configs": 2, "runs_per_config": 1,
-         "total_trials": 2, "errors": []}))
-
-    # Replace the launched command with a sleeper that still carries the argv
-    # (and thus the campaign id) so liveness fingerprinting matches.
-    def fake_popen(cmd, **kwargs):
-        sleeper = [sys.executable, "-c", "import time,sys; time.sleep(30)"] + cmd
-        return _real_popen(sleeper, **kwargs)
-    monkeypatch.setattr(cc.subprocess, "Popen", fake_popen)
-
-    # Don't touch Docker during stop.
-    monkeypatch.setattr(cc.subprocess, "run", lambda *a, **k: None)
-
-    # Reset the module-level process registry between tests.
-    cc._LOCAL_PROCS.clear()
-    yield fake
-    for proc in list(cc._LOCAL_PROCS.values()):
-        proc.terminate()
-    cc._LOCAL_PROCS.clear()
+# -- preview (read-only, serviceless) ---------------------------------------
 
 
 @pytest.mark.skipif(not _GROWTH_SIM.exists(),
@@ -84,109 +46,7 @@ def test_preview_configurations_bad_path_returns_error():
     assert "error" in cc.preview_configurations("/no/such/file.vast")
 
 
-def test_start_status_and_single_flight(project):
-    started = cc.start_campaign(backend="local")
-    assert "campaign_id" in started, started
-    cid = started["campaign_id"]
-    assert started["log_path"].endswith(f"_control/logs/{cid}.log")
-
-    status = cc.get_campaign_status(cid)
-    assert status["backend"] == "local"
-    assert status["status"] == "running"
-    assert status["batch_runs_total"] == 2
-
-    # A second local start must be refused while the first is live.
-    refused = cc.start_campaign(backend="local")
-    assert refused.get("error") == "campaign already running"
-    assert refused["running"][0]["campaign_id"] == cid
-
-
-def test_stop_transitions_to_terminal(project):
-    started = cc.start_campaign(backend="local")
-    cid = started["campaign_id"]
-    assert cc.get_campaign_status(cid)["status"] == "running"
-
-    stopped = cc.stop_campaign(cid)
-    assert stopped["stopped"] is True
-    assert stopped["status"] == "failed"
-
-    # After stopping, a new campaign is allowed again.
-    again = cc.start_campaign(backend="local")
-    assert "campaign_id" in again and again["campaign_id"] != cid
-
-
-def test_reap_marks_finished_when_child_exits(project, monkeypatch):
-    # A child that exits 0 should reconcile to "finished" via the reaper.
-    def quick_popen(cmd, **kwargs):
-        return _real_popen([sys.executable, "-c", "pass"] + cmd, **kwargs)
-    monkeypatch.setattr(cc.subprocess, "Popen", quick_popen)
-
-    started = cc.start_campaign(backend="local")
-    cid = started["campaign_id"]
-    # Wait for the trivial child to exit, then a status call reaps it.
-    for _ in range(50):
-        if cc.get_campaign_status(cid)["status"] != "running":
-            break
-        time.sleep(0.1)
-    assert cc.get_campaign_status(cid)["status"] == "finished"
-
-
-def test_cluster_start_is_transparent_and_not_single_flighted(project, monkeypatch):
-    # Cluster start spawns a detached `cluster run` child (fire-and-forget; no
-    # results download onto this host), tracked by pid like local, NOT single-flighted.
-    started = cc.start_campaign(backend="cluster")
-    assert started["backend"] == "cluster", started
-    cid = started["campaign_id"]
-
-    status = cc.get_campaign_status(cid)
-    assert status["backend"] == "cluster"
-    assert status["status"] == "running"
-
-    # A second cluster start is allowed (unlike local).
-    other = cc.start_campaign(backend="cluster")
-    assert "campaign_id" in other and other["campaign_id"] != cid
-
-    listing = cc.list_running_campaigns()
-    ids = {e["campaign_id"] for e in listing["running"]}
-    assert {cid, other["campaign_id"]} <= ids
-
-
-def test_cluster_stop_kills_waiter_without_reaching_cluster(project, monkeypatch):
-    # The cooperative controller stop is best-effort; if the cluster is
-    # unreachable, stop still terminates the local waiter and reports a note.
-    monkeypatch.setattr(cc, "_cluster_cooperative_stop",
-                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no cluster")))
-    started = cc.start_campaign(backend="cluster")
-    cid = started["campaign_id"]
-    stopped = cc.stop_campaign(cid)
-    assert stopped["status"] == "failed"
-    assert "note" in stopped and "waiter" in stopped["note"]
-
-
-def test_local_and_cluster_can_coexist(project):
-    # A live cluster campaign must not block a local start (single-flight is
-    # local-only), and vice versa.
-    cluster = cc.start_campaign(backend="cluster")
-    local = cc.start_campaign(backend="local")
-    assert "campaign_id" in cluster and "campaign_id" in local
-    # But a second LOCAL start is refused while the first local is live.
-    refused = cc.start_campaign(backend="local")
-    assert refused.get("error") == "campaign already running"
-
-
-def test_unknown_campaign_returns_error(project):
-    assert "error" in cc.get_campaign_status("does-not-exist")
-    assert "error" in cc.stop_campaign("does-not-exist")
-
-
-def test_list_running_reports_live_local(project):
-    started = cc.start_campaign(backend="local")
-    listing = cc.list_running_campaigns()
-    ids = [e["campaign_id"] for e in listing["running"]]
-    assert started["campaign_id"] in ids
-
-
-# -- client-server routing (ROBOVAST_SERVICE_URL set) -----------------------
+# -- client-server routing (a reachable service) ----------------------------
 
 
 class _FakeClient:
@@ -219,6 +79,18 @@ class _FakeClient:
             CampaignSummary(campaign_id="svc-running", phase="running"),
             CampaignSummary(campaign_id="svc-done", phase="finished")])
 
+    def resource_usage(self, backend=None):
+        from robovast.service.interface import ResourceUsage
+        self.calls.append(("resource_usage", backend))
+        return ResourceUsage(backend="docker", cpu_capacity=8, cpu_used=1,
+                             memory_capacity_bytes=16, memory_used_bytes=2,
+                             parallel_runs=False)
+
+    def build_image(self, request):
+        from robovast.service.interface import ImageBuildRef
+        self.calls.append(("build_image", request))
+        return ImageBuildRef(build_id="b1", tag="t", cached=True)
+
 
 @pytest.fixture
 def service(monkeypatch):
@@ -230,10 +102,23 @@ def service(monkeypatch):
 
 def test_service_start_routes_to_client(service):
     started = cc.start_campaign(config_filter="hospital*", runs=5)
-    assert started == {"campaign_id": "svc-campaign-1", "backend": "service"}
+    assert started == {"campaign_id": "svc-campaign-1", "backend": "service-default"}
     name, req = service.calls[-1]
     assert name == "create_campaign"
     assert req.config_filter == "hospital*" and req.runs == 5
+    assert req.backend is None  # unset -> service default (cluster when available)
+
+
+def test_service_start_passes_backend(service):
+    cc.start_campaign(backend="local")
+    _name, req = service.calls[-1]
+    assert req.backend == "local"
+
+
+def test_start_rejects_unknown_backend(service):
+    res = cc.start_campaign(backend="gpu")
+    assert "error" in res and "unknown backend" in res["error"]
+    assert not service.calls  # never reached the service
 
 
 def test_service_status_maps_from_status_model(service):
@@ -256,16 +141,50 @@ def test_service_list_running_filters_terminal(service):
     assert listing["count"] == 1
 
 
-def test_no_service_url_uses_subprocess_path(project):
-    # With no service configured, the local subprocess path is used unchanged.
-    assert cc._service_client() is None
-    started = cc.start_campaign(backend="local")
-    assert started["log_path"].endswith(f"_control/logs/{started['campaign_id']}.log")
+def test_resource_usage_passes_backend(service):
+    cc.resource_usage(backend="cluster")
+    assert ("resource_usage", "cluster") in service.calls
+    cc.resource_usage()  # unset -> None (service default)
+    assert ("resource_usage", None) in service.calls
 
 
-# ---------------------------------------------------------------------------
-# get_campaign_download — returns a web link, never writes a file
-# ---------------------------------------------------------------------------
+def test_build_image_passes_backend(service):
+    cc.build_experiment_image(backend="cluster")
+    name, req = service.calls[-1]
+    assert name == "build_image" and req.backend == "cluster"
+
+
+# -- fail loudly when no service is reachable (no local fallback) ------------
+
+
+@pytest.fixture
+def no_service(monkeypatch):
+    monkeypatch.setattr(cc, "_service_client", lambda: None)
+
+
+def test_start_without_service_fails_loudly(no_service):
+    res = cc.start_campaign()
+    assert "error" in res and "no robovast-service" in res["error"]
+
+
+def test_status_without_service_fails_loudly(no_service):
+    assert "no robovast-service" in cc.get_campaign_status("x")["error"]
+
+
+def test_stop_without_service_fails_loudly(no_service):
+    assert "no robovast-service" in cc.stop_campaign("x")["error"]
+
+
+def test_list_running_without_service_fails_loudly(no_service):
+    assert "no robovast-service" in cc.list_running_campaigns()["error"]
+
+
+def test_resource_usage_without_service_fails_loudly(no_service):
+    assert "no robovast-service" in cc.resource_usage()["error"]
+
+
+# -- get_campaign_download — returns a web link, never writes a file ---------
+
 
 def _fake_download_client(backend, base_url="http://127.0.0.1:8800"):
     from robovast.service.interface import VersionInfo

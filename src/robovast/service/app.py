@@ -211,8 +211,8 @@ def build_app(impl: RobovastInterface):
         return _guard(impl.version)
 
     @app.get(Routes.USAGE, response_model=ResourceUsage)
-    def resource_usage() -> ResourceUsage:
-        return _guard(impl.resource_usage)
+    def resource_usage(backend: str | None = None) -> ResourceUsage:
+        return _guard(lambda: impl.resource_usage(backend))
 
     # -- authoring help (static; config editor) -----------------------------
 

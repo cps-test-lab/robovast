@@ -61,23 +61,26 @@ class HTTPTransport(RobovastInterface):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 
-    def _get(self, path: str, **params):
+    # First arg is the URL *route*; **params are query params — named `route` (not
+    # `path`) so an endpoint whose query param is itself `path` (workspace file
+    # read/delete) doesn't collide with this positional.
+    def _get(self, route: str, **params):
         import requests
-        resp = requests.get(f"{self.base_url}{path}", params=params or None,
+        resp = requests.get(f"{self.base_url}{route}", params=params or None,
                             timeout=self.timeout)
         resp.raise_for_status()
         return resp.json()
 
-    def _post(self, path: str, json=None):
+    def _post(self, route: str, json=None):
         import requests
-        resp = requests.post(f"{self.base_url}{path}", json=json,
+        resp = requests.post(f"{self.base_url}{route}", json=json,
                             timeout=self.timeout)
         resp.raise_for_status()
         return resp.json()
 
-    def _delete(self, path: str, **params):
+    def _delete(self, route: str, **params):
         import requests
-        resp = requests.delete(f"{self.base_url}{path}", params=params or None,
+        resp = requests.delete(f"{self.base_url}{route}", params=params or None,
                                timeout=self.timeout)
         resp.raise_for_status()
         return resp.json()
@@ -85,8 +88,9 @@ class HTTPTransport(RobovastInterface):
     def version(self) -> VersionInfo:
         return VersionInfo.model_validate(self._get(Routes.VERSION))
 
-    def resource_usage(self) -> ResourceUsage:
-        return ResourceUsage.model_validate(self._get(Routes.USAGE))
+    def resource_usage(self, backend: Optional[str] = None) -> ResourceUsage:
+        params = {"backend": backend} if backend else {}
+        return ResourceUsage.model_validate(self._get(Routes.USAGE, **params))
 
     def check_compatibility(self) -> dict:
         """Compare this client's robovast version with the service's (handshake).

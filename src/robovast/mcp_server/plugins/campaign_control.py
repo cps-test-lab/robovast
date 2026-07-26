@@ -17,11 +17,12 @@
 """MCP plugin for driving campaigns: validate, start, monitor, and stop.
 
 Unlike the read-only result plugins, these tools launch and kill real compute.
-They are backed by :class:`~robovast.mcp_server.campaign_registry.CampaignRegistry`,
-a crash-safe run-state registry that gives RoboVAST a single authoritative
-"is a campaign running?" answer and enforces **local single-flight**: while a
-local campaign is live, a second local start is refused (concurrent local runs
-would collide on the shared Docker resources RoboVAST uses today).
+They are a **strict client of a running ``robovast-service``** (a ``vast serve``
+locally, or a tunnel / ``vast serve --attach`` to a remote VM or cluster): the
+service is the single execution authority and owns run-state tracking, so there
+is no separate ``vast exec`` subprocess path here. When no service is reachable
+the control tools fail loudly rather than silently running a divergent local
+lane. (Users who want a serviceless local run still have ``vast exec local run``.)
 
 .. warning::
 
@@ -32,56 +33,32 @@ would collide on the shared Docker resources RoboVAST uses today).
 
 import logging
 import os
-import signal
-import subprocess
-import sys
-import threading
-import time
-from datetime import datetime
-from pathlib import Path
 
 from fastmcp import FastMCP
 
 from robovast.mcp_server import results_resolver
-from robovast.mcp_server.campaign_registry import CampaignRegistry, _proc_start_time
 
 logger = logging.getLogger(__name__)
 
-# Popen handles for local campaigns launched by *this* server process, so we can
-# reap them (poll) — capturing the authoritative exit code and avoiding zombies
-# that would otherwise still answer ``os.kill(pid, 0)``. Lost on server restart,
-# in which case liveness falls back to /proc + the on-disk heuristic.
-_LOCAL_PROCS: dict = {}
-_PROCS_LOCK = threading.Lock()
-
-_STOP_GRACE_SECONDS = 10
+#: Canonical failure when no ``robovast-service`` answers on the conventional local
+#: port. The control tools drive the service, so without one they cannot act.
+_NO_SERVICE = ("no robovast-service reachable — start a 'vast serve' (local) or "
+               "'vast serve --attach' (cluster), or open a tunnel to one, so the "
+               "MCP has an execution authority to drive")
 
 
 # -- Helpers -----------------------------------------------------------------
 
 
-def _load_project():
-    """Load the project config. Raises ValueError if the project is not initialized."""
-    from robovast.common.cli.project_config import ProjectConfig
-    project = ProjectConfig.load()
-    if project is None or not project.config_path or not project.results_dir:
-        raise ValueError(
-            "Project not initialized. Run 'vast init <config-file>' first.")
-    return project
-
-
 def _service_client():
     """Return a ``RobovastClient`` bound to a reachable robovast-service, or None.
 
-    When a service answers on the conventional local port (a local ``vast serve``,
-    or a tunnel to a remote VM / cluster you brought up before starting MCP), the
-    control tools drive that service through the
-    :class:`~robovast.service.interface.RobovastInterface` contract instead of
-    spawning ``vast exec`` subprocesses — the client-server path in which the
-    service is the execution authority and its own status tracking replaces the
-    local subprocess + ``CampaignRegistry`` machinery. Nothing there (the default)
-    keeps the in-process subprocess path below, so nothing changes for local users
-    who have not brought a service up yet.
+    A service answers on the conventional local port when a ``vast serve`` runs
+    locally, or a tunnel / ``vast serve --attach`` reaches a remote VM or cluster.
+    The control tools drive that service through the
+    :class:`~robovast.service.interface.RobovastInterface` contract; when nothing
+    answers they return :data:`_NO_SERVICE` (fail loudly — there is no local
+    subprocess fallback).
     """
     from robovast.common.cli.service_target import detected_service_url
     url = detected_service_url()
@@ -89,80 +66,6 @@ def _service_client():
         return None
     from robovast.service.client import RobovastClient
     return RobovastClient(url)
-
-
-def _classify_dead_local_for(results_dir):
-    """Return a ``entry -> status`` classifier for dead local entries.
-
-    Precedence: the child's captured exit code (authoritative when present); else
-    the canonical durable record ``_execution/outcome.json`` (so a run the child's
-    controller finished / failed / *stopped* is classified as the controller
-    itself recorded it, not collapsed to finished/crashed); else the on-disk
-    signal (``campaign.db`` present + enough terminal runs).
-    """
-    def classify(entry):
-        exit_code = entry.get("exit_code")
-        if exit_code == 0:
-            return "finished"
-        if exit_code is not None:
-            return "crashed"
-        campaign_id = entry.get("campaign_id")
-        campaign_dir = os.path.join(results_dir, campaign_id)
-        # No exit code (e.g. reaped by a liveness sweep, or MCP restarted): trust the
-        # controller's own durable terminal record over re-inferring from artifacts.
-        from robovast.common.campaign_data import read_execution_outcome
-        from robovast.execution.control_server import is_terminal
-        outcome = read_execution_outcome(Path(campaign_dir))
-        if outcome is not None and is_terminal(outcome.phase):
-            return outcome.phase
-        from robovast.common.store import STORE_FILENAME
-        if not os.path.exists(os.path.join(campaign_dir, STORE_FILENAME)):
-            return "crashed"
-        done, _passed, _failed = _read_progress(campaign_dir)
-        expected = entry.get("expected_total")
-        if expected and done >= expected:
-            return "finished"
-        return "crashed"
-    return classify
-
-
-def _registry(results_dir):
-    """Build a registry bound to ``results_dir`` with the disk-based classifier."""
-    return CampaignRegistry(
-        results_dir, classify_dead_local=_classify_dead_local_for(results_dir))
-
-
-def _reap_local_procs(registry):
-    """Poll tracked child processes, recording exit codes for any that finished.
-
-    Reaps zombies and writes the authoritative terminal status into the
-    registry so single-flight and status reflect reality immediately.
-    """
-    with _PROCS_LOCK:
-        finished = []
-        for campaign_id, proc in list(_LOCAL_PROCS.items()):
-            rc = proc.poll()
-            if rc is not None:
-                finished.append((campaign_id, rc))
-                del _LOCAL_PROCS[campaign_id]
-    for campaign_id, rc in finished:
-        registry.update(
-            campaign_id, exit_code=rc,
-            status="finished" if rc == 0 else "crashed",
-            finished_at=datetime.now().isoformat())
-
-
-def _read_progress(campaign_dir):
-    """Return ``(runs_done, passed, failed)`` from a campaign dir, tolerant of early state."""
-    from robovast.common.campaign_data import get_vast_configuration_info
-    try:
-        info = get_vast_configuration_info(Path(campaign_dir))
-    except (FileNotFoundError, OSError, ValueError, TypeError):
-        return 0, 0, 0
-    done = info.get("num_runs", 0)
-    passed = info.get("num_passed", 0)
-    failed = info.get("num_failed", 0) + info.get("num_errors", 0)
-    return done, passed, failed
 
 
 def _progress_from_status(st) -> float | None:
@@ -220,45 +123,19 @@ def _status_to_dict(campaign_id: str, backend, st) -> dict:
     return result
 
 
-def _log_tail(log_path, max_lines=40):
-    """Return the last ``max_lines`` lines of a log file, or ``""``."""
-    if not log_path or not os.path.exists(log_path):
-        return ""
-    try:
-        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
-            return "".join(f.readlines()[-max_lines:])
-    except OSError:
-        return ""
+def _load_project():
+    """Load the CWD project config (read-only tools). Raises if not initialized.
 
-
-def _validate(project, config_filter):
-    """Validate the project config and count configs/runs (same math as ``vast config info``).
-
-    Returns ``(campaign_config, info_dict)`` used internally by ``start_campaign``
-    (which needs the parsed ``campaign_config`` for the campaign id). Rich,
-    collect-all validation for clients lives in the ``validate_project`` tool.
+    Used by the local, serviceless validation/preview tools (``validate_project`` /
+    ``preview_configurations``), which resolve a ``.vast`` on disk and never touch
+    the execution service.
     """
-    from robovast.common.common import load_config
-    from robovast.common.config import validate_config
-    from robovast.common.config_generation import generate_scenario_variations
-
-    campaign_config = validate_config(load_config(project.config_path))
-    campaign_data, _ = generate_scenario_variations(
-        variation_file=project.config_path, output_dir=None)
-    configs = campaign_data["configs"]
-    if config_filter:
-        import fnmatch
-        configs = [c for c in configs
-                   if fnmatch.fnmatch(c.get("name", ""), config_filter)]
-    runs_per_config = campaign_data.get("execution", {}).get("runs", 1)
-    info = {
-        "valid": True,
-        "configs": len(configs),
-        "runs_per_config": runs_per_config,
-        "total_trials": len(configs) * runs_per_config,
-        "errors": [],
-    }
-    return campaign_config, info
+    from robovast.common.cli.project_config import ProjectConfig
+    project = ProjectConfig.load()
+    if project is None or not project.config_path or not project.results_dir:
+        raise ValueError(
+            "Project not initialized. Run 'vast init <config-file>' first.")
+    return project
 
 
 # -- Tool functions ----------------------------------------------------------
@@ -392,143 +269,56 @@ def init_project(config_path: str, project_dir: str, results_dir: str = "",
         return {"error": str(e)}
 
 
-def start_campaign(config_filter: str = "", runs: int = 0,
-                   backend: str = "local", context: str = "",
+def start_campaign(config_filter: str = "", runs: int = 0, backend: str = "",
                    workspace_id: str = "", config_path: str = "",
                    campaign_name: str = "", upload_to_share: bool = False) -> dict:
-    """Start a campaign and return immediately; results land on local disk either way.
+    """Start a campaign through the robovast-service and return immediately.
 
-    Validates the campaign first and refuses if invalid. Both backends run as a
-    detached child process whose log is written under
-    ``_control/logs/<campaign_id>.log``:
-
-    * ``local`` — ``vast exec local run`` (Docker on this host). Enforces
-      single-flight: if a local campaign is already live, the launch is refused
-      with the list of running campaigns.
-    * ``cluster`` — ``vast exec cluster run`` (Kubernetes): launches the campaign and
-      returns; results stay in the object store (they are **not** downloaded onto this
-      host, which the user may not be able to reach). Retrieve them via the web UI or
-      ``get_campaign_download``. Cluster campaigns are not single-flighted.
+    The service is the execution authority — there is **no** local subprocess path —
+    so a service must be reachable (a ``vast serve`` locally, or ``vast serve
+    --attach`` / a tunnel to a cluster); otherwise this fails loudly. Results land
+    wherever the service keeps them (local disk, or the cluster object store); poll
+    :func:`get_campaign_status`. For a serviceless local run use the ``vast exec
+    local run`` CLI instead.
 
     Args:
         config_filter: Optional glob to run only matching configurations.
         runs: Runs per configuration; ``0`` uses the value from the ``.vast`` file.
-        backend: ``"local"`` (Docker on this host) or ``"cluster"`` (Kubernetes).
-        context: Kubernetes context for ``cluster`` (empty = active context).
-        workspace_id: When a service is configured, run this workspace's project
-            (empty = the CWD project). Independent of the backend.
-        config_path: Which ``.vast`` to run when the workspace has several
-            (workspace-relative; empty = the sole ``.vast``).
-        campaign_name: Override the campaign name; the id becomes
-            ``<name>-<timestamp>``. Empty uses the ``.vast`` ``metadata.name``.
-        upload_to_share: When true, a raw (pre-postprocess) archive of the campaign
-            is delivered to the configured share (cluster) or written to the results
-            ``_archives/`` dir (local) when it finishes. The share target and
-            credentials come from the service/``.env`` config, not this call.
+        backend: On a multi-backend service (``vast serve --backend local+cluster``),
+            which lane to run on — ``"local"`` (pilot: Docker on the serve host) or
+            ``"cluster"`` (scaled: Kubernetes). Empty uses the service's **default
+            lane (cluster when available)**. Single-backend services ignore it.
+        workspace_id: Run this workspace's project (empty = the service's CWD project).
+        config_path: Which ``.vast`` when the workspace has several (empty = the sole one).
+        campaign_name: Override the campaign name; the id becomes ``<name>-<timestamp>``.
+            Empty uses the ``.vast`` ``metadata.name``.
+        upload_to_share: When true, a raw (pre-postprocess) archive is delivered to the
+            configured share when the campaign finishes. Target/credentials come from
+            the service config, not this call.
 
     Returns:
-        ``{campaign_id, backend, log_path}`` on success; ``{error, ...}`` on
-        refusal or failure.
+        ``{campaign_id, backend}`` on success; ``{error}`` when no service is reachable
+        or the start is refused.
     """
     try:
         client = _service_client()
-        if client is not None:
-            # Client-server path: the service is the execution authority and
-            # picks the backend by its own deployment (backend/context args are
-            # ignored here — they are implicit in which service is configured).
-            from robovast.service.interface import CreateCampaignRequest
-            ref = client.create_campaign(CreateCampaignRequest(
-                workspace_id=workspace_id, config_path=config_path,
-                config_filter=config_filter, campaign_name=campaign_name,
-                runs=runs if runs and runs > 0 else 1,
-                upload_to_share=upload_to_share))
-            return {"campaign_id": ref.campaign_id, "backend": "service"}
-
-        project = _load_project()
-        campaign_config, info = _validate(project, config_filter)
-        if not info["valid"]:
-            return {"error": "invalid campaign", "details": info["errors"]}
-        if info["total_trials"] == 0:
-            return {"error": "no configurations match", "config_filter": config_filter}
-        if backend not in ("local", "cluster"):
+        if client is None:
+            return {"error": _NO_SERVICE}
+        if backend and backend not in ("local", "cluster"):
             return {"error": f"unknown backend {backend!r}; use 'local' or 'cluster'"}
-
-        from robovast.execution.controller import campaign_id_for
-        campaign_id = campaign_id_for(campaign_config, campaign_name or None)
-        runs_arg = runs if runs and runs > 0 else info["runs_per_config"]
-        expected_total = info["configs"] * runs_arg
-
-        results_dir = str(project.results_dir)
-        os.makedirs(results_dir, exist_ok=True)
-        registry = _registry(results_dir)
-        registry.ensure_dirs()
-        _reap_local_procs(registry)  # clear any just-finished entry before the guard
-        log_path = registry.log_path_for(campaign_id)
-
-        if backend == "local":
-            ok, running = registry.reserve_local(
-                campaign_id=campaign_id, config_filter=config_filter, runs=runs,
-                expected_total=expected_total, log_path=log_path)
-            if not ok:
-                return {"error": "campaign already running", "running": running}
-            cmd = [sys.executable, "-m", "robovast.common.cli.cli",
-                   "exec", "local", "run", "--campaign-id", campaign_id,
-                   "--output", results_dir, "--no-gui"]
-        else:  # cluster
-            registry.reserve_cluster(
-                campaign_id=campaign_id, config_filter=config_filter, runs=runs,
-                expected_total=expected_total, log_path=log_path, context=context)
-            # Fire-and-forget: do NOT --wait-and-download, so a (potentially ~1TB)
-            # results tree never lands on the MCP-server host (which the user may not
-            # be able to reach). Retrieve results via the web UI / get_campaign_download.
-            cmd = [sys.executable, "-m", "robovast.common.cli.cli",
-                   "exec", "cluster", "run", "--campaign-id", campaign_id]
-            if context:
-                cmd += ["--context", context]
-        if config_filter:
-            cmd += ["--config", config_filter]
-        if runs and runs > 0:
-            cmd += ["--runs", str(runs)]
-        if upload_to_share:
-            cmd += ["--upload-to-share"]
-
-        return _spawn_tracked(registry, campaign_id, backend, cmd, results_dir, log_path)
+        from robovast.service.interface import CreateCampaignRequest
+        ref = client.create_campaign(CreateCampaignRequest(
+            workspace_id=workspace_id, config_path=config_path,
+            config_filter=config_filter, campaign_name=campaign_name,
+            runs=runs if runs and runs > 0 else 1,
+            upload_to_share=upload_to_share, backend=backend or None))
+        return {"campaign_id": ref.campaign_id, "backend": backend or "service-default"}
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 
 
-def _spawn_tracked(registry, campaign_id, backend, cmd, results_dir, log_path):
-    """Spawn a detached child, redirect its log, and record its pid in the registry."""
-    try:
-        log_file = open(log_path, "ab")  # noqa: SIM115 - handed to the child, closed below
-    except OSError as e:
-        registry.update(campaign_id, status="failed", finished_at=datetime.now().isoformat())
-        return {"error": f"cannot open log file: {e}"}
-    try:
-        proc = subprocess.Popen(  # noqa: S603 - args are constructed, not shell
-            cmd, stdout=log_file, stderr=subprocess.STDOUT,
-            start_new_session=True, cwd=results_dir)
-    except OSError as e:
-        registry.update(campaign_id, status="failed", finished_at=datetime.now().isoformat())
-        return {"error": f"failed to launch: {e}"}
-    finally:
-        log_file.close()
-
-    with _PROCS_LOCK:
-        _LOCAL_PROCS[campaign_id] = proc
-    registry.attach_pid(campaign_id, proc.pid, _proc_start_time(proc.pid))
-    logger.info("Started %s campaign %s (pid %s)", backend, campaign_id, proc.pid)
-    return {"campaign_id": campaign_id, "backend": backend, "log_path": str(log_path)}
-
-
 def get_campaign_status(campaign_id: str) -> dict:
-    """Report the current status and progress of a campaign.
-
-    When a service is reachable this reports the service's own live status (the
-    normal cluster path). Otherwise it reconciles the local subprocess's liveness
-    (a killed run is reported ``crashed``, a completed one ``finished``) and reads
-    progress from the on-disk results — the local-backend path; a cluster campaign's
-    results stay in the object store (download them via ``get_campaign_download``).
+    """Report the service's live status and progress for a campaign.
 
     Args:
         campaign_id: The id returned by :func:`start_campaign`.
@@ -536,58 +326,18 @@ def get_campaign_status(campaign_id: str) -> dict:
     Returns:
         ``{campaign_id, backend, status, mode, batch_runs_done, batch_runs_total,
         progress, ...}`` — plus search-only fields (``best_objective``, ``budget``,
-        ``batches_done``, ``stop``) when applicable; ``{error}`` if unknown. Run
-        counts are **batch-scoped**; ``progress`` is overall and mode-aware (``None``
-        when a search's completion cannot be known yet).
+        ``batches_done``, ``stop``) when applicable; ``{error}`` when no service is
+        reachable or the campaign is unknown. Run counts are **batch-scoped**;
+        ``progress`` is overall and mode-aware (``None`` when a search's completion
+        cannot be known yet).
     """
     try:
         client = _service_client()
-        if client is not None:
-            st = client.get_status(campaign_id)
-            result = _status_to_dict(campaign_id, "service", st)
-            result["stage"] = st.stage or ""  # a live marker string, not a log tail
-            return result
-
-        project = _load_project()
-        results_dir = str(project.results_dir)
-        registry = _registry(results_dir)
-        _reap_local_procs(registry)
-        entry = registry.reconcile_and_get(campaign_id)
-        if entry is None:
-            return {"error": f"campaign {campaign_id!r} not tracked"}
-        campaign_dir = os.path.join(results_dir, campaign_id)
-
-        # The one disk reconstruction (durable outcome.json, else derived from
-        # artifacts) — shared with the service's own past-campaign lookup. The
-        # registry supplies only the expected run total for the derived case; it is
-        # no longer a second source of the campaign's phase.
-        from robovast.execution.status_recovery import \
-            reconstruct_status_from_disk  # noqa: PLC0415
-        st = reconstruct_status_from_disk(
-            campaign_dir, expected_total=entry.get("expected_total"))
-        if st.phase == "unknown":
-            # Disk has no outcome yet — a just-started local campaign (no artifacts) or
-            # one killed before producing any. Disk can't say what happened, but the
-            # registry can: its status was just reconciled from the process's liveness
-            # (reconcile_and_get above). Use it so a live campaign reads "running" and a
-            # stopped/crashed one its terminal status, instead of a bare "unknown".
-            # (Disk still wins the moment it carries an outcome/results.)
-            reg_status = entry.get("status")
-            if reg_status == "launching":
-                st.phase = "starting"
-            elif reg_status:
-                st.phase = reg_status
-            # The missing-dir reconstruction carries no run total; surface the expected
-            # total the registry recorded at launch so progress isn't shown as 0/0.
-            expected = entry.get("expected_total")
-            if expected and (not st.runs or not st.runs.total):
-                st.runs = {"completed": 0, "total": expected}
-        _done, passed, failed = _read_progress(campaign_dir)
-        result = _status_to_dict(campaign_id, entry.get("backend"), st)
-        # Local extras beyond the Status model: cumulative pass/fail + a real log tail.
-        result["passed"] = passed
-        result["failed"] = failed
-        result["log_tail"] = _log_tail(entry.get("log_path"))
+        if client is None:
+            return {"error": _NO_SERVICE}
+        st = client.get_status(campaign_id)
+        result = _status_to_dict(campaign_id, "service", st)
+        result["stage"] = st.stage or ""  # a live marker string, not a log tail
         return result
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
@@ -700,148 +450,53 @@ def get_job_log(campaign_id: str, job_name: str, offset: int = 0) -> dict:
 
 
 def stop_campaign(campaign_id: str) -> dict:
-    """Stop a running campaign.
+    """Stop a running campaign (cooperative stop via the service).
 
-    Both backends terminate the launched process group (SIGTERM, then SIGKILL
-    after a grace period). Local additionally reaps the campaign's Docker
-    container; cluster additionally sends the controller a cooperative ``stop``
-    (killing the local launcher alone would not stop the in-cluster controller).
+    The service drives the campaign in-process and owns the teardown (terminating a
+    local Docker container or the cluster's scenario Jobs), so this is a single
+    interface call.
 
     Args:
         campaign_id: The id returned by :func:`start_campaign`.
 
     Returns:
-        ``{campaign_id, stopped, status}`` or ``{error}``.
+        ``{campaign_id, stopped, status, note}`` or ``{error}`` when no service is
+        reachable.
     """
     try:
         client = _service_client()
-        if client is not None:
-            res = client.stop(campaign_id)
-            return {"campaign_id": campaign_id, "stopped": res.ok,
-                    "status": "stopping", "note": res.message}
-
-        project = _load_project()
-        results_dir = str(project.results_dir)
-        registry = _registry(results_dir)
-        entry = registry.get(campaign_id)
-        if entry is None:
-            return {"error": f"campaign {campaign_id!r} not tracked"}
-        backend = entry.get("backend")
-
-        # Cluster: ask the in-cluster controller to stop cooperatively first, so
-        # the campaign actually winds down rather than being orphaned when we
-        # kill the local waiter below. Best-effort (may be unreachable).
-        note = None
-        if backend == "cluster":
-            try:
-                _cluster_cooperative_stop(campaign_id, entry)
-                note = "cooperative stop requested; local waiter terminated"
-            except Exception as e:  # noqa: BLE001
-                note = f"could not reach controller ({e}); killed local waiter only"
-
-        killed = _kill_tracked_process(campaign_id, entry)
-
-        if backend == "local":
-            # docker compose containers live in the daemon's tree and outlive the
-            # process group; reap the hardcoded campaign container best-effort.
-            with _suppress_process_errors():
-                subprocess.run(["docker", "rm", "-f", "robovast"],  # noqa: S603,S607
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                               check=False, timeout=30)
-
-        with _PROCS_LOCK:
-            _LOCAL_PROCS.pop(campaign_id, None)
-        registry.update(campaign_id, status="failed",
-                        finished_at=datetime.now().isoformat())
-        result = {"campaign_id": campaign_id, "stopped": killed, "status": "failed"}
-        if note:
-            result["note"] = note
-        return result
+        if client is None:
+            return {"error": _NO_SERVICE}
+        res = client.stop(campaign_id)
+        return {"campaign_id": campaign_id, "stopped": res.ok,
+                "status": "stopping", "note": res.message}
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 
 
-def _kill_tracked_process(campaign_id, entry):
-    """SIGTERM then SIGKILL the campaign's process group. Returns True if signalled."""
-    pid = entry.get("pid")
-    if not pid or entry.get("status") in ("finished", "failed", "crashed"):
-        return False
-    try:
-        pgid = os.getpgid(pid)
-        os.killpg(pgid, signal.SIGTERM)
-        deadline = time.time() + _STOP_GRACE_SECONDS
-        while time.time() < deadline:
-            try:
-                os.killpg(pgid, 0)
-            except ProcessLookupError:
-                break
-            time.sleep(0.2)
-        else:
-            with _suppress_process_errors():
-                os.killpg(pgid, signal.SIGKILL)
-        return True
-    except ProcessLookupError:
-        return False  # already gone
-    except OSError as e:
-        logger.warning("stop_campaign: killpg failed for %s: %s", campaign_id, e)
-        return False
-
-
-def _cluster_cooperative_stop(campaign_id, entry):
-    """Ask the robovast-service to stop the campaign cooperatively.
-
-    The service drives the campaign in-process, so this is a plain interface call —
-    no controller pod to find and no ``port-forward`` to open (both are gone). MCP
-    is a thin client of the same contract the CLI and web UI use.
-    """
-    client = _service_client()
-    if client is None:
-        raise RuntimeError(
-            "no robovast-service reachable (bring up a 'vast serve' or a tunnel to "
-            "the conventional local port before starting MCP); cluster campaigns "
-            "are driven by the service")
-    result = client.stop(campaign_id)
-    if not result.ok:
-        raise RuntimeError(f"stop failed for {campaign_id!r}: {result.message}")
-
-
 def list_running_campaigns() -> dict:
-    """List campaigns currently tracked as live (both local and cluster).
-
-    Liveness is derived from the launched process registry — no Kubernetes call
-    is made, so this never blocks on an unreachable cluster. For in-cluster
-    detail beyond the local waiter's state, use ``vast exec cluster monitor``.
+    """List campaigns the service currently reports as live (all lanes).
 
     Returns:
-        ``{count, running: [entry, ...]}`` where each entry carries at least
-        ``campaign_id``, ``backend``, and ``status``.
+        ``{count, running: [entry, ...]}`` where each entry carries ``campaign_id``,
+        ``backend``, and ``status``; ``{error}`` when no service is reachable.
     """
     from robovast.execution.control_server import is_running  # noqa: PLC0415
     try:
         client = _service_client()
-        if client is not None:
-            resp = client.list_campaigns()
-            running = [{"campaign_id": c.campaign_id, "backend": "service",
-                        "status": c.phase}
-                       for c in resp.campaigns if is_running(c.phase)]
-            return {"count": len(running), "running": running}
-
-        project = _load_project()
-        results_dir = str(project.results_dir)
-        registry = _registry(results_dir)
-        _reap_local_procs(registry)
-        running = registry.live_entries()
+        if client is None:
+            return {"error": _NO_SERVICE}
+        resp = client.list_campaigns()
+        running = [{"campaign_id": c.campaign_id, "backend": "service",
+                    "status": c.phase}
+                   for c in resp.campaigns if is_running(c.phase)]
         return {"count": len(running), "running": running}
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 
 
-def resource_usage() -> dict:
-    """Report the execution backend's CPU/memory capacity, usage, and parallelism.
-
-    Backend-agnostic: the service resolves local (host, via psutil) vs. cluster
-    (Kubernetes nodes) itself, so the fields mean the same thing either way and you
-    never need to know which backend is running.
+def resource_usage(backend: str = "") -> dict:
+    """Report an execution lane's CPU/memory capacity, usage, and parallelism.
 
     Use this to size a ``.vast`` run against free capacity and estimate its runtime:
     ``free_cpu = cpu_capacity - cpu_used`` (same for memory). If ``parallel_runs`` is
@@ -850,36 +505,27 @@ def resource_usage() -> dict:
     floor(free_mem / run_mem_request))`` using the per-run reservations declared in
     the ``.vast``. Then ``wall_time ~= ceil(num_runs / concurrency) * per_run_time``.
 
-    Requires a reachable robovast-service (bring up a ``vast serve`` or a tunnel).
+    Requires a reachable robovast-service (a ``vast serve`` or a tunnel).
+
+    Args:
+        backend: On a multi-backend service, which lane to size — ``"local"`` or
+            ``"cluster"``. Empty uses the service's default lane (cluster when
+            available). Single-backend services ignore it.
 
     Returns:
         ``{backend, cpu_capacity, cpu_used, memory_capacity_bytes, memory_used_bytes,
-        parallel_runs}`` — CPU in cores, memory in bytes; ``{error}`` if no service
+        parallel_runs}`` — CPU in cores, memory in bytes; ``{error}`` when no service
         is reachable.
     """
+    if backend and backend not in ("local", "cluster"):
+        return {"error": f"unknown backend {backend!r}; use 'local' or 'cluster'"}
     client = _service_client()
     if client is None:
-        return {"error": "no robovast-service reachable (bring up a 'vast serve' or "
-                         "a tunnel before starting MCP); resource usage is served by "
-                         "the service"}
+        return {"error": _NO_SERVICE}
     try:
-        return client.resource_usage().model_dump()
+        return client.resource_usage(backend or None).model_dump()
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
-
-
-# -- Small utilities ---------------------------------------------------------
-
-
-class _suppress_process_errors:
-    """Context manager swallowing process/OS errors from best-effort kills."""
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return exc_type is not None and issubclass(
-            exc_type, (ProcessLookupError, OSError, subprocess.SubprocessError))
 
 
 # -- Plugin class ------------------------------------------------------------
@@ -1082,7 +728,8 @@ def get_campaign_download(campaign_id: str) -> dict:
     }
 
 
-def build_experiment_image(workspace_id: str = "", config_path: str = "") -> dict:
+def build_experiment_image(workspace_id: str = "", config_path: str = "",
+                           backend: str = "") -> dict:
     """Build the experiment container image declared by the project's ``build:`` section.
 
     Use this when the experiment needs new *code or system packages baked into the
@@ -1111,19 +758,25 @@ def build_experiment_image(workspace_id: str = "", config_path: str = "") -> dic
     Args:
         workspace_id: Which workspace's project to build (empty = the CWD project).
         config_path: Which ``.vast`` when the workspace has several (empty = the sole one).
+        backend: On a multi-backend service, which lane to build for — ``"local"``
+            (Docker on the serve host) or ``"cluster"`` (a cluster build Job). Build
+            for the same lane you will ``start_campaign`` on. Empty uses the service's
+            default lane (cluster when available). Single-backend services ignore it.
 
     Returns:
         ``{build_id, tag, cached}`` on submit; ``{error}`` when no service is reachable
         or the ``build:`` section is missing/invalid.
     """
+    if backend and backend not in ("local", "cluster"):
+        return {"error": f"unknown backend {backend!r}; use 'local' or 'cluster'"}
     client = _service_client()
     if client is None:
-        return {"error": "no robovast-service reachable; bring up a 'vast serve' or a "
-                         "tunnel (image builds run server-side)"}
+        return {"error": _NO_SERVICE}
     from robovast.service.interface import BuildImageRequest
     try:
         ref = client.build_image(BuildImageRequest(
-            workspace_id=workspace_id, config_path=config_path))
+            workspace_id=workspace_id, config_path=config_path,
+            backend=backend or None))
         return {"build_id": ref.build_id, "tag": ref.tag, "cached": ref.cached}
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}

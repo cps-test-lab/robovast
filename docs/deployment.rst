@@ -24,6 +24,12 @@ shortcut that opens a browser at that port; it starts nothing.
   runs the CLI, MCP, and ``vast ui`` all reach it. In-pod, the Deployment runs
   ``vast serve --backend cluster``; run ``vast serve --backend cluster -x
   <context>`` off-cluster to debug the driver locally against a real cluster.
+* **Dual-lane dev service** — ``vast serve --backend local+cluster`` offers
+  *both* a local Docker lane and a cluster lane in one service and chooses per
+  campaign (``start_campaign`` ``backend``; default cluster). A dev-host mode
+  (needs Docker **and** kubeconfig, off-cluster only): pilot a campaign locally
+  and scale the same session to the cluster without re-pointing serve. The
+  deployed in-cluster service stays single-backend.
 * **Your own tunnel to any of the above** — an ``ssh -N -L 8800:127.0.0.1:8800
   <host>`` or ``kubectl port-forward … 8800:8800`` on the conventional port is
   equivalent to ``vast serve --attach``; the web UI and every ``vast`` command

@@ -45,29 +45,8 @@ def test_derives_finished_without_outcome(tmp_path):
     assert st.runs.total == 5  # expected_total surfaced when no artifacts counted
 
 
-# -- registry terminal vocabulary must not drift from the canonical phases ----
+# -- terminal vocabulary must not drift: 'stopped' stays terminal -------------
 
-def test_registry_terminal_statuses_match_canonical():
-    from robovast.mcp_server.campaign_registry import TERMINAL_STATUSES
-    assert TERMINAL_STATUSES == frozenset(TERMINAL_PHASES)
-    # The drift that used to bite: 'stopped' must be terminal.
-    assert "stopped" in TERMINAL_STATUSES
+def test_stopped_is_terminal():
+    assert "stopped" in {str(p) for p in TERMINAL_PHASES}
     assert is_terminal("stopped")
-
-
-def test_dead_local_classifier_prefers_outcome_json(tmp_path):
-    """A reaped local campaign (no exit code) is classified as its durable record says."""
-    from robovast.mcp_server.plugins.campaign_control import \
-        _classify_dead_local_for
-
-    campaign_id = "camp-2026-01-01-000003"
-    campaign = tmp_path / campaign_id
-    campaign.mkdir()
-    write_execution_outcome(
-        campaign, Status(phase=Phase.STOPPED, campaign_id=campaign_id))
-
-    classify = _classify_dead_local_for(str(tmp_path))
-    # exit_code is None (reaped by a sweep) -> must trust outcome.json, not collapse.
-    assert classify({"campaign_id": campaign_id, "exit_code": None}) == Phase.STOPPED
-    # A captured exit code still wins (authoritative).
-    assert classify({"campaign_id": campaign_id, "exit_code": 0}) == "finished"

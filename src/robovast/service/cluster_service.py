@@ -108,6 +108,7 @@ class ClusterService(LocalTransport):
     def version(self) -> VersionInfo:
         v = super().version()
         v.backend = "kubernetes"
+        v.backends = ["cluster"]
         return v
 
     def _compute_resource_usage(self) -> ResourceUsage:

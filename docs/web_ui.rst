@@ -84,6 +84,25 @@ run files, and author the ``.vast`` in the Monaco editor.
    an incrementing ``-2``/``-3`` suffix (printed in the command's output) so the
    copies stay distinguishable in the dropdown.
 
+   To push a fresh version of a project **into the workspace that already exists**
+   (instead of making another copy), use ``vast workspace update`` with the
+   workspace's ``ws-…`` id or name:
+
+   .. code-block:: bash
+
+      vast workspace update ros2demo configs/examples/ros2_basic          # add + overwrite
+      vast workspace update ros2demo configs/examples/ros2_basic --prune  # also delete removed files
+
+   ``update`` re-uploads every file (overwriting in place) with the same inline /
+   side-channel split and skip rules as ``init``. By default it only adds and
+   overwrites; ``--prune`` also deletes workspace files that no longer exist under
+   the directory, so the workspace mirrors it exactly. Read-only pinned workspaces
+   (``--workspace-dir``) refuse the update — edit their files on disk instead. The
+   MCP tool ``update_workspace`` does the same for an LLM/agent client (see
+   :ref:`architecture`), refreshing a whole project in one call rather than looping
+   per-file writes. In the browser, dragging a project folder onto the **Config →
+   Files** tab performs the same add/overwrite sync.
+
 .. tip::
 
    To skip the upload entirely and always have a project available — even across

@@ -14,13 +14,11 @@ import { ResultsPage } from '@/pages/results/ResultsPage'
 // (e.g. #/config/files) so refresh / back-forward / bookmarks restore the view.
 const TOPICS: NavTopic[] = [
   {
+    // One consolidated page: the Editor / Files split is a tab bar inside the page (left column),
+    // not sidebar sub-views, so config is a leaf topic. `#/config` still resolves.
     id: 'config',
     label: 'Config',
     icon: <TuneRoundedIcon />,
-    views: [
-      { id: 'configuration', label: 'Editor' },
-      { id: 'files', label: 'File Browser' },
-    ],
   },
   {
     // Launch + monitor merged into one page: the launch form is a bar atop the live campaign list,
@@ -95,7 +93,7 @@ export function App() {
           navigation instead of resetting on unmount. */}
       <Box component="main" sx={{ flexGrow: 1, minWidth: 0, p: 3 }}>
         <KeepAlive active={nav.topicId === 'config'}>
-          <ConfigPage view={nav.viewId} />
+          <ConfigPage />
         </KeepAlive>
         <KeepAlive active={nav.topicId === 'execution'}>
           <Monitor />

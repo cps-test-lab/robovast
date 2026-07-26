@@ -217,7 +217,16 @@ lives in the ``run_data`` MCP plugin):
 * **Workspaces** — ``create_workspace`` / ``list_workspaces`` / ``get_workspace``
   / ``delete_workspace``; ``write_project_file`` / ``edit_project_file``
   (``.vast``/``.osc`` only) / ``read_project_file`` / ``list_project_files`` /
-  ``delete_project_file`` / ``create_upload``.
+  ``delete_project_file`` / ``create_upload``. Bulk directory sync is **client-side
+  glue over these primitives**, not a new operation: ``sync_directory_to_workspace``
+  (in ``robovast.service.project_push``) walks a local directory and drives
+  ``write_project_file`` for ``.vast``/``.osc`` and ``create_upload`` for everything
+  else, with an optional ``prune`` that ``delete_project_file``\ s workspace files
+  absent locally. It is the single implementation behind three callers — the
+  ``vast workspace init`` / ``vast workspace update`` CLI commands, the
+  ``update_workspace`` MCP tool, and the web UI's drag-a-folder upload — so all three
+  stay transport-agnostic (in-process ``LocalTransport`` or HTTP client) and can
+  never drift.
 * **Campaigns** — ``create_campaign`` (backend implicit in the deployment;
   ``upload_to_share`` is a per-campaign launch flag on the request, not a separate
   operation) / ``get_status`` / ``list_campaigns`` / ``list_jobs`` / ``get_job_log``

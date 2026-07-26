@@ -149,6 +149,36 @@ def delete_project_file(workspace_id: str, path: str) -> dict:
         return {"error": str(e)}
 
 
+def update_workspace(workspace_id: str, directory: str, prune: bool = False) -> dict:
+    """Re-sync a local DIRECTORY into an existing workspace (id or name).
+
+    Reads files from *directory* **on the host running this MCP server** and pushes
+    them to the service — ``.vast``/``.osc`` inline, everything else via the upload
+    side channel — so the file bytes never pass through your context. This is the
+    cheap way to refresh a whole project at once instead of looping
+    ``write_project_file`` / ``create_upload`` per file. Hidden files/dirs and
+    ``results/`` are skipped; existing files are overwritten in place.
+
+    Args:
+        workspace_id: Target workspace ``ws-…`` id, or a unique workspace name.
+        directory: Local project directory on the MCP-server host.
+        prune: Also delete workspace files absent from *directory* (full mirror).
+
+    Returns:
+        ``{workspace_id, written, uploaded, pruned}`` counts.
+    """
+    from robovast.service.project_push import (_resolve_workspace_id,
+                                               sync_directory_to_workspace)
+    try:
+        client = _client()
+        wid = _resolve_workspace_id(client, workspace_id)
+        stats = sync_directory_to_workspace(
+            client, wid, directory, skip_dirs={"results"}, prune=prune)
+        return {"workspace_id": wid, **stats}
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
+
+
 def create_upload(workspace_id: str, path: str, executable: bool = False) -> dict:
     """Get a one-time, expiring URL to PUT any non-``.vast``/``.osc`` file into the workspace.
 
@@ -176,6 +206,7 @@ _TOOLS = [
     list_workspaces,
     get_workspace,
     delete_workspace,
+    update_workspace,
     write_project_file,
     edit_project_file,
     read_project_file,

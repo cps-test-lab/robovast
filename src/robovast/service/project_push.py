@@ -51,6 +51,102 @@ def _is_project_input(rel: Path, main_vast: str) -> bool:
     return True
 
 
+def _upload_one(client, workspace_id: str, rel: str, path: Path) -> str:
+    """Push one local file into the workspace. Returns ``"written"``/``"uploaded"``.
+
+    ``.vast``/``.osc`` go inline (last-write-wins, so this both creates and
+    overwrites); everything else streams through the PUT side channel with the
+    executable bit preserved. The one place that knows about both transports: the
+    HTTP client issues an absolute PUT URL (``grant.url``), the in-process
+    ``LocalTransport`` exposes ``client.store`` for a direct write.
+    """
+    from robovast.service.interface import CreateUploadRequest, WriteFileRequest
+
+    if path.suffix.lower() in _INLINE_EXTS:
+        client.write_project_file(WriteFileRequest(
+            workspace_id=workspace_id, path=rel,
+            content=path.read_text(encoding="utf-8")))
+        return "written"
+
+    grant = client.create_upload(CreateUploadRequest(
+        workspace_id=workspace_id, path=rel, executable=os.access(path, os.X_OK)))
+    data = path.read_bytes()
+    if grant.url:  # HTTP service issued an absolute PUT URL
+        import requests
+        requests.put(grant.url, data=data, timeout=120).raise_for_status()
+    elif hasattr(client, "store"):  # in-process LocalTransport
+        client.store.write_upload(grant.token, data)
+    else:
+        raise RuntimeError(
+            f"cannot upload {rel!r}: this client has no upload channel")
+    return "uploaded"
+
+
+def _should_skip(rel: Path, skip_dirs) -> bool:
+    """True for hidden files/dirs (``.cache`` etc.) and any part in *skip_dirs*."""
+    return any(p.startswith(".") or p in skip_dirs for p in rel.parts)
+
+
+def _resolve_workspace_id(client, ref: str) -> str:
+    """Resolve a workspace id-or-name to a concrete ``workspace_id``.
+
+    A ``ws-…`` id is returned as-is; anything else is matched by name against the
+    service's workspaces. Fails loudly on no match or an ambiguous name, so a typo
+    never silently targets the wrong workspace.
+    """
+    if ref.startswith("ws-"):
+        return ref
+    matches = [w for w in client.list_workspaces().workspaces if w.name == ref]
+    if not matches:
+        raise ValueError(f"no workspace named {ref!r}")
+    if len(matches) > 1:
+        raise ValueError(
+            f"workspace name {ref!r} is ambiguous ({len(matches)} matches); "
+            "use the ws-… id")
+    return matches[0].workspace_id
+
+
+def sync_directory_to_workspace(client, workspace_id: str, directory, *,
+                                skip_dirs=frozenset(), prune: bool = False,
+                                echo=None) -> dict:
+    """Re-sync a local *directory* into an **existing** workspace.
+
+    Uploads every non-hidden file under *directory* (``.vast``/``.osc`` inline,
+    the rest via the PUT side channel), overwriting in place. Hidden files/dirs
+    and any directory named in *skip_dirs* are skipped. With *prune*, workspace
+    files absent from *directory* are deleted (full mirror). *echo* (e.g.
+    ``click.echo``) receives one ``+``/``-`` line per change. Returns
+    ``{"written", "uploaded", "pruned"}`` counts.
+    """
+    root = Path(directory).resolve()
+    stats = {"written": 0, "uploaded": 0, "pruned": 0}
+    local_rels: set[str] = set()
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root)
+        if _should_skip(rel, skip_dirs):
+            continue
+        rel_str = rel.as_posix()
+        kind = _upload_one(client, workspace_id, rel_str, path)
+        stats["written" if kind == "written" else "uploaded"] += 1
+        local_rels.add(rel_str)
+        if echo:
+            echo(f"  + {rel_str}")
+
+    if prune:
+        existing = [f.path for f in client.list_project_files(workspace_id).files]
+        for rel_str in sorted(existing):
+            if rel_str in local_rels or _should_skip(Path(rel_str), skip_dirs):
+                continue
+            client.delete_project_file(workspace_id, rel_str)
+            stats["pruned"] += 1
+            if echo:
+                echo(f"  - {rel_str} (pruned)")
+    logger.info("Synced %s into workspace %s (%s)", root, workspace_id, stats)
+    return stats
+
+
 def push_project_to_workspace(client, config_path: str, name: str = "") -> str:
     """Upload the project rooted at *config_path*'s directory into a new workspace.
 
@@ -58,10 +154,7 @@ def push_project_to_workspace(client, config_path: str, name: str = "") -> str:
     binaries) streams through the PUT side channel with the executable bit
     preserved. Returns the new ``workspace_id``.
     """
-    import requests
-    from robovast.service.interface import (CreateUploadRequest,
-                                            CreateWorkspaceRequest,
-                                            WriteFileRequest)
+    from robovast.service.interface import CreateWorkspaceRequest
 
     config_path = Path(config_path).resolve()
     project_dir = config_path.parent
@@ -75,17 +168,7 @@ def push_project_to_workspace(client, config_path: str, name: str = "") -> str:
         rel_path = path.relative_to(project_dir)
         if not _is_project_input(rel_path, main_vast):
             continue
-        rel = str(rel_path)
-        if path.suffix.lower() in _INLINE_EXTS:
-            client.write_project_file(WriteFileRequest(
-                workspace_id=workspace_id, path=rel,
-                content=path.read_text(encoding="utf-8")))
-        else:
-            executable = bool(path.stat().st_mode & 0o111)
-            grant = client.create_upload(CreateUploadRequest(
-                workspace_id=workspace_id, path=rel, executable=executable))
-            resp = requests.put(grant.url, data=path.read_bytes(), timeout=120)
-            resp.raise_for_status()
+        _upload_one(client, workspace_id, rel_path.as_posix(), path)
     logger.info("Pushed project %s into workspace %s", project_dir, workspace_id)
     return workspace_id
 

@@ -39,8 +39,8 @@ bit is set here (explicit flag or shebang auto-detect) and
 ``in_pod_storage._is_executable``/``_EXECUTABLE_META`` already carry it through
 the object store (S3 ``x-amz-meta-executable`` / GCS blob metadata).
 
-The registry mirrors :mod:`robovast.mcp_server.campaign_registry`: one JSON file
-guarded by an ``fcntl`` lock and replaced by an atomic temp-file rename.
+The registry is one JSON file guarded by an ``fcntl`` lock and replaced by an
+atomic temp-file rename.
 """
 
 import errno

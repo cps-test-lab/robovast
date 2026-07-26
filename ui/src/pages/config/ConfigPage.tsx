@@ -6,22 +6,28 @@ import Button from '@mui/material/Button'
 import Chip from '@mui/material/Chip'
 import MenuItem from '@mui/material/MenuItem'
 import Stack from '@mui/material/Stack'
+import Tab from '@mui/material/Tab'
+import Tabs from '@mui/material/Tabs'
 import TextField from '@mui/material/TextField'
 import Typography from '@mui/material/Typography'
 import { robovast } from '@/lib/robovastClient'
 import { configureVastSchema, isSchemaConfigured } from '@/lib/monaco'
 import { useDialogs } from '@/components/DialogProvider'
-import { KeepAlive } from '@/components/KeepAlive'
-import { ConfigView } from './ConfigView'
+import { ConfigEditorPane } from './ConfigEditorPane'
+import { ConfigPreviewPane } from './ConfigPreviewPane'
 import { FilesView } from './FilesView'
+import { useConfigEditor } from './useConfigEditor'
 
-// The Config topic container: owns the selected workspace and the shared workspace bar, then renders
-// the active subview (Configuration or Files). The .vast schema is loaded once here so Monaco in
-// either subview gets completion + inline validation.
-export function ConfigPage({ view }: { view: string }) {
+// The Config topic: one consolidated view. The left column is a tabbed [Editor | Files] panel
+// (full height), the right column keeps the resolved-config preview. The workspace bar and the
+// .vast schema (loaded once, so Monaco gets completion + inline validation) live here; the editor
+// and preview share a single selection via useConfigEditor.
+export function ConfigPage() {
   const qc = useQueryClient()
   const { prompt, confirm } = useDialogs()
   const [workspaceId, setWorkspaceId] = useState('')
+  const [tab, setTab] = useState<'editor' | 'files'>('editor')
+  const editor = useConfigEditor(workspaceId)
 
   const workspaces = useQuery({ queryKey: ['workspaces'], queryFn: () => robovast.listWorkspaces() })
   useQuery({
@@ -88,9 +94,9 @@ export function ConfigPage({ view }: { view: string }) {
   }
 
   return (
-    <Stack spacing={2}>
+    <Stack spacing={2} sx={{ height: 'calc(100vh - 48px)' }}>
       <Stack direction="row" spacing={2} alignItems="center">
-        <Typography variant="h6">{view === 'files' ? 'Workspace files' : 'Configuration'}</Typography>
+        <Typography variant="h6">Configuration</Typography>
         <TextField
           select={!!list.length}
           size="small"
@@ -132,15 +138,38 @@ export function ConfigPage({ view }: { view: string }) {
           Select or create a workspace, then author a <code>.vast</code> and upload your scenario/run files.
         </Alert>
       ) : (
-        // Both subviews are kept alive so each retains its state (selected .vast/file, editor buffer,
-        // preview) when the user switches between Configuration and Files.
-        <Box>
-          <KeepAlive active={view !== 'files'}>
-            <ConfigView workspaceId={workspaceId} />
-          </KeepAlive>
-          <KeepAlive active={view === 'files'}>
-            <FilesView workspaceId={workspaceId} />
-          </KeepAlive>
+        <Box
+          sx={{
+            display: 'grid',
+            gridTemplateColumns: '1fr 1fr',
+            gap: 2,
+            flexGrow: 1,
+            minHeight: 0,
+          }}
+        >
+          {/* Left column: a tabbed [Editor | Files] panel. Both panes stay mounted (toggled with
+              display) so the editor buffer and the tree's expansion survive tab switches. */}
+          <Box sx={{ display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0 }}>
+            <Tabs
+              value={tab}
+              onChange={(_, v) => setTab(v)}
+              sx={{ minHeight: 36, mb: 1, '& .MuiTab-root': { minHeight: 36, py: 0 } }}
+            >
+              <Tab value="editor" label="Editor" />
+              <Tab value="files" label="Files" />
+            </Tabs>
+            <Box sx={{ flexGrow: 1, minHeight: 0 }}>
+              <Box sx={{ display: tab === 'editor' ? 'block' : 'none', height: '100%' }}>
+                <ConfigEditorPane editor={editor} />
+              </Box>
+              <Box sx={{ display: tab === 'files' ? 'block' : 'none', height: '100%' }}>
+                <FilesView workspaceId={workspaceId} />
+              </Box>
+            </Box>
+          </Box>
+
+          {/* Right column: the resolved-config preview, always visible regardless of the left tab. */}
+          <ConfigPreviewPane editor={editor} />
         </Box>
       )}
     </Stack>

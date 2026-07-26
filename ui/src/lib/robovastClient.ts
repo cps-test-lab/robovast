@@ -15,6 +15,10 @@ export interface VersionInfo {
   robovast_version: string
   api_version: string
   backend?: string | null
+  // Execution lanes this service offers, e.g. ["local"], ["cluster"], or
+  // ["local","cluster"] for a dual-backend serve. The launch UI shows a backend
+  // picker only when there is more than one, and defaults the choice to cluster.
+  backends?: string[]
 }
 
 // Live capacity/usage of the service's execution backend (mirrors
@@ -101,6 +105,9 @@ export interface CreateCampaignRequest {
   runs?: number
   postprocess?: boolean
   upload_to_share?: boolean
+  // On a multi-backend serve, which lane to run on ("local" | "cluster"). Omitted
+  // uses the service default (cluster when available). Single-backend serves ignore it.
+  backend?: string
 }
 
 export interface CampaignRef {

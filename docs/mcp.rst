@@ -125,40 +125,42 @@ The MCP server organizes its tools along two dimensions: **operations**
 Campaign control
 ----------------
 
-The ``campaign_control`` plugin lets an assistant drive campaigns. It is backed
-by a crash-safe run-state registry under ``<results_dir>/_control/`` that
-records every launched campaign and provides a **single-flight guarantee for
-local runs**: while a local campaign is live, a second local ``start`` is
-refused. This prevents concurrent local launches from colliding on the shared
-Docker resources they use. Cluster campaigns are concurrent by design and are
-not guarded.
+The ``campaign_control`` plugin lets an assistant drive campaigns. It is a
+**strict client of a running** ``robovast-service`` — a ``vast serve`` locally,
+or a tunnel / ``vast serve --attach`` to a remote VM or cluster. The service is
+the single execution authority and owns run-state tracking; there is **no local
+subprocess path**. When no service is reachable the control tools fail loudly
+(``{"error": "no robovast-service reachable — start a 'vast serve' …"}``) rather
+than silently running a divergent local lane. (For a serviceless local run, use
+the ``vast exec local run`` CLI directly.)
 
-Both backends behave the same way from the assistant's point of view: ``start``
-launches a detached child process and returns immediately, and the results end
-up on local disk. For ``cluster`` this runs
-``vast exec cluster run --wait-and-download`` under the hood — it launches the
-in-cluster controller, waits for the campaign to finish and upload, and
-downloads the results into the project results directory. So a cluster campaign
-is as transparent as a local one; ``get_campaign_status`` reports on-disk progress
-once results land, and the live controller phase is visible in the status
-``log_tail`` meanwhile.
+``start_campaign`` validates and launches through the service and returns
+immediately; poll ``get_campaign_status``. Results live wherever the service
+keeps them — local disk for a local ``vast serve``, the object store for a
+cluster service (retrieve via the web UI or ``get_campaign_download``).
+
+**Choosing a lane on a dual-backend serve.** A ``vast serve --backend
+local+cluster`` (a dev host with both Docker and kubeconfig) offers *both* lanes
+in one service and routes per campaign. There, three tools take an optional
+``backend`` argument:
+
+* ``start_campaign(backend=…)`` — ``"local"`` pilots on the serve host's Docker;
+  ``"cluster"`` dispatches Kubernetes Jobs. Empty uses the service's **default
+  lane (cluster when available)**.
+* ``build_experiment_image(backend=…)`` — build for the lane you will run on.
+* ``resource_usage(backend=…)`` — size the lane you target.
+
+Every other tool is scoped to an existing ``campaign_id`` (or ``build_id``), so
+the service resolves the lane itself and no ``backend`` argument is needed.
+Single-backend services (a plain local or in-cluster ``vast serve``, or
+``--attach``) offer one lane and ignore ``backend``.
 
 .. note::
 
-   The local ``stop`` is an abrupt kill (it terminates the launched process
-   group and reaps the campaign container). The cluster ``stop`` sets the
-   driver's *cooperative* stop flag **and** tears down the campaign's in-flight
-   scenario Jobs (the same Kueue-aware cleanup as ``vast exec cluster
-   run-cleanup``, scoped to that one campaign) — so running work halts promptly
-   rather than only after the current batch. Other queued/running campaigns are
-   left untouched.
-
-.. note::
-
-   ``list_running_campaigns`` reports liveness from the local process registry
-   and makes no Kubernetes call, so it never blocks on an unreachable cluster.
-   For in-cluster detail beyond the local waiter's state, use
-   ``vast exec cluster monitor``.
+   ``stop_campaign`` is a cooperative stop through the service, which owns the
+   teardown (terminating a local Docker container, or the cluster's in-flight
+   scenario Jobs). ``list_running_campaigns`` reports the campaigns the service
+   considers live (all lanes).
 
 .. note::
 
@@ -166,30 +168,19 @@ once results land, and the live controller phase is visible in the status
    per-job** view the web UI Monitor shows: the current batch's jobs with their
    status (running / pending / completed / failed) and aggregate counts, and the
    live log of a single **running** job (its scenario container's output — the
-   running pod's log on the cluster, the live ``system.log`` file locally). They
-   are served by the ``robovast-service``, so they need a reachable service
-   (a ``vast serve`` or a tunnel); a finished job whose pod has been
-   garbage-collected has no live log.
+   running pod's log on the cluster, the live ``system.log`` file locally). A
+   finished job whose pod has been garbage-collected has no live log.
 
 .. note::
 
-   ``resource_usage`` reports the execution backend's CPU/memory capacity and
-   current usage, plus a ``parallel_runs`` flag. It is **backend-agnostic** — the
-   service resolves local (host, via ``psutil``) versus cluster (Kubernetes nodes)
-   itself, so an assistant reads the same fields either way and never branches on
-   the backend. Use it to size a ``.vast`` run against free capacity: with
-   ``free_cpu = cpu_capacity - cpu_used`` (and the same for memory), a run's
-   concurrency is ``1`` when ``parallel_runs`` is false, otherwise
-   ``min(⌊free_cpu / run_cpu⌋, ⌊free_mem / run_mem⌋)`` from the per-run reservations
-   in the ``.vast`` — and the wall time is roughly
-   ``⌈num_runs / concurrency⌉ × per_run_time``. Served by the ``robovast-service``,
-   so it needs a reachable service (a ``vast serve`` or a tunnel).
-
-.. note::
-
-   The registry uses file locking (``flock``) and atomic renames, which require
-   ``<results_dir>`` to be on a local filesystem. On an NFS share, locking may
-   be unreliable.
+   ``resource_usage`` reports an execution lane's CPU/memory capacity and current
+   usage, plus a ``parallel_runs`` flag. The fields mean the same thing on either
+   lane, so an assistant reads them uniformly. Use it to size a ``.vast`` run
+   against free capacity: with ``free_cpu = cpu_capacity - cpu_used`` (and the same
+   for memory), a run's concurrency is ``1`` when ``parallel_runs`` is false,
+   otherwise ``min(⌊free_cpu / run_cpu⌋, ⌊free_mem / run_mem⌋)`` from the per-run
+   reservations in the ``.vast`` — and the wall time is roughly
+   ``⌈num_runs / concurrency⌉ × per_run_time``.
 
 
 Building experiment images

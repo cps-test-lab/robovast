@@ -233,16 +233,57 @@ def _load_project_dotenv() -> None:
         load_dotenv()
 
 
+def _build_cluster_impl(in_pod, context, k8s_namespace, store=None):
+    """Build the cluster-lane service for ``vast serve``.
+
+    In-pod the config/cluster come from the pod env; off-cluster the config is read
+    from the deployed robovast-service (the authoritative record), so no local setup
+    is needed. Shared by ``--backend cluster`` and the cluster lane of
+    ``--backend local+cluster`` (``store`` lets the latter pass its shared store).
+    """
+    from robovast.service.cluster_service import ClusterService
+    if in_pod:
+        return ClusterService(kube_context=context, store=store)
+    from robovast.execution.cluster_execution.service_deploy import \
+        read_service_config_from_cluster
+    name, kwargs = read_service_config_from_cluster(k8s_namespace, context)
+    if not name:
+        for_ctx = f" in context {context!r}" if context else ""
+        raise click.ClickException(
+            f"no robovast-service found{for_ctx} (namespace "
+            f"{k8s_namespace!r}) to read the cluster config from — deploy "
+            "one with 'vast exec cluster setup <cluster-config>"
+            f"{f' -x {context}' if context else ''}', or check "
+            "--context/--namespace.")
+    # Off-cluster the driver reaches the cluster's object store through a kubectl
+    # port-forward, which is fragile under the large per-file result transfers a big
+    # campaign produces. This mode is a dev convenience; the deployed in-cluster
+    # service reads the store directly (no tunnel).
+    click.secho(
+        "WARNING: running the cluster backend off-cluster — campaigns are "
+        "driven from this host through a kubectl port-forward to the cluster "
+        "object store, which is fragile under large result transfers. This "
+        "mode is a dev convenience; run large campaigns via the deployed "
+        "in-cluster robovast-service.",
+        fg="yellow")
+    return ClusterService(namespace=k8s_namespace, cluster_config_name=name,
+                          cluster_config_kwargs=kwargs, kube_context=context,
+                          store=store)
+
+
 @cli.command()
 @click.option('--host', default='127.0.0.1', show_default=True,
               help='Interface to bind. Keep 127.0.0.1 unless behind a tunnel/proxy: '
                    'the service is unauthenticated in v1.')
 @click.option('--port', default=8800, show_default=True, type=int,
               help='Port to listen on.')
-@click.option('--backend', type=click.Choice(['auto', 'local', 'cluster']),
+@click.option('--backend', type=click.Choice(['auto', 'local', 'cluster',
+                                              'local+cluster']),
               default='auto', show_default=True,
               help="Execution backend. 'auto' picks 'cluster' when running inside "
-                   "a Kubernetes pod, else 'local' Docker.")
+                   "a Kubernetes pod, else 'local' Docker. 'local+cluster' offers "
+                   "BOTH lanes in one serve and chooses per campaign (dev-host only "
+                   "— needs Docker AND kubeconfig; the default lane is cluster).")
 @click.option('--attach', is_flag=True,
               help='Do not run a service — hold a kubectl port-forward to the '
                    'already-deployed in-cluster robovast-service and keep it '
@@ -279,7 +320,7 @@ def serve(host, port, backend, attach, context, k8s_namespace, rebuild_ui,
     and campaigns survive client exit (unlike ``vast exec local run``). The
     service serves the web UI at the same URL — from a source checkout this
     (re)builds ``ui/dist`` first when it is missing or stale (needs ``npm``;
-    ``--rebuild-ui`` forces it). Three ways it makes the port live:
+    ``--rebuild-ui`` forces it). Ways it makes the port live:
 
     * **local** (default off-cluster) — runs the app in-process: local Docker +
       local filesystem (mode 2). Run it on your machine or a remote VM reached
@@ -291,10 +332,16 @@ def serve(host, port, backend, attach, context, k8s_namespace, rebuild_ui,
       scenarios execute in that cluster — the cluster config is read from the
       deployed robovast-service in that cluster, so it works from any host with
       kubeconfig access (no local setup needed).
+    * **local+cluster** — offers *both* lanes in one service and chooses per
+      campaign (``start_campaign``/``CreateCampaignRequest`` ``backend``; the
+      default lane is cluster). A **dev-host mode**: it needs both Docker and
+      kubeconfig, so it is off-cluster only (refused in a pod — the deployed
+      service is cluster-only). Lets an agent pilot a campaign locally and scale
+      the same session to the cluster without re-pointing serve.
     * **--attach** — runs *nothing* locally: just holds a ``kubectl
       port-forward`` to the service you already deployed with ``vast exec cluster
       setup`` and keeps it reachable here until Ctrl-C. This is how you drive a
-      deployed cluster from your laptop.
+      deployed cluster from your laptop (cluster lane only).
 
     Security: unauthenticated in v1, so it binds ``127.0.0.1`` by default and
     must stay behind localhost / SSH tunnel / port-forward (see
@@ -335,49 +382,33 @@ def serve(host, port, backend, attach, context, k8s_namespace, rebuild_ui,
     if backend == 'auto':
         backend = 'cluster' if in_pod else 'local'
 
-    if context is not None and backend != 'cluster':
+    if context is not None and backend not in ('cluster', 'local+cluster'):
         raise click.ClickException(
-            "--context/-x only applies to '--backend cluster' — it selects which "
-            "Kubernetes context to dispatch campaigns into.")
+            "--context/-x only applies to '--backend cluster' / 'local+cluster' — "
+            "it selects which Kubernetes context to dispatch campaigns into.")
+
+    if backend == 'local+cluster' and in_pod:
+        raise click.ClickException(
+            "--backend local+cluster is a dev-host mode (both lanes in one serve) "
+            "and needs local Docker, which a Kubernetes pod does not have; the "
+            "in-cluster service is cluster-only.")
 
     if backend == 'cluster':
         if workspace_dirs:
             raise click.ClickException(
                 "--workspace-dir is only supported by the local backend "
                 "(the cluster service stores workspaces in the object store)")
-        from robovast.service.cluster_service import ClusterService
-        if in_pod:
-            # The in-cluster Deployment: config and cluster come from the pod env.
-            impl = ClusterService(kube_context=context)
-        else:
-            # Off-cluster driver: read the config straight from the deployed
-            # robovast-service in the target cluster (the authoritative record), so
-            # no local setup/flag file and no env exports are needed to dispatch.
-            from robovast.execution.cluster_execution.service_deploy import \
-                read_service_config_from_cluster
-            name, kwargs = read_service_config_from_cluster(k8s_namespace, context)
-            if not name:
-                for_ctx = f" in context {context!r}" if context else ""
-                raise click.ClickException(
-                    f"no robovast-service found{for_ctx} (namespace "
-                    f"{k8s_namespace!r}) to read the cluster config from — deploy "
-                    "one with 'vast exec cluster setup <cluster-config>"
-                    f"{f' -x {context}' if context else ''}', or check "
-                    "--context/--namespace.")
-            impl = ClusterService(namespace=k8s_namespace, cluster_config_name=name,
-                                  cluster_config_kwargs=kwargs, kube_context=context)
-            # Off-cluster the driver reaches the cluster's object store through a
-            # kubectl port-forward, which is fragile under the large per-file result
-            # transfers a big campaign produces. This mode is a dev convenience; the
-            # deployed in-cluster service reads the store directly (no tunnel).
-            click.secho(
-                "WARNING: running the cluster backend off-cluster — campaigns are "
-                "driven from this host through a kubectl port-forward to the cluster "
-                "object store, which is fragile under large result transfers. This "
-                "mode is a dev convenience; run large campaigns via the deployed "
-                "in-cluster robovast-service.",
-                fg="yellow")
+        impl = _build_cluster_impl(in_pod, context, k8s_namespace)
         storage = "object store"
+    elif backend == 'local+cluster':
+        # Dev-host dual lane: one shared store so both lanes see the same results dir
+        # and workspaces; the cluster lane is built exactly as '--backend cluster'.
+        from robovast.service.multi_backend import MultiBackendService
+        from robovast.service.workspaces import WorkspaceStore
+        store = WorkspaceStore(workspace_dirs=list(workspace_dirs) or None)
+        cluster = _build_cluster_impl(in_pod, context, k8s_namespace, store=store)
+        impl = MultiBackendService(cluster, store=store)
+        storage = "local filesystem + object store"
     else:
         from robovast.service.client import LocalTransport
         impl = LocalTransport(workspace_dirs=list(workspace_dirs))
@@ -542,9 +573,8 @@ def workspace_init(directory, name, excludes, cluster, namespace, context):
       vast workspace init configs/examples/growth_sim --cluster  # the cluster UI
     """
     from pathlib import Path
-    from robovast.service.interface import (CreateUploadRequest,
-                                            CreateWorkspaceRequest,
-                                            WriteFileRequest)
+    from robovast.service.interface import CreateWorkspaceRequest
+    from robovast.service.project_push import sync_directory_to_workspace
     root = Path(directory).resolve()
     skip_dirs = _INIT_EXCLUDE_DIRS | set(excludes)
     with service_client(cluster, namespace, context) as (client, target):
@@ -563,35 +593,51 @@ def workspace_init(directory, name, excludes, cluster, namespace, context):
                 raise click.ClickException("aborted; workspace not created")
             click.echo(f"note: name {requested!r} already exists — using {ws.name!r}")
 
-        count = 0
-        for path in sorted(root.rglob('*')):
-            rel = path.relative_to(root)
-            if not path.is_file():
-                continue
-            # skip hidden (.cache, .robovast_*, …) and excluded output dirs (results/, …)
-            if any(part.startswith('.') or part in skip_dirs for part in rel.parts):
-                continue
-            rel_str = rel.as_posix()
-            if path.suffix.lower() in ('.vast', '.osc'):
-                client.write_project_file(WriteFileRequest(
-                    workspace_id=wid, path=rel_str,
-                    content=path.read_text(encoding='utf-8')))
-            else:
-                grant = client.create_upload(CreateUploadRequest(
-                    workspace_id=wid, path=rel_str, executable=os.access(path, os.X_OK)))
-                data = path.read_bytes()
-                if grant.url:  # HTTP service issued an absolute PUT URL
-                    import requests
-                    requests.put(grant.url, data=data, timeout=120).raise_for_status()
-                elif hasattr(client, 'store'):  # in-process LocalTransport
-                    client.store.write_upload(grant.token, data)
-                else:
-                    raise click.ClickException(
-                        f"cannot upload {rel_str!r}: this client has no upload channel")
-            count += 1
-            click.echo(f"  + {rel_str}")
+        stats = sync_directory_to_workspace(
+            client, wid, root, skip_dirs=skip_dirs, echo=click.echo)
+        count = stats['written'] + stats['uploaded']
         click.echo(
             f"workspace {wid} ({ws.name}) initialized from {root} ({count} files)")
+
+
+@workspace.command('update')
+@click.argument('workspace', metavar='WORKSPACE')
+@click.argument('directory', type=click.Path(exists=True, file_okay=False))
+@click.option('--exclude', 'excludes', multiple=True, metavar='NAME',
+              help='Directory name to skip (repeatable). Adds to the default '
+                   f"{sorted(_INIT_EXCLUDE_DIRS)}.")
+@click.option('--prune', is_flag=True,
+              help='Also delete workspace files that are absent from DIRECTORY '
+                   '(full mirror). Off by default: update only adds/overwrites.')
+@target_options
+def workspace_update(workspace, directory, excludes, prune, cluster, namespace, context):
+    """Re-sync DIRECTORY into an EXISTING workspace (id or name).
+
+    Uploads every file from DIRECTORY, overwriting in place — ``.vast``/``.osc``
+    inline, everything else via the upload side channel. Hidden files/dirs and
+    output dirs (``results/``, plus any ``--exclude``) are skipped. With
+    ``--prune`` it also removes workspace files that no longer exist locally, so
+    the workspace mirrors DIRECTORY exactly.
+
+    \b
+      vast workspace update ws-ab12 configs/examples/growth_sim
+      vast workspace update growth_sim configs/examples/growth_sim --prune
+    """
+    from pathlib import Path
+    from robovast.service.project_push import (_resolve_workspace_id,
+                                               sync_directory_to_workspace)
+    root = Path(directory).resolve()
+    skip_dirs = _INIT_EXCLUDE_DIRS | set(excludes)
+    with service_client(cluster, namespace, context) as (client, target):
+        _echo_target(target)
+        wid = _resolve_workspace_id(client, workspace)
+        stats = sync_directory_to_workspace(
+            client, wid, root, skip_dirs=skip_dirs, prune=prune, echo=click.echo)
+        count = stats['written'] + stats['uploaded']
+        summary = f"{count} written"
+        if prune:
+            summary += f", {stats['pruned']} pruned"
+        click.echo(f"workspace {wid} updated from {root} ({summary})")
 
 
 @workspace.command('list')

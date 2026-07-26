@@ -40,7 +40,7 @@ operations extend :class:`RobovastInterface` in later phases.
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -57,10 +57,13 @@ from robovast.execution.control_server import Phase, Status  # noqa: F401
 class CreateCampaignRequest(BaseModel):
     """Start a campaign from a workspace's current project.
 
-    ``backend`` is intentionally **absent**: it is implicit in *which* service
-    the client is talking to (an in-process/local ``vast serve`` uses Docker; an
-    in-cluster service uses Kubernetes). Callers select the backend by choosing
-    the deployment, not per call.
+    ``backend`` is normally **absent**: for a single-backend service it is
+    implicit in *which* service the client is talking to (an in-process/local
+    ``vast serve`` uses Docker; an in-cluster service uses Kubernetes), and such
+    services ignore the field. It is honoured only by a **multi-backend** service
+    (``vast serve --backend local+cluster``), which offers both lanes and routes
+    per campaign; there ``None`` means "the service's default lane" (cluster when
+    available, else local).
     """
 
     workspace_id: str
@@ -70,6 +73,7 @@ class CreateCampaignRequest(BaseModel):
     runs: int = 1                    # runs per configuration
     postprocess: bool = True         # trigger analysis postprocessing once when done
     upload_to_share: bool = False    # stream a raw (pre-postprocess) archive to the share
+    backend: Optional[str] = None    # "local" | "cluster"; honoured only by a multi-backend service
 
 
 class CampaignRef(BaseModel):
@@ -89,6 +93,7 @@ class BuildImageRequest(BaseModel):
 
     workspace_id: str
     config_path: str = ""            # which .vast (workspace-relative); "" = the sole .vast
+    backend: Optional[str] = None    # "local" | "cluster"; honoured only by a multi-backend service
 
 
 class ImageBuildRef(BaseModel):
@@ -296,6 +301,10 @@ class VersionInfo(BaseModel):
     robovast_version: str
     api_version: str = "0"
     backend: Optional[str] = None    # "docker" | "kubernetes" (informational)
+    #: Execution lanes this service offers, e.g. ``["local"]``, ``["cluster"]`` or
+    #: ``["local", "cluster"]`` for a multi-backend serve. Lets clients (web UI, MCP)
+    #: show a backend picker only when >1 and default the selection to cluster.
+    backends: List[str] = []
 
 
 class ResourceUsage(BaseModel):
@@ -751,8 +760,12 @@ class RobovastInterface(ABC):
         """Report the implementation's RoboVAST + API version (handshake)."""
 
     @abstractmethod
-    def resource_usage(self) -> ResourceUsage:
-        """Report the execution backend's CPU/memory capacity + current usage."""
+    def resource_usage(self, backend: Optional[str] = None) -> ResourceUsage:
+        """Report the execution backend's CPU/memory capacity + current usage.
+
+        ``backend`` selects the lane on a multi-backend service ("local"/"cluster");
+        single-backend services offer one lane and ignore it.
+        """
 
     # -- workspaces (editable project inputs) -------------------------------
 

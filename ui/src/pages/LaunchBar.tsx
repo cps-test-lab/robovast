@@ -52,12 +52,25 @@ export function LaunchBar() {
   const [postprocess, setPostprocess] = useState(true)
   const [uploadToShare, setUploadToShare] = useState(true)
   const [configPath, setConfigPath] = useState('')
+  const [backend, setBackend] = useState('')
   const [showOptions, setShowOptions] = useState(false)
 
   const workspaces = useQuery({
     queryKey: ['workspaces'],
     queryFn: () => robovast.listWorkspaces(),
   })
+
+  // The lanes this service offers. A backend picker is shown only when there is
+  // more than one (a `vast serve --backend local+cluster`); it defaults to
+  // cluster (the scaled lane) and is omitted from the request otherwise, so a
+  // single-backend service is unaffected.
+  const version = useQuery({ queryKey: ['version'], queryFn: () => robovast.version() })
+  const backends = version.data?.backends ?? []
+  const multiBackend = backends.length > 1
+  useEffect(() => {
+    if (!multiBackend || backend) return
+    setBackend(backends.includes('cluster') ? 'cluster' : backends[0])
+  }, [multiBackend, backends, backend])
 
   // On startup pick a workspace so the form is ready to launch: the most recently
   // created one if creation times are known, otherwise the first listed.
@@ -113,6 +126,7 @@ export function LaunchBar() {
         runs,
         postprocess,
         upload_to_share: uploadToShare,
+        backend: multiBackend ? backend : undefined,
       }),
     // The launched campaign becomes a card in the list below; nothing else to hold onto here.
     onSuccess: () => qc.invalidateQueries({ queryKey: ['campaigns'] }),
@@ -175,6 +189,24 @@ export function LaunchBar() {
               {vastFiles.map((p) => (
                 <MenuItem key={p} value={p}>
                   {p}
+                </MenuItem>
+              ))}
+            </TextField>
+          ) : null}
+
+          {multiBackend ? (
+            <TextField
+              select
+              label="Backend"
+              value={backend}
+              onChange={(e) => setBackend(e.target.value)}
+              size="small"
+              sx={{ minWidth: 130 }}
+              helperText={backend === 'local' ? 'pilot (Docker)' : 'scaled (cluster)'}
+            >
+              {backends.map((b) => (
+                <MenuItem key={b} value={b}>
+                  {b}
                 </MenuItem>
               ))}
             </TextField>
