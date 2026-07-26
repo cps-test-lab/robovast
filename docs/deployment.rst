@@ -156,12 +156,9 @@ Tear it down and set it up again:
    vast exec cluster cleanup
    vast exec cluster setup rke2
 
-Plain ``setup`` over a live service is refused (``Cluster is already set up``) —
-the deployed service's env is the record of which cluster config is in use, so
-setup will not silently overwrite it. ``setup --force`` skips that guard and
-patches the Deployment in place, which is the quicker path when only the service
-image changed; the cleanup cycle is the reliable one. Neither touches the object
-store, so campaign data survives both.
+Campaign data lives in the object store and survives this. Plain ``setup`` over a
+live service is refused (``Cluster is already set up``); ``setup --force``
+updates it without the teardown.
 
 Setting up again also reconciles the service's RBAC. In particular, the
 ``/usage`` endpoint (cluster CPU/memory capacity and usage, shown in the web UI
