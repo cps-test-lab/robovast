@@ -36,11 +36,13 @@ import re
 import subprocess
 import threading
 import time
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from robovast.common.build_context import BUILD_CONTEXT_IGNORE
+from robovast.common.build_context import (BUILD_CONTEXT_IGNORE,
+                                           render_dockerignore)
 from robovast.common.execution import (BUILD_IMAGE_PREFIX, DEFAULT_IMAGE_USER,
                                        build_image_tag, is_build_image_ref,
                                        resolve_robovast_image)
@@ -53,10 +55,27 @@ logger = logging.getLogger(__name__)
 _CONTEXT_DIR = "/robovast_build_context"
 #: Local docker tag namespace for agent-built experiment images.
 _LOCAL_TAG_NS = "robovast-build"
+#: The buildx builder to build experiment images with. Pinned rather than inheriting whichever
+#: builder the operator has selected, because only the ``docker`` driver runs inside dockerd and so
+#: shares the daemon's image store and build cache. On a ``docker-container`` builder (a multi-arch
+#: one is a common thing to have selected) the base image is invisible and gets re-pulled from the
+#: registry on *every* build -- measured at 124 s of a 188 s build for a 5.6 GB ROS base -- the layer
+#: cache lives in a separate store that the daemon's images cannot seed, and a locally built
+#: ``build.base_image`` (which ``_base_ref`` explicitly supports) cannot be resolved at all.
+_LOCAL_BUILDER = "default"
+#: BuildKit frontend pin — required for the ``RUN --mount=type=cache`` below. Honoured by both
+#: builders we drive: ``docker buildx`` locally and ``buildctl --frontend dockerfile.v0`` in-cluster.
+_SYNTAX_DIRECTIVE = "# syntax=docker/dockerfile:1"
 #: pip invocation for the build steps. The base is an externally-managed (PEP 668) Debian Python and
 #: the target *is* that interpreter, so the marker has to be overridden rather than worked around
 #: with a venv, which ``ros2 launch``'s /usr/bin/python3 would not see.
-_PIP_INSTALL = "pip install --no-cache-dir --break-system-packages"
+#:
+#: The pip download cache lives in a BuildKit cache mount rather than being suppressed with
+#: ``--no-cache-dir``: a mount is never committed to a layer, so the image stays the same size while a
+#: rebuilt layer stops re-downloading its wheels (mujoco alone is tens of MB). ``sharing=locked``
+#: serialises concurrent builds sharing the mount instead of letting them corrupt the cache.
+_PIP_INSTALL = ("RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked "
+                "pip install --break-system-packages")
 #: Files/dirs never hashed or copied into the build context. Sourced from
 #: ``common`` so the in-cluster staging path skips exactly the same set (a
 #: mismatch would break the context hash — see build_context).
@@ -131,6 +150,36 @@ def _hash_dir(h: "hashlib._Hash", root: Path) -> None:
             pass
 
 
+def _hash_wheel(h: "hashlib._Hash", path: Path) -> None:
+    """Fold a wheel's *logical* content into *h*, ignoring zip metadata.
+
+    A wheel is a zip, and rebuilding one from unchanged sources still yields different
+    bytes: entry order, compression and the embedded mtimes all move (pip stamps each
+    member with its source file's mtime, so a branch switch or a fresh clone rewrites
+    every timestamp). Hashing the raw file therefore reported "changed" for wheels that
+    install byte-identical files, forcing a full rebuild of every layer downstream.
+
+    Folding name + CRC + uncompressed size per member, in name order, keys on what the
+    wheel actually installs. CRC32 is weak against a *crafted* collision but these are
+    our own build artifacts, not untrusted input, and it is what the zip central
+    directory already carries — so this needs no decompression.
+    """
+    try:
+        with zipfile.ZipFile(path) as zf:
+            for info in sorted(zf.infolist(), key=lambda i: i.filename):
+                h.update(b"\x00")
+                h.update(info.filename.encode())
+                h.update(b"\x01")
+                h.update(f"{info.CRC:08x}:{info.file_size}".encode())
+    except (OSError, zipfile.BadZipFile):
+        # Not a readable zip: fall back to the raw bytes rather than silently hashing
+        # nothing, which would collide with every other unreadable wheel.
+        try:
+            h.update(path.read_bytes())
+        except OSError:
+            pass
+
+
 def build_hash(spec: BuildSpec, project_dir: Path, base_ref: str) -> str:
     """A stable short hash of everything that affects the built image.
 
@@ -140,10 +189,10 @@ def build_hash(spec: BuildSpec, project_dir: Path, base_ref: str) -> str:
     does not.
     """
     h = hashlib.sha256()
-    # v2: the rendered Dockerfile changed (root for the build steps, PEP 668 pip), so images built
-    # by v1 are not what this spec now means -- the bump forces them to be rebuilt rather than
-    # served from cache.
-    h.update(b"v2")
+    # v3: the rendered Dockerfile changed again (per-entry COPY, sorted apt list, pip cache mount)
+    # and context wheels are now hashed by logical content instead of raw bytes. Both change what a
+    # given hash *means*, so the epoch bump forces a rebuild rather than serving a v2 image.
+    h.update(b"v3")
     h.update(base_ref.encode())
     for pkg in sorted(spec.system_packages):
         h.update(b"|apt|")
@@ -154,10 +203,7 @@ def build_hash(spec: BuildSpec, project_dir: Path, base_ref: str) -> str:
         if _is_source_dir(entry, project_dir):
             _hash_dir(h, (project_dir / entry).resolve())
         elif _is_context_wheel(entry, project_dir):
-            try:
-                h.update((project_dir / entry).read_bytes())
-            except OSError:
-                pass
+            _hash_wheel(h, (project_dir / entry).resolve())
     return h.hexdigest()[:12]
 
 
@@ -179,24 +225,35 @@ def generate_dockerfile(spec: BuildSpec, project_dir: Path, base_ref: str,
     to reach the system interpreter — the one ``ros2 launch`` starts nodes with, and
     therefore the only one an installed package is visible from. *base_user* is
     restored afterwards so the image still runs unprivileged.
+
+    Layer caching drives the shape of the output. Each entry gets its **own** ``COPY``
+    of just the path it installs, immediately before its ``RUN``, rather than one
+    ``COPY .`` of the whole project up front: a blanket copy makes every unrelated
+    file (the ``.vast`` itself, a scenario, a run file) invalidate all the pip layers,
+    which for a project carrying large asset packages means reinstalling hundreds of
+    MB to pick up a few KB of changed code. With per-entry copies a change to entry
+    *k* rebuilds only *k* onward, and a change outside ``python_packages`` rebuilds
+    nothing. The apt list is sorted to match :func:`build_hash`, so reordering the
+    YAML is a cache hit rather than a rebuild.
     """
-    lines = [f"FROM {base_ref}", "USER root"]
+    lines = [_SYNTAX_DIRECTIVE, f"FROM {base_ref}", "USER root"]
     if spec.system_packages:
-        pkgs = " ".join(spec.system_packages)
+        pkgs = " ".join(sorted(spec.system_packages))
         lines.append(
             "RUN apt-get update "
             f"&& apt-get install -y --no-install-recommends {pkgs} "
             "&& rm -rf /var/lib/apt/lists/*")
-    if spec.python_packages:
-        lines.append(f"COPY . {_CONTEXT_DIR}")
-        for entry in spec.python_packages:
-            if _is_source_dir(entry, project_dir):
-                lines.append(f"RUN {_PIP_INSTALL} -e {_CONTEXT_DIR}/{entry}")
-            elif _is_context_wheel(entry, project_dir):
-                lines.append(f"RUN {_PIP_INSTALL} {_CONTEXT_DIR}/{entry}")
-            else:
-                # index pin or git URL — reused verbatim from plugins: vocabulary
-                lines.append(f"RUN {_PIP_INSTALL} '{entry}'")
+    for entry in spec.python_packages:
+        if _is_source_dir(entry, project_dir):
+            lines.append(f"COPY {entry} {_CONTEXT_DIR}/{entry}")
+            lines.append(f"{_PIP_INSTALL} -e {_CONTEXT_DIR}/{entry}")
+        elif _is_context_wheel(entry, project_dir):
+            lines.append(f"COPY {entry} {_CONTEXT_DIR}/{entry}")
+            lines.append(f"{_PIP_INSTALL} {_CONTEXT_DIR}/{entry}")
+        else:
+            # index pin or git URL — reused verbatim from plugins: vocabulary. Nothing
+            # to copy, so it never carries a context layer.
+            lines.append(f"{_PIP_INSTALL} '{entry}'")
     lines.append(f"USER {base_user}")
     return "\n".join(lines) + "\n"
 
@@ -397,8 +454,13 @@ class LocalImageBuildManager:
         dockerfile = generate_dockerfile(spec, project_dir, base_ref)
         df_path = self._log_root / f"{record.build_id}.Dockerfile"
         df_path.write_text(dockerfile)
-        cmd = ["docker", "buildx", "build", "--load", "-f", str(df_path),
-               "-t", record.local_ref, str(project_dir)]
+        # BuildKit reads ``<dockerfile>.dockerignore`` beside an out-of-context -f
+        # Dockerfile, which is the only place to put one here: writing a .dockerignore
+        # into the project dir would mutate the user's workspace.
+        df_path.with_name(df_path.name + ".dockerignore").write_text(
+            render_dockerignore())
+        cmd = ["docker", "buildx", "build", "--builder", _LOCAL_BUILDER, "--load",
+               "-f", str(df_path), "-t", record.local_ref, str(project_dir)]
         logger.info("Building image %s: %s", record.local_ref, " ".join(cmd))
         try:
             with open(record.log_path, "wb") as log:

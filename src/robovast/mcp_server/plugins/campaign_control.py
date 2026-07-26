@@ -753,6 +753,12 @@ def build_experiment_image(workspace_id: str = "", config_path: str = "",
     :func:`get_image_build_log`). You may also skip this and just ``start_campaign`` —
     a ``build:<tag>`` image is (re)built automatically as the campaign's first step.
 
+    **Order ``python_packages`` so what changes often comes last.** Each entry is
+    copied and installed in its own layers, so a change to one entry only rebuilds the
+    entries after it — putting a large, stable asset package before the small code
+    package you keep editing turns a full rebuild into a few seconds. Dependencies come
+    first regardless (an entry's deps must already be installed when it runs).
+
     Requires a reachable robovast-service (a local ``vast serve`` or a tunnel).
 
     Args:

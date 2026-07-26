@@ -267,6 +267,43 @@ explicitly with the ``build_experiment_image`` MCP tool / ``vast image build``, 
 implicitly: ``start_campaign`` (re)builds a ``build:<tag>`` image as its first
 step. See :doc:`mcp` and :doc:`cluster_execution`.
 
+.. _config-build-caching:
+
+Caching, and how the entry order affects it
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Two independent caches apply, and the second one is worth authoring for.
+
+*Whole image.* The cache key covers the base image, the apt list (order-insensitive)
+and each ``python_packages`` entry — for a workspace wheel by its **logical zip
+content** (member names, CRCs, sizes), not its bytes. Rebuilding a wheel from
+unchanged sources therefore does **not** trigger an image rebuild, even though the
+regenerated file differs byte-for-byte (pip stamps zip members with their source
+mtimes, so a branch switch or a fresh clone rewrites all of them). Nothing outside
+``build:`` is part of the key: editing the ``.vast``, the scenario or a run file never
+rebuilds the image.
+
+*Layers.* Each entry is copied and installed in its **own pair of layers**, in the
+order listed, so a change to entry *k* rebuilds only *k* onward. Order the list so
+that what changes often comes **last**:
+
+.. code-block:: yaml
+
+   python_packages:
+     - mujoco>=3.0                       # index pin: no context, never invalidated
+     - wheels/assets-0.1.0-...whl        # ~100 MB of meshes/textures, changes rarely
+     - wheels/my_nodes-0.1.0-...whl      # a few KB of code, changes constantly
+
+With that order an edit to ``my_nodes`` reuses the asset layers instead of
+reinstalling them. Dependencies constrain this — an entry's ``rst_*``-style deps must
+already be installed when it runs — so sort by change frequency only within what the
+dependency graph allows. pip's download cache is a BuildKit cache mount, so even a
+rebuilt layer does not re-download from the index.
+
+On the cluster each build runs in a fresh BuildKit pod, so layer reuse there comes
+from a registry-backed cache (``<prefix>/<tag>:buildcache``) rather than a local one;
+see :doc:`cluster_execution`.
+
 The ``build:`` section is distinct from the top-level ``plugins:`` field:
 ``plugins:`` installs *variation-type* packages into the **composer** (before
 config generation); ``build:`` bakes code/apt into the **scenario container**

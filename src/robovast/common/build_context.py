@@ -33,3 +33,22 @@ BUILD_CONTEXT_IGNORE: frozenset[str] = frozenset({
     ".git", "__pycache__", ".cache", ".preprocessed", "results",
     "_execution", "_transient", ".robovast_plugins", "resolved",
 })
+
+
+def render_dockerignore() -> str:
+    """:data:`BUILD_CONTEXT_IGNORE` as ``.dockerignore`` patterns.
+
+    The local build hands the project dir to the daemon as-is, so without this the
+    whole of ``results/``/``.git``/``.cache`` is transferred on every build. The
+    in-cluster path gets the same exclusions by pruning while it stages to S3; this
+    is the docker-native equivalent, so the two builders see the same context.
+
+    Each name is emitted twice: bare (a ``.dockerignore`` pattern is anchored at the
+    context root) and ``**/``-prefixed, to match the *any path component* rule the
+    hashing and staging code applies.
+    """
+    lines = []
+    for name in sorted(BUILD_CONTEXT_IGNORE):
+        lines.append(name)
+        lines.append(f"**/{name}")
+    return "\n".join(lines) + "\n"

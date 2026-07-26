@@ -64,6 +64,19 @@ def build_id_for(tag: str, image_hash: str) -> str:
     return f"imgbuild-{name}-{image_hash}"
 
 
+def cache_image_ref(registry_prefix: str, tag: str) -> str:
+    """Registry ref holding the *layer* cache for a build tag.
+
+    Deliberately **not** hash-qualified: the point is for the build of hash B to import
+    the layers produced for hash A, so the cache ref must be shared across hashes of the
+    same tag. Each BuildKit Job's build pod is fresh, so a cache mount or emptyDir buys
+    nothing across builds — a registry-backed cache is the only layer reuse available
+    in-cluster, and it works across nodes and service restarts too.
+    """
+    name = tag.replace(":", "-")
+    return f"{registry_prefix.rstrip('/')}/{name}:buildcache"
+
+
 def stage_context_to_s3(storage_client, bucket: str, prefix: str,
                         project_dir: Path, dockerfile: str) -> None:
     """Upload the build context (project dir + generated Dockerfile) to S3.
@@ -139,7 +152,8 @@ def _registry_host(image_ref: str) -> str:
 def build_job_manifest(*, build_id: str, image_ref: str, campaign_label: str,
                        init_env: list, push_secret_name: str,
                        namespace: str, insecure: bool = False,
-                       ca_configmap_name: str = "") -> dict:
+                       ca_configmap_name: str = "",
+                       cache_ref: str = "") -> dict:
     """A rootless BuildKit Job that fetches the S3 context and builds+pushes *image_ref*.
 
     An init container (``robovast-sidecar``) mirrors the context to an emptyDir; the
@@ -155,10 +169,20 @@ def build_job_manifest(*, build_id: str, image_ref: str, campaign_label: str,
     a CA over ``insecure`` for anything real. (Pull-side trust for a self-signed
     registry is node-level — the operator configures containerd — and is out of
     scope of this Job.)
+
+    ``cache_ref`` (see :func:`cache_image_ref`) turns on the registry layer cache:
+    ``mode=max`` exports the intermediate layers, not just the final ones, so a later
+    build that changed one late ``build:`` entry reuses everything before it. Export
+    failures are non-fatal by design — ``ignore-error=true`` keeps a build from failing
+    because the cache tag could not be written (e.g. a read-only or full registry), since
+    the image itself has already been pushed at that point.
     """
-    output = f"type=image,name={image_ref},push=true"
-    if insecure and not ca_configmap_name:
-        output += ",registry.insecure=true"
+    # An insecure registry has to be flagged on *every* ref, not just the output: the
+    # cache refs address the same registry, so omitting it there fails the import/export
+    # with a TLS error while the push succeeds. A mounted CA makes the registry properly
+    # trusted, so the flag is neither needed nor wanted then.
+    reg_insecure = ",registry.insecure=true" if insecure and not ca_configmap_name else ""
+    output = f"type=image,name={image_ref},push=true{reg_insecure}"
     buildctl = (
         "buildctl-daemonless.sh build "
         "--frontend dockerfile.v0 "
@@ -166,6 +190,12 @@ def build_job_manifest(*, build_id: str, image_ref: str, campaign_label: str,
         f"--local dockerfile={_CONTEXT_MOUNT} "
         f"--output {output}"
     )
+    if cache_ref:
+        buildctl += (
+            f" --import-cache type=registry,ref={cache_ref}{reg_insecure}"
+            f" --export-cache type=registry,ref={cache_ref},mode=max,"
+            f"ignore-error=true{reg_insecure}"
+        )
     volumes = [{'name': 'context', 'emptyDir': {}}]
     build_mounts = [{'name': 'context', 'mountPath': _CONTEXT_MOUNT}]
     build_env = [

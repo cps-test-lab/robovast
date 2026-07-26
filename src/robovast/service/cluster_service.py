@@ -579,7 +579,8 @@ class ClusterService(LocalTransport):
     def _start_cluster_build(self, spec, project_dir, cfg, registry, bucket):
         """Core (idempotent) launch shared by build_image + the campaign preflight."""
         from robovast.execution.cluster_execution.cluster_image_build import (
-            build_id_for, build_job_manifest, s3_init_env, stage_context_to_s3)
+            build_id_for, build_job_manifest, cache_image_ref, s3_init_env,
+            stage_context_to_s3)
         from robovast.execution.cluster_execution import in_pod_storage
         from robovast.service.image_build import generate_dockerfile
         from robovast.service.interface import ImageBuildRef, ImageBuildStatus
@@ -591,8 +592,22 @@ class ClusterService(LocalTransport):
         symbolic = f"{BUILD_IMAGE_PREFIX}{spec.tag}"
         state = self._image_build_state()
 
-        # Idempotent: a completed Job for this exact input hash means the image is
-        # already pushed — reuse it (no new build).
+        # Idempotent, and the registry is asked first: a pushed manifest for this exact
+        # input hash is durable proof the image exists, where the Job that produced it is
+        # deleted after ttlSecondsAfterFinished (1 h) and the in-process record dies with
+        # the service. Without this the same bit-identical image was rebuilt and re-pushed
+        # an hour later.
+        if self._registry_has_image(image_ref, registry):
+            status = ImageBuildStatus(build_id=build_id, tag=spec.tag, phase="cached",
+                                      done=True, cached=True, image_ref=symbolic,
+                                      digest=image_hash)
+            state[build_id] = {"tag": spec.tag, "image_ref": image_ref,
+                               "hash": image_hash, "status": status}
+            return ImageBuildRef(build_id=build_id, tag=spec.tag, cached=True)
+
+        # The Job is still consulted, but only for the case the registry cannot answer:
+        # a build already in flight (nothing pushed yet) that this caller should join
+        # rather than duplicate.
         existing = self._existing_build_job(build_id)
         if existing == "succeeded":
             status = ImageBuildStatus(build_id=build_id, tag=spec.tag, phase="cached",
@@ -619,7 +634,8 @@ class ClusterService(LocalTransport):
             build_id=build_id, image_ref=image_ref, campaign_label=build_id,
             init_env=init_env, push_secret_name=registry.push_secret_name,
             namespace=self.namespace, insecure=registry.insecure,
-            ca_configmap_name=registry.ca_configmap_name)
+            ca_configmap_name=registry.ca_configmap_name,
+            cache_ref=cache_image_ref(registry.registry_prefix, spec.tag))
         self._k8s_batch().create_namespaced_job(self.namespace, manifest)
 
         status = ImageBuildStatus(build_id=build_id, tag=spec.tag, phase="building",
@@ -627,6 +643,74 @@ class ClusterService(LocalTransport):
         state[build_id] = {"tag": spec.tag, "image_ref": image_ref,
                            "hash": image_hash, "status": status}
         return ImageBuildRef(build_id=build_id, tag=spec.tag, cached=False)
+
+    def _registry_has_image(self, image_ref: str, registry) -> bool:
+        """Is *image_ref* already pushed? Fails closed (see ``registry_client``)."""
+        from robovast.execution.cluster_execution.registry_client import \
+            manifest_exists
+        dockerconfig = self._push_dockerconfig(registry.push_secret_name)
+        ca_path = self._registry_ca_path(registry.ca_configmap_name)
+        return manifest_exists(image_ref, dockerconfigjson=dockerconfig,
+                               insecure=registry.insecure, ca_path=ca_path)
+
+    def _push_dockerconfig(self, push_secret_name: str) -> str:
+        """The push Secret's ``.dockerconfigjson``, or ``""`` when unavailable.
+
+        Same credential the build Job mounts; read here only to authenticate a read-only
+        manifest probe. Never returned to a client.
+        """
+        if not push_secret_name:
+            return ""
+        from kubernetes import client
+        try:
+            secret = self._k8s().read_namespaced_secret(push_secret_name, self.namespace)
+        except client.exceptions.ApiException as e:
+            logger.warning("registry check: cannot read push secret %s: %s",
+                           push_secret_name, e)
+            return ""
+        data = (secret.data or {}).get(".dockerconfigjson")
+        if not data:
+            return ""
+        import base64
+        try:
+            return base64.b64decode(data).decode()
+        except (ValueError, UnicodeDecodeError):
+            logger.warning("registry check: push secret %s is not decodable",
+                           push_secret_name)
+            return ""
+
+    def _registry_ca_path(self, ca_configmap_name: str) -> str:
+        """Materialize the registry CA to a file for ``requests``' ``verify=``.
+
+        Cached per ConfigMap name: this runs on every build submit, and a fresh temp file
+        each time would leak one per call for the service's lifetime.
+        """
+        if not ca_configmap_name:
+            return ""
+        cache = getattr(self, "_registry_ca_paths", None)
+        if cache is None:
+            cache = {}
+            self._registry_ca_paths = cache
+        if ca_configmap_name in cache:
+            return cache[ca_configmap_name]
+        from kubernetes import client
+        try:
+            cm = self._k8s().read_namespaced_config_map(ca_configmap_name, self.namespace)
+            pem = (cm.data or {}).get("ca.pem", "")
+        except client.exceptions.ApiException as e:
+            logger.warning("registry check: cannot read CA configmap %s: %s",
+                           ca_configmap_name, e)
+            pem = ""
+        path = ""
+        if pem:
+            import tempfile
+            fd = tempfile.NamedTemporaryFile(  # noqa: SIM115 - lives for the process
+                mode="w", suffix=".pem", prefix="robovast-registry-ca-", delete=False)
+            fd.write(pem)
+            fd.close()
+            path = fd.name
+        cache[ca_configmap_name] = path
+        return path
 
     def _existing_build_job(self, build_id: str) -> "str | None":
         """Return 'succeeded' | 'failed' | 'running' for an existing Job, else None."""
