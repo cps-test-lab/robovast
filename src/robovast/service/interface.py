@@ -210,12 +210,10 @@ class ActionResult(BaseModel):
 
 
 class PostprocessingInfo(BaseModel):
-    """Effective postprocessing entries for a campaign + override history."""
+    """The campaign's ``results_processing.postprocessing`` entries."""
 
     campaign_id: str
-    source: str = ""                 # which .vast is effective (snapshot or rev-N)
     entries: list = Field(default_factory=list)
-    revisions: list[int] = Field(default_factory=list)
 
 
 class UpdatePostprocessingRequest(BaseModel):
@@ -225,7 +223,6 @@ class UpdatePostprocessingRequest(BaseModel):
 
 class PostprocessingRevision(BaseModel):
     campaign_id: str
-    revision: int
     entries: list = Field(default_factory=list)
 
 
@@ -233,7 +230,6 @@ class PanelsSource(BaseModel):
     """The run-view ``visualization:`` block as editable YAML text."""
 
     campaign_id: str
-    source: str = ""                 # which .vast is effective (snapshot or rev-N)
     content: str = ""                # YAML text of the ``visualization:`` block
 
 
@@ -245,11 +241,11 @@ class UpdatePanelsSourceRequest(BaseModel):
 class PostprocessingSource(BaseModel):
     """The ``results_processing.postprocessing`` block as editable YAML text.
 
-    The webui rerun dialog edits this text and saves it as a new override
-    revision — the text twin of the structured :class:`PostprocessingInfo`."""
+    The webui rerun dialog edits this text and saves it straight back into the
+    campaign's ``_config/<name>.vast`` — the text twin of the structured
+    :class:`PostprocessingInfo`."""
 
     campaign_id: str
-    source: str = ""                 # which .vast is effective (snapshot or rev-N)
     content: str = ""                # YAML text of the ``results_processing:`` block
 
 

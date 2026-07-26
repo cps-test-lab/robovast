@@ -60,6 +60,21 @@ def iter_run_folders(results_dir: str) -> Iterator[Tuple[str, str, str, Path]]:
                 yield campaign, config_name, run_number, folder_path
 
 
+def campaign_vast(campaign_dir) -> Path:
+    """The single ``.vast`` under a campaign's ``_config/`` — the one source of truth
+    for that campaign's config (both the editable postprocessing/visualization blocks
+    and the as-ran variations/execution). Raises ``ValueError`` if it is missing.
+
+    Distinct from :func:`find_campaign_vast_file`, which takes a *results dir* and picks
+    the most recent campaign; this takes a specific campaign directory.
+    """
+    config_dir = Path(campaign_dir) / "_config"
+    vasts = sorted(config_dir.glob("*.vast"))
+    if not vasts:
+        raise ValueError(f"no .vast in {config_dir}")
+    return vasts[0]
+
+
 def find_campaign_vast_file(results_dir: str) -> tuple[Optional[str], Optional[str]]:
     """Find the .vast file from the most recent campaign in results_dir.
 

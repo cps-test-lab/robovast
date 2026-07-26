@@ -988,9 +988,9 @@ batch per ask/tell round.
 Schema
 ^^^^^^
 
-``robovast.common.store.CampaignStore`` is a thin wrapper over three tables::
+``robovast.common.store.CampaignStore`` is a thin wrapper over four tables::
 
-    campaign (1) --< batch (1) --< unit (one per param set / config)
+    campaign (1) --< batch (1) --< unit (one per param set / config) (1) --< run (one per repetition)
 
 * **campaign** — ``mode`` (``batch``/``search``), ``config_dir`` (base directory
   against which ``evaluation.visualization`` notebooks resolve), ``config_json``
@@ -1000,7 +1000,45 @@ Schema
   batch-mode campaign.
 * **unit** — one evaluated parameter set (search) or one configuration (batch):
   the sampled ``params``, ``objectives``/``measures`` (JSON; ``{}`` for batch),
-  ``n_samples``, an aggregate ``status`` and the ``result_dir``.
+  and the ``result_dir``. ``n_samples`` and the aggregate ``status`` are roll-ups
+  of the unit's ``run`` rows, kept for convenience.
+* **run** — one repetition of a unit (schema v2+). Mirrors that run's
+  ``test.xml``: ``status`` (``passed``/``failed``/``error``/``unknown``),
+  ``passed`` (0/1), ``errors``/``failures``/``tests``, ``duration_s``,
+  ``start_time`` and ``failure_message``. ``run_id`` is the numeric run index
+  within the config dir. A run whose ``test.xml`` is missing or unparseable is
+  still recorded, as ``unknown`` — never dropped.
+
+.. rubric:: Why ``run`` exists — the data-model layering
+
+``run`` is the **operational source of truth for per-run outcomes**, and it is why
+listing campaigns is cheap. ``test.xml`` (JUnit, one per run) is the runner's
+on-disk contract; the controller already parses it at record time, so capturing a
+``run`` row there is free. Pass/fail counts are then one ``GROUP BY status`` over
+``run`` — no filesystem walk — and are available **live**, before postprocessing.
+The postprocessed ``_execution/data.db`` ``runs`` table is the analytics-wide
+*view* over these rows (joining sysinfo, exploding params into ``param_*``
+columns); ``generate_data_db`` reads outcomes from ``campaign.db.run`` rather than
+re-parsing every ``test.xml``. Heavy per-run measurement data (metric time-series)
+stays in ``data.db`` only — ``campaign.db`` remains the lightweight live store.
+
+::
+
+    test.xml         runner artifact (per run) — the on-disk contract
+      -> captured live at record time (data already in hand)
+    campaign.db.run  operational source of truth — queryable DURING the run
+      -> postprocessing joins sysinfo/params/metrics
+    data.db.runs     analytics-ready wide view (param_* columns, metrics) — DERIVED
+
+.. note::
+
+   Schema v1 stores (written before the ``run`` table) migrate forward on open to
+   an empty ``run`` table.
+   :func:`robovast.common.campaign_index.backfill_run_rows` fills them from disk
+   ``test.xml``; the service does this lazily for finished campaigns, and the
+   summary path falls back to the ``test.xml`` walk
+   (:func:`~robovast.common.campaign_data.get_vast_configuration_info`) until it is
+   backfilled, so counts are never under-reported.
 
 Who writes it
 ^^^^^^^^^^^^^
@@ -1408,18 +1446,20 @@ Two entry points share that one implementation (``postprocess_campaign``):
 * **explicit re-run** — :class:`~robovast.service.cluster_service.ClusterService.run_postprocessing`,
   which overrides the ``LocalTransport`` implementation — unusable in the service, which has no local
   results root and no ROS runtime. It fetches the campaign, runs the same two stages, and publishes
-  ``_execution/`` back. This backs the web **Run postprocessing** button, the MCP
-  ``run_postprocessing`` tool, and the CLI. The re-run reads the *effective* ``.vast`` (the latest
-  ``_control/postprocess/rev-N.vast`` override if any, else the ``_config/`` snapshot) via
-  ``common.postprocess_config.effective_vast``, so edited postprocessing parameters take effect on the
-  cluster path too; and it refreshes the durable outcome (clearing/setting ``postprocessing_error``),
-  so its result survives a restart.
+  ``_execution/`` back. This backs the web **Retrigger postprocessing** dialog, the MCP
+  ``run_postprocessing`` tool, and the CLI. It reads the campaign's own ``_config/<name>.vast`` (which
+  the edit dialog overwrites in place — the single source of truth resolved by
+  ``common.results_utils.campaign_vast``), refreshes the durable outcome (clearing/setting
+  ``postprocessing_error``), and is **dispatched in the background**: both transports run it via
+  ``LocalTransport._dispatch_background``, which registers a tracked campaign entry set to the
+  ``postprocessing`` phase (busy-guarded against a second concurrent op) and returns at once, so the
+  campaign view shows it live. A minutes-to-hours re-run therefore never blocks the caller.
 
 The **upload-to-share** step mirrors this: a failure records ``share_error`` (durable) instead of
 being swallowed, and :meth:`~robovast.service.cluster_service.ClusterService.run_share` re-triggers it
-from the stored campaign (web *Retrigger upload-to-share*, MCP ``run_share``,
-``POST /campaigns/{id}/share/run``). Both re-triggers need no live in-memory campaign entry, so they
-work after a service restart.
+(web *Retrigger upload-to-share*, MCP ``run_share``, ``POST /campaigns/{id}/share/run``) — also via
+``_dispatch_background`` (``sharing`` phase). Both re-triggers need no live in-memory campaign entry,
+so they work after a service restart.
 
 A post-run step failure is deliberately **not** a campaign failure: the phase stays ``finished`` and
 the reason lives on ``postprocessing_error`` / ``share_error``. After a restart the cluster service

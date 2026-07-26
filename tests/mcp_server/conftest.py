@@ -1,0 +1,22 @@
+# Copyright (C) 2026 Frederik Pasch
+# SPDX-License-Identifier: Apache-2.0
+"""Shared fixtures for the MCP plugin tests."""
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _no_stray_service(monkeypatch):
+    """Isolate MCP tests from any real ``vast serve`` on the conventional local port.
+
+    The tools resolve where to run via ``detected_service_url()``: when a service is
+    reachable they route to it over HTTP, otherwise they run locally / via a subprocess.
+    That makes the tests non-deterministic — a leftover ``vast serve`` on 127.0.0.1:8800
+    silently diverts them there and they 404 on the test's throwaway campaigns. Default
+    every MCP test to "no service reachable" so it deterministically takes the local
+    path; the tests that exercise the service path patch ``_service_client`` /
+    ``_service`` directly and are unaffected.
+    """
+    monkeypatch.setattr(
+        "robovast.common.cli.service_target.detected_service_url",
+        lambda *a, **k: "", raising=False)

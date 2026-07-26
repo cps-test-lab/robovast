@@ -945,83 +945,141 @@ class LocalTransport(RobovastInterface):
 
     # -- postprocessing -----------------------------------------------------
 
+    def _publish_config_edit(self, campaign_id: str) -> None:
+        """Hook: persist an in-place edit of ``_config/<name>.vast`` beyond local disk.
+
+        No-op locally — the local ``_config/`` is the durable copy. ``ClusterService``
+        overrides this to upload the edited config to the object store, so a re-run's
+        ``fetch_campaign(force=True)`` sees the edit instead of clobbering it.
+        """
+
     def get_postprocessing(self, campaign_id: str):
         from robovast.service.interface import PostprocessingInfo
         from robovast.service.postprocessing_edit import get_postprocessing
         info = get_postprocessing(self._campaign_dir(campaign_id))
-        return PostprocessingInfo(campaign_id=campaign_id, source=info["source"],
-                                  entries=info["entries"], revisions=info["revisions"])
+        return PostprocessingInfo(campaign_id=campaign_id, entries=info["entries"])
 
     def update_postprocessing(self, request):
         from robovast.service.interface import PostprocessingRevision
         from robovast.service.postprocessing_edit import update_postprocessing
         res = update_postprocessing(self._campaign_dir(request.campaign_id),
                                     request.entries)
+        self._publish_config_edit(request.campaign_id)
         return PostprocessingRevision(campaign_id=request.campaign_id,
-                                      revision=res["revision"], entries=res["entries"])
+                                      entries=res["entries"])
 
     def get_postprocessing_source(self, campaign_id: str):
         from robovast.service.interface import PostprocessingSource
         from robovast.service.postprocessing_edit import get_postprocessing_source
         info = get_postprocessing_source(self._campaign_dir(campaign_id))
-        return PostprocessingSource(campaign_id=campaign_id, source=info["source"],
-                                    content=info["content"])
+        return PostprocessingSource(campaign_id=campaign_id, content=info["content"])
 
     def update_postprocessing_source(self, request):
         from robovast.service.interface import PostprocessingSource
-        from robovast.service.postprocessing_edit import (
-            effective_vast, update_postprocessing_source)
-        campaign_dir = self._campaign_dir(request.campaign_id)
-        update_postprocessing_source(campaign_dir, request.content)
+        from robovast.service.postprocessing_edit import update_postprocessing_source
+        update_postprocessing_source(self._campaign_dir(request.campaign_id),
+                                     request.content)
+        self._publish_config_edit(request.campaign_id)
         return PostprocessingSource(campaign_id=request.campaign_id,
-                                    source=effective_vast(campaign_dir).name,
                                     content=request.content)
 
+    def _dispatch_background(self, campaign_id: str, *, phase: str, work) -> ActionResult:
+        """Run a post-run operation (postprocessing / share) as a tracked background
+        campaign and return immediately, so the campaign view shows it live.
+
+        Registers a fresh tracked entry set to *phase* — refusing if the campaign already
+        has a live operation (the busy guard) — then runs ``work(state)`` on a daemon
+        thread. ``work`` performs the operation, streams its own log, sets the final phase
+        and records the durable outcome; this helper only owns the tracked-entry lifecycle
+        and a crash safety-net. The entry's ``created_at`` is the campaign's real start
+        time so a re-run does not make its listed ``started_at`` jump to now.
+        """
+        with self._lock:
+            existing = self._campaigns.get(campaign_id)
+            if existing is not None and not self._is_done(existing):
+                return ActionResult(
+                    ok=False,
+                    message=f"campaign {campaign_id!r} is busy; an operation is "
+                            "already running — wait for it to finish")
+            state = ControllerState()
+            state.update(campaign_id=campaign_id)
+            state.set_phase(phase)
+            entry = _LocalCampaign(campaign_id, str(self._campaigns_root()), state)
+            entry.created_at = (self._campaign_started_at(self._campaign_dir(campaign_id))
+                                or entry.created_at)
+            self._campaigns[campaign_id] = entry
+
+        def _worker():
+            try:
+                work(state)
+            except Exception as e:  # noqa: BLE001 - surfaced via status; never crash the thread
+                logger.exception("Background %s for %s failed", phase, campaign_id)
+                state.update(error=failure_detail(e))
+                state.set_phase(Phase.FINISHED)
+
+        entry.thread = threading.Thread(
+            target=_worker, name=f"robovast-{phase}-{campaign_id}", daemon=True)
+        entry.thread.start()
+        return ActionResult(
+            ok=True, message=f"{phase} started; monitor it in the campaign view")
+
     def run_postprocessing(self, request) -> ActionResult:
-        from robovast.results_processing.postprocessing import run_postprocessing
-        from robovast.service.postprocessing_edit import effective_vast
         campaign_dir = self._campaign_dir(request.campaign_id)
-        override = effective_vast(campaign_dir)
-        # `campaign` scopes the work to this campaign (without it the run sweeps
-        # every campaign under the results root); `vast_file` only chooses the
-        # config, so the postprocessing override still applies.
-        ok, message = run_postprocessing(
-            results_dir=str(campaign_dir.parent), campaign=request.campaign_id,
-            vast_file=str(override), force=request.force,
-            skip=list(request.skip or []))
-        # Refresh the durable outcome so the re-run's result survives a restart: a
-        # success clears any stale postprocessing_error, a failure records the reason —
-        # on a campaign no longer tracked in memory (post-restart) this is the only
-        # place that state lives.
-        from robovast.execution.status_recovery import record_step_outcome
-        record_step_outcome(campaign_dir, postprocessing=(ok, message))
-        return ActionResult(ok=ok, message=message)
+
+        def work(state):
+            from robovast.common.logging_config import (add_campaign_log_handler,
+                                                        remove_campaign_log_handler)
+            from robovast.execution.status_recovery import record_step_outcome
+            from robovast.results_processing.postprocessing import run_postprocessing
+            handler = None
+            try:
+                handler = add_campaign_log_handler(
+                    str(campaign_dir / "_execution" / "postprocessing.log"))
+            except Exception:  # pylint: disable=broad-except
+                logger.warning("Could not open postprocessing.log for %s",
+                               request.campaign_id, exc_info=True)
+            try:
+                # `campaign` scopes the work to this campaign; with no `vast_file` the run
+                # reads the campaign's own `_config/<name>.vast` (edited in place).
+                ok, message = run_postprocessing(
+                    results_dir=str(campaign_dir.parent), campaign=request.campaign_id,
+                    force=request.force, skip=list(request.skip or []))
+            finally:
+                remove_campaign_log_handler(handler)
+            status = record_step_outcome(campaign_dir, postprocessing=(ok, message))
+            state.update(postprocessed=status.postprocessed,
+                         postprocessing_error=status.postprocessing_error)
+            state.set_phase(Phase.FINISHED)
+
+        return self._dispatch_background(
+            request.campaign_id, phase=Phase.POSTPROCESSING, work=work)
 
     def run_share(self, request) -> ActionResult:
         """(Re)trigger upload-to-share for one finished campaign, from disk.
 
-        Uses the on-disk campaign (no live in-memory entry), so it works after a
-        `vast serve` restart. Local ``share_campaign`` writes the tar.gz to the archive
-        dir; the durable outcome's ``share_error`` is cleared on success / set on
-        failure so the result survives a restart.
+        Dispatched as a tracked background op (works after a `vast serve` restart, no
+        live entry needed). Local ``share_campaign`` writes the tar.gz to the archive
+        dir; the durable ``share_error`` is cleared on success / set on failure.
         """
-        from robovast.execution.backends import RunOptions
-        from robovast.execution.control_server import ControllerState
-        from robovast.execution.status_recovery import record_step_outcome
         campaign_dir = self._campaign_dir(request.campaign_id)
-        if not campaign_dir.is_dir():
-            return ActionResult(
-                ok=False, message=f"campaign {request.campaign_id!r} has no local data")
-        backend = self._build_backend(ControllerState())
-        options = RunOptions(gui=False, upload_to_share=True)
-        try:
-            backend.preflight_upload_to_share()
-            backend.share_campaign(str(campaign_dir), options)
-            ok, message = True, "upload-to-share complete"
-        except Exception as e:  # noqa: BLE001 - surfaced via ActionResult + share_error
-            ok, message = False, failure_detail(e)
-        record_step_outcome(campaign_dir, share=(ok, message))
-        return ActionResult(ok=ok, message=message)
+
+        def work(state):
+            from robovast.execution.backends import RunOptions
+            from robovast.execution.status_recovery import record_step_outcome
+            backend = self._build_backend(ControllerState())
+            options = RunOptions(gui=False, upload_to_share=True)
+            try:
+                backend.preflight_upload_to_share()
+                backend.share_campaign(str(campaign_dir), options)
+                ok, message = True, "upload-to-share complete"
+            except Exception as e:  # noqa: BLE001 - surfaced via status + share_error
+                ok, message = False, failure_detail(e)
+            status = record_step_outcome(campaign_dir, share=(ok, message))
+            state.update(share_error=status.share_error)
+            state.set_phase(Phase.FINISHED)
+
+        return self._dispatch_background(
+            request.campaign_id, phase=Phase.SHARING, work=work)
 
     # -- validation / preview / authoring help (config editor) --------------
 
@@ -1145,9 +1203,9 @@ class LocalTransport(RobovastInterface):
         # .vast so in-place run-view visualization edits are reflected.
         from robovast.common.config_validation import _safe_load
         from robovast.service.interface import CampaignPanelsResponse
-        from robovast.service.postprocessing_edit import effective_vast
+        from robovast.service.postprocessing_edit import campaign_vast
         from robovast.common.config import CUSTOM_PANEL_TYPE
-        cfg, _ = _safe_load(str(effective_vast(Path(self._campaign_dir(campaign_id)))))
+        cfg, _ = _safe_load(str(campaign_vast(Path(self._campaign_dir(campaign_id)))))
         viz = (cfg or {}).get("visualization") or {}
         raw = viz.get("panels") or []
         # Each panel is a single-key mapping ``{<type>: <props-or-null>}`` (``playback:``
@@ -1196,18 +1254,14 @@ class LocalTransport(RobovastInterface):
         from robovast.service.interface import PanelsSource
         from robovast.service.postprocessing_edit import get_visualization
         info = get_visualization(self._campaign_dir(campaign_id))
-        return PanelsSource(campaign_id=campaign_id, source=info["source"],
-                            content=info["content"])
+        return PanelsSource(campaign_id=campaign_id, content=info["content"])
 
     def update_panels_source(self, request) -> "PanelsSource":
         from robovast.service.interface import PanelsSource
-        from robovast.service.postprocessing_edit import (
-            effective_vast, update_visualization)
-        campaign_dir = self._campaign_dir(request.campaign_id)
-        update_visualization(campaign_dir, request.content)
-        return PanelsSource(campaign_id=request.campaign_id,
-                            source=effective_vast(campaign_dir).name,
-                            content=request.content)
+        from robovast.service.postprocessing_edit import update_visualization
+        update_visualization(self._campaign_dir(request.campaign_id), request.content)
+        self._publish_config_edit(request.campaign_id)
+        return PanelsSource(campaign_id=request.campaign_id, content=request.content)
 
     def get_run_file(
         self, campaign_id: str, config_name: str, run_id: int, path: str,
@@ -1309,7 +1363,6 @@ class LocalTransport(RobovastInterface):
             entry.thread is not None and not entry.thread.is_alive())
 
     def _summary_for(self, cid: str) -> CampaignSummary:
-        from robovast.common.campaign_data import get_vast_configuration_info
         from robovast.execution.status_recovery import \
             reconstruct_status_from_disk
         campaign_dir = self._campaigns_root() / cid
@@ -1327,18 +1380,56 @@ class LocalTransport(RobovastInterface):
         else:
             snap = reconstruct_status_from_disk(campaign_dir)
             started_at = self._campaign_started_at(campaign_dir)
-        # Pass/fail counts are a disk-only analysis (test outcomes), distinct from
-        # the controller's live progress — an empty {} for a fresh campaign with no
-        # results yet is the correct value, not a masked error.
+        counts = self._run_counts(campaign_dir, live=entry is not None)
+        return CampaignSummary(
+            campaign_id=cid, phase=snap.phase, postprocessed=snap.postprocessed,
+            started_at=started_at,
+            num_runs=counts["num_runs"], num_passed=counts["num_passed"],
+            num_failed=counts["num_failed"] + counts["num_errors"])
+
+    def _run_counts(self, campaign_dir: Path, *, live: bool) -> dict:
+        """Pass/fail tallies for the summary, from ``campaign.db`` when possible.
+
+        The fast path is one indexed ``GROUP BY`` over ``campaign.db``'s ``run``
+        table (:func:`read_run_counts`) — no ``test.xml`` walk. A store predating
+        that table (schema v1) returns nothing; for a *finished* campaign we then
+        backfill the run rows from disk once (so the next call is fast) and, if the
+        run table is still empty, fall back to the authoritative
+        :func:`get_vast_configuration_info` disk walk so counts are never
+        under-reported. A live campaign is left to the controller to fill in (no
+        write-on-read to avoid store lock contention).
+        """
+        from robovast.common.store import read_run_counts
+
+        counts = read_run_counts(campaign_dir)
+        if counts is not None and (live or counts["num_runs"] > 0):
+            return counts
+        if not live:
+            import sqlite3
+            try:
+                from robovast.common.campaign_index import backfill_run_rows
+                if backfill_run_rows(campaign_dir):
+                    counts = read_run_counts(campaign_dir)
+            except (OSError, ValueError, TypeError, sqlite3.Error) as e:
+                logger.debug("run-row backfill failed for %s: %s", campaign_dir, e)
+        if counts is not None and counts["num_runs"] > 0:
+            return counts
+        return self._walk_counts(campaign_dir)
+
+    @staticmethod
+    def _walk_counts(campaign_dir: Path) -> dict:
+        """Legacy fallback: derive counts by walking each run's ``test.xml``."""
+        from robovast.common.campaign_data import get_vast_configuration_info
         try:
             info = get_vast_configuration_info(campaign_dir)
         except (FileNotFoundError, OSError, ValueError, TypeError):
             info = {}
-        return CampaignSummary(
-            campaign_id=cid, phase=snap.phase, postprocessed=snap.postprocessed,
-            started_at=started_at,
-            num_runs=info.get("num_runs", 0), num_passed=info.get("num_passed", 0),
-            num_failed=info.get("num_failed", 0) + info.get("num_errors", 0))
+        return {
+            "num_runs": info.get("num_runs", 0),
+            "num_passed": info.get("num_passed", 0),
+            "num_failed": info.get("num_failed", 0),
+            "num_errors": info.get("num_errors", 0),
+        }
 
     @staticmethod
     def _campaign_started_at(campaign_dir: Path) -> Optional[str]:

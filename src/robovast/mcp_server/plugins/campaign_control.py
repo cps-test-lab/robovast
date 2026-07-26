@@ -565,6 +565,23 @@ def get_campaign_status(campaign_id: str) -> dict:
             reconstruct_status_from_disk  # noqa: PLC0415
         st = reconstruct_status_from_disk(
             campaign_dir, expected_total=entry.get("expected_total"))
+        if st.phase == "unknown":
+            # Disk has no outcome yet — a just-started local campaign (no artifacts) or
+            # one killed before producing any. Disk can't say what happened, but the
+            # registry can: its status was just reconciled from the process's liveness
+            # (reconcile_and_get above). Use it so a live campaign reads "running" and a
+            # stopped/crashed one its terminal status, instead of a bare "unknown".
+            # (Disk still wins the moment it carries an outcome/results.)
+            reg_status = entry.get("status")
+            if reg_status == "launching":
+                st.phase = "starting"
+            elif reg_status:
+                st.phase = reg_status
+            # The missing-dir reconstruction carries no run total; surface the expected
+            # total the registry recorded at launch so progress isn't shown as 0/0.
+            expected = entry.get("expected_total")
+            if expected and (not st.runs or not st.runs.total):
+                st.runs = {"completed": 0, "total": expected}
         _done, passed, failed = _read_progress(campaign_dir)
         result = _status_to_dict(campaign_id, entry.get("backend"), st)
         # Local extras beyond the Status model: cumulative pass/fail + a real log tail.
@@ -911,10 +928,14 @@ def update_postprocessing(campaign_id: str, entries: list) -> dict:
 
 def run_postprocessing(campaign_id: str, force: bool = False,
                        skip: list | None = None) -> dict:
-    """(Re)run analysis postprocessing for one campaign with its effective config.
+    """(Re)run analysis postprocessing for one campaign, rebuilding ``data.db``.
 
-    Reprocesses just this campaign (not its siblings), rebuilding ``data.db`` so
-    the new metrics are immediately queryable via ``query_campaign_data_sql``.
+    **Dispatched in the background** — returns as soon as the run is started (it can take
+    minutes to hours). The campaign enters the ``postprocessing`` phase; poll
+    :func:`get_campaign_status` for progress and the outcome (``postprocessed`` /
+    ``postprocessing_error``). Reprocesses just this campaign (not its siblings), reading
+    its own ``_config/<name>.vast``. Returns ``{ok, message}`` where *message* confirms
+    the dispatch, or ``ok=false`` if an operation is already running for the campaign.
 
     Args:
         campaign_id: The campaign to (re)process.
@@ -935,10 +956,12 @@ def run_postprocessing(campaign_id: str, force: bool = False,
 def run_share(campaign_id: str) -> dict:
     """(Re)trigger the upload-to-share of one finished campaign's raw archive.
 
-    Works from disk with no live campaign (usable after a `vast serve` restart). The
-    target provider comes from the service environment (``ROBOVAST_SHARE_TYPE`` +
-    credentials): adjust it and re-trigger to upload to a different provider. Fails
-    loudly if no share provider is configured.
+    **Dispatched in the background** — returns as soon as the upload is started; the
+    campaign enters the ``sharing`` phase, so poll :func:`get_campaign_status` for the
+    outcome (``share_error`` on failure). Works from disk with no live campaign (usable
+    after a `vast serve` restart). The target provider comes from the service environment
+    (``ROBOVAST_SHARE_TYPE`` + credentials): adjust it and re-trigger to upload to a
+    different provider. Fails loudly if no share provider is configured.
 
     Args:
         campaign_id: The finished campaign to (re)upload.

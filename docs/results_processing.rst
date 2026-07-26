@@ -184,6 +184,13 @@ Standard JUnit XML format with scenario execution results:
      </testcase>
    </testsuite>
 
+Each run's ``test.xml`` is the runner's contract for that run's outcome. The
+controller mirrors it into ``campaign.db``'s ``run`` table at record time (status,
+pass/fail, errors/failures, duration, start time), so per-run outcomes are
+queryable live and the postprocessed ``data.db`` ``runs`` view is built from those
+rows rather than by re-parsing every ``test.xml`` — see
+:ref:`the campaign store schema <campaign-store>`.
+
 .. _job-directory:
 
 Job Directory
@@ -398,8 +405,16 @@ campaign process is required, so a re-trigger is available even after the
 ``robovast-service`` (``vast serve``) was restarted. Under the web UI's *Monitor*
 each finished campaign's actions menu offers *Retrigger postprocessing* and
 *Retrigger upload-to-share*; the same operations are exposed as the MCP tools
-``run_postprocessing`` and ``run_share`` and, for postprocessing, the
-``vast results postprocess`` CLI.
+``run_postprocessing`` and ``run_share``.
+
+A re-trigger through the service is **dispatched in the background and returns
+immediately** — postprocessing can take minutes to hours, so the campaign simply
+re-enters the ``postprocessing`` (or ``sharing``) phase and you follow its progress and
+log in the campaign view, exactly like the original run; it returns to ``finished`` when
+done. The web *Retrigger postprocessing* dialog therefore closes as soon as you click
+*Run*. A second re-trigger is refused while one is already running. (The
+``vast results postprocess`` CLI is the exception: it runs postprocessing locally and
+synchronously, streaming to the console.)
 
 Because a post-run step is separate from the runs themselves, a **failure of one of
 these steps does not fail the campaign**. The campaign stays ``finished`` (its runs
@@ -409,11 +424,14 @@ service restart) and is surfaced as a warning badge in the UI. Re-running the st
 successfully clears it. This is distinct from a *run* failure, which reports the
 campaign phase as ``failed``.
 
-Editing postprocessing parameters and re-running (see :ref:`results-override`) applies
-on both the local and the cluster backend. For the **upload-to-share**, the target
-provider is taken from the service environment (``ROBOVAST_SHARE_TYPE`` and its
-credentials); adjust it and re-trigger to upload the same campaign to a different
-provider.
+Editing the postprocessing parameters before re-running **overwrites the
+``results_processing.postprocessing`` block of the campaign's own ``_config/<name>.vast``
+in place** — it is config, not captured data, so there are no override files or
+revisions, and the raw rosbags and the as-ran ``configuration``/``execution`` are left
+untouched. The edited config applies on both the local and the cluster backend. For the
+**upload-to-share**, the target provider is taken from the service environment
+(``ROBOVAST_SHARE_TYPE`` and its credentials); adjust it and re-trigger to upload the
+same campaign to a different provider.
 
 Custom postprocessing plugins that need third-party Python packages — an
 entry-point postprocessing command, or the dependencies a local

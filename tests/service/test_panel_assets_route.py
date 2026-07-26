@@ -13,10 +13,28 @@ Covers both delivery paths for a Module-Federation run-view panel:
 
 import threading
 
+import pytest
 from fastapi.testclient import TestClient
 
 from robovast.service.app import build_app
 from robovast.service.client import LocalTransport
+
+
+def _costmap_bundle_built() -> bool:
+    """Whether robovast_nav's ``costmap`` panel ships a *built* WEB_PANEL bundle.
+
+    The panel's ``remoteEntry.js`` is produced by the package's frontend build; a
+    source checkout that installed robovast_nav without building its UI has the
+    entry point but no bundle, so serving it 404s. Skip that one case rather than
+    fail — the same spirit as the ``_GROWTH_SIM.exists()`` skips elsewhere.
+    """
+    from robovast.service.app import _resolve_plugin_asset
+    try:
+        _resolve_plugin_asset("robovast.panel_types", "costmap", "remoteEntry.js",
+                              "WEB_PANEL")
+        return True
+    except Exception:  # noqa: BLE001 - unknown entry / no bundle → treat as not built
+        return False
 
 
 def _local_transport(results_root) -> LocalTransport:
@@ -72,6 +90,8 @@ def test_panels_carry_remote_descriptors(tmp_path):
         assert cu["remote_entry_url"] == "/campaigns/camp-1/panel_assets/panels/my/remoteEntry.js"
 
 
+@pytest.mark.skipif(not _costmap_bundle_built(),
+                    reason="robovast_nav costmap WEB_PANEL bundle not built in this checkout")
 def test_serves_package_panel_asset(tmp_path):
     with _make_campaign(tmp_path) as client:
         resp = client.get("/panel_types/costmap/assets/remoteEntry.js")

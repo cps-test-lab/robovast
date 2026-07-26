@@ -16,14 +16,13 @@
 
 """Editable, re-runnable per-campaign postprocessing.
 
-Analysis postprocessing is not privileged: the raw rosbags are always preserved,
-so the ``results_processing.postprocessing`` entries can be edited and re-run any
-number of times against the same data — to compute different metrics later.
-
-The immutable ``_config/`` snapshot (what actually ran) is **never** mutated.
-Edits are written as **versioned full-`.vast` overrides** under
-``<campaign>/_control/postprocess/rev-N.vast``; the latest rev is the effective
-config, and ``vast results postprocess --override <rev>`` reprocesses with it.
+Analysis postprocessing (and the run-view ``visualization`` panels) are *config*,
+not captured data: the raw rosbags are the ground truth and are never touched, so
+these blocks can be adapted and re-run any number of times to compute different
+metrics. Editing therefore **overwrites the campaign's own ``_config/<name>.vast``
+in place** — only the ``results_processing.postprocessing`` / ``visualization``
+blocks; the as-ran ``configuration``/``execution`` are left as they are. There is no
+override file and no revision history: the campaign carries exactly one ``.vast``.
 
 Pure helpers here (no MCP/HTTP) so both the CLI and the service reuse them.
 """
@@ -33,61 +32,58 @@ from pathlib import Path
 
 import yaml
 
-# The `.vast` resolver lives in common so the CLI, the service, and the in-cluster
-# conversion Job all resolve the effective (override-aware) config identically.
-from robovast.common.postprocess_config import (config_vast, effective_vast,
-                                                rev_dir, revs)
+# The one resolver for "this campaign's .vast" — shared with the cluster conversion
+# Job (postprocess_job) and the rest of the service, so there is a single source of
+# truth for which file is the campaign's config.
+from robovast.common.results_utils import campaign_vast
 
 logger = logging.getLogger(__name__)
 
-# Back-compat aliases for the private names this module used before the resolver
-# moved to common; kept so the rest of this file reads unchanged.
-_config_vast = config_vast
-_rev_dir = rev_dir
-_revs = revs
+
+def _load(vast_path: Path) -> dict:
+    return yaml.safe_load(vast_path.read_text(encoding="utf-8")) or {}
+
+
+def _write(vast_path: Path, data: dict) -> None:
+    vast_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    logger.info("Updated campaign config %s", vast_path)
 
 
 def get_postprocessing(campaign_dir: Path) -> dict:
-    """Return the effective postprocessing entries + revision history."""
-    vast_path = effective_vast(campaign_dir)
-    data = yaml.safe_load(vast_path.read_text(encoding="utf-8")) or {}
+    """Return the campaign's ``results_processing.postprocessing`` entries."""
+    vast_path = campaign_vast(campaign_dir)
+    data = _load(vast_path)
     entries = (data.get("results_processing") or {}).get("postprocessing", [])
-    revs = _revs(campaign_dir)
-    return {
-        "campaign_dir": str(campaign_dir),
-        "source": vast_path.name,
-        "entries": entries,
-        "revisions": [n for n, _ in revs],
-    }
+    return {"campaign_dir": str(campaign_dir), "entries": entries}
 
 
 def update_postprocessing(campaign_dir: Path, entries: list) -> dict:
-    """Write a new override revision with *entries* as the postprocessing list.
+    """Overwrite the campaign's ``results_processing.postprocessing`` list in place.
 
-    Copies the current effective `.vast` in full, replaces its
-    ``results_processing.postprocessing`` list, and writes ``rev-<N+1>.vast``.
-    Validates the entries first; the ``_config/`` snapshot is untouched.
+    Loads ``_config/<name>.vast``, replaces its ``results_processing.postprocessing``
+    list (validated first) and writes the same file back — every other block is
+    preserved, and the raw rosbags are untouched.
     """
     from robovast.common.config_validation import _postprocessing_problems
 
     if not isinstance(entries, list):
         raise ValueError("entries must be a list of postprocessing commands")
 
-    base = effective_vast(campaign_dir)
-    data = yaml.safe_load(base.read_text(encoding="utf-8")) or {}
-    problems = _postprocessing_problems(entries, str(campaign_dir / "_config"),
+    problems = _postprocessing_problems(entries, str(Path(campaign_dir) / "_config"),
                                         "results_processing.postprocessing")
     if problems:
         raise ValueError("invalid postprocessing entries: " +
                          "; ".join(p["message"] for p in problems))
 
-    data.setdefault("results_processing", {})
-    if data["results_processing"] is None:
-        data["results_processing"] = {}
-    data["results_processing"]["postprocessing"] = entries
-
-    return _write_override(campaign_dir, data, "postprocessing",
-                           extra={"entries": entries})
+    vast_path = campaign_vast(campaign_dir)
+    data = _load(vast_path)
+    section = data.get("results_processing")
+    if not isinstance(section, dict):
+        section = {}
+        data["results_processing"] = section
+    section["postprocessing"] = entries
+    _write(vast_path, data)
+    return {"campaign_dir": str(campaign_dir), "entries": entries}
 
 
 # -- postprocessing as editable YAML text (webui rerun dialog) ---------------
@@ -99,26 +95,21 @@ def update_postprocessing(campaign_dir: Path, entries: list) -> dict:
 
 
 def get_postprocessing_source(campaign_dir: Path) -> dict:
-    """Return the effective ``results_processing.postprocessing`` block as YAML text."""
+    """Return the ``results_processing.postprocessing`` block as YAML text."""
     info = get_postprocessing(campaign_dir)
     content = yaml.safe_dump(
         {"results_processing": {"postprocessing": info["entries"]}},
         sort_keys=False)
-    return {
-        "campaign_dir": str(campaign_dir),
-        "source": info["source"],
-        "content": content,
-    }
+    return {"campaign_dir": str(campaign_dir), "content": content}
 
 
 def update_postprocessing_source(campaign_dir: Path, content: str) -> dict:
-    """Write a new override revision from an edited postprocessing YAML document.
+    """Overwrite the postprocessing block from an edited YAML document.
 
     *content* is the document as shown by :func:`get_postprocessing_source`: a
     top-level ``results_processing:`` mapping carrying a ``postprocessing:`` list.
-    The entries are validated and persisted via :func:`update_postprocessing`, so
-    the ``_config/`` snapshot is untouched and only the ``postprocessing`` sub-key
-    is replaced (any siblings under ``results_processing`` are preserved).
+    The entries are validated and written via :func:`update_postprocessing`, so only
+    the ``postprocessing`` sub-key is replaced (siblings are preserved).
     """
     try:
         parsed = yaml.safe_load(content)
@@ -132,33 +123,23 @@ def update_postprocessing_source(campaign_dir: Path, content: str) -> dict:
     return update_postprocessing(campaign_dir, section["postprocessing"])
 
 
-# -- run-view visualization (same override chain, display-only) --------------
+# -- run-view visualization (same in-place edit, display-only) ---------------
 #
 # The run view's panels come from the top-level ``visualization:`` block. Editing
-# it is a pure display concern, so — like postprocessing — edits are written as
-# full-`.vast` override revisions (never mutating ``_config/``) and picked up by
-# ``effective_vast``.
+# it is a pure display concern, so — like postprocessing — the edit overwrites the
+# ``visualization`` key of ``_config/<name>.vast`` in place.
 
 
 def get_visualization(campaign_dir: Path) -> dict:
-    """Return the effective ``visualization:`` block as editable YAML text."""
-    vast_path = effective_vast(campaign_dir)
-    data = yaml.safe_load(vast_path.read_text(encoding="utf-8")) or {}
+    """Return the campaign's ``visualization:`` block as editable YAML text."""
+    data = _load(campaign_vast(campaign_dir))
     section = data.get("visualization") or {}
-    return {
-        "campaign_dir": str(campaign_dir),
-        "source": vast_path.name,
-        "content": yaml.safe_dump({"visualization": section}, sort_keys=False),
-    }
+    return {"campaign_dir": str(campaign_dir),
+            "content": yaml.safe_dump({"visualization": section}, sort_keys=False)}
 
 
 def update_visualization(campaign_dir: Path, content: str) -> dict:
-    """Write a new override revision replacing the ``visualization:`` block.
-
-    *content* is the edited YAML document as shown by :func:`get_visualization`:
-    a top-level ``visualization:`` mapping. Copies the current effective `.vast`
-    and replaces its ``visualization`` key; the ``_config/`` snapshot is untouched.
-    """
+    """Overwrite the ``visualization:`` block of ``_config/<name>.vast`` in place."""
     try:
         parsed = yaml.safe_load(content)
     except yaml.YAMLError as e:
@@ -169,19 +150,8 @@ def update_visualization(campaign_dir: Path, content: str) -> dict:
     if not isinstance(section, dict):
         raise ValueError("'visualization' must be a mapping")
 
-    base = effective_vast(campaign_dir)
-    data = yaml.safe_load(base.read_text(encoding="utf-8")) or {}
+    vast_path = campaign_vast(campaign_dir)
+    data = _load(vast_path)
     data["visualization"] = section
-    return _write_override(campaign_dir, data, "visualization")
-
-
-def _write_override(campaign_dir: Path, data: dict, kind: str,
-                    extra: dict | None = None) -> dict:
-    """Write *data* as the next ``rev-N.vast`` override and return its number."""
-    rev_dir = _rev_dir(campaign_dir)
-    rev_dir.mkdir(parents=True, exist_ok=True)
-    next_n = (_revs(campaign_dir)[-1][0] + 1) if _revs(campaign_dir) else 1
-    rev_path = rev_dir / f"rev-{next_n}.vast"
-    rev_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
-    logger.info("Wrote %s override %s", kind, rev_path)
-    return {"revision": next_n, "path": str(rev_path), **(extra or {})}
+    _write(vast_path, data)
+    return {"campaign_dir": str(campaign_dir)}

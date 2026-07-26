@@ -278,7 +278,7 @@ function VisualizationEditor({
   return (
     <Stack spacing={1} sx={{ width: 680, p: 1.5 }}>
       <Typography variant="subtitle2">
-        Edit visualization{src.data?.source ? ` — ${src.data.source}` : ''}
+        Edit visualization
       </Typography>
       {src.isError ? <Alert severity="error">{(src.error as Error).message}</Alert> : null}
       <Paper variant="outlined" sx={{ height: 380, overflow: 'hidden' }}>

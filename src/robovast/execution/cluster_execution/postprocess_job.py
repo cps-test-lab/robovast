@@ -132,14 +132,13 @@ def sync_outputs(cluster_config, campaign_id: str, campaign_root: str) -> int:
 
 
 def campaign_vast(campaign_root) -> str:
-    """The `.vast` postprocessing should use: the latest edited override under
-    ``_control/postprocess/rev-N.vast`` if any, else the immutable ``_config/``
-    snapshot. Resolved through the shared ``common.postprocess_config`` helper so the
-    cluster conversion Job honors re-run parameter edits exactly like the local path.
+    """The campaign's ``.vast`` (``<campaign>/_config/<name>.vast``) — the same single
+    source of truth the service edits in place, so the cluster conversion Job runs
+    exactly the config the re-run dialog saved.
     """
-    from robovast.common.postprocess_config import effective_vast  # noqa: PLC0415
+    from robovast.common.results_utils import campaign_vast as _campaign_vast  # noqa: PLC0415
 
-    return str(effective_vast(campaign_root))
+    return str(_campaign_vast(campaign_root))
 
 
 def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,

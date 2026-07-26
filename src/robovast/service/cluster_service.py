@@ -937,71 +937,92 @@ class ClusterService(LocalTransport):
         (inherited from :class:`LocalTransport`) read the fetched ``data.db``."""
         return self.fetch_campaign(campaign_id)
 
-    def run_postprocessing(self, request) -> ActionResult:
-        """(Re)run analysis postprocessing for a cluster campaign.
+    def _publish_config_edit(self, campaign_id: str) -> None:
+        """Publish an in-place ``_config/<name>.vast`` edit to the object store.
 
-        Overrides :class:`LocalTransport`'s in-process implementation, which cannot
-        work here: this pod has no ROS runtime. Instead the rosbag→CSV step runs as a
-        Job in the campaign's own execution image and the ``data.db`` step runs here
-        (pure Python) — the same two stages the campaign loop chains, via one shared
-        implementation.
-
-        Backs the web "Run postprocessing" button, the MCP ``run_postprocessing``
-        tool, and the CLI for cluster campaigns.
+        The object store is the durable home, and a re-run fetches from it with
+        ``force=True`` — which would re-download the *old* config over the just-edited
+        local copy. Uploading the edited ``.vast`` here makes the edit durable so the
+        re-run reads it. (Overrides the local no-op.)
         """
+        from robovast.common.results_utils import campaign_vast
         from robovast.execution.cluster_execution import in_pod_storage
-        from robovast.execution.cluster_execution.postprocess_job import \
-            postprocess_campaign
-        from robovast.execution.status_recovery import record_step_outcome
-
-        campaign_root = self.fetch_campaign(request.campaign_id, force=True)
+        vast = campaign_vast(self._campaign_dir(campaign_id))
         cfg = self._cluster_config()
-        ok, message = postprocess_campaign(
-            cfg, request.campaign_id, str(campaign_root), self.namespace,
-            force=request.force, skip=list(request.skip or []))
-        # Refresh the durable outcome (success clears postprocessing_error; failure
-        # records it) and publish _execution back to the object store on *either* path,
-        # so the result — including the failure's postprocessing.log — survives a
-        # restart. Without this a failed re-run left no durable trace and the campaign
-        # reconstructed as stale/unknown.
-        record_step_outcome(campaign_root, postprocessing=(ok, message))
-        bucket, prefix = in_pod_storage.campaign_storage_location(cfg, request.campaign_id)
+        bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
         storage = in_pod_storage.storage_client_for(cfg)
-        n = storage.upload_dir(str(Path(campaign_root) / "_execution"),
-                               bucket, f"{prefix}_execution")
-        return ActionResult(ok=ok, message=f"{message}; published {n} file(s)")
+        storage.upload_file(str(vast), bucket, f"{prefix}_config/{vast.name}")
+        logger.info("Published edited config %s for %s to the object store",
+                    vast.name, campaign_id)
 
-    def run_share(self, request) -> ActionResult:
-        """(Re)trigger upload-to-share for a cluster campaign, from the object store.
-
-        Fetches the campaign to scratch and streams it to the env-configured provider
-        (``preflight_upload_to_share`` fails loudly if ``ROBOVAST_SHARE_TYPE`` is unset),
-        then records + publishes the outcome (clear/set ``share_error``). Touches no
-        ``self._campaigns`` entry, so it works purely from durable storage after a
-        service restart. Adjusting the share env and re-triggering re-uploads to the new
-        provider — the share analog of an adapted-parameter re-postprocess.
-        """
-        from robovast.common.status import failure_detail
-        from robovast.execution.backends import RunOptions
+    def _publish_execution(self, campaign_id: str, campaign_root) -> None:
+        """Upload a campaign's ``_execution/`` (outcome + logs + data.db) to the store."""
         from robovast.execution.cluster_execution import in_pod_storage
-        from robovast.execution.control_server import ControllerState
-        from robovast.execution.status_recovery import record_step_outcome
-
-        campaign_root = self.fetch_campaign(request.campaign_id, force=True)
-        backend = self._build_backend(ControllerState())
-        options = RunOptions(gui=False, upload_to_share=True, namespace=self.namespace)
-        try:
-            backend.preflight_upload_to_share()
-            backend.share_campaign(str(campaign_root), options)
-            ok, message = True, "upload-to-share complete"
-        except Exception as e:  # noqa: BLE001 - surfaced via ActionResult + share_error
-            ok, message = False, failure_detail(e)
-        record_step_outcome(campaign_root, share=(ok, message))
         cfg = self._cluster_config()
-        bucket, prefix = in_pod_storage.campaign_storage_location(cfg, request.campaign_id)
+        bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
         storage = in_pod_storage.storage_client_for(cfg)
         storage.upload_dir(str(Path(campaign_root) / "_execution"),
                            bucket, f"{prefix}_execution")
+
+    def run_postprocessing(self, request) -> ActionResult:
+        """(Re)run analysis postprocessing for a cluster campaign, as a monitored
+        background operation (returns immediately; watch it in the campaign view).
+
+        The rosbag→CSV step runs as a Job in the campaign's own execution image and the
+        ``data.db`` step runs here (pure Python) — the same two stages the campaign loop
+        chains. ``postprocess_campaign`` streams into the scratch ``postprocessing.log``,
+        which is published to the object store so the Monitor and a later restart see it.
+        """
+        from robovast.execution.status_recovery import record_step_outcome
+        from robovast.execution.cluster_execution.postprocess_job import \
+            postprocess_campaign
+
+        def work(state):
+            campaign_root = self.fetch_campaign(request.campaign_id, force=True)
+            cfg = self._cluster_config()
+            ok, message = postprocess_campaign(
+                cfg, request.campaign_id, str(campaign_root), self.namespace,
+                force=request.force, skip=list(request.skip or []))
+            status = record_step_outcome(campaign_root, postprocessing=(ok, message))
+            # Publish _execution (outcome + the conversion's postprocessing.log, even on
+            # failure) so the result survives a restart and the Monitor can read it.
+            self._publish_execution(request.campaign_id, campaign_root)
+            state.update(postprocessed=status.postprocessed,
+                         postprocessing_error=status.postprocessing_error)
+            state.set_phase(Phase.FINISHED)
+
+        return self._dispatch_background(
+            request.campaign_id, phase=Phase.POSTPROCESSING, work=work)
+
+    def run_share(self, request) -> ActionResult:
+        """(Re)trigger upload-to-share for a cluster campaign, as a monitored background
+        operation. Fetches the campaign and streams it to the env-configured provider
+        (``preflight_upload_to_share`` fails loudly if ``ROBOVAST_SHARE_TYPE`` is unset);
+        the outcome (clear/set ``share_error``) is recorded and published. Adjusting the
+        share env and re-triggering re-uploads to the new provider.
+        """
+        from robovast.common.status import failure_detail
+        from robovast.execution.backends import RunOptions
+        from robovast.execution.control_server import ControllerState
+        from robovast.execution.status_recovery import record_step_outcome
+
+        def work(state):
+            campaign_root = self.fetch_campaign(request.campaign_id, force=True)
+            backend = self._build_backend(ControllerState())
+            options = RunOptions(gui=False, upload_to_share=True, namespace=self.namespace)
+            try:
+                backend.preflight_upload_to_share()
+                backend.share_campaign(str(campaign_root), options)
+                ok, message = True, "upload-to-share complete"
+            except Exception as e:  # noqa: BLE001 - surfaced via status + share_error
+                ok, message = False, failure_detail(e)
+            status = record_step_outcome(campaign_root, share=(ok, message))
+            self._publish_execution(request.campaign_id, campaign_root)
+            state.update(share_error=status.share_error)
+            state.set_phase(Phase.FINISHED)
+
+        return self._dispatch_background(
+            request.campaign_id, phase=Phase.SHARING, work=work)
         return ActionResult(ok=ok, message=message)
 
     def campaign_tar_stream(self, campaign_id: str):

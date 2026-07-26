@@ -145,9 +145,12 @@ archive route.
 Analysis postprocessing is **editable and re-runnable**: the raw rosbags are
 always preserved, so ``results_processing.postprocessing`` entries can be changed
 and re-run to compute different metrics later without re-executing the campaign.
-Edits are **versioned overrides** under ``<campaign>/_control/postprocess/rev-N.vast``;
-the immutable ``_config/`` snapshot is never mutated
-(:mod:`robovast.service.postprocessing_edit`).
+Because it is config (not captured data), an edit **overwrites that block in the
+campaign's own ``_config/<name>.vast`` in place** — no override files, no revisions
+(:mod:`robovast.service.postprocessing_edit`); the raw rosbags and the as-ran
+``configuration``/``execution`` are untouched. A re-run is **dispatched in the
+background** and shows up in the campaign view as a live ``postprocessing`` phase (see
+:ref:`results-retrigger`).
 
 Querying results
 ----------------
@@ -155,11 +158,15 @@ Querying results
 Per-run metrics are consolidated into ``<campaign>/_execution/data.db`` (one
 table per CSV stem) plus a ``runs`` **dimension table** — per-run
 ``status``/``duration_s`` and each scenario parameter as a ``param_*`` column.
-The MCP ``run_data`` plugin exposes read-only **SQL**
+That ``runs`` table is the analytics-wide *view* over ``campaign.db``'s ``run``
+table (the operational source of truth for per-run outcomes, written live from
+each ``test.xml``); see :ref:`the store schema <campaign-store>`. The MCP
+``run_data`` plugin exposes read-only **SQL**
 (``query_campaign_data_sql`` + ``describe_campaign_data``), with ``campaign.db``
-attached as schema ``campaign``. Joining ``runs`` to any metric table on
-``(config_name, run_id)`` answers "how does *<param>* affect *<metric>*" in one
-query. The ``vast eval gui`` notebook path reads the same ``data.db`` directly and
+attached as schema ``campaign`` — so ``campaign.run`` is queryable for raw
+pass/fail even before postprocessing builds ``data.db``. Joining ``runs`` to any
+metric table on ``(config_name, run_id)`` answers "how does *<param>* affect
+*<metric>*" in one query. The ``vast eval gui`` notebook path reads the same ``data.db`` directly and
 is unaffected.
 
 Run view (web panel framework)
@@ -234,6 +241,8 @@ lives in the ``run_data`` MCP plugin):
   ``run_postprocessing``. The structured ``*_postprocessing`` pair is the programmatic
   API (MCP, CLI); ``get_postprocessing_source`` / ``update_postprocessing_source`` are
   the YAML-text twin the web UI re-run dialog edits in Monaco (mirroring the run-view
-  ``*_panels_source`` visualization editor). Both write the same versioned override.
+  ``*_panels_source`` visualization editor). Both overwrite the edited block in the
+  campaign's own ``_config/<name>.vast`` in place. ``run_postprocessing`` dispatches the
+  re-run in the background and returns at once (watch the campaign view for progress).
 * **Data query** (MCP ``run_data``) — ``describe_campaign_data`` /
   ``query_campaign_data_sql``.

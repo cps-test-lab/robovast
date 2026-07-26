@@ -324,21 +324,19 @@ export interface CampaignPanelsResponse {
   timeline?: { table: string; time_column?: string }
 }
 
-// The campaign's run-view `visualization:` block as editable YAML text. `source` names the
-// effective .vast (snapshot or rev-N override); saving writes a new override revision.
+// The campaign's run-view `visualization:` block as editable YAML text. Saving overwrites that
+// block in the campaign's own `_config/<name>.vast` in place.
 export interface PanelsSource {
   campaign_id: string
-  source: string
   content: string
 }
 
 // The campaign's `results_processing.postprocessing` block as editable YAML text (the same
-// shape as PanelsSource — see the postprocessing rerun dialog). `source` names the effective
-// .vast (snapshot or rev-N override); saving writes a new override revision. The raw rosbags
-// are preserved, so postprocessing can be edited and re-run any number of times.
+// shape as PanelsSource — see the postprocessing rerun dialog). Saving overwrites that block in
+// the campaign's own `_config/<name>.vast` in place; the raw rosbags are preserved, so
+// postprocessing can be edited and re-run any number of times.
 export interface PostprocessingSource {
   campaign_id: string
-  source: string
   content: string
 }
 

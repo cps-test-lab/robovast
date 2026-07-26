@@ -46,17 +46,24 @@ export function PostprocessingDialog({
   const original = src.data?.content ?? ''
   const changed = text != null && text !== original
 
-  // Save (only if edited) then rerun. Keeping both in one mutation gives a single pending state
-  // for the whole "adapt and rerun" action — the run is synchronous and can take a while.
+  // Save (only if edited) the overwritten config, then *dispatch* the rerun. The service now
+  // runs postprocessing in the background and returns at once, so this mutation is quick — the
+  // long-running work is watched in the campaign view, not here.
   const saveAndRerun = useMutation({
     mutationFn: async () => {
       if (changed) await robovast.updatePostprocessingSource(campaignId, text ?? '')
       return robovast.runPostprocessing(campaignId)
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
+      // Not ok = the busy guard (an operation is already running): keep the dialog open and
+      // show why. On a successful dispatch, close so the campaign view can show progress —
+      // invalidating the row's status query restarts its polling (it had stopped once the
+      // campaign was terminal), so it picks up the new `postprocessing` phase.
+      if (!result.ok) return
       qc.invalidateQueries({ queryKey: ['status', campaignId] })
       qc.invalidateQueries({ queryKey: ['campaigns'] })
       qc.invalidateQueries({ queryKey: ['postprocessing-source', campaignId] })
+      onClose()
     },
   })
 
@@ -69,15 +76,16 @@ export function PostprocessingDialog({
         Retrigger postprocessing
         <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
           {campaignId}
-          {src.data?.source ? ` — ${src.data.source}` : ''}
         </Typography>
       </DialogTitle>
       <DialogContent>
         <Stack spacing={1.5} sx={{ pt: 1 }}>
           <Typography variant="body2" color="text.secondary">
-            Adapt the <code>results_processing.postprocessing</code> block, then rerun. Edits are
-            saved as a new versioned override of this campaign's <code>.vast</code> — the original
-            snapshot is left untouched — and the raw rosbags are reprocessed against it.
+            Adapt the <code>results_processing.postprocessing</code> block, then rerun. The change
+            overwrites this campaign's config in place (it is only postprocessing config, not
+            captured data — the raw rosbags are untouched), so it can be re-run any number of
+            times. The rerun starts in the background; this dialog closes so you can follow its
+            progress in the campaign view.
           </Typography>
           {src.isError ? (
             <Alert severity="error">{(src.error as Error).message}</Alert>
@@ -100,16 +108,15 @@ export function PostprocessingDialog({
           </Paper>
           {saveAndRerun.isError ? (
             <Alert severity="error">{(saveAndRerun.error as Error).message}</Alert>
-          ) : result ? (
-            <Alert severity={result.ok ? 'success' : 'warning'}>
-              {result.message ?? (result.ok ? 'Postprocessing complete.' : 'No effect.')}
-            </Alert>
+          ) : result && !result.ok ? (
+            // A successful dispatch closes the dialog; only the busy guard lands here.
+            <Alert severity="warning">{result.message ?? 'Could not start the rerun.'}</Alert>
           ) : null}
         </Stack>
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose} color="inherit" disabled={busy}>
-          {result && result.ok ? 'Close' : 'Cancel'}
+          Cancel
         </Button>
         <Button
           variant="contained"
@@ -117,7 +124,7 @@ export function PostprocessingDialog({
           disabled={busy || src.isPending || src.isError}
           startIcon={busy ? <CircularProgress size={16} color="inherit" /> : undefined}
         >
-          {busy ? 'Running…' : changed ? 'Save & rerun' : 'Rerun'}
+          {busy ? 'Starting…' : changed ? 'Save & rerun' : 'Rerun'}
         </Button>
       </DialogActions>
     </Dialog>
