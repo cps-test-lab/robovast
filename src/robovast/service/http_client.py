@@ -109,8 +109,10 @@ class HTTPTransport(RobovastInterface):
         compatible = info.robovast_version == client_v
         if not compatible:
             logger.warning(
-                "robovast version mismatch: client %s vs service %s. Re-run "
-                "'vast exec cluster setup' to upgrade the in-cluster service.",
+                "robovast version mismatch: client %s vs service %s. Upgrade the "
+                "in-cluster service with 'vast exec cluster cleanup' then "
+                "'vast exec cluster setup <cluster-config>' (or "
+                "'vast exec cluster setup --force <cluster-config>').",
                 client_v, info.robovast_version)
         return {"compatible": compatible, "client_version": client_v,
                 "service_version": info.robovast_version, "backend": info.backend}

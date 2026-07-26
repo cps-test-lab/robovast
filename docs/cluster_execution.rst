@@ -225,8 +225,8 @@ its campaign id so concurrent campaigns sharing a topic stay distinguishable.
 
 For an **in-cluster** service the ntfy config is read from your ``.env`` at
 ``setup`` time and injected into the service pod (as a Kubernetes Secret, exactly
-like the share credentials), so changing the topic means re-running ``setup`` /
-``--upgrade`` to redeploy. A local ``vast serve`` reads the ``.env`` live.
+like the share credentials), so changing the topic means re-running ``setup
+--force`` to redeploy. A local ``vast serve`` reads the ``.env`` live.
 
 
 Experiment image builds (registry)
@@ -235,7 +235,7 @@ Experiment image builds (registry)
 Agent-built experiment images (a project's :ref:`build section
 <config-build-section>`) are built **in-cluster** by a BuildKit Job and pushed to a
 container registry the cluster can pull from. Point the deployment at a registry in
-your ``.env`` before ``setup`` / ``--upgrade`` — the values are stored in the
+your ``.env`` before ``setup`` (or a later ``setup --force``) — the values are stored in the
 service pod's environment (like the share/ntfy credentials) and read back by the
 cluster config's ``get_registry_config()``; **no registry detail ever reaches a
 client**.

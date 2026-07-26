@@ -145,13 +145,27 @@ Keeping the service up to date
 ------------------------------
 
 Controllers are launched per campaign, so execution always tracks the configured
-controller image. The persistent service Deployment is updated by re-running
-``vast exec cluster setup`` (rolling restart). The client/service exchange a
-version at ``/version`` so a stale service can be surfaced.
+controller image. The persistent service Deployment does not, so it has to be
+updated deliberately. The client/service exchange a version at ``/version`` so a
+stale service can be surfaced.
 
-Re-running setup also reconciles the service's RBAC. In particular, the
+Tear it down and set it up again:
+
+.. code-block:: bash
+
+   vast exec cluster cleanup
+   vast exec cluster setup rke2
+
+Plain ``setup`` over a live service is refused (``Cluster is already set up``) —
+the deployed service's env is the record of which cluster config is in use, so
+setup will not silently overwrite it. ``setup --force`` skips that guard and
+patches the Deployment in place, which is the quicker path when only the service
+image changed; the cleanup cycle is the reliable one. Neither touches the object
+store, so campaign data survives both.
+
+Setting up again also reconciles the service's RBAC. In particular, the
 ``/usage`` endpoint (cluster CPU/memory capacity and usage, shown in the web UI
 top bar and via the ``resource_usage`` MCP tool) needs a cluster-scoped
 read-only ``ClusterRole`` over ``nodes``/``pods`` — so a service first deployed
-by an older setup must be re-run through ``vast exec cluster setup`` to gain it,
-otherwise ``/usage`` returns a permissions error.
+by an older setup must be set up again to gain it, otherwise ``/usage`` returns a
+permissions error.

@@ -615,7 +615,8 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
             lambda c=cm: core.create_namespaced_config_map(namespace, c, dry_run=dr),
             lambda c=cm, n=name: core.replace_namespaced_config_map(
                 n, namespace, c, dry_run=dr))
-    # Deployment (replace spec on conflict → rolling update / --upgrade)
+    # Deployment (patch spec on conflict, so a `setup --force` over a live
+    # service updates it in place instead of failing)
     _create_or_replace(
         lambda: apps.create_namespaced_deployment(namespace, deployment, dry_run=dr),
         lambda: apps.patch_namespaced_deployment(SERVICE_NAME, namespace, deployment, dry_run=dr))
@@ -683,8 +684,9 @@ def read_service_config_from_cluster(namespace="default", kube_context=None):
 def delete_service(namespace="default", kube_context=None):
     """Remove the robovast-service Deployment + Service + RBAC (best-effort).
 
-    Never touches the object store (the durable data home) — safe for
-    ``--upgrade`` teardown-then-redeploy.
+    Never touches the object store (the durable data home), so the
+    ``cluster cleanup`` → ``cluster setup`` cycle that updates the service
+    keeps the campaign data it left behind.
     """
     from kubernetes import client, config  # pylint: disable=import-outside-toplevel
     from kubernetes.client.rest import \

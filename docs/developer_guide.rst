@@ -1237,7 +1237,8 @@ TTL-cached path on the base class (``LocalTransport.resource_usage`` memoises fo
 The cluster read needs cluster-scoped RBAC (nodes are not namespaced): setup grants the
 service ServiceAccount a read-only ``ClusterRole`` over ``nodes``/``pods``
 (``service_deploy._service_rbac_manifests``), so **upgrading an already-deployed service to
-this version requires re-running** ``vast exec cluster setup`` to add the grant.
+this version requires setting it up again** (``vast exec cluster cleanup`` then ``setup``,
+or ``setup --force``) to add the grant.
 
 **Config editor** (``ui/src/pages/ConfigEditor.tsx``) is the browser ``vast config gui``:
 a **Monaco** editor (``ui/src/lib/monaco.ts`` bundles the editor + YAML workers and, via
