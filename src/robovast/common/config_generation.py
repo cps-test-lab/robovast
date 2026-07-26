@@ -35,6 +35,7 @@ from pprint import pformat
 from .common import convert_dataclasses_to_dict, get_scenario_parameters, load_config
 from .config_identifier import collect_paths_from_config, hash_variation_entrypoints
 from .config_plugins import ensure_workspace_plugins
+from .errors import missing_input_error
 from .file_cache2 import CacheKey, FileCache2
 from .plugin_ref import is_file_ref, load_ref
 from .variation.loader import _validate_variation_class
@@ -741,6 +742,13 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
 
     _maybe_disable_ssl_verification()
 
+    # Every path this function derives (`vast`, `scenario_file`, run/config files) hangs off this one,
+    # and they outlive the call: they are cached under a key that is already abspath-normalized, and
+    # written into the campaign's configurations.yaml. Left relative, a cache entry written by a
+    # caller in one directory is replayed by a caller in another -- which is how a `vast` CLI run from
+    # the repo root handed the service `rst_basic_nav/scenario.osc` to resolve again.
+    variation_file = os.path.abspath(variation_file)
+
     parameters = load_config(variation_file)
 
     # Get scenario file from configuration section
@@ -774,6 +782,13 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
 
     if scenario_file is None:
         raise ValueError("No scenario_file specified in execution section of the variation file. Please add 'scenario_file' to the execution section.")
+
+    # Checked here, at the first point the path is known, rather than where it is first
+    # *read*: the cache key skips a non-existent scenario file, so an unchecked typo
+    # surfaced deep in campaign staging as a bare copy error naming only the path.
+    if not os.path.isfile(scenario_file):
+        raise missing_input_error([
+            ("execution.scenario_file", execution_scenario_file_name, scenario_file)])
 
     # Collect analysis notebook files (resolved early for cache key)
     analysis_files = _collect_analysis_input_files(parameters, base_dir=os.path.dirname(variation_file))
@@ -1014,6 +1029,11 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         "resources": execution_section.get('resources'),
         "secondary_containers": execution_section.get('secondary_containers'),
         "local": execution_section.get('local'),
+        # `runs` is what the campaign's size is reported in (validate, `config info`,
+        # preview_configurations all read it here). It was missing, so every campaign was reported as
+        # one run per configuration -- a 25-trial sweep looked like 5 -- right where an agent decides
+        # whether it can afford to start.
+        "runs": execution_section.get('runs', 1),
         "runs_per_job": execution_section.get('runs_per_job', 1),
         "simulation": execution_section.get('simulation'),
         "mode": execution_section.get('mode'),

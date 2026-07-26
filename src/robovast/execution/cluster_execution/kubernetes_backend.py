@@ -549,8 +549,10 @@ class BatchJobRunner:
         """Write one multi-document scenario-parameter file per packed job into
         ``out_dir/_transient/`` so they upload with the campaign and are mirrored
         into each packed job's ``/config`` as ``job-<idx>.params.yaml``."""
-        vast_dir = os.path.dirname(self.campaign_data["vast"])
-        scenario_path = os.path.join(vast_dir, self.campaign_data["scenario_file"])
+        # Already resolved against the .vast's location by config generation (same note as in
+        # execute_local); prepending the .vast's directory again doubles it whenever the project's
+        # config path has a directory part.
+        scenario_path = self.campaign_data["scenario_file"]
         scenario_name = next(iter(get_scenario_parameters(scenario_path).keys()))
         transient_dir = os.path.join(out_dir, "_transient")
         os.makedirs(transient_dir, exist_ok=True)

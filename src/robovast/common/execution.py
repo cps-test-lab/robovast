@@ -32,6 +32,7 @@ import yaml
 from .common import convert_dataclasses_to_dict, get_scenario_parameters
 from .config_identifier import (compute_config_identifier, hash_file_content,
                                 hash_run_files)
+from .errors import CampaignConfigError, missing_input_error
 
 # Compatibility version between host robovast code and the container image.
 # Bump this integer when the contract between host scripts and the container
@@ -45,6 +46,11 @@ COMPAT_VERSION = 2
 # an explicit value (``--image`` / an ``execution.image`` entry in the ``.vast``
 # file) always takes precedence over the env var.
 DEFAULT_ROBOVAST_IMAGE = "ghcr.io/cps-test-lab/robovast:latest"
+# The unprivileged user a robovast execution image runs as (fixuid is configured for it). Experiment
+# image builds step up to root for apt/pip and must drop back to this, or a cluster pod -- which
+# takes the user from the image, unlike a local run, where compose sets it explicitly -- would run
+# the scenario as root.
+DEFAULT_IMAGE_USER = "ubuntu:ubuntu"
 # robovast-controller hosts the in-cluster CampaignController for cluster runs.
 DEFAULT_ROBOVAST_CONTROLLER_IMAGE = "ghcr.io/cps-test-lab/robovast-controller:latest"
 
@@ -537,9 +543,37 @@ def _apply_local_parameter_overrides(config, parameter_overrides, valid_param_na
     config.update(merged)
 
 
+def check_campaign_inputs(campaign_data):
+    """Fail with one actionable error if a required project input is missing.
+
+    Staging copies the ``.vast``, the scenario file and the ``run_files`` verbatim,
+    so a wrong path used to surface as ``shutil``'s ``[Errno 2] ... '<path>'`` —
+    which names neither the ``.vast`` key the path came from nor what it was
+    resolved against, and arrives mid-campaign, after the campaign dir and the
+    store entry already exist. Checked up front and reported together instead, as
+    the user error it is (no traceback; see :class:`CampaignConfigError`).
+    """
+    vast_file = campaign_data.get("vast")
+    vast_dir = os.path.dirname(vast_file) if vast_file else ""
+    candidates = [("the .vast file", vast_file, vast_file),
+                  ("execution.scenario_file", campaign_data.get("scenario_file"),
+                   campaign_data.get("scenario_file"))]
+    # run_files are collected relative to the .vast's directory; _input_files and the
+    # transient files are skipped-with-a-warning at their copy site (they are optional
+    # extras, not something a run cannot start without), so they are not checked here.
+    for run_file in campaign_data.get("_run_files", []):
+        candidates.append(("execution.run_files", run_file,
+                           os.path.join(vast_dir, run_file)))
+    missing = [entry for entry in candidates
+               if not entry[2] or not os.path.isfile(entry[2])]
+    if missing:
+        raise missing_input_error(missing)
+
+
 def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
     # Create the output directory structure
     logger.debug(f"Campaign Configs: {pformat(campaign_data)}")
+    check_campaign_inputs(campaign_data)
     os.makedirs(out_dir, exist_ok=True)
 
     campaign_config_dir = os.path.join(out_dir, "_config")
@@ -602,11 +636,12 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
 
     # Compute hashes once per run (reused for all configs)
     run_files_hash = hash_run_files(vast_file_path, campaign_data.get("_run_files", []))
-    scenario_file_path_for_hash = (
-        campaign_data["scenario_file"]
-        if os.path.isabs(campaign_data["scenario_file"])
-        else os.path.join(vast_file_path, campaign_data["scenario_file"])
-    )
+    # Config generation already resolved this against the .vast's location, so it is usable as-is
+    # (see the same note in execute_local). Re-prepending the .vast's directory doubled it -- e.g.
+    # `rst_basic_nav/rst_basic_nav/scenario.osc` -- for every project whose config path has a
+    # directory part, and was a silent no-op only for the usual case of `vast init` run in the
+    # project's own directory.
+    scenario_file_path_for_hash = campaign_data["scenario_file"]
     scenario_file_hash = (
         hash_file_content(scenario_file_path_for_hash)
         if os.path.isfile(scenario_file_path_for_hash)
@@ -651,7 +686,7 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
         shutil.copy2(abs_path, dst_path)
 
     # get scenario name
-    original_scenario_path = os.path.join(vast_file_path, campaign_data.get("scenario_file"))
+    original_scenario_path = campaign_data.get("scenario_file")
     try:
         scenario_params = get_scenario_parameters(original_scenario_path)
         scenario_name = next(iter(scenario_params.keys()))
@@ -715,7 +750,16 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
                     else os.path.join(_gen_output_dir, config_path)
                 )
                 if not os.path.exists(src_path):
-                    raise FileNotFoundError(f"Config file {src_path} does not exist.")
+                    # A generated artifact, not something the user wrote: the message
+                    # has to say so, or the path reads like a bad .vast entry. The
+                    # usual cause is a config-generation cache entry whose artifact
+                    # tarball no longer matches, so name the cache as the remedy.
+                    raise CampaignConfigError(
+                        f"Config '{config_data.get('name')}': the generated config "
+                        f"file '{config_rel_path}' is missing at {src_path}.\n"
+                        "It is produced by config generation, not by the .vast — a "
+                        "stale generation cache is the usual cause. Remove "
+                        f"{os.path.join(vast_file_path, '.cache')} and retry.")
                 dst_path = os.path.join(run_config_dir, config_rel_path)
                 os.makedirs(os.path.dirname(dst_path), exist_ok=True)
                 shutil.copy2(src_path, dst_path)
@@ -925,7 +969,10 @@ def generate_execution_yaml_script(runs, execution_params=None, output_dir_var="
     script += f'robovast_version: {get_app_version()}\n'
     script += f'runs: {runs}\n'
     script += f'execution_type: local\n'
-    script += f'image: {execution_params.get("image")}\n'
+    # The image that actually ran, not the .vast's raw entry: for a `build:<tag>` project the raw
+    # entry is symbolic, and postprocessing re-runs its container from this file -- `docker run
+    # build:<tag>` finds no such image, which surfaces as a bogus "compat version <missing>".
+    script += "image: '${DOCKER_IMAGE}'\n"
     script += 'image_revision: ${IMAGE_REVISION}\n'
     # Local executions have no cluster information attached
     script += 'cluster_info: {}\n'

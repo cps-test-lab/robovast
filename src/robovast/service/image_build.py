@@ -41,8 +41,8 @@ from pathlib import Path
 from typing import Optional
 
 from robovast.common.build_context import BUILD_CONTEXT_IGNORE
-from robovast.common.execution import (BUILD_IMAGE_PREFIX, build_image_tag,
-                                       is_build_image_ref,
+from robovast.common.execution import (BUILD_IMAGE_PREFIX, DEFAULT_IMAGE_USER,
+                                       build_image_tag, is_build_image_ref,
                                        resolve_robovast_image)
 from robovast.service.interface import (ImageBuildError, ImageBuildRef,
                                         ImageBuildStatus, LogChunk)
@@ -53,6 +53,10 @@ logger = logging.getLogger(__name__)
 _CONTEXT_DIR = "/robovast_build_context"
 #: Local docker tag namespace for agent-built experiment images.
 _LOCAL_TAG_NS = "robovast-build"
+#: pip invocation for the build steps. The base is an externally-managed (PEP 668) Debian Python and
+#: the target *is* that interpreter, so the marker has to be overridden rather than worked around
+#: with a venv, which ``ros2 launch``'s /usr/bin/python3 would not see.
+_PIP_INSTALL = "pip install --no-cache-dir --break-system-packages"
 #: Files/dirs never hashed or copied into the build context. Sourced from
 #: ``common`` so the in-cluster staging path skips exactly the same set (a
 #: mismatch would break the context hash — see build_context).
@@ -136,7 +140,10 @@ def build_hash(spec: BuildSpec, project_dir: Path, base_ref: str) -> str:
     does not.
     """
     h = hashlib.sha256()
-    h.update(b"v1")
+    # v2: the rendered Dockerfile changed (root for the build steps, PEP 668 pip), so images built
+    # by v1 are not what this spec now means -- the bump forces them to be rebuilt rather than
+    # served from cache.
+    h.update(b"v2")
     h.update(base_ref.encode())
     for pkg in sorted(spec.system_packages):
         h.update(b"|apt|")
@@ -158,15 +165,22 @@ def build_hash(spec: BuildSpec, project_dir: Path, base_ref: str) -> str:
 # Dockerfile generation — one step per entry, for clean error attribution
 # ---------------------------------------------------------------------------
 
-def generate_dockerfile(spec: BuildSpec, project_dir: Path, base_ref: str) -> str:
+def generate_dockerfile(spec: BuildSpec, project_dir: Path, base_ref: str,
+                        base_user: str = DEFAULT_IMAGE_USER) -> str:
     """Render a deterministic Dockerfile from *spec*.
 
     Each ``build:`` entry becomes its own ``RUN`` so a failing step maps back to
     exactly one entry (see :func:`classify_build_error`). The base image supplies
     the ROS/nav2 scaffolding *and* ``/etc/robovast_compat_version``, so the result
     stays compat-valid — we never rewrite that marker.
+
+    A robovast base image ends as an unprivileged user and carries Debian's PEP 668
+    marker, so the build steps run as root and pip needs ``--break-system-packages``
+    to reach the system interpreter — the one ``ros2 launch`` starts nodes with, and
+    therefore the only one an installed package is visible from. *base_user* is
+    restored afterwards so the image still runs unprivileged.
     """
-    lines = [f"FROM {base_ref}"]
+    lines = [f"FROM {base_ref}", "USER root"]
     if spec.system_packages:
         pkgs = " ".join(spec.system_packages)
         lines.append(
@@ -177,12 +191,13 @@ def generate_dockerfile(spec: BuildSpec, project_dir: Path, base_ref: str) -> st
         lines.append(f"COPY . {_CONTEXT_DIR}")
         for entry in spec.python_packages:
             if _is_source_dir(entry, project_dir):
-                lines.append(f"RUN pip install -e {_CONTEXT_DIR}/{entry}")
+                lines.append(f"RUN {_PIP_INSTALL} -e {_CONTEXT_DIR}/{entry}")
             elif _is_context_wheel(entry, project_dir):
-                lines.append(f"RUN pip install {_CONTEXT_DIR}/{entry}")
+                lines.append(f"RUN {_PIP_INSTALL} {_CONTEXT_DIR}/{entry}")
             else:
                 # index pin or git URL — reused verbatim from plugins: vocabulary
-                lines.append(f"RUN pip install '{entry}'")
+                lines.append(f"RUN {_PIP_INSTALL} '{entry}'")
+    lines.append(f"USER {base_user}")
     return "\n".join(lines) + "\n"
 
 

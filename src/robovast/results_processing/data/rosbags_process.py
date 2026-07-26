@@ -303,16 +303,24 @@ class TfToCsvHandler(RosbagHandler):
         if self._csvfile is not None:
             self._csvfile.close()
         total = sum(self._record_counts.values())
-        if total > 0:
-            summary = ", ".join(
-                f"{f}: {c}" for f, c in self._record_counts.items() if c > 0
-            )
-            print(f"  ✓ {self._output_file}: {total} records ({summary})")
-            return total, [self._output_file]
-        print(f"  ✗ {self._output_file}: no records found")
-        if len(self._frames) == 1:
-            print(f"    Found TF frames:\n" + "\n".join(f"    - {t}" for t in self._found_tfs))
-        return 0, []
+        # Every configured frame was asked for explicitly, so one yielding nothing is a defect in the
+        # run, not an empty result: the frame was never published, or it is not connected to `map` in
+        # the TF tree. Reporting success on the remaining frames would hand the analysis a CSV that is
+        # silently missing a whole trajectory -- e.g. the ground-truth frame a sim-vs-sim comparison
+        # is measured against.
+        missing = [f for f in self._frames if not self._record_counts.get(f)]
+        if missing:
+            found = "\n".join(f"    - {t}" for t in sorted(self._found_tfs)) or "    (none)"
+            got = ", ".join(
+                f"{f}: {c}" for f, c in self._record_counts.items() if c
+            ) or "nothing"
+            raise RuntimeError(
+                f"no map-relative poses for requested TF frame(s) {', '.join(missing)} "
+                f"(extracted {got}). Either the frame is not published, or it does not connect to "
+                f"'map'. Transforms present in the bag:\n{found}")
+        summary = ", ".join(f"{f}: {c}" for f, c in self._record_counts.items())
+        print(f"  ✓ {self._output_file}: {total} records ({summary})")
+        return total, [self._output_file]
 
     @classmethod
     def from_config(cls, config: dict) -> "TfToCsvHandler":
@@ -1225,6 +1233,12 @@ def main() -> int:
         f"({processed_bags} success{cached_str}, {error_bags} errors, {failed_bags} no-data), "
         f"{total_records} total records, {elapsed:.2f}s"
     )
+    # A handler that failed outright must not be reported as a successful postprocessing step: this
+    # exit code is what the campaign's results phase reads, and returning 0 regardless meant a run
+    # could be graded on data a handler had already refused to produce.
+    if error_bags:
+        print(f"ERROR: {error_bags} handler error(s) — see the messages above")
+        return 1
     return 0
 
 

@@ -39,6 +39,10 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 from robovast.common import prepare_campaign_configs
+# Re-exported: config generation and campaign staging raise the same user-error
+# type, and they live in ``common`` (which the execution layer imports), so the
+# class itself has to live there too. Every caller keeps importing it from here.
+from robovast.common.errors import CampaignConfigError
 from robovast.common.execution import (DEFAULT_ROBOVAST_IMAGE,
                                        resolve_robovast_image)
 from robovast.execution.execution_utils.execute_local import \
@@ -56,20 +60,6 @@ class CampaignStopped(Exception):
     finalize upload) that would otherwise fail noisily against a torn-down cluster
     tunnel and produce misleading tracebacks.
     """
-
-
-class CampaignConfigError(Exception):
-    """Raised when the campaign cannot start because of bad user input.
-
-    A typo'd ``--config`` filter, an empty vast-file, etc. — a user error, not a
-    bug. The message is self-contained and actionable (it lists the available
-    config names), so callers surface it as ``phase=failed`` *without* an
-    accompanying stack trace, which would only be noise here.
-    """
-
-    # Read by failure_detail(): a clean user error carries no traceback into the
-    # durable failure record, matching how the worker already logs it.
-    include_traceback = False
 
 
 @dataclass

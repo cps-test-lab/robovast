@@ -6,7 +6,9 @@ from .common import (convert_dataclasses_to_dict, filter_configs,
 from .config import (VariationConfig, get_validated_config,
                      normalize_secondary_containers)
 from .config_generation import execute_variation, generate_scenario_variations
-from .execution import (COMPAT_VERSION, create_execution_yaml,
+from .errors import CampaignConfigError, missing_input_error
+from .execution import (COMPAT_VERSION, check_campaign_inputs,
+                        create_execution_yaml,
                         generate_execution_yaml_script, get_campaign,
                         get_campaign_timestamp, get_execution_env_variables,
                         is_campaign_dir, prepare_campaign_configs)
@@ -23,6 +25,9 @@ __all__ = [
     'execute_variation',
     'convert_dataclasses_to_dict',
     'prepare_campaign_configs',
+    'check_campaign_inputs',
+    'CampaignConfigError',
+    'missing_input_error',
     'get_execution_env_variables',
     'VariationConfig',
     'get_validated_config',
