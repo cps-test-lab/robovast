@@ -17,6 +17,7 @@ import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded'
 import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded'
 import ReplayRoundedIcon from '@mui/icons-material/ReplayRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
+import CloudUploadRoundedIcon from '@mui/icons-material/CloudUploadRounded'
 import Typography from '@mui/material/Typography'
 import {
   robovast,
@@ -78,6 +79,19 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
     setPpOpen(true)
   }
 
+  const share = useMutation({
+    mutationFn: () => robovast.runShare(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['status', id] })
+      qc.invalidateQueries({ queryKey: ['campaigns'] })
+    },
+  })
+
+  const onShare = () => {
+    closeMenu()
+    share.mutate()
+  }
+
   const onDelete = async () => {
     closeMenu()
     const ok = await confirm({
@@ -96,6 +110,10 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
 
   const phase = status.data?.phase ?? summary.phase
   const running = !isTerminalPhase(phase)
+  // A finished campaign can still carry a post-run step failure (postprocessing / share);
+  // prefer the live status, fall back to the list summary. Re-triggerable via the menu.
+  const postprocError = status.data?.postprocessing_error ?? summary.postprocessing_error
+  const shareError = status.data?.share_error ?? summary.share_error
 
   // The postprocessed archive is streamed from the object store — only a cluster
   // service serves it (a local service's results are already on its filesystem).
@@ -136,6 +154,12 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
                   <ReplayRoundedIcon fontSize="small" />
                 </ListItemIcon>
                 <ListItemText>Retrigger postprocessing</ListItemText>
+              </MenuItem>
+              <MenuItem onClick={onShare} disabled={share.isPending}>
+                <ListItemIcon>
+                  <CloudUploadRoundedIcon fontSize="small" />
+                </ListItemIcon>
+                <ListItemText>Retrigger upload-to-share</ListItemText>
               </MenuItem>
               <MenuItem onClick={onDelete} sx={{ color: 'error.main' }}>
                 <ListItemIcon>
@@ -185,6 +209,33 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
       {del.isError ? (
         <Alert severity="error" sx={{ mb: 1 }}>
           Delete failed: {(del.error as Error).message}
+        </Alert>
+      ) : null}
+
+      {share.isError ? (
+        <Alert severity="error" sx={{ mb: 1 }}>
+          Upload-to-share failed: {(share.error as Error).message}
+        </Alert>
+      ) : share.data && !share.data.ok ? (
+        <Alert severity="warning" sx={{ mb: 1 }}>
+          {share.data.message ?? 'Upload-to-share had no effect.'}
+        </Alert>
+      ) : share.data?.ok ? (
+        <Alert severity="success" sx={{ mb: 1 }}>
+          {share.data.message ?? 'Upload-to-share complete.'}
+        </Alert>
+      ) : null}
+
+      {!running && postprocError ? (
+        <Alert severity="warning" sx={{ mb: 1 }}>
+          Postprocessing failed: {postprocError} — the runs finished; retrigger
+          postprocessing from the actions menu.
+        </Alert>
+      ) : null}
+
+      {!running && shareError ? (
+        <Alert severity="warning" sx={{ mb: 1 }}>
+          Upload-to-share failed: {shareError} — retrigger it from the actions menu.
         </Alert>
       ) : null}
 

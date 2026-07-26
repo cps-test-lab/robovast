@@ -79,10 +79,12 @@ Plugins Section
 
 **Required:** No
 
-The ``plugins`` section declares the **variation-plugin packages** this campaign
-needs — required whenever a scenario's ``variations`` use a variation type that is
-not built into ``robovast`` / ``robovast-nav`` (for example the ``scenario_mt``
-metamorphic types). Each entry is a `pip requirement specifier
+The ``plugins`` section declares the **Python plugin packages** this campaign needs.
+Two kinds of plugin resolve from it: **variation types** not built into ``robovast`` /
+``robovast-nav`` (for example the ``scenario_mt`` metamorphic types), and
+**postprocessing** plugins — an entry-point postprocessing command, or the
+third-party dependencies a local ``./file.py:Class`` postprocessing plugin imports.
+Each entry is a `pip requirement specifier
 <https://pip.pypa.io/en/stable/reference/requirement-specifiers/>`_, in one of three
 forms:
 
@@ -96,10 +98,13 @@ forms:
      # 3. a wheel you uploaded into this project — a workspace-relative path
      - ./plugins/my_plugin-1.0.0-py3-none-any.whl
 
-The packages are installed **into the workspace** (a ``.robovast_plugins/`` directory
-next to your ``.vast``), together with their dependencies, before the variations are
-composed — so the variation type names resolve. The installed directory travels with
-the campaign into the cluster; the execution pods do not install or clone anything.
+The packages are installed into a ``.robovast_plugins/`` directory (next to your
+``.vast`` for a workspace, or inside the campaign for a re-run), together with their
+dependencies, and put on ``sys.path`` before the variations are composed — so the
+variation type names resolve — and again before postprocessing runs, so postprocessing
+plugins and their dependencies resolve (including on a re-run in a fresh process after
+a service restart). The installed directory travels with the campaign into the
+cluster; the execution pods do not install or clone anything.
 
 .. note::
 

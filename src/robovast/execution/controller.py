@@ -53,7 +53,7 @@ from robovast.common.store import STORE_FILENAME, CampaignStore
 
 from .backends import (CampaignConfigError, CampaignStopped, DockerBackend,
                        ExecutionBackend, RunOptions)
-from .control_server import Phase
+from .control_server import Phase, failure_detail
 from .notify import Notifier
 
 # Use the qualified name rather than __name__ so this module's records always
@@ -488,6 +488,12 @@ class CampaignController:
         """
         if not self.postprocessing:
             return
+        # Make the workspace's `plugins:` importable here: compose staged them into
+        # <vast_dir>/.robovast_plugins/ but only led sys.path in its *subprocess*, so
+        # this controller process needs them prepended before resolving search
+        # postprocessing plugins (and their deps). Same helper the analysis path uses.
+        from robovast.common.config_plugins import ensure_postprocessing_plugins
+        ensure_postprocessing_plugins(self.vast_dir)
         # Imported lazily to avoid importing the results_processing stack (and its
         # heavier deps) unless a search actually configures postprocessing.
         from robovast.results_processing.postprocessing import \
@@ -522,7 +528,6 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
     if cluster_config is None:  # local backend — the in-process chain handles it
         return
     try:
-        from robovast.common.execution import resolve_controller_image
         from robovast.execution.cluster_execution.postprocess_job import \
             postprocess_campaign
         if state is not None:
@@ -530,7 +535,6 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
         ok, message = postprocess_campaign(
             cluster_config, campaign_id, campaign_root,
             options.namespace or os.environ.get("ROBOVAST_NAMESPACE", "default"),
-            options.controller_image or resolve_controller_image(),
         )
         logger.info("Analysis postprocessing: %s", message)
         if state is not None:
@@ -544,13 +548,24 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
                     campaign_defines_postprocessing
                 if campaign_defines_postprocessing(campaign_root):
                     state.update(postprocessed=True)
+                state.update(postprocessing_error=None)
                 state.set_phase(Phase.FINISHED)
             else:
-                state.set_phase(Phase.FAILED, stage=f"postprocessing: {message}")
-    except Exception:  # pylint: disable=broad-except
+                # The runs finished — postprocessing is a separate step, so a
+                # postprocessing failure keeps ``phase == finished`` (the runs are
+                # the deliverable) and records the reason on its own field, distinct
+                # from a run failure (``phase == failed``). Re-run corrects it.
+                state.update(postprocessing_error=message, postprocessed=False)
+                state.set_phase(Phase.FINISHED, stage=f"postprocessing failed: {message}")
+            # The durable outcome record is written once by _finish_campaign after
+            # both share and postprocessing have run, so a single outcome.json carries
+            # phase=finished + share_error + postprocessing_error (and covers the
+            # postproc-off / share-only cases too).
+    except Exception as e:  # pylint: disable=broad-except
         logger.warning("Analysis postprocessing failed", exc_info=True)
         if state is not None:
-            state.set_phase(Phase.FAILED, stage="postprocessing failed")
+            state.update(postprocessing_error=failure_detail(e), postprocessed=False)
+            state.set_phase(Phase.FINISHED, stage="postprocessing failed")
 
 
 def _finalize(backend: ExecutionBackend, campaign_root: str) -> None:
@@ -590,6 +605,14 @@ def _finish_campaign(backend: ExecutionBackend, campaign_root: str, campaign_id:
         logger.info("Campaign %s failed — skipping analysis postprocessing.", campaign_id)
     else:
         _chain_postprocessing(backend, campaign_root, campaign_id, state, options)
+        # Persist the terminal outcome once, after both share and postprocessing, so a
+        # single _execution/outcome.json carries phase=finished + share_error +
+        # postprocessing_error. Without this a cleanly-finished (or finished-but-a-
+        # post-step-failed) cluster campaign has no durable record and a stateless
+        # service reconstructs it as unknown after the driver is gone. A run failure
+        # (Phase.FAILED, handled above) is recorded by _record_campaign_failure instead.
+        if state is not None:
+            _record_controller_outcome(campaign_root, campaign_id, state, backend)
     _finalize(backend, campaign_root)
 
 
@@ -607,10 +630,18 @@ def _share_campaign(backend: ExecutionBackend, campaign_root: str,
         if state is not None:
             state.set_phase(Phase.SHARING)
         backend.share_campaign(campaign_root, options)
-    except Exception:  # pylint: disable=broad-except
+    except Exception as e:  # pylint: disable=broad-except
         logger.warning("Upload-to-share failed; continuing with the campaign.",
                        exc_info=True)
+        # Record the reason on its own field (not swallowed) so it survives to the
+        # durable outcome _finish_campaign writes and can be re-triggered from disk
+        # (service run_share). The phase is left for postprocessing/finalize to set —
+        # a share failure keeps the campaign finished, it is not a run failure.
+        if state is not None:
+            state.update(share_error=failure_detail(e))
         return
+    if state is not None:
+        state.update(share_error=None)
     if notifier is not None:
         # The resolved provider isn't in scope here; the configured share type is what
         # the service was handed via env (ROBOVAST_SHARE_TYPE), matching the old

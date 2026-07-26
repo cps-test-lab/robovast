@@ -1341,19 +1341,31 @@ ROS2**; everything after it (``generate_data_db``, metadata) is plain Python.
 
 Both backends run the rosbag conversion **in the campaign's own execution image** — the
 system-under-test's image, recorded in ``<campaign>/_execution/execution.yaml`` — because rosbags
-carry the SUT's *custom ROS2 message types* and only deserialize there.
+carry the SUT's *custom ROS2 message types* and only deserialize there. On the cluster backend the
+image is **pinned to the immutable digest the run pods used** (captured from the pods and stored as
+``image_revision``; ``campaign_execution_image`` prefers it), so a re-postprocess months later
+deserializes against the exact image the runs recorded the bags with — not whatever a floating
+``:latest`` resolves to then.
 
 **Local.** ``run_postprocessing`` reads that ``image:`` and passes it to
 ``docker_exec.sh --image``, which bind-mounts the campaign dir (``-v $INPUT_DIR:/input``) — so the
-container writes CSVs **in place**. Nothing to sync.
+container writes CSVs **in place**. Nothing to sync. The **scripts** are bind-mounted from the
+driver's own package (``-v $SCRIPT_DIR:/scripts:ro``, ``$SCRIPT_DIR`` =
+``robovast.results_processing.data``), so the script version always matches the driver.
 
 **Cluster.** A pod cannot bind-mount the caller's filesystem, so the conversion runs as a Job
 (:mod:`robovast.execution.cluster_execution.postprocess_job`) modelled on the run Jobs:
 
 * **image** = the campaign's execution image (never a default — a missing ``image:`` is an error,
   not a silent wrong-image conversion);
-* the conversion scripts are **mounted in** via an initContainer + emptyDir (the K8s analog of
-  ``docker_exec.sh``'s ``-v $SCRIPT_DIR:/scripts:ro``) — nothing is ever baked into the user's image;
+* the conversion scripts are delivered as a per-campaign **ConfigMap** built from the driver's own
+  ``robovast.results_processing.data`` and mounted read-only at ``/scripts`` — the K8s analog of the
+  local ``-v $SCRIPT_DIR:/scripts:ro`` bind-mount. This is deliberate: sourcing the scripts from the
+  *driver* (not from a separately-versioned controller image, as an earlier design did) guarantees
+  the in-cluster scripts match the driver that generates the conversion command, so an
+  off-cluster/dev driver running ahead of a published image can no longer skew (the failure mode that
+  produced a spurious ``--output-root`` error). The scripts are self-contained (stdlib + ROS2 libs, no
+  ``robovast`` import) and small; nothing is ever baked into the user's image;
 * inputs (``/bags``, mirrored from the object store) and outputs (``/out``) are **separate dirs** —
   the run-Job pattern — enabled by ``rosbags_process.py --output-root``. Its default is the input
   root, i.e. "beside the bag", so the local path is unchanged. The Job then mirrors ``/out``
@@ -1373,7 +1385,23 @@ Two entry points share that one implementation (``postprocess_campaign``):
   which overrides the ``LocalTransport`` implementation — unusable in the service, which has no local
   results root and no ROS runtime. It fetches the campaign, runs the same two stages, and publishes
   ``_execution/`` back. This backs the web **Run postprocessing** button, the MCP
-  ``run_postprocessing`` tool, and the CLI.
+  ``run_postprocessing`` tool, and the CLI. The re-run reads the *effective* ``.vast`` (the latest
+  ``_control/postprocess/rev-N.vast`` override if any, else the ``_config/`` snapshot) via
+  ``common.postprocess_config.effective_vast``, so edited postprocessing parameters take effect on the
+  cluster path too; and it refreshes the durable outcome (clearing/setting ``postprocessing_error``),
+  so its result survives a restart.
+
+The **upload-to-share** step mirrors this: a failure records ``share_error`` (durable) instead of
+being swallowed, and :meth:`~robovast.service.cluster_service.ClusterService.run_share` re-triggers it
+from the stored campaign (web *Retrigger upload-to-share*, MCP ``run_share``,
+``POST /campaigns/{id}/share/run``). Both re-triggers need no live in-memory campaign entry, so they
+work after a service restart.
+
+A post-run step failure is deliberately **not** a campaign failure: the phase stays ``finished`` and
+the reason lives on ``postprocessing_error`` / ``share_error``. After a restart the cluster service
+reconstructs a campaign's status from ``_execution/outcome.json`` in the object store, falling back to
+the on-disk run artifacts (``reconstruct_status_from_disk``) when no outcome was recorded — so a
+finished campaign reads as ``finished``, never a bare ``unknown``.
 
 Querying RoboVAST campaigns
 ---------------------------

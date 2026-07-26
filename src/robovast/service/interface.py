@@ -264,6 +264,10 @@ class RunPostprocessingRequest(BaseModel):
     skip: list[str] = Field(default_factory=list)
 
 
+class RunShareRequest(BaseModel):
+    campaign_id: str
+
+
 class CleanupDataRequest(BaseModel):
     """Which campaign result buckets to delete from the object store.
 
@@ -693,6 +697,10 @@ class Routes:
         return f"/campaigns/{campaign_id}/postprocessing/run"
 
     @staticmethod
+    def campaign_share_run(campaign_id: str) -> str:
+        return f"/campaigns/{campaign_id}/share/run"
+
+    @staticmethod
     def campaign_postprocessing_source(campaign_id: str) -> str:
         return f"/campaigns/{campaign_id}/postprocessing/source"
 
@@ -928,6 +936,15 @@ class RobovastInterface(ABC):
     @abstractmethod
     def run_postprocessing(self, request: RunPostprocessingRequest) -> ActionResult:
         """(Re)run analysis postprocessing for one campaign with the effective config."""
+
+    @abstractmethod
+    def run_share(self, request: RunShareRequest) -> ActionResult:
+        """(Re)trigger the upload-to-share of one finished campaign's raw archive.
+
+        Works from disk with no live in-memory entry (usable after a service restart);
+        the target provider comes from the current environment (``ROBOVAST_SHARE_TYPE``
+        + credentials), so adjusting it and re-triggering re-uploads to a new provider.
+        """
 
     # -- validation / preview / authoring help (config editor) --------------
 

@@ -37,6 +37,11 @@ export interface CampaignSummary {
   campaign_id: string
   phase: string
   postprocessed: boolean
+  // Reason a post-run step's last attempt failed, or null/absent when it succeeded or
+  // never ran. A finished campaign can carry either: the runs are the deliverable, the
+  // step failure is separate and re-triggerable (see runPostprocessing / runShare).
+  postprocessing_error?: string | null
+  share_error?: string | null
   num_runs: number
   num_passed: number
   num_failed: number
@@ -136,6 +141,9 @@ export interface Status {
   stop?: Record<string, unknown> | null
   error?: string | null
   share_provider?: string | null
+  // Per-step failure markers (postprocessing / upload-to-share); see CampaignSummary.
+  postprocessing_error?: string | null
+  share_error?: string | null
   extra: Record<string, unknown>
   updated_at: number
 }
@@ -621,6 +629,15 @@ export const robovast = {
       'POST',
       `/campaigns/${encodeURIComponent(campaignId)}/postprocessing/run`,
       { campaign_id: campaignId, force, skip: [] },
+    ),
+
+  // (Re)trigger upload-to-share for a finished campaign. Works from disk after a
+  // restart; the target provider comes from the service environment.
+  runShare: (campaignId: string) =>
+    request<ActionResult>(
+      'POST',
+      `/campaigns/${encodeURIComponent(campaignId)}/share/run`,
+      { campaign_id: campaignId },
     ),
 
   // URL of one run artifact file (fetched directly, e.g. by the scene3d loader). Path-style so a

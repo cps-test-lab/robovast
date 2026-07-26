@@ -88,12 +88,11 @@ class RunOptions:
     # -- chained analysis postprocessing (cluster backend only) --------------
     # Per-campaign, so it must travel with the options rather than through the
     # process environment: the service drives many campaigns concurrently in one
-    # process, where an env var could not distinguish them. ``namespace`` /
-    # ``controller_image`` are process-level for the service and fall back to the
-    # env / resolve_controller_image() when unset.
+    # process, where an env var could not distinguish them. ``namespace`` falls back
+    # to the env when unset. (The conversion scripts now come from a per-campaign
+    # ConfigMap built from the driver's own package, so no controller image is needed.)
     postprocess: bool = False
     namespace: str | None = None
-    controller_image: str | None = None
     # -- upload-to-share (pre-postprocess minimal snapshot) -------------------
     # When set, the finish tail produces a raw campaign archive *before* analysis
     # postprocessing (so the share stays minimal/untouched): the local backend just

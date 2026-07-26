@@ -932,6 +932,27 @@ def run_postprocessing(campaign_id: str, force: bool = False,
         return {"error": str(e)}
 
 
+def run_share(campaign_id: str) -> dict:
+    """(Re)trigger the upload-to-share of one finished campaign's raw archive.
+
+    Works from disk with no live campaign (usable after a `vast serve` restart). The
+    target provider comes from the service environment (``ROBOVAST_SHARE_TYPE`` +
+    credentials): adjust it and re-trigger to upload to a different provider. Fails
+    loudly if no share provider is configured.
+
+    Args:
+        campaign_id: The finished campaign to (re)upload.
+    """
+    from robovast.common.cli.service_target import detected_service_url
+    from robovast.service.client import RobovastClient
+    from robovast.service.interface import RunShareRequest
+    try:
+        return RobovastClient(detected_service_url()) \
+            .run_share(RunShareRequest(campaign_id=campaign_id)).model_dump()
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
+
+
 def cleanup_campaign_data(campaign_id: str = "", force: bool = False) -> dict:
     """Delete campaign result data (object-store bucket(s)) for a cluster campaign.
 
@@ -1149,6 +1170,7 @@ _TOOLS = [
     get_postprocessing,
     update_postprocessing,
     run_postprocessing,
+    run_share,
     cleanup_campaign_data,
     delete_campaign,
     get_campaign_download,

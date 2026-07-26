@@ -52,7 +52,7 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 
-from robovast.execution.control_server import Phase, Status, is_running
+from robovast.execution.control_server import Status, is_running
 from robovast.service.client import LocalTransport
 from robovast.service.interface import (ActionResult, JobCounts, JobSummary,
                                         ListJobsResponse, LogChunk,
@@ -69,7 +69,7 @@ class ClusterService(LocalTransport):
     """Interface implementation that drives campaigns in-process over Kubernetes."""
 
     def __init__(self, namespace=None, cluster_config_name=None,
-                 cluster_config_kwargs=None, image=None, store=None,
+                 cluster_config_kwargs=None, store=None,
                  reap_on_start=True, kube_context=None):
         super().__init__(store=store)
         self.namespace = namespace or os.environ.get("ROBOVAST_NAMESPACE", "default")
@@ -84,7 +84,6 @@ class ClusterService(LocalTransport):
         if self._config_kwargs is None:
             raw = os.environ.get("ROBOVAST_CLUSTER_CONFIG_KWARGS")
             self._config_kwargs = json.loads(raw) if raw else {}
-        self._image = image  # resolved lazily
         # Off-cluster + embedded MinIO: one persistent kubectl port-forward for the
         # service lifetime, giving the in-process driver's storage client a
         # host-reachable S3 endpoint (see _driver_s3_endpoint / _cluster_config).
@@ -242,9 +241,6 @@ class ClusterService(LocalTransport):
             except Exception:  # noqa: BLE001 - best-effort teardown
                 pf.kill()
 
-    def _resolve_image(self):
-        from robovast.common.execution import resolve_controller_image
-        return self._image or resolve_controller_image()
 
     def _load_kube(self):
         from robovast.common.kube import load_kube_config
@@ -288,8 +284,7 @@ class ClusterService(LocalTransport):
         return RunOptions(gui=False,
                           postprocess=bool(request.postprocess),
                           upload_to_share=bool(getattr(request, "upload_to_share", False)),
-                          namespace=self.namespace,
-                          controller_image=self._resolve_image())
+                          namespace=self.namespace)
 
     def _postprocess_in_process(self) -> bool:
         """False: the builder chains postprocessing before its upload.
@@ -354,14 +349,25 @@ class ClusterService(LocalTransport):
     def _status_from_disk(self, campaign_id: str) -> Status:
         """Fallback for a campaign this process is not driving.
 
-        Overrides the local disk lookup: the durable home is the object store, so a
-        past campaign (or one lost to a service restart) is explained from the
-        ``_execution/outcome.json`` published there.
+        Precedence, matching what ``_summary_for``/``list_campaigns`` already do so the
+        per-campaign status can never disagree with the list view:
+
+        1. the durable ``_execution/outcome.json`` published to the object store (the
+           canonical terminal record — ``finished`` / ``failed`` / ``stopped``, plus any
+           ``postprocessing_error`` / ``share_error``);
+        2. otherwise reconstruct from the campaign's on-disk artifacts. Off-cluster the
+           driver downloads every campaign under the local results root, so a campaign
+           whose runs finished but that never got a durable outcome (e.g. an older run,
+           or one lost to a restart) reconstructs as ``finished`` from its ``test.xml``
+           results instead of a bare ``unknown``. In-pod there is no local scratch, so
+           this yields ``unknown`` for a missing dir — the same answer as before.
         """
         outcome = self._read_outcome(campaign_id)
         if outcome is not None:
             return outcome
-        return Status(phase=Phase.UNKNOWN, campaign_id=campaign_id)
+        from robovast.execution.status_recovery import \
+            reconstruct_status_from_disk
+        return reconstruct_status_from_disk(self._campaigns_root() / campaign_id)
 
     def get_campaign_logs(self, campaign_id: str, offset: int = 0):
         """Serve the unified infrastructure log — live pod scratch, then object store.
@@ -946,20 +952,57 @@ class ClusterService(LocalTransport):
         from robovast.execution.cluster_execution import in_pod_storage
         from robovast.execution.cluster_execution.postprocess_job import \
             postprocess_campaign
+        from robovast.execution.status_recovery import record_step_outcome
 
         campaign_root = self.fetch_campaign(request.campaign_id, force=True)
         cfg = self._cluster_config()
         ok, message = postprocess_campaign(
             cfg, request.campaign_id, str(campaign_root), self.namespace,
-            self._resolve_image(), force=request.force, skip=list(request.skip or []))
-        if not ok:
-            return ActionResult(ok=False, message=message)
-        # Publish the refreshed derived data back to the durable home.
+            force=request.force, skip=list(request.skip or []))
+        # Refresh the durable outcome (success clears postprocessing_error; failure
+        # records it) and publish _execution back to the object store on *either* path,
+        # so the result — including the failure's postprocessing.log — survives a
+        # restart. Without this a failed re-run left no durable trace and the campaign
+        # reconstructed as stale/unknown.
+        record_step_outcome(campaign_root, postprocessing=(ok, message))
         bucket, prefix = in_pod_storage.campaign_storage_location(cfg, request.campaign_id)
         storage = in_pod_storage.storage_client_for(cfg)
         n = storage.upload_dir(str(Path(campaign_root) / "_execution"),
                                bucket, f"{prefix}_execution")
-        return ActionResult(ok=True, message=f"{message}; published {n} file(s)")
+        return ActionResult(ok=ok, message=f"{message}; published {n} file(s)")
+
+    def run_share(self, request) -> ActionResult:
+        """(Re)trigger upload-to-share for a cluster campaign, from the object store.
+
+        Fetches the campaign to scratch and streams it to the env-configured provider
+        (``preflight_upload_to_share`` fails loudly if ``ROBOVAST_SHARE_TYPE`` is unset),
+        then records + publishes the outcome (clear/set ``share_error``). Touches no
+        ``self._campaigns`` entry, so it works purely from durable storage after a
+        service restart. Adjusting the share env and re-triggering re-uploads to the new
+        provider — the share analog of an adapted-parameter re-postprocess.
+        """
+        from robovast.common.status import failure_detail
+        from robovast.execution.backends import RunOptions
+        from robovast.execution.cluster_execution import in_pod_storage
+        from robovast.execution.control_server import ControllerState
+        from robovast.execution.status_recovery import record_step_outcome
+
+        campaign_root = self.fetch_campaign(request.campaign_id, force=True)
+        backend = self._build_backend(ControllerState())
+        options = RunOptions(gui=False, upload_to_share=True, namespace=self.namespace)
+        try:
+            backend.preflight_upload_to_share()
+            backend.share_campaign(str(campaign_root), options)
+            ok, message = True, "upload-to-share complete"
+        except Exception as e:  # noqa: BLE001 - surfaced via ActionResult + share_error
+            ok, message = False, failure_detail(e)
+        record_step_outcome(campaign_root, share=(ok, message))
+        cfg = self._cluster_config()
+        bucket, prefix = in_pod_storage.campaign_storage_location(cfg, request.campaign_id)
+        storage = in_pod_storage.storage_client_for(cfg)
+        storage.upload_dir(str(Path(campaign_root) / "_execution"),
+                           bucket, f"{prefix}_execution")
+        return ActionResult(ok=ok, message=message)
 
     def campaign_tar_stream(self, campaign_id: str):
         """Yield a ``tar.gz`` of the postprocessed campaign, streamed from the object store.

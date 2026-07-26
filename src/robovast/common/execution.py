@@ -968,7 +968,8 @@ def _get_image_revision(image: str) -> str:
     return 'unknown'
 
 
-def create_execution_yaml(runs, output_dir, execution_params=None, context=None):
+def create_execution_yaml(runs, output_dir, execution_params=None, context=None,
+                          image_digest=None):
     """Create execution.yaml file with ISO formatted timestamp.
 
     Args:
@@ -976,6 +977,11 @@ def create_execution_yaml(runs, output_dir, execution_params=None, context=None)
         output_dir: Directory where execution.yaml will be created
         execution_params: Dictionary containing execution parameters (run_as_user, env, etc.)
         context: Kubernetes context name to use. ``None`` uses the active context.
+        image_digest: The immutable ``repo@sha256:…`` the run pods actually used, when
+            known (see ``KubernetesBackend._capture_image_digest``). Recorded as
+            ``image_revision`` so a floating ``:latest`` is pinned to the exact image the
+            runs ran — and postprocessing reuses it (``campaign_execution_image``). Falls
+            back to the local docker image id (``unknown`` off-cluster) when None.
     """
     if execution_params is None:
         execution_params = {}
@@ -992,7 +998,7 @@ def create_execution_yaml(runs, output_dir, execution_params=None, context=None)
         'runs': runs,
         'execution_type': 'cluster',
         'image': image,
-        'image_revision': _get_image_revision(image),
+        'image_revision': image_digest or _get_image_revision(image),
     }
 
     # Add run_as_user if provided

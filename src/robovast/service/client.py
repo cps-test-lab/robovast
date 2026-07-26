@@ -680,19 +680,25 @@ class LocalTransport(RobovastInterface):
                 if campaign_defines_postprocessing(
                         str(Path(results_dir) / campaign_id)):
                     state.update(postprocessed=True)
+                state.update(postprocessing_error=None)
                 state.set_phase(Phase.FINISHED)
             else:
-                entry.error = message
-                state.update(error=message)
-                state.set_phase(Phase.FAILED, stage=f"postprocessing failed: {message}")
-                self._record_outcome(campaign_id, results_dir, state)
+                # The runs finished — a postprocessing failure keeps phase=finished
+                # (not a run failure) and records the reason on its own field, so it is
+                # re-triggerable and distinct from a failed run. Mirrors the cluster
+                # auto-chain in controller._chain_postprocessing.
+                state.update(postprocessing_error=message, postprocessed=False)
+                state.set_phase(Phase.FINISHED, stage=f"postprocessing failed: {message}")
         except Exception as e:  # noqa: BLE001 - surfaced via status
             logger.exception("Postprocessing for %s failed", campaign_id)
-            entry.error = str(e)
-            state.update(error=failure_detail(e))
-            state.set_phase(Phase.FAILED, stage=f"postprocessing: {e}")
-            self._record_outcome(campaign_id, results_dir, state)
+            state.update(postprocessing_error=failure_detail(e), postprocessed=False)
+            state.set_phase(Phase.FINISHED, stage=f"postprocessing failed: {e}")
         finally:
+            # Re-write the durable outcome to reflect the final postprocessing state
+            # (_finish_campaign wrote one before this ran, when postprocessing was still
+            # pending). Success or failure, one record now carries the accurate
+            # postprocessed / postprocessing_error / share_error snapshot.
+            self._record_outcome(campaign_id, results_dir, state)
             remove_campaign_log_handler(handler)
 
     def _record_outcome(self, campaign_id, results_dir, state):
@@ -989,6 +995,38 @@ class LocalTransport(RobovastInterface):
             results_dir=str(campaign_dir.parent), campaign=request.campaign_id,
             vast_file=str(override), force=request.force,
             skip=list(request.skip or []))
+        # Refresh the durable outcome so the re-run's result survives a restart: a
+        # success clears any stale postprocessing_error, a failure records the reason —
+        # on a campaign no longer tracked in memory (post-restart) this is the only
+        # place that state lives.
+        from robovast.execution.status_recovery import record_step_outcome
+        record_step_outcome(campaign_dir, postprocessing=(ok, message))
+        return ActionResult(ok=ok, message=message)
+
+    def run_share(self, request) -> ActionResult:
+        """(Re)trigger upload-to-share for one finished campaign, from disk.
+
+        Uses the on-disk campaign (no live in-memory entry), so it works after a
+        `vast serve` restart. Local ``share_campaign`` writes the tar.gz to the archive
+        dir; the durable outcome's ``share_error`` is cleared on success / set on
+        failure so the result survives a restart.
+        """
+        from robovast.execution.backends import RunOptions
+        from robovast.execution.control_server import ControllerState
+        from robovast.execution.status_recovery import record_step_outcome
+        campaign_dir = self._campaign_dir(request.campaign_id)
+        if not campaign_dir.is_dir():
+            return ActionResult(
+                ok=False, message=f"campaign {request.campaign_id!r} has no local data")
+        backend = self._build_backend(ControllerState())
+        options = RunOptions(gui=False, upload_to_share=True)
+        try:
+            backend.preflight_upload_to_share()
+            backend.share_campaign(str(campaign_dir), options)
+            ok, message = True, "upload-to-share complete"
+        except Exception as e:  # noqa: BLE001 - surfaced via ActionResult + share_error
+            ok, message = False, failure_detail(e)
+        record_step_outcome(campaign_dir, share=(ok, message))
         return ActionResult(ok=ok, message=message)
 
     # -- validation / preview / authoring help (config editor) --------------
@@ -1530,6 +1568,11 @@ class HTTPTransport(RobovastInterface):
     def run_postprocessing(self, request) -> ActionResult:
         return ActionResult.model_validate(self._post(
             Routes.campaign_postprocessing_run(request.campaign_id),
+            json=request.model_dump()))
+
+    def run_share(self, request) -> ActionResult:
+        return ActionResult.model_validate(self._post(
+            Routes.campaign_share_run(request.campaign_id),
             json=request.model_dump()))
 
     # -- validation / preview / authoring help (config editor) --------------

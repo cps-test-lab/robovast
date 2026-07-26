@@ -85,8 +85,12 @@ def campaign_execution_image(campaign_dir) -> str:
 
     This is the system-under-test's image — the only place its custom ROS2 message
     types deserialize — and the same source the local path feeds to
-    ``docker_exec.sh --image``. Raises if it is absent rather than silently
-    converting in the wrong image.
+    ``docker_exec.sh --image``. Prefers the pinned ``image_revision`` when it is an
+    immutable ``repo@sha256:…`` digest (recorded at run time, see
+    ``create_execution_yaml`` / ``KubernetesBackend._capture_image_digest``) so a
+    re-postprocess deserializes bags against the *exact* image the runs recorded them
+    with, not whatever a floating ``:latest`` resolves to now. Falls back to the
+    ``image`` tag. Raises if neither is present rather than converting in the wrong image.
     """
     import os  # noqa: PLC0415
 
@@ -95,9 +99,13 @@ def campaign_execution_image(campaign_dir) -> str:
     path = os.path.join(str(campaign_dir), "_execution", "execution.yaml")
     try:
         with open(path, "r", encoding="utf-8") as f:
-            image = (yaml.safe_load(f) or {}).get("image")
+            data = yaml.safe_load(f) or {}
     except (OSError, yaml.YAMLError) as e:
         raise ValueError(f"cannot read the campaign's execution image from {path}: {e}") from e
+    revision = data.get("image_revision")
+    if isinstance(revision, str) and "@sha256:" in revision:
+        return revision
+    image = data.get("image")
     if not image:
         raise ValueError(
             f"no execution image recorded in {path}; cannot pick the image whose "
@@ -124,17 +132,18 @@ def sync_outputs(cluster_config, campaign_id: str, campaign_root: str) -> int:
 
 
 def campaign_vast(campaign_root) -> str:
-    """The campaign's snapshotted ``.vast`` (``<campaign>/_config/*.vast``)."""
-    from pathlib import Path  # noqa: PLC0415
+    """The `.vast` postprocessing should use: the latest edited override under
+    ``_control/postprocess/rev-N.vast`` if any, else the immutable ``_config/``
+    snapshot. Resolved through the shared ``common.postprocess_config`` helper so the
+    cluster conversion Job honors re-run parameter edits exactly like the local path.
+    """
+    from robovast.common.postprocess_config import effective_vast  # noqa: PLC0415
 
-    vasts = sorted(Path(campaign_root).joinpath("_config").glob("*.vast"))
-    if not vasts:
-        raise ValueError(f"no .vast under {campaign_root}/_config; cannot postprocess")
-    return str(vasts[0])
+    return str(effective_vast(campaign_root))
 
 
 def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,
-                         namespace: str, controller_image: str, force: bool = False,
+                         namespace: str, force: bool = False,
                          skip=None, skip_rosout: bool = False) -> tuple:
     """Analysis postprocessing for one campaign, in-cluster. Returns ``(ok, message)``.
 
@@ -156,8 +165,7 @@ def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,
     if rosbag_cmds:
         image = campaign_execution_image(campaign_root)
         ok, message = run_conversion_job(
-            cluster_config, campaign_id, namespace, image, rosbag_cmds,
-            controller_image, force=force)
+            cluster_config, campaign_id, namespace, image, rosbag_cmds, force=force)
         # Sync the Job's outputs regardless of outcome. The conversion tees its
         # stdout/stderr to postprocessing.log and mirrors /out to the object store
         # even on failure, so this lands the POSTPROCESSING section (with the
@@ -297,8 +305,56 @@ def _short_job_name(prefix: str, campaign: str) -> str:
     return f"{prefix}{head}-{digest}"
 
 
+#: Prefix for the per-campaign ConfigMap that carries the conversion scripts.
+_SCRIPTS_CM_PREFIX = "robovast-postproc-scripts-"
+
+
+def _scripts_cm_name(campaign_id: str) -> str:
+    return _short_job_name(_SCRIPTS_CM_PREFIX, campaign_id)
+
+
+def scripts_configmap_manifest(campaign_id: str, namespace: str) -> dict:
+    """A ConfigMap carrying the *driver's own* conversion scripts.
+
+    Built from ``robovast.results_processing.data`` — the same package dir the local
+    path bind-mounts via ``docker_exec.sh -v <scripts>:/scripts``. Mounting this in the
+    conversion Job (instead of copying ``/scripts`` from a separately-versioned
+    controller image) makes the in-cluster scripts always match the driver that
+    generated the conversion command, so the driver/script version skew that produced
+    the ``--output-root`` failure cannot occur on any exec variant. The scripts are
+    self-contained (stdlib + ROS2 libs + one sibling, no ``robovast`` import) and small
+    (well under the 1 MiB ConfigMap limit), so a plain text ConfigMap suffices.
+    """
+    from importlib.resources import files  # noqa: PLC0415
+
+    from robovast.execution.cluster_execution.cluster_execution import (  # noqa: PLC0415
+        _label_safe_campaign)
+
+    data_dir = files("robovast.results_processing.data")
+    payload = {}
+    for entry in data_dir.iterdir():
+        if entry.name == "__pycache__" or not entry.is_file():
+            continue
+        payload[entry.name] = entry.read_text(encoding="utf-8")
+    if "rosbags_process.py" not in payload:
+        raise RuntimeError(
+            "conversion scripts not found in robovast.results_processing.data; "
+            "cannot build the postprocessing ConfigMap")
+    return {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {
+            "name": _scripts_cm_name(campaign_id),
+            "namespace": namespace,
+            "labels": {"jobgroup": "postprocessing",
+                       "campaign-id": _label_safe_campaign(campaign_id)},
+        },
+        "data": payload,
+    }
+
+
 def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
-                   namespace: str, controller_image: str, force: bool = False) -> dict:
+                   namespace: str, force: bool = False) -> dict:
     """Build the conversion Job manifest.
 
     Args:
@@ -308,9 +364,12 @@ def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
         rosbag_cmds: :func:`rosbag_commands_for` output.
         s3: ``(endpoint, access_key, secret_key, bucket, campaign_prefix)``.
         namespace: Kubernetes namespace.
-        controller_image: An image that has the robovast package — used only by an
-            initContainer to *copy the conversion scripts in*.
         force: Bypass the per-rosbag caches.
+
+    The ``/scripts`` come from a per-campaign ConfigMap (see
+    :func:`scripts_configmap_manifest`) built from the driver's own
+    ``results_processing/data`` — the K8s analog of ``docker_exec.sh``'s
+    ``-v <scripts>:/scripts`` — so the script version always matches the driver.
     """
     from robovast.execution.cluster_execution.cluster_execution import (  # noqa: PLC0415
         _label_safe_campaign)
@@ -347,7 +406,10 @@ def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
                 "spec": {
                     "restartPolicy": "Never",
                     "volumes": [
-                        {"name": "scripts", "emptyDir": {}},
+                        # The driver's own conversion scripts, executable (0755).
+                        {"name": "scripts",
+                         "configMap": {"name": _scripts_cm_name(campaign_id),
+                                       "defaultMode": 0o755}},
                         {"name": "tools", "emptyDir": {}},
                         {"name": "bags", "emptyDir": {}},
                         {"name": "out", "emptyDir": {}},
@@ -355,30 +417,20 @@ def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
                     ],
                     "initContainers": [
                         {
-                            # Mount the conversion scripts in — never baked into the
-                            # SUT image (the K8s analog of docker_exec.sh's -v).
-                            "name": "scripts",
-                            "image": controller_image,
-                            "command": ["python", "-c",
-                                        "import os,shutil,robovast.results_processing.data as d;"
-                                        "shutil.copytree(os.path.dirname(d.__file__),'/scripts',"
-                                        "dirs_exist_ok=True)"],
-                            "volumeMounts": [{"name": "scripts", "mountPath": "/scripts"}],
-                        },
-                        {
                             # mc for the upload + mirror the campaign (rosbags) down.
+                            # (The scripts are no longer copied by an initContainer —
+                            # they arrive read-only from the ConfigMap volume above.)
                             "name": "s3-init",
                             "image": SIDECAR_IMAGE,
                             "command": ["sh", "-c",
                                         'cp "$(command -v mc)" /tools/mc && '
-                                        'chmod +x /tools/mc /scripts/*.sh 2>/dev/null; '
+                                        'chmod +x /tools/mc; '
                                         'mc alias set mystore "$S3_ENDPOINT" "$S3_ACCESS_KEY" '
                                         '"$S3_SECRET_KEY" && '
                                         'mc mirror "mystore/$S3_BUCKET/$S3_CAMPAIGN_PREFIX" /bags/'],
                             "env": s3_env,
                             "volumeMounts": [
                                 {"name": "tools", "mountPath": "/tools"},
-                                {"name": "scripts", "mountPath": "/scripts"},
                                 {"name": "bags", "mountPath": "/bags"},
                             ],
                         },
@@ -405,7 +457,7 @@ def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
 
 
 def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image: str,
-                       rosbag_cmds: list, controller_image: str, force: bool = False,
+                       rosbag_cmds: list, force: bool = False,
                        timeout: int = _DEFAULT_TIMEOUT) -> tuple:
     """Create the conversion Job and wait for it. Returns ``(ok, message)``.
 
@@ -424,32 +476,57 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image: 
     access_key, secret_key = cluster_config.get_s3_credentials()
     s3 = (cluster_config.get_s3_endpoint(), access_key, secret_key, bucket, campaign_prefix)
 
-    manifest = build_manifest(campaign_id, image, rosbag_cmds, s3, namespace,
-                              controller_image, force=force)
+    manifest = build_manifest(campaign_id, image, rosbag_cmds, s3, namespace, force=force)
     name = manifest["metadata"]["name"]
+    core = client.CoreV1Api()
     batch = client.BatchV1Api()
-    try:
-        batch.create_namespaced_job(namespace=namespace, body=manifest)
-    except ApiException as e:
-        if e.status != 409:  # already exists → fall through and wait on it
-            return False, f"could not create postprocessing job: {e}"
-    logger.info("Postprocessing job %s created (image=%s)", name, image)
 
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+    # The conversion scripts arrive as a per-campaign ConfigMap mounted at /scripts —
+    # the driver's own copy, so no controller-image version skew. Create it before the
+    # Job (the pod waits in ContainerCreating until the volume source exists) and delete
+    # it once the Job is done.
+    cm = scripts_configmap_manifest(campaign_id, namespace)
+    cm_name = cm["metadata"]["name"]
+    try:
+        core.create_namespaced_config_map(namespace=namespace, body=cm)
+    except ApiException as e:
+        if e.status == 409:  # a stale copy from a prior run — replace it
+            core.replace_namespaced_config_map(name=cm_name, namespace=namespace, body=cm)
+        else:
+            return False, f"could not create postprocessing scripts ConfigMap: {e}"
+
+    try:
         try:
-            status = batch.read_namespaced_job_status(name=name, namespace=namespace).status
+            batch.create_namespaced_job(namespace=namespace, body=manifest)
         except ApiException as e:
-            if e.status == 404:  # reaped (ttl) — treat as finished
-                return True, "postprocessing job finished (reaped)"
-            return False, f"could not read postprocessing job status: {e}"
-        if not status.active:
-            if status.succeeded:
-                logger.info("Postprocessing job %s succeeded", name)
-                return True, "rosbag conversion complete"
-            if status.failed:
-                return False, (f"postprocessing job {name} failed — see the "
-                               f"POSTPROCESSING section of the campaign log for the "
-                               f"conversion error (kubectl logs job/{name} -n {namespace})")
-        time.sleep(_POLL_SECONDS)
-    return False, f"postprocessing job {name} timed out after {timeout}s"
+            if e.status != 409:  # already exists → fall through and wait on it
+                return False, f"could not create postprocessing job: {e}"
+        logger.info("Postprocessing job %s created (image=%s)", name, image)
+
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                status = batch.read_namespaced_job_status(
+                    name=name, namespace=namespace).status
+            except ApiException as e:
+                if e.status == 404:  # reaped (ttl) — treat as finished
+                    return True, "postprocessing job finished (reaped)"
+                return False, f"could not read postprocessing job status: {e}"
+            if not status.active:
+                if status.succeeded:
+                    logger.info("Postprocessing job %s succeeded", name)
+                    return True, "rosbag conversion complete"
+                if status.failed:
+                    return False, (f"postprocessing job {name} failed — see the "
+                                   f"POSTPROCESSING section of the campaign log for the "
+                                   f"conversion error (kubectl logs job/{name} -n {namespace})")
+            time.sleep(_POLL_SECONDS)
+        return False, f"postprocessing job {name} timed out after {timeout}s"
+    finally:
+        # Best-effort cleanup of the scripts ConfigMap (labeled for manual sweep if the
+        # driver dies before this runs). The Job's own ttlSecondsAfterFinished reaps it.
+        try:
+            core.delete_namespaced_config_map(name=cm_name, namespace=namespace)
+        except ApiException as e:
+            if e.status != 404:
+                logger.warning("Could not delete scripts ConfigMap %s: %s", cm_name, e)

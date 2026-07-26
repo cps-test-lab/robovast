@@ -158,6 +158,18 @@ class Status(BaseModel):
     # with only the minimal (pre-postprocess) data. Drives whether a download is the
     # postprocessed archive or the minimal campaign data.
     postprocessed: bool = False
+    # Reason the campaign's most recent postprocessing attempt failed, or ``None`` when
+    # it succeeded or never ran. A separate fact from ``phase``: a campaign whose runs
+    # all finished but whose postprocessing failed stays ``phase == "finished"`` (the
+    # runs are the deliverable) with ``postprocessed == False`` and this set — distinct
+    # from a run failure (``phase == "failed"``). Cleared on a successful (re-)run.
+    postprocessing_error: Optional[str] = None
+    # Reason the campaign's most recent upload-to-share attempt failed, or ``None`` when
+    # it succeeded or was never requested. Like ``postprocessing_error`` this is a
+    # separate fact from ``phase``: a share failure keeps ``phase == "finished"`` (the
+    # runs are the deliverable) and is re-triggerable from disk (service ``run_share``).
+    # Cleared on a successful (re-)triggered upload.
+    share_error: Optional[str] = None
     extra: dict = Field(default_factory=dict)
     updated_at: float = Field(default_factory=time.time)
 

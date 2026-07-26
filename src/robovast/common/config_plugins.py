@@ -373,3 +373,49 @@ def ensure_workspace_plugins(vast_dir: str, specs, force: bool = False) -> str |
         return None
     _prepend_sys_path(target_dir)
     return target_dir
+
+
+def _plugin_specs_from_vast(vast_path: str) -> list:
+    """The ``plugins:`` list (pip requirement specs) from a ``.vast``, or ``[]``.
+
+    Read straight from YAML — not the full validated config — so it also works on an
+    override revision and never fails on an unrelated schema issue.
+    """
+    import yaml  # noqa: PLC0415
+    try:
+        with open(vast_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except (OSError, yaml.YAMLError):
+        return []
+    specs = data.get("plugins")
+    if not isinstance(specs, list):
+        return []
+    return [s for s in specs if isinstance(s, str) and s.strip()]
+
+
+def ensure_postprocessing_plugins(install_dir: str, vast_path: str | None = None) -> None:
+    """Make a campaign's ``plugins:`` importable for postprocessing.
+
+    Postprocessing plugins resolve off ``sys.path`` exactly like variation plugins
+    (an entry-point name, or the third-party deps a local ``./file.py:Class`` plugin
+    imports). The compose worker only leads ``sys.path`` with ``.robovast_plugins/``
+    inside its *subprocess*, so a later postprocessing pass — a batch analysis run, a
+    search's per-batch ``search.postprocessing`` step, or a re-run in a fresh process /
+    fetched campaign — would not otherwise see them. This installs the recorded specs
+    into ``<install_dir>/.robovast_plugins/`` when absent and leads ``sys.path`` with
+    it; "install if absent" is what lets a re-run after a service restart resolve them.
+
+    *vast_path* names the ``.vast`` whose ``plugins:`` to read; when ``None`` the sole
+    ``.vast`` directly under *install_dir* is used. Best-effort: a genuinely missing
+    plugin surfaces loudly when the plugin is resolved, not here.
+    """
+    if vast_path is None:
+        import glob as _glob  # noqa: PLC0415
+        vasts = sorted(_glob.glob(os.path.join(install_dir, "*.vast")))
+        vast_path = vasts[0] if vasts else None
+    specs = _plugin_specs_from_vast(vast_path) if vast_path else []
+    try:
+        ensure_workspace_plugins(install_dir, specs)
+    except Exception as e:  # noqa: BLE001 - never abort postprocessing on plugin prep
+        logger.warning("Could not prepare postprocessing plugins in %s: %s",
+                       install_dir, e)

@@ -29,47 +29,22 @@ Pure helpers here (no MCP/HTTP) so both the CLI and the service reuse them.
 """
 
 import logging
-import re
 from pathlib import Path
 
 import yaml
 
+# The `.vast` resolver lives in common so the CLI, the service, and the in-cluster
+# conversion Job all resolve the effective (override-aware) config identically.
+from robovast.common.postprocess_config import (config_vast, effective_vast,
+                                                rev_dir, revs)
+
 logger = logging.getLogger(__name__)
 
-_POSTPROCESS_SUBDIR = "_control/postprocess"
-_REV_RE = re.compile(r"^rev-(\d+)\.vast$")
-
-
-def _config_vast(campaign_dir: Path) -> Path:
-    """The immutable snapshot ``.vast`` in ``_config/`` (never modified)."""
-    config_dir = campaign_dir / "_config"
-    vasts = sorted(config_dir.glob("*.vast"))
-    if not vasts:
-        raise ValueError(f"no .vast snapshot in {config_dir}")
-    return vasts[0]
-
-
-def _rev_dir(campaign_dir: Path) -> Path:
-    return campaign_dir / _POSTPROCESS_SUBDIR
-
-
-def _revs(campaign_dir: Path) -> list[tuple[int, Path]]:
-    """All override revisions as ``(n, path)``, ascending."""
-    d = _rev_dir(campaign_dir)
-    if not d.is_dir():
-        return []
-    out = []
-    for p in d.iterdir():
-        m = _REV_RE.match(p.name)
-        if m:
-            out.append((int(m.group(1)), p))
-    return sorted(out)
-
-
-def effective_vast(campaign_dir: Path) -> Path:
-    """The `.vast` postprocessing currently uses: latest override, else snapshot."""
-    revs = _revs(campaign_dir)
-    return revs[-1][1] if revs else _config_vast(campaign_dir)
+# Back-compat aliases for the private names this module used before the resolver
+# moved to common; kept so the rest of this file reads unchanged.
+_config_vast = config_vast
+_rev_dir = rev_dir
+_revs = revs
 
 
 def get_postprocessing(campaign_dir: Path) -> dict:

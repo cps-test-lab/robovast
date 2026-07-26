@@ -234,3 +234,46 @@ def test_token_env_names_shared_with_cluster_setup():
     of truth), so a token that works for one works for the other."""
     from robovast.execution.cluster_execution import service_deploy as sd
     assert tuple(sd._GIT_TOKEN_HOST_ENVS) == tuple(cp.GIT_TOKEN_ENVS)
+
+
+# -- postprocessing sees plugins: (install-if-absent + sys.path) --------------
+
+def test_plugin_specs_from_vast(tmp_path):
+    v = tmp_path / "p.vast"
+    v.write_text("version: 1\nplugins:\n  - foo==1.2.3\n  - bar @ git+https://h/r@ref\n"
+                 "  - ''\nexecution:\n  image: i\n")
+    assert cp._plugin_specs_from_vast(str(v)) == ["foo==1.2.3", "bar @ git+https://h/r@ref"]
+    # No plugins key / unreadable → empty (never raises).
+    (tmp_path / "none.vast").write_text("version: 1\nexecution:\n  image: i\n")
+    assert cp._plugin_specs_from_vast(str(tmp_path / "none.vast")) == []
+    assert cp._plugin_specs_from_vast(str(tmp_path / "missing.vast")) == []
+
+
+def test_ensure_postprocessing_plugins_installs_recorded_specs(tmp_path, monkeypatch):
+    """A re-run reads plugins: from the campaign's .vast and installs-if-absent."""
+    seen = {}
+    monkeypatch.setattr(cp, "_install_target",
+                        lambda d, s: (os.makedirs(d, exist_ok=True), seen.update(specs=list(s))))
+    (tmp_path / "c.vast").write_text(
+        "version: 1\nplugins:\n  - made-up-pp==9\nexecution:\n  image: i\n")
+    cp.ensure_postprocessing_plugins(str(tmp_path))  # vast auto-discovered
+    assert seen["specs"] == ["made-up-pp==9"]
+    assert sys.path[0] == str(tmp_path / PLUGIN_DIRNAME)  # led sys.path
+
+
+def test_ensure_postprocessing_plugins_prepends_existing_dir_without_specs(tmp_path):
+    """No plugins: but a staged .robovast_plugins/ (compose) is still put on sys.path."""
+    pd = tmp_path / PLUGIN_DIRNAME
+    pd.mkdir()
+    (tmp_path / "c.vast").write_text("version: 1\nexecution:\n  image: i\n")
+    cp.ensure_postprocessing_plugins(str(tmp_path))
+    assert sys.path[0] == str(pd)
+
+
+def test_ensure_postprocessing_plugins_never_raises(tmp_path, monkeypatch):
+    """A pip failure during postprocessing prep is swallowed (surfaces at plugin use)."""
+    monkeypatch.setattr(cp, "ensure_workspace_plugins",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    (tmp_path / "c.vast").write_text(
+        "version: 1\nplugins:\n  - x==1\nexecution:\n  image: i\n")
+    cp.ensure_postprocessing_plugins(str(tmp_path))  # must not raise

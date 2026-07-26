@@ -73,7 +73,12 @@ The structure inside is domain-specific, but typically includes:
 - ``robovast_version``: Git commit hash of the robovast version used
 - ``runs``: Number of runs per configuration
 - ``execution_type``: ``cluster`` or ``local``
-- ``image``: Docker image with SHA digest
+- ``image``: the configured execution image reference (may be a floating tag such as
+  ``…:latest``)
+- ``image_revision``: the **immutable digest** the run pods actually used
+  (``repo@sha256:…``), captured at run time on the cluster backend. Re-postprocessing
+  reuses this exact image, so a later re-run deserializes the recorded bags against the
+  same image the runs used even if the tag has since moved.
 - ``cluster_info``: Node count, labels, CPU manager policies (cluster only)
 
 ``controller.log`` captures the campaign controller's own log for the whole run —
@@ -370,6 +375,43 @@ directory is unchanged the step is skipped automatically.  Use ``--force`` (or
 .. code-block:: bash
 
    vast results postprocess --force
+
+
+.. _results-retrigger:
+
+Re-running a finished campaign's post-run steps
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The two steps that run *after* a campaign's scenarios finish — analysis
+**postprocessing** and the **upload-to-share** — can each be re-triggered on a
+finished campaign, and each works **from the stored campaign alone**: no live
+campaign process is required, so a re-trigger is available even after the
+``robovast-service`` (``vast serve``) was restarted. Under the web UI's *Monitor*
+each finished campaign's actions menu offers *Retrigger postprocessing* and
+*Retrigger upload-to-share*; the same operations are exposed as the MCP tools
+``run_postprocessing`` and ``run_share`` and, for postprocessing, the
+``vast results postprocess`` CLI.
+
+Because a post-run step is separate from the runs themselves, a **failure of one of
+these steps does not fail the campaign**. The campaign stays ``finished`` (its runs
+are the deliverable and remain downloadable) and the failure is recorded on its own
+field — ``postprocessing_error`` or ``share_error`` — which is durable (it survives a
+service restart) and is surfaced as a warning badge in the UI. Re-running the step
+successfully clears it. This is distinct from a *run* failure, which reports the
+campaign phase as ``failed``.
+
+Editing postprocessing parameters and re-running (see :ref:`results-override`) applies
+on both the local and the cluster backend. For the **upload-to-share**, the target
+provider is taken from the service environment (``ROBOVAST_SHARE_TYPE`` and its
+credentials); adjust it and re-trigger to upload the same campaign to a different
+provider.
+
+Custom postprocessing plugins that need third-party Python packages — an
+entry-point postprocessing command, or the dependencies a local
+``./file.py:Class`` plugin imports — declare those packages in the ``.vast``'s
+top-level ``plugins:`` list (see :ref:`configuration`). They are installed into the
+campaign's ``.robovast_plugins/`` and put on ``sys.path`` before postprocessing
+runs, including on a re-run in a fresh process.
 
 
 .. _results-publish:

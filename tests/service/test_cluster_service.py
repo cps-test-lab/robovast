@@ -26,8 +26,7 @@ def cs():
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tempfile.mkdtemp()))
     # reap_on_start=False: the reaper talks to the kube API, which no test has.
     return ClusterService(namespace="ns1", cluster_config_name="rke2",
-                          cluster_config_kwargs={"foo": "bar"},
-                          image="example/robovast:test", store=store,
+                          cluster_config_kwargs={"foo": "bar"}, store=store,
                           reap_on_start=False)
 
 
@@ -144,7 +143,6 @@ def test_run_options_carry_postprocess_out_of_band(cs):
     opts = cs._run_options(CreateCampaignRequest(workspace_id="ws-x", postprocess=True))
     assert opts.postprocess is True
     assert opts.namespace == "ns1"
-    assert opts.controller_image == "example/robovast:test"
 
     off = cs._run_options(CreateCampaignRequest(workspace_id="ws-x", postprocess=False))
     assert off.postprocess is False

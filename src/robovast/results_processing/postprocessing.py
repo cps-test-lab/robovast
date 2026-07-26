@@ -555,6 +555,13 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     # and metadata is generated for it, never for its siblings.
     scope_dir = campaign_dir
 
+    # Make the campaign's declared `plugins:` importable for postprocessing (entry-point
+    # plugins and the deps of local file-ref plugins), installing them into the
+    # campaign's own .robovast_plugins/ if absent — so a re-run in a fresh process /
+    # fetched campaign (post-restart) resolves them, not just the original run.
+    from robovast.common.config_plugins import ensure_postprocessing_plugins
+    ensure_postprocessing_plugins(campaign_dir, vast_path=vast_path)
+
     # Read execution image from execution.yaml (if available)
     execution_image = None
     execution_yaml_path = os.path.join(campaign_dir, "_execution", "execution.yaml")

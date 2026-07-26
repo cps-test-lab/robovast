@@ -43,7 +43,8 @@ from pathlib import Path
 from typing import Optional
 
 from robovast.common.campaign_data import (get_vast_configuration_info,
-                                           read_execution_outcome)
+                                           read_execution_outcome,
+                                           write_execution_outcome)
 from robovast.common.store import read_campaign_mode
 from robovast.execution.control_server import Phase, Status
 
@@ -92,3 +93,35 @@ def reconstruct_status_from_disk(campaign_dir: str | Path,
                   mode=read_campaign_mode(campaign_dir),
                   postprocessed=postprocessed,
                   runs={"completed": total, "total": expected_total or total})
+
+
+def record_step_outcome(campaign_dir: str | Path, *,
+                        postprocessing: Optional[tuple] = None,
+                        share: Optional[tuple] = None) -> Status:
+    """Persist a re-triggered post-run step's result into ``_execution/outcome.json``.
+
+    A re-trigger (``run_postprocessing`` / ``run_share``) runs on a campaign that is
+    no longer driven in-process — there is no live ``ControllerState`` to update — so
+    the durable outcome is edited straight on disk. The current Status is reconstructed
+    (preferring an existing ``outcome.json``, so a prior share/postproc marker is
+    preserved), the given step's field is refreshed, and it is written back.
+
+    Each of *postprocessing* / *share*, when given, is an ``(ok, message)`` pair; only
+    the provided step is touched. ``phase`` is normalised to ``finished`` — a re-trigger
+    runs on an already-finished campaign and never changes that.
+
+    Returns the written :class:`Status`.
+    """
+    campaign_dir = Path(campaign_dir)
+    status = reconstruct_status_from_disk(campaign_dir)
+    status.phase = Phase.FINISHED
+    if postprocessing is not None:
+        ok, message = postprocessing
+        # ``postprocessed`` follows the on-disk data.db (reconstruct already set it);
+        # here we only clear/set the failure marker.
+        status.postprocessing_error = None if ok else message
+    if share is not None:
+        ok, message = share
+        status.share_error = None if ok else message
+    write_execution_outcome(campaign_dir, status)
+    return status

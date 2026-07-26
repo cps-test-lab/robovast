@@ -576,7 +576,16 @@ When the toggle is set, the driver — the moment the scenario runs finish and
    minimal and untouched (postprocessing only *adds* derived data, which lands in
    the object store and the postprocessed download instead).
 3. **On failure** the campaign is untouched in the object store and the run
-   continues normally — the share is best-effort and never loses results.
+   continues normally — the share is best-effort and never loses results. The failure
+   reason is recorded on the campaign's ``share_error`` (durable across a service
+   restart) and shown as a warning in the UI; the campaign still reports ``finished``.
+
+The upload can be **re-triggered** on a finished campaign at any time — from the web
+UI's *Retrigger upload-to-share* action, the MCP ``run_share`` tool, or
+``POST /campaigns/{id}/share/run`` — and it works from the stored campaign alone, so
+it is available even after the service was restarted. A re-trigger uses the share
+provider currently configured in the environment, so adjusting ``ROBOVAST_SHARE_TYPE``
+and re-triggering uploads to a different provider.
 
 The destination is whatever ``ROBOVAST_SHARE_TYPE`` (and its variables) name in the
 service's ``.env`` — the launch flag is a pure on/off switch and carries no

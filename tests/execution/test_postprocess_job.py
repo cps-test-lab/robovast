@@ -27,7 +27,7 @@ def test_postprocess_syncs_outputs_even_on_conversion_failure(monkeypatch, tmp_p
     synced = []
     _patch_failed_conversion(monkeypatch, synced)
 
-    ok, msg = pj.postprocess_campaign(object(), "camp", str(tmp_path), "ns", "ci")
+    ok, msg = pj.postprocess_campaign(object(), "camp", str(tmp_path), "ns")
 
     assert ok is False and msg == "boom"
     assert synced == [str(tmp_path)]  # synced despite the failure
@@ -43,7 +43,7 @@ def test_postprocess_echoes_conversion_log_to_console_on_failure(
         "rosbags_process.py: error: unrecognized arguments: --output-root\n")
 
     with caplog.at_level(logging.WARNING, logger=pj.logger.name):
-        pj.postprocess_campaign(object(), "camp", str(tmp_path), "ns", "ci")
+        pj.postprocess_campaign(object(), "camp", str(tmp_path), "ns")
 
     assert any("unrecognized arguments: --output-root" in r.message
                for r in caplog.records)

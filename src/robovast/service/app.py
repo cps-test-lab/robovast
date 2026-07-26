@@ -47,7 +47,8 @@ from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         PreviewResponse,
                                         ResourceUsage,
                                         RobovastInterface, Routes,
-                                        RunPostprocessingRequest, Status,
+                                        RunPostprocessingRequest, RunShareRequest,
+                                        Status,
                                         UpdatePostprocessingRequest, UploadGrant,
                                         ValidationReport, VariationTypesResponse,
                                         VersionInfo, WorkspaceInfo, WriteFileRequest,
@@ -467,6 +468,10 @@ def build_app(impl: RobovastInterface):
     @app.post("/campaigns/{campaign_id}/postprocessing/run", response_model=ActionResult)
     def run_postprocessing(campaign_id: str, request: RunPostprocessingRequest) -> ActionResult:
         return _guard(lambda: impl.run_postprocessing(request))
+
+    @app.post("/campaigns/{campaign_id}/share/run", response_model=ActionResult)
+    def run_share(campaign_id: str, request: RunShareRequest) -> ActionResult:
+        return _guard(lambda: impl.run_share(request))
 
     # -- results data query (eval viewer) -----------------------------------
 

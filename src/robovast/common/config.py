@@ -777,16 +777,18 @@ class ConfigV1(BaseModel):
     plugins: Optional[list[str]] = Field(
         default=None,
         description=(
-            "Variation-plugin packages this campaign needs, as pip requirement "
-            "specs. Required for any third-party variation type not built into "
-            "robovast/robovast-nav. Each entry is one of: an index pin "
-            "('my_plugin==1.2.3'); a git URL "
-            "('scenario_mt @ git+https://github.com/org/repo@ref' — for a private "
-            "repo, provide a GitHub token at 'vast exec cluster setup'); or a "
+            "Python plugin packages this campaign needs, as pip requirement specs — "
+            "for both third-party variation types (not built into robovast/robovast-"
+            "nav) and postprocessing plugins (an entry-point postprocessing command, "
+            "or the third-party dependencies a local './file.py:Class' postprocessing "
+            "plugin imports). Each entry is one of: an index pin ('my_plugin==1.2.3'); "
+            "a git URL ('scenario_mt @ git+https://github.com/org/repo@ref' — for a "
+            "private repo, provide a GitHub token at 'vast exec cluster setup'); or a "
             "workspace-relative path to a wheel you uploaded "
-            "('./plugins/my_plugin-1.0-py3-none-any.whl'). They are installed into "
-            "the workspace's '.robovast_plugins/' (with dependencies) before "
-            "composing, so the variation names resolve."),
+            "('./plugins/my_plugin-1.0-py3-none-any.whl'). They are installed into the "
+            "'.robovast_plugins/' dir (with dependencies) and put on sys.path before "
+            "composing (so variation names resolve) and before postprocessing (so "
+            "postprocessing plugins and their deps resolve, including on a re-run)."),
     )
     configuration: Optional[list[ConfigurationConfig]] = None
     execution: ExecutionConfig

@@ -145,6 +145,39 @@ def _short_job_name(campaign: str, config_name: str, run_number: int) -> str:
     return f"{run_part}-{config_part}-{run_number}"
 
 
+def pullable_digest(image_id: str | None) -> str | None:
+    """A pullable ``repo@sha256:…`` ref from a pod container's ``imageID``, or None.
+
+    Kubernetes reports the exact image a container ran as ``status.imageID`` — usually
+    ``registry/repo@sha256:<digest>``, sometimes prefixed (``docker-pullable://…``). We
+    keep only refs that carry an ``@sha256:`` digest (a plain local ``sha256:…`` id is
+    not pullable and is rejected), stripping any ``scheme://`` prefix.
+    """
+    if not image_id:
+        return None
+    ref = image_id.split("://", 1)[-1]
+    return ref if "@sha256:" in ref else None
+
+
+def resolve_image_digest(container_statuses, image: str) -> str | None:
+    """The immutable digest ref of the SUT *image* from a run pod's container statuses.
+
+    Prefers the container whose ``image`` matches the resolved SUT tag; falls back to
+    any container that yields a pullable digest. Returns None when nothing usable is
+    found (an old node, a missing status) — the caller then leaves the image unpinned
+    rather than guessing.
+    """
+    statuses = list(container_statuses or [])
+    for match_wanted in (True, False):
+        for cs in statuses:
+            if match_wanted and getattr(cs, "image", None) != image:
+                continue
+            digest = pullable_digest(getattr(cs, "image_id", None))
+            if digest:
+                return digest
+    return None
+
+
 class BatchJobRunner:
     """Build, submit and clean up the Kubernetes Jobs for **one** batch.
 
@@ -158,6 +191,11 @@ class BatchJobRunner:
     #: Cooperative-stop signal, set by :meth:`for_batch`. Class-level default so a
     #: runner built another way (offline manifest emit, tests) has no stop wired.
     _state = None
+
+    #: SUT image ref and the immutable digest captured from the run pods; class-level
+    #: defaults so a runner built another way (offline manifest emit, tests) is safe.
+    image = None
+    _resolved_image_digest = None
 
     #: Effective per-Job ``activeDeadlineSeconds`` and the set of Jobs already logged
     #: as hard-killed on it. Class-level defaults for runners not built via
@@ -192,6 +230,11 @@ class BatchJobRunner:
         self.campaign_data = campaign_data
         self.configs = campaign_data.get("configs", [])
         self.num_runs = runs
+        # The SUT image ref the run pods use; captured back as an immutable digest
+        # after the batch runs (see run_batch_in_pod) so postprocessing reuses the
+        # exact image the runs recorded their bags with.
+        self.image = image
+        self._resolved_image_digest = None
         # ``None`` ⇒ classic single-batch layout (prepare-run); the controller sets
         # a tag per search batch so jobs/param files/storage prefix don't collide.
         self._batch_tag = batch_tag
@@ -670,6 +713,30 @@ class BatchJobRunner:
                         })
         return manifest
 
+    def _capture_image_digest(self, job_label: str) -> None:
+        """Record the immutable digest the run pods actually used for the SUT image.
+
+        Read once, from this batch's pods while they still exist (before Job cleanup),
+        so ``execution.yaml`` can pin ``:latest`` to the exact ``repo@sha256:…`` the runs
+        ran — and postprocessing reuses that identical image. Best-effort: any failure
+        leaves the image unpinned (the tag), never blocking the campaign.
+        """
+        if self._resolved_image_digest:
+            return  # already captured (search mode calls this per batch)
+        try:
+            pods = self.k8s_client.list_namespaced_pod(
+                self.namespace, label_selector=job_label).items
+            statuses = [cs for pod in pods
+                        for cs in (pod.status.container_statuses or [])]
+            digest = resolve_image_digest(statuses, self.image)
+        except Exception as exc:  # noqa: BLE001 - never block the run on a status read
+            logger.debug("Could not resolve SUT image digest for %s: %s",
+                         self.campaign, exc)
+            return
+        if digest:
+            self._resolved_image_digest = digest
+            logger.info("Pinned SUT image for %s to %s", self.campaign, digest)
+
     # -- in-pod execution ---------------------------------------------------
 
     def run_batch_in_pod(self, campaign_root: str, whole_campaign: bool = False):
@@ -761,6 +828,7 @@ class BatchJobRunner:
             raise CampaignStopped(f"campaign {self.campaign} stopped during batch "
                                   f"{self._batch_tag}")
         logger.info("Batch %s: all jobs finished.", self._batch_tag)
+        self._capture_image_digest(job_label)
         if self._deadline_killed:
             logger.warning(
                 "Batch %s: %d job(s) hard-killed on the %ss deadline: %s",
@@ -913,7 +981,8 @@ class KubernetesBackend(ExecutionBackend):
             create_execution_yaml  # pylint: disable=import-outside-toplevel
         create_execution_yaml(runs, campaign_root,
                               execution_params=execution_params,
-                              context=self.kube_context)
+                              context=self.kube_context,
+                              image_digest=getattr(runner, "_resolved_image_digest", None))
 
     def finalize_campaign(self, campaign_root: str) -> None:
         """Publish the canonical campaign to storage so the bucket matches local.

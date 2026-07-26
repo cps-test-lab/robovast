@@ -16,9 +16,12 @@ from robovast.execution.control_server import Phase
 
 
 def _state(stop_requested, phase=Phase.RUNNING):
-    return types.SimpleNamespace(stop_requested=stop_requested,
-                                 set_phase=lambda *a, **k: None,
-                                 snapshot=lambda: types.SimpleNamespace(phase=phase))
+    ns = types.SimpleNamespace(stop_requested=stop_requested,
+                               set_phase=lambda *a, **k: None,
+                               fields={})
+    ns.update = lambda **kw: ns.fields.update(kw)
+    ns.snapshot = lambda: types.SimpleNamespace(phase=phase)
+    return ns
 
 
 class _RecordingBackend:
@@ -37,14 +40,21 @@ def _patch_tail(monkeypatch, calls):
                         lambda *a, **k: calls.append("postprocess"))
     monkeypatch.setattr(controller, "_finalize",
                         lambda *a, **k: calls.append("finalize"))
+    # The finish tail now writes one durable outcome after share+postprocess; these
+    # tests cover ordering/isolation, so stub the recorder out.
+    monkeypatch.setattr(controller, "_record_controller_outcome",
+                        lambda *a, **k: None)
 
 
 def test_share_runs_before_postprocessing(monkeypatch):
     backend = _RecordingBackend()
     _patch_tail(monkeypatch, backend.calls)
+    state = _state(False)
     controller._finish_campaign(
-        backend, "/root", "camp-1", _state(False), RunOptions(upload_to_share=True))
+        backend, "/root", "camp-1", state, RunOptions(upload_to_share=True))
     assert backend.calls == ["share", "postprocess", "finalize"]
+    # A successful share clears the failure marker.
+    assert state.fields.get("share_error") is None
 
 
 def test_share_skipped_when_toggle_off(monkeypatch):
@@ -66,10 +76,13 @@ def test_share_skipped_on_stop(monkeypatch):
 def test_share_failure_still_runs_postprocess_and_finalize(monkeypatch):
     backend = _RecordingBackend(fail=True)
     _patch_tail(monkeypatch, backend.calls)
+    state = _state(False)
     controller._finish_campaign(
-        backend, "/root", "camp-1", _state(False), RunOptions(upload_to_share=True))
+        backend, "/root", "camp-1", state, RunOptions(upload_to_share=True))
     # share raised but was isolated; postprocess + finalize still ran.
     assert backend.calls == ["share", "postprocess", "finalize"]
+    # The failure is recorded on its own field (not swallowed), not raised.
+    assert state.fields.get("share_error")
 
 
 class _RecordingNotifier:
