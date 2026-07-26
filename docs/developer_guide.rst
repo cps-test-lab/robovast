@@ -1226,6 +1226,79 @@ mappings documented under *Per-Cluster Resource Limits* in
    :undoc-members:
 
 
+.. _kueue-internals:
+
+Job admission (Kueue) internals
+-------------------------------
+
+User-facing behaviour is in :doc:`cluster_execution`; this is the machinery
+behind it. RoboVAST targets Kueue |kueue_version|.
+
+.. |kueue_version| replace:: 0.16.1
+
+**Objects.** A single ``ResourceFlavor`` (``default-flavor``) represents the
+homogeneous node pool; a ``ClusterQueue`` (``robovast-cluster-queue``) holds the
+combined CPU/memory quota, sized from ``allocatable − requested`` at setup time;
+a ``LocalQueue`` named ``robovast`` in the execution namespace is the submission
+target. Each generated Job carries the **label**
+``kueue.x-k8s.io/queue-name: robovast`` — Kueue 0.16 keys queue membership off
+the label, not an annotation.
+
+**Why there is an admission preflight.** Because every Job is labelled into the
+LocalQueue, Kueue creates it **suspended** and starts it only once the queue
+admits it. A broken admission path therefore does not fail the submit — the jobs
+simply never start, with no pod, no event and no error. Nothing about that state
+looks like a failure: the Job counts as active, the campaign log says "still
+running", and the ``activeDeadlineSeconds`` backstop cannot fire because its
+timer does not run while a Job is suspended.
+
+``verify_kueue_admission_ready()`` therefore runs before any Job is created (and
+again every 30 s while a batch waits, so a queue broken *mid*-campaign is caught
+too). It fails the campaign with an actionable message when:
+
+* the ``LocalQueue`` does not exist in the execution namespace — setup was never
+  run, or the campaign targets a different namespace;
+* the ``ClusterQueue`` it points at does not exist;
+* the ``ClusterQueue`` is stopped (``stopPolicy: Hold``);
+* the ``ClusterQueue`` reports ``Active=False`` — most often a missing
+  ``ResourceFlavor``, which leaves every object present but unusable.
+
+The same check runs as a post-condition of ``vast execution cluster setup``, so
+setup cannot report success while leaving the queues unusable.
+
+**Quota exhaustion is not a failure.** A queue whose capacity is currently used
+up is healthy, and the correct response is to wait — that is Kueue's normal
+operating state. The preflight only ever looks at the *structure* of the
+admission path. While jobs wait, the batch logs Kueue's own reason (read from
+each Workload's ``QuotaReserved`` condition) instead of a bare "still running",
+and ``list_campaign_jobs`` reports them ``blocked`` with that reason as
+``detail``.
+
+The preflight reads ``localqueues`` (namespaced) and ``clusterqueues``
+(cluster-scoped); both grants are on the service's Role and ClusterRole. An
+**existing** deployment must be redeployed to pick them up — until then the check
+reports "cannot verify" and the campaign proceeds, since a missing read
+permission should never block a run that would otherwise work.
+
+**Holding the queue during cleanup.** ``stopPolicy`` lives on the single,
+cluster-scoped ``ClusterQueue`` that every campaign shares. Holding it stops
+*all* admissions — ``Hold`` versus ``HoldAndDrain`` decides only whether
+already-running workloads are preempted, not whose workloads are affected.
+
+Cleaning up **one** campaign therefore does not touch it: doing so would stall
+every other campaign's pending jobs for the length of the cleanup, and a cleanup
+that died in between used to leave the queue held permanently — suspending every
+later campaign forever, indistinguishable from a missing ClusterQueue.
+Per-campaign quota safety does not need the hold: the deletions are label-scoped
+and ordered Workloads-before-Jobs, which is what lets Kueue release that
+campaign's quota cleanly.
+
+A **cluster-wide** cleanup (no campaign given) does hold the queue, since pausing
+everything is the intent. It restores the *previous* ``stopPolicy`` in a
+``finally``, so a concurrent teardown's hold survives and an error can never
+leave the queue stopped.
+
+
 .. _web-ui-internals:
 
 Web UI internals

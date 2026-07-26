@@ -33,10 +33,8 @@ cluster. Internally:
    config files from storage and a main ``robovast`` container that executes the
    scenario. (Variations that declare an auxiliary container get a per-campaign
    aux pod the driver execs into during composition.)
-3. **Queueing (Kueue)** — Jobs are submitted to a dedicated Kueue
-   ``LocalQueue`` (``robovast``).  Kueue's gang-scheduling and resource quotas
-   ensure that jobs are admitted only when sufficient CPU/memory is available,
-   preventing cluster oversubscription.
+3. **Queueing (Kueue)** — Jobs are admitted only when sufficient CPU/memory is
+   available, so a campaign cannot oversubscribe the cluster.
 4. **Result collection** — Jobs upload result files back to the storage bucket,
    and the driver publishes the **canonical campaign** (``campaign.db`` +
    ``_execution`` + results) there. The **object store is the durable home and
@@ -111,9 +109,8 @@ The setup command:
 * Deploys a ``robovast`` pod containing the MinIO S3 server (embedded-storage
   configs such as ``rke2``). External-storage configs (e.g. GCS) deploy no
   helper pod — the bucket is used directly.
-* Installs `Kueue <https://kueue.sigs.k8s.io/>`_ via Helm and creates a
-  ``ClusterQueue`` and ``LocalQueue`` sized to the cluster's available
-  CPU/memory.
+* Installs `Kueue <https://kueue.sigs.k8s.io/>`_ via Helm and sizes its job
+  queue to the cluster's available CPU/memory.
 
 To tear everything down after use:
 
@@ -404,100 +401,27 @@ The output directory contains:
 Job Queueing with Kueue
 -----------------------
 
-RoboVAST uses `Kueue <https://kueue.sigs.k8s.io/>`_ (version |kueue_version|)
-for admission control and resource quotas.
+Cluster jobs are queued by `Kueue <https://kueue.sigs.k8s.io/>`_, which ``vast
+execution cluster setup`` installs and sizes to the cluster. It admits jobs only
+when there is CPU and memory for them, so a large campaign cannot oversubscribe
+the nodes, and several campaigns launched at once share the cluster instead of
+fighting over it. There is nothing to configure — every job RoboVAST creates is
+submitted to the queue automatically.
 
-.. |kueue_version| replace:: 0.16.1
+**Jobs waiting is normal.** A campaign whose jobs sit in the queue is healthy: it
+is waiting for capacity, not stuck. ``vast execution cluster monitor`` and
+``list_campaign_jobs`` report such jobs as ``blocked``, with Kueue's own reason as
+the detail.
 
-**What Kueue does:**
-
-* Admits batch jobs only when the cluster has enough CPU and memory.
-* Queues excess jobs and starts them as capacity becomes available.
-* Prevents oversubscription: no node goes out-of-memory from too many
-  concurrent simulation pods.
-* Enables fair sharing when the cluster is shared with other workloads.
-
-**How it is set up:**
-
-* A single ``ResourceFlavor`` (``default-flavor``) represents the cluster's
-  homogeneous node pool.
-* A ``ClusterQueue`` (``robovast-cluster-queue``) holds the combined CPU/memory
-  quota, sized automatically from ``allocatable − requested`` at setup time.
-* A ``LocalQueue`` named ``robovast`` in the execution namespace is the
-  submission target for every RoboVAST job.
-
-Each generated Job manifest carries the **label**
-``kueue.x-k8s.io/queue-name: robovast`` so Kueue picks it up automatically.
-Kueue 0.16 keys queue membership off the label, not an annotation.
-
-If Kueue is not installed, jobs are still created but are *not* queued —
-they start immediately, which can overload the cluster.
-
-
-You can launch several ``vast execution cluster run`` campaigns at once; Kueue
-keeps the cluster busy by admitting their jobs as capacity frees up.
-
-Admission preflight
-~~~~~~~~~~~~~~~~~~~
-
-Because every Job is labelled into the LocalQueue, Kueue creates it
-**suspended** and starts it only once the queue admits it.  A broken admission
-path therefore does not fail the submit — the jobs simply never start, with no
-pod, no event and no error.  Nothing about that state looks like a failure: the
-Job counts as active, the campaign log says "still running", and the
-``activeDeadlineSeconds`` backstop cannot fire because its timer does not run
-while a Job is suspended.
-
-``verify_kueue_admission_ready()`` therefore runs before any Job is created
-(and again every 30 s while a batch waits, so a queue broken *mid*-campaign is
-caught too).  It fails the campaign with an actionable message when:
-
-* the ``LocalQueue`` does not exist in the execution namespace — setup was never
-  run, or the campaign targets a different namespace;
-* the ``ClusterQueue`` it points at does not exist;
-* the ``ClusterQueue`` is stopped (``stopPolicy: Hold``);
-* the ``ClusterQueue`` reports ``Active=False`` — most often a missing
-  ``ResourceFlavor``, which leaves every object present but unusable.
-
-The same check runs as a post-condition of ``vast execution cluster setup``, so
-setup cannot report success while leaving the queues unusable.
-
-**Quota exhaustion is not a failure.**  A queue whose capacity is currently used
-up is healthy, and the correct response is to wait — that is Kueue's normal
-operating state.  The preflight only ever looks at the *structure* of the
-admission path.  While jobs wait, the batch logs Kueue's own reason (read from
-each Workload's ``QuotaReserved`` condition) instead of a bare "still running",
-and ``list_campaign_jobs`` reports them ``blocked`` with that reason as
-``detail``.
+If the queue is genuinely unusable — setup was never run, or the campaign targets
+a namespace that was never set up — the campaign fails at launch with a message
+naming what is missing, rather than hanging. ``setup`` checks the same thing
+before reporting success.
 
 .. note::
 
-   The preflight reads ``localqueues`` (namespaced) and ``clusterqueues``
-   (cluster-scoped).  Both grants were added to the service's Role and
-   ClusterRole; an **existing** deployment must be redeployed to pick them up.
-   Until then the check reports "cannot verify" and the campaign proceeds — a
-   missing read permission never blocks a run that would otherwise work.
-
-Holding the queue during cleanup
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-``stopPolicy`` lives on the single, cluster-scoped ``ClusterQueue`` that every
-campaign shares.  Holding it stops *all* admissions — ``Hold`` versus
-``HoldAndDrain`` decides only whether already-running workloads are preempted,
-not whose workloads are affected.
-
-Cleaning up **one** campaign therefore does not touch it: doing so would stall
-every other campaign's pending jobs for the length of the cleanup, and a cleanup
-that died in between used to leave the queue held permanently — suspending every
-later campaign forever, indistinguishable from a missing ClusterQueue.
-Per-campaign quota safety does not need the hold: the deletions are label-scoped
-and ordered Workloads-before-Jobs, which is what lets Kueue release that
-campaign's quota cleanly.
-
-A **cluster-wide** cleanup (no campaign given) does hold the queue, since
-pausing everything is the intent.  It restores the *previous* ``stopPolicy`` in
-a ``finally``, so a concurrent teardown's hold survives and an error can never
-leave the queue stopped.
+   Without Kueue installed, jobs are still created but never queued: they all
+   start at once and can overload the cluster.
 
 
 Selecting a Cluster Context
