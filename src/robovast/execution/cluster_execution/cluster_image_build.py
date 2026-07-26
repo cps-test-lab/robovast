@@ -43,6 +43,10 @@ BUILDKIT_IMAGE = "moby/buildkit:rootless"
 _CONTEXT_MOUNT = "/context"
 #: Where the push credential (dockerconfigjson) is mounted for BuildKit.
 _DOCKER_CONFIG_MOUNT = "/docker"
+#: The build image's own CA bundle, and the writable copy we extend with the registry CA
+#: (see the ``SSL_CERT_FILE`` note where the build command is assembled).
+_SYSTEM_CA_BUNDLE = "/etc/ssl/certs/ca-certificates.crt"
+_CA_BUNDLE = "/tmp/robovast-ca-bundle.crt"
 
 
 def concrete_image_ref(registry_prefix: str, tag: str, image_hash: str) -> str:
@@ -128,6 +132,41 @@ def context_fetch_command() -> str:
     )
 
 
+#: Bucket the build context is staged to when the deployment has no shared bucket.
+#: Lowercase and hyphenated because MinIO rejects underscores with an HTTP 400.
+BUILD_CONTEXT_BUCKET = "robovast-image-builds"
+
+
+def build_context_bucket(cluster_config) -> str:
+    """The bucket an experiment-image build stages its context to.
+
+    The deployment's shared bucket when it has one (external-S3 / GCS keep everything
+    there under key prefixes). Otherwise a dedicated bucket of our own — an image build
+    belongs to no campaign, so a per-campaign-bucket deployment has none to hand it.
+    That case used to be refused outright, demanding external-S3 mode, which was never a
+    real requirement: the embedded MinIO is an ordinary S3 endpoint, the Job takes
+    bucket/prefix/endpoint/credentials as plain values, and the S3 client creates a
+    missing bucket exactly as it does for a campaign's own bucket.
+
+    Naming our own bucket is only defensible on the ``s3`` backend, where the namespace
+    is the deployment's own endpoint and ``_ensure_bucket`` can create it. On GCS a
+    bucket name is global to all of Google Cloud — an invented one would collide with a
+    stranger's bucket or 403 — and that client does not create buckets at all, so a
+    missing shared bucket is a configuration error to report, not a name to guess.
+    """
+    shared = cluster_config.get_s3_bucket()
+    if shared:
+        return shared
+    backend = cluster_config.get_storage_backend()
+    if backend != "s3":
+        raise ValueError(
+            f"in-cluster image builds on the '{backend}' storage backend need a bucket "
+            "configured for this deployment (there is no private namespace to create one "
+            "in). Set it at 'vast exec cluster setup' (GCS: -o gcs_bucket=… or "
+            "ROBOVAST_GCS_BUCKET).")
+    return BUILD_CONTEXT_BUCKET
+
+
 def s3_init_env(s3_endpoint, s3_access_key, s3_secret_key, bucket, build_prefix):
     return [
         {'name': 'S3_ENDPOINT', 'value': s3_endpoint},
@@ -153,7 +192,7 @@ def build_job_manifest(*, build_id: str, image_ref: str, campaign_label: str,
                        init_env: list, push_secret_name: str,
                        namespace: str, insecure: bool = False,
                        ca_configmap_name: str = "",
-                       cache_ref: str = "") -> dict:
+                       cache_ref: str = "", host_aliases: list = None) -> dict:
     """A rootless BuildKit Job that fetches the S3 context and builds+pushes *image_ref*.
 
     An init container (``robovast-sidecar``) mirrors the context to an emptyDir; the
@@ -162,9 +201,10 @@ def build_job_manifest(*, build_id: str, image_ref: str, campaign_label: str,
     Secret provisioned at ``vast exec cluster setup`` — the only place registry
     credentials live.
 
-    TLS to a private registry: ``ca_configmap_name`` mounts a CA (key ``ca.pem``) and
-    points BuildKit at it via ``buildkitd.toml`` (proper trust — covers both the
-    registry API and the auth/token endpoint). ``insecure`` instead skips TLS verify
+    TLS to a private registry: ``ca_configmap_name`` mounts a CA (key ``ca.pem``), points
+    BuildKit at it via ``buildkitd.toml`` **and** puts it on ``SSL_CERT_FILE`` — the
+    per-registry ``ca`` covers the registry API, the system pool covers the auth/token
+    endpoint (see the note at the command assembly; one without the other is not enough). ``insecure`` instead skips TLS verify
     (plain HTTP / untrusted cert), e.g. a throwaway cluster-internal registry. Prefer
     a CA over ``insecure`` for anything real. (Pull-side trust for a self-signed
     registry is node-level — the operator configures containerd — and is out of
@@ -224,10 +264,24 @@ def build_job_manifest(*, build_id: str, image_ref: str, campaign_label: str,
                              'readOnly': True})
         toml = (f'[registry."{_registry_host(image_ref)}"]\n'
                 f'  ca=["{_CA_MOUNT}/ca.pem"]\n')
+        # Two mechanisms, because they cover different requests:
+        #
+        # * buildkitd.toml's per-registry ``ca`` — the registry API (blobs, manifests).
+        # * SSL_CERT_FILE — Go's *system* cert pool. The registry's OAuth **token
+        #   endpoint** (the realm from WWW-Authenticate, e.g. /service/token) is fetched
+        #   by the auth transport, which does not consult the per-registry ``ca`` at all:
+        #   with only the toml in place the build failed at "failed to fetch oauth token:
+        #   … x509: certificate signed by unknown authority", having already built and
+        #   exported the image. Appending to the image's bundle in /tmp keeps this working
+        #   for rootless BuildKit, which cannot write /etc/ssl/certs.
         command = ['sh', '-c',
                    f"mkdir -p {_BUILDKIT_CONF_DIR} && "
                    f"cat > {_BUILDKIT_CONF_DIR}/buildkitd.toml <<'BKEOF'\n"
-                   f"{toml}BKEOF\n{buildctl}"]
+                   f"{toml}BKEOF\n"
+                   f"{{ cat {_SYSTEM_CA_BUNDLE} 2>/dev/null || true; "
+                   f"cat {_CA_MOUNT}/ca.pem; }} > {_CA_BUNDLE} && "
+                   f"export SSL_CERT_FILE={_CA_BUNDLE} && "
+                   f"{buildctl}"]
 
     return {
         'apiVersion': 'batch/v1',
@@ -257,6 +311,11 @@ def build_job_manifest(*, build_id: str, image_ref: str, campaign_label: str,
                 },
                 'spec': {
                     'restartPolicy': 'Never',
+                    # Names the cluster's DNS cannot resolve (see
+                    # BaseConfig.get_host_aliases) — without this a push to such a
+                    # registry fails at "lookup <host>: no such host" after the whole
+                    # image has already been built.
+                    **({'hostAliases': host_aliases} if host_aliases else {}),
                     'volumes': volumes,
                     'initContainers': [{
                         'name': 'context-fetch',

@@ -170,7 +170,7 @@ def test_n_reps_override_groups_runs(tmp_path):
     store.close()
 
 
-def test_end_batch_progress_reports_failed_runs(tmp_path):
+def test_end_batch_progress_reports_resultless_runs(tmp_path):
     """When some runs produce no result, the batch-end progress reports the split.
 
     Previously it optimistically set completed == total, hiding partial-batch
@@ -193,7 +193,9 @@ def test_end_batch_progress_reports_failed_runs(tmp_path):
     controller._end_batch_progress()
 
     runs = state.snapshot().runs
-    assert (runs.completed, runs.total, runs.failed) == (3, 4, 1)
+    # The run that produced no artifact counts as no_result, not failed: `failed` is
+    # reserved for a run that delivered a result whose verdict is a failure.
+    assert (runs.completed, runs.total, runs.no_result, runs.failed) == (3, 4, 1, 0)
     store.close()
 
 

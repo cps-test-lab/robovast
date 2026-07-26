@@ -17,15 +17,17 @@
 """Pod-accurate classification shared by the service lister and the CLI monitor."""
 
 import types
+from unittest import mock
 
 from robovast.execution.cluster_execution.cluster_execution import (
     blocked_job_reasons, job_phase, list_jobs_with_phase,
     pod_termination_reason, running_scenario_job_names)
 
 
-def _job(name, *, succeeded=0, active=0, failed=0):
+def _job(name, *, succeeded=0, active=0, failed=0, suspend=False):
     return types.SimpleNamespace(
         metadata=types.SimpleNamespace(name=name, labels={}, annotations={}),
+        spec=types.SimpleNamespace(suspend=suspend),
         status=types.SimpleNamespace(succeeded=succeeded, active=active, failed=failed))
 
 
@@ -193,3 +195,45 @@ def test_list_jobs_with_phase_explains_oom_killed_failure():
               for j, p, d in list_jobs_with_phase(batch, core, "ns", "sel")}
     assert result["oom-job"] == (
         "failed", "OOMKilled: container robovast exceeded its memory limit")
+
+
+def test_list_jobs_with_phase_marks_kueue_suspended_job_blocked():
+    """A Kueue-suspended Job has no pod, so the pod probe cannot see it and it used to
+    report ``pending`` — indistinguishable from a job about to start. It is ``blocked``
+    with Kueue's own wait message."""
+    jobs = [_job("queued-job", suspend=True), _job("running-job", active=1)]
+    core = _Core([_pod("running-job", "Running")])
+    with mock.patch(
+        "robovast.execution.cluster_execution.kubernetes_kueue.workload_wait_reasons",
+        return_value={"queued-job": "ClusterQueue robovast-cluster-queue doesn't exist"},
+    ):
+        result = {j.metadata.name: (p, d)
+                  for j, p, d in list_jobs_with_phase(_Batch(jobs), core, "ns", "sel")}
+    assert result["queued-job"] == (
+        "blocked", "ClusterQueue robovast-cluster-queue doesn't exist")
+    assert result["running-job"] == ("running", None)
+
+
+def test_suspended_job_without_workload_still_reports_blocked():
+    """An unreadable / absent Workload must not downgrade the job back to pending: the
+    status is what makes the hang visible, the message only explains it."""
+    jobs = [_job("queued-job", suspend=True)]
+    with mock.patch(
+        "robovast.execution.cluster_execution.kubernetes_kueue.workload_wait_reasons",
+        return_value={},
+    ):
+        result = {j.metadata.name: (p, d)
+                  for j, p, d in list_jobs_with_phase(_Batch(jobs), _Core([]), "ns", "sel")}
+    phase, detail = result["queued-job"]
+    assert phase == "blocked"
+    assert "Kueue admission" in detail
+
+
+def test_unsuspended_jobs_never_query_kueue():
+    """The common case must not pay for a Workload list on every poll."""
+    jobs = [_job("a", active=1)]
+    with mock.patch(
+        "robovast.execution.cluster_execution.kubernetes_kueue.workload_wait_reasons",
+    ) as wl:
+        list_jobs_with_phase(_Batch(jobs), _Core([_pod("a", "Running")]), "ns", "sel")
+    wl.assert_not_called()

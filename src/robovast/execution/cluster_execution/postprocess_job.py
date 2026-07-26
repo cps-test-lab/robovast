@@ -475,6 +475,21 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image: 
     access_key, secret_key = cluster_config.get_s3_credentials()
     s3 = (cluster_config.get_s3_endpoint(), access_key, secret_key, bucket, campaign_prefix)
 
+    # This Job carries the Kueue queue label too, so a broken admission path suspends it
+    # and the wait below would report a misleading "timed out" after _DEFAULT_TIMEOUT
+    # instead of the actual cause.
+    from robovast.common.errors import CampaignConfigError  # noqa: PLC0415
+
+    from .kubernetes_kueue import (KueueCheckUnavailable,  # noqa: PLC0415
+                                   verify_kueue_admission_ready)
+    try:
+        verify_kueue_admission_ready(namespace=namespace)
+    except CampaignConfigError as e:
+        return False, f"postprocessing cannot be scheduled: {e}"
+    except KueueCheckUnavailable as e:
+        logger.warning("Cannot verify the Kueue admission path (%s); submitting "
+                       "postprocessing anyway.", e)
+
     manifest = build_manifest(campaign_id, image, rosbag_cmds, s3, namespace, force=force)
     name = manifest["metadata"]["name"]
     core = client.CoreV1Api()

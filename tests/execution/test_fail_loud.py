@@ -140,3 +140,182 @@ def test_load_kube_config_prefers_in_cluster():
     from robovast.common.kube import load_kube_config
     with mock.patch.object(kc, "load_incluster_config", return_value=None):
         assert load_kube_config() == "in-cluster"
+
+
+# -- A6: Kueue admission path ------------------------------------------------
+#
+# Every scenario/postprocess Job is labelled into a Kueue LocalQueue, so a broken
+# admission path does not fail the submit — Kueue just suspends the jobs, with no pod,
+# forever. activeDeadlineSeconds cannot rescue them (its timer does not run while
+# suspended), so the batch used to spin "still running" indefinitely.
+
+def _kueue_api(local_queue=None, cluster_queue=None, missing=(), forbidden=()):
+    """A CustomObjectsApi double returning the given objects.
+
+    Names in *missing* raise 404, names in *forbidden* raise 403.
+    """
+    from kubernetes.client import rest
+
+    def _maybe_raise(name):
+        if name in forbidden:
+            raise rest.ApiException(status=403, reason="Forbidden")
+        if name in missing:
+            raise rest.ApiException(status=404, reason="Not Found")
+
+    api = mock.Mock()
+
+    def get_namespaced(group, version, plural, namespace, name):
+        _maybe_raise(name)
+        return local_queue
+
+    def get_cluster(group, version, plural, name):
+        _maybe_raise(name)
+        return cluster_queue
+
+    api.get_namespaced_custom_object.side_effect = get_namespaced
+    api.get_cluster_custom_object.side_effect = get_cluster
+    return api
+
+
+def _verify(api, **kwargs):
+    from robovast.execution.cluster_execution import kubernetes_kueue
+    with mock.patch.object(kubernetes_kueue.client, "CustomObjectsApi",
+                           return_value=api), \
+         mock.patch("robovast.common.kube.load_kube_config"):
+        return kubernetes_kueue.verify_kueue_admission_ready(namespace="ns", **kwargs)
+
+
+_LQ = {"spec": {"clusterQueue": "robovast-cluster-queue"}}
+_CQ_OK = {"spec": {}, "status": {"conditions": [{"type": "Active", "status": "True"}]}}
+
+
+def test_missing_cluster_queue_fails_loudly():
+    """The observed incident: LocalQueue present, ClusterQueue gone. Jobs sat forever
+    and only `kubectl get workloads` revealed why."""
+    from robovast.common.errors import CampaignConfigError
+
+    api = _kueue_api(local_queue=_LQ, missing=("robovast-cluster-queue",))
+    with pytest.raises(CampaignConfigError, match="robovast-cluster-queue"):
+        _verify(api)
+
+
+def test_missing_local_queue_fails_loudly():
+    from robovast.common.errors import CampaignConfigError
+
+    api = _kueue_api(missing=("robovast",))
+    with pytest.raises(CampaignConfigError, match="LocalQueue"):
+        _verify(api)
+
+
+def test_held_cluster_queue_fails_loudly():
+    """A cleanup that died mid-way used to leave stopPolicy=Hold behind, which suspends
+    every later campaign exactly like a missing queue."""
+    from robovast.common.errors import CampaignConfigError
+
+    api = _kueue_api(local_queue=_LQ, cluster_queue={"spec": {"stopPolicy": "Hold"}})
+    with pytest.raises(CampaignConfigError, match="stopped"):
+        _verify(api)
+
+
+def test_inactive_cluster_queue_fails_loudly():
+    """Kueue reports an unusable queue (e.g. missing ResourceFlavor) as Active=False
+    rather than by deleting anything, so every object still looks present."""
+    from robovast.common.errors import CampaignConfigError
+
+    cq = {"spec": {}, "status": {"conditions": [
+        {"type": "Active", "status": "False", "reason": "FlavorNotFound",
+         "message": "flavor default-flavor not found"}]}}
+    api = _kueue_api(local_queue=_LQ, cluster_queue=cq)
+    with pytest.raises(CampaignConfigError, match="FlavorNotFound"):
+        _verify(api)
+
+
+def test_healthy_queue_passes():
+    assert _verify(_kueue_api(local_queue=_LQ, cluster_queue=_CQ_OK)) is None
+
+
+def test_queue_with_no_status_yet_passes():
+    """Right after `cluster setup` the Active condition may not be published yet; an
+    absent condition must not be read as a broken queue."""
+    assert _verify(_kueue_api(local_queue=_LQ, cluster_queue={"spec": {}})) is None
+
+
+def test_forbidden_read_is_not_reported_as_missing():
+    """A missing RBAC grant must never masquerade as a broken queue — the two demand
+    opposite responses, and refusing to run on a 403 would be worse than the hang."""
+    from robovast.execution.cluster_execution.kubernetes_kueue import \
+        KueueCheckUnavailable
+
+    api = _kueue_api(local_queue=_LQ, forbidden=("robovast",))
+    with pytest.raises(KueueCheckUnavailable):
+        _verify(api)
+
+
+def test_quota_exhaustion_is_not_a_failure():
+    """Quota exhaustion is Kueue's normal state — every cluster user meets it — so a
+    healthy but busy queue must keep waiting, not fail the campaign."""
+    busy = {"spec": {"resourceGroups": [{"flavors": [{"resources": [
+        {"name": "cpu", "nominalQuota": "1"}]}]}]},
+        "status": {"conditions": [{"type": "Active", "status": "True"}],
+                   "pendingWorkloads": 5, "admittedWorkloads": 0}}
+    assert _verify(_kueue_api(local_queue=_LQ, cluster_queue=busy)) is None
+
+
+# -- A7: the shared ClusterQueue is not held for one campaign's cleanup -------
+
+def _run_cleanup(campaign):
+    """Run cleanup_cluster_campaign with every deletion stubbed; returns the
+    stopPolicy values written to the shared ClusterQueue."""
+    from robovast.execution.cluster_execution import cluster_execution
+    written = []
+    with mock.patch.object(cluster_execution, "_cleanup_cluster_campaign_resources"), \
+         mock.patch("robovast.execution.cluster_execution.kubernetes_kueue."
+                    "set_cluster_queue_stop_policy",
+                    side_effect=lambda p, **kw: written.append(p)), \
+         mock.patch("robovast.execution.cluster_execution.kubernetes_kueue."
+                    "_queue_object", return_value={"spec": {}}):
+        cluster_execution.cleanup_cluster_campaign(namespace="ns", campaign=campaign)
+    return written
+
+
+def test_per_campaign_cleanup_leaves_the_shared_queue_alone():
+    """stopPolicy lives on ONE cluster-scoped ClusterQueue shared by every campaign, so
+    holding it to delete one campaign's jobs stops every *other* campaign being
+    admitted for the length of the cleanup."""
+    assert _run_cleanup("camp-a") == []
+
+
+def test_cluster_wide_cleanup_holds_and_restores():
+    assert _run_cleanup(None) == ["Hold", None]
+
+
+def test_hold_is_restored_even_when_cleanup_raises():
+    """A queue left held is worse than a failed cleanup: the failure is visible, the
+    held queue is not — it just suspends every future campaign forever."""
+    from robovast.execution.cluster_execution import cluster_execution
+    written = []
+    with mock.patch.object(cluster_execution, "_cleanup_cluster_campaign_resources",
+                           side_effect=RuntimeError("deletion blew up")), \
+         mock.patch("robovast.execution.cluster_execution.kubernetes_kueue."
+                    "set_cluster_queue_stop_policy",
+                    side_effect=lambda p, **kw: written.append(p)), \
+         mock.patch("robovast.execution.cluster_execution.kubernetes_kueue."
+                    "_queue_object", return_value={"spec": {}}):
+        with pytest.raises(RuntimeError, match="deletion blew up"):
+            cluster_execution.cleanup_cluster_campaign(namespace="ns", campaign=None)
+    assert written == ["Hold", None]
+
+
+def test_pre_existing_hold_is_preserved():
+    """A concurrent teardown (or a deliberate manual hold) must survive: restore what
+    was there, don't force None."""
+    from robovast.execution.cluster_execution import cluster_execution
+    written = []
+    with mock.patch.object(cluster_execution, "_cleanup_cluster_campaign_resources"), \
+         mock.patch("robovast.execution.cluster_execution.kubernetes_kueue."
+                    "set_cluster_queue_stop_policy",
+                    side_effect=lambda p, **kw: written.append(p)), \
+         mock.patch("robovast.execution.cluster_execution.kubernetes_kueue."
+                    "_queue_object", return_value={"spec": {"stopPolicy": "Hold"}}):
+        cluster_execution.cleanup_cluster_campaign(namespace="ns", campaign=None)
+    assert written == ["Hold", "Hold"]

@@ -444,16 +444,13 @@ def list_publication_plugins():
 
 
 def _load_share_dotenv() -> None:
-    """Load ``.env`` from the project (share credentials live there, not in the CLI)."""
-    project_file = ProjectConfig.find_project_file()
-    if project_file:
-        project_dir = os.path.dirname(os.path.abspath(project_file))
-        pc = ProjectConfig.load()
-        if pc and pc.config_path:
-            load_dotenv(os.path.join(os.path.dirname(pc.config_path), ".env"), override=False)
-        load_dotenv(os.path.join(project_dir, ".env"), override=False)
-    else:
-        load_dotenv(override=False)
+    """Load ``./.env`` (share credentials live there, not in the CLI).
+
+    The current directory only — same rule as ``vast serve``'s loader; see the note
+    there on why the old project-relative search was dropped.
+    """
+    from robovast.common.env_file import load_env_file
+    load_env_file()
 
 
 def _share_configured() -> bool:

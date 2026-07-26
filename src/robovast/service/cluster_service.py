@@ -545,18 +545,16 @@ class ClusterService(LocalTransport):
         if problems:
             raise ValueError("invalid build: section:\n  - " + "\n  - ".join(problems))
         cfg = self._cluster_config()
-        registry = cfg.get_registry_config()
+        registry = self._resolve_registry_objects(cfg.get_registry_config())
         if not registry.enabled():
             raise ValueError(
                 "no container registry is configured for this cluster; in-cluster "
                 "image builds are unavailable. Configure one at 'vast exec cluster "
                 "setup' (or set ROBOVAST_REGISTRY_PREFIX / _PUSH_SECRET / "
                 "_PULL_SECRET on the service).")
-        bucket = cfg.get_s3_bucket()
-        if not bucket:
-            raise ValueError(
-                "in-cluster image builds require a fixed S3 bucket "
-                "(external-S3 mode); this deployment uses per-campaign buckets.")
+        from robovast.execution.cluster_execution.cluster_image_build import \
+            build_context_bucket
+        bucket = build_context_bucket(cfg)
         return project, campaign_config, spec, project_dir, cfg, registry, bucket
 
     def _resolve_build_ref(self, spec, project_dir, registry) -> "tuple[str, str]":
@@ -618,6 +616,13 @@ class ClusterService(LocalTransport):
             return ImageBuildRef(build_id=build_id, tag=spec.tag, cached=True)
         if existing == "running":
             return ImageBuildRef(build_id=build_id, tag=spec.tag, cached=False)
+        if existing == "failed":
+            # A retry after a failed build has the same content hash, hence the same
+            # build_id, and the spent Job lingers for ttlSecondsAfterFinished (1 h).
+            # Nothing is salvageable from it, and leaving it in place made the retry die
+            # on an unhandled 409 AlreadyExists from create_namespaced_job — a 500 with
+            # no message, for what is a perfectly reasonable "try again".
+            self._delete_build_job(build_id)
 
         # Stage the context (project dir + generated Dockerfile) to S3.
         base_ref = (spec.base_image or registry.base_experiment_image
@@ -635,7 +640,8 @@ class ClusterService(LocalTransport):
             init_env=init_env, push_secret_name=registry.push_secret_name,
             namespace=self.namespace, insecure=registry.insecure,
             ca_configmap_name=registry.ca_configmap_name,
-            cache_ref=cache_image_ref(registry.registry_prefix, spec.tag))
+            cache_ref=cache_image_ref(registry.registry_prefix, spec.tag),
+            host_aliases=cfg.get_host_aliases())
         self._k8s_batch().create_namespaced_job(self.namespace, manifest)
 
         status = ImageBuildStatus(build_id=build_id, tag=spec.tag, phase="building",
@@ -679,6 +685,52 @@ class ClusterService(LocalTransport):
                            push_secret_name)
             return ""
 
+    def _resolve_registry_objects(self, registry):
+        """Fill in the push/pull Secret and CA ConfigMap by *looking for them*.
+
+        Their names are fixed constants written by ``vast exec cluster setup``, so the
+        ``ROBOVAST_REGISTRY_{PUSH,PULL}_SECRET`` / ``_CA_CONFIGMAP`` variables were never
+        carrying a name — only the fact that setup had created the object, since
+        referencing a Secret that does not exist keeps the pod from starting. Setup writes
+        them into the *deployed service pod's* env, so an **off-cluster** ``vast serve``
+        never learned them and silently pushed anonymously to an untrusted registry.
+
+        Checking existence covers both deployments identically. An explicitly set variable
+        still wins, for a deployment that named its objects differently.
+        """
+        from kubernetes import client
+        from robovast.execution.cluster_execution.service_deploy import (
+            REGISTRY_CA_CONFIGMAP_NAME, REGISTRY_PUSH_SECRET_NAME)
+
+        def exists(read, name):
+            try:
+                read(name, self.namespace)
+                return True
+            except client.exceptions.ApiException as e:
+                if e.status not in (403, 404):
+                    raise
+                if e.status == 403:
+                    # In-pod without RBAC for this read: say so rather than treating it as
+                    # absent, which would look like "no credentials configured".
+                    logger.warning(
+                        "not permitted to read %r in %s; cannot tell whether the registry "
+                        "object exists", name, self.namespace)
+                return False
+
+        core = self._k8s()
+        if not registry.push_secret_name and exists(
+                core.read_namespaced_secret, REGISTRY_PUSH_SECRET_NAME):
+            registry.push_secret_name = REGISTRY_PUSH_SECRET_NAME
+            logger.info("using registry push Secret %r", REGISTRY_PUSH_SECRET_NAME)
+        if not registry.pull_secret_name and registry.push_secret_name:
+            # One dockerconfigjson serves both directions (setup wires it that way).
+            registry.pull_secret_name = registry.push_secret_name
+        if not registry.ca_configmap_name and exists(
+                core.read_namespaced_config_map, REGISTRY_CA_CONFIGMAP_NAME):
+            registry.ca_configmap_name = REGISTRY_CA_CONFIGMAP_NAME
+            logger.info("using registry CA ConfigMap %r", REGISTRY_CA_CONFIGMAP_NAME)
+        return registry
+
     def _registry_ca_path(self, ca_configmap_name: str) -> str:
         """Materialize the registry CA to a file for ``requests``' ``verify=``.
 
@@ -711,6 +763,35 @@ class ClusterService(LocalTransport):
             path = fd.name
         cache[ca_configmap_name] = path
         return path
+
+    def _delete_build_job(self, build_id: str, timeout_s: float = 60.0) -> None:
+        """Delete a spent build Job (and its pods) and wait until it is really gone.
+
+        The wait matters: ``create_namespaced_job`` right after a delete request still
+        races the API server's cleanup and would 409 again.
+        """
+        from kubernetes import client
+        batch = self._k8s_batch()
+        try:
+            batch.delete_namespaced_job(
+                build_id, self.namespace,
+                grace_period_seconds=0, propagation_policy="Background")
+        except client.exceptions.ApiException as e:
+            if e.status != 404:
+                raise
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            try:
+                batch.read_namespaced_job(build_id, self.namespace)
+            except client.exceptions.ApiException as e:
+                if e.status == 404:
+                    logger.info("removed the previous failed build Job %s", build_id)
+                    return
+                raise
+            time.sleep(1.0)
+        raise RuntimeError(
+            f"the previous failed build Job '{build_id}' did not disappear within "
+            f"{timeout_s:.0f}s; delete it manually and retry")
 
     def _existing_build_job(self, build_id: str) -> "str | None":
         """Return 'succeeded' | 'failed' | 'running' for an existing Job, else None."""
@@ -801,15 +882,14 @@ class ClusterService(LocalTransport):
         if problems:
             raise ValueError("invalid build: section:\n  - " + "\n  - ".join(problems))
         cfg = self._cluster_config()
-        registry = cfg.get_registry_config()
+        registry = self._resolve_registry_objects(cfg.get_registry_config())
         if not registry.enabled():
             raise ValueError(
                 "execution.image is a build:<tag> ref but no container registry is "
                 "configured for this cluster (see 'vast exec cluster setup').")
-        bucket = cfg.get_s3_bucket()
-        if not bucket:
-            raise ValueError(
-                "in-cluster image builds require a fixed S3 bucket (external-S3 mode).")
+        from robovast.execution.cluster_execution.cluster_image_build import \
+            build_context_bucket
+        bucket = build_context_bucket(cfg)
         image_ref, _hash = self._resolve_build_ref(spec, project_dir, registry)
         ref = self._start_cluster_build(spec, project_dir, cfg, registry, bucket)
         status = self._await_cluster_build(ref.build_id)
@@ -879,8 +959,9 @@ class ClusterService(LocalTransport):
 
         Reuses ``cleanup_cluster_campaign`` — the same teardown ``vast exec cluster
         run-cleanup`` performs — so the running pods terminate now and the driver's
-        batch wait loop unblocks. Scoped to this campaign (``"Hold"``, not
-        ``"HoldAndDrain"``), so other campaigns are not preempted.
+        batch wait loop unblocks. Label-scoped to this campaign's Jobs/Workloads/pods,
+        and it leaves the shared ClusterQueue alone, so a concurrent campaign keeps
+        being admitted while this one is torn down.
         """
         from robovast.execution.cluster_execution.cluster_execution import \
             cleanup_cluster_campaign

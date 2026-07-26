@@ -725,6 +725,47 @@ To test your cluster configuration, you can use:
 
 The output directory will contain all necessary files and instructions to manually execute the setup steps for your cluster configuration and execution.
 
+**Storage for experiment-image builds.** ``build_context_bucket()``
+(``cluster_execution.cluster_image_build``) decides where a build stages its context,
+from two methods of your config:
+
+* ``get_s3_bucket()`` non-empty → that shared bucket is used, under the
+  ``image-builds/<build-id>/`` prefix.
+* ``get_s3_bucket()`` returning ``None`` (per-campaign buckets) **and**
+  ``get_storage_backend() == "s3"`` → the dedicated ``BUILD_CONTEXT_BUCKET``
+  (``robovast-image-builds``), created on first upload by the S3 client's
+  ``_ensure_bucket``.
+* ``None`` on any other backend → ``ValueError``. Naming a bucket ourselves is only
+  sound where the namespace belongs to the deployment's own endpoint and the client can
+  create it. GCS satisfies neither: its names are global to all of Google Cloud, and
+  ``_GcsStorageClient`` has no bucket creation, so a guessed name would collide or 403
+  and then not exist. Such a backend must configure its bucket.
+
+So a new config needs no build-specific method — but if it fronts storage with a global
+namespace or a client that cannot create buckets, it must return a bucket from
+``get_s3_bucket()``, and ``get_storage_backend()`` must not claim ``"s3"``.
+
+**Pod DNS for unresolvable hosts.** ``get_host_aliases()`` parses
+``ROBOVAST_EXTRA_HOST_ALIASES`` (``<host>=<ip>``, comma-separated, grouped by IP into the
+shape of the k8s field) and is spliced into the build Job
+(``cluster_image_build.build_job_manifest``) and campaign Jobs
+(``kubernetes_backend``). Override it if a deployment knows its aliases from somewhere
+other than the environment. A malformed entry raises rather than being skipped: a dropped
+alias reappears as an unexplained ``no such host`` inside a pod, far from its cause.
+
+The boundary is worth keeping in mind when adding pod specs: ``hostAliases`` writes
+``/etc/hosts`` **in the pod**, so it governs what the pod's own processes resolve — the
+BuildKit push, or a node inside the scenario. The **image pull** is performed by the
+node's container runtime *before* the pod exists, so no pod-level field can influence it;
+that stays node configuration, exactly like registry TLS trust.
+
+Historically this path instead *required* ``get_s3_bucket()`` to be set, refusing
+per-campaign-bucket deployments with "in-cluster image builds require a fixed S3 bucket
+(external-S3 mode)". That was never a real constraint — the embedded MinIO is an ordinary
+S3 endpoint and the build Job takes bucket/prefix/endpoint/credentials as plain env — and
+the workaround (switching to a shared bucket) silently changed the storage layout of every
+campaign, since ``get_s3_bucket()`` drives ``bucket_ops`` too.
+
 
 Add Share Provider Plugin
 ^^^^^^^^^^^^^^^^^^^^^^^^^

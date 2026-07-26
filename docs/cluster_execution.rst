@@ -263,6 +263,76 @@ same credentials (added as an ``imagePullSecret``). Without a registry configure
 in-cluster builds are unavailable and a ``build:<tag>`` project fails at submit
 with an actionable message.
 
+The auth Secret and CA ConfigMap that ``setup`` creates from those values are
+**found by the service itself** — it looks for the fixed names it would have created
+(``robovast-registry-push``, ``robovast-registry-ca``) and uses them when present, so
+nothing has to tell it they exist. This matters for a **local** ``vast serve``:
+``setup`` stores its env in the *service pod*, which an off-cluster service never
+reads, and the previous behaviour was to conclude there were no credentials and no CA
+— pushing anonymously to an untrusted registry. Set
+``ROBOVAST_REGISTRY_PUSH_SECRET`` / ``_PULL_SECRET`` / ``_CA_CONFIGMAP`` only to point
+at **differently named** objects; they are overrides, not requirements.
+
+.. _cluster-registry-dns:
+
+When the cluster cannot resolve the registry
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+A registry whose name lives only in ``/etc/hosts`` on your workstation is not resolvable
+from inside the cluster, and the push fails **after the whole image has been built**:
+
+.. code-block:: text
+
+   failed to push harbor.example.org/robovast/my-tag:<hash>: ... dial tcp:
+   lookup harbor.example.org on 10.43.0.10:53: no such host
+
+Declare the mapping instead of editing CoreDNS — RoboVAST puts it in the pod specs it
+creates (the build Job and campaign Jobs) as ``hostAliases``:
+
+.. code-block:: bash
+
+   ROBOVAST_EXTRA_HOST_ALIASES=harbor.example.org=10.181.120.39
+   # several: comma-separated, names sharing an IP are grouped automatically
+   ROBOVAST_EXTRA_HOST_ALIASES=harbor.example.org=10.0.0.9,minio.example.org=10.0.0.10
+
+.. warning::
+
+   This fixes what a **pod** resolves — the push, and anything the scenario itself looks
+   up. It does **not** fix the **image pull**: that is performed by the container runtime
+   on the node, which reads neither pod specs nor CoreDNS. An unresolvable registry
+   therefore also needs the name in each node's own resolver (``/etc/hosts`` or
+   ``registries.yaml``) — the same node-level scope as registry TLS trust.
+
+   A real DNS record is the one change that covers both, and is preferable wherever you
+   can add one. Note also that using the registry's **IP** as
+   ``ROBOVAST_REGISTRY_PREFIX`` is not a substitute when it sits behind an SNI-based
+   proxy: a client dialing a bare IP sends no TLS SNI, so such a proxy serves no
+   certificate at all and the handshake fails before ``INSECURE`` or a CA could apply.
+
+.. _cluster-build-context-staging:
+
+Where the build context is staged
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The build needs somewhere in object storage to put its context (the project directory
+plus the generated ``Dockerfile``) for the BuildKit Job's init container to mirror.
+**Nothing to configure on a normal cluster** — the storage the deployment already uses
+is reused:
+
+* **Embedded MinIO** (the ``rke2`` / ``minikube`` configs, where each campaign gets its
+  own bucket): builds share one dedicated bucket, ``robovast-image-builds``, created on
+  first use like any campaign bucket. A build belongs to no campaign, so it cannot use a
+  per-campaign bucket; one stable bucket also keeps the content-addressed cache usable
+  across service restarts. Objects live under ``image-builds/<build-id>/``.
+* **A shared bucket** (external S3, or GCS): that bucket is used, with the same
+  ``image-builds/<build-id>/`` prefix — nothing extra is created.
+
+On GCS a bucket name is global to all of Google Cloud and the client does not create
+buckets, so builds there **require** the deployment's bucket to be configured
+(``-o gcs_bucket=…`` / ``ROBOVAST_GCS_BUCKET``); a missing one is reported rather than
+guessed at. In-cluster builds do **not** require external-S3 mode, and enabling them
+never changes how campaign results are stored.
+
 Caching in-cluster
 ^^^^^^^^^^^^^^^^^^
 
@@ -356,8 +426,9 @@ for admission control and resource quotas.
 * A ``LocalQueue`` named ``robovast`` in the execution namespace is the
   submission target for every RoboVAST job.
 
-Each generated Job manifest carries the annotation
+Each generated Job manifest carries the **label**
 ``kueue.x-k8s.io/queue-name: robovast`` so Kueue picks it up automatically.
+Kueue 0.16 keys queue membership off the label, not an annotation.
 
 If Kueue is not installed, jobs are still created but are *not* queued —
 they start immediately, which can overload the cluster.
@@ -365,6 +436,68 @@ they start immediately, which can overload the cluster.
 
 You can launch several ``vast execution cluster run`` campaigns at once; Kueue
 keeps the cluster busy by admitting their jobs as capacity frees up.
+
+Admission preflight
+~~~~~~~~~~~~~~~~~~~
+
+Because every Job is labelled into the LocalQueue, Kueue creates it
+**suspended** and starts it only once the queue admits it.  A broken admission
+path therefore does not fail the submit — the jobs simply never start, with no
+pod, no event and no error.  Nothing about that state looks like a failure: the
+Job counts as active, the campaign log says "still running", and the
+``activeDeadlineSeconds`` backstop cannot fire because its timer does not run
+while a Job is suspended.
+
+``verify_kueue_admission_ready()`` therefore runs before any Job is created
+(and again every 30 s while a batch waits, so a queue broken *mid*-campaign is
+caught too).  It fails the campaign with an actionable message when:
+
+* the ``LocalQueue`` does not exist in the execution namespace — setup was never
+  run, or the campaign targets a different namespace;
+* the ``ClusterQueue`` it points at does not exist;
+* the ``ClusterQueue`` is stopped (``stopPolicy: Hold``);
+* the ``ClusterQueue`` reports ``Active=False`` — most often a missing
+  ``ResourceFlavor``, which leaves every object present but unusable.
+
+The same check runs as a post-condition of ``vast execution cluster setup``, so
+setup cannot report success while leaving the queues unusable.
+
+**Quota exhaustion is not a failure.**  A queue whose capacity is currently used
+up is healthy, and the correct response is to wait — that is Kueue's normal
+operating state.  The preflight only ever looks at the *structure* of the
+admission path.  While jobs wait, the batch logs Kueue's own reason (read from
+each Workload's ``QuotaReserved`` condition) instead of a bare "still running",
+and ``list_campaign_jobs`` reports them ``blocked`` with that reason as
+``detail``.
+
+.. note::
+
+   The preflight reads ``localqueues`` (namespaced) and ``clusterqueues``
+   (cluster-scoped).  Both grants were added to the service's Role and
+   ClusterRole; an **existing** deployment must be redeployed to pick them up.
+   Until then the check reports "cannot verify" and the campaign proceeds — a
+   missing read permission never blocks a run that would otherwise work.
+
+Holding the queue during cleanup
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``stopPolicy`` lives on the single, cluster-scoped ``ClusterQueue`` that every
+campaign shares.  Holding it stops *all* admissions — ``Hold`` versus
+``HoldAndDrain`` decides only whether already-running workloads are preempted,
+not whose workloads are affected.
+
+Cleaning up **one** campaign therefore does not touch it: doing so would stall
+every other campaign's pending jobs for the length of the cleanup, and a cleanup
+that died in between used to leave the queue held permanently — suspending every
+later campaign forever, indistinguishable from a missing ClusterQueue.
+Per-campaign quota safety does not need the hold: the deletions are label-scoped
+and ordered Workloads-before-Jobs, which is what lets Kueue release that
+campaign's quota cleanly.
+
+A **cluster-wide** cleanup (no campaign given) does hold the queue, since
+pausing everything is the intent.  It restores the *previous* ``stopPolicy`` in
+a ``finally``, so a concurrent teardown's hold survives and an error can never
+leave the queue stopped.
 
 
 Selecting a Cluster Context

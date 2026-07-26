@@ -102,13 +102,24 @@ def is_running(phase: str) -> bool:
 class RunProgress(BaseModel):
     """Per-run progress for the current batch.
 
-    ``completed`` counts runs that produced results (their result artifact reached
-    storage); ``total`` is the number expected. ``failed`` is only meaningful once
-    the batch's jobs have all reached a terminal state — then it is the count of
-    expected runs that produced no result (``total - completed``); it stays 0 while
-    the batch is still running (an unfinished run is not yet a failed one)."""
+    Two different things can go wrong with a run, and conflating them let a sweep
+    report itself as clean while a trial had failed:
+
+    * ``no_result`` — the run delivered **nothing**: no result artifact reached storage
+      (``total - completed``). Only meaningful once the batch's jobs have all reached a
+      terminal state; it stays 0 while the batch runs, since an unfinished run is not
+      yet a lost one.
+    * ``failed`` — the run delivered a result whose **own verdict is a failure** (the
+      scenario reported a failure or error). Its job may have completed normally: a
+      failing trial is still a successful execution. Set when the batch's outcomes are
+      recorded, so 0 before then.
+
+    ``completed`` counts runs that produced results — including failing ones — and
+    ``total`` is the number expected. So ``total=25, completed=25, no_result=0,
+    failed=1`` means every run delivered data and one trial did not pass: 24 usable."""
     completed: int = 0
     total: int = 0
+    no_result: int = 0
     failed: int = 0
 
 

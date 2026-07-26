@@ -300,12 +300,29 @@ def classify_build_error(log: str, spec: Optional[BuildSpec] = None) -> ImageBui
             message="could not pull the base image (server-side registry/base "
                     "config); not fixable by editing build:",
             log_tail=tail)
-    if ("denied: requested access" in low or "unauthorized" in low
-            or "error pushing" in low or "failed to push" in low):
+    # Push failures: name the actual cause. These are all "infra", but the operator has to
+    # know *which* knob — this branch used to assert "registry credentials" for every push
+    # failure, which sends you looking for a Secret when the registry host simply does not
+    # resolve from inside the cluster.
+    if "failed to push" in low or "error pushing" in low or "denied" in low or "unauthorized" in low:
+        if "no such host" in low or "server misbehaving" in low:
+            detail = ("the registry hostname does not resolve from inside the cluster "
+                      "(DNS); the build itself succeeded")
+        elif ("x509" in low or "certificate signed by unknown authority" in low
+                or "tls: failed to verify" in low):
+            detail = ("the registry's TLS certificate is not trusted by the build Job "
+                      "(set ROBOVAST_REGISTRY_CA_FILE, or INSECURE for a throwaway "
+                      "registry); the build itself succeeded")
+        elif ("unauthorized" in low or "denied: requested access" in low
+                or "authentication required" in low):
+            detail = ("the registry rejected the credentials (server-side push Secret); "
+                      "the build itself succeeded")
+        else:
+            detail = "the build itself succeeded; see the log tail for the push error"
         return ImageBuildError(
             phase="push", fixable_by="infra",
-            message="could not push to the registry (server-side registry "
-                    "credentials); not fixable by editing build:",
+            message=f"could not push to the registry: {detail}. "
+                    "Not fixable by editing build:",
             log_tail=tail)
     if "no space left on device" in low or "killed" in low or "oomkilled" in low:
         return ImageBuildError(

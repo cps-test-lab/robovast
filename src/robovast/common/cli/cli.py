@@ -214,23 +214,17 @@ def _ensure_ui_built(rebuild: bool = False) -> None:
 
 
 def _load_project_dotenv() -> None:
-    """Load the project ``.env`` into ``os.environ`` (share creds, ntfy, etc.).
+    """Load ``./.env`` into ``os.environ`` (share creds, registry, ntfy, etc.).
 
-    Mirrors the results CLI's ``_load_share_dotenv``: prefer the ``.env`` next to
-    the project config, then the discovered project dir, then the CWD. ``override``
-    is left at its default (False) so a real environment variable always wins over
-    a ``.env`` line, and the call is a harmless no-op when no ``.env`` exists.
+    The current directory, and nowhere else. It used to search the project config's
+    directory and the project dir too, falling back to the CWD only when no project
+    file existed — so which ``.env`` won depended on where the project happened to be
+    initialized, and initializing one in a parent directory silently took a working
+    ``.env`` out of scope. ``override`` stays False so a real environment variable
+    beats a ``.env`` line; a missing file is a no-op.
     """
-    from dotenv import load_dotenv
-    project_file = ProjectConfig.find_project_file()
-    if project_file:
-        project_dir = os.path.dirname(os.path.abspath(project_file))
-        pc = ProjectConfig.load()
-        if pc and pc.config_path:
-            load_dotenv(os.path.join(os.path.dirname(pc.config_path), ".env"))
-        load_dotenv(os.path.join(project_dir, ".env"))
-    else:
-        load_dotenv()
+    from robovast.common.env_file import load_env_file
+    load_env_file()
 
 
 def _build_cluster_impl(in_pod, context, k8s_namespace, store=None):

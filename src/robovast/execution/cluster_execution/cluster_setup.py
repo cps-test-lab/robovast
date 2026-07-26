@@ -24,7 +24,8 @@ from robovast.common.cli.project_config import ProjectConfig
 from robovast.common.common import load_config
 
 from .kubernetes_kueue import (apply_kueue_queues, install_kueue_helm,
-                               uninstall_kueue_helm)
+                               uninstall_kueue_helm,
+                               verify_kueue_admission_ready)
 
 logger = logging.getLogger(__name__)
 
@@ -354,6 +355,11 @@ def setup_server(config_name=None, list_configs=False, force=False, **cluster_kw
     install_kueue_helm(kube_context=kube_context)
     apply_kueue_queues(namespace=namespace, kube_context=kube_context,
                        node_labels=jobs_node_labels, cluster_config=cluster_config)
+    # Post-condition: `kubectl apply` reporting success is not proof that the queues are
+    # usable — a ClusterQueue whose ResourceFlavor is missing stays Active=False, and
+    # setup would otherwise finish "successfully" while every future job hangs suspended.
+    verify_kueue_admission_ready(namespace=namespace, kube_context=kube_context,
+                                 settle_timeout=60)
 
     # RBAC for the in-cluster search controller pod (create/monitor jobs).
     apply_controller_rbac(namespace=namespace, kube_context=kube_context)

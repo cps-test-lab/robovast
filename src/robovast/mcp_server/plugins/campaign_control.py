@@ -105,8 +105,10 @@ def _status_to_dict(campaign_id: str, backend, st) -> dict:
         "mode": st.mode,
         "batch_runs_done": st.runs.completed if st.runs else 0,
         "batch_runs_total": st.runs.total if st.runs else 0,
-        # Runs that produced no result once the batch's jobs all reached a terminal
-        # state (0 while the batch is still running). Surfaces partial-batch failures.
+        # Two distinct outcomes, because a run can deliver nothing *or* deliver a
+        # failing trial, and reporting only the former made a sweep with a failed
+        # trial look clean. See RunProgress.
+        "batch_runs_no_result": st.runs.no_result if st.runs else 0,
         "batch_runs_failed": st.runs.failed if st.runs else 0,
         "progress": _progress_from_status(st),
     }
@@ -310,7 +312,12 @@ def start_campaign(config_filter: str = "", runs: int = 0, backend: str = "",
         ref = client.create_campaign(CreateCampaignRequest(
             workspace_id=workspace_id, config_path=config_path,
             config_filter=config_filter, campaign_name=campaign_name,
-            runs=runs if runs and runs > 0 else 1,
+            # Pass the "unset" value through instead of substituting 1: the service maps a
+            # non-positive count to None and falls back to the .vast's execution.runs,
+            # which is what this tool documents. Substituting 1 here silently shrank every
+            # campaign started without an explicit count to one run per configuration — a
+            # 25-trial sweep finished "successfully" with 5 trials.
+            runs=runs if runs and runs > 0 else 0,
             upload_to_share=upload_to_share, backend=backend or None))
         return {"campaign_id": ref.campaign_id, "backend": backend or "service-default"}
     except Exception as e:  # noqa: BLE001
@@ -343,7 +350,8 @@ def get_campaign_status(campaign_id: str) -> dict:
         return {"error": str(e)}
 
 
-def get_campaign_log(campaign_id: str, lines: int = 200, offset: int = 0) -> dict:
+def get_campaign_log(campaign_id: str, lines: int = 200, offset: int = 0,
+                     grep: str = "") -> dict:
     """Read a campaign's unified infrastructure log.
 
     Returns the campaign's whole infrastructure log — the same divider-separated
@@ -358,21 +366,34 @@ def get_campaign_log(campaign_id: str, lines: int = 200, offset: int = 0) -> dic
 
     A phase's section is absent until that phase has produced output.
 
+    Filtered by :func:`~robovast.mcp_server.log_view.view_log` — the same ``grep``
+    control every log tool takes. Each line of a run's output arrives stamped with the
+    relay prefix of whatever forwarded it (``robovast  | [INFO] [<ts>]
+    [scenario_execution_ros]: ``); that prefix is dropped where the payload carries its
+    own level and timestamp, which is most of them.
+
     Args:
         campaign_id: The id returned by :func:`start_campaign`.
         lines: Maximum number of lines to return (default 200).
         offset: Line offset to start reading from (default 0), for pagination.
+        grep: Keep only lines matching this regex (case-insensitive). Applied before
+            ``offset``/``lines``, so paging walks the matches.
 
     Returns:
-        ``{file_name, total_lines, returned_lines, offset, content}``; ``{error}``
-        if the campaign is unknown.
+        ``{file_name, total_lines, returned_lines, offset, content, dropped}``;
+        ``{error}`` if the campaign is unknown or ``grep`` is not a valid regex.
     """
     from robovast.common.campaign_logs import assemble_log_from_dir  # noqa: PLC0415
+    from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
     campaign_dir = results_resolver.resolve_campaign_path(campaign_id)
     # Assemble the full unified text (byte offset 0), then paginate by lines — the
     # MCP tool's ``offset`` is a line offset, unlike the service's byte offset.
     text, _, _ = assemble_log_from_dir(campaign_dir, offset=0, eof=True)
-    all_lines = text.splitlines()
+    try:
+        view = view_log(text, grep=grep)
+    except ValueError as e:
+        return {"error": str(e)}
+    all_lines = view["content"].splitlines()
     selected = all_lines[offset:offset + lines]
     return {
         "file_name": f"{campaign_id} (infrastructure log)",
@@ -380,6 +401,7 @@ def get_campaign_log(campaign_id: str, lines: int = 200, offset: int = 0) -> dic
         "returned_lines": len(selected),
         "offset": offset,
         "content": "\n".join(selected),
+        "dropped": view["dropped"],
     }
 
 
@@ -415,7 +437,8 @@ def list_campaign_jobs(campaign_id: str) -> dict:
         return {"error": str(e)}
 
 
-def get_job_log(campaign_id: str, job_name: str, offset: int = 0) -> dict:
+def get_job_log(campaign_id: str, job_name: str, offset: int = 0,
+                grep: str = "", tail: int = 0) -> dict:
     """Read a **running** job's live log (its containers' stdout/stderr).
 
     Streams the live log of one job from :func:`list_campaign_jobs` — the running
@@ -429,24 +452,39 @@ def get_job_log(campaign_id: str, job_name: str, offset: int = 0) -> dict:
 
     Requires a reachable robovast-service.
 
+    ``grep`` / ``tail`` filter the returned text (see
+    :func:`~robovast.mcp_server.log_view.view_log`); ``next_offset`` still refers to the
+    **unfiltered** stream, so incremental polling stays correct.
+
     Args:
         campaign_id: The id returned by :func:`start_campaign`.
         job_name: A ``job_name`` from :func:`list_campaign_jobs`.
         offset: Byte offset to resume from (default 0).
+        grep: Keep only lines matching this regex (case-insensitive).
+        tail: Keep only the last N matching lines (``0`` = all).
 
     Returns:
-        ``{text, next_offset, eof}``; ``{error}`` if no service is reachable or the
-        job's live log source is gone.
+        ``{text, next_offset, eof, lines, lines_total, dropped, truncated}``;
+        ``{error}`` if no service is reachable, the job's live log source is gone, or
+        ``grep`` is not a valid regex.
     """
+    from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
     client = _service_client()
     if client is None:
         return {"error": "no robovast-service reachable (bring up a 'vast serve' or "
                          "a tunnel before starting MCP); live job logs are served "
                          "by the service"}
     try:
-        return client.get_job_log(campaign_id, job_name, offset).model_dump()
+        chunk = client.get_job_log(campaign_id, job_name, offset).model_dump()
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
+    try:
+        view = view_log(chunk.get("text", ""), grep=grep, tail=tail)
+    except ValueError as e:
+        return {"error": str(e)}
+    return {**chunk, "text": view["content"], "lines": view["lines"],
+            "lines_total": view["lines_total"], "dropped": view["dropped"],
+            "truncated": view["truncated"]}
 
 
 def stop_campaign(campaign_id: str) -> dict:
@@ -814,24 +852,50 @@ def get_image_build_status(build_id: str) -> dict:
         return {"error": str(e)}
 
 
-def get_image_build_log(build_id: str, offset: int = 0) -> dict:
-    """Return the raw builder log from byte *offset* onward.
+def get_image_build_log(build_id: str, offset: int = 0, grep: str = "",
+                        tail: int = 200) -> dict:
+    """Return the builder log from byte *offset* onward, filtered for reading.
+
+    **For a failure, read :func:`get_image_build_status` first** — its ``error`` names
+    the phase and its ``log_tail`` usually contains the whole story. Come here when you
+    need more than that tail.
+
+    A builder log is dominated by per-layer byte counters, so this defaults to the last
+    ``tail`` lines rather than the entire stream (which runs to tens of thousands of
+    lines). Narrow it with ``grep`` — e.g. ``grep="error|x509|denied"`` — or page with
+    ``offset``; ``grep`` / ``tail`` are the same controls the other log tools take (see
+    :func:`~robovast.mcp_server.log_view.view_log`).
 
     Streaming: poll from ``0``, append ``text``, resume from the returned
-    ``next_offset``; ``eof`` is true once the build is done.
+    ``next_offset`` (a byte offset into the **unfiltered** stream, so filtering never
+    breaks a poll loop); ``eof`` is true once the build is done.
 
     Args:
         build_id: The id returned by :func:`build_experiment_image`.
         offset: Byte offset to resume from.
+        grep: Keep only lines matching this regex (case-insensitive).
+        tail: Keep only the last N matching lines (default 200; ``0`` = all).
+
+    Returns:
+        ``{text, next_offset, eof, lines, lines_total, dropped, truncated}``;
+        ``{error}`` if no service is reachable or ``grep`` is not a valid regex.
     """
+    from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
     client = _service_client()
     if client is None:
         return {"error": "no robovast-service reachable"}
     try:
         chunk = client.get_image_build_log(build_id, offset)
-        return {"text": chunk.text, "next_offset": chunk.next_offset, "eof": chunk.eof}
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
+    try:
+        view = view_log(chunk.text, grep=grep, tail=tail)
+    except ValueError as e:
+        return {"error": str(e)}
+    return {"text": view["content"], "next_offset": chunk.next_offset,
+            "eof": chunk.eof, "lines": view["lines"],
+            "lines_total": view["lines_total"], "dropped": view["dropped"],
+            "truncated": view["truncated"]}
 
 
 _TOOLS = [

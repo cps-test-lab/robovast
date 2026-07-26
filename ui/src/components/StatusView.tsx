@@ -66,8 +66,11 @@ export function StatusView({
   const counts = jobs?.counts
   const running = counts?.running ?? 0
   // Failures for the bar's red segment: prefer the live job count so a failure shows
-  // in real time (runs.failed stays 0 until the whole batch reaches a terminal state).
-  const failed = counts?.failed ?? runs.failed
+  // in real time (the status counters only settle once the batch reaches a terminal
+  // state). runs.no_result is the fallback — a job that delivered nothing is what the
+  // bar's red segment means; a failing *trial* did deliver its result and is reported
+  // separately in the caption.
+  const failed = counts?.failed ?? runs.no_result
   const shownJobs = liveOnly
     ? jobs?.jobs.filter(
         (j) => j.status === 'running' || j.status === 'failed' || j.status === 'blocked',
@@ -82,10 +85,10 @@ export function StatusView({
     .filter(Boolean)
     .join(' · ')
   // This is a progress view, so a run is "done" whether it produced a result or
-  // failed to — both have reached a terminal state. Count failed runs toward the
-  // numerator (and the bar) so `done/total` reaches total when the batch is over;
-  // the failure count is still called out separately below.
-  const done = runs.completed + runs.failed
+  // delivered none — both have reached a terminal state. Count the resultless ones
+  // toward the numerator (and the bar) so `done/total` reaches total when the batch is
+  // over. Runs that produced a *failing* result are already in `completed`.
+  const done = runs.completed + runs.no_result
   const etaSeconds = estimateEtaSeconds(status, startedAt, terminal)
   // Only a search campaign has multiple batches; a plain batch run always has one,
   // so the "batch N" counter is noise there and is shown for search only.
@@ -115,6 +118,12 @@ export function StatusView({
               <Box component="span" sx={{ color: 'error.main' }}>
                 {' · '}
                 {runs.failed} failed
+              </Box>
+            ) : null}
+            {runs.no_result > 0 ? (
+              <Box component="span" sx={{ color: 'error.main' }}>
+                {' · '}
+                {runs.no_result} no result
               </Box>
             ) : null}
             {etaSeconds != null

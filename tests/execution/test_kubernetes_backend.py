@@ -43,6 +43,7 @@ def _runner_for_download_test(configs):
     r.campaign_data = {"execution": {}}
     # Stub every side-effecting step so only the download loop runs.
     r._ensure_k8s_initialized = lambda: None
+    r._verify_admission_path = lambda: None  # no cluster to check the Kueue queues on
     r._s3_settings = lambda: ("ep", "ak", "sk", "bkt", "")  # embedded: empty prefix
     r._write_job_param_files = lambda out_dir: None
     r._build_jobs = lambda: []          # no jobs → submission loop is empty

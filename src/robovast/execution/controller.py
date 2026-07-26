@@ -250,8 +250,8 @@ class CampaignController:
                         done = self.backend.count_run_artifacts(self.campaign_id)
                         if done is not None:
                             completed = min(max(0, done - self._batch_baseline), self._batch_total)
-                            self.state.update(
-                                runs={"completed": completed, "total": self._batch_total})
+                            self.state.update_runs(
+                                completed=completed, total=self._batch_total)
                     except Exception:  # pylint: disable=broad-except
                         pass
                 self._poller_stop.wait(self._POLL_INTERVAL)
@@ -284,7 +284,10 @@ class CampaignController:
         except Exception:  # pylint: disable=broad-except
             self._batch_baseline = 0
         self._batch_total = total
-        self.state.update(runs={"completed": 0, "total": total})
+        # A new batch resets every counter, so this one replaces the sub-model rather
+        # than merging: a previous batch's failures must not carry into this one.
+        self.state.update(runs={"completed": 0, "total": total, "no_result": 0,
+                                "failed": 0})
         self._batch_active.set()
 
     def _end_batch_progress(self) -> None:
@@ -303,12 +306,12 @@ class CampaignController:
             completed = self._batch_total
         else:
             completed = min(max(0, done - self._batch_baseline), self._batch_total)
-        failed = max(0, self._batch_total - completed)
-        if failed:
-            logger.warning("Batch complete: %d/%d run(s) produced results; %d failed.",
-                           completed, self._batch_total, failed)
-        self.state.update(runs={"completed": completed, "total": self._batch_total,
-                                "failed": failed})
+        no_result = max(0, self._batch_total - completed)
+        if no_result:
+            logger.warning("Batch complete: %d/%d run(s) produced results; %d produced "
+                           "none.", completed, self._batch_total, no_result)
+        self.state.update_runs(completed=completed, total=self._batch_total,
+                               no_result=no_result)
 
     # -- batch mode ---------------------------------------------------------
 
@@ -328,6 +331,7 @@ class CampaignController:
         finally:
             self._end_batch_progress()
 
+        failed_runs = 0
         for cfg in configs:
             name = cfg["name"]
             cdir = os.path.join(self.campaign_root, name)
@@ -337,8 +341,17 @@ class CampaignController:
                 params=cfg.get("config", {}) or {}, objectives={}, measures={},
                 n_samples=len(run_dirs), status=aggregate_run_status(run_dirs),
                 result_dir=os.path.relpath(cdir, self.campaign_root))
-            self.store.record_runs(unit_id, read_run_outcomes(Path(cdir)))
+            outcomes = read_run_outcomes(Path(cdir))
+            self.store.record_runs(unit_id, outcomes)
+            # The verdicts are parsed here anyway for the store; tallying them into the
+            # live state is what makes a failing trial visible to a status poll. Without
+            # it the only failure count was "produced no result", which a scenario that
+            # ran and failed does not trip — so the campaign reported itself clean.
+            failed_runs += sum(1 for o in outcomes if o.get("status") != "passed")
         if self.state is not None:
+            if failed_runs:
+                logger.warning("Batch complete: %d run(s) did not pass.", failed_runs)
+            self.state.update_runs(failed=failed_runs)
             self.state.update(batches_done=1,
                               batch_history=[{"idx": 0, "n_units": len(configs)}])
         self.notifier.batch_finished(0, len(configs))
@@ -455,6 +468,7 @@ class CampaignController:
         # Expected runs across the whole batch (all reps-groups), for run progress.
         self._begin_batch_progress(sum((ps.n_reps or self.runs) for ps in param_sets))
         evaluations = []
+        failed_runs = 0
         try:
             for reps, group in sorted(groups.items()):
                 tag = f"batch-{batch_idx}" + (f"/reps-{reps}" if multi else "")
@@ -477,8 +491,16 @@ class CampaignController:
                         params=ps.values, objectives=ev.objectives, measures=ev.measures,
                         n_samples=ev.n_samples, status="evaluated",
                         result_dir=os.path.relpath(config_dir, self.campaign_root))
-                    self.store.record_runs(unit_id, read_run_outcomes(config_dir))
+                    outcomes = read_run_outcomes(config_dir)
+                    self.store.record_runs(unit_id, outcomes)
+                    failed_runs += sum(1 for o in outcomes
+                                       if o.get("status") != "passed")
         finally:
+            # Same tally as batch mode: a trial that ran and failed is invisible in the
+            # resultless count, so surface it before the batch's progress is closed out.
+            if self.state is not None and failed_runs:
+                logger.warning("Batch %d: %d run(s) did not pass.", batch_idx, failed_runs)
+                self.state.update_runs(failed=failed_runs)
             self._end_batch_progress()
         return evaluations
 

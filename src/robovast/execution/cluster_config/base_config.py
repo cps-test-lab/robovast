@@ -279,6 +279,50 @@ class BaseConfig(object):
             ca_configmap_name=os.environ.get("ROBOVAST_REGISTRY_CA_CONFIGMAP", ""),
         )
 
+    def get_host_aliases(self) -> list:
+        """Return Kubernetes ``hostAliases`` entries for the pods RoboVAST creates.
+
+        For a host the cluster's DNS cannot resolve — typically a registry whose name
+        lives only in ``/etc/hosts`` on the operator's workstation, where a push fails
+        with ``dial tcp: lookup <host>: no such host``. Declare it once instead of
+        editing CoreDNS::
+
+            ROBOVAST_EXTRA_HOST_ALIASES=harbor.example.org=10.0.0.9,other.example=10.0.0.10
+
+        Applies to the build Job and campaign Jobs. It does **not** affect the *image
+        pull*: that is done by the container runtime on the node, which reads neither
+        pod specs nor CoreDNS, so an unresolvable registry still needs the name in each
+        node's own resolver (same node-level scope as registry trust). A real DNS record
+        remains the fix that covers both.
+
+        Returns:
+            list: ``[{"ip": …, "hostnames": [...]}, …]`` — empty when unset.
+
+        Raises:
+            ValueError: on a malformed entry; a silently dropped alias would surface
+                far away as an unexplained DNS failure inside a pod.
+        """
+        raw = os.environ.get("ROBOVAST_EXTRA_HOST_ALIASES", "").strip()
+        if not raw:
+            return []
+        by_ip: dict = {}
+        for item in raw.split(","):
+            item = item.strip()
+            if not item:
+                continue
+            host, sep, ip = item.partition("=")
+            host, ip = host.strip(), ip.strip()
+            if not sep or not host or not ip:
+                raise ValueError(
+                    f"ROBOVAST_EXTRA_HOST_ALIASES entry {item!r} is not '<hostname>=<ip>' "
+                    "(comma-separated for several)")
+            # Grouped by IP because that is the shape of the k8s field: one entry per
+            # address, carrying all its names.
+            by_ip.setdefault(ip, [])
+            if host not in by_ip[ip]:
+                by_ip[ip].append(host)
+        return [{"ip": ip, "hostnames": hosts} for ip, hosts in by_ip.items()]
+
     def get_s3_bucket(self) -> Optional[str]:
         """Return a fixed/shared S3 bucket name, or ``None``.
 

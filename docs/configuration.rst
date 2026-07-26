@@ -267,6 +267,13 @@ explicitly with the ``build_experiment_image`` MCP tool / ``vast image build``, 
 implicitly: ``start_campaign`` (re)builds a ``build:<tag>`` image as its first
 step. See :doc:`mcp` and :doc:`cluster_execution`.
 
+On a cluster the build additionally needs a container registry to push to, which is a
+deployment setting rather than a project one. It does **not** need any particular object
+storage mode: it stages its context in the storage the deployment already uses (a
+dedicated ``robovast-image-builds`` bucket where campaigns get their own buckets), so
+enabling builds never changes where campaign results live — see
+:ref:`Where the build context is staged <cluster-build-context-staging>`.
+
 .. _config-build-caching:
 
 Caching, and how the entry order affects it

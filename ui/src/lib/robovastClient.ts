@@ -121,10 +121,14 @@ export interface ActionResult {
 
 // control_server.Status (reused verbatim by the interface) — the live monitor model.
 export interface RunProgress {
+  // Runs that produced a result — including a *failing* one.
   completed: number
   total: number
-  // Runs that produced no result once the batch's jobs all reached a terminal
-  // state (0 while the batch is still running).
+  // Runs that delivered nothing at all, once the batch's jobs have all reached a
+  // terminal state (0 while the batch is still running).
+  no_result: number
+  // Runs whose own verdict is a failure: the trial ran and did not pass. Distinct
+  // from no_result, and 0 until the batch's outcomes are recorded.
   failed: number
 }
 

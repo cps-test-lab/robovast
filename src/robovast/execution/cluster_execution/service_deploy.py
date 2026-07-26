@@ -83,6 +83,12 @@ def _service_rbac_manifests(namespace):
                 # the service creates and tears down.
                 {"apiGroups": [""], "resources": ["pods", "pods/log"],
                  "verbs": ["create", "get", "list", "watch", "delete", "deletecollection"]},
+                # The registry push Secret and CA ConfigMap: read to authenticate the
+                # "is this image already pushed?" probe, to trust a private-CA registry
+                # for it, and to detect that they exist at all (see
+                # ClusterService._resolve_registry_objects). Read-only, by name.
+                {"apiGroups": [""], "resources": ["secrets", "configmaps"],
+                 "verbs": ["get"]},
                 # Variations that declare an auxiliary container run their commands
                 # in that campaign's aux pod via the pods/exec subresource (see
                 # cluster_execution.container_runner.ClusterContainerRunner).
@@ -94,6 +100,11 @@ def _service_rbac_manifests(namespace):
                 # (see cluster_execution.kubernetes_kueue.cleanup_kueue_workloads).
                 {"apiGroups": ["kueue.x-k8s.io"], "resources": ["workloads"],
                  "verbs": ["get", "list", "watch", "delete", "deletecollection", "patch"]},
+                # The admission preflight reads the LocalQueue every job is labelled
+                # into, to fail loudly instead of letting Kueue suspend the batch
+                # forever (kubernetes_kueue.verify_kueue_admission_ready).
+                {"apiGroups": ["kueue.x-k8s.io"], "resources": ["localqueues"],
+                 "verbs": ["get", "list"]},
             ],
         },
         {
@@ -105,16 +116,19 @@ def _service_rbac_manifests(namespace):
             "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role",
                         "name": role_name},
         },
-        # Cluster-scoped read for the /usage endpoint: nodes are cluster resources
-        # (not grantable via a namespaced Role), and cluster-wide pod requests give
-        # the true "used" figure across tenants. Read-only (get/list). The ClusterRole
-        # name is namespaced so parallel robovast deployments don't collide.
+        # Cluster-scoped reads: nodes for the /usage endpoint (cluster resources, not
+        # grantable via a namespaced Role) with cluster-wide pod requests for the true
+        # "used" figure across tenants, and the ClusterQueue behind the LocalQueue for
+        # the admission preflight. Read-only (get/list). The ClusterRole name is
+        # namespaced so parallel robovast deployments don't collide.
         {
             "apiVersion": "rbac.authorization.k8s.io/v1",
             "kind": "ClusterRole",
             "metadata": {"name": cluster_role_name},
             "rules": [
                 {"apiGroups": [""], "resources": ["nodes", "pods"],
+                 "verbs": ["get", "list"]},
+                {"apiGroups": ["kueue.x-k8s.io"], "resources": ["clusterqueues"],
                  "verbs": ["get", "list"]},
             ],
         },
@@ -222,26 +236,19 @@ from robovast.common.config_plugins import \
 
 
 def _load_setup_dotenv():
-    """Load ``.env`` (project dir, then CWD) so setup picks up secrets kept there.
+    """Load ``./.env`` so setup picks up secrets kept there.
 
-    Mirrors the ``.env`` convention already used for share / ntfy credentials, so a
-    ``ROBOVAST_GIT_TOKEN=…`` line in the project's ``.env`` is honored without
-    exporting it in the shell. ``override=False`` keeps a real env var authoritative.
+    The current directory only — the same rule as the other two ``.env`` readers, so a
+    ``ROBOVAST_GIT_TOKEN=…`` line is honored without exporting it in the shell, and which
+    file wins never depends on where a project was initialized. ``override=False`` keeps a
+    real env var authoritative.
     """
-    import os
     try:
-        from dotenv import load_dotenv  # pylint: disable=import-outside-toplevel
+        from robovast.common.env_file import \
+            load_env_file  # pylint: disable=import-outside-toplevel
     except ImportError:
         return
-    try:
-        from robovast.common.cli.project_config import \
-            ProjectConfig  # pylint: disable=import-outside-toplevel
-        pc = ProjectConfig.load()
-        if pc and getattr(pc, "config_path", None):
-            load_dotenv(os.path.join(os.path.dirname(pc.config_path), ".env"), override=False)
-    except Exception:  # pylint: disable=broad-except
-        pass
-    load_dotenv(override=False)  # CWD .env fallback
+    load_env_file()
 
 
 def _git_token_from_host_env():
@@ -384,6 +391,12 @@ def _registry_env_from_host():
     # self-signed / private-CA registry (see _registry_ca_manifest).
     if os.environ.get("ROBOVAST_REGISTRY_CA_FILE", "").strip():
         env["ROBOVAST_REGISTRY_CA_CONFIGMAP"] = REGISTRY_CA_CONFIGMAP_NAME
+    # Carried through so a deployed (in-pod) service resolves an unresolvable registry
+    # the same way a local one does — the aliases are read from the service's env when
+    # it builds a Job spec (BaseConfig.get_host_aliases).
+    aliases = os.environ.get("ROBOVAST_EXTRA_HOST_ALIASES", "").strip()
+    if aliases:
+        env["ROBOVAST_EXTRA_HOST_ALIASES"] = aliases
     return env
 
 

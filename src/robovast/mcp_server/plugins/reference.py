@@ -131,12 +131,50 @@ def get_cli_help(command: str = "") -> str:
     return cmd.get_help(ctx)
 
 
+def get_service_info() -> dict:
+    """Report which robovast-service is answering, and which code it is running.
+
+    A service is a long-lived process: it loads robovast's code and its plugin entry
+    points **once, at startup**. After editing robovast or installing a plugin, a
+    reachable service is not necessarily a current one — it keeps behaving like the
+    code it started with, which surfaces as a fix that "did not work". ``code_version``
+    is the git revision that process is running (with ``+dirty`` when its working tree
+    had uncommitted changes); compare it with the tree you just edited, and restart the
+    service if they differ.
+
+    Returns:
+        ``{code_version, api_version, backend, backends, mcp_plugins}``; ``{error}``
+        when no service answers. ``mcp_plugins`` are the plugin groups *this MCP
+        process* loaded — same staleness caveat, different process.
+    """
+    from importlib.metadata import entry_points
+
+    from robovast.mcp_server.plugins.campaign_control import (_NO_SERVICE,
+                                                              _service_client)
+    client = _service_client()
+    if client is None:
+        return {"error": _NO_SERVICE}
+    try:
+        v = client.version()
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
+    return {
+        "code_version": v.robovast_version,
+        "api_version": v.api_version,
+        "backend": v.backend,
+        "backends": v.backends,
+        "mcp_plugins": sorted(
+            ep.name for ep in entry_points(group="robovast.mcp_plugins")),
+    }
+
+
 # -- Plugin class ------------------------------------------------------------
 
 _TOOLS = [
     get_config_schema,
     list_cli_commands,
     get_cli_help,
+    get_service_info,
 ]
 
 

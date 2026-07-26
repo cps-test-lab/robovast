@@ -73,6 +73,19 @@ class ControllerState:
                 setattr(self._status, key, value)
             self._status.updated_at = time.time()
 
+    def update_runs(self, **fields) -> None:
+        """Merge *fields* into the ``runs`` sub-model, atomically.
+
+        :meth:`update` assigns whole attributes, so ``update(runs={...})`` would drop
+        every counter the dict omits. The counters are written from different places
+        (the progress poller, the batch-completion tally, the outcome tally) and must
+        not clobber each other, and merging under the lock keeps that safe without
+        each caller having to read-modify-write.
+        """
+        with self._lock:
+            self._status.runs = self._status.runs.model_copy(update=fields)
+            self._status.updated_at = time.time()
+
     def set_phase(self, phase: str, stage: Optional[str] = None) -> None:
         with self._lock:
             self._status.phase = phase

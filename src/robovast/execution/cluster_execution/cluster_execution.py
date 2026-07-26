@@ -24,6 +24,7 @@ toolkit that actually builds/submits Jobs lives in
 :mod:`.kubernetes_backend` (the in-cluster controller is the sole executor).
 """
 
+import contextlib
 import logging
 import threading
 import time
@@ -31,8 +32,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from kubernetes import client
 
-from .kubernetes_kueue import (cleanup_kueue_workloads,
-                               set_cluster_queue_stop_policy)
+from .kubernetes_kueue import cleanup_kueue_workloads, cluster_queue_held
 
 logger = logging.getLogger(__name__)
 
@@ -376,6 +376,23 @@ def blocked_job_reasons(k8s_core, namespace, label_selector) -> dict:
     return _pod_signals(k8s_core, namespace, label_selector)[1]
 
 
+def _suspended_job_reasons(job_list, namespace) -> dict:
+    """Job name → Kueue's wait message, for each Job still ``spec.suspend`` true.
+
+    Kept advisory (an unreadable Workload just yields a generic message) because this
+    only enriches a listing; the campaign-level fail decision belongs to the run loop's
+    admission re-check, not to a display path.
+    """
+    suspended = [job.metadata.name for job in job_list.items
+                 if getattr(getattr(job, "spec", None), "suspend", False)]
+    if not suspended:
+        return {}
+    from .kubernetes_kueue import workload_wait_reasons
+    reasons = workload_wait_reasons(namespace, job_names=suspended)
+    return {name: reasons.get(name, "suspended: waiting for Kueue admission")
+            for name in suspended}
+
+
 def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
     """List scenario-run Jobs matching *label_selector*, each with its phase + detail.
 
@@ -387,6 +404,11 @@ def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
     config error) is reported ``blocked`` with a human ``detail`` (Kubernetes' own
     message) instead of sitting ``pending`` forever.
 
+    A Kueue-**suspended** Job is reported ``blocked`` too, with Kueue's own wait message
+    as ``detail``. It has no pod at all, so the pod-level probe cannot see it and it
+    would otherwise report ``pending`` — indistinguishable from a job about to start,
+    which is how a batch that could never be admitted looked like a slow one.
+
     ``blocked`` is its own status, distinct from ``failed``: Kubernetes still counts
     the Job active (it keeps retrying the pull), so it has neither completed nor been
     marked failed — it simply cannot make progress. The campaign-level escalation
@@ -394,8 +416,9 @@ def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
 
     Returns a list of ``(job, phase, detail)`` tuples in the order the API returned
     the Jobs; ``detail`` is ``None`` unless the Job is blocked (image pull / config
-    error) or failed for an infrastructure reason (OOMKilled / evicted / deadline),
-    in which case it carries Kubernetes' own explanation.
+    error, or suspended awaiting Kueue admission) or failed for an infrastructure
+    reason (OOMKilled / evicted / deadline), in which case it carries Kubernetes' or
+    Kueue's own explanation.
     """
     job_list = k8s_batch.list_namespaced_job(namespace, label_selector=label_selector)
     try:
@@ -408,9 +431,10 @@ def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
         logger.warning("Pod-level refinement unavailable (%s); reporting Job-level "
                        "phases for this listing.", exc)
         running, blocked, terminated = set(), {}, {}
+    suspended = _suspended_job_reasons(job_list, namespace)
     out = []
     for job in job_list.items:
-        detail = blocked.get(job.metadata.name)
+        detail = blocked.get(job.metadata.name) or suspended.get(job.metadata.name)
         phase = "blocked" if detail else job_phase(job, running)
         # A failed job whose pod was OOM-killed / evicted / deadline-exceeded would
         # otherwise show no cause (its scenario log is truncated) — surface it.
@@ -423,16 +447,42 @@ def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
 def cleanup_cluster_campaign(namespace="default", campaign=None, context=None):
     """Clean up scenario run jobs, pods, and Kueue workloads from the cluster.
 
+    Holds the ClusterQueue for the duration **only when cleaning the whole cluster**
+    (*campaign* is ``None``), where pausing all admissions is the intent.
+
+    A single campaign's cleanup deliberately does not touch it. ``stopPolicy`` lives on
+    one cluster-scoped ClusterQueue shared by every campaign, so holding it to delete
+    one campaign's jobs stops *every* other campaign's jobs being admitted for the
+    length of the cleanup — and left behind by a failed cleanup, forever. Per-campaign
+    quota safety does not need it: the deletions are label-scoped and already ordered
+    Workloads-before-Jobs, which is what lets Kueue release that campaign's quota
+    cleanly. See :func:`~...kubernetes_kueue.cluster_queue_held`.
+
+    Args:
+        namespace: Kubernetes namespace.
+        campaign: If given, clean only this run's jobs/pods/workloads.
+        context: Kubernetes context name to use. ``None`` uses the active context.
+    """
+    with contextlib.ExitStack() as stack:
+        if campaign is None:
+            stack.enter_context(cluster_queue_held(kube_context=context))
+        _cleanup_cluster_campaign_resources(namespace=namespace, campaign=campaign,
+                                            context=context)
+
+
+def _cleanup_cluster_campaign_resources(namespace="default", campaign=None, context=None):
+    """Delete scenario run jobs, pods, and Kueue workloads (steps 2-7 and 9).
+
+    Called by :func:`cleanup_cluster_campaign`, which owns holding and resuming the
+    ClusterQueue around it.
+
     Cleanup order is designed to avoid confusing Kueue's quota tracking:
-    1. Hold the ClusterQueue to prevent new admissions during cleanup (does NOT
-       preempt running workloads — use Hold, not HoldAndDrain).
     2. Delete Workloads first so Kueue releases quota before Jobs disappear.
     3. Force-clear finalizers on stuck Workloads.
     4. Delete Jobs (Foreground propagation so pods are reaped by the Job controller).
     5. Force-clear finalizers on stuck Jobs.
     6. Delete Pods.
     7. Force-clear finalizers on stuck Pods.
-    8. Resume the ClusterQueue (stopPolicy -> None) so new runs can be admitted.
 
     If campaign is given, removes only resources for that run (label
     ``jobgroup=scenario-runs,campaign-id=<campaign>``) plus that campaign's
@@ -454,12 +504,6 @@ def cleanup_cluster_campaign(namespace="default", campaign=None, context=None):
     if campaign is not None:
         label_safe = _label_safe_campaign(campaign)
         label_selector = f"jobgroup=scenario-runs,campaign-id={label_safe}"
-
-    # Step 1: Pause the ClusterQueue so Kueue does not admit new jobs during
-    # cleanup. Use "Hold" (not "HoldAndDrain") to avoid preempting workloads
-    # that belong to other campaigns or that the user did not intend to kill.
-    logger.info("Setting ClusterQueue stopPolicy to Hold before cleanup")
-    set_cluster_queue_stop_policy("Hold", kube_context=context)
 
     # Step 2+3: Delete Workloads FIRST so Kueue can release quota cleanly
     # before the underlying Jobs disappear. Hard finalizer cleanup is handled
@@ -582,10 +626,6 @@ def cleanup_cluster_campaign(namespace="default", campaign=None, context=None):
         with ThreadPoolExecutor(max_workers=min(len(stuck_pods), 16)) as pool:
             list(pool.map(_clear_pod_finalizers, stuck_pods))
         time.sleep(1)
-
-    # Step 8: Resume the ClusterQueue so future runs can be admitted.
-    logger.info("Restoring ClusterQueue stopPolicy to None after cleanup")
-    set_cluster_queue_stop_policy(None, kube_context=context)
 
     # Step 9: Also reap any auxiliary-container pod(s). There are no controller
     # pods any more (the service drives campaigns in-process), but a campaign whose

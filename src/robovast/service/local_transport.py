@@ -63,10 +63,22 @@ logger = logging.getLogger(__name__)
 
 
 def _robovast_version() -> str:
+    """The version of the code *this process is running*.
+
+    ``get_app_version`` prefers the git revision (with ``+dirty`` for an unclean tree)
+    and falls back to package metadata. That preference is the point: a service is
+    long-lived and loads its code once, so a client needs to tell "the fix I just made
+    is loaded" from "this process predates it". The packaged version alone cannot —
+    it stays ``2.0.0`` across every edit.
+    """
+    from robovast.common.execution import get_app_version
     try:
-        return _pkg_version("robovast")
-    except PackageNotFoundError:  # editable/source without metadata
-        return "0.0.0+unknown"
+        return get_app_version()
+    except Exception:  # noqa: BLE001 - version reporting must never break the handshake
+        try:
+            return _pkg_version("robovast")
+        except PackageNotFoundError:  # editable/source without metadata
+            return "0.0.0+unknown"
 
 
 def _plugin_remotes(group: str, asset_attr: str, url_builder,

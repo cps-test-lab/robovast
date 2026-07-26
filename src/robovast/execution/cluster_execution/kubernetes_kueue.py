@@ -17,6 +17,7 @@
 
 """Kueue installation, queue setup, and workload cleanup for cluster execution."""
 
+import contextlib
 import logging
 import os
 import subprocess
@@ -166,6 +167,202 @@ def set_cluster_queue_stop_policy(stop_policy, kube_context=None):
             )
         else:
             logger.warning("Could not set ClusterQueue '%s' stopPolicy: %s", CLUSTER_QUEUE_NAME, e)
+
+
+#: Raised by :func:`verify_kueue_admission_ready` when the admission path cannot be
+#: *checked* (RBAC), as opposed to being broken. Callers warn and carry on: refusing to
+#: run because we lack a read permission would be worse than the hang we are preventing.
+class KueueCheckUnavailable(Exception):
+    """The Kueue queue objects could not be read, so nothing can be concluded."""
+
+
+def _queue_object(custom_api, plural, name, namespace=None):
+    """Read one Kueue custom object, or ``None`` when it does not exist.
+
+    Raises :class:`KueueCheckUnavailable` on a 403 so "we are not allowed to look"
+    never reaches the caller as "it is not there" — the two demand opposite responses.
+    """
+    try:
+        if namespace is None:
+            return custom_api.get_cluster_custom_object(
+                group=KUEUE_WORKLOAD_GROUP, version=KUEUE_WORKLOAD_VERSION,
+                plural=plural, name=name)
+        return custom_api.get_namespaced_custom_object(
+            group=KUEUE_WORKLOAD_GROUP, version=KUEUE_WORKLOAD_VERSION,
+            plural=plural, namespace=namespace, name=name)
+    except client.rest.ApiException as e:
+        if e.status == 404:
+            return None
+        if e.status == 403:
+            raise KueueCheckUnavailable(
+                f"not permitted to read {plural}/{name}"
+                f"{f' in namespace {namespace}' if namespace else ''}: {e.reason}") from e
+        raise
+
+
+def verify_kueue_admission_ready(namespace="default", kube_context=None,
+                                 settle_timeout=0.0):
+    """Check that a scenario Job labelled into the robovast queue can be admitted.
+
+    Every scenario and postprocess Job carries ``kueue.x-k8s.io/queue-name``, so Kueue
+    creates it **suspended** and starts it only once LocalQueue ``robovast`` admits it
+    through ClusterQueue ``robovast-cluster-queue``. When any link in that chain is
+    missing the Job is not rejected — it simply stays suspended, with no pod, forever.
+    Nothing about that state resembles a failure: the Job is "active", the campaign log
+    says "still running", and ``activeDeadlineSeconds`` cannot save it because the timer
+    does not run while a Job is suspended. So it must be checked up front.
+
+    Raises :class:`~robovast.common.errors.CampaignConfigError` naming the broken link
+    and the remedy. Raises :class:`KueueCheckUnavailable` when the objects cannot be
+    read at all (RBAC) — callers downgrade that to a warning.
+
+    Deliberately does **not** look at quota. A queue whose capacity is currently used up
+    is healthy and the correct response is to wait; only a structurally broken admission
+    path is an error.
+
+    Args:
+        namespace: Namespace the jobs run in — the LocalQueue must live there too.
+        kube_context: Kubernetes context to use. ``None`` uses the active context.
+        settle_timeout: Seconds to keep retrying a failing check before raising. For a
+            check run straight after ``apply_kueue_queues``, where Kueue may not have
+            reconciled the ClusterQueue against its ResourceFlavor yet; leave at 0 for a
+            queue that has been up for a while, so a real breakage fails immediately.
+    """
+    from robovast.common.errors import CampaignConfigError
+    from robovast.common.kube import load_kube_config
+    load_kube_config(context=kube_context)
+    deadline = time.monotonic() + settle_timeout
+    while True:
+        try:
+            return _check_kueue_admission(namespace)
+        except CampaignConfigError:
+            if time.monotonic() >= deadline:
+                raise
+            logger.debug("Kueue admission path not ready yet; retrying until it settles")
+            time.sleep(2)
+
+
+def _check_kueue_admission(namespace):
+    """One pass of :func:`verify_kueue_admission_ready` (no retry, config already loaded)."""
+    from robovast.common.errors import CampaignConfigError
+    custom_api = client.CustomObjectsApi()
+    remedy = ("Run 'vast execution cluster setup' to (re)create the Kueue queues, "
+              "or point the campaign at the namespace that has them.")
+
+    local_queue = _queue_object(custom_api, "localqueues", KUEUE_QUEUE_NAME,
+                                namespace=namespace)
+    if local_queue is None:
+        raise CampaignConfigError(
+            f"Kueue LocalQueue '{KUEUE_QUEUE_NAME}' does not exist in namespace "
+            f"'{namespace}', but every job is labelled into it "
+            f"(kueue.x-k8s.io/queue-name={KUEUE_QUEUE_NAME}). Kueue would suspend the "
+            f"jobs and never admit them.\n{remedy}")
+
+    # The LocalQueue names its ClusterQueue; read it from the object rather than
+    # assuming CLUSTER_QUEUE_NAME, so a hand-edited queue is diagnosed truthfully.
+    cq_name = (local_queue.get("spec") or {}).get("clusterQueue") or CLUSTER_QUEUE_NAME
+    cluster_queue = _queue_object(custom_api, "clusterqueues", cq_name)
+    if cluster_queue is None:
+        raise CampaignConfigError(
+            f"Kueue ClusterQueue '{cq_name}' does not exist, but LocalQueue "
+            f"'{KUEUE_QUEUE_NAME}' in namespace '{namespace}' points at it. Every job "
+            f"would stay suspended with 'ClusterQueue {cq_name} doesn't exist'.\n"
+            f"{remedy}")
+
+    spec = cluster_queue.get("spec") or {}
+    stop_policy = spec.get("stopPolicy")
+    if stop_policy and stop_policy != "None":
+        raise CampaignConfigError(
+            f"Kueue ClusterQueue '{cq_name}' is stopped (stopPolicy={stop_policy}), so "
+            f"no job will be admitted. Campaign cleanup holds the queue while it "
+            f"deletes and resumes it afterwards; a cleanup that died in between leaves "
+            f"it held.\nResume it with: kubectl patch clusterqueue {cq_name} "
+            f"--type=merge -p '{{\"spec\":{{\"stopPolicy\":\"None\"}}}}'")
+
+    # Kueue reports an unusable queue (most often a ResourceFlavor that does not exist)
+    # as Active=False rather than by deleting anything, so the objects all look fine.
+    active = next((c for c in (cluster_queue.get("status") or {}).get("conditions") or []
+                   if c.get("type") == "Active"), None)
+    if active is not None and active.get("status") != "True":
+        raise CampaignConfigError(
+            f"Kueue ClusterQueue '{cq_name}' is not active "
+            f"({active.get('reason') or 'unknown reason'}: "
+            f"{active.get('message') or 'no message'}), so no job will be admitted.\n"
+            f"{remedy}")
+
+    logger.debug("Kueue admission path ready: LocalQueue '%s' in '%s' -> ClusterQueue "
+                 "'%s'", KUEUE_QUEUE_NAME, namespace, cq_name)
+
+
+def workload_wait_reasons(namespace, job_names=None, k8s_custom=None):
+    """Job name → Kueue's own explanation for each not-yet-admitted Workload.
+
+    Kueue mirrors every suspended Job into a Workload and records why it is waiting in
+    the ``QuotaReserved`` condition. That message ("insufficient unused quota for cpu",
+    "ClusterQueue ... doesn't exist") is the only place the reason exists — the Job
+    itself just says ``suspend: true``.
+
+    Workloads do **not** inherit the jobs' ``jobgroup`` / ``campaign-id`` labels (see
+    :func:`cleanup_kueue_workloads`), so they are listed by the queue label and mapped
+    back to their owning Job; pass *job_names* to keep only one campaign's.
+
+    Best-effort: returns ``{}`` rather than raising, because this only enriches a log
+    line. The fail-loudly decision is :func:`verify_kueue_admission_ready`'s.
+    """
+    custom_api = k8s_custom or client.CustomObjectsApi()
+    try:
+        workloads = custom_api.list_namespaced_custom_object(
+            group=KUEUE_WORKLOAD_GROUP, version=KUEUE_WORKLOAD_VERSION,
+            plural=KUEUE_WORKLOAD_PLURAL, namespace=namespace,
+            label_selector=f"kueue.x-k8s.io/queue-name={KUEUE_QUEUE_NAME}",
+        ).get("items") or []
+    except Exception as e:  # noqa: BLE001 - advisory only
+        logger.debug("Could not list Kueue workloads in %s: %s", namespace, e)
+        return {}
+    wanted = set(job_names) if job_names is not None else None
+    reasons = {}
+    for wl in workloads:
+        owners = (wl.get("metadata") or {}).get("ownerReferences") or []
+        job_name = next((o.get("name") for o in owners if o.get("kind") == "Job"), None)
+        if not job_name or (wanted is not None and job_name not in wanted):
+            continue
+        for cond in (wl.get("status") or {}).get("conditions") or []:
+            if cond.get("type") == "QuotaReserved" and cond.get("status") != "True":
+                reasons[job_name] = (cond.get("message")
+                                     or cond.get("reason") or "not admitted")
+                break
+    return reasons
+
+
+@contextlib.contextmanager
+def cluster_queue_held(kube_context=None):
+    """Hold the ClusterQueue for the duration, then restore what it was before.
+
+    Only appropriate for a **cluster-wide** operation. The ClusterQueue is a single
+    cluster-scoped object shared by every campaign, and ``stopPolicy: Hold`` stops all
+    admissions in it — it is not scoped to one campaign's jobs (``Hold`` vs
+    ``HoldAndDrain`` decides only whether *running* workloads are preempted, not whose
+    workloads are affected). Holding it for a per-campaign operation stalls every other
+    campaign's pending jobs, which is the same forever-suspended state this module's
+    preflight exists to prevent.
+
+    Restores the **previous** policy rather than forcing ``None``, so a hold that was
+    already in place (a concurrent teardown, a deliberate manual hold) survives, and so
+    an error inside the block can never leave the queue stopped for good.
+    """
+    previous = None
+    try:
+        cq = _queue_object(client.CustomObjectsApi(), "clusterqueues", CLUSTER_QUEUE_NAME)
+        previous = (cq.get("spec") or {}).get("stopPolicy") if cq else None
+    except Exception as e:  # noqa: BLE001 - fall back to the normal state
+        logger.debug("Could not read the current ClusterQueue stopPolicy: %s", e)
+    logger.info("Setting ClusterQueue stopPolicy to Hold")
+    set_cluster_queue_stop_policy("Hold", kube_context=kube_context)
+    try:
+        yield
+    finally:
+        logger.info("Restoring ClusterQueue stopPolicy to '%s'", previous or "None")
+        set_cluster_queue_stop_policy(previous, kube_context=kube_context)
 
 
 def cleanup_kueue_workloads(
