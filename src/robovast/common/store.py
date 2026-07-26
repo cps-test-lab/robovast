@@ -102,8 +102,31 @@ CREATE TABLE IF NOT EXISTS unit (
 );
 """
 
+# 1 -> 2: per-run outcomes. ``unit`` stops one level short of the results tree —
+# ``n_samples`` and ``status`` are lossy roll-ups of runs that had no row of their
+# own. The ``run`` table completes ``campaign -> batch -> unit -> run`` and mirrors
+# each run's ``test.xml`` (the runner's contract), so pass/fail is queryable live
+# and ``data.db`` can be built from it instead of re-parsing the XML.
+_MIGRATION_ADD_RUN = """
+CREATE TABLE IF NOT EXISTS run (
+    id              INTEGER PRIMARY KEY,
+    unit_id         INTEGER NOT NULL REFERENCES unit(id),
+    run_id          INTEGER NOT NULL,   -- numeric run index within the config dir
+    status          TEXT,               -- passed / failed / error / unknown
+    passed          INTEGER,            -- 0/1
+    errors          INTEGER,
+    failures        INTEGER,
+    tests           INTEGER,
+    duration_s      REAL,
+    start_time      TEXT,               -- ISO 8601
+    failure_message TEXT,               -- NULL when passed
+    created_at      REAL
+);
+CREATE INDEX IF NOT EXISTS idx_run_unit ON run (unit_id);
+"""
+
 # Current schema version, stored in the database as ``PRAGMA user_version``.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Ordered, append-only migrations: ``_MIGRATIONS[i]`` is the SQL that upgrades a
 # database from ``user_version == i`` to ``user_version == i + 1``. To change the
@@ -115,6 +138,7 @@ _MIGRATIONS = [
     # pre-versioning robovast (its tables already present, ``user_version`` 0)
     # adopts version 1 without modification.
     _SCHEMA,
+    _MIGRATION_ADD_RUN,
 ]
 assert len(_MIGRATIONS) == SCHEMA_VERSION  # one migration per version step
 
@@ -190,11 +214,11 @@ class CampaignStore:
         status: str,
         result_dir: str,
         n_samples: Optional[int] = None,
-    ) -> None:
+    ) -> int:
         # Surface the sole objective as a queryable REAL column for the common
         # single-objective case; keep the full dict in JSON regardless.
         objective_scalar = next(iter(objectives.values())) if len(objectives) == 1 else None
-        self._conn.execute(
+        cur = self._conn.execute(
             "INSERT INTO unit (batch_id, paramset_id, config_name, params_json, "
             "objective, objectives_json, measures_json, n_samples, status, result_dir, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -207,6 +231,30 @@ class CampaignStore:
                 n_samples,
                 status, result_dir, time.time(),
             ),
+        )
+        self._conn.commit()
+        return cur.lastrowid
+
+    def record_runs(self, unit_id: int, runs: list[dict]) -> None:
+        """Record per-run outcomes for a unit (one ``run`` row per run).
+
+        Each dict is a :func:`robovast.common.campaign_data.read_run_outcome`
+        result: ``run_id``, ``status``, ``passed``, ``errors``, ``failures``,
+        ``tests``, ``duration_s``, ``start_time``, ``failure_message``.
+        """
+        if not runs:
+            return
+        now = time.time()
+        self._conn.executemany(
+            "INSERT INTO run (unit_id, run_id, status, passed, errors, failures, "
+            "tests, duration_s, start_time, failure_message, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (unit_id, r["run_id"], r["status"], r["passed"], r["errors"],
+                 r["failures"], r["tests"], r["duration_s"], r["start_time"],
+                 r["failure_message"], now)
+                for r in runs
+            ],
         )
         self._conn.commit()
 
@@ -252,6 +300,34 @@ class CampaignStore:
             "SELECT * FROM unit WHERE batch_id = ? ORDER BY id", (batch_id,)
         ).fetchall())
 
+    def runs(self, unit_id: int) -> list[sqlite3.Row]:
+        """Per-run outcome rows of a unit, in run-index order."""
+        return list(self._conn.execute(
+            "SELECT * FROM run WHERE unit_id = ? ORDER BY run_id", (unit_id,)
+        ).fetchall())
+
+    def run_counts(self, campaign_id: int) -> dict[str, int]:
+        """Pass/fail tallies for a campaign, from one ``GROUP BY`` over ``run``.
+
+        Returns ``num_runs`` (all rows), ``num_passed``, ``num_failed`` (status
+        ``failed`` only), and ``num_errors`` (status ``error``). An ``unknown`` run
+        counts toward ``num_runs`` but none of the others, so
+        ``num_passed + num_failed + num_errors`` may be < ``num_runs``.
+        """
+        rows = self._conn.execute(
+            "SELECT r.status AS status, COUNT(*) AS n FROM run r "
+            "JOIN unit u ON r.unit_id = u.id "
+            "JOIN batch b ON u.batch_id = b.id "
+            "WHERE b.campaign_id = ? GROUP BY r.status", (campaign_id,)
+        ).fetchall()
+        by_status = {row["status"]: row["n"] for row in rows}
+        return {
+            "num_runs": sum(by_status.values()),
+            "num_passed": by_status.get("passed", 0),
+            "num_failed": by_status.get("failed", 0),
+            "num_errors": by_status.get("error", 0),
+        }
+
 
 def read_campaign_mode(campaign_dir: str | Path) -> Optional[str]:
     """Best-effort read of ``campaign.mode`` ('search'/'batch') from ``campaign.db``.
@@ -270,3 +346,30 @@ def read_campaign_mode(campaign_dir: str | Path) -> Optional[str]:
     except sqlite3.Error:
         return None
     return row[0] if row else None
+
+
+def read_run_counts(campaign_dir: str | Path) -> Optional[dict[str, int]]:
+    """Best-effort read of per-run pass/fail tallies from ``campaign.db``.
+
+    Aggregates the ``run`` table (each ``campaign.db`` holds one campaign). Read
+    only — it never creates or migrates the store — so it is safe on the summary
+    hot path. Returns ``None`` when the store is absent, pre-``run``-table (schema
+    v1), or unreadable, letting the caller fall back to a disk walk; the returned
+    keys match :meth:`CampaignStore.run_counts`.
+    """
+    db = Path(campaign_dir) / STORE_FILENAME
+    if not db.is_file():
+        return None
+    try:
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) AS n FROM run GROUP BY status").fetchall()
+    except sqlite3.Error:
+        return None  # no ``run`` table (v1) or unreadable store
+    by_status = {r[0]: r[1] for r in rows}
+    return {
+        "num_runs": sum(by_status.values()),
+        "num_passed": by_status.get("passed", 0),
+        "num_failed": by_status.get("failed", 0),
+        "num_errors": by_status.get("error", 0),
+    }

@@ -45,9 +45,13 @@ SQL is the primary way to answer quantitative questions:
    recorded CSV), and a **`runs`** dimension table holding, for every run, its
    status/duration/objective plus each scenario parameter as a `param_*` column.
    The campaign's store is attached as schema `campaign` (tables `campaign`,
-   `batch`, `unit`) — that is where the full `.vast` (`campaign.config_json`),
+   `batch`, `unit`, `run`) — that is where the full `.vast` (`campaign.config_json`),
    multi-objective/quality-diversity results (`unit.objectives_json` /
-   `measures_json`), and search history/stop reason live.
+   `measures_json`), and search history/stop reason live. `campaign.run` is the
+   per-run source of truth for outcomes (status/passed/errors/failures/duration),
+   written live from each `test.xml`; the `runs` dimension table is its
+   postprocessed view. For raw pass/fail counts, `SELECT status, COUNT(*) FROM
+   campaign.run GROUP BY status` works even before postprocessing builds `data.db`.
 2. `query_campaign_data_sql(campaign_id, sql)` – run one read-only `SELECT`. Join
    `runs` to any metric table on `(config_name, run_id)`. Besides the built-ins,
    `STDDEV`, `VARIANCE`, `MEDIAN`, `PERCENTILE(col, p)` and `REGEXP(pat, col)` are

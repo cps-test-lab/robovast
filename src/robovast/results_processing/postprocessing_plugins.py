@@ -455,15 +455,18 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
     """Create a ``runs`` dimension table: per-run status/duration + scenario params.
 
     Params (and the objective) come from ``campaign.db``'s ``unit`` table, keyed
-    by ``config_name``; status/duration come from each run's ``test.xml``. Joining
-    ``runs`` to any metric table on ``(config_name, run_id)`` answers questions
-    like "how does <param> affect <metric>" in one query. Scalar params become
-    columns (prefixed ``param_``); non-scalar values are JSON-encoded.
+    by ``config_name``; per-run status/duration come from ``campaign.db``'s ``run``
+    table (the operational source of truth, written live from each ``test.xml``) —
+    this ``runs`` table is the analytics-wide *view* over it, joining sysinfo and
+    exploding params into ``param_`` columns. Joining ``runs`` to any metric table
+    on ``(config_name, run_id)`` answers questions like "how does <param> affect
+    <metric>" in one query. A store predating the ``run`` table falls back to
+    re-parsing ``test.xml`` directly.
     """
     from datetime import datetime, timedelta  # pylint: disable=import-outside-toplevel
 
     from robovast.common.campaign_data import (  # pylint: disable=import-outside-toplevel
-        read_sysinfo, read_test_result)
+        read_run_outcome, read_sysinfo)
 
     def _end_time(start_iso, duration_sec):
         """ISO end time = start + duration, or None when either is unavailable."""
@@ -484,9 +487,13 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
         return (si.get("instance_type"), si.get("cpu_name"),
                 si.get("available_cpus"), si.get("available_mem_gb"))
 
-    # Resolved params + objective per config, from campaign.db (read-only).
+    # Resolved params + objective per config, and per-run outcomes, from
+    # campaign.db (read-only). ``outcomes[config_name][run_id]`` holds the stored
+    # status/passed/errors/failures/duration/start_time; empty when the store
+    # predates the ``run`` table, in which case the loop re-parses ``test.xml``.
     params_by_config: dict[str, dict] = {}
     objective_by_config: dict[str, object] = {}
+    outcomes: dict[str, dict[int, dict]] = {}
     campaign_db = campaign_path / "campaign.db"
     if campaign_db.exists():
         cc = sqlite3.connect(f"file:{campaign_db}?mode=ro", uri=True)
@@ -502,8 +509,17 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
                 objective_by_config[cn] = obj
         except sqlite3.Error:
             pass
-        finally:
-            cc.close()
+        try:
+            for cn, rid, status, passed, errors, failures, duration, start in cc.execute(
+                    "SELECT u.config_name, r.run_id, r.status, r.passed, r.errors, "
+                    "r.failures, r.duration_s, r.start_time "
+                    "FROM run r JOIN unit u ON r.unit_id = u.id"):
+                outcomes.setdefault(cn, {})[rid] = {
+                    "status": status, "passed": passed, "errors": errors,
+                    "failures": failures, "duration_s": duration, "start_time": start}
+        except sqlite3.Error:
+            pass  # v1 store: no ``run`` table — fall back to test.xml below
+        cc.close()
 
     base_cols = ["config_name", "run_id", "status", "passed",
                  "duration_s", "errors", "failures", "objective",
@@ -535,18 +551,14 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
                 (d for d in config_dir.iterdir() if d.is_dir() and d.name.isdigit()),
                 key=lambda d: int(d.name)):
             run_id = int(run_dir.name)
-            start_time = None
-            try:
-                tr = read_test_result(run_dir)
-                passed = 1 if tr.get("success") else 0
-                errors = int(tr.get("errors", 0))
-                failures = int(tr.get("failures", 0))
-                duration = tr.get("duration_sec")
-                start_time = tr.get("start_time")
-                status = ("passed" if passed else
-                          "error" if errors else "failed")
-            except (FileNotFoundError, OSError, ValueError, TypeError):
-                passed, errors, failures, duration, status = 0, 0, 0, None, "unknown"
+            # Stored outcome from campaign.db.run; else parse the run's test.xml.
+            o = outcomes.get(config_name, {}).get(run_id) or read_run_outcome(run_dir)
+            status = o["status"]
+            passed = o["passed"]
+            errors = o["errors"]
+            failures = o["failures"]
+            duration = o["duration_s"]
+            start_time = o["start_time"]
             end_time = _end_time(start_time, duration)
             instance_type, cpu_name, avail_cpus, avail_mem = _sysinfo(run_dir)
             base_vals = [config_name, run_id, status, passed, duration,

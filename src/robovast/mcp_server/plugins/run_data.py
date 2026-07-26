@@ -20,8 +20,13 @@ A campaign's per-run metrics are consolidated into
 ``<campaign>/_execution/data.db`` during postprocessing — one table per CSV
 stem (``poses``, ``behaviors``, …), a ``rosout`` log table, ``scenario_timestamps``,
 and a ``runs`` **dimension table** (per-run ``status``/``duration_s`` + scenario
-parameters as ``param_*`` columns). SQL is the generic query interface an LLM
-wants, so this plugin exposes exactly two tools:
+parameters as ``param_*`` columns). That ``runs`` table is the postprocessed
+*view* over ``campaign.db``'s ``run`` table — the operational source of truth for
+per-run outcomes, written live from each ``test.xml`` and attached as
+``campaign.run``. For raw pass/fail (``SELECT status, COUNT(*) FROM campaign.run
+GROUP BY status``) ``campaign.run`` is queryable even before postprocessing exists.
+SQL is the generic query interface an LLM wants, so this plugin exposes exactly two
+tools:
 
 * :func:`describe_campaign_data` — the schema (tables, columns, row counts);
 * :func:`query_campaign_data_sql` — a **read-only** ``SELECT`` (authorizer + ``mode=ro``),
@@ -61,7 +66,8 @@ def describe_campaign_data(campaign_id: str) -> dict:
 
     Lists every table in ``data.db`` (metric tables, ``rosout``, the ``runs``
     dimension table with per-run status/duration + ``param_*`` columns) plus the
-    attached ``campaign.db`` (schema ``campaign``). Use before
+    attached ``campaign.db`` (schema ``campaign``: ``campaign``/``batch``/``unit``/
+    ``run`` — ``campaign.run`` is the per-run source of truth). Use before
     :func:`query_campaign_data_sql`.
 
     Args:

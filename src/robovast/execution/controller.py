@@ -46,7 +46,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from robovast.common.campaign_data import aggregate_run_status, list_run_dirs
+from robovast.common.campaign_data import (aggregate_run_status, list_run_dirs,
+                                           read_run_outcomes)
 from robovast.common.logging_config import (add_campaign_log_handler,
                                             remove_campaign_log_handler)
 from robovast.common.store import STORE_FILENAME, CampaignStore
@@ -331,11 +332,12 @@ class CampaignController:
             name = cfg["name"]
             cdir = os.path.join(self.campaign_root, name)
             run_dirs = list_run_dirs(cdir)
-            self.store.record_unit(
+            unit_id = self.store.record_unit(
                 batch_id=batch_id, paramset_id=name, config_name=name,
                 params=cfg.get("config", {}) or {}, objectives={}, measures={},
                 n_samples=len(run_dirs), status=aggregate_run_status(run_dirs),
                 result_dir=os.path.relpath(cdir, self.campaign_root))
+            self.store.record_runs(unit_id, read_run_outcomes(Path(cdir)))
         if self.state is not None:
             self.state.update(batches_done=1,
                               batch_history=[{"idx": 0, "n_units": len(configs)}])
@@ -470,11 +472,12 @@ class CampaignController:
                     config_dir = Path(self.campaign_root) / config_name
                     ev = self.evaluator.evaluate(config_dir, ps)
                     evaluations.append(ev)
-                    self.store.record_unit(
+                    unit_id = self.store.record_unit(
                         batch_id=batch_id, paramset_id=ps.id, config_name=config_name,
                         params=ps.values, objectives=ev.objectives, measures=ev.measures,
                         n_samples=ev.n_samples, status="evaluated",
                         result_dir=os.path.relpath(config_dir, self.campaign_root))
+                    self.store.record_runs(unit_id, read_run_outcomes(config_dir))
         finally:
             self._end_batch_progress()
         return evaluations

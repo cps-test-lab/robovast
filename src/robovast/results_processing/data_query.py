@@ -253,7 +253,19 @@ _TABLE_DESCRIPTIONS = {
     ("campaign", "unit"): (
         "One row per evaluated configuration. objectives_json (all named "
         "objectives) and measures_json (quality-diversity measures) live ONLY here "
-        "— runs.objective lifts just the single scalar objective."),
+        "— runs.objective lifts just the single scalar objective. params_json holds "
+        "the config's scenario parameters; n_samples/status are roll-ups of its "
+        "'run' rows (join campaign.run on unit_id for the per-run breakdown)."),
+    ("campaign", "run"): (
+        "One row per individual run (repetition), child of unit via unit_id — the "
+        "operational source of truth for run outcomes, written live during execution "
+        "from each run's test.xml. status is passed/failed/error/unknown (unknown = "
+        "test.xml missing or unparseable), passed is 0/1, with errors/failures/tests/"
+        "duration_s/start_time/failure_message. run_id is the numeric run index within "
+        "the config. Prefer this over walking test.xml: pass/fail counts are one "
+        "GROUP BY status here, available even before postprocessing builds data.db. "
+        "The main.runs table is the postprocessed wide VIEW over these rows (joining "
+        "sysinfo + exploding params)."),
     ("main", "costmaps"): (
         "nav2 OccupancyGrid frames (costmaps / the static map) recorded over the run, "
         "one row per message, written by the rosbags_costmap_to_csv postprocessing step. "
@@ -271,7 +283,9 @@ _TABLE_DESCRIPTIONS = {
 _DESCRIBE_NOTE = (
     "Join the 'runs' table (param_* columns + status/duration) to any metric table "
     "on (config_name, run_id). campaign.db is attached as schema 'campaign' (see "
-    "the campaign/batch/unit table descriptions). Extra aggregate functions are "
+    "the campaign/batch/unit/run table descriptions). For raw per-run pass/fail, "
+    "campaign.run is the source of truth (main.runs is its postprocessed view). "
+    "Extra aggregate functions are "
     "available beyond SQLite's built-ins: STDDEV, VARIANCE, MEDIAN, and "
     "PERCENTILE(col, p) where p is 0..100. A REGEXP(pattern, col) function is also "
     "registered."

@@ -28,7 +28,7 @@ import logging
 from pathlib import Path
 
 from .campaign_data import (aggregate_run_status, list_config_dirs,
-                            list_run_dirs, read_scenario_config)
+                            list_run_dirs, read_run_outcomes, read_scenario_config)
 from .common import load_config
 from .store import STORE_FILENAME, CampaignStore
 
@@ -79,7 +79,7 @@ def build_campaign_store(campaign_dir, *, force: bool = False) -> Path:
                 params = read_scenario_config(cfg_dir)
             except FileNotFoundError:
                 params = {}
-            store.record_unit(
+            unit_id = store.record_unit(
                 batch_id=batch_id,
                 paramset_id=cfg_dir.name,
                 config_name=cfg_dir.name,
@@ -90,5 +90,41 @@ def build_campaign_store(campaign_dir, *, force: bool = False) -> Path:
                 result_dir=cfg_dir.name,
                 n_samples=len(run_dirs),
             )
+            store.record_runs(unit_id, read_run_outcomes(cfg_dir))
     logger.info("Built campaign store: %s", store_path)
     return store_path
+
+
+def backfill_run_rows(campaign_dir) -> int:
+    """Populate the ``run`` table of an existing store from on-disk ``test.xml``.
+
+    For a store written by a robovast predating the ``run`` table (schema v1,
+    migrated to v2 with an empty ``run`` table on open), this fills in the per-run
+    outcomes without disturbing the controller-written ``campaign``/``batch``/``unit``
+    rows. Idempotent: a unit that already has ``run`` rows is skipped. Returns the
+    number of run rows inserted. Does nothing (returns 0) if the store is absent.
+
+    Resolve each unit's config dir from its ``result_dir`` (stored relative to the
+    campaign root), and record :func:`read_run_outcomes` for it — so a run missing
+    its ``test.xml`` is still recorded as ``unknown`` rather than dropped.
+    """
+    campaign_dir = Path(campaign_dir)
+    store_path = campaign_dir / STORE_FILENAME
+    if not store_path.is_file():
+        return 0
+    inserted = 0
+    with CampaignStore(store_path) as store:
+        for campaign in store.list_campaigns():
+            for batch in store.batches(campaign["id"]):
+                for unit in store.units(batch["id"]):
+                    if store.runs(unit["id"]):
+                        continue  # already backfilled / written live
+                    result_dir = unit["result_dir"]
+                    if not result_dir:
+                        continue
+                    rows = read_run_outcomes(campaign_dir / result_dir)
+                    store.record_runs(unit["id"], rows)
+                    inserted += len(rows)
+    if inserted:
+        logger.info("Backfilled %d run row(s) into %s", inserted, store_path)
+    return inserted

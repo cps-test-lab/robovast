@@ -166,6 +166,47 @@ def read_test_result(run_dir: Path) -> dict[str, Any]:
     }
 
 
+def read_run_outcome(run_dir: Path) -> dict[str, Any]:
+    """Per-run outcome for the ``run`` table, derived from ``test.xml``.
+
+    The single place the JUnit result is mapped to a normalized ``status`` —
+    ``passed`` (no errors, no failures), ``error`` (errors present), ``failed``
+    (failures only), or ``unknown`` (``test.xml`` missing/unparseable). The
+    controller records these live, :mod:`campaign_index` backfills them from disk,
+    and postprocessing reads them back, so the mapping must live once here.
+
+    Returns a dict keyed exactly like the ``run`` columns: ``run_id``, ``status``,
+    ``passed`` (0/1), ``errors``, ``failures``, ``tests``, ``duration_s``,
+    ``start_time``, ``failure_message``.
+    """
+    run_id = int(run_dir.name) if run_dir.name.isdigit() else -1
+    try:
+        tr = read_test_result(run_dir)
+    except (OSError, ET.ParseError, ValueError):
+        # A run that never wrote a ``test.xml``, or wrote a truncated/corrupt one
+        # (crashed mid-run), still gets a row so it is counted — marked ``unknown``
+        # rather than silently dropped. ``OSError`` covers the missing-file case
+        # (``FileNotFoundError``); ``ET.ParseError``/``ValueError`` the malformed one.
+        return {"run_id": run_id, "status": "unknown", "passed": 0,
+                "errors": 0, "failures": 0, "tests": 0,
+                "duration_s": None, "start_time": None, "failure_message": None}
+    passed = 1 if tr.get("success") else 0
+    errors = int(tr.get("errors", 0))
+    failures = int(tr.get("failures", 0))
+    status = "passed" if passed else "error" if errors else "failed"
+    return {
+        "run_id": run_id, "status": status, "passed": passed,
+        "errors": errors, "failures": failures, "tests": int(tr.get("tests", 0)),
+        "duration_s": tr.get("duration_sec"), "start_time": tr.get("start_time"),
+        "failure_message": tr.get("failure_message"),
+    }
+
+
+def read_run_outcomes(config_dir: Path) -> list[dict[str, Any]]:
+    """:func:`read_run_outcome` for every numeric run dir under *config_dir*."""
+    return [read_run_outcome(rd) for rd in list_run_dirs(config_dir)]
+
+
 def read_sysinfo(run_dir: Path) -> dict[str, Any]:
     """Read system information from ``sysinfo.yaml``.
 
