@@ -396,7 +396,7 @@ directory is unchanged the step is skipped automatically.  Use ``--force`` (or
 .. _results-retrigger:
 
 Re-running a finished campaign's post-run steps
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The two steps that run *after* a campaign's scenarios finish — analysis
 **postprocessing** and the **upload-to-share** — can each be re-triggered on a
