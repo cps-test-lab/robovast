@@ -80,13 +80,19 @@ def stage_context_to_s3(storage_client, bucket: str, prefix: str,
 
 
 def _copy_tree(src: Path, dst: Path) -> None:
-    """Copy *src* into *dst*, skipping the heavy/irrelevant dirs (see image_build)."""
-    from robovast.service.image_build import _IGNORE
+    """Copy *src* into *dst*, skipping the heavy/irrelevant dirs.
+
+    Uses the shared :data:`~robovast.common.build_context.BUILD_CONTEXT_IGNORE` so
+    this staging skips exactly what the local build path hashes over — a mismatch
+    would break the context hash.
+    """
     import shutil
+
+    from robovast.common.build_context import BUILD_CONTEXT_IGNORE
     dst.mkdir(parents=True, exist_ok=True)
     for path in src.rglob("*"):
         rel = path.relative_to(src)
-        if any(part in _IGNORE for part in rel.parts):
+        if any(part in BUILD_CONTEXT_IGNORE for part in rel.parts):
             continue
         target = dst / rel
         if path.is_dir():

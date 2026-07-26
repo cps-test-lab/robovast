@@ -101,12 +101,33 @@ def test_running_scenario_job_names_only_counts_running_pods():
     assert running_scenario_job_names(core, "ns", "sel") == {"a", "c"}
 
 
-def test_running_scenario_job_names_swallows_api_errors():
-    class _Boom:
-        def list_namespaced_pod(self, namespace, label_selector):
-            raise RuntimeError("boom")
+class _BoomCore:
+    def list_namespaced_pod(self, namespace, label_selector):
+        raise RuntimeError("boom")
 
-    assert running_scenario_job_names(_Boom(), "ns", "sel") == set()
+
+def test_pod_refinement_raises_on_api_error():
+    """A pod-list failure must propagate, not silently return empties (which read as
+    'nothing blocked' and let a stuck batch hang). See _pod_signals."""
+    import pytest
+    with pytest.raises(RuntimeError, match="boom"):
+        running_scenario_job_names(_BoomCore(), "ns", "sel")
+    with pytest.raises(RuntimeError, match="boom"):
+        blocked_job_reasons(_BoomCore(), "ns", "sel")
+
+
+def test_list_jobs_with_phase_degrades_explicitly_on_pod_error():
+    """The advisory listing tolerates a transient pod-list hiccup (Job-level view),
+    without raising — the safety-critical escalation is handled elsewhere."""
+    class _Batch:
+        def list_namespaced_job(self, namespace, label_selector):
+            job = _job("a", active=1)
+            return type("L", (), {"items": [job]})()
+
+    # Does not raise; still lists the job (Job-level phase, no pod-derived detail).
+    out = list_jobs_with_phase(_Batch(), _BoomCore(), "ns", "sel")
+    assert [j.metadata.name for j, _p, _d in out] == ["a"]
+    assert all(detail is None for _j, _p, detail in out)
 
 
 def test_list_jobs_with_phase_uses_pod_truth():

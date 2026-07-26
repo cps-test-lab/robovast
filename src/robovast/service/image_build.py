@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from robovast.common.build_context import BUILD_CONTEXT_IGNORE
 from robovast.common.execution import (BUILD_IMAGE_PREFIX, build_image_tag,
                                        is_build_image_ref,
                                        resolve_robovast_image)
@@ -52,9 +53,10 @@ logger = logging.getLogger(__name__)
 _CONTEXT_DIR = "/robovast_build_context"
 #: Local docker tag namespace for agent-built experiment images.
 _LOCAL_TAG_NS = "robovast-build"
-#: Files/dirs never hashed or copied into the build context.
-_IGNORE = {".git", "__pycache__", ".cache", ".preprocessed", "results",
-           "_execution", "_transient", ".robovast_plugins", "resolved"}
+#: Files/dirs never hashed or copied into the build context. Sourced from
+#: ``common`` so the in-cluster staging path skips exactly the same set (a
+#: mismatch would break the context hash — see build_context).
+_IGNORE = BUILD_CONTEXT_IGNORE
 
 
 @dataclass

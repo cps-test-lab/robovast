@@ -6,6 +6,7 @@ import Stack from '@mui/material/Stack'
 import Typography from '@mui/material/Typography'
 import {
   robovast,
+  isTerminalPhase,
   type JobSummary,
   type ListJobsResponse,
   type Status,
@@ -61,7 +62,7 @@ export function StatusView({
   liveOnly?: boolean
 }) {
   const { runs, budget } = status
-  const terminal = ['finished', 'failed', 'stopped', 'error'].includes(status.phase)
+  const terminal = isTerminalPhase(status.phase)
   const counts = jobs?.counts
   const running = counts?.running ?? 0
   // Failures for the bar's red segment: prefer the live job count so a failure shows

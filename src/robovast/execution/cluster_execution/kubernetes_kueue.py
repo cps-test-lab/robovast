@@ -24,7 +24,7 @@ import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from kubernetes import client, config
+from kubernetes import client
 from kubernetes.utils.quantity import parse_quantity
 
 logger = logging.getLogger(__name__)
@@ -144,10 +144,8 @@ def set_cluster_queue_stop_policy(stop_policy, kube_context=None):
         stop_policy: Policy string, e.g. ``"Hold"``.
         kube_context: Kubernetes context to use. ``None`` uses the active context.
     """
-    try:
-        config.load_kube_config(context=kube_context)
-    except config.ConfigException:
-        pass
+    from robovast.common.kube import load_kube_config
+    load_kube_config(context=kube_context)
     custom_api = client.CustomObjectsApi()
     body = {"spec": {"stopPolicy": stop_policy if stop_policy else "None"}}
     try:
@@ -335,10 +333,8 @@ def delete_kueue_webhook_configs(kube_context=None):
     Args:
         kube_context: Kubernetes context to use. ``None`` uses the active context.
     """
-    try:
-        config.load_kube_config(context=kube_context)
-    except config.ConfigException:
-        pass
+    from robovast.common.kube import load_kube_config
+    load_kube_config(context=kube_context)
     admission_api = client.AdmissionregistrationV1Api()
     for name, deleter in [
         (KUEUE_VALIDATING_WEBHOOK_CONFIG,
@@ -368,10 +364,8 @@ def cleanup_kueue_cluster_resources(kube_context=None):
     Args:
         kube_context: Kubernetes context to use. ``None`` uses the active context.
     """
-    try:
-        config.load_kube_config(context=kube_context)
-    except config.ConfigException:
-        pass
+    from robovast.common.kube import load_kube_config
+    load_kube_config(context=kube_context)
     # Remove the admission webhooks first: if the kueue-controller-manager pods
     # are already gone, the webhook calls fail and block the finalizer patches
     # below, leaving the resources stuck Terminating.
@@ -447,10 +441,8 @@ def get_cluster_allocatable_resources(kube_context=None, cluster_config=None):
 
     # 2. Generic K8s node query — total allocatable (autoscaling-safe)
     try:
-        try:
-            config.load_incluster_config()
-        except config.ConfigException:
-            config.load_kube_config(context=kube_context)
+        from robovast.common.kube import load_kube_config
+        load_kube_config(context=kube_context)
 
         v1 = client.CoreV1Api()
         total_allocatable_cpu = 0.0

@@ -40,7 +40,7 @@ import urllib.parse
 import urllib.request
 from typing import Optional
 
-from kubernetes import client, config
+from kubernetes import client
 
 from .base_config import BaseConfig
 
@@ -70,10 +70,8 @@ def _get_gke_cluster_info(kube_context=None): # pylint: disable=too-many-return-
 
     # 2. Detect from Kubernetes node metadata
     try:
-        try:
-            config.load_incluster_config()
-        except config.ConfigException:
-            config.load_kube_config(context=kube_context)
+        from robovast.common.kube import load_kube_config
+        load_kube_config(context=kube_context)
 
         v1 = client.CoreV1Api()
         nodes = v1.list_node(limit=1)

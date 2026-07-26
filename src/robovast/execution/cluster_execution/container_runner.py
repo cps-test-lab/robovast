@@ -207,7 +207,7 @@ def cleanup_aux_pods(namespace="default", kube_context=None, campaign=None):
     campaigns are left untouched; otherwise deletes every aux pod. Backs
     ``vast exec cluster run-cleanup`` (the successor to the controller-pod reap).
     """
-    from kubernetes import client, config
+    from kubernetes import client
 
     from robovast.execution.cluster_execution.cluster_execution import \
         _label_safe_campaign
@@ -215,14 +215,9 @@ def cleanup_aux_pods(namespace="default", kube_context=None, campaign=None):
     selector = AUX_LABEL
     if campaign is not None:
         selector += f",campaign-id={_label_safe_campaign(campaign)}"
+    from robovast.common.kube import load_kube_config
     try:
-        if kube_context:
-            config.load_kube_config(context=kube_context)
-        else:
-            try:
-                config.load_incluster_config()
-            except Exception:  # noqa: BLE001 - host fallback
-                config.load_kube_config()
+        load_kube_config(context=kube_context)
         core = client.CoreV1Api()
         pods = core.list_namespaced_pod(namespace, label_selector=selector).items
     except Exception as e:  # noqa: BLE001
@@ -340,11 +335,10 @@ class AuxPodSession:
 
     def _client(self):
         if self._core_v1 is None:
-            from kubernetes import client, config
-            try:
-                config.load_incluster_config()
-            except Exception:  # noqa: BLE001 - dev/local fallback
-                config.load_kube_config()
+            from kubernetes import client
+
+            from robovast.common.kube import load_kube_config
+            load_kube_config()
             self._core_v1 = client.CoreV1Api()
         return self._core_v1
 
@@ -420,11 +414,10 @@ class ClusterContainerRunner:
 
     def _client(self):
         if self._core_v1 is None:
-            from kubernetes import client, config
-            try:
-                config.load_incluster_config()
-            except Exception:  # noqa: BLE001 - dev/local fallback
-                config.load_kube_config()
+            from kubernetes import client
+
+            from robovast.common.kube import load_kube_config
+            load_kube_config()
             self._core_v1 = client.CoreV1Api()
         return self._core_v1
 

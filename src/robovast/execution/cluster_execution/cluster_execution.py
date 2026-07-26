@@ -30,7 +30,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from kubernetes import client
-from kubernetes import config as kube_config
 
 from .kubernetes_kueue import (cleanup_kueue_workloads,
                                set_cluster_queue_stop_policy)
@@ -336,15 +335,16 @@ def _pod_signals(k8s_core, namespace, label_selector) -> "tuple[set, dict, dict]
     Job name → ``"<reason>: <message>"`` for pods that cannot start (image pull /
     container-config errors). ``terminated_reasons``: Job name → reason string for a
     pod that ended abnormally (OOMKilled / evicted / deadline — see
-    :func:`pod_termination_reason`), so a *failed* job can explain itself. Best-effort:
-    on any pod-list error, returns empties so callers fall back to the Job-level view
-    rather than failing the whole listing.
+    :func:`pod_termination_reason`), so a *failed* job can explain itself.
+
+    Raises on a pod-list error rather than returning empties: a silent empty result
+    is indistinguishable from "nothing is blocked", which let the run loop's grace
+    timer reset and a genuinely blocked batch hang until the deadline hard-kill.
+    Callers that can tolerate losing the refinement (the advisory job *listing*)
+    catch this explicitly; the escalation loop treats a failed probe as "unknown",
+    never as "unblocked".
     """
-    try:
-        pods = k8s_core.list_namespaced_pod(namespace, label_selector=label_selector).items
-    except Exception as exc:  # noqa: BLE001 - best-effort refinement
-        logger.warning("Could not list pods to refine job status: %s", exc)
-        return set(), {}, {}
+    pods = k8s_core.list_namespaced_pod(namespace, label_selector=label_selector).items
     running, blocked, terminated = set(), {}, {}
     for pod in pods:
         name = _pod_job_name(pod)
@@ -398,7 +398,16 @@ def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
     in which case it carries Kubernetes' own explanation.
     """
     job_list = k8s_batch.list_namespaced_job(namespace, label_selector=label_selector)
-    running, blocked, terminated = _pod_signals(k8s_core, namespace, label_selector)
+    try:
+        running, blocked, terminated = _pod_signals(k8s_core, namespace, label_selector)
+    except Exception as exc:  # noqa: BLE001 - advisory listing degrades explicitly
+        # A transient pod-list hiccup: report Job-level phases for this listing only
+        # (it self-corrects on the next poll). The safety-critical blocked-job
+        # escalation does NOT come through here — it calls blocked_job_reasons and
+        # handles a failed probe itself, so it is not weakened by this fallback.
+        logger.warning("Pod-level refinement unavailable (%s); reporting Job-level "
+                       "phases for this listing.", exc)
+        running, blocked, terminated = set(), {}, {}
     out = []
     for job in job_list.items:
         detail = blocked.get(job.metadata.name)
@@ -436,10 +445,8 @@ def cleanup_cluster_campaign(namespace="default", campaign=None, context=None):
         context: Kubernetes context name to use. ``None`` uses the active context.
     """
     # In-cluster first (the service drives campaigns in-pod), else the host context.
-    try:
-        kube_config.load_incluster_config()
-    except kube_config.ConfigException:
-        kube_config.load_kube_config(context=context)
+    from robovast.common.kube import load_kube_config
+    load_kube_config(context=context)
     k8s_client = client.CoreV1Api()
     k8s_batch_client = client.BatchV1Api()
 
@@ -603,7 +610,8 @@ def get_cluster_job_counts_per_campaign(namespace="default", context=None):
         namespace: Kubernetes namespace.
         context: Kubernetes context name to use. ``None`` uses the active context.
     """
-    kube_config.load_kube_config(context=context)
+    from robovast.common.kube import load_kube_config
+    load_kube_config(context=context)
     try:
         # Phase reflects true pod state (an active-but-Pending pod counts as pending).
         jobs = list_jobs_with_phase(

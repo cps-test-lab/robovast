@@ -247,11 +247,8 @@ class ClusterService(LocalTransport):
         return self._image or resolve_controller_image()
 
     def _load_kube(self):
-        from kubernetes import config
-        try:
-            config.load_incluster_config()
-        except Exception:  # noqa: BLE001 - off-cluster: use the selected context
-            config.load_kube_config(context=self.kube_context)
+        from robovast.common.kube import load_kube_config
+        load_kube_config(context=self.kube_context)
 
     def _k8s(self):
         from kubernetes import client

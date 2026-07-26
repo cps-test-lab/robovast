@@ -28,14 +28,9 @@ def get_kubernetes_client(context=None):
     Args:
         context: Kubernetes context name to use. ``None`` uses the active context.
     """
+    from robovast.common.kube import load_kube_config
     try:
-        # Load kube config
-        try:
-            config.load_incluster_config()
-        except config.ConfigException:
-            config.load_kube_config(context=context)
-
-        # Create API client
+        load_kube_config(context=context)
         return client.CoreV1Api()
     except Exception as e:
         logger.error(f"Failed to create Kubernetes client: {str(e)}")

@@ -70,6 +70,14 @@ const RUNNING_PHASES: ReadonlySet<string> = new Set<CampaignPhase>([
   'building', 'starting', 'variation', 'running', 'finishing', 'postprocessing', 'sharing',
 ])
 
+// The campaign is over, one way or another — the complement of RUNNING_PHASES, mirroring the
+// backend's TERMINAL_PHASES. `crashed` and `unknown` are terminal too: `unknown` is what a campaign
+// reconstructs to after a service restart that lost its live driver, so it must NOT be treated as
+// still-running (that left a Stop button enabled on a campaign nothing was driving). Take a bare
+// phase string, not a summary, so it also works on a live `Status.phase`.
+export const isTerminalPhase = (phase: string | undefined): boolean =>
+  !!phase && !RUNNING_PHASES.has(phase)
+
 export const isRunning = (c: CampaignSummary) => RUNNING_PHASES.has(c.phase)
 export const isFinished = (c: CampaignSummary) => c.phase === 'finished'
 export const isFailed = (c: CampaignSummary) => c.phase === 'failed'

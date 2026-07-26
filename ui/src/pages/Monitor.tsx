@@ -21,6 +21,7 @@ import Typography from '@mui/material/Typography'
 import {
   robovast,
   campaignsNewestFirst,
+  isTerminalPhase,
   type CampaignSummary,
   type ListCampaignsResponse,
   type Status,
@@ -32,9 +33,6 @@ import { useDialogs } from '@/components/DialogProvider'
 import { LaunchBar } from './LaunchBar'
 import { PostprocessingDialog } from './PostprocessingDialog'
 
-const TERMINAL = ['finished', 'failed', 'stopped', 'error']
-const isTerminal = (phase: string | undefined) => !!phase && TERMINAL.includes(phase)
-
 // One campaign row: fetches its own live Status and polls until the campaign reaches a terminal phase.
 function CampaignCard({ summary }: { summary: CampaignSummary }) {
   const qc = useQueryClient()
@@ -44,7 +42,7 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
     queryKey: ['status', id],
     queryFn: () => robovast.getStatus(id),
     // Poll while running; stop once the fetched status is terminal.
-    refetchInterval: (q) => (isTerminal((q.state.data as Status | undefined)?.phase) ? false : 1500),
+    refetchInterval: (q) => (isTerminalPhase((q.state.data as Status | undefined)?.phase) ? false : 1500),
   })
 
   // Live per-job listing (running count + the clickable jobs list). Polled while the
@@ -53,7 +51,7 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
     queryKey: ['jobs', id],
     queryFn: () => robovast.listJobs(id),
     refetchInterval: () =>
-      isTerminal((status.data as Status | undefined)?.phase) ? false : 2000,
+      isTerminalPhase((status.data as Status | undefined)?.phase) ? false : 2000,
   })
 
   const stop = useMutation({
@@ -97,7 +95,7 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
   }
 
   const phase = status.data?.phase ?? summary.phase
-  const running = !isTerminal(phase)
+  const running = !isTerminalPhase(phase)
 
   // The postprocessed archive is streamed from the object store — only a cluster
   // service serves it (a local service's results are already on its filesystem).

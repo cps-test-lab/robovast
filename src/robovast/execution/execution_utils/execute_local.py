@@ -66,7 +66,8 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
     config_path = project_config.config_path
     logger.debug(f"Loading config from: {config_path}")
     execution_parameters = load_config(config_path, "execution")
-    docker_image = resolve_robovast_image(config_image=execution_parameters.get("image"))
+    docker_image = resolve_robovast_image(
+        required=True, config_image=execution_parameters.get("image"))
     pre_command = execution_parameters.get("pre_command")
     post_command = execution_parameters.get("post_command")
     results_dir = project_config.results_dir

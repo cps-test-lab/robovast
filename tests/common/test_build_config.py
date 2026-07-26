@@ -67,3 +67,22 @@ def test_resolve_guards_unresolved_build_ref():
     # An explicit concrete image still wins and resolves fine.
     assert resolve_robovast_image(explicit="reg/x:1",
                                   config_image="build:foo") == "reg/x:1"
+
+
+def test_run_image_required_fails_loud(monkeypatch):
+    # The image a campaign RUNS must be pinned: nothing configured -> raise, not
+    # silently use the mutable default tag.
+    monkeypatch.delenv("ROBOVAST_IMAGE", raising=False)
+    with pytest.raises(ValueError, match="no container image configured for this run"):
+        resolve_robovast_image(required=True)
+    # Explicit / config still satisfy the requirement.
+    assert resolve_robovast_image(required=True, explicit="reg/x:1") == "reg/x:1"
+    assert resolve_robovast_image(required=True, config_image="reg/y:2") == "reg/y:2"
+
+
+def test_build_base_image_keeps_default(monkeypatch):
+    # The build BASE image is not required: it defaults to the framework's own
+    # published image (the normal base for experiment images).
+    from robovast.common.execution import DEFAULT_ROBOVAST_IMAGE
+    monkeypatch.delenv("ROBOVAST_IMAGE", raising=False)
+    assert resolve_robovast_image() == DEFAULT_ROBOVAST_IMAGE

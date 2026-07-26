@@ -190,7 +190,7 @@ def stage_run_script(campaign_data: dict, work_dir: str, runs: int,
     ``prepare-run`` (staging into a persistent, inspectable directory).
     """
     execution = campaign_data.get("execution", {})
-    image = resolve_robovast_image(explicit=options.image,
+    image = resolve_robovast_image(required=True, explicit=options.image,
                                    config_image=execution.get("image"))
     config_path_result = os.path.join(work_dir, "out_template")
     prepare_campaign_configs(config_path_result, campaign_data)
@@ -236,7 +236,7 @@ class DockerBackend(ExecutionBackend):
         del whole_campaign
         os.makedirs(campaign_root, exist_ok=True)
         image = resolve_robovast_image(
-            explicit=options.image,
+            required=True, explicit=options.image,
             config_image=campaign_data.get("execution", {}).get("image"))
 
         # Stage the prepared configs + run.sh in a temp dir (not the results dir);

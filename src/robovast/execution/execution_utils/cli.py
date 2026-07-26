@@ -1312,6 +1312,7 @@ def prepare_run(output, config, runs, cluster_config, options, log_tree, kube_co
                 campaign_data["configs"] = matched
 
             image = resolve_robovast_image(
+                required=True,
                 config_image=(campaign_data.get("execution") or {}).get("image"))
             job_runner = BatchJobRunner.for_batch(
                 campaign_data=campaign_data, campaign_id=campaign_id, batch_tag=None,

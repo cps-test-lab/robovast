@@ -68,13 +68,21 @@ def build_image_tag(image: str) -> str:
 
 
 def _resolve_image(default: str, env_var: str, *, explicit: str | None = None,
-                   config_image: str | None = None) -> str:
+                   config_image: str | None = None, required: bool = False) -> str:
     """Resolve a container image with a fixed precedence.
 
     Precedence (highest first): *explicit* (e.g. a ``--image`` flag) →
     *config_image* (a value from the ``.vast`` file) → the *env_var* environment
     variable (a replacement for the built-in default only, handy for testing a
     dev image pushed to e.g. Docker Hub) → *default*.
+
+    When *required* is set, there is **no** silent fall-through to *default*: if
+    nothing configured an image, resolution fails loudly. This is used for the
+    image a campaign actually *runs* (see :func:`resolve_robovast_image`), where a
+    mutable default tag would mean the exact code under test is whatever was last
+    pushed — unacceptable for a reconstruction. The build *base* image keeps the
+    default (``required=False``): building experiment images from the framework's
+    own published image is the normal case.
 
     A symbolic ``build:<tag>`` ref must have been resolved to a concrete image by
     the build lifecycle before it reaches here; if one slips through it would be
@@ -86,13 +94,18 @@ def _resolve_image(default: str, env_var: str, *, explicit: str | None = None,
         resolved = config_image
     else:
         env_image = os.environ.get(env_var, "").strip()
-        resolved = env_image if env_image else default
-        if not env_image:
-            # Nothing configured the image (no explicit flag, no execution.image,
-            # no {env_var}). We fall through to the built-in default, which is a
-            # mutable ``:latest`` tag — the exact code that runs is then whatever
-            # was last pushed. Never let that be silent: a reproducible run must
-            # pin an image via --image / execution.image / {env_var}.
+        if env_image:
+            resolved = env_image
+        elif required:
+            raise ValueError(
+                "no container image configured for this run: set execution.image "
+                f"in the .vast, pass --image, or set {env_var}. Refusing to fall "
+                "back to a mutable default tag — the image a reconstruction runs "
+                "against must be pinned.")
+        else:
+            # Non-required (e.g. the build base image): fall through to the built-in
+            # default, but never silently — it is a mutable ``:latest`` tag.
+            resolved = default
             logger.warning(
                 "No container image configured (checked --image, execution.image, "
                 "%s); using the built-in default %r. This is a mutable tag — pin an "
@@ -106,13 +119,19 @@ def _resolve_image(default: str, env_var: str, *, explicit: str | None = None,
 
 
 def resolve_robovast_image(explicit: str | None = None,
-                           config_image: str | None = None) -> str:
+                           config_image: str | None = None,
+                           *, required: bool = False) -> str:
     """Resolve the robovast (job / local) container image.
 
-    Overridable via ``ROBOVAST_IMAGE``. Used for the job pods and local runs.
+    Overridable via ``ROBOVAST_IMAGE``. Used both for the image a campaign *runs*
+    (the job pods / local docker run — pass ``required=True`` there so an
+    unconfigured run fails loudly instead of using a mutable default tag) and as
+    the default *base* image for building experiment images (``required=False``,
+    the framework's own published image is the natural base).
     """
     return _resolve_image(DEFAULT_ROBOVAST_IMAGE, "ROBOVAST_IMAGE",
-                          explicit=explicit, config_image=config_image)
+                          explicit=explicit, config_image=config_image,
+                          required=required)
 
 
 def resolve_controller_image(explicit: str | None = None,
@@ -225,13 +244,9 @@ def _get_cluster_info(context=None):
     try:
         from kubernetes import \
             client as k8s_client_lib  # pylint: disable=import-outside-toplevel
-        from kubernetes import \
-            config as k8s_config  # pylint: disable=import-outside-toplevel
-
-        try:
-            k8s_config.load_incluster_config()
-        except k8s_config.ConfigException:
-            k8s_config.load_kube_config(context=context)
+        from robovast.common.kube import \
+            load_kube_config  # pylint: disable=import-outside-toplevel
+        load_kube_config(context=context)
 
         v1 = k8s_client_lib.CoreV1Api()
         node_list = v1.list_node()

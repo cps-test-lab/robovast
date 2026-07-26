@@ -73,7 +73,7 @@ def test_kueue_quota_raises_when_no_allocatable_cpu():
     node.status.allocatable = {"cpu": "0", "memory": "0"}
     node_list = mock.Mock(items=[node])
 
-    with mock.patch.object(kubernetes_kueue.config, "load_incluster_config"), \
+    with mock.patch("robovast.common.kube.load_kube_config"), \
          mock.patch.object(kubernetes_kueue.client, "CoreV1Api") as api:
         api.return_value.list_node.return_value = node_list
         with pytest.raises(RuntimeError, match="No allocatable CPU"):
@@ -84,7 +84,7 @@ def test_kueue_quota_raises_when_query_fails():
     """A failed node query must raise, not fall back to a hard-coded quota."""
     from robovast.execution.cluster_execution import kubernetes_kueue
 
-    with mock.patch.object(kubernetes_kueue.config, "load_incluster_config"), \
+    with mock.patch("robovast.common.kube.load_kube_config"), \
          mock.patch.object(kubernetes_kueue.client, "CoreV1Api") as api:
         api.return_value.list_node.side_effect = RuntimeError("api unreachable")
         with pytest.raises(RuntimeError, match="Failed to query cluster resources"):
@@ -117,3 +117,26 @@ def test_cpu_manager_policy_reads_value_when_available():
     client.connect_get_node_proxy_with_path.return_value = \
         '{"kubeletconfig": {"cpuManagerPolicy": "static"}}'
     assert execution._check_static_cpu_manager(client, "node-1") == "static"
+
+
+# -- A5: single kube-config loader -------------------------------------------
+
+def test_load_kube_config_raises_when_no_source():
+    """Neither in-cluster nor host config available must raise, not proceed silently."""
+    from kubernetes import config as kc
+
+    from robovast.common.kube import load_kube_config
+    with mock.patch.object(kc, "load_incluster_config",
+                           side_effect=kc.ConfigException("not in cluster")), \
+         mock.patch.object(kc, "load_kube_config",
+                           side_effect=Exception("no kubeconfig")):
+        with pytest.raises(RuntimeError, match="no Kubernetes configuration available"):
+            load_kube_config(context="x")
+
+
+def test_load_kube_config_prefers_in_cluster():
+    from kubernetes import config as kc
+
+    from robovast.common.kube import load_kube_config
+    with mock.patch.object(kc, "load_incluster_config", return_value=None):
+        assert load_kube_config() == "in-cluster"

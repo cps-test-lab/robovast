@@ -232,12 +232,9 @@ class BatchJobRunner:
         """Initialise Kubernetes clients from the in-cluster service account."""
         if self._k8s_initialized:
             return
-        from kubernetes import config as kube_config  # pylint: disable=import-outside-toplevel
-        try:
-            kube_config.load_incluster_config()
-        except kube_config.ConfigException:
-            # Fallback for host-side dry-runs / tests.
-            kube_config.load_kube_config(context=self.kube_context)
+        from robovast.common.kube import load_kube_config  # pylint: disable=import-outside-toplevel
+        # In-cluster in the service pod; host kubeconfig for host-side dry-runs / tests.
+        load_kube_config(context=self.kube_context)
         self.k8s_client = client.CoreV1Api()
         self.k8s_batch_client = client.BatchV1Api()
         self.k8s_api_client = client.ApiClient()
@@ -729,7 +726,16 @@ class BatchJobRunner:
             # indefinitely with no progress. Detect it and, after a short grace window
             # (a transient registry blip may clear on its own), fail the batch with
             # Kubernetes' own message so the campaign reports *why* instead of hanging.
-            blocked = blocked_job_reasons(self.k8s_client, self.namespace, job_label)
+            try:
+                blocked = blocked_job_reasons(self.k8s_client, self.namespace, job_label)
+            except Exception as exc:  # noqa: BLE001 - probe failed this iteration
+                # Could not check pods this cycle. Treat as "unknown", NOT as
+                # "nothing blocked": clearing blocked_since here would silently reset
+                # the grace timer and let a truly blocked batch hang until the
+                # deadline hard-kill. Keep any existing blocked state and retry.
+                logger.warning("Batch %s: could not check for blocked jobs: %s",
+                               self._batch_tag, exc)
+                blocked = None
             if blocked:
                 reasons = "; ".join(sorted(set(blocked.values())))
                 if blocked_since is None:
@@ -742,8 +748,10 @@ class BatchJobRunner:
                         f"{self._BLOCKED_GRACE_SECONDS:.0f}s and will not recover — "
                         f"Kubernetes reports: {reasons}. Check the execution image "
                         f"reference and pull credentials.")
-            else:
+            elif blocked is not None:
+                # A successful probe that found nothing blocked clears the timer.
                 blocked_since = None
+            # blocked is None (probe failed) => leave blocked_since unchanged.
             logger.info("Batch %s: %d/%d job(s) still running...",
                         self._batch_tag, len(remaining), len(job_names))
             time.sleep(2)
@@ -878,6 +886,7 @@ class KubernetesBackend(ExecutionBackend):
         campaign_id = os.path.basename(os.path.normpath(campaign_root))
         execution_params = campaign_data.get("execution", {}) or {}
         image = resolve_robovast_image(
+            required=True,
             explicit=options.image,
             config_image=execution_params.get("image"),
         )

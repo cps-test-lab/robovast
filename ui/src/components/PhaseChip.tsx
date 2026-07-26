@@ -15,7 +15,9 @@ const COLOR: Record<string, 'default' | 'success' | 'error' | 'warning' | 'info'
   finished: 'success',
   failed: 'error',
   stopped: 'error',
-  error: 'error',
+  crashed: 'error',
+  // `unknown` (a campaign whose live driver was lost to a service restart) has no
+  // color entry on purpose — it falls through to the neutral 'default' chip.
 }
 
 const LIVE_PHASES = [
