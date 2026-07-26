@@ -90,6 +90,15 @@ def build_app(impl: RobovastInterface):
 
     app = FastAPI(title="robovast-service", docs_url="/docs", lifespan=_lifespan)
 
+    # Whether the service has begun shutting down. The SSE generators below loop
+    # forever and only exit on client disconnect, so an open browser tab would
+    # keep them alive and hang uvicorn's graceful shutdown ("Waiting for
+    # connections to close") on Ctrl+C. ``serve()`` replaces this with a probe of
+    # uvicorn's ``should_exit`` — set at the very start of shutdown, before the
+    # connection wait — so the loops close their streams promptly. Default False
+    # keeps ``build_app`` usable (e.g. in tests) without a running server.
+    app.state.should_exit = lambda: False
+
     def _guard(fn):
         """Map interface exceptions to clean HTTP errors instead of 500s."""
         try:
@@ -139,7 +148,7 @@ def build_app(impl: RobovastInterface):
         """
         offset = max(0, start_offset)
         yield ": open\n\n"  # prompt proxies to flush the response headers
-        while True:
+        while not app.state.should_exit():
             if await request.is_disconnected():
                 return
             try:
@@ -174,7 +183,7 @@ def build_app(impl: RobovastInterface):
             ListCampaignsRequest  # pylint: disable=import-outside-toplevel
         yield ": open\n\n"
         last = None
-        while True:
+        while not app.state.should_exit():
             if await request.is_disconnected():
                 return
             try:
@@ -655,8 +664,16 @@ def serve(impl: RobovastInterface, host: str = "127.0.0.1", port: int = DEFAULT_
 
     app = build_app(impl)
     logger.info("robovast-service listening on %s:%d (OpenAPI at /docs)", host, port)
-    uvicorn.run(app, host=host, port=port, log_level=log_level,
-                log_config=_quiet_access_log_config())
+    # Drive uvicorn via an explicit Server so the SSE generators can probe
+    # ``should_exit`` (set when a Ctrl+C begins shutdown, before the connection
+    # wait) and close their streams instead of hanging it. ``timeout_graceful_
+    # shutdown`` is a backstop for any other lingering connection.
+    config = uvicorn.Config(app, host=host, port=port, log_level=log_level,
+                            log_config=_quiet_access_log_config(),
+                            timeout_graceful_shutdown=5)
+    server = uvicorn.Server(config)
+    app.state.should_exit = lambda: server.should_exit
+    server.run()
 
 
 def _quiet_access_log_config() -> dict:
