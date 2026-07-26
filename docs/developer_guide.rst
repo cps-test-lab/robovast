@@ -1070,18 +1070,37 @@ Status: phase and stage
 
    * - ``phase``
      - Meaning
-   * - ``starting`` → ``running``
-     - Campaign created; batch loop executing.
+   * - ``building``
+     - Building the experiment image (only when the ``.vast`` has a ``build:`` section).
+   * - ``starting``
+     - Campaign registered; about to run.
+   * - ``plugin install``
+     - Installing the declared ``plugins:`` (only when any are declared). ``pip``'s
+       output streams live into ``_execution/plugin_install.log``.
+   * - ``variation``
+     - Expanding the config variations (batch mode); its log is ``variation.log``.
+   * - ``running``
+     - Batch loop executing.
    * - ``finishing``
      - Search stop condition met (or a ``stop`` was requested); winding down.
+   * - ``sharing``
+     - Streaming the raw pre-postprocessing archive to the configured share (only when
+       ``upload_to_share`` was set).
    * - ``postprocessing``
      - Chained analysis postprocessing (rosbag→CSV Job + ``data.db``) running.
    * - ``finished``
-     - Done; the campaign is published to the object store.
+     - Done; the campaign is published to the object store. **A post-run step may still
+       have failed:** the runs are the deliverable, so a failed upload-to-share or
+       postprocessing keeps the phase ``finished`` and records the reason on
+       ``share_error`` / ``postprocessing_error`` (durable, re-triggerable) rather than
+       failing the campaign.
    * - ``failed``
-     - Aborted. ``stage``/``error`` say why (e.g. a bad ``config_filter`` lists the
-       available config names). Recorded to ``_execution/outcome.json`` so it is
-       readable after the fact.
+     - The *runs* were aborted. ``stage``/``error`` say why (e.g. a bad ``config_filter``
+       lists the available config names). Recorded to ``_execution/outcome.json`` so it
+       is readable after the fact.
+   * - ``stopped`` / ``crashed`` / ``unknown``
+     - Terminal: cooperatively stopped; the driver died without recording an outcome; or
+       (after a restart) not reconstructable from disk.
 
 Control operations
 ^^^^^^^^^^^^^^^^^^^
@@ -1094,11 +1113,16 @@ Control operations
   stream the log; ``vast … monitor`` renders live status from ``get_status``.
 * ``upload_to_share`` (launch flag on ``create_campaign``) — when set, the driver
   streams a raw, pre-postprocessing archive of the campaign to the configured share
-  the moment the runs finish, *before* analysis postprocessing (best-effort; a share
-  failure never loses the campaign). Local backends write the ``tar.gz`` to
+  the moment the runs finish, *before* analysis postprocessing. A share failure never
+  loses the campaign: it stays ``finished`` and the reason is recorded on
+  ``share_error`` (durable). Local backends write the ``tar.gz`` to
   ``<results>/_archives/`` instead; cluster backends stream it to the share provider
   with no on-disk copy. The download counterpart is the ``/campaigns/{id}/archive``
   stream (the postprocessed campaign, tarred on the fly from the object store).
+* ``run_share`` (``client.run_share``) — re-triggers the upload-to-share on a finished
+  campaign, from the stored campaign alone (works after a service restart, no live
+  entry). The provider comes from the environment, so adjusting ``ROBOVAST_SHARE_TYPE``
+  and re-triggering uploads to a different destination. Mirrors ``run_postprocessing``.
 
 API reference
 ^^^^^^^^^^^^^

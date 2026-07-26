@@ -65,7 +65,16 @@ The structure inside is domain-specific, but typically includes:
 
    _execution/
    ├── execution.yaml
-   └── controller.log                        # Campaign controller log
+   ├── plugin_install.log                    # ``plugin install`` phase (pip output; only when plugins are declared)
+   ├── variation.log                         # ``variation`` phase (config-variation expansion)
+   ├── controller.log                        # ``run`` phase — campaign controller log
+   └── postprocessing.log                    # ``postprocessing`` phase (rosbag→CSV + data.db)
+
+Each pre-/post-run **phase** writes its own log file here; the service concatenates
+them in phase order into the single live campaign log the web UI streams. The
+``plugin install`` phase (present only when the ``.vast`` declares ``plugins:``) runs
+first and captures the ``pip install`` output live, exactly like ``building``,
+``variation`` and ``postprocessing``.
 
 ``execution.yaml`` contains:
 

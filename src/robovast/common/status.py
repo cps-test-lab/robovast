@@ -55,12 +55,14 @@ class Phase(StrEnum):
     this enum is the *known* vocabulary, not a lock on the field.
     """
     # -- live: the campaign is still working ------------------------------
-    # Ordered by when they occur: image build (if any) → registration →
-    # config-variation expansion (batch) → the run loop → finish → postprocess
-    # → share. ``building`` and ``variation`` precede ``running`` and exist so
-    # the two pre-run steps are observable rather than a blank "starting".
+    # Ordered by when they occur: image build (if any) → registration → plugin
+    # install (if any) → config-variation expansion (batch) → the run loop → finish
+    # → postprocess → share. ``building``, ``plugin install`` and ``variation`` precede
+    # ``running`` and exist so the pre-run steps are observable rather than a blank
+    # "starting".
     BUILDING = "building"
     STARTING = "starting"
+    PLUGIN_INSTALL = "plugin install"
     VARIATION = "variation"
     RUNNING = "running"
     FINISHING = "finishing"

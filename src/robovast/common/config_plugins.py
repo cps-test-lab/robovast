@@ -296,7 +296,8 @@ def _prepend_sys_path(target_dir: str) -> None:
     importlib.invalidate_caches()
 
 
-def ensure_workspace_plugins(vast_dir: str, specs, force: bool = False) -> str | None:
+def ensure_workspace_plugins(vast_dir: str, specs, force: bool = False,
+                             add_to_path: bool = True) -> str | None:
     """Ensure the ``.vast``'s ``plugins:`` are available for composition.
 
     Two modes:
@@ -318,6 +319,12 @@ def ensure_workspace_plugins(vast_dir: str, specs, force: bool = False) -> str |
         vast_dir: directory of the ``.vast`` (the workspace/project root).
         specs: the ``plugins:`` list (pip requirement specs); ``None``/empty no-op.
         force: materialize every spec into the workspace dir for pod staging.
+        add_to_path: put ``.robovast_plugins/`` on ``sys.path`` (the default). Pass
+            ``False`` to **materialize only** — used by the driver's dedicated
+            plugin-install phase, which installs the packages (and streams pip's
+            output to the campaign log) without importing them into the long-lived
+            service process; the isolated compose subprocess does the ``sys.path`` +
+            import later.
 
     Returns:
         The plugin directory path when it exists, else ``None``.
@@ -331,7 +338,8 @@ def ensure_workspace_plugins(vast_dir: str, specs, force: bool = False) -> str |
 
     if not specs:
         if os.path.isdir(target_dir):
-            _prepend_sys_path(target_dir)
+            if add_to_path:
+                _prepend_sys_path(target_dir)
             return target_dir
         return None
 
@@ -371,7 +379,8 @@ def ensure_workspace_plugins(vast_dir: str, specs, force: bool = False) -> str |
 
     if not os.path.isdir(target_dir):
         return None
-    _prepend_sys_path(target_dir)
+    if add_to_path:
+        _prepend_sys_path(target_dir)
     return target_dir
 
 

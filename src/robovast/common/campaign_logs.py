@@ -40,6 +40,7 @@ from typing import Callable, Optional
 #: ``filename`` is relative to the campaign's ``_execution/`` directory. Adding a
 #: future infrastructure phase is a one-line change here.
 INFRA_PHASES: list[tuple[str, str]] = [
+    ("PLUGIN INSTALL", "plugin_install.log"),
     ("VARIATION", "variation.log"),
     ("RUN", "controller.log"),
     ("POSTPROCESSING", "postprocessing.log"),

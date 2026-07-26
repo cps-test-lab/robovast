@@ -66,13 +66,14 @@ export const campaignsNewestFirst = (campaigns: CampaignSummary[]) =>
 // union rather than an enum so it stays a plain wire value; `CampaignSummary.phase` is still typed
 // `string`, so an unexpected/future phase never fails to parse.
 export type CampaignPhase =
-  | 'building' | 'starting' | 'variation' | 'running' | 'finishing'
+  | 'building' | 'starting' | 'plugin install' | 'variation' | 'running' | 'finishing'
   | 'postprocessing' | 'sharing'
   | 'finished' | 'failed' | 'stopped' | 'crashed' | 'unknown'
 
 // Phases where the campaign is still working, so no final verdict exists yet.
 const RUNNING_PHASES: ReadonlySet<string> = new Set<CampaignPhase>([
-  'building', 'starting', 'variation', 'running', 'finishing', 'postprocessing', 'sharing',
+  'building', 'starting', 'plugin install', 'variation', 'running', 'finishing',
+  'postprocessing', 'sharing',
 ])
 
 // The campaign is over, one way or another — the complement of RUNNING_PHASES, mirroring the

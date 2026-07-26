@@ -678,6 +678,42 @@ def _make_upload_progress_cb(state):
     return _cb
 
 
+def _install_plugins(vast_file, campaign_config, campaign_root: str, state) -> None:
+    """Install the campaign's declared ``plugins:`` as a distinct, logged phase.
+
+    A no-op when the campaign declares no plugins (its phase flow is unchanged).
+    Otherwise the phase advances to ``plugin install`` and pip's output streams live into
+    ``<campaign>/_execution/plugin_install.log`` — served under the campaign log's PLUGIN
+    INSTALL divider, the same per-phase pattern as ``variation``/``postprocessing`` — so
+    the install is observable rather than a blank "starting", and its log rides the
+    campaign into the object store / a re-run like every other phase file.
+
+    Materialize-only (``add_to_path=False``): the packages land in
+    ``.robovast_plugins/`` (and travel with the campaign to the pods and a re-run),
+    while importing them onto ``sys.path`` stays in the isolated compose subprocess and
+    never pollutes the long-lived service process. Composition later finds them already
+    installed (marker hit) and only adjusts ``sys.path`` there.
+    """
+    specs = list(getattr(campaign_config, "plugins", None) or [])
+    if not specs:
+        return
+    vast_dir = os.path.dirname(os.path.abspath(vast_file))
+    if state is not None:
+        state.set_phase(Phase.PLUGIN_INSTALL)
+    handler = None
+    try:
+        handler = add_campaign_log_handler(
+            os.path.join(campaign_root, "_execution", "plugin_install.log"))
+    except Exception:  # pylint: disable=broad-except
+        logger.warning("Could not open plugin_install.log; continuing without it.",
+                       exc_info=True)
+    try:
+        from robovast.common.config_plugins import ensure_workspace_plugins
+        ensure_workspace_plugins(vast_dir, specs, add_to_path=False)
+    finally:
+        remove_campaign_log_handler(handler)
+
+
 def run_search_campaign(vast_file, campaign_config, results_dir, runs,
                         backend: ExecutionBackend | None = None,
                         options: RunOptions | None = None, campaign_id=None, state=None,
@@ -698,6 +734,10 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
     be = backend or DockerBackend(state=state)
     opts = options or RunOptions()
     _preflight_upload_to_share(be, opts)
+    # Install declared plugins first, as their own logged phase (no-op if none), before
+    # the search loop composes its first batch.
+    _install_plugins(vast_file, campaign_config,
+                     os.path.join(results_dir, campaign_id), state)
     # One notifier drives the whole campaign: the controller fires the lifecycle
     # events, and _finish_campaign (outside the controller) fires `uploaded`.
     notifier = notifier or Notifier.from_env(campaign_id)
@@ -853,6 +893,9 @@ def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_fil
         # concurrent service campaigns keep separate variation.log files. It is
         # attached only around composition — the run phase writes controller.log.
         campaign_root = os.path.join(results_dir, campaign_id)
+        # Install declared plugins first, as their own logged phase (no-op if none),
+        # so the pip install is observable and its log lands beside the others.
+        _install_plugins(vast_file, campaign_config, campaign_root, state)
         var_handler = None
         try:
             var_handler = add_campaign_log_handler(
