@@ -47,3 +47,22 @@ implementation detail into user pages or leave internals undocumented.
 Change code in place and delete what it replaces. Fix problems at the root — one
 correct path, not a primary path plus a compatibility shim or silent workaround.
 (Handling genuinely-absent data is fine; tolerating the old way of doing things is not.)
+
+## 4. Report only what the caller can rely on
+
+An interface's job is to tell the truth about what happened. A wrong answer that
+looks right is worse than an error, because nothing downstream can detect it.
+
+- **Never ignore an argument.** If a value cannot be honoured, fail; do not quietly
+  act on something else and return success. Argument-*free* policy (a default
+  location, say) may have a precedence — a supplied argument may not.
+- **Never advertise a path, id, or capability the caller cannot use.** Offer it only
+  when it is usable from where the caller is.
+- **Distinguish absent data from a failed lookup.** "None yet" is an empty result;
+  "this should exist and does not" is an error. Collapsing them either way misleads.
+- **A status must be able to say "unhealthy".** If the only way to learn that work is
+  failing is to know which log to grep, the status is incomplete.
+- **Long-running work returns a handle, not a blocked call.** An inline wait turns a
+  succeeding operation into a client timeout, i.e. a false failure.
+- **One source of truth per fact.** Derive or reference it; a second copy will
+  disagree eventually. Prefer answering a narrower question over duplicating state.
