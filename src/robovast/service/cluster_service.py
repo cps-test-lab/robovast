@@ -1266,7 +1266,8 @@ class ClusterService(LocalTransport):
             cfg = self._cluster_config()
             ok, message = postprocess_campaign(
                 cfg, request.campaign_id, str(campaign_root), self.namespace,
-                force=request.force, skip=list(request.skip or []))
+                force=request.force, skip=list(request.skip or []),
+                kube_context=self.kube_context)
             status = record_step_outcome(campaign_root, postprocessing=(ok, message))
             # Publish _execution (outcome + the conversion's postprocessing.log, even on
             # failure) so the result survives a restart and the Monitor can read it.

@@ -143,7 +143,8 @@ def campaign_vast(campaign_root) -> str:
 
 def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,
                          namespace: str, force: bool = False,
-                         skip=None, skip_rosout: bool = False) -> tuple:
+                         skip=None, skip_rosout: bool = False,
+                         kube_context=None) -> tuple:
     """Analysis postprocessing for one campaign, in-cluster. Returns ``(ok, message)``.
 
     The single implementation behind both entry points — the per-campaign controller
@@ -158,13 +159,18 @@ def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,
     *campaign_root* must already hold the campaign (`_config/`, `campaign.db`,
     `test.xml`s) — true for the controller (it built it) and for the service after
     ``fetch_campaign``.
+
+    *kube_context* must be the same context the campaign's Jobs were submitted with;
+    ``None`` means the active kubeconfig context, which is only correct when the caller
+    has none of its own.
     """
     rosbag_cmds = rosbag_commands_for(campaign_vast(campaign_root), skip=skip,
                                       skip_rosout=skip_rosout)
     if rosbag_cmds:
         image = campaign_execution_image(campaign_root)
         ok, message = run_conversion_job(
-            cluster_config, campaign_id, namespace, image, rosbag_cmds, force=force)
+            cluster_config, campaign_id, namespace, image, rosbag_cmds, force=force,
+            kube_context=kube_context)
         # Sync the Job's outputs regardless of outcome. The conversion tees its
         # stdout/stderr to postprocessing.log and mirrors /out to the object store
         # even on failure, so this lands the POSTPROCESSING section (with the
@@ -457,7 +463,7 @@ def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
 
 def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image: str,
                        rosbag_cmds: list, force: bool = False,
-                       timeout: int = _DEFAULT_TIMEOUT) -> tuple:
+                       timeout: int = _DEFAULT_TIMEOUT, kube_context=None) -> tuple:
     """Create the conversion Job and wait for it. Returns ``(ok, message)``.
 
     A no-op success when the campaign configures no rosbag conversion.
@@ -484,7 +490,12 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image: 
     from .kubernetes_kueue import (KueueCheckUnavailable,  # noqa: PLC0415
                                    verify_kueue_admission_ready)
     try:
-        verify_kueue_admission_ready(namespace=namespace)
+        # The service's --context, not the ambient kubeconfig one. Omitting it made this
+        # check dial whatever kubectl happened to point at while the campaign's Jobs went
+        # to the configured cluster -- so postprocessing failed against a cluster the
+        # campaign never used, reporting the configured API server as unreachable while
+        # naming a completely different address as the connection that timed out.
+        verify_kueue_admission_ready(namespace=namespace, kube_context=kube_context)
     except (CampaignConfigError, ClusterUnreachableError) as e:
         # An unreachable cluster ends postprocessing the same way a broken queue does:
         # a reported reason on the campaign's postprocessing_error, re-runnable once the

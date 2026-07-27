@@ -560,6 +560,9 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
         ok, message = postprocess_campaign(
             cluster_config, campaign_id, campaign_root,
             options.namespace or os.environ.get("ROBOVAST_NAMESPACE", "default"),
+            # The context this backend submitted the campaign's Jobs with; postprocessing
+            # must schedule against the same cluster the runs went to.
+            kube_context=getattr(backend, "kube_context", None),
         )
         logger.info("Analysis postprocessing: %s", message)
         if state is not None:

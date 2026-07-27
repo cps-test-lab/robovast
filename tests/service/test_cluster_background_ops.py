@@ -15,6 +15,8 @@ the dispatcher — which is all that was broken, and all that a unit test can ho
 claim here.
 """
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from robovast.service.cluster_service import ClusterService
@@ -57,3 +59,67 @@ def test_run_share_dispatches_in_the_sharing_phase(svc, monkeypatch):
     assert seen["campaign_id"] == "camp-1"
     assert seen["phase"] == "sharing"
     assert callable(seen["work"])
+
+
+def test_admission_check_uses_the_given_context(monkeypatch):
+    """The Kueue admission check must dial the context the Jobs were submitted with.
+
+    It used to be called with no context at all, so it dialled the ambient kubeconfig
+    context while the campaign's Jobs had gone to the service's ``--context`` cluster.
+    With the two pointing at different clusters, postprocessing failed against a cluster
+    the campaign never used — and said so in a self-contradictory way, naming the
+    configured API server as unreachable while the timeout it quoted was to a different
+    address entirely.
+
+    The stub raises ``ClusterUnreachableError``, a case this path already handles by
+    returning a reason, so the test stops right where the context has been consumed and
+    needs no cluster.
+    """
+    from robovast.common.errors import ClusterUnreachableError
+    from robovast.execution.cluster_execution import (in_pod_storage,
+                                                      kubernetes_kueue,
+                                                      postprocess_job)
+
+    seen = {}
+
+    def _check(**kwargs):
+        seen.update(kwargs)
+        raise ClusterUnreachableError("api server unreachable")
+
+    monkeypatch.setattr(kubernetes_kueue, "verify_kueue_admission_ready", _check)
+    monkeypatch.setattr(in_pod_storage, "campaign_storage_location",
+                        lambda cfg, cid: ("bucket", "prefix"))
+    cfg = MagicMock()
+    cfg.get_s3_credentials.return_value = ("key", "secret")
+    cfg.get_s3_endpoint.return_value = "http://localhost:9000"
+
+    ok, message = postprocess_job.run_conversion_job(
+        cfg, "camp-1", "ns", "img", ["echo"], kube_context="local")
+
+    assert seen.get("kube_context") == "local", (
+        f"admission check did not receive the caller's context: {seen}")
+    assert not ok and "cannot be scheduled" in message
+
+
+def test_postprocess_campaign_forwards_the_context(monkeypatch):
+    """``postprocess_campaign`` hands its context to the Job it schedules."""
+    from robovast.execution.cluster_execution import postprocess_job
+
+    seen = {}
+
+    class _Stop(Exception):
+        pass
+
+    def _conversion(*args, **kwargs):
+        seen.update(kwargs)
+        raise _Stop  # stop before the object-store sync, which needs a cluster
+
+    monkeypatch.setattr(postprocess_job, "run_conversion_job", _conversion)
+    monkeypatch.setattr(postprocess_job, "rosbag_commands_for", lambda *a, **k: ["echo"])
+    monkeypatch.setattr(postprocess_job, "campaign_vast", lambda root: "vast")
+    monkeypatch.setattr(postprocess_job, "campaign_execution_image", lambda root: "img")
+
+    with pytest.raises(_Stop):
+        postprocess_job.postprocess_campaign(
+            MagicMock(), "camp-1", "/nonexistent", "ns", kube_context="local")
+    assert seen.get("kube_context") == "local"
