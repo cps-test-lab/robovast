@@ -147,6 +147,16 @@ def _collect_paths_from_config(config_block: dict, vast_dir: str) -> set[str]:
 
     def walk(obj):
         if isinstance(obj, str):
+            # A blank string is not a path reference. ``os.path.join(vast_dir, "")`` is
+            # ``vast_dir`` itself, which always exists — so an empty config value (a
+            # deliberate one, e.g. the empty package name that makes ros_launch take a
+            # plain file path) collected the whole project directory as a "referenced
+            # file" and made the hash walk every file under it. On a campaign directory
+            # that is both ruinously slow and outright fatal: the walk raced a run's
+            # transient files and died on FileNotFoundError for a path that existed when
+            # os.walk listed it.
+            if not obj.strip():
+                return
             full = os.path.join(vast_dir, obj)
             if os.path.exists(full):
                 paths.add(obj)
