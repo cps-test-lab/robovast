@@ -374,10 +374,12 @@ _TABLE_DESCRIPTIONS = {
         "Join on (config_name, run_id)."),
     ("main", "runs"): (
         "Per-run dimension table: status/passed/duration_s/errors/failures, the "
-        "scalar objective, and each scenario parameter as a param_* column "
-        "(non-scalar params are JSON-encoded — use json_extract/json_each). Join to "
-        "any metric table on (config_name, run_id). Exists only after postprocessing; "
-        "run_view answers the same per-run questions before it."),
+        "scalar objective, each scenario parameter as a param_* column (non-scalar "
+        "params are JSON-encoded — use json_extract/json_each), and the host it ran on "
+        "(instance_type, cpu_name, available_cpus, available_mem_bytes — bytes, so "
+        "divide by 1024*1024*1024 for GiB). Join to any metric table on (config_name, "
+        "run_id). Exists only after postprocessing; run_view answers the same per-run "
+        "questions before it."),
     ("campaign", "campaign"): (
         "One row for the campaign. Execution provenance, and what to compare across "
         "campaigns: robovast_version, execution_type (local|cluster), image, "

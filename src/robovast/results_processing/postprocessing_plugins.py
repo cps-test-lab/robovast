@@ -514,6 +514,8 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
 
     from robovast.common.campaign_data import \
         read_run_outcome  # pylint: disable=import-outside-toplevel
+    from robovast.common.quantity import \
+        to_bytes  # pylint: disable=import-outside-toplevel
 
     def _end_time(start_iso, duration_sec):
         """ISO end time = start + duration, or None when either is unavailable."""
@@ -544,8 +546,13 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
                 si = json.loads(raw) or {}
             except (TypeError, ValueError):
                 return None, None, None, None
+        # ``available_mem`` is the key sysinfo actually writes, and its value is a
+        # Kubernetes-style quantity — a plain byte count from /proc/meminfo or the
+        # downward API, or a suffixed string like "16Gi" when the .vast set a limit. It is
+        # normalized to bytes here so the column can be compared and averaged; reading it
+        # raw would make the column numeric in some runs and text in others.
         return (si.get("instance_type"), si.get("cpu_name"),
-                si.get("available_cpus"), si.get("available_mem_gb"))
+                si.get("available_cpus"), to_bytes(si.get("available_mem")))
 
     # Resolved params + objective per config, and per-run outcomes, from
     # campaign.db (read-only). ``outcomes[config_name][run_id]`` holds the stored
@@ -589,7 +596,7 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
     base_cols = ["config_name", "run_id", "status", "passed",
                  "duration_s", "errors", "failures", "objective",
                  "start_time", "end_time",
-                 "instance_type", "cpu_name", "available_cpus", "available_mem_gb"]
+                 "instance_type", "cpu_name", "available_cpus", "available_mem_bytes"]
     param_keys = sorted({k for p in params_by_config.values() for k in p
                          if f"param_{k}" not in base_cols})
     param_cols = [f"param_{k}" for k in param_keys]
@@ -599,8 +606,8 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
     # a numeric factor stays numeric: `ORDER BY param_wind_strength` and
     # `WHERE param_speed > 0.5` mean what they say instead of comparing text.
     types = {c: (INTEGER if c in ("run_id", "passed", "errors", "failures",
-                                  "available_cpus")
-                 else REAL if c in ("duration_s", "objective", "available_mem_gb")
+                                  "available_cpus", "available_mem_bytes")
+                 else REAL if c in ("duration_s", "objective")
                  else TEXT)
              for c in base_cols}
     for key, col in zip(param_keys, param_cols):

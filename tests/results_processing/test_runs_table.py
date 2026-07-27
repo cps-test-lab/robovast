@@ -15,7 +15,16 @@ import pytest
 from robovast.results_processing.postprocessing_plugins import _build_runs_table
 
 
-def _write_run(run_dir, *, start_ts, duration, errors=0, failures=0):
+def _write_run(run_dir, *, start_ts, duration, errors=0, failures=0,
+               available_mem="134603354112"):
+    """A run dir with the artifacts the runner actually writes.
+
+    ``available_mem`` is spelled exactly as ``collect_sysinfo.py`` writes it — that key,
+    and a Kubernetes-style quantity for its value. An earlier version of this fixture
+    invented ``available_mem_gb``, which no producer emits, so it agreed with an ingest
+    that read the same wrong key and the column was NULL in every real campaign while
+    this test passed.
+    """
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "test.xml").write_text(
         f'<testsuite errors="{errors}" failures="{failures}" tests="1">'
@@ -29,7 +38,7 @@ def _write_run(run_dir, *, start_ts, duration, errors=0, failures=0):
         "cpu_name: Intel Xeon\n"
         "instance_type: n1-standard-4\n"
         "available_cpus: 4\n"
-        "available_mem_gb: 16.0\n",
+        f"available_mem: {available_mem}\n",
         encoding="utf-8",
     )
 
@@ -57,12 +66,12 @@ def test_runs_table_has_timing_and_sysinfo(campaign_with_runs):
 
     cols = {r[1] for r in conn.execute("PRAGMA table_info(runs)").fetchall()}
     for expected in ("start_time", "end_time", "instance_type", "cpu_name",
-                     "available_cpus", "available_mem_gb"):
+                     "available_cpus", "available_mem_bytes"):
         assert expected in cols, f"missing column {expected}"
 
     row = conn.execute(
         "SELECT start_time, end_time, instance_type, cpu_name, available_cpus, "
-        "available_mem_gb FROM runs WHERE config_name='cfg-a' AND run_id=0"
+        "available_mem_bytes FROM runs WHERE config_name='cfg-a' AND run_id=0"
     ).fetchone()
     start_time, end_time, instance_type, cpu_name, cpus, mem = row
 
@@ -71,7 +80,30 @@ def test_runs_table_has_timing_and_sysinfo(campaign_with_runs):
     assert instance_type == "n1-standard-4"
     assert cpu_name == "Intel Xeon"
     assert cpus == 4
-    assert mem == pytest.approx(16.0)
+    assert mem == 134603354112, "the recorded byte count, not NULL and not rescaled"
+
+
+def test_runs_table_normalizes_a_suffixed_memory_quantity(tmp_path):
+    """A .vast that sets ``resources.memory`` puts a suffixed string in sysinfo.
+
+    Stored raw, that would make the column numeric for cluster runs and text for these,
+    where AVG() reads the text rows as 0 and returns a plausible wrong number.
+    """
+    conn = sqlite3.connect(tmp_path / "campaign.db")
+    conn.execute("CREATE TABLE unit (config_name TEXT, params_json TEXT, objective REAL)")
+    conn.execute("INSERT INTO unit VALUES (?,?,?)", ("cfg-a", "{}", None))
+    conn.commit()
+    conn.close()
+
+    cfg = tmp_path / "cfg-a"
+    _write_run(cfg / "0", start_ts=1_700_000_000.0, duration=1.0, available_mem="16Gi")
+
+    conn = sqlite3.connect(":memory:")
+    _build_runs_table(conn, tmp_path, [cfg])
+    mem, typ = conn.execute(
+        "SELECT available_mem_bytes, typeof(available_mem_bytes) FROM runs").fetchone()
+    assert mem == 16 * 1024 ** 3
+    assert typ == "integer"
 
 
 def test_runs_table_tolerates_missing_sysinfo(tmp_path):
