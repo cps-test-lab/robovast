@@ -9,7 +9,7 @@ Panel ``type`` is a core built-in, an installed ``robovast.panel_types`` entry p
 import pytest
 from pydantic import ValidationError
 
-from robovast.common.config import PanelConfig
+from robovast.common.config import ConfigV1, PanelConfig
 from robovast.common.config_validation import _panel_problems
 
 
@@ -55,3 +55,15 @@ def test_validation_passes_when_bundle_present(tmp_path):
     (tmp_path / "panels" / "ok" / "remoteEntry.js").write_text("//\n")
     raw = {"visualization": {"panels": [{"custom": {"remote": "panels/ok"}}]}}
     assert _panel_problems(raw, str(tmp_path)) == []
+
+
+def test_json_schema_accepts_shorthand():
+    # The web config editor validates the .vast against ConfigV1's JSON Schema. The default
+    # schema requires a literal ``type`` property and flagged the shorthand every example
+    # config uses as ``Missing property "type"``; the branches below are what fixes that.
+    branches = ConfigV1.model_json_schema()["$defs"]["PanelConfig"]["anyOf"]
+    assert {"type": "string"} in branches  # bare ``- playback``
+    shorthand = next(b for b in branches if b.get("maxProperties") == 1)  # ``- costmap: {...}``
+    props = shorthand["additionalProperties"]["anyOf"][1]["properties"]
+    assert "title" in props and "position" in props and "type" not in props
+    assert any("type" in b.get("required", []) for b in branches)  # explicit form still offered

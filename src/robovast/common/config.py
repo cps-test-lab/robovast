@@ -418,6 +418,35 @@ class PanelConfig(BaseModel):
                 return {'type': ptype, **(props or {})}
         return v
 
+    @classmethod
+    def __get_pydantic_json_schema__(cls, core_schema, handler):
+        # ``_flatten_shorthand`` accepts shapes the post-validation model can't express:
+        # a bare string (the panel type), or a single-key mapping keyed by the type
+        # (``- playback:`` / ``- costmap: {title: ...}``) instead of a ``type`` property.
+        # The default schema would require a literal ``type`` property, so the web editor
+        # flags valid YAML as ``Missing property "type"``. Reflect the real accepted forms
+        # here; the shorthand branch keeps the remaining panel properties so the editor
+        # still completes/validates ``title``, ``position`` & co. inside it.
+        default = handler(core_schema)
+        props = {k: v for k, v in default.get('properties', {}).items() if k != 'type'}
+        return {
+            'anyOf': [
+                {'type': 'string'},
+                default,
+                {
+                    'type': 'object',
+                    'minProperties': 1,
+                    'maxProperties': 1,
+                    'additionalProperties': {
+                        'anyOf': [
+                            {'type': 'null'},
+                            {'type': 'object', 'properties': props, 'additionalProperties': True},
+                        ],
+                    },
+                },
+            ],
+        }
+
     @field_validator('type')
     @classmethod
     def _known_type(cls, v):
