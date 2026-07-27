@@ -26,27 +26,43 @@ from robovast.common.execution import is_campaign_dir
 # in robovast.common.campaign_data — see list_config_dirs() below.
 
 
-def resolve_results_dir() -> Path:
-    """Resolve the results directory from the project configuration.
+def _campaigns_root() -> Path:
+    """Where local campaigns live, by the same precedence the service applies.
 
-    Uses ``ProjectConfig.load()`` to find the ``.robovast_project`` file
-    and read the configured ``results_dir``.
+    A CWD ``.robovast_project``'s ``results_dir`` first (so this reader and a
+    ``vast serve`` started in that project agree, and ``vast results`` / ``vast eval``
+    look in the same place), else the service-owned dir beside the workspaces store.
+
+    Pure path resolution — the directory need not exist. This is a **local** root: a
+    cluster campaign's home is the object store, so results there are reached through
+    the service, not here.
+    """
+    config = ProjectConfig.load()
+    if config is not None and config.results_dir:
+        return Path(config.results_dir)
+    from robovast.service.workspaces import default_workspaces_root
+    return default_workspaces_root().parent / "results"
+
+
+def resolve_results_dir() -> Path:
+    """Resolve the local results directory campaign ids are looked up under.
 
     Returns:
         Absolute path to the results directory.
 
     Raises:
-        ValueError: If the project is not initialized or results_dir is missing.
+        ValueError: If that directory does not exist. Not "project not initialized":
+            there is no project to initialize any more — a campaign runs a workspace's
+            ``.vast`` and results land in the shared root resolved by
+            :func:`_campaigns_root`.
     """
-    config = ProjectConfig.load()
-    if config is None or not config.results_dir:
-        raise ValueError(
-            "Project not initialized or results_dir not configured. "
-            "Run 'vast init <config-file>' first."
-        )
-    path = Path(config.results_dir)
+    path = _campaigns_root()
     if not path.is_dir():
-        raise ValueError(f"Results directory does not exist: {path}")
+        raise ValueError(
+            f"No local results directory at {path}. Campaigns run by a cluster "
+            "service live in the object store and are read through the service "
+            "(check 'get_service_info' / 'list_workspaces'); pass an absolute "
+            "campaign directory to analyze one directly.")
     return path
 
 
@@ -120,13 +136,19 @@ def resolve_run_path(campaign: str, config: str, run: int) -> Path:
 
 
 def list_campaigns() -> list[Path]:
-    """List all campaigns that are available.
+    """List the campaigns present in the local results root.
+
+    An absent root yields ``[]`` rather than an error: "no campaigns here yet" is
+    genuinely-absent data, and a fresh service has no results directory until its
+    first run. (Contrast :func:`resolve_results_dir`, which *does* raise — there a
+    caller named a campaign it expects to find.)
 
     Returns:
-        Sorted list of campaigns (directories in results_dir matching the
-        campaign directory naming pattern ``<name>-YYYY-MM-DD-HHMMSS``).
+        Sorted list of campaign directories matching ``<name>-YYYY-MM-DD-HHMMSS``.
     """
-    results_dir = resolve_results_dir()
+    results_dir = _campaigns_root()
+    if not results_dir.is_dir():
+        return []
     return sorted(
         d for d in results_dir.iterdir()
         if d.is_dir() and is_campaign_dir(d.name)

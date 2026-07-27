@@ -215,3 +215,54 @@ def test_get_campaign_download_no_service_errors(monkeypatch):
     monkeypatch.setattr(cc, "_service_client", lambda: None)
     res = cc.get_campaign_download("camp-2026-01-01-000000")
     assert "error" in res and "no robovast-service" in res["error"]
+
+
+# -- get_campaign_log is served by the service, not by the local results dir ------
+
+
+def test_get_campaign_log_is_served_by_the_service(monkeypatch):
+    """The campaign log comes from the service, which knows where it lives.
+
+    Regression: this tool read the local results dir directly, so on a cluster
+    service -- where the durable log is in the object store and the live one is pod
+    scratch -- it reported an empty log even though
+    ``ClusterService.get_campaign_logs`` already served both.
+    """
+    from robovast.mcp_server.plugins import campaign_control as cc
+
+    class _Chunk:
+        text = "===== RUN =====\nline one\nline two\n"
+
+    class _Fake:
+        def __init__(self):
+            self.asked = None
+
+        def get_campaign_logs(self, campaign_id, offset=0):
+            self.asked = (campaign_id, offset)
+            return _Chunk()
+
+    fake = _Fake()
+    monkeypatch.setattr(cc, "_service_client", lambda: fake)
+    # Would raise if the local disk path were taken: no such campaign anywhere.
+    monkeypatch.setattr(
+        cc.results_resolver, "resolve_campaign_path",
+        lambda *a, **k: pytest.fail("must not read the local results dir"))
+
+    out = cc.get_campaign_log("camp-2026-01-01-000000")
+    assert fake.asked == ("camp-2026-01-01-000000", 0)
+    assert "line one" in out["content"]
+    assert out["total_lines"] == 3
+
+
+def test_get_campaign_log_falls_back_to_disk_with_no_service(monkeypatch, tmp_path):
+    """With no service, an archived results tree is still readable offline."""
+    from robovast.mcp_server.plugins import campaign_control as cc
+
+    campaign = tmp_path / "camp-2026-01-01-000000"
+    (campaign / "_execution").mkdir(parents=True)
+    (campaign / "_execution" / "controller.log").write_text("from disk\n")
+
+    monkeypatch.setattr(cc, "_service_client", lambda: None)
+    monkeypatch.setattr(cc.results_resolver, "resolve_campaign_path",
+                        lambda *a, **k: campaign)
+    assert "from disk" in cc.get_campaign_log("camp-2026-01-01-000000")["content"]

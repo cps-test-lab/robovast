@@ -310,6 +310,12 @@ def get_campaign_log(campaign_id: str, lines: int = 200, offset: int = 0,
 
     A phase's section is absent until that phase has produced output.
 
+    Served by the robovast-service, which knows where the log lives for its backend —
+    on the cluster the durable copy is in the object store and the live one is pod
+    scratch, neither of them on this host. With no service reachable it falls back to
+    reading a local results directory, so an archived campaign is still readable
+    offline.
+
     Filtered by :func:`~robovast.mcp_server.log_view.view_log` — the same ``grep``
     control every log tool takes. Each line of a run's output arrives stamped with the
     relay prefix of whatever forwarded it (``robovast  | [INFO] [<ts>]
@@ -327,12 +333,30 @@ def get_campaign_log(campaign_id: str, lines: int = 200, offset: int = 0,
         ``{file_name, total_lines, returned_lines, offset, content, dropped}``;
         ``{error}`` if the campaign is unknown or ``grep`` is not a valid regex.
     """
-    from robovast.common.campaign_logs import assemble_log_from_dir  # noqa: PLC0415
     from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
-    campaign_dir = results_resolver.resolve_campaign_path(campaign_id)
-    # Assemble the full unified text (byte offset 0), then paginate by lines — the
-    # MCP tool's ``offset`` is a line offset, unlike the service's byte offset.
-    text, _, _ = assemble_log_from_dir(campaign_dir, offset=0, eof=True)
+
+    # Ask the service, which knows where this campaign's log actually lives: on the
+    # cluster the durable copy is in the object store and the live one is pod scratch
+    # (ClusterService.get_campaign_logs serves both), neither of which is on this
+    # filesystem. Reading the local results dir here reported an empty log for every
+    # cluster campaign. The local disk path stays as the serviceless fallback so an
+    # archived results tree is still readable with no service running.
+    client = _service_client()
+    if client is not None:
+        try:
+            # The service pages by *byte* offset; this tool pages by lines, so take
+            # the whole text (offset 0) and slice lines below, as before.
+            text = client.get_campaign_logs(campaign_id, offset=0).text
+        except Exception as e:  # noqa: BLE001
+            return {"error": str(e)}
+    else:
+        from robovast.common.campaign_logs import \
+            assemble_log_from_dir  # noqa: PLC0415
+        try:
+            campaign_dir = results_resolver.resolve_campaign_path(campaign_id)
+            text, _, _ = assemble_log_from_dir(campaign_dir, offset=0, eof=True)
+        except ValueError as e:
+            return {"error": str(e)}
     try:
         view = view_log(text, grep=grep)
     except ValueError as e:
