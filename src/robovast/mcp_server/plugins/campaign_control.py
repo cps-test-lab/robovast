@@ -32,7 +32,6 @@ lane. (Users who want a serviceless local run still have ``vast exec local run``
 """
 
 import logging
-import os
 
 from fastmcp import FastMCP
 
@@ -125,25 +124,10 @@ def _status_to_dict(campaign_id: str, backend, st) -> dict:
     return result
 
 
-def _load_project():
-    """Load the CWD project config (read-only tools). Raises if not initialized.
-
-    Used by the local, serviceless validation/preview tools (``validate_project`` /
-    ``preview_configurations``), which resolve a ``.vast`` on disk and never touch
-    the execution service.
-    """
-    from robovast.common.cli.project_config import ProjectConfig
-    project = ProjectConfig.load()
-    if project is None or not project.config_path or not project.results_dir:
-        raise ValueError(
-            "Project not initialized. Run 'vast init <config-file>' first.")
-    return project
-
-
 # -- Tool functions ----------------------------------------------------------
 
 
-def validate_project(config_path: str = "") -> dict:
+def validate_project(config_path: str) -> dict:
     """Validate a RoboVAST project (``.vast`` file), reporting ALL problems at once.
 
     A ``.vast`` file defines a *project* (a campaign is one execution of it). This
@@ -157,10 +141,13 @@ def validate_project(config_path: str = "") -> dict:
     counts (same math as ``vast config info``). Same collect-all core as the
     ``vast configuration validate`` CLI command.
 
+    Reads the ``.vast`` straight off disk — no workspace, no service, and no
+    initialized project needed, so it works before anything else exists.
+
     Args:
-        config_path: Path to the ``.vast`` file. Empty uses the initialized
-            project's config; pass an explicit path to validate any ``.vast``
-            before a project has been initialized.
+        config_path: Path to the ``.vast`` file. Required: there is no server-side
+            "current project" to fall back to, and guessing one would validate a
+            different file than the caller named.
 
     Returns:
         ``{valid, configs, runs_per_config, total_trials, problems}`` where each
@@ -168,8 +155,7 @@ def validate_project(config_path: str = "") -> dict:
     """
     from robovast.common.config_validation import validate_project_file
     try:
-        path = config_path or _load_project().config_path
-        return validate_project_file(path)
+        return validate_project_file(config_path)
     except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
         return {"valid": False, "configs": 0, "runs_per_config": 0,
                 "total_trials": 0,
@@ -177,7 +163,7 @@ def validate_project(config_path: str = "") -> dict:
                               "field": None, "message": str(e)}]}
 
 
-def preview_configurations(config_path: str = "", max_configs: int = 0) -> dict:
+def preview_configurations(config_path: str, max_configs: int = 0) -> dict:
     """Preview the resolved configurations a ``.vast`` would generate — WITHOUT running.
 
     ``validate_project`` returns only the counts; this returns the actual resolved
@@ -186,9 +172,12 @@ def preview_configurations(config_path: str = "", max_configs: int = 0) -> dict:
     ``vast configuration generate`` / ``vast exec local prepare-run``, which stage
     the same tree to disk). Nothing is executed and nothing is written.
 
+    Reads the ``.vast`` straight off disk — no workspace, service, or initialized
+    project needed.
+
     Args:
-        config_path: Path to the ``.vast`` file. Empty uses the initialized
-            project's config.
+        config_path: Path to the ``.vast`` file. Required, for the same reason as
+            ``validate_project``: there is no server-side "current project".
         max_configs: Cap the number of configurations returned (``0`` = all). The
             ``configs`` count always reflects the true total; ``truncated`` marks
             when the returned list was shortened.
@@ -201,9 +190,8 @@ def preview_configurations(config_path: str = "", max_configs: int = 0) -> dict:
     """
     from robovast.common.config_generation import generate_scenario_variations
     try:
-        path = config_path or _load_project().config_path
         campaign_data, _ = generate_scenario_variations(
-            variation_file=path, output_dir=None)
+            variation_file=config_path, output_dir=None)
         configs = campaign_data["configs"]
         runs = campaign_data.get("execution", {}).get("runs", 1)
         items = [{"name": c["name"], "parameters": c.get("config", {})}
@@ -219,55 +207,6 @@ def preview_configurations(config_path: str = "", max_configs: int = 0) -> dict:
             "truncated": truncated,
         }
     except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
-        return {"error": str(e)}
-
-
-def init_project(config_path: str, project_dir: str, results_dir: str = "",
-                 log_level: str = "INFO") -> dict:
-    """Initialize a RoboVAST project (write ``.robovast_project``) from a ``.vast`` file.
-
-    A ``.vast`` file defines a project; this creates the workspace that ties it to
-    a results directory (the equivalent of ``vast init``, minus the interactive
-    Docker/Kubernetes checks). The ``.vast`` is validated first — if it has any
-    problems, **nothing is written** and every problem is returned so it can be
-    fixed and retried.
-
-    Because the server has no reliable working directory, all paths are explicit.
-    Note that read/analysis tools discover a project by walking up from the
-    server's working directory, so initialize where the server runs (or analyze a
-    campaign folder directly by passing its absolute path).
-
-    Args:
-        config_path: Path to the ``.vast`` file (resolved to absolute).
-        project_dir: Directory to write ``.robovast_project`` into.
-        results_dir: Where campaign results go. Empty → ``<project_dir>/results``.
-        log_level: Project log level (DEBUG/INFO/WARNING/ERROR/CRITICAL).
-
-    Returns:
-        ``{project_file, config_path, results_dir}`` on success; on an invalid
-        ``.vast`` ``{error, problems: [...]}`` (no file written).
-    """
-    try:
-        from robovast.common.cli.project_config import ProjectConfig
-        from robovast.common.config_validation import validate_project_file
-
-        abs_config = os.path.abspath(os.path.expanduser(config_path))
-        report = validate_project_file(abs_config)
-        if not report.get("valid"):
-            return {"error": "invalid .vast", "config_path": abs_config,
-                    "problems": report.get("problems", [])}
-
-        abs_project_dir = os.path.abspath(os.path.expanduser(project_dir))
-        os.makedirs(abs_project_dir, exist_ok=True)
-        abs_results = (os.path.abspath(os.path.expanduser(results_dir))
-                       if results_dir else os.path.join(abs_project_dir, "results"))
-
-        project = ProjectConfig(config_path=abs_config, results_dir=abs_results,
-                                log_level=log_level)
-        project.save(target_dir=abs_project_dir)
-        return {"project_file": os.path.join(abs_project_dir, ".robovast_project"),
-                "config_path": abs_config, "results_dir": abs_results}
-    except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 
 
@@ -290,8 +229,13 @@ def start_campaign(config_filter: str = "", runs: int = 0, backend: str = "",
             which lane to run on — ``"local"`` (pilot: Docker on the serve host) or
             ``"cluster"`` (scaled: Kubernetes). Empty uses the service's **default
             lane (cluster when available)**. Single-backend services ignore it.
-        workspace_id: Run this workspace's project (empty = the service's CWD project).
-        config_path: Which ``.vast`` when the workspace has several (empty = the sole one).
+        workspace_id: **Required** — the workspace whose project to run. A campaign
+            always runs a workspace's ``.vast``; there is no server-side "current
+            project". Get an id from ``list_workspaces()`` (a directory the operator
+            pinned with ``vast serve --workspace-dir``) or by uploading one with
+            ``create_workspace`` + ``update_workspace``.
+        config_path: Which ``.vast`` when the workspace has several (empty = the sole
+            one, and an error naming the candidates when it is ambiguous).
         campaign_name: Override the campaign name; the id becomes ``<name>-<timestamp>``.
             Empty uses the ``.vast`` ``metadata.name``.
         upload_to_share: When true, a raw (pre-postprocess) archive is delivered to the
@@ -800,8 +744,10 @@ def build_experiment_image(workspace_id: str = "", config_path: str = "",
     Requires a reachable robovast-service (a local ``vast serve`` or a tunnel).
 
     Args:
-        workspace_id: Which workspace's project to build (empty = the CWD project).
-        config_path: Which ``.vast`` when the workspace has several (empty = the sole one).
+        workspace_id: **Required** — which workspace's project to build. Same rule as
+            ``start_campaign``: there is no server-side "current project".
+        config_path: Which ``.vast`` when the workspace has several (empty = the sole
+            one, and an error naming the candidates when it is ambiguous).
         backend: On a multi-backend service, which lane to build for — ``"local"``
             (Docker on the serve host) or ``"cluster"`` (a cluster build Job). Build
             for the same lane you will ``start_campaign`` on. Empty uses the service's
@@ -901,7 +847,6 @@ def get_image_build_log(build_id: str, offset: int = 0, grep: str = "",
 _TOOLS = [
     validate_project,
     preview_configurations,
-    init_project,
     start_campaign,
     build_experiment_image,
     get_image_build_status,

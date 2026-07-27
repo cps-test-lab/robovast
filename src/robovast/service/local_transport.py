@@ -187,9 +187,11 @@ class _LocalCampaign:
 class LocalTransport(RobovastInterface):
     """In-process implementation over the local Docker backend.
 
-    ``workspace_id`` resolution is deferred to Phase A; for now an empty
-    ``workspace_id`` resolves to the initialized CWD project (back-compat with
-    ``vast exec local run``). A non-empty id is looked up once workspaces exist.
+    A campaign always runs a **workspace's** ``.vast``: ``workspace_id`` is the only
+    project binding this service accepts (see :meth:`_resolve_project`), and
+    ``config_path``/``vast_path`` selects among several ``.vast`` files in that
+    workspace. ``.robovast_project`` is a CLI-side concept and never selects what the
+    service runs.
     """
 
     #: Local Docker is single-flight — the backend hardcodes container name
@@ -224,22 +226,29 @@ class LocalTransport(RobovastInterface):
     # -- project resolution -------------------------------------------------
 
     def _resolve_project(self, workspace_id: str, vast_path: str = ""):
-        """Resolve the project to act on: a workspace, or the CWD project.
+        """Resolve what to act on — always a workspace's ``.vast``.
 
-        A non-empty ``workspace_id`` uses the workspace's authored project — the
-        server-side inputs, so no client filesystem is involved. An empty id
-        falls back to the initialized CWD project (``vast exec local run``
-        back-compat). ``vast_path`` selects which ``.vast`` in a multi-``.vast``
-        workspace (workspace-relative).
+        ``workspace_id`` is the service's **only** project binding, so this is
+        single-mode by design. ``vast_path`` selects which ``.vast`` in a
+        multi-``.vast`` workspace (workspace-relative).
+
+        There used to be a fallback here: an empty ``workspace_id`` resolved the
+        ``.robovast_project`` in the *service's* CWD. That branch ignored ``vast_path``
+        entirely, so a caller naming one ``.vast`` silently got whichever one had been
+        initialized -- a campaign that ran the wrong simulator and looked successful.
+        Its stated justification ("``vast exec local run`` back-compat") was false:
+        that command drives the controller in-process and never reaches this method.
         """
-        from robovast.common.cli.project_config import ProjectConfig
-        if workspace_id:
-            return self._project_for_workspace(workspace_id, vast_path)
-        project = ProjectConfig.load()
-        if project is None or not project.config_path or not project.results_dir:
+        if not workspace_id:
             raise ValueError(
-                "Project not initialized. Run 'vast init <config-file>' first.")
-        return project
+                "workspace_id is required: the service runs a workspace's project. "
+                "List them with 'vast workspace list' / list_workspaces(); pin a "
+                "directory in place with 'vast serve --workspace-dir <dir>', or "
+                "upload one with 'vast workspace init <dir>' (create_workspace + "
+                "update_workspace). ('.robovast_project' / 'vast init' binds the "
+                "CLI's project, not the service's -- it never selected what the "
+                "service runs.)")
+        return self._project_for_workspace(workspace_id, vast_path)
 
     def _campaigns_root(self) -> Path:
         """The single results root every local campaign shares.

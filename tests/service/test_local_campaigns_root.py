@@ -168,3 +168,42 @@ def test_deleting_workspace_keeps_campaigns(transport):
 
     assert (Path(root) / cid).is_dir()
     assert cid in {c.campaign_id for c in transport.list_campaigns().campaigns}
+
+
+# -- project binding: workspace_id is the only one --------------------------------
+
+
+def test_resolve_project_without_workspace_fails_loudly(transport):
+    """An empty ``workspace_id`` is refused, not resolved from a CWD project.
+
+    Regression: the empty-id branch loaded ``.robovast_project`` from the service's
+    CWD and **ignored** ``vast_path``, so a caller naming one ``.vast`` silently got
+    whichever one had been initialized -- a campaign that ran the wrong simulator and
+    reported success.
+    """
+    with pytest.raises(ValueError, match="workspace_id is required"):
+        transport._resolve_project("", "sim.vast")
+
+
+def test_config_path_selects_the_named_vast(transport):
+    """``vast_path`` picks among several ``.vast`` files -- it is never ignored."""
+    wid = _make_workspace(transport)
+    transport.store.write_file(wid, "other.vast", "configuration:\n  name: y\n")
+
+    assert transport._resolve_project(wid, "sim.vast").config_path.endswith("sim.vast")
+    assert transport._resolve_project(wid, "other.vast").config_path.endswith("other.vast")
+
+
+def test_ambiguous_workspace_names_the_candidates(transport):
+    """With several ``.vast`` files and no ``vast_path``, the error lists them."""
+    wid = _make_workspace(transport)
+    transport.store.write_file(wid, "other.vast", "configuration:\n  name: y\n")
+
+    with pytest.raises(ValueError, match="other.vast"):
+        transport._resolve_project(wid, "")
+
+
+def test_unknown_vast_path_is_an_error_not_a_fallback(transport):
+    wid = _make_workspace(transport)
+    with pytest.raises(ValueError, match="no such .vast"):
+        transport._resolve_project(wid, "nope.vast")

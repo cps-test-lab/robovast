@@ -834,7 +834,9 @@ def image():
 
 
 @image.command('build')
-@click.option('--workspace-id', default='', help='Workspace to build (empty = CWD project).')
+@click.option('--workspace-id', required=True,
+              help='Workspace whose project to build. Required: the service runs a '
+                   "workspace's project, never a CWD one.")
 @click.option('--config-path', default='', help='Which .vast when the workspace has several.')
 @click.option('--wait/--no-wait', default=True, help='Wait for the build to finish (default).')
 @target_options

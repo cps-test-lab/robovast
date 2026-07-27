@@ -27,6 +27,10 @@ _DOCS_DIR = pathlib.Path(__file__).resolve().parents[2] / "docs"
 _FORBIDDEN_NAMES = [
     "list_run_data_tables", "query_run_data_table", "query_run_data_tables",
     "inspect_run_data_table", "query_run_log",
+    # Removed deliberately: the service has one project binding (``workspace_id``),
+    # so there is nothing for an MCP-side ``vast init`` to bind. ``.robovast_project``
+    # remains a CLI-only concept -- see LocalTransport._resolve_project.
+    "init_project",
 ]
 
 
