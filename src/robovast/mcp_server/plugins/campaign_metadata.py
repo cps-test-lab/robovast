@@ -25,6 +25,7 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+from robovast.common.store import read_campaign_created_at
 from robovast.mcp_server import results_resolver
 
 from ..plugin_common import _list_files_relative, _read_text_paginated, read_campaign_metadata
@@ -35,29 +36,44 @@ logger = logging.getLogger(__name__)
 # -- Tool functions ----------------------------------------------------------
 
 
-def list_campaigns(limit: int = 20, offset: int = 0) -> dict:
-    """List available campaigns
+def _newest_first(entry: dict) -> tuple:
+    """Sort key ordering campaigns by recorded start time, unknown last.
 
-    Returns a paginated list with campaigns and their execution time.
+    Used with ``reverse=True``. Deliberately not the campaign id: that is
+    ``<name>-<timestamp>`` with a user-supplied name, so sorting on it orders
+    alphabetically by name. The id only breaks ties between identical start times.
+    """
+    started = entry.get("started_at")
+    return (started is not None, started or "", entry["campaign_id"])
+
+
+def list_campaigns(limit: int = 20, offset: int = 0) -> dict:
+    """List available campaigns, newest first.
+
+    Ordered by the campaign's recorded start time (``campaign.created_at`` in its
+    ``campaign.db``), so ``limit`` returns the most recent campaigns — the first page
+    answers "what did I just run?". A campaign whose start time is unrecorded sorts
+    last, with ``started_at`` null.
 
     Args:
         limit: Maximum number of campaigns to return (default 20).
         offset: Number of campaigns to skip (default 0).
     """
     with_metadata: list[dict] = []
-    missing_metadata: list[str] = []
+    missing_metadata: list[dict] = []
 
     for d in results_resolver.list_campaigns():
         metadata = read_campaign_metadata(d)
+        entry = {"campaign_id": d.name, "started_at": read_campaign_created_at(d)}
         if metadata:
             exec_info = metadata.get("execution", {})
-            with_metadata.append({
-                "campaign_id": d.name,
-                "execution_time": exec_info.get("execution_time"),
-            })
+            entry["execution_time"] = exec_info.get("execution_time")
+            with_metadata.append(entry)
         else:
-            missing_metadata.append(d.name)
+            missing_metadata.append(entry)
 
+    with_metadata.sort(key=_newest_first, reverse=True)
+    missing_metadata.sort(key=_newest_first, reverse=True)
     page = with_metadata[offset : offset + limit]
     result: dict = {
         "campaigns": page,

@@ -234,6 +234,21 @@ class MultiBackendService(LocalTransport):
         with self._cluster._lock:  # noqa: SLF001 - sibling lane, one feature
             return set(self._cluster._campaigns)  # noqa: SLF001
 
+    def _started_at_for(self, cid: str) -> Optional[str]:
+        """The cluster lane's launch times too — the counterpart of _extra_live_ids.
+
+        That method puts a pre-flight cluster campaign into the listing before its
+        results directory exists; the inherited helper only knows the *local* registry,
+        so such a campaign would have no start time and sort last — precisely the
+        just-launched campaign that belongs first.
+        """
+        started = LocalTransport._started_at_for(self, cid)
+        if started is not None:
+            return started
+        with self._cluster._lock:  # noqa: SLF001 - sibling lane, one feature
+            entry = self._cluster._campaigns.get(cid)  # noqa: SLF001
+        return entry.created_at if entry is not None else None
+
     def list_campaigns(
         self, request: Optional[ListCampaignsRequest] = None
     ) -> ListCampaignsResponse:

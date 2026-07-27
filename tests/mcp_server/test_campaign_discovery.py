@@ -39,6 +39,30 @@ def test_list_campaigns_empty_when_root_absent(no_project):
     assert results_resolver.list_campaigns() == []
 
 
+def test_list_campaigns_tool_is_newest_first(no_project):
+    """The tool's first page is the *newest* campaigns, whatever the names sort like.
+
+    It used to slice an ascending disk scan, so ``limit`` returned the oldest campaigns
+    and "what did I just run?" landed on the last page.
+    """
+    from robovast.common.store import STORE_FILENAME, CampaignStore
+    from robovast.mcp_server.plugins.campaign_metadata import list_campaigns
+
+    for cid, created_at in (("zzz-2026-07-01-120000", 1_000.0),
+                            ("aaa-2026-07-26-120000", 2_000.0)):
+        cdir = no_project / cid
+        cdir.mkdir(parents=True)
+        with CampaignStore(cdir / STORE_FILENAME) as store:
+            store.create_campaign(cid, {}, mode="batch", created_at=created_at)
+
+    result = list_campaigns(limit=1)
+    # Neither campaign is postprocessed, so both arrive via missing_metadata — which is
+    # ordered too, and now carries the start time it was ordered by.
+    listed = [c["campaign_id"] for c in result["missing_metadata"]]
+    assert listed == ["aaa-2026-07-26-120000", "zzz-2026-07-01-120000"]
+    assert result["missing_metadata"][0]["started_at"] == "1970-01-01T00:33:20+00:00"
+
+
 def test_resolve_results_dir_still_raises_for_a_named_campaign(no_project):
     """Naming a campaign under a non-existent root is an error, not silence.
 

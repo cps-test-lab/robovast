@@ -37,6 +37,7 @@ from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from pathlib import Path
 from typing import Optional
 
+from robovast.common.store import read_campaign_created_at
 from robovast.execution.control_server import (ControllerState, Phase, Status,
                                                failure_detail, is_terminal)
 from robovast.service.interface import (ActionResult, BuildImageRequest,
@@ -180,7 +181,7 @@ class _LocalCampaign:
         # Real launch time, recorded the instant the campaign is registered — so a
         # just-launched campaign has a start time before the controller writes the
         # ``campaign`` DB row (seconds later). Same ISO-8601 UTC shape as
-        # ``_campaign_started_at`` reads back from disk, so both format identically.
+        # ``read_campaign_created_at`` reads back from disk, so both format identically.
         self.created_at: str = datetime.now(timezone.utc).isoformat()
 
 
@@ -214,6 +215,9 @@ class LocalTransport(RobovastInterface):
         self._lock = threading.Lock()
         self._usage_lock = threading.Lock()
         self._usage_cache: "tuple[float, ResourceUsage] | None" = None
+        # campaign_id -> recorded start time (see _started_at_for). Only known values
+        # are held, and a recorded one never changes, so no invalidation is needed.
+        self._started_at_cache: dict[str, str] = {}
         # Prime psutil's non-blocking CPU sampler so the first resource_usage()
         # reading reflects real load instead of the 0.0 a cold sampler returns.
         import psutil  # pylint: disable=import-outside-toplevel
@@ -950,7 +954,18 @@ class LocalTransport(RobovastInterface):
         with self._lock:
             mem = set(self._campaigns)
         mem |= self._extra_live_ids()
-        all_ids = sorted(disk | mem, reverse=True)  # newest first (id ends in timestamp)
+        # Newest first by recorded start time. Never sort on the id: it is
+        # `<name>-<timestamp>` with a user-supplied name (see `campaign_id_for`), so id
+        # order is alphabetical by name and only chronological within one name. That
+        # matters beyond display, because offset/limit slice *this* order — a
+        # name-ordered window would hide the newest campaigns from the caller entirely.
+        # A campaign whose start time is unknown (no readable store, no execution
+        # record) sorts last; the id only breaks ties, so the order is deterministic
+        # even though the input is a set.
+        started = {cid: self._started_at_for(cid) for cid in disk | mem}
+        all_ids = sorted(started,
+                         key=lambda c: (started[c] is not None, started[c] or "", c),
+                         reverse=True)
         total = len(all_ids)
         window = all_ids[request.offset:request.offset + request.limit]
         summaries = [self._summary_for(cid) for cid in window]
@@ -1060,7 +1075,11 @@ class LocalTransport(RobovastInterface):
             state.update(campaign_id=campaign_id)
             state.set_phase(phase)
             entry = _LocalCampaign(campaign_id, str(self._campaigns_root()), state)
-            entry.created_at = (self._campaign_started_at(self._campaign_dir(campaign_id))
+            # The store's recorded start time, not now: re-running postprocessing or
+            # sharing must not restamp (and so re-order) a finished campaign. Read
+            # directly rather than via _started_at_for — we already hold self._lock,
+            # which that helper takes.
+            entry.created_at = (read_campaign_created_at(self._campaign_dir(campaign_id))
                                 or entry.created_at)
             self._campaigns[campaign_id] = entry
 
@@ -1427,15 +1446,14 @@ class LocalTransport(RobovastInterface):
         # One precedence rule, shared with get_status: a tracked campaign's live
         # ControllerState wins; otherwise reconstruct the Status from disk (the one
         # documented recovery path — it also derives `postprocessed` from data.db).
-        # `started_at` follows the same rule: the entry's launch time when tracked,
-        # else the campaign.db creation time; a recovered campaign with no readable
-        # store has a genuinely unknown start time (None), not a swallowed error.
+        # `started_at` follows the same rule via _started_at_for, which is also what
+        # list_campaigns orders by — so the time shown on a row and the time it was
+        # sorted by cannot disagree.
         if entry is not None:
             snap = entry.state.snapshot()
-            started_at = entry.created_at
         else:
             snap = reconstruct_status_from_disk(campaign_dir)
-            started_at = self._campaign_started_at(campaign_dir)
+        started_at = self._started_at_for(cid)
         counts = self._run_counts(campaign_dir, live=entry is not None)
         return CampaignSummary(
             campaign_id=cid, phase=snap.phase, postprocessed=snap.postprocessed,
@@ -1487,32 +1505,32 @@ class LocalTransport(RobovastInterface):
             "num_errors": info.get("num_errors", 0),
         }
 
-    @staticmethod
-    def _campaign_started_at(campaign_dir: Path) -> Optional[str]:
-        """Real start time of the campaign as an ISO-8601 UTC string.
+    def _started_at_for(self, cid: str) -> Optional[str]:
+        """Start time of *cid* as an ISO-8601 UTC string, or None if unknown.
 
-        Reads ``campaign.created_at`` — the timestamp the controller records at
-        campaign creation (see :meth:`CampaignStore.create_campaign`) — from the
-        campaign's own ``campaign.db``. Opened **read-only** so listing never
-        migrates or locks a store a running campaign is still writing. Returns
-        ``None`` when the store is absent or unreadable.
+        Same precedence as :meth:`_summary_for`: a campaign this service is driving
+        reports its in-memory launch time, so it is ordered correctly from t=0 — before
+        the controller has written the ``campaign`` row seconds later. Otherwise the
+        durable record in ``campaign.db`` is read.
+
+        Memoised because listing has to know every candidate's start time to order them,
+        and the SSE stream re-lists once a second. A recorded start time never changes
+        (``CampaignStore.create_campaign`` stamps it once, and the post-hoc indexer
+        preserves it across rebuilds), so a cached value cannot go stale. ``None`` is
+        deliberately *not* cached: a campaign whose store does not exist yet must be
+        re-read on the next poll.
         """
-        import sqlite3
-        from datetime import datetime, timezone
-        from robovast.common.store import STORE_FILENAME
-        db = campaign_dir / STORE_FILENAME
-        if not db.is_file():
-            return None
-        try:
-            with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
-                row = conn.execute(
-                    "SELECT created_at FROM campaign ORDER BY created_at LIMIT 1"
-                ).fetchone()
-        except sqlite3.Error:
-            return None
-        if not row or row[0] is None:
-            return None
-        return datetime.fromtimestamp(row[0], tz=timezone.utc).isoformat()
+        with self._lock:
+            entry = self._campaigns.get(cid)
+        if entry is not None:
+            return entry.created_at
+        cached = self._started_at_cache.get(cid)
+        if cached is not None:
+            return cached
+        started = read_campaign_created_at(self._campaigns_root() / cid)
+        if started is not None:
+            self._started_at_cache[cid] = started
+        return started
 
     def _status_from_disk(self, campaign_id: str) -> Status:
         from robovast.execution.status_recovery import \

@@ -166,3 +166,39 @@ def test_lists_a_cluster_campaign_before_it_has_a_directory(tmp_path):
     assert [c.campaign_id for c in listed.campaigns] == [cid]
     assert listed.campaigns[0].phase == "initializing"
     assert not (tmp_path / "campaigns" / cid).exists()
+
+
+def test_pre_flight_cluster_campaign_is_listed_first(tmp_path):
+    """A just-accepted cluster campaign heads the list, before its store exists.
+
+    Ordering is by recorded start time, which for a pre-flight campaign lives only in
+    the *cluster* lane's registry — the local lane knows neither an in-memory entry nor
+    a campaign.db. Without ``_started_at_for`` consulting that lane, the newest campaign
+    would sort last, behind every finished one.
+    """
+    from datetime import datetime, timezone
+
+    from robovast.common.store import STORE_FILENAME, CampaignStore
+
+    svc = _make(tmp_path)
+    older = "zzz-2026-02-01-000000"
+    cdir = svc._campaigns_root() / older
+    cdir.mkdir(parents=True)
+    with CampaignStore(cdir / STORE_FILENAME) as store:
+        store.create_campaign(older, {}, mode="batch", created_at=1_000.0)
+
+    cid = "aaa-2026-02-02-000000"
+
+    class _Entry:
+        created_at = datetime.now(timezone.utc).isoformat()
+
+        class state:
+            @staticmethod
+            def snapshot():
+                from robovast.common.status import Status
+                return Status(phase="initializing", campaign_id=cid)
+
+    with svc._cluster._lock:
+        svc._cluster._campaigns[cid] = _Entry()
+
+    assert [c.campaign_id for c in svc.list_campaigns().campaigns] == [cid, older]

@@ -25,10 +25,15 @@ their own store and are not indexed here.
 """
 
 import logging
+from datetime import datetime
 from pathlib import Path
+from typing import Optional
+
+import yaml
 
 from .campaign_data import (aggregate_run_status, list_config_dirs,
-                            list_run_dirs, read_run_outcomes, read_scenario_config)
+                            list_run_dirs, read_execution_metadata,
+                            read_run_outcomes, read_scenario_config)
 from .common import load_config
 from .store import STORE_FILENAME, CampaignStore
 
@@ -39,6 +44,42 @@ def _newest_mtime(campaign_dir: Path) -> float:
     """Newest ``test.xml`` mtime in the tree (0.0 if none)."""
     times = [p.stat().st_mtime for p in campaign_dir.glob("*/*/test.xml")]
     return max(times) if times else 0.0
+
+
+def _recorded_start_time(campaign_dir: Path) -> Optional[float]:
+    """The campaign's real start time (epoch seconds), or None if unrecorded.
+
+    This indexer runs *after* the campaign finished, so "now" is the indexing time —
+    not a start time. The run itself recorded one: the generated run script writes
+    ``execution_time`` into ``_execution/execution.yaml`` as it starts (see
+    ``generate_execution_yaml_script``), which is exactly the execution path whose store
+    cannot be written live. Reading it keeps ``campaign.created_at`` meaning "campaign
+    start" in both modes, and keeps it stable across a rebuild of a stale store.
+
+    Returns None (recorded as NULL) when there is no such record: an unknown start time
+    is honest, whereas falling back to now or to a directory mtime would silently put an
+    old campaign at the top of a newest-first listing.
+    """
+    try:
+        recorded = read_execution_metadata(campaign_dir).get("execution_time")
+    except (FileNotFoundError, OSError, yaml.YAMLError) as e:
+        logger.warning("No execution record for %s (%s); campaign start time unknown",
+                       campaign_dir.name, e)
+        return None
+    if isinstance(recorded, datetime):  # yaml may parse the ISO string into a datetime
+        return recorded.timestamp()
+    if not recorded:
+        logger.warning("Execution record of %s has no execution_time; start time unknown",
+                       campaign_dir.name)
+        return None
+    try:
+        # The local run script writes ...HH:MM:SSZ (`date -u`); normalise the military
+        # suffix so parsing does not depend on Python >= 3.11 accepting it.
+        return datetime.fromisoformat(str(recorded).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        logger.warning("Unparsable execution_time %r in %s; start time unknown",
+                       recorded, campaign_dir.name)
+        return None
 
 
 def build_campaign_store(campaign_dir, *, force: bool = False) -> Path:
@@ -71,7 +112,8 @@ def build_campaign_store(campaign_dir, *, force: bool = False) -> Path:
         # Paths are stored relative to the campaign root (the dir holding
         # campaign.db) so the store survives the campaign being relocated.
         campaign_id = store.create_campaign(
-            campaign_dir.name, config_json, mode="batch", config_dir="_config")
+            campaign_dir.name, config_json, mode="batch", config_dir="_config",
+            created_at=_recorded_start_time(campaign_dir))
         batch_id = store.open_batch(campaign_id, 0, ".")
         for cfg_dir in list_config_dirs(campaign_dir):
             run_dirs = list_run_dirs(cfg_dir)

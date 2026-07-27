@@ -1,7 +1,7 @@
 import { useMemo, useState, type SyntheticEvent } from 'react'
 import { useQueries } from '@tanstack/react-query'
 import { RichTreeView } from '@mui/x-tree-view/RichTreeView'
-import { robovast, campaignsNewestFirst, type CampaignSummary } from '@/lib/robovastClient'
+import { robovast, type CampaignSummary } from '@/lib/robovastClient'
 import {
   buildCampaignChildren,
   campaignItem,
@@ -26,8 +26,8 @@ export function ResultsTree({
   selectedId: string
   onSelect: (item: ResultsTreeItem) => void
 }) {
-  const sorted = useMemo(() => campaignsNewestFirst(campaigns), [campaigns])
-  const byId = useMemo(() => new Map(sorted.map((c) => [c.campaign_id, c])), [sorted])
+  // Rendered in the order received — the service lists campaigns newest-first.
+  const byId = useMemo(() => new Map(campaigns.map((c) => [c.campaign_id, c])), [campaigns])
 
   const [expandedItems, setExpandedItems] = useState<string[]>([])
 
@@ -47,7 +47,7 @@ export function ResultsTree({
 
   // Every campaign carries children so its expand arrow shows; the children are the real subtree
   // once loaded, otherwise a single placeholder (loading / no-data hint).
-  const items: ResultsTreeItem[] = sorted.map((c) => {
+  const items: ResultsTreeItem[] = campaigns.map((c) => {
     const base = campaignItem(c)
     // Every campaign here is finished+postprocessed, so it always has a queryable data.db; go
     // straight to the loading / real-subtree path.

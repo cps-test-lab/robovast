@@ -56,10 +56,15 @@ import json
 import logging
 import sqlite3
 import time
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+# Sentinel for "caller gave no start time, stamp now" — distinct from an explicit
+# ``None``, which records an unknown start time (see ``create_campaign``).
+_STAMP_NOW = object()
 
 # Canonical store filename, written at the root of every campaign directory
 # (a batch ``campaign-<id>/`` or a ``search-<ts>/`` root).
@@ -186,11 +191,23 @@ class CampaignStore:
         self.close()
 
     def create_campaign(self, name: str, config: dict, mode: str = "search",
-                        config_dir: str = "") -> int:
+                        config_dir: str = "", created_at: Any = _STAMP_NOW) -> int:
+        """Insert the campaign row. ``created_at`` is the campaign's START time.
+
+        Omitting it stamps now, which is correct for the live path: the controller calls
+        this as the campaign begins, in both modes. A caller building a store *after the
+        fact* (:func:`robovast.common.campaign_index.build_campaign_store`, for local
+        batch runs whose store cannot be written live) must pass the start time it
+        recovered from the results tree — "now" would mean indexing time, and the whole
+        service reads this column as the campaign's start (listing order, ``started_at``
+        in the UI). Passing ``None`` explicitly records NULL: an unknown start time,
+        which is the honest answer when the results tree has no record of it.
+        """
         cur = self._conn.execute(
             "INSERT INTO campaign (name, mode, config_dir, config_json, created_at) "
             "VALUES (?, ?, ?, ?, ?)",
-            (name, mode, config_dir, json.dumps(config, default=str), time.time()),
+            (name, mode, config_dir, json.dumps(config, default=str),
+             time.time() if created_at is _STAMP_NOW else created_at),
         )
         self._conn.commit()
         return cur.lastrowid
@@ -346,6 +363,33 @@ def read_campaign_mode(campaign_dir: str | Path) -> Optional[str]:
     except sqlite3.Error:
         return None
     return row[0] if row else None
+
+
+def read_campaign_created_at(campaign_dir: str | Path) -> Optional[str]:
+    """Best-effort read of the campaign's start time as an ISO-8601 UTC string.
+
+    Reads ``campaign.created_at`` — recorded when the campaign begins, in both modes
+    (see :meth:`CampaignStore.create_campaign`). Opened **read-only**, like the other
+    readers here, so listing never migrates or locks a store a running campaign is
+    still writing.
+
+    Returns ``None`` when the store is absent, unreadable, or the column is NULL: a
+    genuinely unknown start time, not a swallowed error. Callers order such campaigns
+    last rather than substituting a directory mtime — a guessed start time would be
+    indistinguishable from a recorded one.
+    """
+    db = Path(campaign_dir) / STORE_FILENAME
+    if not db.is_file():
+        return None
+    try:
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+            row = conn.execute(
+                "SELECT created_at FROM campaign ORDER BY created_at LIMIT 1").fetchone()
+    except sqlite3.Error:
+        return None
+    if not row or row[0] is None:
+        return None
+    return datetime.fromtimestamp(row[0], tz=timezone.utc).isoformat()
 
 
 def read_run_counts(campaign_dir: str | Path) -> Optional[dict[str, int]]:

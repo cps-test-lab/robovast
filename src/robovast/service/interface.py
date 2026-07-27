@@ -895,7 +895,14 @@ class RobovastInterface(ABC):
     def list_campaigns(
         self, request: Optional[ListCampaignsRequest] = None
     ) -> ListCampaignsResponse:
-        """List campaigns known to this service (global, newest first)."""
+        """List campaigns known to this service (global, newest first).
+
+        Ordered by each campaign's recorded start time (``started_at``), and ordered
+        *before* ``limit``/``offset`` are applied — so a page is the N newest, not an
+        arbitrary window. Callers render this order as given; a start time is never
+        derived from the campaign id, whose ``<name>-`` prefix is user-supplied. A
+        campaign with no recorded start time comes last.
+        """
 
     @abstractmethod
     def cleanup_campaign_data(self, request: CleanupDataRequest) -> ActionResult:

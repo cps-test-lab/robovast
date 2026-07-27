@@ -21,7 +21,6 @@ import CloudUploadRoundedIcon from '@mui/icons-material/CloudUploadRounded'
 import Typography from '@mui/material/Typography'
 import {
   robovast,
-  campaignsNewestFirst,
   isTerminalPhase,
   type CampaignSummary,
   type ListCampaignsResponse,
@@ -349,7 +348,7 @@ export function Monitor() {
           No campaigns yet — start one from the Launcher.
         </Alert>
       ) : (
-        campaignsNewestFirst(data.campaigns).map((c) => (
+        data.campaigns.map((c) => (
           <CampaignCard key={c.campaign_id} summary={c} />
         ))
       )}

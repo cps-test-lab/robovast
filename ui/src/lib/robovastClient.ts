@@ -58,13 +58,11 @@ export interface ListCampaignsResponse {
   total: number
 }
 
-// Newest first. Prefer started_at when the backend provides it; fall back to
-// campaign_id, which encodes the timestamp (campaign-YYYY-MM-DD-HHMMSS) and so
-// sorts lexicographically by time. Returns a new array (never mutates input).
-const sortKey = (c: CampaignSummary) => c.started_at ?? c.campaign_id
-export const campaignsNewestFirst = (campaigns: CampaignSummary[]) =>
-  [...campaigns].sort((a, b) =>
-    sortKey(a) < sortKey(b) ? 1 : sortKey(a) > sortKey(b) ? -1 : 0)
+// Campaign lists arrive newest-first: the service orders them by recorded start time
+// before it applies limit/offset, so the order and the page contents agree (see
+// LocalTransport.list_campaigns). There is deliberately no client-side re-sort — a
+// second key that had to agree with the backend's was itself the ordering bug, and
+// `campaign_id` is not a usable key here because its `<name>-` prefix is user-supplied.
 
 // The campaign lifecycle vocabulary carried by `phase` (mirrors the backend Phase enum). A string
 // union rather than an enum so it stays a plain wire value; `CampaignSummary.phase` is still typed

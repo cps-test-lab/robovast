@@ -22,7 +22,6 @@ import {
 } from '@mui/x-data-grid'
 import {
   robovast,
-  campaignsNewestFirst,
   hasResults,
   type CampaignSummary,
   type DataQueryResult,
@@ -78,8 +77,8 @@ export function DataBrowser({
 
   // Only finished+postprocessed campaigns have the derived data (data.db) this viewer queries.
   // (The Results container already filters to these; kept defensive since `campaigns` is a prop.)
+  // Newest-first is the service's order; filtering preserves it.
   const evalCampaigns = campaigns.filter(hasResults)
-  const sortedCampaigns = campaignsNewestFirst(evalCampaigns)
 
   // Apply an Explorer deep-link: set the editor + run its query once per nonce.
   const lastNonce = useRef<number>(-1)
@@ -185,7 +184,7 @@ export function DataBrowser({
           }}
           sx={{ minWidth: 340 }}
         >
-          {sortedCampaigns.map((c) => (
+          {evalCampaigns.map((c) => (
             <MenuItem key={c.campaign_id} value={c.campaign_id}>
               {c.campaign_id}
             </MenuItem>

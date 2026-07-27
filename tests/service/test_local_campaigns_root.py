@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from robovast.service.client import LocalTransport
+from robovast.service.interface import ListCampaignsRequest
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
 
@@ -95,6 +96,54 @@ def test_started_at_none_without_store(transport):
     (root / cid).mkdir(parents=True)
     summary = next(c for c in transport.list_campaigns().campaigns if c.campaign_id == cid)
     assert summary.started_at is None
+
+
+def _campaign_with_start(transport, cid: str, created_at: float) -> None:
+    """Write a campaign dir whose store records *created_at* as its start time."""
+    from robovast.common.store import STORE_FILENAME, CampaignStore
+
+    cdir = transport._campaigns_root() / cid
+    cdir.mkdir(parents=True)
+    with CampaignStore(cdir / STORE_FILENAME) as store:
+        store.create_campaign(cid, {}, mode="batch", config_dir="_config",
+                              created_at=created_at)
+
+
+def test_listing_is_ordered_by_start_time_not_by_name(transport):
+    """The newest campaign comes first even when the names invert the chronology.
+
+    The regression this guards: ordering used to sort the whole campaign id, whose
+    ``<name>-`` prefix is user-supplied — so the list came out alphabetical by name.
+    Because limit/offset slice that order, the newest campaign could fall outside the
+    requested page entirely, which no client-side sort can repair.
+    """
+    _campaign_with_start(transport, "zzz-2026-07-01-120000", 1_000.0)   # older
+    _campaign_with_start(transport, "aaa-2026-07-26-120000", 2_000.0)   # newer
+
+    listed = [c.campaign_id for c in transport.list_campaigns().campaigns]
+    assert listed == ["aaa-2026-07-26-120000", "zzz-2026-07-01-120000"]
+    # The window is cut from the time order, so limit=1 yields the newest.
+    page = transport.list_campaigns(ListCampaignsRequest(limit=1)).campaigns
+    assert [c.campaign_id for c in page] == ["aaa-2026-07-26-120000"]
+
+
+def test_campaign_without_start_time_sorts_last(transport):
+    """An unknown start time never outranks a recorded one, and never breaks listing."""
+    _campaign_with_start(transport, "bbb-2026-07-01-120000", 1_000.0)
+    (transport._campaigns_root() / "aaa-2026-07-26-120000").mkdir(parents=True)  # no store
+
+    listed = [c.campaign_id for c in transport.list_campaigns().campaigns]
+    assert listed == ["bbb-2026-07-01-120000", "aaa-2026-07-26-120000"]
+
+
+def test_listed_start_time_matches_the_sort_key(transport):
+    """Each row's started_at is the value it was ordered by — one source, not two."""
+    _campaign_with_start(transport, "ccc-2026-07-01-120000", 1_000.0)
+    _campaign_with_start(transport, "bbb-2026-07-26-120000", 2_000.0)
+
+    campaigns = transport.list_campaigns().campaigns
+    times = [c.started_at for c in campaigns]
+    assert times == sorted(times, reverse=True)
 
 
 def test_stopped_outcome_persists_across_restart(transport):
