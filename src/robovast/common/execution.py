@@ -375,6 +375,13 @@ _LOCAL_INIT_BLOCK = "command -v fixuid > /dev/null 2>&1 || { echo 'ERROR: fixuid
 # entrypoint's tool check fails fast instead of crashing after a full run.
 _CLUSTER_INIT_BLOCK = "EXTRA_REQUIRED_TOOLS=\"mc\""
 
+# Used when the caller has no cluster provider to ask: a local Docker run is not an
+# instance of anything, so the recorded instance_type is empty (which ingests as NULL).
+# ``|| true`` is not needed here, but a provider's command must never abort the run —
+# sysinfo collection is explicitly non-fatal — so each implementation keeps its own
+# failure tolerance (a metadata-server curl that 404s yields an empty string).
+_NO_INSTANCE_TYPE = 'INSTANCE_TYPE=""'
+
 _LOCAL_POST_RUN_BLOCK = """\
     # Build built-in cleanup script (stop rosbag and resource monitor gracefully)
     BUILTIN_CLEANUP_SCRIPT="/tmp/robovast_cleanup.sh"
@@ -570,7 +577,18 @@ def check_campaign_inputs(campaign_data):
         raise missing_input_error(missing)
 
 
-def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
+def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
+                             instance_type_command=None):
+    """Stage a campaign's config tree, including the generated entrypoint.
+
+    *instance_type_command* is a shell line that sets ``INSTANCE_TYPE``, obtained from the
+    cluster provider's
+    :meth:`~robovast.execution.cluster_config.base_config.BaseConfig.get_instance_type_command`
+    — the machine type on a cloud (GCP's metadata server, Azure's IMDS), the architecture
+    on bare metal. The *caller* resolves it rather than this function looking a provider
+    up, so ``robovast.common`` keeps no dependency on the cluster packages. Omitted, the
+    recorded instance type is empty, which is the honest answer for a local Docker run.
+    """
     # Create the output directory structure
     logger.debug(f"Campaign Configs: {pformat(campaign_data)}")
     check_campaign_inputs(campaign_data)
@@ -588,6 +606,8 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False):
         entrypoint_content = f.read()
     init_block = _CLUSTER_INIT_BLOCK if cluster else _LOCAL_INIT_BLOCK
     entrypoint_content = entrypoint_content.replace('# @@INIT_BLOCK@@', init_block)
+    entrypoint_content = entrypoint_content.replace(
+        '# @@INSTANCE_TYPE_BLOCK@@', instance_type_command or _NO_INSTANCE_TYPE)
     post_run_block = _CLUSTER_POST_RUN_BLOCK if cluster else _LOCAL_POST_RUN_BLOCK
     entrypoint_content = entrypoint_content.replace('    # @@POST_RUN_BLOCK@@', post_run_block)
     entrypoint_dst = os.path.join(campaign_transient_dir, "entrypoint.sh")

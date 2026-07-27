@@ -1274,8 +1274,8 @@ def prepare_run(output, config, runs, cluster_config, options, log_tree, kube_co
             generate_scenario_variations  # pylint: disable=import-outside-toplevel
         from robovast.common.execution import \
             resolve_robovast_image  # pylint: disable=import-outside-toplevel
-        from robovast.execution.cluster_execution.kubernetes_backend import \
-            BatchJobRunner  # pylint: disable=import-outside-toplevel
+        from robovast.execution.cluster_execution.kubernetes_backend import (  # pylint: disable=import-outside-toplevel
+            BatchJobRunner, _instance_type_command)
         from robovast.execution.controller import \
             campaign_id_for  # pylint: disable=import-outside-toplevel
 
@@ -1318,7 +1318,9 @@ def prepare_run(output, config, runs, cluster_config, options, log_tree, kube_co
             # Prepare config files
             logging.debug("Preparing configuration files...")
             out_dir = os.path.join(output, "out_template")
-            prepare_campaign_configs(out_dir, campaign_data, cluster=True)
+            prepare_campaign_configs(
+                out_dir, campaign_data, cluster=True,
+                instance_type_command=_instance_type_command(cluster_config))
             # Per-job multi-document parameter files + job-link manifest (matches
             # what upload writes for a real run).
             job_runner._write_job_param_files(out_dir)  # pylint: disable=protected-access

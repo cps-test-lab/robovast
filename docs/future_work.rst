@@ -207,3 +207,24 @@ way, which a grep for ``detected_service_url`` under ``mcp_server/`` now shows.
   every postprocessed artifact was present -- the campaign-level counters were never
   populated. Harmless for one pilot, but that counter is where a sweep's flakiness
   rate would be read from, so it must not be trusted until traced.
+
+**10. The cloud instance-type commands are untested.**
+``get_instance_type_command`` is now wired into the generated entrypoint, so a run records
+the node's instance type in its ``sysinfo.yaml`` (and thence ``main.runs.instance_type``).
+Only the bare-metal implementations have actually run: ``rke2`` and ``minikube`` return
+``uname -m``, which is verifiable locally. The **GCP and Azure** commands query a cloud
+metadata service —
+
+.. code-block:: bash
+
+   INSTANCE_TYPE=$(curl -s -H "Metadata-Flavor: Google" \
+     http://metadata.google.internal/computeMetadata/v1/instance/machine-type | awk -F'/' '{print $NF}')
+   INSTANCE_TYPE=$(curl -s -H "Metadata: true" \
+     "http://169.254.169.254/metadata/instance/compute/vmSize?api-version=2021-02-01")
+
+— and neither has been exercised on a real node. Both fail *quietly*: ``curl -s`` on a
+wrong URL, a changed response shape, or a blocked metadata endpoint yields an empty string,
+which records exactly like the old hardcoded empty. So a green campaign proves nothing;
+verify by running one on each provider and checking ``SELECT DISTINCT instance_type FROM
+runs`` is a machine type rather than ``NULL``. The API versions in particular age: Azure's
+``api-version`` is pinned in the URL.

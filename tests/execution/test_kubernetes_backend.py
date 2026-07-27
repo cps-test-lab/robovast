@@ -65,7 +65,7 @@ def test_run_batch_in_pod_projects_campaign_level_snapshot(monkeypatch, tmp_path
     monkeypatch.setattr(in_pod_storage, "storage_client_for", lambda cfg: storage)
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.kubernetes_backend.prepare_campaign_configs",
-        lambda out_dir, data, cluster=False: None)
+        lambda out_dir, data, cluster=False, instance_type_command=None: None)
 
     runner = _runner_for_download_test([{"name": "cfgA"}, {"name": "cfgB"}])
     runner.run_batch_in_pod(str(tmp_path))
@@ -85,7 +85,7 @@ def test_run_batch_in_pod_whole_campaign_single_prefix_download(monkeypatch, tmp
     monkeypatch.setattr(in_pod_storage, "storage_client_for", lambda cfg: storage)
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.kubernetes_backend.prepare_campaign_configs",
-        lambda out_dir, data, cluster=False: None)
+        lambda out_dir, data, cluster=False, instance_type_command=None: None)
 
     runner = _runner_for_download_test([{"name": "cfgA"}, {"name": "cfgB"}])
     runner.run_batch_in_pod(str(tmp_path), whole_campaign=True)
@@ -105,7 +105,7 @@ def test_run_batch_in_pod_materialises_job_symlinks(monkeypatch, tmp_path):
     monkeypatch.setattr(in_pod_storage, "storage_client_for", lambda cfg: storage)
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.kubernetes_backend.prepare_campaign_configs",
-        lambda out_dir, data, cluster=False: None)
+        lambda out_dir, data, cluster=False, instance_type_command=None: None)
 
     runner = _runner_for_download_test([{"name": "cfgA"}])
     # Seed the job-links manifest create_job_links reads (the no-op _write_job_links
@@ -134,7 +134,7 @@ def test_run_batch_in_pod_aborts_cleanly_on_stop(monkeypatch, tmp_path):
     monkeypatch.setattr(in_pod_storage, "storage_client_for", lambda cfg: storage)
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.kubernetes_backend.prepare_campaign_configs",
-        lambda out_dir, data, cluster=False: None)
+        lambda out_dir, data, cluster=False, instance_type_command=None: None)
 
     runner = _runner_for_download_test([{"name": "cfgA"}])
     runner._state = types.SimpleNamespace(stop_requested=True)

@@ -115,6 +115,30 @@ def _download_progress_logger(batch_tag, interval=_DOWNLOAD_PROGRESS_INTERVAL):
     return on_file
 
 
+def _instance_type_command(cluster_config) -> str | None:
+    """The provider's shell line for recording the node's instance type, or ``None``.
+
+    Each cluster config implements ``get_instance_type_command`` — GCP and Azure query
+    their metadata service for the machine type, bare-metal providers report the
+    architecture. Best-effort: a provider that does not implement it (the base class
+    raises) simply records no instance type, because sysinfo collection must never be the
+    reason a campaign fails.
+
+    .. todo::
+
+       Only the ``uname -m`` implementations (rke2, minikube) have been exercised. The
+       GCP and Azure commands query a cloud metadata service and are **untested** —
+       verify the recorded ``instance_type`` on a real run on each before relying on it
+       (a wrong URL or response shape would silently record an empty string).
+    """
+    try:
+        return cluster_config.get_instance_type_command()
+    except (NotImplementedError, AttributeError):
+        logger.debug("cluster config %s records no instance type",
+                     type(cluster_config).__name__)
+        return None
+
+
 def _short_job_name(campaign: str, config_name: str, run_number: int) -> str:
     """Create a short Kubernetes job name (max 63 chars) for campaign-id-config-run.
 
@@ -837,7 +861,9 @@ class BatchJobRunner:
 
         # 1. Prepare this batch's config tree + per-job parameter files.
         with tempfile.TemporaryDirectory(prefix="robovast_batch_") as out_dir:
-            prepare_campaign_configs(out_dir, self.campaign_data, cluster=True)
+            prepare_campaign_configs(
+                out_dir, self.campaign_data, cluster=True,
+                instance_type_command=_instance_type_command(self.cluster_config))
             self._write_job_param_files(out_dir)
 
             # 2. Upload to the batch's storage prefix (job init containers mirror from here).
