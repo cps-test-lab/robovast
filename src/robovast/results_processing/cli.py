@@ -26,7 +26,6 @@ from pathlib import Path
 
 import click
 import yaml
-from dotenv import load_dotenv
 
 from robovast.common import fmt_size as _fmt_size, make_download_progress_callback
 from robovast.common.cli import get_project_config, handle_cli_exception
@@ -187,7 +186,6 @@ def publish_cmd(results_dir, force, skip_postprocessing, skip_upload, campaign):
                 "(expected pattern: <name>-YYYY-MM-DD-HHMMSS)."
             )
 
-    _load_share_dotenv()
     click.echo("Starting publication...")
     click.echo(f"Results directory: {results_dir}")
     if campaign:
@@ -443,19 +441,8 @@ def list_publication_plugins():
     click.echo("Plugins with parameters use plugin name as key with parameters as dict.")
 
 
-def _load_share_dotenv() -> None:
-    """Load ``./.env`` (share credentials live there, not in the CLI).
-
-    The current directory only — same rule as ``vast serve``'s loader; see the note
-    there on why the old project-relative search was dropped.
-    """
-    from robovast.common.env_file import load_env_file
-    load_env_file()
-
-
 def _share_configured() -> bool:
-    """True if a share provider is configured (``.env`` loaded first)."""
-    _load_share_dotenv()
+    """True if a share provider is configured (in the env or the ``.env``)."""
     return bool(os.environ.get("ROBOVAST_SHARE_TYPE", "").strip())
 
 
@@ -575,7 +562,6 @@ def download_from_share_cmd(output, campaigns, force, keep_archive, variant, deb
 
     # source == "raw": pull from the external share.
     click.echo("Downloading raw archive(s) from the share...")
-    _load_share_dotenv()
 
     if debug:
         import logging  # pylint: disable=import-outside-toplevel
@@ -754,8 +740,6 @@ def list_share_cmd(campaigns):
     ROBOVAST_SHARE_TYPE  — share provider (e.g. ``gcs``)
     ROBOVAST_GCS_BUCKET  — GCS bucket name  (when ROBOVAST_SHARE_TYPE=gcs)
     """
-    _load_share_dotenv()
-
     share_type = os.environ.get("ROBOVAST_SHARE_TYPE", "").strip()
     if not share_type:
         raise click.UsageError(
@@ -936,8 +920,6 @@ def remove_from_share_cmd(campaigns, yes):
     ROBOVAST_GCS_BUCKET  — GCS bucket name  (when ROBOVAST_SHARE_TYPE=gcs)
     ROBOVAST_GCS_KEY_FILE — service-account key file with delete permission
     """
-    _load_share_dotenv()
-
     share_type = os.environ.get("ROBOVAST_SHARE_TYPE", "").strip()
     if not share_type:
         raise click.UsageError(

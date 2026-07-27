@@ -678,12 +678,15 @@ credentials.
 Configuration via ``.env``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-All credentials and share URLs are stored in a ``.env`` file in the project
-directory (or any parent directory).  The file is **never** committed to the
-``.vast`` project configuration, keeping secrets out of version control.
+All credentials and share URLs are stored in a ``.env`` file in the directory you
+run ``vast`` from.  The file is **never** committed to the ``.vast`` project
+configuration, keeping secrets out of version control.
 
-Load order:  ``python-dotenv`` searches for ``.env`` starting from the
-current working directory and walks up to the root.
+Load order: every ``vast`` command loads ``./.env`` once before it runs — the
+current directory only, no walk up to the root — so *any* variable RoboVAST reads
+from the environment (share credentials, registry, ntfy, ``ROBOVAST_IMAGE`` /
+``ROBOVAST_CONTROLLER_IMAGE``, …) can be kept there.  A real environment variable
+beats a ``.env`` line, and a missing file is fine.
 
 **Required variables (for all share types):**
 

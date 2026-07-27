@@ -16,11 +16,16 @@
 
 """Loading the project ``.env``.
 
-One reader for every entry point (``vast serve``, the results CLI, cluster setup), so
-which file wins never depends on which command was run: it is **``./.env``, the current
-directory only**. A ``.env`` elsewhere is not consulted — searching the project config's
-directory and the project dir used to mean that initialising a project in a parent
-directory silently took a working ``.env`` out of scope.
+Read **once per ``vast`` invocation**, by the CLI group callback before any command runs
+(:func:`robovast.common.cli.cli.cli`), so every variable in the file is simply part of
+the environment — no command needs to know that a value came from a ``.env``, and none
+can forget to look. Per-command loaders drifted: a value resolved *before* the load
+ignored the file.
+
+Which file: **``./.env``, the current directory only**. A ``.env`` elsewhere is not
+consulted — searching the project config's directory and the project dir used to mean
+that initialising a project in a parent directory silently took a working ``.env`` out
+of scope.
 """
 
 import os

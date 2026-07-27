@@ -357,8 +357,8 @@ the quadrotor search vasts.
    **Private-repo credentials (``vast exec cluster setup``).** When a ``git+https``
    plugin points at a private repo, provide a token via ``ROBOVAST_GIT_TOKEN`` (or
    ``GITHUB_TOKEN`` / ``GH_TOKEN``) — either exported in the environment or, more
-   conveniently, set in the project's ``.env`` file (setup loads ``.env`` the same
-   way ``upload-to-share`` does). ``deploy_service``
+   conveniently, set in the project's ``.env`` file (every ``vast`` command loads
+   ``./.env`` before it runs). ``deploy_service``
    stores it in a ``robovast-git-credentials`` Secret and **mounts it read-only as a
    file** into the service pod (``/var/run/secrets/robovast-git/token``). The token is
    handled so it is **not accessible to any workspace or command**:

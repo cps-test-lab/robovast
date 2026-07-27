@@ -235,26 +235,13 @@ from robovast.common.config_plugins import \
     GIT_TOKEN_ENVS as _GIT_TOKEN_HOST_ENVS  # noqa: E402
 
 
-def _load_setup_dotenv():
-    """Load ``./.env`` so setup picks up secrets kept there.
-
-    The current directory only — the same rule as the other two ``.env`` readers, so a
-    ``ROBOVAST_GIT_TOKEN=…`` line is honored without exporting it in the shell, and which
-    file wins never depends on where a project was initialized. ``override=False`` keeps a
-    real env var authoritative.
-    """
-    try:
-        from robovast.common.env_file import \
-            load_env_file  # pylint: disable=import-outside-toplevel
-    except ImportError:
-        return
-    load_env_file()
-
-
 def _git_token_from_host_env():
-    """Return a GitHub token from the host environment / ``.env``, or ``None``."""
+    """Return a GitHub token from the host environment, or ``None``.
+
+    A ``ROBOVAST_GIT_TOKEN=…`` line in the project ``.env`` is already part of that
+    environment: the ``vast`` CLI loads ``./.env`` once before any command runs.
+    """
     import os
-    _load_setup_dotenv()
     for var in _GIT_TOKEN_HOST_ENVS:
         val = os.environ.get(var, "").strip()
         if val:
@@ -303,7 +290,6 @@ def _share_env_from_host():
     from .share_providers import \
         load_share_provider_plugins  # pylint: disable=import-outside-toplevel
 
-    _load_setup_dotenv()
     share_type = os.environ.get("ROBOVAST_SHARE_TYPE", "").strip()
     if not share_type:
         return None
@@ -338,7 +324,6 @@ def _ntfy_env_from_host():
     when ``ROBOVAST_NTFY_TOPIC`` is unset, leaving the in-pod ``Notifier`` a no-op.
     """
     import os
-    _load_setup_dotenv()
     if not os.environ.get("ROBOVAST_NTFY_TOPIC", "").strip():
         return None
     out = {}
@@ -372,7 +357,6 @@ def _registry_env_from_host():
     the build Job and campaign pods use it.
     """
     import os
-    _load_setup_dotenv()
     prefix = os.environ.get("ROBOVAST_REGISTRY_PREFIX", "").strip()
     if not prefix:
         return None
@@ -408,7 +392,6 @@ REGISTRY_CA_CONFIGMAP_NAME = "robovast-registry-ca"
 def _registry_ca_manifest(namespace):
     """A ConfigMap holding the registry CA, or ``None`` when no CA file is set."""
     import os
-    _load_setup_dotenv()
     ca_path = os.environ.get("ROBOVAST_REGISTRY_CA_FILE", "").strip()
     if not ca_path:
         return None
@@ -438,7 +421,6 @@ def _registry_dockerconfig_manifest(namespace):
     import base64
     import json
     import os
-    _load_setup_dotenv()
     server = os.environ.get("ROBOVAST_REGISTRY_SERVER", "").strip()
     user = os.environ.get("ROBOVAST_REGISTRY_USERNAME", "").strip()
     password = os.environ.get("ROBOVAST_REGISTRY_PASSWORD", "").strip()

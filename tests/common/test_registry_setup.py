@@ -23,8 +23,6 @@ _REG_VARS = ["ROBOVAST_REGISTRY_PREFIX", "ROBOVAST_REGISTRY_SERVER",
 def _clean_env(monkeypatch):
     for v in _REG_VARS:
         monkeypatch.delenv(v, raising=False)
-    # _load_setup_dotenv may read a project .env; neutralize it for the test.
-    monkeypatch.setattr(sd, "_load_setup_dotenv", lambda: None)
 
 
 def test_disabled_by_default():

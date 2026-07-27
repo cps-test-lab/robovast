@@ -16,8 +16,7 @@ from robovast.execution.cluster_execution import service_deploy as sd
 
 @pytest.fixture(autouse=True)
 def _no_host_secrets(monkeypatch):
-    """Keep manifest shape deterministic regardless of a CI GITHUB_TOKEN / share / .env."""
-    monkeypatch.setattr(sd, "_load_setup_dotenv", lambda: None)
+    """Keep manifest shape deterministic regardless of a CI GITHUB_TOKEN / share config."""
     for var in sd._GIT_TOKEN_HOST_ENVS:
         monkeypatch.delenv(var, raising=False)
     monkeypatch.delenv("ROBOVAST_SHARE_TYPE", raising=False)

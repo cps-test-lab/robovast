@@ -26,7 +26,6 @@ import time
 
 import click
 import yaml
-from dotenv import load_dotenv
 
 from robovast.common import prepare_campaign_configs
 from robovast.common.cli import get_project_config, handle_cli_exception

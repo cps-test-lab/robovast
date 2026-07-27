@@ -77,6 +77,10 @@ def cli(ctx, vast_file):
     Use ``--vast-file`` / ``-V`` to temporarily use a different ``.vast``
     configuration file instead of the one stored in the project.
 
+    Every command reads ``./.env`` first, so anything RoboVAST takes from the
+    environment (share credentials, registry, ntfy, ``ROBOVAST_*_IMAGE``, …) can
+    be kept there instead of exported by hand.
+
     Examples:
       vast --log-level DEBUG execution cluster cleanup
       vast --log-level INFO init config.yaml
@@ -85,6 +89,16 @@ def cli(ctx, vast_file):
 
     See ``vast --help`` for a list of available commands.
     """
+    # One .env read for the whole CLI, before any command runs: every variable in it
+    # is simply part of the environment from here on, whichever command consumes it.
+    # Per-command loaders drifted — a command that forgot to call one (or resolved a
+    # value *before* calling it) silently ignored a configured .env line.
+    from robovast.common.env_file import load_env_file
+    try:
+        load_env_file()
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
     # Ensure context object exists
     ctx.ensure_object(dict)
     if vast_file:
@@ -211,20 +225,6 @@ def _ensure_ui_built(rebuild: bool = False) -> None:
         subprocess.run([npm, 'install'], cwd=str(ui_dir), check=True)  # noqa: S603
     click.echo('Building web UI (npm run build)…')
     subprocess.run([npm, 'run', 'build'], cwd=str(ui_dir), check=True)  # noqa: S603
-
-
-def _load_project_dotenv() -> None:
-    """Load ``./.env`` into ``os.environ`` (share creds, registry, ntfy, etc.).
-
-    The current directory, and nowhere else. It used to search the project config's
-    directory and the project dir too, falling back to the CWD only when no project
-    file existed — so which ``.env`` won depended on where the project happened to be
-    initialized, and initializing one in a parent directory silently took a working
-    ``.env`` out of scope. ``override`` stays False so a real environment variable
-    beats a ``.env`` line; a missing file is a no-op.
-    """
-    from robovast.common.env_file import load_env_file
-    load_env_file()
 
 
 def _build_cluster_impl(in_pod, context, k8s_namespace, store=None):
@@ -379,14 +379,11 @@ def serve(host, port, backend, attach, context, k8s_namespace, rebuild_ui,
 
     from robovast.service.app import serve as _serve
 
-    # The campaign driver runs in this same process (local backend, or an
-    # off-cluster '--backend cluster' driver), so its share upload reads *this*
-    # os.environ. Load the project .env now — the same convention the results CLI
-    # uses — so ROBOVAST_SHARE_TYPE / provider credentials kept there make
-    # '--upload-to-share' work without exporting them by hand. override=False
-    # keeps real environment variables authoritative; in-pod there is no project
-    # .env, so this is a no-op and the deployment env wins.
-    _load_project_dotenv()
+    # The campaign driver runs in this same process (local backend, or an off-cluster
+    # '--backend cluster' driver), so everything it reads from os.environ comes from
+    # the ./.env the group callback loaded: share credentials for '--upload-to-share',
+    # the registry, ROBOVAST_IMAGE / ROBOVAST_CONTROLLER_IMAGE. In-pod there is no
+    # project .env, so the deployment env is the whole environment.
 
     # Build the SPA the service serves, so a source checkout needs one command
     # (no-op for a packaged/in-cluster install — see _ensure_ui_built).
