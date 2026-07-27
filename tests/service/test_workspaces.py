@@ -224,7 +224,7 @@ def test_suffix_avoids_pinned_name_too(tmp_path):
     """An init'd copy never shadows a pinned dir by name."""
     src = tmp_path / "ros2_basic"
     src.mkdir()
-    reg = WorkspaceRegistry(root=tmp_path / "w", static_dirs=[str(src)])
+    reg = WorkspaceRegistry(root=tmp_path / "w", static_dir=str(src))
     assert reg.create(name="ros2_basic")["name"] == "ros2_basic-2"
 
 
@@ -246,7 +246,7 @@ def pinned(tmp_path):
     (src / "run.sh").write_text("#!/bin/sh\n")
     (src / "results" / "old-campaign" / "_config" / "snap.vast").write_text("x")
     (src / ".git" / "config").write_text("x")
-    registry = WorkspaceRegistry(root=tmp_path / "workspaces", static_dirs=[str(src)])
+    registry = WorkspaceRegistry(root=tmp_path / "workspaces", static_dir=str(src))
     store = WorkspaceStore(registry=registry)
     wid = registry.list()[0]["workspace_id"]
     return store, wid, src
@@ -263,14 +263,14 @@ def test_pinned_dir_is_used_in_place_and_listed(pinned):
 def test_pinned_id_is_stable_across_reload(tmp_path):
     src = tmp_path / "myproj"
     src.mkdir()
-    a = WorkspaceRegistry(root=tmp_path / "w", static_dirs=[str(src)]).list()[0]
-    b = WorkspaceRegistry(root=tmp_path / "w", static_dirs=[str(src)]).list()[0]
+    a = WorkspaceRegistry(root=tmp_path / "w", static_dir=str(src)).list()[0]
+    b = WorkspaceRegistry(root=tmp_path / "w", static_dir=str(src)).list()[0]
     assert a["workspace_id"] == b["workspace_id"]
 
 
 def test_pinned_dir_is_not_persisted_to_registry(pinned):
     store, wid, _ = pinned
-    # A fresh registry over the same root (no static_dirs) must not see the pin.
+    # A fresh registry over the same root (no static_dir) must not see the pin.
     reloaded = WorkspaceRegistry(root=store.registry.root)
     assert reloaded.get(wid) is None
 
@@ -297,3 +297,34 @@ def test_pinned_dir_cannot_be_deleted_through_service(pinned):
     store, wid, _ = pinned
     with pytest.raises(WorkspaceError, match="read-only"):
         store.registry.delete(wid)
+
+
+def test_pinned_dir_serves_the_cluster_lane_too(pinned):
+    """A pinned dir is usable by ``--backend cluster`` running off-cluster.
+
+    Pinning only requires the service to run on the host holding the directory --
+    which an off-cluster cluster driver does, reading project inputs from this
+    filesystem exactly as the local lane does. It is refused in-pod (no such
+    directory) and by ``--attach`` (runs no service of its own), both enforced in
+    the CLI. Without this, removing the CWD-project fallback would have forced
+    cluster users through an upload for a directory sitting right there.
+    """
+    store, wid, src = pinned
+    # ClusterService inherits _resolve_project/_project_for_workspace unchanged, so
+    # exercise the resolution the cluster lane would use, with the same store.
+    from robovast.service.client import LocalTransport
+    transport = LocalTransport(store=store)
+    project = transport._resolve_project(wid, "demo.vast")
+    assert project.config_path == str(src / "demo.vast")
+
+
+def test_only_one_pinned_dir_is_accepted():
+    """``--workspace-dir`` collapses to one directory and reports a second."""
+    import click
+
+    from robovast.common.cli.cli import _one_workspace_dir
+
+    assert _one_workspace_dir(None, None, ()) is None
+    assert _one_workspace_dir(None, None, ("/tmp",)) == "/tmp"
+    with pytest.raises(click.BadParameter, match="takes one directory"):
+        _one_workspace_dir(None, None, ("/tmp", "/var"))

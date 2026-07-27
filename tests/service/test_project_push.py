@@ -165,7 +165,7 @@ def test_resolve_ambiguous_name_fails_loudly():
 
 
 def test_sync_refuses_read_only_pinned_workspace(tmp_path, project):
-    registry = WorkspaceRegistry(root=tmp_path / "w", static_dirs=[str(project)])
+    registry = WorkspaceRegistry(root=tmp_path / "w", static_dir=str(project))
     lt = LocalTransport.__new__(LocalTransport)
     lt.store = WorkspaceStore(registry=registry)
     wid = registry.list()[0]["workspace_id"]

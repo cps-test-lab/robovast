@@ -105,13 +105,48 @@ Two independent identifiers:
 never affects an existing campaign, and there is no campaign→workspace link.
 Results/query operations key on ``campaign_id`` only.
 
+**One project binding.** ``workspace_id`` is the only project binding the service
+accepts, on every backend: a campaign always runs a **workspace's** ``.vast``, and
+``config_path`` selects among several ``.vast`` files in that workspace. There is no
+server-side "current project" — ``.robovast_project`` / ``vast init`` bind the *CLI's*
+project (``vast exec local run``, ``vast results``, ``vast eval``) and never select
+what the service runs. Omitting ``workspace_id`` is refused rather than resolved from
+somewhere else, because the fallback that used to exist ignored ``config_path`` and so
+could run a different ``.vast`` than the caller named.
+
 **Pinned (read-only) workspaces.** ``vast serve --workspace-dir DIR`` registers a
 directory as a workspace used *in place* rather than copied into the store: no
 upload, present at start-up, and stable across restarts (the id is derived from
 the resolved path). These entries live only in memory — never in
 ``registry.json`` — carry ``read_only=True``, and every mutating store op refuses
 them (``WorkspaceStore._require_writable``); MCP/CLI/HTTP surface that as a clear
-error. Local backend only.
+error.
+
+Exactly **one** directory may be pinned. It holds as many ``.vast`` files as you
+like — selected per campaign by ``config_path`` — so several pins would add no
+expressiveness while leaving the service with no single sources root to report.
+Pin the collection (a repo root), not each project.
+
+Pinning needs the service to run on the host holding the directory, which decides
+availability by deployment rather than by backend:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 20 50
+
+   * - Deployment
+     - Pinning
+     - How to bind a project
+   * - ``--backend local``, ``local+cluster``
+     - yes
+     - ``--workspace-dir``; edits on disk are live
+   * - ``--backend cluster`` (off-cluster driver)
+     - yes
+     - ``--workspace-dir``; the driver reads inputs from this filesystem
+   * - ``--attach``, in-pod
+     - **no**
+     - upload with ``vast workspace init`` / ``create_workspace`` +
+       ``update_workspace``; edits need a re-push
 
 Token-efficient file transfer
 ------------------------------

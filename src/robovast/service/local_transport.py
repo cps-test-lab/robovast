@@ -209,7 +209,7 @@ class LocalTransport(RobovastInterface):
     #: sampling per window, not N.
     _USAGE_CACHE_TTL = 10.0
 
-    def __init__(self, store=None, workspace_dirs=None):
+    def __init__(self, store=None, workspace_dir=None):
         self._campaigns: dict[str, _LocalCampaign] = {}
         self._lock = threading.Lock()
         self._usage_lock = threading.Lock()
@@ -220,7 +220,7 @@ class LocalTransport(RobovastInterface):
         psutil.cpu_percent(interval=None)
         if store is None:
             from robovast.service.workspaces import WorkspaceStore
-            store = WorkspaceStore(workspace_dirs=workspace_dirs)
+            store = WorkspaceStore(workspace_dir=workspace_dir)
         self.store = store
 
     # -- project resolution -------------------------------------------------

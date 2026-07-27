@@ -93,28 +93,34 @@ class WorkspaceError(ValueError):
 class WorkspaceRegistry:
     """Crash-safe JSON registry of workspaces (flock + atomic rename).
 
-    Beyond the persisted, editable workspaces it also carries any **static**
-    (pinned, read-only) workspaces given at construction — directories used *in
-    place*, never copied into the store. These are in-memory only (never written
-    to ``registry.json``): a ``vast serve --workspace-dir DIR`` derives them
-    afresh each start with a path-stable id, so links survive a restart without a
+    Beyond the persisted, editable workspaces it also carries **one** optional
+    **static** (pinned, read-only) workspace given at construction — a directory used
+    *in place*, never copied into the store. It is in-memory only (never written to
+    ``registry.json``): a ``vast serve --workspace-dir DIR`` derives it afresh each
+    start with a path-stable id, so links survive a restart without a
     ``workspace init`` upload. See :meth:`add_static` / :meth:`is_read_only`.
+
+    Exactly one, deliberately: a pinned directory holds as many ``.vast`` files as
+    the caller likes (selected per campaign by ``config_path``), so N directories add
+    no expressiveness — while N arbitrary host paths would leave the service with no
+    single sources root to publish in ``get_service_info``.
     """
 
-    def __init__(self, root=None, static_dirs=None):
+    def __init__(self, root=None, static_dir=None):
         self.root = Path(root) if root else default_workspaces_root()
         self.registry_path = self.root / REGISTRY_FILENAME
         self.lock_path = self.root / LOCK_FILENAME
-        #: workspace_id -> registry entry, for pinned read-only dirs (in-memory).
+        #: workspace_id -> registry entry, for the pinned read-only dir (in-memory).
         self._static: dict[str, dict] = {}
         #: workspace_id -> on-disk source Path used directly (read-only).
         self._static_paths: dict[str, Path] = {}
-        for spec in (static_dirs or []):
+        if static_dir is not None:
             # Accept a bare path or a (path, name) pair.
-            if isinstance(spec, (tuple, list)):
-                self.add_static(spec[0], spec[1] if len(spec) > 1 else "")
+            if isinstance(static_dir, (tuple, list)):
+                self.add_static(static_dir[0],
+                                static_dir[1] if len(static_dir) > 1 else "")
             else:
-                self.add_static(spec)
+                self.add_static(static_dir)
 
     def add_static(self, path, name: str = "") -> dict:
         """Pin *path* as a read-only workspace used in place; return its entry.
@@ -332,8 +338,8 @@ class WorkspaceStore:
     """File operations on workspaces, with strict path confinement."""
 
     def __init__(self, registry: WorkspaceRegistry | None = None, tokens=None,
-                 workspace_dirs=None):
-        self.registry = registry or WorkspaceRegistry(static_dirs=workspace_dirs)
+                 workspace_dir=None):
+        self.registry = registry or WorkspaceRegistry(static_dir=workspace_dir)
         self.tokens = tokens or _UploadTokens()
 
     # -- read-only guard ----------------------------------------------------

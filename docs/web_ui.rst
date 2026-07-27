@@ -116,9 +116,10 @@ run files, and author the ``.vast`` in the Monaco editor.
    the dropdown the moment the service starts, with a path-stable id so its UI
    link keeps working after a restart. Edit the files on disk to change it —
    writes through the service/UI/MCP are refused (campaign outputs still land in
-   the shared results store, never under the pinned dir). Repeat ``--workspace-dir``
-   to pin several; each is named after its directory. Hidden files and ``results/``
-   are skipped, exactly like ``workspace init``.
+   the shared results store, never under the pinned dir). One directory may be
+   pinned, named after itself; it may hold any number of ``.vast`` files, chosen per
+   campaign, so pin the collection rather than each project. Hidden files and
+   ``results/`` are skipped, exactly like ``workspace init``.
 
    **It lands wherever the UI is — usually with no flag at all.** A workspace
    lives in the store of whichever service you talk to, and ``vast workspace``

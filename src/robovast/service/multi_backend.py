@@ -73,8 +73,8 @@ class MultiBackendService(LocalTransport):
     the shared surface and the results dir are one.
     """
 
-    def __init__(self, cluster: ClusterService, *, store=None, workspace_dirs=None):
-        super().__init__(store=store, workspace_dirs=workspace_dirs)
+    def __init__(self, cluster: ClusterService, *, store=None, workspace_dir=None):
+        super().__init__(store=store, workspace_dir=workspace_dir)
         if cluster.store is not self.store:
             # Both lanes must read/write the one results dir + workspace set; a split
             # store would hide each lane's campaigns from the other's list/status.

@@ -265,6 +265,22 @@ def _build_cluster_impl(in_pod, context, k8s_namespace, store=None):
                           store=store)
 
 
+def _one_workspace_dir(ctx, param, value):  # noqa: ARG001 - click callback signature
+    """Collapse ``--workspace-dir`` to a single directory, refusing more than one.
+
+    Declared ``multiple=True`` only so a second occurrence can be *reported*: click's
+    single-value default would silently keep the last one, and a dropped pin is
+    exactly the kind of quiet substitution that makes a service serve something the
+    operator did not ask for.
+    """
+    if len(value) > 1:
+        raise click.BadParameter(
+            "takes one directory. A pinned directory holds as many .vast files as "
+            "you like (selected per campaign with --config-path), so pin the "
+            "collection — e.g. a repo root — rather than passing several.")
+    return value[0] if value else None
+
+
 @cli.command()
 @click.option('--host', default='127.0.0.1', show_default=True,
               help='Interface to bind. Keep 127.0.0.1 unless behind a tunnel/proxy: '
@@ -298,15 +314,19 @@ def _build_cluster_impl(in_pod, context, k8s_namespace, store=None):
 @click.option('--rebuild-ui', is_flag=True,
               help='Force a web UI rebuild even if ui/dist looks up to date '
                    '(source checkout only).')
-@click.option('--workspace-dir', 'workspace_dirs', multiple=True,
+@click.option('--workspace-dir', 'workspace_dir', multiple=True,
+              callback=_one_workspace_dir,
               type=click.Path(exists=True, file_okay=False),
-              help='Pin a directory as a read-only workspace, used in place '
-                   '(repeatable). Skips the "vast workspace init" upload — the '
-                   'workspace is present the moment the service starts and '
-                   'survives restarts (edit the files on disk to change it). '
-                   'Local backend only.')
+              help='Pin a directory as a read-only workspace, used in place. Skips '
+                   'the "vast workspace init" upload — the workspace is present the '
+                   'moment the service starts and survives restarts (edit the files '
+                   'on disk to change it). One directory: it holds as many .vast '
+                   'files as you like, selected per campaign with --config-path, so '
+                   'pin the collection (e.g. a repo root) rather than each project. '
+                   'Requires the service to run on this host, so it is refused '
+                   'in-pod.')
 def serve(host, port, backend, attach, context, k8s_namespace, rebuild_ui,
-          workspace_dirs):
+          workspace_dir):
     """Make a robovast-service reachable on the local port until Ctrl-C.
 
     This is the one command that puts a service on ``127.0.0.1:8800``; while it
@@ -345,7 +365,7 @@ def serve(host, port, backend, attach, context, k8s_namespace, rebuild_ui,
         conflicts = [name for name, bad in (
             ('--backend', backend != 'auto'),
             ('--host', host != '127.0.0.1'),
-            ('--workspace-dir', bool(workspace_dirs)),
+            ('--workspace-dir', bool(workspace_dir)),
             ('--rebuild-ui', rebuild_ui),
         ) if bad]
         if conflicts:
@@ -387,31 +407,39 @@ def serve(host, port, backend, attach, context, k8s_namespace, rebuild_ui,
             "and needs local Docker, which a Kubernetes pod does not have; the "
             "in-cluster service is cluster-only.")
 
+    # Pinning uses the directory in place, so it needs the service to run on the host
+    # that holds it. That rules out a pod (no such directory) but NOT an off-cluster
+    # '--backend cluster' driver, which runs here and reads project inputs from this
+    # filesystem exactly as the local lane does.
+    if workspace_dir and in_pod:
+        raise click.ClickException(
+            "--workspace-dir pins a directory on the serve host, and a Kubernetes "
+            "pod has no such directory. Upload the project instead with "
+            "'vast workspace init <dir>'.")
+
     if backend == 'cluster':
-        if workspace_dirs:
-            raise click.ClickException(
-                "--workspace-dir is only supported by the local backend "
-                "(the cluster service stores workspaces in the object store)")
-        impl = _build_cluster_impl(in_pod, context, k8s_namespace)
+        from robovast.service.workspaces import WorkspaceStore
+        store = WorkspaceStore(workspace_dir=workspace_dir)
+        impl = _build_cluster_impl(in_pod, context, k8s_namespace, store=store)
         storage = "object store"
     elif backend == 'local+cluster':
         # Dev-host dual lane: one shared store so both lanes see the same results dir
         # and workspaces; the cluster lane is built exactly as '--backend cluster'.
         from robovast.service.multi_backend import MultiBackendService
         from robovast.service.workspaces import WorkspaceStore
-        store = WorkspaceStore(workspace_dirs=list(workspace_dirs) or None)
+        store = WorkspaceStore(workspace_dir=workspace_dir)
         cluster = _build_cluster_impl(in_pod, context, k8s_namespace, store=store)
         impl = MultiBackendService(cluster, store=store)
         storage = "local filesystem + object store"
     else:
         from robovast.service.client import LocalTransport
-        impl = LocalTransport(workspace_dirs=list(workspace_dirs))
+        impl = LocalTransport(workspace_dir=workspace_dir)
         storage = "local filesystem"
 
     click.echo(f"Starting robovast-service on http://{host}:{port} (OpenAPI at /docs)")
     click.echo(f"Backend: {backend} | storage: {storage} | Ctrl-C to stop")
-    for wid_dir in workspace_dirs:
-        click.echo(f"Pinned read-only workspace: {wid_dir}")
+    if workspace_dir:
+        click.echo(f"Pinned read-only workspace: {workspace_dir}")
     _serve(impl, host=host, port=port)
 
 
