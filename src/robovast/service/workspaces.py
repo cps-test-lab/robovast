@@ -359,26 +359,18 @@ class WorkspaceStore:
     # -- path safety --------------------------------------------------------
 
     def _safe_join(self, workspace_id: str, rel_path: str) -> Path:
-        """Resolve *rel_path* inside the workspace, refusing any escape.
+        """Resolve *rel_path* inside this workspace, refusing any escape.
 
-        Rejects absolute paths and ``..`` segments, and verifies the *resolved*
-        path stays under ``project/`` so a symlink cannot point outside.
+        The confinement itself is :func:`~robovast.common.safe_path.safe_join`, shared
+        with the campaign results tree; this only supplies the workspace root and
+        re-labels the failure as a :class:`WorkspaceError` so callers keep mapping it
+        the way they always have.
         """
-        if not rel_path or rel_path.strip() == "":
-            raise WorkspaceError("path must not be empty")
-        if os.path.isabs(rel_path) or rel_path.startswith("~"):
-            raise WorkspaceError(f"path must be relative to the workspace: {rel_path!r}")
-        parts = Path(rel_path).parts
-        if any(p == ".." for p in parts):
-            raise WorkspaceError(f"path must not contain '..': {rel_path!r}")
-
-        base = self.registry.project_dir(workspace_id).resolve()
-        target = (base / rel_path)
-        # resolve(strict=False) collapses symlinks for existing prefixes
-        resolved = target.resolve()
-        if resolved != base and base not in resolved.parents:
-            raise WorkspaceError(f"path escapes the workspace: {rel_path!r}")
-        return resolved
+        from robovast.common.safe_path import UnsafePathError, safe_join
+        try:
+            return safe_join(self.registry.project_dir(workspace_id), rel_path)
+        except UnsafePathError as e:
+            raise WorkspaceError(str(e)) from e
 
     @staticmethod
     def _require_inline_type(rel_path: str) -> None:

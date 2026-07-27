@@ -836,10 +836,14 @@ class LocalTransport(RobovastInterface):
         """
         from robovast.common.campaign_data import read_test_result
         from robovast.common.execution import job_artifact_dir
+        from robovast.common.safe_path import UnsafePathError, safe_join
         campaign_dir = self._campaigns_root() / campaign_id
-        run_dir = (campaign_dir / job_name).resolve()
-        # Guard against path traversal via a crafted job_name.
-        if campaign_dir.resolve() not in run_dir.parents or not run_dir.is_dir():
+        # job_name comes from a client, so confine it to the campaign (shared check).
+        try:
+            run_dir = safe_join(campaign_dir, job_name)
+        except UnsafePathError as e:
+            raise KeyError(str(e)) from e
+        if not run_dir.is_dir():
             raise KeyError(f"job {job_name!r} not found in campaign {campaign_id!r}")
         with self._lock:
             entry = self._campaigns.get(campaign_id)
@@ -1304,11 +1308,12 @@ class LocalTransport(RobovastInterface):
         self, campaign_id: str, config_name: str, run_id: int, path: str,
     ) -> bytes:
         # Confine the lookup to the run directory: the path comes from the URL, so a
-        # ``..``/absolute path must not read outside the run's artifacts.
-        run_dir = (Path(self._data_dir(campaign_id)) / config_name / str(run_id)).resolve()
-        target = (run_dir / path).resolve()
-        if not str(target).startswith(str(run_dir) + os.sep):
-            raise ValueError("path escapes the run directory")
+        # ``..``/absolute path must not read outside the run's artifacts. Shared check
+        # (also rejects a ``~`` prefix and symlink escapes, which the old
+        # ``startswith`` test on the resolved path did not).
+        from robovast.common.safe_path import safe_join
+        run_dir = Path(self._data_dir(campaign_id)) / config_name / str(run_id)
+        target = safe_join(run_dir, path)
         if not target.is_file():
             raise KeyError(
                 f"no file {path!r} in run {config_name}/{run_id} of campaign {campaign_id}")
