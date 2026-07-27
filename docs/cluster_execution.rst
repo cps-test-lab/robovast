@@ -330,6 +330,24 @@ buckets, so builds there **require** the deployment's bucket to be configured
 guessed at. In-cluster builds do **not** require external-S3 mode, and enabling them
 never changes how campaign results are stored.
 
+A staged context is **scratch, and is cleaned up** — it is a full copy of the project
+directory, so a build per experiment would otherwise pile up copies in the bucket
+indefinitely. Nothing reads it after the build: a rebuild re-stages, the layer cache
+lives in the registry, and a failure is diagnosed from the build log. So:
+
+* the context is deleted as soon as the build is **seen to be terminal** (either
+  outcome) — that is any ``vast image build`` without ``--no-wait``, and every campaign
+  submit, since both poll the status to completion;
+* on the next build, any context whose **Job no longer exists** is swept. Build Jobs
+  self-destruct at ``ttlSecondsAfterFinished`` (1 h), so an absent Job means the build
+  ended at least that long ago — or died with a previous service instance. This is the
+  backstop for a ``--no-wait`` submit nobody polled, and it runs on a cache hit too.
+
+Builds the service still has in flight are held back from the sweep explicitly: their
+context is staged *before* their Job is created, so "no Job" on its own does not mean
+stale. The Job itself needs no cleanup of ours, and neither does the ``:buildcache``
+tag — one tag per build tag, overwritten in place.
+
 Caching in-cluster
 ^^^^^^^^^^^^^^^^^^
 

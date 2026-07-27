@@ -271,7 +271,9 @@ On a cluster the build additionally needs a container registry to push to, which
 deployment setting rather than a project one. It does **not** need any particular object
 storage mode: it stages its context in the storage the deployment already uses (a
 dedicated ``robovast-image-builds`` bucket where campaigns get their own buckets), so
-enabling builds never changes where campaign results live — see
+enabling builds never changes where campaign results live. The staged context is scratch
+and is removed once the build ends, so the credentials the service uses need delete
+permission under the ``image-builds/`` prefix — see
 :ref:`Where the build context is staged <cluster-build-context-staging>`.
 
 .. _config-build-caching:

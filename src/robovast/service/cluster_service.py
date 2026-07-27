@@ -577,8 +577,8 @@ class ClusterService(LocalTransport):
     def _start_cluster_build(self, spec, project_dir, cfg, registry, bucket):
         """Core (idempotent) launch shared by build_image + the campaign preflight."""
         from robovast.execution.cluster_execution.cluster_image_build import (
-            build_id_for, build_job_manifest, cache_image_ref, s3_init_env,
-            stage_context_to_s3)
+            build_id_for, build_job_manifest, cache_image_ref, context_prefix,
+            s3_init_env, stage_context_to_s3)
         from robovast.execution.cluster_execution import in_pod_storage
         from robovast.service.image_build import generate_dockerfile
         from robovast.service.interface import ImageBuildRef, ImageBuildStatus
@@ -589,6 +589,12 @@ class ClusterService(LocalTransport):
         build_id = build_id_for(spec.tag, image_hash)
         symbolic = f"{BUILD_IMAGE_PREFIX}{spec.tag}"
         state = self._image_build_state()
+
+        # Before anything else, and on every path (a cache hit included, or a project
+        # that only ever hits the cache would never sweep): retire the contexts no
+        # status poll got to — a build submitted with --no-wait and never polled, or
+        # one whose service restarted mid-build.
+        self._sweep_build_contexts(cfg, bucket)
 
         # Idempotent, and the registry is asked first: a pushed manifest for this exact
         # input hash is durable proof the image exists, where the Job that produced it is
@@ -624,31 +630,90 @@ class ClusterService(LocalTransport):
             # no message, for what is a perfectly reasonable "try again".
             self._delete_build_job(build_id)
 
-        # Stage the context (project dir + generated Dockerfile) to S3.
-        base_ref = (spec.base_image or registry.base_experiment_image
-                    or resolve_robovast_image())
-        dockerfile = generate_dockerfile(spec, project_dir, base_ref)
-        build_prefix = f"image-builds/{build_id}"
-        storage = in_pod_storage.storage_client_for(cfg)
-        stage_context_to_s3(storage, bucket, build_prefix, project_dir, dockerfile)
-
-        access_key, secret_key = cfg.get_s3_credentials()
-        init_env = s3_init_env(cfg.get_s3_endpoint(), access_key, secret_key,
-                               bucket, build_prefix)
-        manifest = build_job_manifest(
-            build_id=build_id, image_ref=image_ref, campaign_label=build_id,
-            init_env=init_env, push_secret_name=registry.push_secret_name,
-            namespace=self.namespace, insecure=registry.insecure,
-            ca_configmap_name=registry.ca_configmap_name,
-            cache_ref=cache_image_ref(registry.registry_prefix, spec.tag),
-            host_aliases=cfg.get_host_aliases())
-        self._k8s_batch().create_namespaced_job(self.namespace, manifest)
-
-        status = ImageBuildStatus(build_id=build_id, tag=spec.tag, phase="building",
+        # Registered *before* staging so a concurrent build's context sweep can see
+        # this build is in flight — its context exists in the object store for the
+        # whole upload, while its Job does not exist yet.
+        status = ImageBuildStatus(build_id=build_id, tag=spec.tag, phase="pending",
                                   image_ref=symbolic, digest=image_hash)
         state[build_id] = {"tag": spec.tag, "image_ref": image_ref,
                            "hash": image_hash, "status": status}
+
+        # Everything up to a created Job is undone on failure: the in-flight record
+        # holds the sweep back, so a submit that dies here (staging error, rejected
+        # Job) would otherwise strand its context for as long as the service lives.
+        try:
+            # Stage the context (project dir + generated Dockerfile) to S3.
+            base_ref = (spec.base_image or registry.base_experiment_image
+                        or resolve_robovast_image())
+            dockerfile = generate_dockerfile(spec, project_dir, base_ref)
+            build_prefix = context_prefix(build_id)
+            storage = in_pod_storage.storage_client_for(cfg)
+            stage_context_to_s3(storage, bucket, build_prefix, project_dir, dockerfile)
+
+            access_key, secret_key = cfg.get_s3_credentials()
+            init_env = s3_init_env(cfg.get_s3_endpoint(), access_key, secret_key,
+                                   bucket, build_prefix)
+            manifest = build_job_manifest(
+                build_id=build_id, image_ref=image_ref, campaign_label=build_id,
+                init_env=init_env, push_secret_name=registry.push_secret_name,
+                namespace=self.namespace, insecure=registry.insecure,
+                ca_configmap_name=registry.ca_configmap_name,
+                cache_ref=cache_image_ref(registry.registry_prefix, spec.tag),
+                host_aliases=cfg.get_host_aliases())
+            self._k8s_batch().create_namespaced_job(self.namespace, manifest)
+        except BaseException:
+            status.phase, status.done = "failed", True
+            self._discard_build_context(cfg, bucket, build_id)
+            raise
+        status.phase = "building"
         return ImageBuildRef(build_id=build_id, tag=spec.tag, cached=False)
+
+    def _discard_build_context(self, cfg, bucket: str, build_id: str) -> None:
+        """Drop *build_id*'s staged context. Best-effort: a leftover copy of the
+        project dir is not worth failing a finished build over, but it is worth a
+        warning, since the next sweep is the only thing that will retry it."""
+        from robovast.execution.cluster_execution import in_pod_storage
+        from robovast.execution.cluster_execution.cluster_image_build import \
+            discard_context
+        try:
+            storage = in_pod_storage.storage_client_for(cfg)
+            removed = discard_context(storage, bucket, build_id)
+        except Exception as e:  # noqa: BLE001 - cleanup must not fail the build
+            logger.warning("could not discard the staged build context for %s: %s",
+                           build_id, e)
+            return
+        if removed:
+            logger.info("discarded the staged build context for %s (%d objects)",
+                        build_id, removed)
+
+    def _sweep_build_contexts(self, cfg, bucket: str) -> None:
+        """Discard staged contexts whose build is over.
+
+        A context is stale when no build Job owns it any more (Jobs self-destruct at
+        ``ttlSecondsAfterFinished``, so an absent Job means the build ended at least
+        that long ago — or died with a previous service instance). Builds this process
+        still has in flight are held back explicitly: theirs is staged before their Job
+        exists, so "no Job" alone would delete a context out from under a sibling
+        request's init container.
+        """
+        from robovast.execution.cluster_execution import in_pod_storage
+        from robovast.execution.cluster_execution.cluster_image_build import \
+            staged_context_build_ids
+        try:
+            storage = in_pod_storage.storage_client_for(cfg)
+            staged = staged_context_build_ids(storage, bucket)
+            jobs = self._k8s_batch().list_namespaced_job(
+                self.namespace, label_selector="jobgroup=image-builds").items
+        except Exception as e:  # noqa: BLE001 - cleanup must not fail the build
+            logger.warning("could not sweep stale build contexts: %s", e)
+            return
+        live = {(job.metadata.labels or {}).get("build-id") for job in jobs}
+        # Snapshot: a concurrent submit inserting into the state dict must not turn
+        # this into "dictionary changed size during iteration".
+        live |= {bid for bid, rec in list(self._image_build_state().items())
+                 if not rec["status"].done}
+        for build_id in sorted(staged - live):
+            self._discard_build_context(cfg, bucket, build_id)
 
     def _registry_has_image(self, image_ref: str, registry) -> bool:
         """Is *image_ref* already pushed? Fails closed (see ``registry_client``)."""
@@ -820,6 +885,11 @@ class ClusterService(LocalTransport):
             if phase is None:
                 raise KeyError(f"unknown build '{build_id}'")
             done = phase in ("succeeded", "failed")
+            if done:
+                # A build from a previous service instance: no record memoizes the
+                # transition, so this repeats per poll — a no-op list once the prefix
+                # is gone, and it beats waiting for the next build to sweep it.
+                self._retire_build_context(build_id)
             return ImageBuildStatus(
                 build_id=build_id, phase=phase, done=done,
                 cached=phase == "succeeded")
@@ -834,7 +904,25 @@ class ClusterService(LocalTransport):
             status.phase = "failed"
             status.done = True
             status.error = self._build_error(build_id, record["tag"])
+        if status.done:
+            # This transition is the one moment we know the context is dead, for both
+            # outcomes. Cheap (a prefix delete) and it runs once, since a done record
+            # returns above.
+            self._retire_build_context(build_id)
         return status
+
+    def _retire_build_context(self, build_id: str) -> None:
+        """Discard a just-finished build's staged context, resolving the bucket."""
+        from robovast.execution.cluster_execution.cluster_image_build import \
+            build_context_bucket
+        try:
+            cfg = self._cluster_config()
+            bucket = build_context_bucket(cfg)
+        except Exception as e:  # noqa: BLE001 - cleanup must not fail a status read
+            logger.warning("cannot resolve the build-context bucket for %s: %s",
+                           build_id, e)
+            return
+        self._discard_build_context(cfg, bucket, build_id)
 
     def _build_error(self, build_id: str, tag: str):
         from robovast.service.image_build import classify_build_error

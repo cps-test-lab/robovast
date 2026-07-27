@@ -44,6 +44,10 @@ logger = logging.getLogger(__name__)
 # survives a round-trip.
 _EXECUTABLE_META = {"executable": "yes"}
 
+# GCS deletes one blob per request; batching keeps a prefix removal to a few
+# round-trips. Same batch size the host-side ``bucket_ops`` uses.
+_GCS_DELETE_BATCH = 100
+
 
 def _iter_files(local_dir):
     """Yield ``(absolute_path, posix_relative_path)`` for every file under *local_dir*.
@@ -116,6 +120,20 @@ def _download_atomic(dst: str, fetch) -> None:
         raise
 
 
+def _delete_key_prefix(bucket: str, prefix: str) -> str:
+    """Normalize *prefix* to a ``dir/`` key prefix safe to delete under.
+
+    Raises on an empty prefix rather than deleting the bucket's whole contents, and
+    appends the trailing slash so ``foo`` cannot also match ``foobar/``.
+    """
+    clean = (prefix or "").strip().strip("/")
+    if not clean:
+        raise ValueError(
+            "refusing to delete with an empty prefix — that would wipe all of "
+            f"'{bucket}'. Pass the prefix to remove.")
+    return f"{clean}/"
+
+
 class StorageClient:
     """Common interface: upload a local dir to / download a prefix from storage."""
 
@@ -158,6 +176,19 @@ class StorageClient:
         Used by the controller to count completed per-run artifacts in the live
         batch prefix (run-level progress), so it must not raise on a
         not-yet-created bucket — implementations return ``[]`` in that case.
+        """
+        raise NotImplementedError
+
+    def delete_prefix(self, bucket: str, prefix: str) -> int:
+        """Delete every object under *prefix*; return how many were removed.
+
+        Used to drop an experiment-image build's staged context once the build no
+        longer needs it (see ``cluster_image_build.discard_context``) — the one thing
+        written here that is scratch rather than results.
+
+        Implementations must **refuse an empty prefix**: on a shared-bucket deployment
+        the campaign results live in the same bucket, so a prefix-less delete would
+        take them with it. A missing bucket is not an error — nothing to delete.
         """
         raise NotImplementedError
 
@@ -360,6 +391,32 @@ class _S3StorageClient(StorageClient):
             return keys
         return self._resilient(op)
 
+    def delete_prefix(self, bucket: str, prefix: str) -> int:
+        from botocore.exceptions import ClientError  # pylint: disable=import-outside-toplevel
+        key_prefix = _delete_key_prefix(bucket, prefix)
+
+        def op():
+            paginator = self._s3.get_paginator("list_objects_v2")
+            deleted = 0
+            try:
+                # A listing page is at most 1000 keys, which is also the DeleteObjects
+                # limit — so one batched delete per page needs no extra chunking.
+                for page in paginator.paginate(Bucket=bucket, Prefix=key_prefix):
+                    objects = [{"Key": o["Key"]} for o in page.get("Contents", []) or []]
+                    if objects:
+                        self._s3.delete_objects(Bucket=bucket,
+                                                Delete={"Objects": objects})
+                        deleted += len(objects)
+            except ClientError as exc:
+                code = exc.response.get("Error", {}).get("Code", "")
+                if code in ("404", "NoSuchBucket"):
+                    return 0
+                raise
+            logger.debug("Deleted %d objects under s3://%s/%s", deleted, bucket,
+                         key_prefix)
+            return deleted
+        return self._resilient(op)
+
 
 class _GcsStorageClient(StorageClient):
     """google-cloud-storage client for a shared GCS bucket (prefix per campaign)."""
@@ -434,6 +491,22 @@ class _GcsStorageClient(StorageClient):
                     if not b.name.endswith("/")]
         except NotFound:
             return []
+
+    def delete_prefix(self, bucket: str, prefix: str) -> int:
+        from google.cloud.exceptions import NotFound  # pylint: disable=import-outside-toplevel
+        key_prefix = _delete_key_prefix(bucket, prefix)
+        gbucket = self._client.bucket(bucket)
+        try:
+            blobs = list(self._client.list_blobs(gbucket, prefix=key_prefix))
+        except NotFound:
+            return 0
+        for i in range(0, len(blobs), _GCS_DELETE_BATCH):
+            with self._client.batch():
+                for blob in blobs[i:i + _GCS_DELETE_BATCH]:
+                    blob.delete()
+        logger.debug("Deleted %d objects under gs://%s/%s", len(blobs), bucket,
+                     key_prefix)
+        return len(blobs)
 
 
 def campaign_storage_location(cluster_config, campaign_id: str) -> tuple[str, str]:

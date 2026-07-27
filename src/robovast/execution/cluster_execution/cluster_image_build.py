@@ -24,6 +24,11 @@ the deployment's registry using a pre-provisioned push Secret. The pushed image 
 ``<registry_prefix>/<name>:<hash>``; only the symbolic ``build:<tag>`` is ever
 returned to a client.
 
+The staged context is scratch, not results: it is discarded when the build reaches a
+terminal phase, and any context whose Job is gone is swept at the next build (see
+:func:`discard_context` / :func:`staged_context_build_ids`). The Job itself is reaped
+by its own ``ttlSecondsAfterFinished``.
+
 The pure helpers (hash, Dockerfile, error classification) are shared with the local
 path in ``robovast.service.image_build``.
 """
@@ -79,6 +84,44 @@ def cache_image_ref(registry_prefix: str, tag: str) -> str:
     """
     name = tag.replace(":", "-")
     return f"{registry_prefix.rstrip('/')}/{name}:buildcache"
+
+
+#: Key prefix all staged build contexts live under, inside :func:`build_context_bucket`.
+BUILD_CONTEXT_PREFIX = "image-builds"
+
+
+def context_prefix(build_id: str) -> str:
+    """Where *build_id*'s context is staged. One definition, because staging,
+    the Job's mirror command, and the cleanup must all address the same keys."""
+    return f"{BUILD_CONTEXT_PREFIX}/{build_id}"
+
+
+def staged_context_build_ids(storage_client, bucket: str) -> set:
+    """Build ids that currently have a context staged in *bucket*.
+
+    The listing *is* the record of what needs cleaning: a build id is derivable from
+    its own keys, so no side table has to be kept in sync with the object store (and
+    a context staged by a service instance that has since restarted is still found).
+    """
+    head = f"{BUILD_CONTEXT_PREFIX}/"
+    ids = set()
+    for key in storage_client.list_keys(bucket, BUILD_CONTEXT_PREFIX):
+        rest = key[len(head):] if key.startswith(head) else ""
+        build_id = rest.split("/", 1)[0]
+        if build_id:
+            ids.add(build_id)
+    return ids
+
+
+def discard_context(storage_client, bucket: str, build_id: str) -> int:
+    """Delete *build_id*'s staged context; return the number of objects removed.
+
+    The context is scratch — a copy of the project dir the init container mirrors in
+    once — so it is dead the moment the build reaches a terminal phase. Nothing reads
+    it afterwards: a rebuild re-stages, the layer cache lives in the registry, and a
+    failure is diagnosed from the build log.
+    """
+    return storage_client.delete_prefix(bucket, context_prefix(build_id))
 
 
 def stage_context_to_s3(storage_client, bucket: str, prefix: str,

@@ -745,6 +745,11 @@ So a new config needs no build-specific method — but if it fronts storage with
 namespace or a client that cannot create buckets, it must return a bucket from
 ``get_s3_bucket()``, and ``get_storage_backend()`` must not claim ``"s3"``.
 
+A staged context is deleted again when the build ends (``cluster_image_build``:
+``discard_context`` / ``staged_context_build_ids``, driven by ``ClusterService``), so a
+new ``StorageClient`` implementation must provide ``delete_prefix`` — refusing an empty
+prefix, since on a shared bucket the campaign results sit beside the contexts.
+
 **Pod DNS for unresolvable hosts.** ``get_host_aliases()`` parses
 ``ROBOVAST_EXTRA_HOST_ALIASES`` (``<host>=<ip>``, comma-separated, grouped by IP into the
 shape of the k8s field) and is spliced into the build Job
