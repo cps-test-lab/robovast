@@ -587,7 +587,11 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
             # phase=finished + share_error + postprocessing_error (and covers the
             # postproc-off / share-only cases too).
     except Exception as e:  # pylint: disable=broad-except
-        logger.warning("Analysis postprocessing failed", exc_info=True)
+        # A clean failure (an unreachable cluster, a bad config) states its cause and
+        # its remedy in the message; the traceback would only bury it. Genuine bugs
+        # still carry one — that is what ``include_traceback`` distinguishes.
+        logger.warning("Analysis postprocessing failed: %s", e,
+                       exc_info=getattr(e, "include_traceback", True))
         if state is not None:
             state.update(postprocessing_error=failure_detail(e), postprocessed=False)
             state.set_phase(Phase.FINISHED, stage="postprocessing failed")

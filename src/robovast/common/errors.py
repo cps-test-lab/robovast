@@ -39,6 +39,23 @@ class CampaignConfigError(Exception):
     include_traceback = False
 
 
+class ClusterUnreachableError(Exception):
+    """Raised when the Kubernetes API server cannot be reached at all.
+
+    A stopped cluster, a down VPN, a kubeconfig pointing at an endpoint that no
+    longer answers: the request never gets a reply, so there is no API answer to
+    interpret. Distinct from :class:`CampaignConfigError` (the cluster answered and
+    the configuration is wrong) and from ``KueueCheckUnavailable`` (the cluster
+    answered "forbidden").
+
+    Like a config error it is self-contained and actionable — the stack through
+    urllib3's retry machinery names no cause the message does not — so it carries no
+    traceback into the log or the durable failure record.
+    """
+
+    include_traceback = False
+
+
 def missing_input_error(entries, *, hint=True):
     """Build a :class:`CampaignConfigError` for missing project input files.
 

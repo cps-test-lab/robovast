@@ -436,6 +436,18 @@ a namespace that was never set up — the campaign fails at launch with a messag
 naming what is missing, rather than hanging. ``setup`` checks the same thing
 before reporting success.
 
+An unreachable cluster (VPN down, cluster stopped, a kubeconfig context pointing at
+an endpoint that no longer answers) is reported the same way: one line naming the API
+server and the transport error, within about a minute — every API call has a 10-second
+connect timeout (``ROBOVAST_KUBE_CONNECT_TIMEOUT``), so a connect that cannot succeed
+is not left to the operating system's multi-minute TCP timeout. Read timeouts stay
+unlimited; a slow answer is still an answer.
+
+When it happens *after* the runs — the postprocessing step that follows a finished
+campaign — the campaign stays ``finished`` with the reason on
+``postprocessing_error``; the results are already published, and
+``run_postprocessing`` re-runs the step once the cluster is back.
+
 .. note::
 
    Without Kueue installed, jobs are still created but never queued: they all

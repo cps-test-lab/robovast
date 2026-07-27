@@ -478,13 +478,17 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image: 
     # This Job carries the Kueue queue label too, so a broken admission path suspends it
     # and the wait below would report a misleading "timed out" after _DEFAULT_TIMEOUT
     # instead of the actual cause.
-    from robovast.common.errors import CampaignConfigError  # noqa: PLC0415
+    from robovast.common.errors import (CampaignConfigError,  # noqa: PLC0415
+                                        ClusterUnreachableError)
 
     from .kubernetes_kueue import (KueueCheckUnavailable,  # noqa: PLC0415
                                    verify_kueue_admission_ready)
     try:
         verify_kueue_admission_ready(namespace=namespace)
-    except CampaignConfigError as e:
+    except (CampaignConfigError, ClusterUnreachableError) as e:
+        # An unreachable cluster ends postprocessing the same way a broken queue does:
+        # a reported reason on the campaign's postprocessing_error, re-runnable once the
+        # cluster is back. The runs themselves are already published.
         return False, f"postprocessing cannot be scheduled: {e}"
     except KueueCheckUnavailable as e:
         logger.warning("Cannot verify the Kueue admission path (%s); submitting "

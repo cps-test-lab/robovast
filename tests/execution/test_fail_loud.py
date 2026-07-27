@@ -251,6 +251,47 @@ def test_forbidden_read_is_not_reported_as_missing():
         _verify(api)
 
 
+def test_unreachable_cluster_is_one_clean_error():
+    """An off cluster (VPN down, cluster stopped) reached the campaign log as a ~60-line
+    traceback through urllib3's retry internals, which names no cause and no remedy. The
+    transport failing IS the whole fact, so it must arrive as one sentence."""
+    import urllib3.exceptions
+
+    from robovast.common.errors import ClusterUnreachableError
+
+    api = mock.Mock()
+    api.get_namespaced_custom_object.side_effect = urllib3.exceptions.MaxRetryError(
+        pool=mock.Mock(), url="/apis/kueue.x-k8s.io/v1beta2/localqueues/robovast",
+        reason=urllib3.exceptions.ConnectTimeoutError("connect timed out"))
+
+    with pytest.raises(ClusterUnreachableError) as excinfo:
+        _verify(api)
+    # failure_detail() reads this to keep the durable record traceback-free too.
+    assert excinfo.value.include_traceback is False
+    assert "unreachable" in str(excinfo.value)
+
+
+def test_unreachable_cluster_only_ends_postprocessing():
+    """The runs are already published when postprocessing chains, so an unreachable
+    cluster is a reported, re-runnable postprocessing failure — never an exception out
+    of the conversion step."""
+    from robovast.common.errors import ClusterUnreachableError
+    from robovast.execution.cluster_execution import postprocess_job
+
+    cluster_config = mock.Mock()
+    cluster_config.get_s3_credentials.return_value = ("key", "secret")
+    with mock.patch("robovast.execution.cluster_execution.in_pod_storage."
+                    "campaign_storage_location", return_value=("bucket", "prefix/")), \
+         mock.patch("robovast.execution.cluster_execution.kubernetes_kueue."
+                    "verify_kueue_admission_ready",
+                    side_effect=ClusterUnreachableError("API server X is unreachable")):
+        ok, message = postprocess_job.run_conversion_job(
+            cluster_config, "camp", "ns", "img", [{"plugins": []}])
+
+    assert ok is False
+    assert "unreachable" in message
+
+
 def test_quota_exhaustion_is_not_a_failure():
     """Quota exhaustion is Kueue's normal state — every cluster user meets it — so a
     healthy but busy queue must keep waiting, not fail the campaign."""

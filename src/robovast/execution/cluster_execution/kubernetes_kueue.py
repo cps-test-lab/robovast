@@ -214,7 +214,9 @@ def verify_kueue_admission_ready(namespace="default", kube_context=None,
 
     Raises :class:`~robovast.common.errors.CampaignConfigError` naming the broken link
     and the remedy. Raises :class:`KueueCheckUnavailable` when the objects cannot be
-    read at all (RBAC) — callers downgrade that to a warning.
+    read at all (RBAC) — callers downgrade that to a warning. Raises
+    :class:`~robovast.common.errors.ClusterUnreachableError` when the API server does
+    not answer, so an off cluster reads as one sentence rather than a urllib3 traceback.
 
     Deliberately does **not** look at quota. A queue whose capacity is currently used up
     is healthy and the correct response is to wait; only a structurally broken admission
@@ -229,12 +231,14 @@ def verify_kueue_admission_ready(namespace="default", kube_context=None,
             queue that has been up for a while, so a real breakage fails immediately.
     """
     from robovast.common.errors import CampaignConfigError
-    from robovast.common.kube import load_kube_config
+    from robovast.common.kube import api_transport_errors, load_kube_config
     load_kube_config(context=kube_context)
     deadline = time.monotonic() + settle_timeout
     while True:
         try:
-            return _check_kueue_admission(namespace)
+            with api_transport_errors(
+                    f"checking the Kueue admission path in namespace '{namespace}'"):
+                return _check_kueue_admission(namespace)
         except CampaignConfigError:
             if time.monotonic() >= deadline:
                 raise

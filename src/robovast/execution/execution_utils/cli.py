@@ -782,21 +782,11 @@ def monitor(interval, once, kube_context, namespace):
             for label, ctx in contexts_to_monitor:
                 unreachable = False
                 try:
-                    # Suppress urllib3 retry warnings for unreachable contexts;
-                    # both the parent and the connectionpool child logger must be
-                    # silenced because the child may have its own effective level.
-                    _suppressed_loggers = [
-                        logging.getLogger("urllib3"),
-                        logging.getLogger("urllib3.connectionpool"),
-                    ]
-                    _prev_levels = [lg.level for lg in _suppressed_loggers]
-                    for lg in _suppressed_loggers:
-                        lg.setLevel(logging.CRITICAL)
-                    try:
+                    # Suppress urllib3 retry warnings for unreachable contexts — this
+                    # display reports reachability itself, one line below.
+                    from robovast.common.kube import quiet_urllib3_retries
+                    with quiet_urllib3_retries():
                         per_run = get_cluster_job_counts_per_campaign(namespace, context=ctx)
-                    finally:
-                        for lg, lvl in zip(_suppressed_loggers, _prev_levels):
-                            lg.setLevel(lvl)
                 except Exception as exc:
                     # Keep displaying even if one context is unreachable
                     per_run = {}
