@@ -105,6 +105,7 @@ extensions = ['sphinx.ext.extlinks',
               'sphinx_click',
               'sphinxcontrib.spelling',
               'mcp_tools',
+              'http_routes',
               'variation_plugins']
 
 # Add the project root to the path so we can import the modules.

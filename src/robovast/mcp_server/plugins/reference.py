@@ -169,11 +169,11 @@ def get_service_info() -> dict:
         committing a long campaign to it — it reads the cluster's nodes, so it fails
         when the cluster does.
     """
-    from robovast.mcp_server.plugins.campaign_control import (_NO_SERVICE,
-                                                              _service_client)
-    client = _service_client()
+    from robovast.mcp_server import service_access
+    from robovast.mcp_server.service_access import NO_SERVICE
+    client = service_access.service_client()
     if client is None:
-        return {"error": _NO_SERVICE}
+        return {"error": NO_SERVICE}
     try:
         v = client.version()
     except Exception as e:  # noqa: BLE001

@@ -123,18 +123,18 @@ zenodo = "robovast.results_processing.publication_plugins.zenodo:Zenodo"
 [tool.poetry.plugins."robovast.metadata_processing"]
 
 [tool.poetry.plugins."robovast.mcp_plugins"]
+# Grouped by lifecycle phase: author -> run -> read -> dispose, then the reference
+# material. Files span every phase, so they are one address space rather than a phase.
+files = "robovast.mcp_server.plugins.files:FilesPlugin"
+authoring = "robovast.mcp_server.plugins.authoring:AuthoringPlugin"
+execution = "robovast.mcp_server.plugins.execution:ExecutionPlugin"
+results = "robovast.mcp_server.plugins.results:ResultsPlugin"
+results_lifecycle = "robovast.mcp_server.plugins.results_lifecycle:ResultsLifecyclePlugin"
+reference = "robovast.mcp_server.plugins.reference:ReferencePlugin"
 docs = "robovast.mcp_server.plugins.docs:DocsPlugin"
 examples = "robovast.mcp_server.plugins.examples:ExamplesPlugin"
-reference = "robovast.mcp_server.plugins.reference:ReferencePlugin"
-campaign_metadata = "robovast.mcp_server.plugins.campaign_metadata:CampaignMetadataPlugin"
-configuration_metadata = "robovast.mcp_server.plugins.configuration_metadata:ConfigurationMetadataPlugin"
 plugin_metadata = "robovast.mcp_server.plugins.plugin_metadata:PluginMetadataPlugin"
-run_metadata = "robovast.mcp_server.plugins.run_metadata:RunMetadataPlugin"
-run_data = "robovast.mcp_server.plugins.run_data:RunDataPlugin"
 prompts = "robovast.mcp_server.plugins.prompts:PromptsPlugin"
-campaign_control = "robovast.mcp_server.plugins.campaign_control:CampaignControlPlugin"
-workspace = "robovast.mcp_server.plugins.workspace:WorkspacePlugin"
-files = "robovast.mcp_server.plugins.files:FilesPlugin"
 
 [build-system]
 requires = ["poetry-core"]

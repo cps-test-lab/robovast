@@ -33,6 +33,7 @@ import os
 import subprocess
 import threading
 import time
+from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from pathlib import Path
 from typing import Optional
@@ -216,6 +217,23 @@ class _LocalCampaign:
         self.created_at: str = datetime.now(timezone.utc).isoformat()
 
 
+@dataclass(frozen=True)
+class WorkspaceTarget:
+    """What the service resolved a request to: one workspace's ``.vast``.
+
+    Deliberately just the config path. This used to be a ``ProjectConfig`` — the CLI's
+    type, where ``.robovast_project`` genuinely binds a config *and* a results dir — but
+    the service synthesized one per call with a constant ``results_dir``, so the type
+    implied a choice that was never made. Every campaign lands in the shared
+    ``_campaigns_root()``; a caller needing that asks for it, rather than reading a copy
+    off this object where it could look per-workspace.
+
+    ``ProjectConfig`` stays where it means something: the CLI.
+    """
+
+    config_path: str
+
+
 class LocalTransport(RobovastInterface):
     """In-process implementation over the local Docker backend.
 
@@ -223,7 +241,8 @@ class LocalTransport(RobovastInterface):
     project binding this service accepts (see :meth:`_resolve_project`), and
     ``config_path``/``vast_path`` selects among several ``.vast`` files in that
     workspace. ``.robovast_project`` is a CLI-side concept and never selects what the
-    service runs.
+    service runs — its one remaining role is the *results root* (see
+    :func:`~robovast.common.results_root.local_results_root`).
     """
 
     #: Local Docker is single-flight — the backend hardcodes container name
@@ -297,32 +316,31 @@ class LocalTransport(RobovastInterface):
         under ``<workspace>/results`` instead would both hide them from the
         service's readers and let ``delete_workspace`` take the campaigns with it.
 
-        Prefer an initialized CWD project's ``results_dir`` (back-compat with
-        ``vast exec local run``); otherwise a service-owned dir beside the
-        workspaces so a headless ``vast serve`` still has one stable location.
+        The precedence lives in :func:`~robovast.common.results_root.local_results_root`,
+        shared with the MCP results reader so the two cannot disagree about where a
+        campaign is.
 
         Pure path resolver — the dir is materialized lazily by ``CampaignStore``
         on first run, so simply asking where campaigns live (e.g. from
         :class:`ClusterService`, whose results live in the object store) never
         creates a stray local directory.
         """
-        from robovast.common.cli.project_config import ProjectConfig
-        project = ProjectConfig.load()
-        if project is not None and project.results_dir:
-            return Path(project.results_dir)
-        return self.store.registry.root.parent / "results"
+        from robovast.common.results_root import local_results_root
+        return local_results_root(self.store.registry.root)
 
     def _project_for_workspace(self, workspace_id: str, vast_path: str = ""):
-        """Build a ProjectConfig rooted at the workspace's ``project/`` dir.
+        """Resolve which ``.vast`` a workspace runs, as a :class:`WorkspaceTarget`.
 
         A workspace may hold **several** ``.vast`` files. ``vast_path`` (a
         workspace-relative path, confined like every other file op) selects one;
         when omitted, the sole ``.vast`` is used, and if there are several a clear
-        error names the candidates so the caller can pass ``vast_path``. Results go
-        to the shared :meth:`_campaigns_root` (never ``<workspace>/results``), so
-        campaigns stay independent of the workspace that authored them.
+        error names the candidates so the caller can pass ``vast_path``.
+
+        Results are **not** part of this answer: every campaign lands in the shared
+        :meth:`_campaigns_root`, so a caller that needs the results root asks for it
+        directly rather than reading it off a per-call object where it was always the
+        same constant.
         """
-        from robovast.common.cli.project_config import ProjectConfig
         workspace_id = self.store.registry.require(workspace_id)["workspace_id"]
         project_dir = self.store.registry.project_dir(workspace_id)
         if vast_path:
@@ -350,10 +368,7 @@ class LocalTransport(RobovastInterface):
                     f"workspace {workspace_id!r} has {len(vasts)} .vast files ({rel}); "
                     "specify which with the path/config_path argument")
             config_path = vasts[0]
-        # Results land in the shared campaigns root (materialized lazily by the
-        # store on first run), never under the workspace.
-        return ProjectConfig(config_path=str(config_path),
-                             results_dir=str(self._campaigns_root()))
+        return WorkspaceTarget(config_path=str(config_path))
 
     # -- workspaces ---------------------------------------------------------
 
@@ -614,9 +629,10 @@ class LocalTransport(RobovastInterface):
                                                    run_batch_campaign,
                                                    run_search_campaign)
 
-        project = self._resolve_project(request.workspace_id, request.config_path)
-        campaign_config = validate_config(load_config(project.config_path))
-        results_dir = str(project.results_dir)
+        target = self._resolve_project(request.workspace_id, request.config_path)
+        campaign_config = validate_config(load_config(target.config_path))
+        # The shared root, asked for directly: it never varied per workspace.
+        results_dir = str(self._campaigns_root())
         campaign_id = campaign_id_for(campaign_config, request.campaign_name or None)
         is_search = campaign_config.search is not None
         config_filter = request.config_filter or None
@@ -666,11 +682,11 @@ class LocalTransport(RobovastInterface):
         # meanwhile. A doomed build is recorded as ``failed`` (so it stays visible
         # in the list and does not wedge the single-flight guard) and re-raised so
         # the caller sees it before any run starts.
-        spec, _ = self._build_spec_for(project, campaign_config)
+        spec, _ = self._build_spec_for(target, campaign_config)
         if spec is not None:
             state.set_phase(Phase.BUILDING)
         try:
-            built = self._ensure_build_image(project, campaign_config)
+            built = self._ensure_build_image(target, campaign_config)
         except Exception as e:  # noqa: BLE001 - recorded via status, then re-raised
             logger.exception("Campaign %s image build failed", campaign_id)
             entry.error = str(e)
@@ -686,17 +702,17 @@ class LocalTransport(RobovastInterface):
                 CampaignConfigError, CampaignStopped)
             backend = None
             try:
-                with self._campaign_context(campaign_id, project):
+                with self._campaign_context(campaign_id, target):
                     backend = self._build_backend(state)
                     if is_search:
                         run_search_campaign(
-                            project.config_path, campaign_config, results_dir, runs,
+                            target.config_path, campaign_config, results_dir, runs,
                             backend=backend, options=options,
                             campaign_id=campaign_id, state=state,
                             description=request.description)
                     else:
                         run_batch_campaign(
-                            project.config_path, campaign_config, results_dir, runs,
+                            target.config_path, campaign_config, results_dir, runs,
                             config_filter=config_filter, backend=backend,
                             options=options, campaign_id=campaign_id, state=state,
                             description=request.description)

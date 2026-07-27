@@ -15,8 +15,8 @@ Visual artifact egress over MCP (video and rasters)
 
 **Motivation.** Analysis over MCP is increasingly driven by an LLM. Quantitative
 questions are well served: per-run metrics are consolidated into
-``<campaign>/_execution/data.db`` and queried with read-only SQL via the
-``run_data`` tools (``describe_campaign_data`` / ``query_campaign_data_sql``), and
+``<campaign>/_execution/data.db`` and queried with read-only SQL
+(``describe_campaign_data`` / ``query_campaign_data_sql``), and
 a campaign's author-declared charts are exposed as Vega-Lite specs by
 ``list_campaign_plots`` (from ``evaluation.plots`` in the snapshot ``.vast``).
 
@@ -49,8 +49,7 @@ A machine-readable figure layer **now exists**: a campaign's ``evaluation.plots`
 declare ``{title, query, vega_lite}`` entries, surfaced over MCP by
 ``list_campaign_plots`` and over the service by ``GET
 /campaigns/{id}/plots``. The web UI can render those Vega-Lite specs directly, and
-an LLM can read ``data.db`` through the ``run_data`` SQL tools to *propose* new
-ones.
+an LLM can read ``data.db`` through the SQL tools to *propose* new ones.
 
 What is *not* built is a server-side ``render_analysis(campaign, spec) ->
 figure_json`` that resolves a declarative spec to a figure on the server. It is an
@@ -63,26 +62,16 @@ unaffected and stays for rich, code-driven analysis.
 Refocusing the MCP interface for a cluster-first service
 --------------------------------------------------------
 
-A running programme of work, part landed and part not. The shared theme in every
-item below is a **report that does not match reality** — a status that says
-``running`` for a doomed run, a listing that omits campaigns that exist, a client
-timeout for work that succeeded. Each was found by using the interface rather than
-reading it.
+What is left of a running programme of work. The shared theme in every item below is a
+**report that does not match reality** — a status that says ``running`` for a doomed run, a
+listing that omits campaigns that exist, a client timeout for work that succeeded. Each was
+found by using the interface rather than reading it.
 
-Landed already: ``workspace_id`` is the service's only project binding (the
-``.robovast_project`` fallback silently ignored ``config_path`` and ran the wrong
-project); one pinned workspace directory, allowed on the off-cluster cluster lane;
-``get_campaign_log`` routed through the service so it works on the cluster;
-campaign discovery without a project file; one shared path-confinement check
-(``robovast.common.safe_path.safe_join``); and **one address space for files** —
-``/results/<campaign>/<path>`` (read-only) and ``/sources/<workspace>/<path>``
-(writable), replacing the dozen per-scope file tools and the synthetic ``run-files``
-route, with the address templates and (loopback-only) filesystem roots published by
-``get_service_info``. See :ref:`file-address-space`.
-
-Not yet done, roughly in dependency order. The numbering is historical — items 4 and 5
-were the file address space above, and are not renumbered so that notes referring to
-"item 7" keep meaning item 7.
+Finished items are not kept here: they are described where they are implemented — the file
+address space in :ref:`file-address-space`, the SQL results surface in :ref:`mcp-analysis`
+and :ref:`database-or-address-space`, the HTTP route table in :ref:`http-api`. The numbering
+below is historical and deliberately not compacted, so a note elsewhere referring to
+"item 9" still means item 9.
 
 **1. Cluster campaign discovery (design settled, not implemented).**
 ``ClusterService`` inherits ``LocalTransport.list_campaigns``, which scans a local
@@ -157,6 +146,13 @@ the local lane does not enforce ``execution.timeout`` at all, so a stalled run t
 hangs indefinitely). Interim guidance lives in the ``campaign-execution`` skill,
 but a check that must be remembered will be forgotten; the status should carry it.
 
+Where the count/summarize output belongs is already decided: normalized pattern plus
+count is an aggregate, so by :ref:`database-or-address-space` it is a table, joinable to
+``run_view`` ("which failed runs share a warning pattern?") rather than a bespoke
+response schema. The raw lines stay files — one TEXT column is not queryable data. The
+open part is the ingest path: this must work on a **live** campaign, where ``data.db``
+does not exist yet and ``campaign.db``'s writer does not tail container logs.
+
 **5b. The file address space's remaining substrate costs.** The address space landed
 (see :ref:`file-address-space`); these are the object-store paths it did **not**
 optimize, each measured rather than guessed.
@@ -195,46 +191,17 @@ implementation would put the namespace comparison in exactly one place, and woul
 close the seam where ``/sources`` writes go through ``WorkspaceStore`` while its reads
 go around it.
 
-**6. Retire "project" from the service, and re-cut the tool taxonomy.**
-``ProjectConfig`` is a vestigial adapter inside the service — synthesized per call
-with a constant ``results_dir``, while every consumer reads only ``config_path``.
-The real unit is *(workspace, .vast)*; keep ``ProjectConfig`` for the CLI, where
-``.robovast_project`` genuinely binds a config and a results dir. The word then
-survives only there, and ``validate_project`` becomes ``validate_config``.
-Separately, the tool modules mix scope-based and capability-based grouping with a
-21-tool catch-all; re-cut by lifecycle phase (files / authoring / execution+build /
-results+data / results-lifecycle / reference).
+**9. A smaller defect found alongside the above.**
 
-**7. Collapse the metadata tools onto SQL.** Nine tools are views over
-``metadata.yaml`` plus the ``.vast``, each with its own response schema. ``data.db``
-already holds this: ``campaign.config_json`` is the entire ``.vast`` (queryable with
-``json_extract``), and — the constraint that made this look impossible — the
-``campaign`` schema is written **live during execution**, so ``campaign.run`` answers
-pass/fail counts with one ``GROUP BY`` before postprocessing exists. Only ``main.*``
-needs postprocessing. Classify each of the nine against that, delete the ones SQL
-answers (documenting the query), keep ``get_campaign_summary`` as the single
-convenience implemented *over the same SQL*, and ensure every table an argument
-relies on has a ``_TABLE_DESCRIPTIONS`` entry — "use SQL instead" must not mean
-"guess the columns".
+The other one — ``RobovastClient("")`` silently returning an in-process
+``LocalTransport``, so a tool passing an unresolved URL read local disk instead of
+reporting that no service answered — is fixed. ``robovast.mcp_server.service_access`` is
+now the only place that resolves a service URL: ``service_client()`` returns the client or
+``None`` (the control tools then report ``NO_SERVICE``), and ``client_or_local()`` spells
+the fallback out for the operations that *are* meaningful without a service.
+``RobovastClient("")`` itself still behaves this way; the fix was to stop calling it that
+way, which a grep for ``detected_service_url`` under ``mcp_server/`` now shows.
 
-**8. Docs that do not exist yet.** There is no page describing the HTTP interface —
-only the runtime OpenAPI at ``/docs``, which nobody reading the documentation sees.
-That matters more now that the path *is* the ``read_file`` argument: the address space
-itself is documented (:ref:`file-address-space`), but the rest of the route table is
-not. Add ``docs/http_api.rst``: narrative for the conventions, plus an
-**autogenerated** route table via a directive modelled on the existing
-``.. mcp-tools::`` (``docs/_ext/mcp_tools.py``). A hand-maintained endpoint list is how
-the retired synthetic run-file route came to look documented while matching no
-directory on disk.
-
-**9. Two smaller defects found alongside the above.**
-
-* ``RobovastClient("")`` returns an in-process ``LocalTransport`` rather than
-  failing, so a caller that passes an unresolved service URL straight in
-  (``RobovastClient(detected_service_url())``) silently reads local disk instead of
-  reporting that no service answered. Several tools do exactly that. Either require a
-  non-empty URL at those call sites or adopt the explicit "client or ``None``"
-  pattern used in ``run_data``, so "no service" is reported rather than substituted.
 * A campaign that ran and passed reported ``runs: {completed: 0, total: 0}`` in its
   ``_execution/outcome.json`` while ``test.xml`` recorded ``errors=0 failures=0`` and
   every postprocessed artifact was present -- the campaign-level counters were never

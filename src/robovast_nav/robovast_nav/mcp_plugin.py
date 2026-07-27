@@ -36,7 +36,6 @@ from robovast.common.campaign_data import (
     read_resolved_configurations,
     read_scenario_config,
 )
-from robovast.mcp_server.plugin_common import _get_config_by_identifier_or_name
 from robovast.mcp_server.results_resolver import (
     resolve_campaign_path,
     resolve_config_path,
@@ -637,12 +636,14 @@ def draw_map(
     """
     from robovast_nav.gui.map_visualizer import MapVisualizer  # pylint: disable=import-outside-toplevel
 
-    cfg = _get_config_by_identifier_or_name(campaign, config)
-    if cfg is None:
-        raise FileNotFoundError(f"Config '{config}' not found in campaign '{campaign}'")
-    map_file = cfg.get("config", {}).get("map_file")
+    # Straight from the configuration's own resolved scenario parameters, rather than the
+    # campaign metadata.yaml this used to read: that file is written by postprocessing, so
+    # drawing the map of a campaign that had merely run used to fail.
+    params = read_scenario_config(resolve_config_path(campaign, config))
+    map_file = params.get("map_file")
     if not map_file:
-        raise FileNotFoundError(f"No map_file in metadata for config '{config}'")
+        raise FileNotFoundError(
+            f"No map_file among the scenario parameters of config '{config}'")
     map_yaml = str(resolve_campaign_path(campaign) / map_file)
 
     viz = MapVisualizer()

@@ -176,6 +176,91 @@ def _attach_ro(conn: sqlite3.Connection, db_path: Path, alias: str) -> None:
         logger.debug("could not attach %s as %s: %s", db_path, alias, e)
 
 
+#: Flat views created per attached ``campaign.db``, as ``{name: SQL body}``.
+#:
+#: They exist because every per-run question needs ``run JOIN unit`` (``run_id`` is only
+#: unique *within* a config) and now ``LEFT JOIN job`` for the host record. A forgotten
+#: join does not raise — it silently returns rows from the wrong configs — so the join is
+#: made a property of the schema rather than something the caller has to remember.
+#:
+#: They are **TEMP views on the connection**, not objects in the file, for three reasons:
+#: the store is attached read-only so nothing may be written to it; an existing store
+#: predating the ``job`` table would carry a view referencing a table it does not have;
+#: and defining them here means a change to a view never needs a schema migration. The
+#: cost is that they must be created for each attached alias, which
+#: :func:`_create_campaign_views` does.
+#: Names of the views, in listing order. The bodies are built per store by
+#: :func:`_campaign_view_sql`, which adapts to the tables that store actually has.
+_CAMPAIGN_VIEW_NAMES = ("run_view", "config_view")
+
+
+def _tables_in(conn: sqlite3.Connection, schema: str) -> set:
+    """Table names present in an attached *schema*."""
+    try:
+        return {r["name"] for r in conn.execute(
+            f"SELECT name FROM {schema}.sqlite_master WHERE type='table'")}
+    except sqlite3.Error:
+        return set()
+
+
+def _campaign_view_sql(schema: str, have: set) -> dict:
+    """``{view_name: SELECT}`` for the tables *schema* actually has.
+
+    A store on disk may predate the ``job`` table — ``data_query`` attaches read-only and
+    so never migrates it — and ``CREATE TEMP VIEW`` does *not* resolve its body, so a view
+    over a missing table is created happily and then fails at query time with a confusing
+    ``no such table: campaign.job``. Hence the tables are checked here instead.
+
+    When ``job`` is absent the host columns are selected as NULL rather than dropped, so
+    ``run_view`` has the **same column set** on every store version: the caller writes one
+    query, and a missing host record reads as NULL instead of as a different schema.
+    """
+    views = {}
+    if {"run", "unit"} <= have:
+        if "job" in have:
+            host = "j.job_dir, j.sysinfo_json"
+            join = f"LEFT JOIN {schema}.job j ON r.job_id = j.id"
+        else:
+            host = "NULL AS job_dir, NULL AS sysinfo_json"
+            join = ""
+        views["run_view"] = f"""
+            SELECT u.config_name, r.run_id, r.status, r.passed, r.duration_s,
+                   r.errors, r.failures, r.tests, r.start_time, r.failure_message,
+                   u.params_json, u.objective, u.paramset_id, {host}
+            FROM {schema}.run r
+            JOIN {schema}.unit u ON r.unit_id = u.id
+            {join}
+        """
+    if "campaign" in have:
+        # The .vast as rows. ``atom`` (not ``value``) is load-bearing: it is NULL for
+        # objects and arrays, so a container row cannot return a serialized subtree that
+        # _cap_cell would truncate into a config looking complete but is not. A caller
+        # descends by fullkey instead, and every row stays small.
+        views["config_view"] = f"""
+            SELECT t.fullkey, t.key, t.parent, t.type, t.atom AS value
+            FROM {schema}.campaign c, json_tree(c.config_json) t
+        """
+    return views
+
+
+def _create_campaign_views(conn: sqlite3.Connection, schema: str,
+                           prefix: str = "") -> None:
+    """Create the flat views over *schema* as ``TEMP`` views on this connection.
+
+    *prefix* namespaces them for an extra attached campaign (``c1_run_view``), since temp
+    views share one namespace across the connection.
+
+    A view whose tables are missing is not created at all, so ``describe_data_db`` does not
+    list it and a query naming it fails with ``no such table: run_view`` — the honest
+    report that this store cannot answer that question.
+    """
+    for name, body in _campaign_view_sql(schema, _tables_in(conn, schema)).items():
+        try:
+            conn.execute(f"CREATE TEMP VIEW {prefix}{name} AS {body}")
+        except sqlite3.Error as e:
+            logger.debug("could not create view %s%s over %s: %s", prefix, name, schema, e)
+
+
 def _open_db(campaign_dir, extra_dirs: dict | None = None) -> sqlite3.Connection:
     """Open a campaign's queryable databases read-only.
 
@@ -211,6 +296,7 @@ def _open_db(campaign_dir, extra_dirs: dict | None = None) -> sqlite3.Connection
     _register_aggregates(conn)
     if campaign_db.exists():
         _attach_ro(conn, campaign_db, "campaign")
+        _create_campaign_views(conn, "campaign")
     for alias, other in (extra_dirs or {}).items():
         other = Path(other)
         other_data = other / "_execution" / "data.db"
@@ -219,6 +305,7 @@ def _open_db(campaign_dir, extra_dirs: dict | None = None) -> sqlite3.Connection
         other_campaign = other / "campaign.db"
         if other_campaign.exists():
             _attach_ro(conn, other_campaign, f"{alias}_campaign")
+            _create_campaign_views(conn, f"{alias}_campaign", prefix=f"{alias}_")
     return conn
 
 
@@ -234,19 +321,76 @@ def open_data_db(campaign_dir, extra_dirs: dict | None = None) -> sqlite3.Connec
     return _open_db(campaign_dir, extra_dirs)
 
 
-# Human-readable meaning for the non-obvious tables an LLM will otherwise see as
-# bare names. Metric tables (one per CSV stem) are self-describing by their columns.
+# What an LLM needs to write a correct query against a table it cannot see: what one row
+# is, which column to filter on, and the mistakes that return wrong rows instead of an
+# error. Deliberately no history and no design rationale — a caller cannot act on either,
+# and every word here is spent on every request. Metric tables (one per CSV stem) are
+# self-describing by their columns and are not listed.
 _TABLE_DESCRIPTIONS = {
+    ("temp", "run_view"): (
+        "START HERE for per-run and per-configuration questions. One row per run, joined: "
+        "config_name, run_id, status, passed, duration_s, errors, failures, tests, "
+        "start_time, failure_message, params_json, objective, paramset_id, job_dir, "
+        "sysinfo_json. Query unqualified: FROM run_view. Works before postprocessing. "
+        "ALWAYS filter with config_name, not run_id alone: run_id restarts at 0 in every "
+        "configuration, so run_id alone matches one run per config and returns rows you "
+        "did not ask for. "
+        "One run: WHERE config_name='goal-1' AND run_id=0. "
+        "Pass/fail per config: SELECT config_name, status, COUNT(*) FROM run_view "
+        "GROUP BY 1,2. A run's CPU: json_extract(sysinfo_json,'$.cpu_name'). "
+        "Per-run metrics: join a metric table on (config_name, run_id). "
+        "params_json holds each parameter as the scenario received it, so a file-valued "
+        "parameter resolves under /results/<campaign>/<config_name>/_config/<value>. "
+        "job_dir and sysinfo_json are NULL when the campaign has no recorded host info."),
+    ("temp", "config_view"): (
+        "The campaign's .vast configuration as rows, one per key. Query unqualified: "
+        "FROM config_view. Columns: fullkey (JSON path, e.g. '$.execution.image'), key, "
+        "parent, type, value. value is NULL on 'object' and 'array' rows — descend with "
+        "fullkey LIKE '$.execution%' instead of expecting a subtree. Use this to explore; "
+        "when the path is known, json_extract(campaign.config_json,'$.execution.image') is "
+        "cheaper. "
+        "This is the config AS RUN, with defaults filled in — a defaulted key is "
+        "indistinguishable from one the author wrote, and comments and anchors are gone. "
+        "For what the author actually wrote, read /results/<campaign>/_config/*.vast."),
+    ("main", "postprocessing_steps"): (
+        "How each table in this data.db was produced. One row per step: plugin, output, "
+        "table_name (the data.db table it became; NULL when the output was not a CSV that "
+        "became a table), sources_json, params_json. "
+        "SELECT DISTINCT plugin, params_json FROM postprocessing_steps WHERE "
+        "table_name='poses'. Use DISTINCT: a step is recorded once per run. A table with "
+        "no row here was produced by a step that recorded no provenance."),
+    ("campaign", "job"): (
+        "One row per execution job, holding that job's host record. Several runs can share "
+        "one job, so this answers 'did these runs run on the same machine?'. "
+        "sysinfo_json: json_extract(sysinfo_json,'$.cpu_name'), '$.available_cpus', "
+        "'$.platform'. job_dir is campaign-relative. Join campaign.run on job_id — or use "
+        "run_view, which already has. NULL sysinfo_json means the job recorded none."),
+    ("main", "scenario_timestamps"): (
+        "One row per run: when its scenario reached a terminal state, from the first "
+        "scenario-end rosout entry. timestamp is rosbag time in seconds; status and "
+        "message are that entry's verdict. This is the SCENARIO's verdict, which can "
+        "disagree with the run's test.xml verdict in run_view.status — comparing the two "
+        "finds a scenario that reported success while the harness failed, or the reverse. "
+        "Join on (config_name, run_id)."),
     ("main", "runs"): (
         "Per-run dimension table: status/passed/duration_s/errors/failures, the "
         "scalar objective, and each scenario parameter as a param_* column "
         "(non-scalar params are JSON-encoded — use json_extract/json_each). Join to "
-        "any metric table on (config_name, run_id)."),
+        "any metric table on (config_name, run_id). Exists only after postprocessing; "
+        "run_view answers the same per-run questions before it."),
     ("campaign", "campaign"): (
-        "One row for the campaign. config_json holds the entire .vast (use "
-        "json_extract, e.g. json_extract(config_json,'$.evaluation')); stop_kind/"
-        "stop_reason/batches/elapsed_s explain why/when a search terminated. "
-        "strategy_state is an opaque BLOB (masked in query results)."),
+        "One row for the campaign. Execution provenance, and what to compare across "
+        "campaigns: robovast_version, execution_type (local|cluster), image, "
+        "image_revision (the repo@sha256 the runs used), execution_started_at, elapsed_s. "
+        "execution_json holds the rest of the execution record "
+        "(json_extract(execution_json,'$.cluster_info'), '$.env'). These are NULL until "
+        "the campaign has executed. Attach another campaign with extra_campaign_ids to ask "
+        "whether two runs used the same image. "
+        "stop_kind/stop_reason/batches explain why a search terminated. strategy_state is "
+        "an opaque BLOB (masked in results). "
+        "config_json is the whole .vast: json_extract(config_json,'$.execution.image') for "
+        "a known path, but do NOT 'SELECT config_json' — it exceeds the per-cell limit and "
+        "returns truncated. Use config_view to explore it."),
     ("campaign", "batch"): (
         "One row per search batch/iteration; idx is the iteration index — the "
         "search history over time."),
@@ -255,17 +399,14 @@ _TABLE_DESCRIPTIONS = {
         "objectives) and measures_json (quality-diversity measures) live ONLY here "
         "— runs.objective lifts just the single scalar objective. params_json holds "
         "the config's scenario parameters; n_samples/status are roll-ups of its "
-        "'run' rows (join campaign.run on unit_id for the per-run breakdown)."),
+        "'run' rows. For per-run detail use run_view, which joins this to run."),
     ("campaign", "run"): (
-        "One row per individual run (repetition), child of unit via unit_id — the "
-        "operational source of truth for run outcomes, written live during execution "
-        "from each run's test.xml. status is passed/failed/error/unknown (unknown = "
-        "test.xml missing or unparseable), passed is 0/1, with errors/failures/tests/"
-        "duration_s/start_time/failure_message. run_id is the numeric run index within "
-        "the config. Prefer this over walking test.xml: pass/fail counts are one "
-        "GROUP BY status here, available even before postprocessing builds data.db. "
-        "The main.runs table is the postprocessed wide VIEW over these rows (joining "
-        "sysinfo + exploding params)."),
+        "One row per individual run, child of unit via unit_id and of a job via job_id. "
+        "status is passed/failed/error/unknown (unknown = test.xml missing or "
+        "unparseable), passed is 0/1, with errors/failures/tests/duration_s/start_time/"
+        "failure_message. Available before postprocessing. "
+        "run_id is the index WITHIN its config and is not unique on its own; config_name "
+        "is on campaign.unit. Prefer run_view, which joins unit and job for you."),
     ("main", "costmaps"): (
         "nav2 OccupancyGrid frames (costmaps / the static map) recorded over the run, "
         "one row per message, written by the rosbags_costmap_to_csv postprocessing step. "
@@ -281,20 +422,28 @@ _TABLE_DESCRIPTIONS = {
 }
 
 _DESCRIBE_NOTE = (
+    "Start with the views, queried unqualified: run_view for per-run and "
+    "per-configuration questions (works before postprocessing), config_view to explore "
+    "the campaign's .vast. Filter run_view by config_name — run_id restarts at 0 in every "
+    "configuration, so run_id alone silently matches runs in other configs. "
+    "Ready-made queries: one run -> SELECT * FROM run_view WHERE config_name=? AND "
+    "run_id=?; a config's parameters -> SELECT DISTINCT params_json FROM run_view WHERE "
+    "config_name=?; a run's host -> SELECT sysinfo_json FROM run_view WHERE ...; configs "
+    "that produced runs -> SELECT DISTINCT config_name FROM run_view (for ALL configs, "
+    "including any that never ran, list the campaign's directories instead); how a metric "
+    "was produced -> main.postprocessing_steps; what the campaign ran on -> "
+    "campaign.campaign. "
     "Join the 'runs' table (param_* columns + status/duration) to any metric table "
-    "on (config_name, run_id). campaign.db is attached as schema 'campaign' (see "
-    "the campaign/batch/unit/run table descriptions). For raw per-run pass/fail, "
-    "campaign.run is the source of truth (main.runs is its postprocessed view). "
+    "on (config_name, run_id). campaign.db is attached as schema 'campaign'. "
     "Each column is listed as 'name TYPE': numeric CSV columns are stored as "
     "INTEGER/REAL, so compare and ORDER BY them directly. A TEXT column holds text — "
     "ordering it is lexicographic ('10.022' < '9.5'), so CAST(col AS REAL) first, and "
     "note that a data.db built before typed ingest has TEXT everywhere (rerun "
     "postprocessing to retype it). A table's 'column_notes' flags a column whose type "
     "does not tell the whole story — read it before aggregating that column. "
-    "Extra aggregate functions are "
-    "available beyond SQLite's built-ins: STDDEV, VARIANCE, MEDIAN, and "
-    "PERCENTILE(col, p) where p is 0..100. A REGEXP(pattern, col) function is also "
-    "registered."
+    "Extra aggregate functions are available beyond SQLite's built-ins: STDDEV, VARIANCE, "
+    "MEDIAN, and PERCENTILE(col, p) where p is 0..100. A REGEXP(pattern, col) function is "
+    "also registered."
 )
 
 
@@ -321,6 +470,44 @@ def _column_notes(conn: sqlite3.Connection, schema: str) -> dict:
     return notes
 
 
+def _list_campaign_views(conn: sqlite3.Connection) -> list[dict]:
+    """The flat views (:func:`_create_campaign_views`), listed **first**.
+
+    They come first deliberately: they are where a caller should start, and a schema dump
+    is read top-down. Reported with schema ``temp`` because that is where they live and
+    what makes ``temp.run_view`` a valid name — they are also reachable unqualified as
+    ``run_view``, which the descriptions say.
+    """
+    views = []
+    try:
+        rows = conn.execute(
+            "SELECT name FROM temp.sqlite_master WHERE type='view' ORDER BY name").fetchall()
+    except sqlite3.Error:
+        return views
+    # Listing order: run_view before config_view, extra-campaign aliases after both.
+    def _order(name: str) -> tuple:
+        for i, base in enumerate(_CAMPAIGN_VIEW_NAMES):
+            if name == base:
+                return (0, i, name)
+            if name.endswith(f"_{base}"):
+                return (1, i, name)
+        return (2, 0, name)
+
+    for r in sorted((r["name"] for r in rows), key=_order):
+        cols = [f'{c["name"]} {c["type"]}'.strip()
+                for c in conn.execute(f'PRAGMA table_info("{r}")').fetchall()]
+        try:
+            n = conn.execute(f'SELECT COUNT(*) FROM temp."{r}"').fetchone()[0]
+        except sqlite3.Error:
+            n = None
+        entry = {"schema": "temp", "table": r, "columns": cols, "rows": n}
+        desc = _TABLE_DESCRIPTIONS.get(("temp", r))
+        if desc:
+            entry["description"] = desc
+        views.append(entry)
+    return views
+
+
 def _list_tables(conn: sqlite3.Connection) -> list[dict]:
     """Return ``[{schema, table, columns, rows, description}]`` across attached DBs.
 
@@ -328,9 +515,9 @@ def _list_tables(conn: sqlite3.Connection) -> list[dict]:
     declared without a type). A table with recorded caveats also carries
     ``column_notes`` (see :func:`_column_notes`).
     """
-    tables = []
-    # Every attached schema except the transient `temp` one; keep `main`/`campaign`
-    # first for readability, then any extra-campaign aliases in attach order.
+    tables = _list_campaign_views(conn)
+    # Every attached schema except `temp`, whose views are listed above; keep
+    # `main`/`campaign` first for readability, then extra-campaign aliases in attach order.
     names = [r["name"] for r in conn.execute("PRAGMA database_list").fetchall()
              if r["name"] != "temp"]
     ordered = [s for s in ("main", "campaign") if s in names]

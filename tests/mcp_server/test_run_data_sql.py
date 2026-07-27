@@ -6,7 +6,7 @@ import sqlite3
 
 import pytest
 
-from robovast.mcp_server.plugins import run_data
+from robovast.mcp_server.plugins import results as run_data
 from robovast.results_processing.postprocessing_plugins import _build_runs_table
 
 

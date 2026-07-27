@@ -4,7 +4,8 @@
 overall progress (never a batch-scoped ratio presented as completion)."""
 
 from robovast.execution.control_server import Status
-from robovast.mcp_server.plugins import campaign_control as cc
+from robovast.mcp_server import service_access
+from robovast.mcp_server.plugins import execution as cc
 
 
 def _status(**kw):

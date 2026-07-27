@@ -258,6 +258,58 @@ campaign's own ``_config/<name>.vast`` in place** — no override files, no revi
 background** and shows up in the campaign view as a live ``postprocessing`` phase (see
 :ref:`results-retrigger`).
 
+.. _database-or-address-space:
+
+What goes in the database, and what stays a file
+------------------------------------------------
+
+A campaign writes a lot of artifacts, and each is reachable in exactly one of two ways:
+as rows in a database, or as a file through the :ref:`one address space
+<file-address-space>`. The rule deciding which:
+
+   An artifact belongs **in the database** when it is a *per-entity record you filter,
+   aggregate, or join across runs* — and stays **a file** when it is a *whole document
+   read once*.
+
+"One row" is not the test; *aggregatable* is. A campaign's ``_execution/execution.yaml``
+is a single document, but its contents (which robovast, which image) are exactly what one
+compares *across* campaigns — and the SQL interface can attach several campaigns at once —
+so it is lifted onto the ``campaign`` row. Applied to what a campaign writes:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 34 66
+
+   * - Artifact
+     - Home
+   * - each run's ``test.xml``
+     - DB — ``campaign.run`` (per-run record, counted constantly)
+   * - each job's ``sysinfo.yaml``
+     - DB — ``campaign.job``; "did the slow runs share a host?" is a join
+   * - per-run metric CSVs
+     - DB — one ``data.db`` table per CSV stem, after postprocessing
+   * - ``_execution/execution.yaml``
+     - DB — provenance columns on ``campaign.campaign`` (+ ``execution_json``)
+   * - ``_transient/postprocessing.yaml``
+     - DB — ``data.db``'s ``postprocessing_steps``; the file stays, as the PROV-O input
+   * - the ``.vast``
+     - Both — ``campaign.config_json`` for effective values, the file for authored intent
+   * - ``_execution/outcome.json``
+     - File — the campaign's terminal status, read by ``get_campaign_status``
+   * - ``_transient/configurations.yaml``
+     - File — already duplicated into ``campaign.unit``; a second copy would drift
+   * - ``rosout`` (from the rosbag)
+     - DB — structured messages with severity/node/stamp
+   * - ``system.log``, ``controller.log``
+     - File + the log tools — unstructured, and the live case is the point of reading them
+
+Two consequences worth stating. A **file** is never *also* a table: putting
+``configurations.yaml`` in the DB would create a second source of truth for the resolved
+configuration list. And a **document in a cell** is not a queryable artifact:
+``campaign.config_json`` holds the whole ``.vast``, which exceeds the per-cell limit and
+comes back truncated, so it is queried through ``json_extract`` or the ``config_view``
+rows — never ``SELECT config_json``.
+
 Querying results
 ----------------
 
@@ -274,6 +326,26 @@ pass/fail even before postprocessing builds ``data.db``. Joining ``runs`` to any
 metric table on ``(config_name, run_id)`` answers "how does *<param>* affect
 *<metric>*" in one query. The ``vast eval gui`` notebook path reads the same ``data.db`` directly and
 is unaffected.
+
+**Two flat views carry the joins, so a caller cannot omit one.** ``run_view`` (one row per
+run: config, status, duration, params, host record) and ``config_view`` (the ``.vast`` as
+one row per key) are created on the query connection as ``TEMP`` views, and are queried
+unqualified. They exist because a forgotten join does not raise — ``run_id`` is unique only
+*within* a configuration, so a query filtering on ``run_id`` alone silently returns rows
+from every configuration and averages across them. Making the join part of the schema
+removes that failure mode rather than documenting it.
+
+They are views on the *connection*, not objects in the file, because ``campaign.db`` is
+attached read-only (nothing may be written to it), because a store predating the ``job``
+table would otherwise carry a view over a table it does not have, and because a change to
+a view then never needs a schema migration. Where the underlying tables are missing,
+``run_view`` keeps its column set and reports NULL host columns — one query shape for every
+store version, with "not recorded" reading as NULL rather than as a broken query.
+
+``describe_campaign_data`` lists both views first and carries the canonical query for each
+question a caller is likely to ask — the per-run lookup, a configuration's parameters, how
+a metric was produced. That is deliberate: the replacement for a tool has to be discoverable
+from the tool output an assistant already reads, not only from this page.
 
 **Columns are typed from the data, not left as text.** A CSV yields only strings, so an
 untyped ingest makes every comparison lexicographic — ``ORDER BY timestamp`` puts

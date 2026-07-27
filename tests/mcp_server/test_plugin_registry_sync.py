@@ -44,6 +44,18 @@ _FORBIDDEN_NAMES = [
     "list_run_additional_output_files", "get_run_output_file",
     "read_project_file", "list_project_files", "write_project_file",
     "edit_project_file", "delete_project_file",
+    # The metadata.yaml views, collapsed onto read-only SQL. Each was a hand-rolled
+    # reader of a file only postprocessing writes, so all of them answered "run
+    # postprocessing first" for campaigns whose results were already in campaign.db.
+    # Their questions are now one WHERE clause on ``run_view`` (or, for the campaign's
+    # configurations, a directory listing — SQL knows only configs that produced runs).
+    # Listed here because a retired tool name left in a docstring or a doc page is one an
+    # LLM will try to call: the replacements are described by what they answer, never by
+    # the name of the tool that used to answer it.
+    "get_configuration_summary", "get_configuration_scenario_parameter",
+    "get_configuration_variations", "get_run_details", "get_run_sysinfo",
+    "list_campaign_configurations", "get_campaign_execution_details",
+    "get_campaign_postprocessing_details",
 ]
 
 
@@ -111,9 +123,11 @@ def test_registry_directive_covers_every_registered_plugin():
     has tools — so a newly added plugin cannot go undocumented."""
     details = load_registered_tool_details()
     documented = {p for p, tools in details.items() if tools}
-    # Every plugin with tools is present in the structure the directive renders.
-    assert "workspace" in documented, "workspace (authoring) must be documented"
-    assert "run_data" in documented
+    # Every lifecycle phase is present in the structure the directive renders, so a phase
+    # cannot go undocumented after the modules were re-cut along these lines.
+    for phase in ("files", "authoring", "execution", "results", "results_lifecycle",
+                  "reference"):
+        assert phase in documented, f"{phase} must be documented"
     # No plugin with tools is silently empty.
     assert all(details[p] for p in documented)
 
@@ -138,6 +152,17 @@ def test_no_phantom_tool_names_in_source_or_docs(phantom):
     assert not hits, f"phantom tool name {phantom!r} still referenced in: {hits}"
 
 
+# SQL identifiers the prompt legitimately backticks. They collide with the verb
+# heuristic below ("run_view" and "run_id" both start with the verb ``run``) without
+# being tools at all, so they are named here rather than weakening the heuristic — the
+# point of which is to catch a *tool* name that does not exist.
+_NON_TOOL_IDENTIFIERS = {
+    "run_view", "config_view", "run_id", "config_name", "run_data",
+    "config_json", "params_json", "objectives_json", "measures_json", "sysinfo_json",
+    "duration_s", "postprocessing_steps", "table_name",
+}
+
+
 def test_prompt_references_only_real_tools():
     """Every tool-shaped name backticked in the analyze prompt must resolve to a
     registered tool (catches the phantom `query_run_data_table` class of bug)."""
@@ -148,7 +173,8 @@ def test_prompt_references_only_real_tools():
              "display", "create", "write", "edit", "read", "delete", "update",
              "run", "start", "stop", "validate", "preview", "init")
     candidates = set(re.findall(r"`([a-z]+_[a-z0-9_]+)`", prompts._SYSTEM_PROMPT))
-    tool_like = {c for c in candidates if c.split("_", 1)[0] in verbs}
+    tool_like = {c for c in candidates
+                 if c.split("_", 1)[0] in verbs and c not in _NON_TOOL_IDENTIFIERS}
     unresolved = {c for c in tool_like if c not in registered}
     assert not unresolved, (
         f"analyze prompt references non-registered tools: {sorted(unresolved)}")

@@ -191,6 +191,15 @@ queryable live and the postprocessed ``data.db`` ``runs`` view is built from tho
 rows rather than by re-parsing every ``test.xml`` — see
 :ref:`the campaign store schema <campaign-store>`.
 
+.. note::
+
+   ``metadata.yaml`` is **not** how a caller reads a campaign's results. It is written
+   only by postprocessing, so nine MCP tools that parsed it answered "run postprocessing
+   first" for campaigns whose outcomes were already recorded in ``campaign.db``; they were
+   replaced by read-only SQL over ``run_view`` (see :ref:`mcp-analysis`). The file remains
+   as the campaign's self-contained metadata document — what the FAIR/PROV-O export and
+   the publication zip read.
+
 .. _job-directory:
 
 Job Directory

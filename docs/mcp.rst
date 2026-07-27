@@ -75,60 +75,108 @@ A ``.vast`` file defines a **project**; a **campaign** is one execution of it; a
 Tool Taxonomy
 -------------
 
-The MCP server organizes its tools along two dimensions: **operations**
-(verbs) and **resources**. Tool names follow the pattern
-``<verb>_<resource>[_<detail>]``.
-
-**Operations**
+Tools are grouped by **lifecycle phase** — where in a campaign's life you reach for them —
+because that is the axis a caller actually navigates: you are authoring, or running, or
+reading results. Each phase is one plugin, so the generated table below is also the map.
 
 .. list-table::
    :header-rows: 1
-   :widths: 15 55
+   :widths: 22 78
 
-   * - Verb
-     - Meaning
-   * - ``get``
-     - Retrieve a specific structured metadata object
-   * - ``list``
-     - Enumerate objects within a resource
-   * - ``search``
-     - Filter and query resources by criteria
-   * - ``inspect``
-     - Compute derived analysis or statistics
-   * - ``validate``
-     - Check a project (``.vast``) without running it, reporting all problems
-   * - ``start``
-     - Launch a campaign (local or cluster)
-   * - ``stop``
-     - Terminate a running campaign
+   * - Phase
+     - What it covers
+   * - ``files``
+     - Reading and writing any file, in every phase. Not a phase but
+       :ref:`one address space <mcp-files>`.
+   * - ``authoring``
+     - Before anything runs: create a workspace, put a ``.vast`` in it, check it, and see
+       what configurations it expands to.
+   * - ``execution``
+     - Starting a campaign and watching it: status, logs, per-job view, capacity, stop.
+       Building the experiment image lives here too — a build is part of a campaign's
+       driven work, not a stage of its own.
+   * - ``results``
+     - Reading what a campaign did: :ref:`read-only SQL <mcp-analysis>` plus the campaign
+       listing and one aggregate.
+   * - ``results_lifecycle``
+     - Acting *on* finished results: re-deriving them (postprocessing), publishing them,
+       downloading, cleaning up, deleting.
+   * - ``reference`` / ``docs`` / ``examples`` / ``plugin_metadata``
+     - Reference material about RoboVAST itself: the config schema, the CLI, the
+       documentation, worked examples, and what plugins are installed.
 
-**Resources**
+The grouping used to be a mix: some modules by scope (one per campaign / configuration /
+run) and some by capability, with a 20-tool module holding everything else — so "which
+module owns this?" had no answer, and the biggest one owned build, postprocessing, share,
+cleanup, delete and download, none of which are execution control.
+
+Names still read ``<verb>_<resource>``: ``get`` retrieves one object, ``list`` enumerates,
+``search`` filters, ``describe``/``query`` are the SQL pair, and ``validate`` /
+``preview`` / ``start`` / ``stop`` / ``run`` do what they say.
+
+Two whole classes of question are deliberately *not* one tool per scope: files are
+:ref:`one address space <mcp-files>`, and reading what a campaign did is
+:ref:`read-only SQL <mcp-analysis>`.
+
+
+.. _mcp-analysis:
+
+Reading results: SQL, not a tool per scope
+------------------------------------------
+
+There is no tool that summarises one configuration, none that returns a single run's
+outcome, none that returns a run's host information. There were nine such tools, each a
+hand-written reader of the campaign's ``metadata.yaml`` with its own response schema. Two
+things were wrong with that. The file is written **only by postprocessing**, so every one
+of them answered "run postprocessing first" about campaigns whose outcomes were already
+recorded in ``campaign.db``. And the shape of the question was fixed by whoever wrote the
+tool: "the mean error per parameter value, for the runs that passed" was not expressible at
+all, while "the status of 200 runs" cost 200 calls.
+
+So the per-run and per-configuration views collapsed onto the same read-only SQL the
+metric tables already used:
+
+* ``describe_campaign_data`` — the schema, and **where the canonical query for each
+  question is written down**. Read its ``note`` first.
+* ``query_campaign_data_sql`` — one ``SELECT``, optionally spanning several campaigns.
+
+The entry points are two flat views, queried unqualified:
 
 .. list-table::
    :header-rows: 1
-   :widths: 20 50
+   :widths: 18 82
 
-   * - Resource
-     - Description
-   * - ``campaign``
-     - An experiment dataset containing configurations and runs.
-       Defines the shared input files (scenario, .vast config)
-       available to every configuration and run.
-   * - ``configuration``
-     - A specific parameterized experiment setup.
-       May add configuration-specific files generated during variation.
-   * - ``run``
-     - An individual execution of a configuration.
-       Inherits all input files from its configuration and campaign.
-       Produces output files (test results, logs, rosbags).
-   * - ``run_data``
-     - Structured tabular run output exposed via
-       dedicated query/inspect tools.
-   * - ``artifact``
-     - Files generated or consumed during execution
+   * - View
+     - Answers
+   * - ``run_view``
+     - One row per run: ``config_name``, ``run_id``, ``status``, ``duration_s``, the
+       configuration's ``params_json`` and ``objective``, and the host record
+       (``sysinfo_json``). Available as soon as runs are recorded.
+   * - ``config_view``
+     - The campaign's ``.vast`` as one row per key (``fullkey``, ``value``) — for reading
+       the configuration without pulling one oversized cell.
 
-Files are the exception to the ``<verb>_<resource>`` pattern: they are not one resource
-per scope but :ref:`one address space <mcp-files>`.
+They carry the joins on purpose. ``run_id`` is unique only *within* a configuration, so a
+query that filters on ``run_id`` alone silently returns rows from every configuration and
+averages across them — it does not fail. Making the join part of the schema removes that
+failure mode instead of documenting it.
+
+What survives as a tool is the one aggregate asked constantly —
+``get_campaign_summary`` (pass/fail counts plus the campaign's provenance), itself
+implemented over the same SQL — and ``list_campaigns``, which spans campaigns rather than
+querying one.
+
+Two limits worth knowing, both stated in ``describe_campaign_data``'s output:
+
+* **To list a campaign's configurations, list its directories**
+  (``list_files("/results/<campaign>/")``). SQL knows only configurations that produced
+  runs, so on a stopped or partially-run campaign it omits exactly the ones worth
+  inspecting.
+* **Do not** ``SELECT config_json``. It is the whole ``.vast`` in one cell, exceeds the
+  per-cell limit, and returns truncated. Use ``config_view``, ``json_extract`` for a known
+  path, or ``read_file`` on ``/results/<campaign>/_config/*.vast`` for the file as
+  authored — that last one being the only way to see what the author *wrote* rather than
+  the validated config with defaults filled in.
 
 
 .. _mcp-files:
@@ -189,7 +237,7 @@ own tools rather than through the interface.
 Campaign control
 ----------------
 
-The ``campaign_control`` plugin lets an assistant drive campaigns. It is a
+The ``execution`` plugin lets an assistant drive campaigns. It is a
 **strict client of a running** ``robovast-service`` — a ``vast serve`` locally,
 or a tunnel / ``vast serve --attach`` to a remote VM or cluster. The service is
 the single execution authority and owns run-state tracking; there is **no local
@@ -259,7 +307,7 @@ Building experiment images
 When an experiment needs new code or system packages **baked into its container
 image** (a new ``sim_suite`` package, an apt dependency), the assistant declares a
 :ref:`build section <config-build-section>` in the ``.vast`` and sets
-``execution.image: build:<tag>``. The ``campaign_control`` plugin then exposes:
+``execution.image: build:<tag>``. The ``execution`` plugin then exposes:
 
 * ``build_experiment_image`` — build (or reuse) the image from the project's
   ``build:`` section. Returns ``{build_id, tag, cached}``.

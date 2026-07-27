@@ -41,6 +41,7 @@ Configuration format:
 """
 import csv
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -50,11 +51,15 @@ from importlib.resources import files
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+import yaml
+
 from robovast.common.execution import COMPAT_VERSION, is_campaign_dir
 from robovast.results_processing.csv_types import (INTEGER, REAL, TEXT, UNKNOWN,
                                                   cast_expr, column_def,
                                                   infer_column_types, sql_value, widen,
                                                   widest)
+
+logger = logging.getLogger(__name__)
 
 
 def _retype_table(conn, table: str, final_types: dict) -> list[str]:
@@ -507,8 +512,8 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
     """
     from datetime import datetime, timedelta  # pylint: disable=import-outside-toplevel
 
-    from robovast.common.campaign_data import (  # pylint: disable=import-outside-toplevel
-        read_run_outcome, read_sysinfo)
+    from robovast.common.campaign_data import \
+        read_run_outcome  # pylint: disable=import-outside-toplevel
 
     def _end_time(start_iso, duration_sec):
         """ISO end time = start + duration, or None when either is unavailable."""
@@ -520,12 +525,25 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
         except (ValueError, TypeError):
             return None
 
-    def _sysinfo(run_dir):
-        """Host info for a run (instance_type/cpu_name/cpus/mem), tolerant of absence."""
-        try:
-            si = read_sysinfo(run_dir) or {}
-        except (FileNotFoundError, OSError, ValueError, TypeError):
-            return None, None, None, None
+    def _sysinfo_fields(outcome):
+        """Host info for a run (instance_type/cpu_name/cpus/mem) from its outcome dict.
+
+        Prefers ``campaign.db``'s ``job.sysinfo_json`` (``sysinfo_json``) over re-walking
+        each run's ``sysinfo.yaml``: the store already resolved that file once at
+        execution time, across its three historical locations, so this cannot disagree
+        with ``campaign.job`` the way a second independent read could. Also accepts the
+        ``sysinfo`` dict that :func:`read_run_outcome` attaches on the fallback path,
+        where a store too old to have a ``job`` table forces a read from disk.
+        """
+        si = outcome.get("sysinfo")
+        if si is None:
+            raw = outcome.get("sysinfo_json")
+            if not raw:
+                return None, None, None, None
+            try:
+                si = json.loads(raw) or {}
+            except (TypeError, ValueError):
+                return None, None, None, None
         return (si.get("instance_type"), si.get("cpu_name"),
                 si.get("available_cpus"), si.get("available_mem_gb"))
 
@@ -552,15 +570,20 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
         except sqlite3.Error:
             pass
         try:
-            for cn, rid, status, passed, errors, failures, duration, start in cc.execute(
-                    "SELECT u.config_name, r.run_id, r.status, r.passed, r.errors, "
-                    "r.failures, r.duration_s, r.start_time "
-                    "FROM run r JOIN unit u ON r.unit_id = u.id"):
+            # LEFT JOIN job: the host record is per *job*, shared by the runs of a packed
+            # multi-config job, and absent for a store written before the job table.
+            for cn, rid, status, passed, errors, failures, duration, start, sysinfo in \
+                    cc.execute(
+                        "SELECT u.config_name, r.run_id, r.status, r.passed, r.errors, "
+                        "r.failures, r.duration_s, r.start_time, j.sysinfo_json "
+                        "FROM run r JOIN unit u ON r.unit_id = u.id "
+                        "LEFT JOIN job j ON r.job_id = j.id"):
                 outcomes.setdefault(cn, {})[rid] = {
                     "status": status, "passed": passed, "errors": errors,
-                    "failures": failures, "duration_s": duration, "start_time": start}
+                    "failures": failures, "duration_s": duration, "start_time": start,
+                    "sysinfo_json": sysinfo}
         except sqlite3.Error:
-            pass  # v1 store: no ``run`` table — fall back to test.xml below
+            pass  # v1 store: no ``run``/``job`` table — fall back to test.xml below
         cc.close()
 
     base_cols = ["config_name", "run_id", "status", "passed",
@@ -606,8 +629,10 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
                 (d for d in config_dir.iterdir() if d.is_dir() and d.name.isdigit()),
                 key=lambda d: int(d.name)):
             run_id = int(run_dir.name)
-            # Stored outcome from campaign.db.run; else parse the run's test.xml.
-            o = outcomes.get(config_name, {}).get(run_id) or read_run_outcome(run_dir)
+            # Stored outcome from campaign.db.run; else parse the run's test.xml (passing
+            # the campaign root so that fallback still resolves the run's sysinfo.yaml).
+            o = (outcomes.get(config_name, {}).get(run_id)
+                 or read_run_outcome(run_dir, campaign_path))
             status = o["status"]
             passed = o["passed"]
             errors = o["errors"]
@@ -615,7 +640,7 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
             duration = o["duration_s"]
             start_time = o["start_time"]
             end_time = _end_time(start_time, duration)
-            instance_type, cpu_name, avail_cpus, avail_mem = _sysinfo(run_dir)
+            instance_type, cpu_name, avail_cpus, avail_mem = _sysinfo_fields(o)
             base_vals = [config_name, run_id, status, passed, duration,
                          errors, failures, objective,
                          start_time, end_time,
@@ -623,6 +648,62 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
             param_vals = [params.get(k) for k in param_keys]
             conn.execute(insert_sql, [sql_value(v, types[c])
                                       for c, v in zip(all_cols, base_vals + param_vals)])
+
+
+def _build_postprocessing_steps_table(conn, campaign_path, name_map: dict) -> None:
+    """Create ``postprocessing_steps``: how each table in this ``data.db`` was produced.
+
+    ``data.db`` holds one table per CSV stem but says nothing about their derivation,
+    while ``_transient/postprocessing.yaml`` records exactly that (``plugin`` / ``output``
+    / ``sources`` / ``params`` per step) in a form no query can reach. This projects those
+    entries into SQL so the provenance edge is joinable to the data:
+
+        SELECT plugin, params_json FROM postprocessing_steps WHERE table_name = 'poses'
+
+    ``table_name`` is resolved here rather than left to the caller, because this is where
+    both halves are known — the entry's output path and *name_map*, the display-name to
+    SQL-name mapping. A caller would have to re-derive a stem-to-table match and guess the
+    sanitisation. It is NULL for a step whose output is not a CSV that became a table
+    (a plot, a video, a merged artifact), which is a fact about the step, not a failure.
+
+    The YAML remains the source of truth and is not replaced: it is what the FAIR/PROV-O
+    export reads.
+    """
+    conn.execute(
+        "CREATE TABLE postprocessing_steps ("
+        "step_idx INTEGER, "
+        "plugin TEXT, "
+        "output TEXT, "
+        "table_name TEXT, "
+        "sources_json TEXT, "
+        "params_json TEXT"
+        ")"
+    )
+    path = campaign_path / "_transient" / "postprocessing.yaml"
+    if not path.is_file():
+        # No postprocessing ran, or it produced nothing — an empty table is the honest
+        # answer, and still tells a caller the provenance question has a home.
+        return
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        entries = data.get("entries") or []
+    except (OSError, yaml.YAMLError) as e:
+        logger.warning("Could not read %s for postprocessing provenance: %s", path, e)
+        return
+    for idx, ent in enumerate(entries):
+        if not isinstance(ent, dict):
+            continue
+        output = ent.get("output") or ""
+        conn.execute(
+            "INSERT INTO postprocessing_steps "
+            "(step_idx, plugin, output, table_name, sources_json, params_json) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (idx, ent.get("plugin") or None, output or None,
+             name_map.get(Path(output).stem) if output else None,
+             json.dumps(ent.get("sources") or [], default=str),
+             json.dumps(ent.get("params") or {}, default=str)),
+        )
+    conn.commit()
 
 
 def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str]:
@@ -903,6 +984,10 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
         # Dimension table joining per-run status/duration to scenario parameters,
         # so "how does <param> affect <metric>" is a single SQL join.
         _build_runs_table(conn, campaign_path, config_dirs)
+
+        # How each of the tables above was produced — the provenance edge from a metric
+        # back to the plugin and parameters that derived it.
+        _build_postprocessing_steps_table(conn, campaign_path, name_map)
 
         # Final commit and persist name map
         conn.commit()

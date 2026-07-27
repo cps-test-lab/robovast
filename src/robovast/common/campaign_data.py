@@ -20,6 +20,7 @@ These functions provide a common interface for reading campaign data,
 used by both MCP plugins and the FAIR metadata generator.
 """
 
+import os
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
@@ -166,7 +167,54 @@ def read_test_result(run_dir: Path) -> dict[str, Any]:
     }
 
 
-def read_run_outcome(run_dir: Path) -> dict[str, Any]:
+def read_run_job(run_dir: Path, campaign_root: Path) -> tuple[str, dict[str, Any] | None]:
+    """The execution job a run belonged to: ``(job_dir, sysinfo)``.
+
+    ``job_dir`` is the job's directory relative to *campaign_root* (e.g.
+    ``_jobs/batch-0/job-3``), resolved through the run dir's ``job`` symlink. It is the
+    identity of the *host record*, not of the run: a packed multi-config job executes
+    several (config, run) pairs, and every one of them resolves to the same job dir. That
+    sharing is the point — it is what makes "did these runs land on one machine?"
+    answerable — so the job is recorded once and runs point at it.
+
+    Without a ``job`` symlink — an older layout that wrote ``sysinfo.yaml`` into the run
+    dir or its ``logs/``, or a run whose job dir was pruned — the run *is* its own unit of
+    host information, so ``job_dir`` is the run's own directory. That keeps the host record
+    reachable (dropping it would lose data :func:`read_sysinfo` can still find) while
+    saying something true: one host record, no shared job known.
+
+    ``(job_dir, None)`` when no ``sysinfo.yaml`` exists in any of the accepted locations,
+    which is not an error — *which* job a run belonged to is worth recording regardless.
+    """
+    campaign_root = Path(campaign_root).resolve()
+
+    def _relative(path: Path) -> str:
+        """*path* relative to the campaign root, or "" if it escapes it."""
+        try:
+            rel = os.path.relpath(path, campaign_root)
+        except (OSError, ValueError):
+            return ""
+        # Outside the campaign: not this campaign's job, so do not record it.
+        return "" if rel.startswith("..") else rel
+
+    job_dir = ""
+    try:
+        job_path = (run_dir / "job").resolve()
+        if job_path.is_dir():
+            job_dir = _relative(job_path)
+    except (OSError, ValueError):
+        job_dir = ""
+    if not job_dir:
+        job_dir = _relative(run_dir.resolve())
+    try:
+        sysinfo = read_sysinfo(run_dir)
+    except (FileNotFoundError, OSError, ValueError, TypeError):
+        sysinfo = None
+    return job_dir, sysinfo
+
+
+def read_run_outcome(run_dir: Path,
+                     campaign_root: Path | None = None) -> dict[str, Any]:
     """Per-run outcome for the ``run`` table, derived from ``test.xml``.
 
     The single place the JUnit result is mapped to a normalized ``status`` —
@@ -177,9 +225,16 @@ def read_run_outcome(run_dir: Path) -> dict[str, Any]:
 
     Returns a dict keyed exactly like the ``run`` columns: ``run_id``, ``status``,
     ``passed`` (0/1), ``errors``, ``failures``, ``tests``, ``duration_s``,
-    ``start_time``, ``failure_message``.
+    ``start_time``, ``failure_message``. When *campaign_root* is given it also carries
+    ``job_dir`` / ``sysinfo`` from :func:`read_run_job`, which
+    :meth:`~robovast.common.store.CampaignStore.record_runs` turns into the ``job`` row
+    and the run's ``job_id``.
     """
     run_id = int(run_dir.name) if run_dir.name.isdigit() else -1
+    job: dict[str, Any] = {}
+    if campaign_root is not None:
+        job_dir, sysinfo = read_run_job(run_dir, campaign_root)
+        job = {"job_dir": job_dir, "sysinfo": sysinfo}
     try:
         tr = read_test_result(run_dir)
     except (OSError, ET.ParseError, ValueError):
@@ -189,7 +244,8 @@ def read_run_outcome(run_dir: Path) -> dict[str, Any]:
         # (``FileNotFoundError``); ``ET.ParseError``/``ValueError`` the malformed one.
         return {"run_id": run_id, "status": "unknown", "passed": 0,
                 "errors": 0, "failures": 0, "tests": 0,
-                "duration_s": None, "start_time": None, "failure_message": None}
+                "duration_s": None, "start_time": None, "failure_message": None,
+                **job}
     passed = 1 if tr.get("success") else 0
     errors = int(tr.get("errors", 0))
     failures = int(tr.get("failures", 0))
@@ -199,12 +255,14 @@ def read_run_outcome(run_dir: Path) -> dict[str, Any]:
         "errors": errors, "failures": failures, "tests": int(tr.get("tests", 0)),
         "duration_s": tr.get("duration_sec"), "start_time": tr.get("start_time"),
         "failure_message": tr.get("failure_message"),
+        **job,
     }
 
 
-def read_run_outcomes(config_dir: Path) -> list[dict[str, Any]]:
+def read_run_outcomes(config_dir: Path,
+                      campaign_root: Path | None = None) -> list[dict[str, Any]]:
     """:func:`read_run_outcome` for every numeric run dir under *config_dir*."""
-    return [read_run_outcome(rd) for rd in list_run_dirs(config_dir)]
+    return [read_run_outcome(rd, campaign_root) for rd in list_run_dirs(config_dir)]
 
 
 def read_sysinfo(run_dir: Path) -> dict[str, Any]:

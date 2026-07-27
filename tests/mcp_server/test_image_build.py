@@ -9,7 +9,8 @@ orchestration is covered without a service, docker, or a cluster.
 
 from types import SimpleNamespace
 
-from robovast.mcp_server.plugins import campaign_control as cc
+from robovast.mcp_server import service_access
+from robovast.mcp_server.plugins import execution as cc
 
 
 def test_build_tools_registered():
@@ -20,7 +21,7 @@ def test_build_tools_registered():
 
 
 def test_build_experiment_image_no_service(monkeypatch):
-    monkeypatch.setattr(cc, "_service_client", lambda: None)
+    monkeypatch.setattr(service_access, "service_client", lambda: None)
     out = cc.build_experiment_image(workspace_id="ws1")
     assert "error" in out
     assert "no robovast-service" in out["error"]
@@ -34,7 +35,7 @@ def test_build_experiment_image_delegates(monkeypatch):
             captured["request"] = request
             return SimpleNamespace(build_id="imgbuild-foo-abc", tag="foo", cached=True)
 
-    monkeypatch.setattr(cc, "_service_client", lambda: _Client())
+    monkeypatch.setattr(service_access, "service_client", lambda: _Client())
     out = cc.build_experiment_image(workspace_id="ws1", config_path="a.vast")
     assert out == {"build_id": "imgbuild-foo-abc", "tag": "foo", "cached": True}
     assert captured["request"].workspace_id == "ws1"
@@ -52,7 +53,7 @@ def test_get_image_build_status_surfaces_structured_error(monkeypatch):
         def get_image_build_status(self, build_id):
             return status
 
-    monkeypatch.setattr(cc, "_service_client", lambda: _Client())
+    monkeypatch.setattr(service_access, "service_client", lambda: _Client())
     out = cc.get_image_build_status("b1")
     assert out["phase"] == "failed"
     assert out["image_ref"] == "build:foo"
@@ -65,7 +66,7 @@ def test_get_image_build_log_streams(monkeypatch):
         def get_image_build_log(self, build_id, offset):
             return SimpleNamespace(text="building...\n", next_offset=12, eof=True)
 
-    monkeypatch.setattr(cc, "_service_client", lambda: _Client())
+    monkeypatch.setattr(service_access, "service_client", lambda: _Client())
     out = cc.get_image_build_log("b1")
     assert out["text"] == "building...\n"
     assert out["eof"] is True

@@ -537,13 +537,14 @@ def _read_text(path: Path) -> str:
         return ""
 
 
-def project_build_spec(project) -> "Optional[BuildSpec]":
-    """Load + validate a project's config and return its :class:`BuildSpec`.
+def project_build_spec(target) -> "Optional[BuildSpec]":
+    """Load + validate a config and return its :class:`BuildSpec`.
 
-    ``project`` is a ``ProjectConfig``-like object with ``config_path``.
-    Returns ``None`` when the project has no ``build:`` section.
+    ``target`` is anything carrying a ``config_path`` — a
+    :class:`~robovast.service.local_transport.WorkspaceTarget` from the service, or the
+    CLI's ``ProjectConfig``. Returns ``None`` when there is no ``build:`` section.
     """
     from robovast.common.common import load_config
     from robovast.common.config import validate_config
-    campaign_config = validate_config(load_config(project.config_path))
+    campaign_config = validate_config(load_config(target.config_path))
     return extract_build_spec(campaign_config)

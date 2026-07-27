@@ -38,29 +38,37 @@ Campaigns are organised in a three-level hierarchy:
 
 ## How to analyze results (the main workflow)
 
-A campaign's per-run metrics are consolidated into a small SQL database. Read-only
-SQL is the primary way to answer quantitative questions:
+Read-only SQL answers nearly every question about what a campaign did, including
+per-run and per-configuration detail:
 
-1. `describe_campaign_data(campaign_id)` – the schema: metric tables (one per
-   recorded CSV), and a **`runs`** dimension table holding, for every run, its
-   status/duration/objective plus each scenario parameter as a `param_*` column.
-   The campaign's store is attached as schema `campaign` (tables `campaign`,
-   `batch`, `unit`, `run`) — that is where the full `.vast` (`campaign.config_json`),
-   multi-objective/quality-diversity results (`unit.objectives_json` /
-   `measures_json`), and search history/stop reason live. `campaign.run` is the
-   per-run source of truth for outcomes (status/passed/errors/failures/duration),
-   written live from each `test.xml`; the `runs` dimension table is its
-   postprocessed view. For raw pass/fail counts, `SELECT status, COUNT(*) FROM
-   campaign.run GROUP BY status` works even before postprocessing builds `data.db`.
-2. `query_campaign_data_sql(campaign_id, sql)` – run one read-only `SELECT`. Join
-   `runs` to any metric table on `(config_name, run_id)`. Besides the built-ins,
-   `STDDEV`, `VARIANCE`, `MEDIAN`, `PERCENTILE(col, p)` and `REGEXP(pat, col)` are
-   available; use `json_extract` / `json_each` for JSON-encoded (non-scalar) params.
+1. `describe_campaign_data(campaign_id)` – the schema. Read its `note` first: it
+   carries ready-made queries. Two flat views are the entry points, queried
+   unqualified:
+   - **`run_view`** – one row per run: `config_name`, `run_id`, `status`,
+     `duration_s`, the config's `params_json` and `objective`, and the host record
+     (`sysinfo_json`). Always filter by `config_name` — `run_id` restarts at 0 in
+     every configuration, so `run_id` alone also matches runs in other configs.
+   - **`config_view`** – the campaign's `.vast` as rows (`fullkey`, `value`), for
+     exploring the configuration without pulling one huge cell.
+   Metric tables (one per recorded CSV) and the wide `runs` dimension table appear
+   after postprocessing; `main.postprocessing_steps` says which plugin produced
+   each of them. `campaign.campaign` holds the campaign's provenance (which
+   robovast, which image) and `unit.objectives_json` / `measures_json` the
+   multi-objective and quality-diversity results.
+2. `query_campaign_data_sql(campaign_id, sql)` – one read-only `SELECT`. Join
+   `runs` (or `run_view`) to any metric table on `(config_name, run_id)`. Besides
+   the built-ins, `STDDEV`, `VARIANCE`, `MEDIAN`, `PERCENTILE(col, p)` and
+   `REGEXP(pat, col)` are available; use `json_extract` / `json_each` for
+   JSON-encoded (non-scalar) params. Pass `extra_campaign_ids` to compare
+   campaigns in one query.
 3. `list_campaign_plots(campaign_id)` – the plots the campaign author declared,
    each a runnable `query` plus a Vega-Lite spec. A good first look at what matters.
 
-For non-tabular detail, the campaign/configuration/run `list_*` and `get_*` tools
-expose the scenario, input files, logs, and other run outputs.
+`get_campaign_summary(campaign_id)` is a shortcut for the single most common
+aggregate (pass/fail counts + provenance); everything more specific is a query.
+
+Files — the scenario, input files, logs, rosbags, run outputs — are read through one
+address space with `list_files` / `read_file` on `/results/<campaign_id>/<path>`.
 
 ## Important Instructions
 
@@ -69,6 +77,12 @@ expose the scenario, input files, logs, and other run outputs.
   campaign — use `list_campaigns` to discover what is available.
 - Prefer `describe_campaign_data` + `query_campaign_data_sql` for any
   count/rate/aggregate question rather than reading files run-by-run.
+- SQL works **before** postprocessing: `run_view` answers per-run outcomes as soon
+  as runs are recorded. Only per-run *metrics* need postprocessing (`postprocessed`
+  in `list_campaigns` says whether it has run).
+- To list a campaign's configurations, list its **directories**
+  (`list_files("/results/<campaign_id>/")`). SQL sees only configurations that
+  produced runs, so on a stopped or partially-run campaign it omits some.
 - When a query returns 0 rows, check the returned note: it distinguishes a
   genuinely empty result from a likely filter/JOIN-key mismatch.
 

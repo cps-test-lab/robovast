@@ -1034,14 +1034,32 @@ batch per ask/tell round.
 Schema
 ^^^^^^
 
-``robovast.common.store.CampaignStore`` is a thin wrapper over four tables::
+``robovast.common.store.CampaignStore`` is a thin wrapper over five tables::
 
     campaign (1) --< batch (1) --< unit (one per param set / config) (1) --< run (one per repetition)
+    campaign (1) --< job  (one per execution job)  ...............<  run (via run.job_id)
 
 * **campaign** — ``mode`` (``batch``/``search``), ``config_dir`` (base directory
   against which ``evaluation.visualization`` notebooks resolve), ``config_json``
-  (the full config), and an opaque ``strategy_state`` blob for resumable
-  strategies.
+  (the full config), an opaque ``strategy_state`` blob for resumable
+  strategies, and the campaign's **execution provenance**:
+  ``robovast_version``, ``execution_type`` (``local``/``cluster``), ``image``,
+  ``image_revision`` (the ``repo@sha256`` the runs actually used),
+  ``execution_started_at``, ``elapsed_s``, plus ``execution_json`` holding the rest
+  of ``_execution/execution.yaml``. Those are the fields one compares *across*
+  campaigns, and the SQL interface can attach several campaigns at once — see
+  :ref:`database-or-address-space`. They are written by ``record_execution`` once
+  the backend has produced ``execution.yaml``, so they are NULL for a campaign that
+  died before execution began. Note ``execution.yaml``'s own ``execution_time`` is a
+  *start timestamp*, not a duration, hence the column name.
+* **job** — one row per **execution job**, holding that job's ``sysinfo.yaml``
+  verbatim in ``sysinfo_json``. It is a table rather than a column on ``run``
+  because sysinfo is written once per *job*: a packed multi-config job runs several
+  ``(config, run)`` pairs which reach the same file through each run dir's ``job``
+  symlink. A per-run copy would repeat the blob and destroy the fact that those runs
+  shared a machine — which is what makes "did the slow runs land together?"
+  answerable. ``job_dir`` is campaign-relative (``_jobs/batch-0/job-3``), or the
+  run's own directory for an older layout that wrote sysinfo beside the run.
 * **batch** — one ask/tell round (search), or the single batch (``idx=0``) of a
   batch-mode campaign.
 * **unit** — one evaluated parameter set (search) or one configuration (batch):
@@ -1052,8 +1070,24 @@ Schema
   ``test.xml``: ``status`` (``passed``/``failed``/``error``/``unknown``),
   ``passed`` (0/1), ``errors``/``failures``/``tests``, ``duration_s``,
   ``start_time`` and ``failure_message``. ``run_id`` is the numeric run index
-  within the config dir. A run whose ``test.xml`` is missing or unparseable is
-  still recorded, as ``unknown`` — never dropped.
+  within the config dir — so it is **not unique on its own**; ``config_name`` lives
+  on ``unit``. ``job_id`` points at the job it ran in. A run whose ``test.xml`` is
+  missing or unparseable is still recorded, as ``unknown`` — never dropped.
+
+.. rubric:: Two definitions of the schema, on purpose
+
+``_SCHEMA`` is the **full current layout**, applied in one step to a fresh database, so a
+reader can see what a table looks like without replaying history. ``_MIGRATIONS`` is the
+append-only ladder that upgrades an *existing* store; entry *i* takes ``user_version`` *i*
+to *i+1* and is never edited once shipped, because some database on disk has already
+applied it. Note migration 0→1 is a frozen copy of the v1 layout rather than ``_SCHEMA``
+— reusing ``_SCHEMA`` there would jump an old store to today's tables and the later
+``ALTER TABLE`` steps would then fail on columns that already exist.
+
+Adding a column therefore means touching both, in the same position.
+``test_fresh_and_migrated_schemas_match`` builds a store each way (from fresh, and from
+every older ``user_version``) and compares the resulting ``sqlite_master`` column by
+column, so the two cannot drift apart.
 
 .. rubric:: Why ``run`` exists — the data-model layering
 

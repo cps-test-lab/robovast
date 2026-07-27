@@ -68,13 +68,8 @@ def _client():
     obtained by passing an empty URL to ``RobovastClient``, where "no service" would be
     substituted for a reachable one without anyone deciding it.
     """
-    from robovast.common.cli.service_target import detected_service_url
-    url = detected_service_url()
-    if url:
-        from robovast.service.client import RobovastClient
-        return RobovastClient(url)
-    from robovast.service.local_transport import LocalTransport
-    return LocalTransport()
+    from robovast.mcp_server import service_access
+    return service_access.client_or_local()
 
 
 def list_files(address: str, recursive: bool = False, offset: int = 0,

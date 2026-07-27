@@ -19,7 +19,7 @@
 import os
 from pathlib import Path
 
-from robovast.common.cli.project_config import ProjectConfig
+from robovast.common.results_root import local_results_root
 from robovast.common.execution import is_campaign_dir
 
 # The campaign layout (which dirs are reserved vs. configurations) is defined once
@@ -27,21 +27,13 @@ from robovast.common.execution import is_campaign_dir
 
 
 def _campaigns_root() -> Path:
-    """Where local campaigns live, by the same precedence the service applies.
+    """Where local campaigns live — :func:`local_results_root`, shared with the service.
 
-    A CWD ``.robovast_project``'s ``results_dir`` first (so this reader and a
-    ``vast serve`` started in that project agree, and ``vast results`` / ``vast eval``
-    look in the same place), else the service-owned dir beside the workspaces store.
-
-    Pure path resolution — the directory need not exist. This is a **local** root: a
-    cluster campaign's home is the object store, so results there are reached through
-    the service, not here.
+    One implementation, so this reader and a ``vast serve`` cannot disagree about where a
+    campaign is. This is a **local** root: a cluster campaign's home is the object store,
+    so results there are reached through the service, not here.
     """
-    config = ProjectConfig.load()
-    if config is not None and config.results_dir:
-        return Path(config.results_dir)
-    from robovast.service.workspaces import default_workspaces_root
-    return default_workspaces_root().parent / "results"
+    return local_results_root()
 
 
 def resolve_results_dir() -> Path:

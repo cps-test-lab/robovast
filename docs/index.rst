@@ -60,6 +60,7 @@ The dataset serves as a comprehensive validation tool for navigation stacks such
    evaluation
    mcp
    architecture
+   http_api
    deployment
    web_ui
    developer_guide

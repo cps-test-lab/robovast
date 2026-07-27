@@ -47,6 +47,7 @@ from datetime import datetime
 from pathlib import Path
 
 from robovast.common.campaign_data import (aggregate_run_status, list_run_dirs,
+                                           read_execution_metadata,
                                            read_run_outcomes)
 from robovast.common.logging_config import (add_campaign_log_handler,
                                             remove_campaign_log_handler)
@@ -195,6 +196,7 @@ class CampaignController:
         self._start_progress_poller()
         self.notifier.start_heartbeat(status_fn=self._notify_status)
         self.notifier.started(self.mode)
+        run_started = time.monotonic()
         try:
             if self.strategy is None:
                 result = self._run_batch_mode(campaign_id)
@@ -223,9 +225,38 @@ class CampaignController:
             self.notifier.failed(f"{type(exc).__name__}: {exc}")
             raise
         finally:
+            self._record_execution_provenance(campaign_id, time.monotonic() - run_started)
             self._stop_progress_poller()
             self.notifier.stop_heartbeat()
             remove_campaign_log_handler(log_handler)
+
+    def _record_execution_provenance(self, campaign_id: int, elapsed_s: float) -> None:
+        """Lift ``_execution/execution.yaml`` onto the campaign row, and stamp elapsed.
+
+        In the ``finally`` of :meth:`run` deliberately, for two reasons. It is the one
+        place **both** modes converge — batch mode has no ``record_outcome``, so before
+        this its campaign row was never written again after creation, leaving
+        ``elapsed_s`` NULL and the provenance unqueryable for every batch campaign. And a
+        campaign that was stopped or crashed still ran on some image for some time; that
+        is more worth recording than less.
+
+        The file is produced by the backend during execution (on the local lane by a
+        generated shell script inside the run), so it cannot exist at campaign creation
+        and may legitimately be absent here — a campaign that died before execution
+        started. Best-effort throughout: this is bookkeeping and must never convert a
+        finished campaign into a failed one.
+        """
+        try:
+            self.store.record_elapsed(campaign_id, elapsed_s)
+        except Exception:  # pylint: disable=broad-except
+            logger.debug("Could not record elapsed time.", exc_info=True)
+        try:
+            self.store.record_execution(
+                campaign_id, read_execution_metadata(Path(self.campaign_root)))
+        except FileNotFoundError:
+            logger.debug("No execution.yaml yet; provenance not recorded.")
+        except Exception:  # pylint: disable=broad-except
+            logger.debug("Could not record execution provenance.", exc_info=True)
 
     # -- run-level progress poller ------------------------------------------
 
@@ -344,7 +375,7 @@ class CampaignController:
                 params=cfg.get("config", {}) or {}, objectives={}, measures={},
                 n_samples=len(run_dirs), status=aggregate_run_status(run_dirs),
                 result_dir=os.path.relpath(cdir, self.campaign_root))
-            outcomes = read_run_outcomes(Path(cdir))
+            outcomes = read_run_outcomes(Path(cdir), Path(self.campaign_root))
             self.store.record_runs(unit_id, outcomes)
             # The verdicts are parsed here anyway for the store; tallying them into the
             # live state is what makes a failing trial visible to a status poll. Without
@@ -494,7 +525,7 @@ class CampaignController:
                         params=ps.values, objectives=ev.objectives, measures=ev.measures,
                         n_samples=ev.n_samples, status="evaluated",
                         result_dir=os.path.relpath(config_dir, self.campaign_root))
-                    outcomes = read_run_outcomes(config_dir)
+                    outcomes = read_run_outcomes(config_dir, Path(self.campaign_root))
                     self.store.record_runs(unit_id, outcomes)
                     failed_runs += sum(1 for o in outcomes
                                        if o.get("status") != "passed")

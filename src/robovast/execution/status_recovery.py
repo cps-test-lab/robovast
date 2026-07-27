@@ -21,7 +21,7 @@ in-memory :class:`~robovast.execution.control_server.ControllerState`. Once no
 process is driving it (a past campaign, or one lost to a service restart), the
 status has to be reconstructed from what is on disk. This module is the *single*
 implementation of that reconstruction — it was previously duplicated (with
-subtly different results) in ``service/client.py`` and the ``campaign_control``
+subtly different results) in ``service/client.py`` and the ``execution``
 MCP plugin.
 
 Precedence, loud and fixed:

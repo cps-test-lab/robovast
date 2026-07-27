@@ -14,21 +14,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""MCP plugin for driving campaigns: validate, start, monitor, and stop.
+"""MCP plugin: running a campaign, and watching it run.
 
-Unlike the read-only result plugins, these tools launch and kill real compute.
-They are a **strict client of a running ``robovast-service``** (a ``vast serve``
-locally, or a tunnel / ``vast serve --attach`` to a remote VM or cluster): the
-service is the single execution authority and owns run-state tracking, so there
-is no separate ``vast exec`` subprocess path here. When no service is reachable
-the control tools fail loudly rather than silently running a divergent local
-lane. (Users who want a serviceless local run still have ``vast exec local run``.)
+A strict client of a running ``robovast-service`` — the single execution authority. There
+is no local subprocess path: when no service answers these tools fail loudly rather than
+silently running a divergent lane.
 
-.. warning::
-
-   The MCP server has no authentication. These tools are registered
-   unconditionally, so only expose the server on a trusted network (it binds
-   ``127.0.0.1`` by default for this reason).
+Building the experiment image lives here too. A build is part of a campaign's driven work
+(``start_campaign`` performs one when the ``.vast`` has a ``build:`` section), not a
+separate lifecycle stage, so its tools belong beside the run they serve.
 """
 
 import logging
@@ -36,36 +30,10 @@ import time
 
 from fastmcp import FastMCP
 
-from robovast.mcp_server import results_resolver
+from robovast.mcp_server import results_resolver, service_access
+from robovast.mcp_server.service_access import NO_SERVICE
 
 logger = logging.getLogger(__name__)
-
-#: Canonical failure when no ``robovast-service`` answers on the conventional local
-#: port. The control tools drive the service, so without one they cannot act.
-_NO_SERVICE = ("no robovast-service reachable — start a 'vast serve' (local) or "
-               "'vast serve --attach' (cluster), or open a tunnel to one, so the "
-               "MCP has an execution authority to drive")
-
-
-# -- Helpers -----------------------------------------------------------------
-
-
-def _service_client():
-    """Return a ``RobovastClient`` bound to a reachable robovast-service, or None.
-
-    A service answers on the conventional local port when a ``vast serve`` runs
-    locally, or a tunnel / ``vast serve --attach`` reaches a remote VM or cluster.
-    The control tools drive that service through the
-    :class:`~robovast.service.interface.RobovastInterface` contract; when nothing
-    answers they return :data:`_NO_SERVICE` (fail loudly — there is no local
-    subprocess fallback).
-    """
-    from robovast.common.cli.service_target import detected_service_url
-    url = detected_service_url()
-    if not url:
-        return None
-    from robovast.service.client import RobovastClient
-    return RobovastClient(url)
 
 
 def _progress_from_status(st) -> float | None:
@@ -141,92 +109,6 @@ def _status_to_dict(campaign_id: str, backend, st) -> dict:
     return result
 
 
-# -- Tool functions ----------------------------------------------------------
-
-
-def validate_project(config_path: str) -> dict:
-    """Validate a RoboVAST project (``.vast`` file), reporting ALL problems at once.
-
-    A ``.vast`` file defines a *project* (a campaign is one execution of it). This
-    checks the whole file — YAML, schema, the scenario file, scenario-parameter
-    references, and every plugin reference (variation types and their parameters,
-    the ``results_processing``/``search`` postprocessing commands, and the search
-    strategy/extractor), whether installed entry-point names or local
-    ``./path.py:Class`` file refs — and returns **every** problem it finds in one
-    pass, each tagged with the config block and field, so the file can be fixed in
-    as few iterations as possible. When valid, it also returns the config/run
-    counts (same math as ``vast config info``). Same collect-all core as the
-    ``vast configuration validate`` CLI command.
-
-    Reads the ``.vast`` straight off disk — no workspace, no service, and no
-    initialized project needed, so it works before anything else exists.
-
-    Args:
-        config_path: Path to the ``.vast`` file. Required: there is no server-side
-            "current project" to fall back to, and guessing one would validate a
-            different file than the caller named.
-
-    Returns:
-        ``{valid, configs, runs_per_config, total_trials, problems}`` where each
-        problem is ``{stage, config, field, message}``.
-    """
-    from robovast.common.config_validation import validate_project_file
-    try:
-        return validate_project_file(config_path)
-    except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
-        return {"valid": False, "configs": 0, "runs_per_config": 0,
-                "total_trials": 0,
-                "problems": [{"stage": "project", "config": None,
-                              "field": None, "message": str(e)}]}
-
-
-def preview_configurations(config_path: str, max_configs: int = 0) -> dict:
-    """Preview the resolved configurations a ``.vast`` would generate — WITHOUT running.
-
-    ``validate_project`` returns only the counts; this returns the actual resolved
-    per-configuration parameter sets, so you can eyeball what each variation cell
-    expands to before starting a campaign (the read-only, in-memory equivalent of
-    ``vast configuration generate`` / ``vast exec local prepare-run``, which stage
-    the same tree to disk). Nothing is executed and nothing is written.
-
-    Reads the ``.vast`` straight off disk — no workspace, service, or initialized
-    project needed.
-
-    Args:
-        config_path: Path to the ``.vast`` file. Required, for the same reason as
-            ``validate_project``: there is no server-side "current project".
-        max_configs: Cap the number of configurations returned (``0`` = all). The
-            ``configs`` count always reflects the true total; ``truncated`` marks
-            when the returned list was shortened.
-
-    Returns:
-        ``{configs, runs_per_config, total_trials, configurations, truncated}``
-        where each configuration is ``{name, parameters}`` and ``parameters`` is
-        the resolved parameter-name → value mapping for that cell. On failure,
-        ``{error}``.
-    """
-    from robovast.common.config_generation import generate_scenario_variations
-    try:
-        campaign_data, _ = generate_scenario_variations(
-            variation_file=config_path, output_dir=None)
-        configs = campaign_data["configs"]
-        runs = campaign_data.get("execution", {}).get("runs", 1)
-        items = [{"name": c["name"], "parameters": c.get("config", {})}
-                 for c in configs]
-        truncated = bool(max_configs) and len(items) > max_configs
-        if truncated:
-            items = items[:max_configs]
-        return {
-            "configs": len(configs),
-            "runs_per_config": runs,
-            "total_trials": len(configs) * runs,
-            "configurations": items,
-            "truncated": truncated,
-        }
-    except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
-        return {"error": str(e)}
-
-
 def start_campaign(config_filter: str = "", runs: int = 0, backend: str = "",
                    workspace_id: str = "", config_path: str = "",
                    campaign_name: str = "", upload_to_share: bool = False,
@@ -274,9 +156,9 @@ def start_campaign(config_filter: str = "", runs: int = 0, backend: str = "",
         or the start is refused.
     """
     try:
-        client = _service_client()
+        client = service_access.service_client()
         if client is None:
-            return {"error": _NO_SERVICE}
+            return {"error": NO_SERVICE}
         if backend and backend not in ("local", "cluster"):
             return {"error": f"unknown backend {backend!r}; use 'local' or 'cluster'"}
         from robovast.service.interface import (DESCRIPTION_MAX_LEN,
@@ -329,9 +211,9 @@ def get_campaign_status(campaign_id: str) -> dict:
         not slow; the phase name alone cannot tell you that.
     """
     try:
-        client = _service_client()
+        client = service_access.service_client()
         if client is None:
-            return {"error": _NO_SERVICE}
+            return {"error": NO_SERVICE}
         st = client.get_status(campaign_id)
         result = _status_to_dict(campaign_id, "service", st)
         result["stage"] = st.stage or ""  # a live marker string, not a log tail
@@ -387,7 +269,7 @@ def get_campaign_log(campaign_id: str, lines: int = 200, offset: int = 0,
     # filesystem. Reading the local results dir here reported an empty log for every
     # cluster campaign. The local disk path stays as the serviceless fallback so an
     # archived results tree is still readable with no service running.
-    client = _service_client()
+    client = service_access.service_client()
     if client is not None:
         try:
             # The service pages by *byte* offset; this tool pages by lines, so take
@@ -442,7 +324,7 @@ def list_campaign_jobs(campaign_id: str) -> dict:
         not stuck — with Kueue's own wait message as ``detail``.
         Returns ``{error}`` if no service is reachable.
     """
-    client = _service_client()
+    client = service_access.service_client()
     if client is None:
         return {"error": "no robovast-service reachable (bring up a 'vast serve' or "
                          "a tunnel before starting MCP); live job listing is served "
@@ -485,7 +367,7 @@ def get_job_log(campaign_id: str, job_name: str, offset: int = 0,
         ``grep`` is not a valid regex.
     """
     from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
-    client = _service_client()
+    client = service_access.service_client()
     if client is None:
         return {"error": "no robovast-service reachable (bring up a 'vast serve' or "
                          "a tunnel before starting MCP); live job logs are served "
@@ -518,9 +400,9 @@ def stop_campaign(campaign_id: str) -> dict:
         reachable.
     """
     try:
-        client = _service_client()
+        client = service_access.service_client()
         if client is None:
-            return {"error": _NO_SERVICE}
+            return {"error": NO_SERVICE}
         res = client.stop(campaign_id)
         return {"campaign_id": campaign_id, "stopped": res.ok,
                 "status": "stopping", "note": res.message}
@@ -537,9 +419,9 @@ def list_running_campaigns() -> dict:
     """
     from robovast.execution.control_server import is_running  # noqa: PLC0415
     try:
-        client = _service_client()
+        client = service_access.service_client()
         if client is None:
-            return {"error": _NO_SERVICE}
+            return {"error": NO_SERVICE}
         resp = client.list_campaigns()
         running = [{"campaign_id": c.campaign_id, "backend": "service",
                     "status": c.phase}
@@ -573,213 +455,13 @@ def resource_usage(backend: str = "") -> dict:
     """
     if backend and backend not in ("local", "cluster"):
         return {"error": f"unknown backend {backend!r}; use 'local' or 'cluster'"}
-    client = _service_client()
+    client = service_access.service_client()
     if client is None:
-        return {"error": _NO_SERVICE}
+        return {"error": NO_SERVICE}
     try:
         return client.resource_usage(backend or None).model_dump()
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
-
-
-# -- Plugin class ------------------------------------------------------------
-
-def get_postprocessing(campaign_id: str) -> dict:
-    """Show a campaign's effective analysis-postprocessing entries + edit history.
-
-    Raw rosbags are always preserved, so postprocessing can be edited and re-run
-    to compute *different* metrics later without re-executing the campaign. The
-    immutable ``_config/`` snapshot is never changed; edits are versioned
-    overrides. Pair with :func:`update_postprocessing` + :func:`run_postprocessing`.
-
-    Returns:
-        ``{campaign_id, source, entries, revisions}`` or ``{error}``.
-    """
-    from robovast.common.cli.service_target import detected_service_url
-    from robovast.service.client import RobovastClient
-    try:
-        return RobovastClient(detected_service_url()) \
-            .get_postprocessing(campaign_id).model_dump()
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
-
-
-def update_postprocessing(campaign_id: str, entries: list) -> dict:
-    """Replace a campaign's analysis-postprocessing entries (a new versioned override).
-
-    ``entries`` is a list of postprocessing commands — a bare plugin name
-    (``"rosbags_to_csv"``) or a single-key dict with params
-    (``{"command": {"script": "postprocess.sh"}}``). Validated before writing;
-    the ``_config/`` snapshot is untouched. Call :func:`run_postprocessing` to apply.
-
-    Returns:
-        ``{campaign_id, revision, entries}`` or ``{error}``.
-    """
-    from robovast.common.cli.service_target import detected_service_url
-    from robovast.service.client import RobovastClient
-    from robovast.service.interface import UpdatePostprocessingRequest
-    try:
-        return RobovastClient(detected_service_url()) \
-            .update_postprocessing(UpdatePostprocessingRequest(
-                campaign_id=campaign_id, entries=entries)).model_dump()
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
-
-
-def run_postprocessing(campaign_id: str, force: bool = False,
-                       skip: list | None = None) -> dict:
-    """(Re)run analysis postprocessing for one campaign, rebuilding ``data.db``.
-
-    **Dispatched in the background** — returns as soon as the run is started (it can take
-    minutes to hours). The campaign enters the ``postprocessing`` phase; poll
-    :func:`get_campaign_status` for progress and the outcome (``postprocessed`` /
-    ``postprocessing_error``). Reprocesses just this campaign (not its siblings), reading
-    its own ``_config/<name>.vast``. Returns ``{ok, message}`` where *message* confirms
-    the dispatch, or ``ok=false`` if an operation is already running for the campaign.
-
-    Args:
-        campaign_id: The campaign to (re)process.
-        force: Bypass per-rosbag caches and reprocess all bags.
-        skip: Plugin names to skip (e.g. ``["rosbags_to_webm"]``).
-    """
-    from robovast.common.cli.service_target import detected_service_url
-    from robovast.service.client import RobovastClient
-    from robovast.service.interface import RunPostprocessingRequest
-    try:
-        return RobovastClient(detected_service_url()) \
-            .run_postprocessing(RunPostprocessingRequest(
-                campaign_id=campaign_id, force=force, skip=skip or [])).model_dump()
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
-
-
-def run_share(campaign_id: str) -> dict:
-    """(Re)trigger the upload-to-share of one finished campaign's raw archive.
-
-    **Dispatched in the background** — returns as soon as the upload is started; the
-    campaign enters the ``sharing`` phase, so poll :func:`get_campaign_status` for the
-    outcome (``share_error`` on failure). Works from disk with no live campaign (usable
-    after a `vast serve` restart). The target provider comes from the service environment
-    (``ROBOVAST_SHARE_TYPE`` + credentials): adjust it and re-trigger to upload to a
-    different provider. Fails loudly if no share provider is configured.
-
-    Args:
-        campaign_id: The finished campaign to (re)upload.
-    """
-    from robovast.common.cli.service_target import detected_service_url
-    from robovast.service.client import RobovastClient
-    from robovast.service.interface import RunShareRequest
-    try:
-        return RobovastClient(detected_service_url()) \
-            .run_share(RunShareRequest(campaign_id=campaign_id)).model_dump()
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
-
-
-def cleanup_campaign_data(campaign_id: str = "", force: bool = False) -> dict:
-    """Delete campaign result data (object-store bucket(s)) for a cluster campaign.
-
-    Frees storage once results have been downloaded or published and are no longer
-    needed. This goes **through the robovast-service**, which owns the object-store
-    credentials and knows which campaigns are still live — so there is **no
-    infrastructure to deal with** here: no kubeconfig, no S3 keys, no namespaces.
-
-    Args:
-        campaign_id: The campaign whose data to delete. Empty string deletes **all**
-            finished campaigns' data (campaigns still running are always skipped).
-        force: Delete a named campaign even if the service still considers it live.
-
-    Returns:
-        ``{ok, message}`` (``message`` reports how many buckets were removed), or
-        ``{error}`` if no service is reachable / the backend has no object store.
-    """
-    from robovast.service.interface import CleanupDataRequest
-    client = _service_client()
-    if client is None:
-        return {"error": "no robovast-service reachable (bring up a 'vast serve' or "
-                         "a tunnel before starting MCP); campaign data lives in the "
-                         "service's object store"}
-    try:
-        res = client.cleanup_campaign_data(
-            CleanupDataRequest(campaign_id=campaign_id or None, force=force))
-        return {"ok": res.ok, "message": res.message}
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
-
-
-def delete_campaign(campaign_id: str) -> dict:
-    """Permanently delete **one** campaign wholesale, through the robovast-service.
-
-    Removes the campaign's durable home — its local directory on a local service,
-    or its object-store data (plus any leftover Kubernetes Jobs and the service's
-    cache) on a cluster service. This is the full "forget this campaign" action, as
-    opposed to :func:`cleanup_campaign_data`, which only frees object-store buckets.
-
-    The service refuses a campaign that is still running — stop it first with
-    :func:`stop_campaign`. The external share copy (if any) is never touched. This
-    is irreversible.
-
-    Args:
-        campaign_id: The campaign to delete.
-
-    Returns:
-        ``{ok, message}`` on success, or ``{error}`` if no service is reachable or
-        the campaign is still running.
-    """
-    client = _service_client()
-    if client is None:
-        return {"error": "no robovast-service reachable (bring up a 'vast serve' or "
-                         "a tunnel before starting MCP)"}
-    try:
-        res = client.delete_campaign(campaign_id)
-        return {"ok": res.ok, "message": res.message}
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
-
-
-def get_campaign_download(campaign_id: str) -> dict:
-    """Return **where to download** a campaign — a web link, not a file on this host.
-
-    Downloading is a browser action: the campaign archive is served by the
-    robovast-service (and its web UI) at a fixed path, so this returns that URL for
-    **you** to open where your robovast web UI runs — it never writes a file onto the
-    MCP-server host (which you may not be able to reach if the server runs elsewhere).
-
-    Args:
-        campaign_id: The campaign id to download.
-
-    Returns:
-        For a **cluster** service: ``{campaign_id, url, path, note}`` — ``url`` is the
-        postprocessed ``tar.gz`` (full campaign, incl. derived data) streamed from the
-        object store. For a **local** service: ``{campaign_id, note}`` — the results
-        already live on the service host's filesystem, so there is no HTTP download.
-        ``{error}`` when no service is reachable.
-    """
-    client = _service_client()
-    if client is None:
-        return {"error": "no robovast-service reachable; bring up a 'vast serve' or a "
-                         "tunnel (the campaign lives in the service, not on this host)"}
-    try:
-        backend = client.version().backend
-    except Exception as e:  # noqa: BLE001
-        return {"error": f"could not reach the service: {e}"}
-
-    path = f"/campaigns/{campaign_id}/archive"
-    if backend == "kubernetes":
-        return {
-            "campaign_id": campaign_id,
-            "url": f"{client.base_url}{path}",
-            "path": path,
-            "note": ("Open this in the browser where your robovast web UI runs "
-                     "(or Monitor → Download), or run "
-                     f"'vast results download -i {campaign_id}' on your own machine "
-                     "('--variant raw' for the pre-postprocess archive from the share)."),
-        }
-    return {
-        "campaign_id": campaign_id,
-        "note": ("This is a local service — the campaign results are already on the "
-                 "service host's filesystem; there is no HTTP download."),
-    }
 
 
 def build_experiment_image(workspace_id: str = "", config_path: str = "",
@@ -831,9 +513,9 @@ def build_experiment_image(workspace_id: str = "", config_path: str = "",
     """
     if backend and backend not in ("local", "cluster"):
         return {"error": f"unknown backend {backend!r}; use 'local' or 'cluster'"}
-    client = _service_client()
+    client = service_access.service_client()
     if client is None:
-        return {"error": _NO_SERVICE}
+        return {"error": NO_SERVICE}
     from robovast.service.interface import BuildImageRequest
     try:
         ref = client.build_image(BuildImageRequest(
@@ -856,7 +538,7 @@ def get_image_build_status(build_id: str) -> dict:
     Args:
         build_id: The id returned by :func:`build_experiment_image`.
     """
-    client = _service_client()
+    client = service_access.service_client()
     if client is None:
         return {"error": "no robovast-service reachable"}
     try:
@@ -899,7 +581,7 @@ def get_image_build_log(build_id: str, offset: int = 0, grep: str = "",
         ``{error}`` if no service is reachable or ``grep`` is not a valid regex.
     """
     from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
-    client = _service_client()
+    client = service_access.service_client()
     if client is None:
         return {"error": "no robovast-service reachable"}
     try:
@@ -916,13 +598,10 @@ def get_image_build_log(build_id: str, offset: int = 0, grep: str = "",
             "truncated": view["truncated"]}
 
 
+# -- Plugin class ------------------------------------------------------------
+
 _TOOLS = [
-    validate_project,
-    preview_configurations,
     start_campaign,
-    build_experiment_image,
-    get_image_build_status,
-    get_image_build_log,
     get_campaign_status,
     get_campaign_log,
     list_campaign_jobs,
@@ -930,20 +609,16 @@ _TOOLS = [
     stop_campaign,
     list_running_campaigns,
     resource_usage,
-    get_postprocessing,
-    update_postprocessing,
-    run_postprocessing,
-    run_share,
-    cleanup_campaign_data,
-    delete_campaign,
-    get_campaign_download,
+    build_experiment_image,
+    get_image_build_status,
+    get_image_build_log,
 ]
 
 
-class CampaignControlPlugin:
-    """Expose campaign control (validate/start/status/stop/list) as MCP tools."""
+class ExecutionPlugin:
+    """MCP plugin: running a campaign, and watching it run."""
 
-    name = "campaign_control"
+    name = "execution"
 
     def register(self, mcp: FastMCP) -> None:
         """Register all tool functions with the MCP server."""

@@ -35,26 +35,36 @@ def _make_workspace(transport) -> str:
     return wid
 
 
-def test_workspace_project_results_go_to_shared_root(transport):
-    """_project_for_workspace points results at the shared root, not the workspace."""
+def test_campaign_results_go_to_the_shared_root_not_the_workspace(transport):
+    """Results land in the shared root; the workspace only supplies the ``.vast``.
+
+    Resolving a workspace no longer *returns* a results dir at all — it answers with the
+    config path alone (``WorkspaceTarget``), and the root is asked for separately. So the
+    property this used to check at runtime is now structural, and what is left to assert is
+    that the two are genuinely different places.
+    """
     wid = _make_workspace(transport)
-    project = transport._project_for_workspace(wid)
+    target = transport._project_for_workspace(wid)
 
     shared = transport._campaigns_root()
     ws_results = transport.store.registry.root / wid / "results"
 
-    assert Path(project.results_dir) == shared
-    assert Path(project.results_dir) != ws_results
+    assert shared != ws_results
+    assert not shared.is_relative_to(transport.store.registry.root / wid)
     # config still resolves from inside the workspace
-    assert Path(project.config_path).name == "sim.vast"
+    assert Path(target.config_path).name == "sim.vast"
+    assert not hasattr(target, "results_dir"), \
+        "the resolved target must not carry a results dir it never varied by"
 
 
 def test_shared_root_is_stable_across_workspaces(transport):
-    """Two different workspaces resolve to the same campaigns root."""
+    """Two different workspaces resolve to the same campaigns root, and to their own
+    ``.vast``. The root cannot vary by workspace — it is not derived from one."""
     w1 = _make_workspace(transport)
     w2 = _make_workspace(transport)
-    assert transport._project_for_workspace(w1).results_dir == \
-        transport._project_for_workspace(w2).results_dir
+    assert transport._campaigns_root() == transport._campaigns_root()
+    assert transport._project_for_workspace(w1).config_path != \
+        transport._project_for_workspace(w2).config_path
 
 
 def test_list_and_status_read_the_shared_root(transport):
@@ -251,7 +261,7 @@ def test_tracked_campaign_phase_wins_over_disk(transport):
 def test_deleting_workspace_keeps_campaigns(transport):
     """Campaigns survive deletion of the workspace that authored them."""
     wid = _make_workspace(transport)
-    root = transport._project_for_workspace(wid).results_dir
+    root = transport._campaigns_root()
     cid = "campaign-2026-07-16-121212"
     (Path(root) / cid).mkdir(parents=True)
 

@@ -34,7 +34,7 @@ and the search ``strategy`` and ``extract.plugin`` — whether they are installe
 entry-point names or local ``./path.py:Class`` file refs. Those non-variation
 plugins are otherwise only resolved when a campaign runs, so a broken local
 plugin would surface as a cryptic controller-pod log; here it is caught up front.
-This function is the shared core behind both the ``validate_project`` MCP tool
+This function is the shared core behind both the ``validate_config`` MCP tool
 and the ``vast configuration validate`` CLI command.
 """
 

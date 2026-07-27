@@ -46,7 +46,7 @@ def test_list_campaigns_tool_is_newest_first(no_project):
     and "what did I just run?" landed on the last page.
     """
     from robovast.common.store import STORE_FILENAME, CampaignStore
-    from robovast.mcp_server.plugins.campaign_metadata import list_campaigns
+    from robovast.mcp_server.plugins.results import list_campaigns
 
     for cid, created_at in (("zzz-2026-07-01-120000", 1_000.0),
                             ("aaa-2026-07-26-120000", 2_000.0)):
@@ -55,12 +55,19 @@ def test_list_campaigns_tool_is_newest_first(no_project):
         with CampaignStore(cdir / STORE_FILENAME) as store:
             store.create_campaign(cid, {}, mode="batch", created_at=created_at)
 
+    # Neither campaign is postprocessed, and both are still listed as ordinary entries:
+    # the listing no longer splits on metadata.yaml (which only postprocessing writes),
+    # it reports `postprocessed` per campaign, because a campaign without it is still
+    # queryable — its runs are in campaign.db.
     result = list_campaigns(limit=1)
-    # Neither campaign is postprocessed, so both arrive via missing_metadata — which is
-    # ordered too, and now carries the start time it was ordered by.
-    listed = [c["campaign_id"] for c in result["missing_metadata"]]
-    assert listed == ["aaa-2026-07-26-120000", "zzz-2026-07-01-120000"]
-    assert result["missing_metadata"][0]["started_at"] == "1970-01-01T00:33:20+00:00"
+    assert result["total"] == 2
+    assert [c["campaign_id"] for c in result["campaigns"]] == ["aaa-2026-07-26-120000"]
+    assert result["campaigns"][0]["started_at"] == "1970-01-01T00:33:20+00:00"
+    assert result["campaigns"][0]["postprocessed"] is False
+
+    # ... and the page after it is the older one, i.e. the ordering is over the whole set.
+    assert [c["campaign_id"] for c in list_campaigns(limit=1, offset=1)["campaigns"]] \
+        == ["zzz-2026-07-01-120000"]
 
 
 def test_resolve_results_dir_still_raises_for_a_named_campaign(no_project):

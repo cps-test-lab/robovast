@@ -121,6 +121,13 @@ def build_campaign_store(campaign_dir, *, force: bool = False) -> Path:
             campaign_dir.name, config_json, mode="batch", config_dir="_config",
             created_at=_recorded_start_time(campaign_dir), description=description)
         batch_id = store.open_batch(campaign_id, 0, ".")
+        # Provenance is recoverable from the results tree (unlike the description), so a
+        # rebuilt store carries it too — otherwise "which image did this run use?" would
+        # answer NULL for exactly the campaigns whose store had to be reconstructed.
+        try:
+            store.record_execution(campaign_id, read_execution_metadata(campaign_dir))
+        except FileNotFoundError:
+            pass
         for cfg_dir in list_config_dirs(campaign_dir):
             run_dirs = list_run_dirs(cfg_dir)
             try:
@@ -138,7 +145,7 @@ def build_campaign_store(campaign_dir, *, force: bool = False) -> Path:
                 result_dir=cfg_dir.name,
                 n_samples=len(run_dirs),
             )
-            store.record_runs(unit_id, read_run_outcomes(cfg_dir))
+            store.record_runs(unit_id, read_run_outcomes(cfg_dir, campaign_dir))
     logger.info("Built campaign store: %s", store_path)
     return store_path
 
@@ -170,7 +177,7 @@ def backfill_run_rows(campaign_dir) -> int:
                     result_dir = unit["result_dir"]
                     if not result_dir:
                         continue
-                    rows = read_run_outcomes(campaign_dir / result_dir)
+                    rows = read_run_outcomes(campaign_dir / result_dir, campaign_dir)
                     store.record_runs(unit["id"], rows)
                     inserted += len(rows)
     if inserted:

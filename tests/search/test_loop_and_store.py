@@ -16,6 +16,8 @@ import json
 import os
 import sqlite3
 
+import pytest
+
 from robovast.common.config import SearchConfig
 from robovast.common.store import STORE_FILENAME, CampaignStore
 from robovast.execution.backends import ExecutionBackend, RunOptions
@@ -251,11 +253,14 @@ def test_store_without_description_reads_none(tmp_path):
 def test_description_read_from_pre_column_store_is_none(tmp_path):
     """A schema-v2 store (no ``description`` column) reads back as "no description"
     rather than raising — and is left unmigrated, since the read is read-only."""
-    from robovast.common.store import (_MIGRATION_ADD_RUN, _SCHEMA,
+    # Built from the frozen migrations, not ``_SCHEMA``: that constant is the *current*
+    # layout and already has ``description``, so using it here would silently stop
+    # simulating a v2 store while the assertion below still passed.
+    from robovast.common.store import (_MIGRATION_ADD_RUN, _MIGRATION_INITIAL,
                                        read_campaign_description)
     db = tmp_path / STORE_FILENAME
     conn = sqlite3.connect(db)
-    conn.executescript(_SCHEMA)
+    conn.executescript(_MIGRATION_INITIAL)
     conn.executescript(_MIGRATION_ADD_RUN)
     conn.execute("PRAGMA user_version = 2")
     conn.execute(
@@ -277,10 +282,11 @@ def test_fresh_store_stamps_schema_version(tmp_path):
 def test_pre_versioning_store_migrates_forward(tmp_path):
     """A store created before schema versioning (tables present, user_version 0)
     is adopted at the current version and stays readable."""
-    from robovast.common.store import SCHEMA_VERSION, _SCHEMA
+    from robovast.common.store import SCHEMA_VERSION, _MIGRATION_INITIAL
     db = tmp_path / "legacy.db"
     conn = sqlite3.connect(db)
-    conn.executescript(_SCHEMA)  # pre-versioning: tables but no user_version bump
+    # The v1 layout as it shipped — a pre-versioning store cannot have today's columns.
+    conn.executescript(_MIGRATION_INITIAL)
     conn.execute(
         "INSERT INTO campaign (id, name, mode, created_at) VALUES (1, 'old', 'search', 0)")
     conn.commit()
@@ -290,6 +296,53 @@ def test_pre_versioning_store_migrates_forward(tmp_path):
     with CampaignStore(db) as store:
         assert store._conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert [c["name"] for c in store.list_campaigns()] == ["old"]
+
+
+def _schema_fingerprint(conn):
+    """Every table's ordered ``(column, type)`` list, plus index/view names."""
+    out = {}
+    for name, typ in conn.execute(
+            "SELECT name, type FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' "
+            "ORDER BY name"):
+        if typ == "table":
+            out[name] = [(r[1], r[2]) for r in conn.execute(f'PRAGMA table_info("{name}")')]
+        else:
+            out[f"{typ}:{name}"] = None
+    return out
+
+
+@pytest.mark.parametrize("start_version", [0, 1, 2, 3])
+def test_fresh_and_migrated_schemas_match(tmp_path, start_version):
+    """``_SCHEMA`` and the migration ladder must produce the *same* database.
+
+    The two exist for different jobs — ``_SCHEMA`` so a reader can see the current
+    layout, ``_MIGRATIONS`` so an existing store upgrades — which means they can drift:
+    a column added to one and not the other yields two different databases depending on
+    when the store happened to be created. Comparing ordered ``(column, type)`` per
+    table makes that impossible to merge; it also pins the convention that a new column
+    is appended to ``_SCHEMA`` in the same position the migration adds it.
+
+    ``start_version`` 0 covers the pre-versioning store (tables present, no stamp).
+    """
+    from robovast.common.store import (SCHEMA_VERSION, _MIGRATIONS,
+                                       _MIGRATION_INITIAL)
+
+    with CampaignStore(tmp_path / "fresh.db") as store:
+        fresh = _schema_fingerprint(store._conn)
+
+    old = tmp_path / "old.db"
+    conn = sqlite3.connect(old)
+    conn.executescript(_MIGRATION_INITIAL)
+    for v in range(1, max(start_version, 1)):
+        conn.executescript(_MIGRATIONS[v])
+    if start_version:
+        conn.execute(f"PRAGMA user_version = {start_version}")
+    conn.commit()
+    conn.close()
+
+    with CampaignStore(old) as store:
+        assert store._conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert _schema_fingerprint(store._conn) == fresh
 
 
 def test_newer_store_is_read_best_effort(tmp_path):
