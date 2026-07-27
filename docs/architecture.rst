@@ -215,6 +215,51 @@ On the cluster, ``/results`` is served straight from the object store: a read is
 download), and a non-recursive listing is a *delimited* ``list_entries``, so it is
 non-recursive at the store and not merely in the response.
 
+.. _fetch-what-the-caller-needs:
+
+Fetch what the caller needs, not the campaign
+----------------------------------------------
+
+``ClusterService`` resolves a campaign to a local directory through **two** seams, and which
+one a caller uses decides whether it moves kilobytes or gigabytes:
+
+``_data_dir`` → ``fetch_campaign``
+    The whole campaign prefix, downloaded into ``/tmp/robovast-campaigns/<id>``. For callers
+    that genuinely need arbitrary files from it: notebook rendering, panel assets, and the
+    endpoint plugins reached via ``resolve_data_dir``.
+
+``_query_dir``
+    Just ``_execution/data.db`` and ``campaign.db`` — the only two objects
+    ``data_query._open_db`` opens. Used by ``describe_campaign_data`` and
+    ``query_campaign_data_sql``.
+
+The split exists because those two are the same answer locally and orders of magnitude apart
+on the cluster. A query used to arrive through ``_data_dir``, so ``SELECT COUNT(*)`` over a
+40 MB ``data.db`` pulled every rosbag the campaign produced — in the deployment where
+campaigns are largest, and inside the HTTP request, where the client's timeout was 30 s. The
+web UI survived it only because ``fetch`` sets no timeout at all.
+
+Two properties of the narrow path are load-bearing:
+
+* **The cached copy is validated by size, not existence.** ``data.db`` is the one campaign
+  object that is *mutable* — re-postprocessing rewrites it in place, which is what
+  ``fetch_campaign(force=True)`` exists for. An existence check would pin the first version a
+  service ever saw and serve stale metrics indefinitely.
+* **It writes through** ``_download_atomic`` **and under the campaign's fetch lock.** The
+  results explorer fires one query per sub-view on first load; without both, one request
+  opens a ``data.db`` another is still streaming and SQLite reports "no such table: runs".
+
+Both seams write into the *same* cache directory, so a later whole-campaign fetch finds the
+two databases already at the right size and skips them, and ``delete_campaign`` still clears
+one place.
+
+``campaign_data_status`` (``GET /campaigns/{id}/data-status``) reports whether a query would
+transfer anything and what it would cost, so a caller can explain the wait *before* it waits.
+It is bounded to two ``stat_object`` calls — a probe that itself enumerated the prefix would
+only move the cost it exists to warn about. It is a **control** route, not a ``/results``
+path: every segment there is a user-chosen file name, so a literal ``data-status`` under it
+would shadow a campaign file of that name.
+
 ``get_service_info`` publishes both address templates, plus ``results_root`` /
 ``sources_root`` filesystem paths — but only when the service is local-filesystem *and*
 the request came from loopback, so a caller is never handed a path it cannot open.

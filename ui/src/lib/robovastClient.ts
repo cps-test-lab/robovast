@@ -345,6 +345,24 @@ export interface DataQueryResult {
   truncated: boolean
 }
 
+// Whether querying a campaign has to transfer its databases from the object store first.
+// `fetch_required: false` (a local service) means the question does not apply — the backend
+// difference is resolved server-side, so a view reads the same fields either way.
+export interface CampaignDataStatus {
+  campaign_id: string
+  source: 'local-disk' | 'object-store'
+  fetch_required: boolean
+  cached: boolean
+  // "cluster-network" (in-pod, fast) vs "port-forward" (off-cluster driver, slow): the same
+  // store reached two ways, differing by orders of magnitude.
+  transfer: 'none' | 'cluster-network' | 'port-forward'
+  db_bytes: number
+  fetch_in_progress: boolean
+  last_fetch_seconds: number | null
+  last_fetch_bytes: number | null
+  note: string
+}
+
 export interface PlotSpec {
   title: string
   query: string
@@ -581,6 +599,14 @@ export const robovast = {
       sql,
       max_rows: maxRows,
     }),
+
+  // Cheap pre-flight for the two above: on a cluster campaign the first of them fetches the
+  // databases from the object store inside the request, which without a word looks like a hang.
+  campaignDataStatus: (campaignId: string) =>
+    request<CampaignDataStatus>(
+      'GET',
+      `/campaigns/${encodeURIComponent(campaignId)}/data-status`,
+    ),
 
   listCampaignPlots: (campaignId: string) =>
     request<CampaignPlotsResponse>('GET', `/campaigns/${encodeURIComponent(campaignId)}/plots`),

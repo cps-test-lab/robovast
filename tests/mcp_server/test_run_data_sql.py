@@ -2,12 +2,25 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for the read-only SQL data-access tools + the runs dimension table."""
 
+import asyncio
 import sqlite3
 
 import pytest
 
 from robovast.mcp_server.plugins import results as run_data
 from robovast.results_processing.postprocessing_plugins import _build_runs_table
+
+# The two query tools are coroutines: they announce a pending object-store fetch *before*
+# blocking on it, which needs an await. Driven here rather than through a pytest asyncio
+# plugin, since the suite configures none.
+
+
+def describe_campaign_data(*args, **kwargs):
+    return asyncio.run(run_data.describe_campaign_data(*args, **kwargs))
+
+
+def query_campaign_data_sql(*args, **kwargs):
+    return asyncio.run(run_data.query_campaign_data_sql(*args, **kwargs))
 
 
 @pytest.fixture
@@ -55,19 +68,19 @@ def test_runs_table_has_params_status_duration(campaign):
 
 
 def test_describe_lists_runs_and_attached_campaign(campaign):
-    d = run_data.describe_campaign_data(campaign)
+    d = describe_campaign_data(campaign)
     pairs = {(t["schema"], t["table"]) for t in d["tables"]}
     assert ("main", "runs") in pairs
     assert ("campaign", "unit") in pairs  # campaign.db attached
 
 
 def test_sql_query_and_param_join(campaign):
-    r = run_data.query_campaign_data_sql(
+    r = query_campaign_data_sql(
         campaign, "SELECT param_wind, status FROM runs ORDER BY param_wind")
     assert r["columns"] == ["param_wind", "status"]
     assert r["rows"][0]["param_wind"] == 2.5
     # attached campaign.db is queryable
-    r2 = run_data.query_campaign_data_sql(campaign, "SELECT COUNT(*) n FROM campaign.unit")
+    r2 = query_campaign_data_sql(campaign, "SELECT COUNT(*) n FROM campaign.unit")
     assert r2["rows"][0]["n"] == 2
 
 
@@ -76,16 +89,16 @@ def test_sql_query_and_param_join(campaign):
     "DROP TABLE runs", "ATTACH DATABASE 'x' AS y", "PRAGMA writable_schema=1",
 ])
 def test_sql_rejects_writes(campaign, bad):
-    assert "error" in run_data.query_campaign_data_sql(campaign, bad)
+    assert "error" in query_campaign_data_sql(campaign, bad)
 
 
 def test_sql_truncates_at_max_rows(campaign):
-    r = run_data.query_campaign_data_sql(campaign, "SELECT * FROM runs", max_rows=1)
+    r = query_campaign_data_sql(campaign, "SELECT * FROM runs", max_rows=1)
     assert r["row_count"] == 1 and r["truncated"] is True
 
 
 def test_empty_result_carries_note(campaign):
-    r = run_data.query_campaign_data_sql(
+    r = query_campaign_data_sql(
         campaign, "SELECT * FROM runs WHERE config_name='nope'")
     assert r["row_count"] == 0 and "runs" in r.get("note", "")
 
@@ -101,7 +114,7 @@ def test_multi_campaign_cross_query(campaign, tmp_path):
                    [("x", 0, 0.1), ("x", 1, 0.2), ("y", 0, 0.3)])
     db.commit(); db.close()
 
-    r = run_data.query_campaign_data_sql(
+    r = query_campaign_data_sql(
         campaign,
         "SELECT (SELECT COUNT(*) FROM runs) AS a, (SELECT COUNT(*) FROM c1.runs) AS b",
         extra_campaign_ids=[str(other)])
@@ -112,7 +125,7 @@ def test_multi_campaign_cross_query(campaign, tmp_path):
 
 def test_single_campaign_query_unchanged_without_extra(campaign):
     """Omitting extra_campaign_ids keeps the original single-campaign behavior."""
-    r = run_data.query_campaign_data_sql(campaign, "SELECT COUNT(*) n FROM runs")
+    r = query_campaign_data_sql(campaign, "SELECT COUNT(*) n FROM runs")
     assert r["rows"][0]["n"] == 2
     assert "attached" not in r
 

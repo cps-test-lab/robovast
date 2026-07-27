@@ -54,6 +54,7 @@ from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         UpdatePostprocessingRequest, UploadGrant,
                                         ValidationReport, VariationTypesResponse,
                                         VersionInfo, WorkspaceInfo, WriteFileRequest,
+                                        CampaignDataStatus,
                                         DataDescribe, DataQueryResult,
                                         CampaignPlotsResponse,
                                         CampaignPanelsResponse,
@@ -643,6 +644,18 @@ def build_app(impl: RobovastInterface):
     @app.get("/campaigns/{campaign_id}/describe", response_model=DataDescribe, tags=["results"])
     def describe_campaign_data(campaign_id: str) -> DataDescribe:
         return _guard(lambda: impl.describe_campaign_data(campaign_id))
+
+    @app.get("/campaigns/{campaign_id}/data-status", response_model=CampaignDataStatus,
+             tags=["results"])
+    def campaign_data_status(campaign_id: str) -> CampaignDataStatus:
+        """Whether querying this campaign transfers data first — ask *before* the wait.
+
+        Cheap by contract (two metadata lookups). On a cluster campaign whose databases
+        are not cached yet, a first ``/describe`` or ``/query`` fetches them from the
+        object store inside the request; this says so in advance, so a client can show
+        why instead of appearing to hang.
+        """
+        return _guard(lambda: impl.campaign_data_status(campaign_id))
 
     @app.post("/campaigns/{campaign_id}/query", response_model=DataQueryResult, tags=["results"])
     def query_campaign_data_sql(

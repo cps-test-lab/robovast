@@ -272,6 +272,16 @@ in the editor and **Run** it; the result shows as a table and, via the chart bui
 as a chart — pick *x* / *y* / *color* columns and a mark. Join ``runs`` to any metric
 table on ``(config_name, run_id)`` to answer "how does *<param>* affect *<metric>*".
 
+**The first query on a cluster campaign may pause.** Its databases live in the object
+store, and the service copies them into a local cache inside that first request; every
+query afterwards reads the cache. Rather than an unexplained spinner, the Explorer's
+loading row and the Data browser's toolbar say what is happening and how much is moving
+("First query — fetching campaign data (39.9 MiB) from the object store over a
+port-forward…"). Nothing is shown for a local service, which transfers nothing, or for a
+campaign already cached — so the message appears exactly when there is something to
+explain. It comes from ``GET /campaigns/{id}/data-status``, which is cheap enough to ask
+alongside the query itself.
+
 .. note::
 
    A campaign only becomes queryable once **analysis postprocessing** has run — it

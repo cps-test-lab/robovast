@@ -40,8 +40,10 @@ Kubespray
 Kueue
 kwarg
 localhost
+lookups
 mcap
 memoryless
+MiB
 minikube
 MuJoCo
 namespace

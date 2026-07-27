@@ -55,7 +55,7 @@ ENDPOINT_GROUP = "robovast.service_endpoints"
 #: which registers first and would win anyway). ``costmap`` is intentionally absent — its
 #: core route was removed, freeing the name for the ``robovast_nav`` plugin.
 RESERVED_CAMPAIGN_ENDPOINTS = frozenset({
-    "status", "stop", "describe", "query", "plots", "panels",
+    "status", "stop", "describe", "query", "data-status", "plots", "panels",
     "visualizations", "notebook", "archive", "postprocessing", "panel_assets",
 })
 

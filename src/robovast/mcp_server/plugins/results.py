@@ -30,7 +30,7 @@ through the address space (``/results/<campaign_id>/<path>``).
 import logging
 from typing import Any
 
-from fastmcp import FastMCP
+from fastmcp import Context, FastMCP
 
 from robovast.common.store import (read_campaign_created_at,
                                    read_campaign_description)
@@ -148,7 +148,55 @@ def get_campaign_summary(campaign_id: str) -> dict:
     return result
 
 
-def describe_campaign_data(campaign_id: str) -> dict:
+async def _announced(ctx, campaign_id: str, call):
+    """Run ``call(preflight)`` off the event loop, saying first if it must fetch.
+
+    The announcement has to precede the wait to be worth anything, so it goes out as an MCP
+    log notification *before* the call starts; the call then runs in a worker thread so that
+    notification actually reaches the client instead of sitting behind a blocked loop.
+    ``ctx`` is None for an in-process caller, which just means no live notification — the
+    reason still arrives with the result, via the warning middleware.
+
+    The probe made here is handed to *call* rather than repeated inside it: probing twice
+    would log the warning twice and, worse, read the post-fetch state as if it were the
+    pre-fetch one.
+    """
+    import anyio
+    preflight = data_access.announce_pending_fetch(campaign_id)
+    if preflight[1] and ctx is not None:
+        await ctx.info(preflight[1])
+    return await anyio.to_thread.run_sync(lambda: call(preflight))
+
+
+def campaign_data_status(campaign_id: str) -> dict:
+    """Check whether querying this campaign will first have to fetch data — and how much.
+
+    Cheap (two metadata lookups). Worth calling before a **batch** of queries against a
+    campaign you have not touched yet, so you can tell the user why the first one is slow
+    instead of appearing to hang; a single query does not need it, since it reports the same
+    thing in its ``fetch`` field afterwards.
+
+    Args:
+        campaign_id: Campaign identifier or an absolute campaign path.
+
+    Returns:
+        ``{campaign_id, source, fetch_required, cached, transfer, db_bytes,
+        fetch_in_progress, last_fetch_seconds, last_fetch_bytes, note}``.
+        ``fetch_required: false`` (a local service) means the question does not apply.
+        ``transfer`` distinguishes ``"cluster-network"`` (fast) from ``"port-forward"``
+        (slow) — the same object store reached two very different ways. Or ``{error}``
+        when no service answers.
+    """
+    status = data_access.data_status(campaign_id)
+    if status is None:
+        return {"error": (
+            "no robovast-service answered, so there is nothing to fetch from: campaign "
+            "data is read from local disk in this process. (A service too old to serve "
+            "/data-status reports the same.)")}
+    return status
+
+
+async def describe_campaign_data(campaign_id: str, ctx: Context | None = None) -> dict:
     """Describe a campaign's queryable data — the schema to write SQL against.
 
     Call this before :func:`query_campaign_data_sql`, and read the returned ``note``: it
@@ -157,23 +205,34 @@ def describe_campaign_data(campaign_id: str) -> dict:
     ``campaign`` schema, each with its columns as ``"name TYPE"`` — a ``TEXT`` column
     orders lexicographically and needs ``CAST(col AS REAL)``.
 
+    The **first** call for a cluster campaign also transfers its databases from the object
+    store, so it can take noticeably longer than the calls after it; the returned ``fetch``
+    says what that cost. :func:`campaign_data_status` answers it in advance.
+
     Args:
         campaign_id: Campaign identifier or an absolute campaign path.
 
     Returns:
         ``{campaign_id, tables: [{schema, table, columns, rows, description}], note}``
-        or ``{error}``.
+        or ``{error}``; plus ``fetch`` when a service resolved the campaign.
     """
-    return data_access.describe(campaign_id)
+    return await _announced(
+        ctx, campaign_id,
+        lambda pf: data_access.describe(campaign_id, preflight=pf))
 
 
-def query_campaign_data_sql(campaign_id: str, sql: str, max_rows: int = 500,
-                            extra_campaign_ids: list | None = None) -> dict:
+async def query_campaign_data_sql(campaign_id: str, sql: str, max_rows: int = 500,
+                                  extra_campaign_ids: list | None = None,
+                                  ctx: Context | None = None) -> dict:
     """Run a **read-only** SQL query over a campaign's data.
 
     Only ``SELECT`` is permitted. Discover the schema first with
     :func:`describe_campaign_data`; ``run_view`` and ``config_view`` are the entry points,
     queried unqualified.
+
+    The **first** query on a cluster campaign also transfers its databases from the object
+    store, so it can take noticeably longer than later ones; the returned ``fetch`` says
+    what that cost, and :func:`campaign_data_status` answers it in advance.
 
     To **compare campaigns**, pass ``extra_campaign_ids``: each is attached under a
     schema alias ``c1``, ``c2``, … (its ``campaign.db`` as ``c1_campaign``, …), so a
@@ -189,7 +248,7 @@ def query_campaign_data_sql(campaign_id: str, sql: str, max_rows: int = 500,
 
     Returns:
         ``{campaign_id, columns, rows, row_count, truncated[, attached]}`` or
-        ``{error}``.
+        ``{error}``; plus ``fetch`` when a service resolved the campaign.
 
     Example — mean of a metric per parameter value::
 
@@ -203,7 +262,10 @@ def query_campaign_data_sql(campaign_id: str, sql: str, max_rows: int = 500,
         SELECT 'A' AS campaign, AVG(objective) FROM runs
         UNION ALL SELECT 'B', AVG(objective) FROM c1.runs
     """
-    return data_access.query(campaign_id, sql, max_rows, extra_campaign_ids)
+    return await _announced(
+        ctx, campaign_id,
+        lambda pf: data_access.query(campaign_id, sql, max_rows, extra_campaign_ids,
+                                     preflight=pf))
 
 
 def list_campaign_plots(campaign_id: str) -> dict:
@@ -253,6 +315,7 @@ _TOOLS = [
     get_campaign_summary,
     describe_campaign_data,
     query_campaign_data_sql,
+    campaign_data_status,
     list_campaign_plots,
 ]
 

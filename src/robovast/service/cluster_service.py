@@ -115,6 +115,11 @@ class ClusterService(LocalTransport):
         # query per sub-view on first load). Guarded by ``_fetch_locks_guard``.
         self._fetch_locks: dict[str, threading.Lock] = {}
         self._fetch_locks_guard = threading.Lock()
+        # What this service's last transfer of each campaign's query databases cost, as
+        # ``(bytes, seconds)`` — so ``campaign_data_status`` reports a measured number
+        # rather than a guess, and a caller that waited can be told why. Process-local: a
+        # restart forgets it, and the cache it describes is scratch anyway.
+        self._last_fetch: dict[str, tuple[int, float]] = {}
         # Incremental, cache-backed job-log tails so a polling log panel fetches only
         # the delta each 1.5s instead of re-reading the whole pod log (see get_job_log
         # / PodLogTail). LRU-bounded so long-lived services don't accumulate buffers.
@@ -1224,8 +1229,7 @@ class ClusterService(LocalTransport):
             logger.warning("Leftover-Job cleanup for %s failed", campaign_id,
                            exc_info=True)
         # 3. Service-local caches: the fetch scratch and any in-pod driver dir.
-        shutil.rmtree(Path("/tmp") / "robovast-campaigns" / campaign_id,  # noqa: S108
-                      ignore_errors=True)
+        shutil.rmtree(self._cache_dir(campaign_id), ignore_errors=True)
         shutil.rmtree(self._campaign_dir(campaign_id), ignore_errors=True)
         with self._lock:
             self._campaigns.pop(campaign_id, None)
@@ -1235,11 +1239,125 @@ class ClusterService(LocalTransport):
 
     # -- data / results -----------------------------------------------------
 
+    def _cache_dir(self, campaign_id: str) -> Path:
+        """Local scratch mirroring a campaign's objects. Ephemeral by design — the object
+        store is the durable home — and shared by the whole-campaign fetch and the
+        query-database fetch, so the two can never hold divergent copies of one file."""
+        return Path("/tmp") / "robovast-campaigns" / campaign_id  # noqa: S108 - pod scratch
+
     def _data_dir(self, campaign_id: str):
-        """Data-query campaign dir: pull it from the object store (the durable home)
-        into a local cache, so ``describe_campaign_data``/``query_campaign_data_sql``
-        (inherited from :class:`LocalTransport`) read the fetched ``data.db``."""
+        """Whole-campaign dir: pulled from the object store (the durable home) into the
+        local cache, for callers that need arbitrary campaign files — notebook render,
+        panel assets, endpoint plugins via ``resolve_data_dir``. A **query** must not come
+        through here; see :meth:`_query_dir`."""
         return self.fetch_campaign(campaign_id)
+
+    #: The only two objects a SQL query reads, relative to the campaign prefix (see
+    #: ``data_query._open_db``). Neither is required to exist: ``campaign.db`` alone is
+    #: queryable before postprocessing has built ``data.db``.
+    _QUERY_DBS = ("_execution/data.db", "campaign.db")
+
+    def _query_dir(self, campaign_id: str):
+        """Materialize just the query databases into the campaign's cache dir; return it.
+
+        The same reasoning as the ``/results`` file overrides below, applied to the last
+        caller that still ignored it: a query over a 40 MB ``data.db`` must not drag every
+        rosbag the campaign produced, which is what ``_data_dir``'s whole-prefix fetch
+        does. Writes into the *same* cache dir, so a later full ``fetch_campaign`` finds
+        these files already at the right size and skips them.
+
+        Unlike a run artifact, ``data.db`` is **mutable** — re-postprocessing rewrites it in
+        place, which is what ``fetch_campaign(force=True)`` exists for. So a cached copy is
+        validated by *size*, not by existence: an existence check would pin the first
+        version this service ever saw and serve stale metrics forever.
+        """
+        from botocore.exceptions import (  # pylint: disable=import-outside-toplevel
+            ClientError, EndpointConnectionError)
+
+        from robovast.common.progress import fmt_size
+        dest = self._cache_dir(campaign_id)
+        storage, bucket, prefix = self._campaign_object_location(campaign_id)
+        with self._fetch_locks_guard:
+            lock = self._fetch_locks.setdefault(campaign_id, threading.Lock())
+        # The same lock ``fetch_campaign`` takes: concurrent first-load queries (the
+        # results explorer fires one per sub-view) must not race to write the same
+        # ``data.db``, nor race a whole-campaign fetch writing it too.
+        with lock:
+            fetched = total = 0
+            started = time.perf_counter()
+            try:
+                for rel in self._QUERY_DBS:
+                    dst = dest / Path(rel)
+                    size = storage.stat_object(bucket, f"{prefix}{rel}")
+                    if size is None:
+                        # Not published (yet). Not an error here — ``_open_db`` decides what
+                        # a missing db means and raises its own clear message.
+                        continue
+                    total += size
+                    if dst.exists() and dst.stat().st_size == size:
+                        continue
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    storage.download_object(bucket, f"{prefix}{rel}", str(dst))
+                    fetched += size
+            except EndpointConnectionError as exc:
+                # Object store unreachable (e.g. a dropped port-forward): a clean 4xx
+                # instead of botocore bubbling up as an ASGI 500 — as in fetch_campaign.
+                raise RuntimeError(f"Object store is unreachable: {exc}") from exc
+            except ClientError as exc:
+                # No bucket: never published (still running / never finalized) or cleaned
+                # up. A clean 404 rather than an ASGI 500.
+                if exc.response.get("Error", {}).get("Code") == "NoSuchBucket":
+                    raise KeyError(
+                        f"No stored data for campaign {campaign_id!r}: its object "
+                        f"store bucket does not exist (not yet published or removed)"
+                    ) from exc
+                raise
+            elapsed = time.perf_counter() - started
+        if fetched:
+            self._last_fetch[campaign_id] = (fetched, elapsed)
+            logger.info(
+                "Fetched query databases for campaign %s (%s of %s) from %s/%s in %.1fs",
+                campaign_id, fmt_size(fetched), fmt_size(total), bucket, prefix, elapsed)
+        return dest
+
+    def campaign_data_status(self, campaign_id: str):
+        """Cluster: a query reads the object store, so report what that will cost.
+
+        Two ``stat_object`` calls — deliberately not a listing of the campaign prefix,
+        which is the cost this whole seam exists to avoid.
+        """
+        from robovast.service.interface import CampaignDataStatus
+        in_pod = bool(os.environ.get("KUBERNETES_SERVICE_HOST"))
+        dest = self._cache_dir(campaign_id)
+        storage, bucket, prefix = self._campaign_object_location(campaign_id)
+        db_bytes, cached = 0, True
+        for rel in self._QUERY_DBS:
+            size = storage.stat_object(bucket, f"{prefix}{rel}")
+            if size is None:
+                continue
+            db_bytes += size
+            dst = dest / Path(rel)
+            if not (dst.exists() and dst.stat().st_size == size):
+                cached = False
+        with self._fetch_locks_guard:
+            lock = self._fetch_locks.get(campaign_id)
+        last = self._last_fetch.get(campaign_id)
+        if cached:
+            note = ("the campaign's query databases are already in the service cache; "
+                    "this query reads them locally")
+        else:
+            where = ("the in-cluster object store" if in_pod else
+                     "the object store through a kubectl port-forward")
+            note = (f"the query databases are not in the service cache yet; they are "
+                    f"fetched from {where} first")
+        return CampaignDataStatus(
+            campaign_id=campaign_id, source="object-store", fetch_required=True,
+            cached=cached, transfer="cluster-network" if in_pod else "port-forward",
+            db_bytes=db_bytes,
+            fetch_in_progress=bool(lock is not None and lock.locked()),
+            last_fetch_bytes=None if last is None else last[0],
+            last_fetch_seconds=None if last is None else last[1],
+            note=note)
 
     # -- files: the /results namespace, served straight from the object store --------
     #
@@ -1453,7 +1571,7 @@ class ClusterService(LocalTransport):
         from robovast.execution.cluster_execution import in_pod_storage
         cfg = self._cluster_config()
         bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
-        dest = Path("/tmp") / "robovast-campaigns" / campaign_id  # noqa: S108 - pod scratch
+        dest = self._cache_dir(campaign_id)
         dest.mkdir(parents=True, exist_ok=True)
         storage = in_pod_storage.storage_client_for(cfg)
         with self._fetch_locks_guard:
@@ -1462,9 +1580,15 @@ class ClusterService(LocalTransport):
         # cache while the rest wait, then find it complete and skip re-downloading
         # (immutable objects, matching size). Different campaigns still fetch in
         # parallel.
+        started = time.perf_counter()
         with lock:
             try:
-                n = storage.download_prefix(bucket, prefix, str(dest), force=force)
+                # A whole campaign is GBs over a port-forward; without a running count the
+                # transfer is indistinguishable from a hang for as long as it takes.
+                n = storage.download_prefix(
+                    bucket, prefix, str(dest), force=force,
+                    on_file=in_pod_storage.download_progress_logger(
+                        f"Campaign {campaign_id}"))
             except EndpointConnectionError as exc:
                 # Object store unreachable (e.g. a dropped port-forward). Surface a
                 # clean 4xx instead of letting botocore bubble up as an ASGI 500.
@@ -1480,6 +1604,12 @@ class ClusterService(LocalTransport):
                         f"store bucket does not exist (not yet published or removed)"
                     ) from exc
                 raise
-        logger.info("Fetched campaign %s (%d file(s)) from %s/%s to %s",
-                    campaign_id, n, bucket, prefix, dest)
+        # Elapsed as well as the count: "1832 files" alone does not distinguish a transfer
+        # that took two seconds from one that took four minutes, which is the only question
+        # a caller staring at a slow first call actually has. Bytes are left out on
+        # purpose — ``download_prefix`` does not report them, and summing the cache dir
+        # would stat every file of a campaign that can hold 100k of them.
+        logger.info("Fetched campaign %s (%d file(s)) from %s/%s to %s in %.1fs",
+                    campaign_id, n, bucket, prefix, dest,
+                    time.perf_counter() - started)
         return dest

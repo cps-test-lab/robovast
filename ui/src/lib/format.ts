@@ -57,6 +57,45 @@ export function formatUsageLabel(u: Usage): string {
   return `${formatCpuLabel(u)} · ${formatMemLabel(u)}`
 }
 
+/** Bytes → a compact size, e.g. "912 KiB", "39.9 MiB", "1.4 GiB". */
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${Math.round(bytes)} B`
+  const units = ['KiB', 'MiB', 'GiB', 'TiB']
+  let value = bytes / 1024
+  let i = 0
+  while (value >= 1024 && i < units.length - 1) {
+    value /= 1024
+    i += 1
+  }
+  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[i]}`
+}
+
+interface DataFetchStatus {
+  fetch_required: boolean
+  cached: boolean
+  transfer: 'none' | 'cluster-network' | 'port-forward'
+  db_bytes: number
+  fetch_in_progress: boolean
+}
+
+/**
+ * What to say while a campaign's first query runs, or `null` when there is nothing to say.
+ *
+ * A cluster campaign's first query fetches its databases from the object store *inside* the
+ * request, which without a word is indistinguishable from a hang. `null` for a local service
+ * (nothing to transfer) and for an already-cached campaign, so the common case stays silent
+ * rather than explaining something that is not happening.
+ *
+ * Lives here, not in a view, because two of them show it and the wording must not drift.
+ */
+export function formatDataFetchLabel(status: DataFetchStatus | undefined): string | null {
+  if (!status || !status.fetch_required || status.cached) return null
+  const size = status.db_bytes ? ` (${formatBytes(status.db_bytes)})` : ''
+  const via = status.transfer === 'port-forward' ? ' over a port-forward' : ''
+  if (status.fetch_in_progress) return `Fetching campaign data${size}${via}…`
+  return `First query — fetching campaign data${size} from the object store${via}…`
+}
+
 /** Seconds → a coarse human duration: "45s", "12m", "2h 5m", "1d 3h". */
 export function formatDuration(seconds: number): string {
   const s = Math.max(0, Math.round(seconds))

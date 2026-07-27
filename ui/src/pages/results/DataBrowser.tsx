@@ -28,6 +28,7 @@ import {
   type PlotSpec,
 } from '@/lib/robovastClient'
 import { FailureBox } from '@/components/StatusView'
+import { formatDataFetchLabel } from '@/lib/format'
 import { VegaLiteChart } from '@/preview/VegaLiteChart'
 import '@/lib/monaco' // configures the Monaco loader + workers (SQL editor below)
 
@@ -108,6 +109,17 @@ export function DataBrowser({
     enabled: !!campaignId,
     retry: false,
   })
+  // Why a query may be slow, asked alongside it: on a cluster campaign the first one fetches
+  // the databases from the object store inside the request. Cheap and advisory — a failure
+  // (an older service has no such route) just means no label.
+  const dataStatus = useQuery({
+    queryKey: ['data-status', campaignId],
+    queryFn: () => robovast.campaignDataStatus(campaignId),
+    enabled: !!campaignId,
+    retry: false,
+    staleTime: 60_000,
+  })
+  const fetchLabel = formatDataFetchLabel(dataStatus.data)
   // A failed campaign never produces data.db — surface *why* it failed (the same
   // reason the Monitor shows) instead of an endless "run postprocessing" prompt.
   const status = useQuery({
@@ -279,9 +291,16 @@ export function DataBrowser({
               >
                 Run
               </Button>
-              {result.data ? (
+              {result.data && !result.isFetching ? (
                 <Typography variant="caption" color="text.secondary">
                   {result.data.row_count} rows{result.data.truncated ? ' (truncated)' : ''}
+                </Typography>
+              ) : null}
+              {/* While a query runs, say if the wait is an object-store fetch rather than
+                  the query itself — otherwise a multi-minute first load looks like a hang. */}
+              {result.isFetching && fetchLabel ? (
+                <Typography variant="caption" color="text.secondary">
+                  {fetchLabel}
                 </Typography>
               ) : null}
             </Stack>

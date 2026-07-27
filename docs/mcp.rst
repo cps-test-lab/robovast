@@ -178,6 +178,32 @@ Two limits worth knowing, both stated in ``describe_campaign_data``'s output:
   authored — that last one being the only way to see what the author *wrote* rather than
   the validated config with defaults filled in.
 
+The first query on a campaign can be slow
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A cluster campaign's durable home is the object store, so the service materializes its two
+query databases into a local cache the first time something asks for them — **inside** that
+request. On a local ``vast serve`` this never happens; against a cluster reached through a
+``kubectl port-forward`` it is the difference between a query answering immediately and one
+taking a few seconds. Every query after it reads the cache.
+
+That is reported rather than left to be guessed at:
+
+* Before the wait, as a log notification naming the size and the transport, so a client that
+  renders MCP notifications shows *why* it is waiting instead of appearing to hang.
+* With the result, as a ``fetch`` field — ``{source, transfer, cold[, seconds, bytes]}`` —
+  which is the measured cost of that call, not an estimate. It also reaches clients that
+  ignore notifications, via the warning channel every tool result carries.
+* On demand, from ``campaign_data_status`` — a cheap pre-flight (two metadata lookups)
+  worth calling before a *batch* of queries against a campaign you have not touched yet.
+  ``fetch_required: false`` means the question does not apply. ``transfer`` separates
+  ``cluster-network`` (in-pod, fast) from ``port-forward`` (off-cluster driver, slow): the
+  same object store reached two ways, differing by orders of magnitude.
+
+A query fetches **only** those two databases (``_execution/data.db`` and ``campaign.db``),
+never the campaign's run artifacts — the same rule ``read_file`` follows for ``/results``.
+The cost therefore tracks the size of the metrics, not of the rosbags beside them.
+
 
 .. _mcp-files:
 

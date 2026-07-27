@@ -626,6 +626,47 @@ class DataQueryResult(BaseModel):
     note: Optional[str] = None
 
 
+class CampaignDataStatus(BaseModel):
+    """Whether querying this campaign has to transfer anything first, and what it costs.
+
+    Exists so a caller can say *why* it is about to wait, **before** it waits. As with
+    :class:`ResourceUsage`, the local↔cluster difference is resolved inside the service, so
+    a consumer reads the same fields either way and never branches on the backend:
+    ``fetch_required`` false means the question does not apply.
+
+    Deliberately cheap — two metadata lookups, never an enumeration of the campaign prefix
+    — because the point is to answer *before* the expensive thing, and a probe that itself
+    cost a listing would only move the cost.
+    """
+
+    campaign_id: str
+    #: ``"local-disk"`` (files on the service's own disk) or ``"object-store"``.
+    source: str
+    #: Can a query have to transfer data before it can answer? False on local, where there
+    #: is nothing to fetch and so nothing to warn about.
+    fetch_required: bool
+    #: The query databases are already cached at their current size, so the next query
+    #: reads them directly. Always True when ``fetch_required`` is False.
+    cached: bool
+    #: How a transfer reaches the store: ``"none"``, ``"cluster-network"`` (in-pod, LAN
+    #: speed) or ``"port-forward"`` (off-cluster driver — the slow one). The two cluster
+    #: modes differ by orders of magnitude, so "object store" alone would not tell a caller
+    #: whether to expect seconds or minutes.
+    transfer: str
+    #: Size of what a *query* needs (``data.db`` + ``campaign.db``) — not of the campaign,
+    #: which is typically orders of magnitude larger and irrelevant here.
+    db_bytes: int = 0
+    #: Another request is fetching this campaign right now; a query queues behind it rather
+    #: than starting a second transfer.
+    fetch_in_progress: bool = False
+    #: What this service's last completed transfer of this campaign actually cost. ``None``
+    #: before the first one — process-local, so a restart forgets it.
+    last_fetch_seconds: Optional[float] = None
+    last_fetch_bytes: Optional[int] = None
+    #: One human sentence naming the reason, for a client to show or an agent to repeat.
+    note: str = ""
+
+
 class CampaignPlotsResponse(BaseModel):
     """User-declared plots for a campaign (from its snapshot ``.vast``
     ``evaluation.plots``). Each entry is ``{title, query, vega_lite}``."""
@@ -822,6 +863,13 @@ class Routes:
     @staticmethod
     def campaign_query(campaign_id: str) -> str:
         return f"/campaigns/{campaign_id}/query"
+
+    @staticmethod
+    def campaign_data_status(campaign_id: str) -> str:
+        # A **control** route, not a ``/results`` path: every segment under ``/results`` is
+        # a user-chosen file name (see :mod:`robovast.common.file_address`), so a literal
+        # ``status`` there would shadow a campaign file actually called that.
+        return f"/campaigns/{campaign_id}/data-status"
 
     @staticmethod
     def campaign_plots(campaign_id: str) -> str:
@@ -1146,6 +1194,16 @@ class RobovastInterface(ABC):
         extra_campaign_ids: Optional[list[str]] = None,
     ) -> DataQueryResult:
         """Run a read-only ``SELECT`` over a campaign's data (``campaign.db`` attached)."""
+
+    @abstractmethod
+    def campaign_data_status(self, campaign_id: str) -> CampaignDataStatus:
+        """Report whether a query on this campaign must transfer data first, and its cost.
+
+        A **cheap** pre-flight for :meth:`describe_campaign_data` /
+        :meth:`query_campaign_data_sql`: it answers before the wait rather than explaining
+        after it, so a client can say *fetching this campaign's databases* instead of
+        appearing to hang. Must not itself enumerate the campaign.
+        """
 
     @abstractmethod
     def list_campaign_plots(self, campaign_id: str) -> CampaignPlotsResponse:

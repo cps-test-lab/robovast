@@ -26,8 +26,14 @@ class _Resp:
         pass
 
     def json(self):
+        # One permissive payload standing in for every response model these tests touch:
+        # the assertions are about the *request* (url, params, timeout), so the body only
+        # has to validate.
         return {"ok": True, "address": "/sources/ws-1/a.vast", "path": "a.vast",
-                "entries": [], "content": "x"}
+                "entries": [], "content": "x",
+                "campaign_id": "camp-1", "tables": [], "plots": [],
+                "source": "object-store", "fetch_required": True, "cached": False,
+                "transfer": "port-forward"}
 
 
 def _capture(monkeypatch):
@@ -35,7 +41,8 @@ def _capture(monkeypatch):
 
     def fake(method):
         def _call(url, params=None, timeout=None, json=None, **kw):
-            calls[method] = {"url": url, "params": params, "json": json}
+            calls[method] = {"url": url, "params": params, "json": json,
+                             "timeout": timeout}
             return _Resp()
         return _call
 
@@ -78,3 +85,33 @@ def test_write_and_edit_and_delete_use_the_same_url(monkeypatch):
         assert calls[method]["url"] == f"http://svc{address}", method
     assert calls["put"]["json"] == {"content": "x"}
     assert calls["post"]["json"] == {"old_string": "a", "new_string": "b"}
+
+
+def test_data_calls_outlast_a_cold_object_store_fetch(monkeypatch):
+    """A cluster campaign's first data call fetches its databases *inside* the request.
+
+    At the default 30 s the client aborted while the service was still transferring, so a
+    first query on a large campaign surfaced as a ReadTimeout indistinguishable from a
+    broken service — the web UI never hit it only because ``fetch`` sets no timeout at all.
+    """
+    calls = _capture(monkeypatch)
+    client = HTTPTransport("http://svc")
+
+    client.describe_campaign_data("camp-1")
+    assert calls["get"]["timeout"] == HTTPTransport.DATA_TIMEOUT
+
+    client.query_campaign_data_sql("camp-1", "SELECT 1")
+    assert calls["post"]["timeout"] == HTTPTransport.DATA_TIMEOUT
+
+    client.list_campaign_plots("camp-1")
+    assert calls["get"]["timeout"] == HTTPTransport.DATA_TIMEOUT
+
+
+def test_the_readiness_probe_keeps_the_default_timeout(monkeypatch):
+    """It is the cheap pre-flight: if *it* hangs, the service is unwell, not busy."""
+    calls = _capture(monkeypatch)
+
+    HTTPTransport("http://svc", timeout=7.0).campaign_data_status("camp-1")
+
+    assert calls["get"]["url"] == "http://svc/campaigns/camp-1/data-status"
+    assert calls["get"]["timeout"] == 7.0

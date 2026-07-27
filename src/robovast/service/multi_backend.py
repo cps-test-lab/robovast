@@ -329,6 +329,11 @@ class MultiBackendService(LocalTransport):
     def describe_campaign_data(self, campaign_id: str):
         return self._route(campaign_id, "describe_campaign_data", campaign_id)
 
+    def campaign_data_status(self, campaign_id: str):
+        # Routed, not answered here: whether a query transfers anything is exactly the
+        # per-lane difference — a local-lane campaign in this service fetches nothing.
+        return self._route(campaign_id, "campaign_data_status", campaign_id)
+
     def query_campaign_data_sql(self, campaign_id: str, sql: str, max_rows: int = 500,
                                 extra_campaign_ids: Optional[list] = None):
         return self._route(campaign_id, "query_campaign_data_sql", campaign_id, sql,

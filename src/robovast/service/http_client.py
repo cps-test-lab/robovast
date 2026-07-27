@@ -64,18 +64,19 @@ class HTTPTransport(RobovastInterface):
 
     # First arg is the URL *route*; **params are query params — named `route` (not
     # `path`) so an endpoint whose query param is itself `path` (workspace file
-    # read/delete) doesn't collide with this positional.
-    def _get(self, route: str, **params):
+    # read/delete) doesn't collide with this positional. `timeout` is keyword-only for the
+    # same reason and is likewise reserved: no route takes a `timeout` query param.
+    def _get(self, route: str, *, timeout: "float | None" = None, **params):
         import requests
         resp = requests.get(f"{self.base_url}{route}", params=params or None,
-                            timeout=self.timeout)
+                            timeout=timeout or self.timeout)
         resp.raise_for_status()
         return resp.json()
 
-    def _post(self, route: str, json=None):
+    def _post(self, route: str, json=None, *, timeout: "float | None" = None):
         import requests
         resp = requests.post(f"{self.base_url}{route}", json=json,
-                            timeout=self.timeout)
+                            timeout=timeout or self.timeout)
         resp.raise_for_status()
         return resp.json()
 
@@ -288,9 +289,25 @@ class HTTPTransport(RobovastInterface):
     def list_variation_types(self) -> VariationTypesResponse:
         return VariationTypesResponse.model_validate(self._get(Routes.VARIATION_TYPES))
 
+    #: A cluster campaign's first data call can spend minutes inside the request fetching
+    #: from the object store (``ClusterService._query_dir``), and the default 30 s would
+    #: abort the client while the service is still transferring — leaving the caller with a
+    #: ReadTimeout indistinguishable from a broken service. The web UI never hit this
+    #: because ``fetch`` sets no timeout at all.
+    DATA_TIMEOUT = 900.0
+
     def describe_campaign_data(self, campaign_id: str) -> "DataDescribe":
         from robovast.service.interface import DataDescribe
-        return DataDescribe.model_validate(self._get(Routes.campaign_describe(campaign_id)))
+        return DataDescribe.model_validate(self._get(
+            Routes.campaign_describe(campaign_id),
+            timeout=max(self.timeout, self.DATA_TIMEOUT)))
+
+    def campaign_data_status(self, campaign_id: str) -> "CampaignDataStatus":
+        # Deliberately the *default* timeout: this is the cheap probe, and if it hangs the
+        # answer is "the service is unwell", not "be patient".
+        from robovast.service.interface import CampaignDataStatus
+        return CampaignDataStatus.model_validate(
+            self._get(Routes.campaign_data_status(campaign_id)))
 
     def query_campaign_data_sql(
         self, campaign_id: str, sql: str, max_rows: int = 500,
@@ -300,12 +317,14 @@ class HTTPTransport(RobovastInterface):
         return DataQueryResult.model_validate(self._post(
             Routes.campaign_query(campaign_id),
             json={"sql": sql, "max_rows": max_rows,
-                  "extra_campaign_ids": extra_campaign_ids or []}))
+                  "extra_campaign_ids": extra_campaign_ids or []},
+            timeout=max(self.timeout, self.DATA_TIMEOUT)))
 
     def list_campaign_plots(self, campaign_id: str) -> "CampaignPlotsResponse":
         from robovast.service.interface import CampaignPlotsResponse
         return CampaignPlotsResponse.model_validate(
-            self._get(Routes.campaign_plots(campaign_id)))
+            self._get(Routes.campaign_plots(campaign_id),
+                      timeout=max(self.timeout, self.DATA_TIMEOUT)))
 
     def list_campaign_panels(self, campaign_id: str) -> "CampaignPanelsResponse":
         from robovast.service.interface import CampaignPanelsResponse

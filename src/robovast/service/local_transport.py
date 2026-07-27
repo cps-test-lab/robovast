@@ -1393,7 +1393,7 @@ class LocalTransport(RobovastInterface):
     def describe_campaign_data(self, campaign_id: str) -> "DataDescribe":
         from robovast.results_processing.data_query import describe_data_db
         from robovast.service.interface import DataDescribe
-        result = describe_data_db(self._data_dir(campaign_id))
+        result = describe_data_db(self._query_dir(campaign_id))
         return DataDescribe(campaign_id=campaign_id, **result)
 
     def query_campaign_data_sql(
@@ -1402,17 +1402,40 @@ class LocalTransport(RobovastInterface):
     ) -> "DataQueryResult":
         from robovast.results_processing.data_query import query_data_db
         from robovast.service.interface import DataQueryResult
-        extra_dirs = {f"c{i + 1}": self._data_dir(cid)
+        extra_dirs = {f"c{i + 1}": self._query_dir(cid)
                       for i, cid in enumerate(extra_campaign_ids or [])}
-        result = query_data_db(self._data_dir(campaign_id), sql, max_rows,
+        result = query_data_db(self._query_dir(campaign_id), sql, max_rows,
                                extra_dirs=extra_dirs)
         return DataQueryResult(campaign_id=campaign_id, **result)
+
+    def campaign_data_status(self, campaign_id: str) -> "CampaignDataStatus":
+        """Local: a query never transfers anything, so there is nothing to warn about.
+
+        The databases are files on this service's own disk. ``ClusterService`` overrides
+        this with the object-store answer."""
+        from robovast.service.interface import CampaignDataStatus
+        return CampaignDataStatus(
+            campaign_id=campaign_id, source="local-disk", fetch_required=False,
+            cached=True, transfer="none",
+            note="the campaign's databases are on the service's local disk; queries read "
+                 "them in place")
 
     def _data_dir(self, campaign_id: str):
         """Campaign dir holding data.db/campaign.db. Local: on disk (this transport
         overrides via ``_campaign_dir``); the cluster service fetches from the
         object store (``ClusterService`` overrides this)."""
         return self._campaign_dir(campaign_id)
+
+    def _query_dir(self, campaign_id: str):
+        """Dir a **query** reads: it needs only ``_execution/data.db`` + ``campaign.db``
+        (see ``data_query._open_db``).
+
+        Locally identical to :meth:`_data_dir`. Separate from it because on the cluster the
+        two answers differ by orders of magnitude — ``_data_dir`` materializes the whole
+        campaign, a query needs two objects — so ``ClusterService`` overrides this one
+        alone. Callers needing arbitrary campaign files (notebook render, panel assets,
+        endpoint plugins via :meth:`resolve_data_dir`) must keep using ``_data_dir``."""
+        return self._data_dir(campaign_id)
 
     def resolve_data_dir(self, campaign_id: str):
         """Public seam: resolve a campaign's data dir (local disk or, on the cluster,

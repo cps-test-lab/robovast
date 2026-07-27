@@ -36,6 +36,7 @@ import logging
 import os
 import socket
 import tempfile
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +135,41 @@ def _delete_key_prefix(bucket: str, prefix: str) -> str:
     return f"{clean}/"
 
 
+# How often (seconds) the download progress logger emits a running count.
+_DOWNLOAD_PROGRESS_INTERVAL = 5.0
+
+
+def download_progress_logger(subject, interval=_DOWNLOAD_PROGRESS_INTERVAL):
+    """Return a no-argument callback that logs the running download count.
+
+    Passed to :meth:`StorageClient.download_prefix` as ``on_file``: called once per
+    fetched file, emitting a throttled ``downloaded N so far`` line so a large transfer
+    shows progress instead of sitting silent. The count is cumulative when the callback is
+    shared across several ``download_prefix`` calls (a search-mode batch makes one per
+    config), so the log reads as one continuous total.
+
+    *subject* is the whole log subject (``"Batch 3"``, ``"Campaign foo"``), not a bare id:
+    the callers differ enough — a batch's result download, the service's campaign fetch —
+    that a hard-coded prefix would misdescribe one of them.
+
+    .. todo::
+
+       ``kubernetes_backend._download_progress_logger`` is an older private copy of this,
+       predating any second caller. Collapse it onto this one; it was left alone here only
+       to keep this change out of a file being edited concurrently.
+    """
+    state = {"count": 0, "last": time.monotonic()}
+
+    def on_file():
+        state["count"] += 1
+        now = time.monotonic()
+        if now - state["last"] >= interval:
+            state["last"] = now
+            logger.info("%s: downloaded %d file(s) so far...", subject, state["count"])
+
+    return on_file
+
+
 class StorageClient:
     """Common interface: upload a local dir to / download a prefix from storage."""
 
@@ -167,6 +203,26 @@ class StorageClient:
         A targeted single-key read (vs :meth:`download_prefix`) for small
         control-plane objects like ``_execution/outcome.json`` — the service reads
         just that one key to surface a failed campaign's reason.
+        """
+        raise NotImplementedError
+
+    def stat_object(self, bucket: str, key: str) -> "int | None":
+        """Return one object's byte size, or ``None`` if it does not exist.
+
+        :meth:`list_entries` cannot answer this: it treats its argument as a *prefix* and
+        appends ``/``, so an exact object key matches nothing. Sizing one known key — "is
+        the cached copy of this ``data.db`` still current?" — is a single metadata
+        round-trip, where the alternative (listing the campaign prefix to find one key) is
+        the whole-prefix cost the caller is trying to avoid.
+        """
+        raise NotImplementedError
+
+    def download_object(self, bucket: str, key: str, dst: str) -> bool:
+        """Stream one object to *dst*; return False if it does not exist.
+
+        :meth:`read_object` answers the same question through memory, which is the wrong
+        shape for a ``data.db`` that can be hundreds of MB. Written via
+        :func:`_download_atomic`, so a concurrent reader never opens a partial file.
         """
         raise NotImplementedError
 
@@ -390,6 +446,33 @@ class _S3StorageClient(StorageClient):
                 raise
         return self._resilient(op)
 
+    def stat_object(self, bucket: str, key: str) -> "int | None":
+        from botocore.exceptions import ClientError  # pylint: disable=import-outside-toplevel
+
+        def op():
+            try:
+                return int(self._s3.head_object(Bucket=bucket, Key=key)["ContentLength"])
+            except ClientError as exc:
+                code = exc.response.get("Error", {}).get("Code", "")
+                if code in ("404", "NoSuchKey", "NoSuchBucket"):
+                    return None
+                raise
+        return self._resilient(op)
+
+    def download_object(self, bucket: str, key: str, dst: str) -> bool:
+        from botocore.exceptions import ClientError  # pylint: disable=import-outside-toplevel
+
+        def op():
+            try:
+                _download_atomic(dst, lambda p: self._s3.download_file(bucket, key, p))
+            except ClientError as exc:
+                code = exc.response.get("Error", {}).get("Code", "")
+                if code in ("404", "NoSuchKey", "NoSuchBucket"):
+                    return False
+                raise
+            return True
+        return self._resilient(op)
+
     def list_entries(self, bucket: str, prefix: str = "", delimited: bool = False):
         from botocore.exceptions import ClientError  # pylint: disable=import-outside-toplevel
         clean = prefix.rstrip("/")
@@ -504,6 +587,27 @@ class _GcsStorageClient(StorageClient):
             return self._client.bucket(bucket).blob(key).download_as_bytes()
         except NotFound:
             return None
+
+    def stat_object(self, bucket: str, key: str) -> "int | None":
+        from google.cloud.exceptions import NotFound  # pylint: disable=import-outside-toplevel
+        try:
+            # ``bucket.blob()`` is a local handle carrying no metadata; ``get_blob`` is the
+            # call that asks the store (and returns None for a missing object).
+            blob = self._client.bucket(bucket).get_blob(key)
+        except NotFound:
+            return None
+        return None if blob is None else int(blob.size or 0)
+
+    def download_object(self, bucket: str, key: str, dst: str) -> bool:
+        from google.cloud.exceptions import NotFound  # pylint: disable=import-outside-toplevel
+        try:
+            blob = self._client.bucket(bucket).get_blob(key)
+            if blob is None:
+                return False
+            _download_atomic(dst, blob.download_to_filename)
+        except NotFound:
+            return False
+        return True
 
     def list_entries(self, bucket: str, prefix: str = "", delimited: bool = False):
         from google.cloud.exceptions import NotFound  # pylint: disable=import-outside-toplevel

@@ -2,6 +2,7 @@ import { useMemo, useState, type SyntheticEvent } from 'react'
 import { useQueries } from '@tanstack/react-query'
 import { RichTreeView } from '@mui/x-tree-view/RichTreeView'
 import { robovast, type CampaignSummary } from '@/lib/robovastClient'
+import { formatDataFetchLabel } from '@/lib/format'
 import {
   buildCampaignChildren,
   campaignItem,
@@ -45,6 +46,20 @@ export function ResultsTree({
   })
   const runByCampaign = new Map(expandedCampaigns.map((id, i) => [id, runQueries[i]]))
 
+  // Why the query above may be slow, asked in parallel with it. On a cluster campaign the
+  // first `RUNS_SQL` fetches the databases from the object store inside the request, so an
+  // unexplained "Loading…" can sit there for minutes. Cheap (two metadata lookups) and
+  // advisory: a failure just means the placeholder stays generic.
+  const statusQueries = useQueries({
+    queries: expandedCampaigns.map((id) => ({
+      queryKey: ['data-status', id],
+      queryFn: () => robovast.campaignDataStatus(id),
+      retry: false,
+      staleTime: 60_000,
+    })),
+  })
+  const statusByCampaign = new Map(expandedCampaigns.map((id, i) => [id, statusQueries[i]]))
+
   // Every campaign carries children so its expand arrow shows; the children are the real subtree
   // once loaded, otherwise a single placeholder (loading / no-data hint).
   const items: ResultsTreeItem[] = campaigns.map((c) => {
@@ -54,7 +69,8 @@ export function ResultsTree({
     let children: ResultsTreeItem[]
     const q = runByCampaign.get(c.campaign_id)
     if (!q || q.isPending) {
-      children = [placeholderChild(c.campaign_id, 'Loading…')]
+      const fetching = formatDataFetchLabel(statusByCampaign.get(c.campaign_id)?.data)
+      children = [placeholderChild(c.campaign_id, fetching ?? 'Loading…')]
     } else if (q.isError) {
       const msg = (q.error as Error).message
       children = [

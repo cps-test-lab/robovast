@@ -29,6 +29,7 @@ by postprocessing, while ``campaign.db`` is written as the campaign runs.
 
 import logging
 
+from robovast.common.progress import fmt_size
 from robovast.mcp_server import results_resolver
 from robovast.mcp_server import service_access
 from robovast.results_processing.data_query import (DataQueryError,
@@ -36,7 +37,8 @@ from robovast.results_processing.data_query import (DataQueryError,
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["describe", "query", "rows", "service_client"]
+__all__ = ["announce_pending_fetch", "data_status", "describe", "query", "rows",
+           "service_client"]
 
 
 def service_client():
@@ -56,23 +58,112 @@ def service_client():
 _REPORTED = (DataQueryError, ValueError, OSError)
 
 
-def describe(campaign_id: str) -> dict:
-    """``{campaign_id, tables, note}`` for a campaign, or ``{error}``."""
+def data_status(campaign_id: str, client=None) -> dict | None:
+    """``campaign_data_status`` for a campaign, or ``None`` when it cannot be known.
+
+    ``None`` covers the two cases a caller must treat identically to "no warning needed":
+    no service answers (the local in-process lane transfers nothing), and a service too
+    old to serve the route. **Never raises** — this only decides whether to say "this may
+    take a moment", so a failure here must not fail the query it precedes.
+    """
+    client = client or service_access.service_client()
+    if client is None:
+        return None
+    try:
+        return client.campaign_data_status(campaign_id).model_dump()
+    except Exception as e:  # noqa: BLE001 - an advisory probe never breaks the real call
+        logger.debug("data-status probe failed for %s: %s", campaign_id, e)
+        return None
+
+
+def announce_pending_fetch(campaign_id: str, client=None) -> tuple[dict | None, str | None]:
+    """Probe, and log why the next query may be slow. ``(status, notice_or_None)``.
+
+    *notice* is non-None only when a transfer is actually pending — a cluster campaign
+    whose databases are not cached yet. It is logged as a **warning** so the MCP server's
+    warning-forwarding middleware attaches it to whichever tool result comes back, which
+    is what makes the reason reach a caller that ignores log notifications. An async caller
+    can additionally deliver it up front (see ``results.py``); the return value is that
+    caller's copy.
+    """
+    status = data_status(campaign_id, client)
+    if status is None or not status.get("fetch_required") or status.get("cached"):
+        return status, None
+    size = fmt_size(status["db_bytes"]) if status.get("db_bytes") else "unknown size"
+    queued = " Another request is already fetching it, so this one waits for that." \
+        if status.get("fetch_in_progress") else ""
+    notice = (
+        f"First query on {campaign_id}: the service is fetching this campaign's query "
+        f"databases ({size}) from the object store"
+        + (" over a kubectl port-forward" if status.get("transfer") == "port-forward"
+           else " over the cluster network")
+        + f", so this call is slower than the ones after it.{queued}")
+    logger.warning(notice)
+    return status, notice
+
+
+def _fetch_info(status: dict | None, cold: bool) -> dict | None:
+    """The ``fetch`` block attached to a result: what the transfer cost, or None."""
+    if status is None:
+        return None
+    info = {"source": status.get("source"), "transfer": status.get("transfer"),
+            "cold": cold}
+    if cold:
+        # Recorded by the service during the call we just made, so this is that call's
+        # own cost rather than a stale figure from an earlier one.
+        info["seconds"] = status.get("last_fetch_seconds")
+        info["bytes"] = status.get("last_fetch_bytes")
+    return info
+
+
+def describe(campaign_id: str, preflight=None) -> dict:
+    """``{campaign_id, tables, note}`` for a campaign, or ``{error}``.
+
+    *preflight* is an ``announce_pending_fetch`` result an async caller already obtained so
+    it could announce before blocking; passing it keeps the announcement to **one** probe
+    and one warning, instead of this function repeating both.
+    """
     client = service_access.service_client()
+    status, notice = (preflight if preflight is not None
+                      else announce_pending_fetch(campaign_id, client))
     try:
         if client is not None:
-            return client.describe_campaign_data(campaign_id).model_dump()
-        campaign_dir = results_resolver.resolve_campaign_path(campaign_id)
-        return {"campaign_id": campaign_id, **describe_data_db(campaign_dir)}
+            result = client.describe_campaign_data(campaign_id).model_dump()
+        else:
+            campaign_dir = results_resolver.resolve_campaign_path(campaign_id)
+            result = {"campaign_id": campaign_id, **describe_data_db(campaign_dir)}
     except _REPORTED as e:
         return {"error": _message(e, client)}
+    return _with_fetch(result, campaign_id, client, status, notice)
+
+
+def _with_fetch(result: dict, campaign_id: str, client, status, notice) -> dict:
+    """Attach what the transfer cost, when there was one.
+
+    Re-probes after a cold call: the pre-call status could not know the duration of a
+    transfer that had not happened yet, and reporting the measured cost is what lets a
+    caller say "3.5 min because 8 GB moved" instead of guessing.
+    """
+    if notice is None:
+        info = _fetch_info(status, cold=False)
+    else:
+        info = _fetch_info(data_status(campaign_id, client) or status, cold=True)
+    if info is not None:
+        result["fetch"] = info
+    return result
 
 
 def query(campaign_id: str, sql: str, max_rows: int = 500,
-          extra_campaign_ids: list | None = None) -> dict:
-    """Run a read-only ``SELECT``; ``{campaign_id, columns, rows, ...}`` or ``{error}``."""
+          extra_campaign_ids: list | None = None, preflight=None) -> dict:
+    """Run a read-only ``SELECT``; ``{campaign_id, columns, rows, ...}`` or ``{error}``.
+
+    See :func:`describe` for *preflight* — it keeps the pending-fetch announcement to one
+    probe when an async caller has already made it.
+    """
     aliases = {f"c{i + 1}": cid for i, cid in enumerate(extra_campaign_ids or [])}
     client = service_access.service_client()
+    status, notice = (preflight if preflight is not None
+                      else announce_pending_fetch(campaign_id, client))
     try:
         if client is not None:
             result = client.query_campaign_data_sql(
@@ -87,7 +178,7 @@ def query(campaign_id: str, sql: str, max_rows: int = 500,
         return {"error": _message(e, client)}
     if aliases:
         result["attached"] = aliases
-    return result
+    return _with_fetch(result, campaign_id, client, status, notice)
 
 
 def _message(exc: Exception, client) -> str:

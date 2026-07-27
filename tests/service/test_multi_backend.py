@@ -116,6 +116,22 @@ def test_per_campaign_call_routes_to_owning_lane(tmp_path, monkeypatch):
     assert seen == [("cluster", "clu"), ("local", "loc")]
 
 
+def test_data_status_routes_so_each_lane_answers_for_itself(tmp_path, monkeypatch):
+    """Whether a query transfers anything *is* the per-lane difference.
+
+    Answering it in the router would report one lane's cost for both: a local-lane campaign
+    in this service fetches nothing, while a cluster-lane one may move hundreds of MB.
+    """
+    svc = _make(tmp_path)
+    svc._lane_map.update({"clu": "cluster", "loc": "local"})
+    monkeypatch.setattr(ClusterService, "campaign_data_status",
+                        lambda self, cid: "cluster-answer")
+
+    assert svc.campaign_data_status("clu") == "cluster-answer"
+    local = svc.campaign_data_status("loc")
+    assert local.fetch_required is False and local.transfer == "none"
+
+
 def test_resource_usage_routes_and_defaults_cluster(tmp_path, monkeypatch):
     svc = _make(tmp_path)
     seen = []
