@@ -233,6 +233,26 @@ class ParameterVariationList(Variation):
               - environments/office/office.yaml
             - - environments/hospital/hospital.stl
               - environments/hospital/hospital.yaml
+
+    .. warning::
+
+       ``values`` is typed ``list[float | int | bool | dict | list]`` — there is **no
+       bare-string member**. A single string parameter therefore cannot be written as
+       ``values: ["nav2_bringup"]``: that is rejected outright, and a value that
+       happens to parse as another type is worse, because ``values: ["False"]``
+       validates by coercing to the boolean ``False`` and hands a bool to a parameter
+       the scenario declares as ``string``.
+
+       Use the multi-parameter form for string parameters — the nested list satisfies
+       the ``list`` member and its entries stay strings. It also fixes several
+       parameters in one level, without multiplying the configuration count:
+
+       .. code-block:: yaml
+
+           - ParameterVariationList:
+               name: [sim_launch_package, sim_launch_file, headless]
+               values:
+               - ["nav2_bringup", "tb4_simulation_launch.py", "False"]
     """
     CONFIG_CLASS = ParameterVariationListConfig
 
