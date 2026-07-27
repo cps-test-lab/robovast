@@ -219,6 +219,48 @@ artifacts span the whole job; slicing them to a single configuration's active
 time window is a planned post-processing step.
 
 
+.. _reading-result-files:
+
+Reading these files
+-------------------
+
+Every path in the tree above has one **address**, and it is the same string
+whether you type it at the CLI, pass it to an MCP tool, or ``GET`` it from the
+service::
+
+    /results/<campaign_id>/<path>
+
+The path after the campaign id is exactly the path in the tree — ``_execution/
+outcome.json``, ``<config-name>/<run>/test.xml`` — so what a listing shows is what
+you can read. Campaign results are **read-only**: they are the record of a run,
+and on the cluster they are object-store objects that a local write could not
+change. Workspace *inputs* live in the writable half of the same address space,
+``/sources/<workspace_id>/<path>`` (see :ref:`web-ui-config`).
+
+.. code-block:: bash
+
+   vast files ls  /results/nav-2026-03-04-152130/            # _config/ _execution/ …
+   vast files ls  /results/nav-2026-03-04-152130/ -r         # whole tree, files only
+   vast files cat /results/nav-2026-03-04-152130/_execution/outcome.json
+   vast files cat /results/nav-.../hospital-1-42/0/logs/system.log --lines 50 --offset 200
+   vast files get /results/nav-.../hospital-1-42/0/rosbag2/bag.mcap ./bag.mcap
+
+``ls`` lists one level at a time — a campaign holds a directory per configuration
+and per run, so a recursive listing of the root is thousands of entries; it
+reports ``total`` when it truncates. ``cat`` pages text and refuses binary;
+``get`` writes raw bytes, which is how you fetch one artifact without downloading
+the whole campaign archive (that is ``vast results download``, below).
+
+The same addresses work over HTTP (``curl <service>/results/<campaign>/<path>``)
+and from an LLM through the ``read_file`` / ``list_files`` MCP tools — see
+:ref:`mcp-files`. Reading a campaign on this machine needs no running service;
+against a cluster service the read fetches that one object, not the campaign.
+
+If the service runs on your own machine, ``get_service_info`` also reports a
+``results_root`` you can open directly with your own tools; it is absent whenever
+that would be a path you cannot actually read.
+
+
 .. _results-metadata:
 
 ``metadata.yaml`` — Campaign Metadata

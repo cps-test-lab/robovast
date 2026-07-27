@@ -58,6 +58,8 @@ It provides four views, one per desktop GUI:
 * **Results** — browse a campaign's data, run read-only SQL, and chart it. The
   browser equivalent of ``vast eval gui`` (SQL + charts rather than notebooks).
 
+.. _web-ui-config:
+
 Config editor
 -------------
 
@@ -92,6 +94,23 @@ run files, and author the ``.vast`` in the Monaco editor.
 
       vast workspace update ros2demo configs/examples/ros2_basic          # add + overwrite
       vast workspace update ros2demo configs/examples/ros2_basic --prune  # also delete removed files
+
+   To work on individual files rather than sync a whole directory, a workspace's
+   contents are addressable as ``/sources/<workspace_id>/<path>`` — the writable
+   half of the same address space a campaign's outputs use (see
+   :ref:`reading-result-files`):
+
+   .. code-block:: bash
+
+      vast files ls  /sources/ros2demo/                   # what the workspace holds
+      vast files cat /sources/ros2demo/demo.vast
+      vast files put /sources/ros2demo/files/run.sh ./run.sh
+      vast files rm  /sources/ros2demo/files/old.osc
+
+   ``put`` writes ``.vast``/``.osc`` directly and streams everything else through
+   the upload side channel, preserving the executable bit — the same two paths the
+   Config tab's drag-a-folder upload uses. A workspace pinned with
+   ``vast serve --workspace-dir`` is read-only: edit those files on disk.
 
    ``update`` re-uploads every file (overwriting in place) with the same inline /
    side-channel split and skip rules as ``init``. By default it only adds and
