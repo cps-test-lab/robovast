@@ -52,7 +52,7 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 
-from robovast.execution.control_server import Status, is_running
+from robovast.execution.control_server import Phase, Status, is_running
 from robovast.service.client import LocalTransport
 from robovast.service.interface import (ActionResult, JobCounts, JobSummary,
                                         ListJobsResponse, LogChunk,
@@ -1307,7 +1307,6 @@ class ClusterService(LocalTransport):
 
         return self._dispatch_background(
             request.campaign_id, phase=Phase.SHARING, work=work)
-        return ActionResult(ok=ok, message=message)
 
     def campaign_tar_stream(self, campaign_id: str):
         """Yield a ``tar.gz`` of the postprocessed campaign, streamed from the object store.
