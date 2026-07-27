@@ -118,7 +118,17 @@ a campaign. The status then carries the phase and the ``build_id``, so the build
 stays reachable. Do **not** instead teach ``list_running_campaigns`` to enumerate
 builds — that needs a listing endpoint that does not exist, returns entries that are
 not campaigns, and creates a second in-flight registry to keep consistent with the
-first. Return immediately in a ``building`` phase and let the driver await it. This
+first.
+
+Two details the ordering change must respect, because builds are **shared**:
+``build_hash`` is content-addressed over the spec and context, so two campaigns needing
+the same image both wait on one build.
+
+* The phase means *waiting for its image*, not *performing the build* — otherwise two
+  campaigns each appear to be building the same image.
+* Stopping a building campaign must **detach** it, not cancel the build: another campaign
+  may be waiting on it, and the image is a cache entry rather than that campaign's
+  property. Return immediately in a ``building`` phase and let the driver await it. This
 applies to the local docker build too: building is part of the campaign's driven
 work, not a precondition of its existence. It changes an error path deliberately —
 a failed build becomes an inspectable failed campaign rather than no campaign.
