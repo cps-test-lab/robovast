@@ -48,7 +48,10 @@ def test_runs_table_has_params_status_duration(campaign):
         "SELECT config_name, status, duration_s, param_wind, objective FROM runs")}
     assert rows["cfg-a"][1] == "passed" and rows["cfg-a"][2] == 12.5
     assert rows["cfg-b"][1] == "failed"
-    assert rows["cfg-a"][3] == "2.5" and rows["cfg-a"][4] == 0.9
+    # Numeric params are stored as numbers, so comparisons/ORDER BY over them are
+    # numeric rather than lexicographic.
+    assert rows["cfg-a"][3] == 2.5 and rows["cfg-a"][4] == 0.9
+    assert isinstance(rows["cfg-a"][3], float)
 
 
 def test_describe_lists_runs_and_attached_campaign(campaign):
@@ -62,7 +65,7 @@ def test_sql_query_and_param_join(campaign):
     r = run_data.query_campaign_data_sql(
         campaign, "SELECT param_wind, status FROM runs ORDER BY param_wind")
     assert r["columns"] == ["param_wind", "status"]
-    assert r["rows"][0]["param_wind"] == "2.5"
+    assert r["rows"][0]["param_wind"] == 2.5
     # attached campaign.db is queryable
     r2 = run_data.query_campaign_data_sql(campaign, "SELECT COUNT(*) n FROM campaign.unit")
     assert r2["rows"][0]["n"] == 2

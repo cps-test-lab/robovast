@@ -70,6 +70,10 @@ def describe_campaign_data(campaign_id: str) -> dict:
     ``run`` — ``campaign.run`` is the per-run source of truth). Use before
     :func:`query_campaign_data_sql`.
 
+    Each column is reported as ``"name TYPE"``: numeric CSV columns are ingested as
+    ``INTEGER``/``REAL`` and can be compared and ordered directly, while a ``TEXT``
+    column orders lexicographically and needs ``CAST(col AS REAL)``.
+
     Args:
         campaign_id: Campaign identifier or an absolute campaign path.
 
@@ -116,7 +120,7 @@ def query_campaign_data_sql(campaign_id: str, sql: str, max_rows: int = 500,
 
         query_campaign_data_sql(
             campaign_id="campaign-...",
-            sql='''SELECT r.param_wind_strength, AVG(CAST(m.error AS REAL)) AS mean_error
+            sql='''SELECT r.param_wind_strength, AVG(m.error) AS mean_error
                    FROM runs r JOIN landing_error m
                      ON r.config_name = m.config_name AND r.run_id = m.run_id
                    GROUP BY r.param_wind_strength ORDER BY r.param_wind_strength''')

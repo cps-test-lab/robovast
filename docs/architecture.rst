@@ -204,6 +204,36 @@ metric table on ``(config_name, run_id)`` answers "how does *<param>* affect
 *<metric>*" in one query. The ``vast eval gui`` notebook path reads the same ``data.db`` directly and
 is unaffected.
 
+**Columns are typed from the data, not left as text.** A CSV yields only strings, so an
+untyped ingest makes every comparison lexicographic — ``ORDER BY timestamp`` puts
+``"10.022"`` before ``"9.5"``, shuffling a trajectory and producing a path length that is
+wrong by a factor rather than an error. So ingest infers a type per column
+(:mod:`robovast.results_processing.csv_types`): a column whose every non-empty value is a
+plain decimal number becomes ``INTEGER``/``REAL`` and is stored numerically, and everything
+else stays ``TEXT`` verbatim. The rule is deliberately strict — one ``n/a`` demotes the
+column, and ``"007"``/``"nan"`` are text (a zero-padded identifier must keep its text, and
+NaN has no SQLite representation, so accepting it would delete data instead of typing it).
+Scenario ``param_*`` columns are typed the same way from their resolved values.
+``describe_campaign_data`` reports each column as ``"name TYPE"``, which is what tells a
+caller whether a column can be ordered directly or needs ``CAST(col AS REAL)``. A
+``data.db`` built before typed ingest is all-``TEXT``; re-running postprocessing retypes it.
+
+**The declaration never outlives the evidence.** A column is declared by the first run that
+writes it, but the evidence is every run — a later one can turn an ``INTEGER`` column real,
+or a numeric column textual. A stale declaration is not cosmetic: a schema claiming ``REAL``
+over a column holding one ``'n/a'`` makes ``AVG()`` return a plausible wrong number (SQLite
+reads the text as 0) and ``MAX()`` return the text itself — the original bug wearing a
+different hat. So after the last run is ingested, any table whose verdict moved is rebuilt
+with the corrected types and its values carried over (``_retype_table``), which also
+normalizes a mixed column so every row in it is text. Only affected tables are touched, so
+the usual case rebuilds nothing.
+
+Because a type alone cannot say "numeric except in the runs that failed", such a column is
+also recorded in ``data.db``'s ``_column_notes`` and surfaced by ``describe_campaign_data``
+as ``column_notes`` on the owning table — postprocessing logs a warning too, but no SQL
+caller ever reads that log. The note names the fix (exclude the text rows, e.g.
+``WHERE col GLOB '[0-9-]*'``) because ``CAST`` alone would silently read them as 0.
+
 Run view (web panel framework)
 ------------------------------
 

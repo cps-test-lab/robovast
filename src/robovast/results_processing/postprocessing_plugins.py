@@ -51,6 +51,48 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from robovast.common.execution import COMPAT_VERSION, is_campaign_dir
+from robovast.results_processing.csv_types import (INTEGER, REAL, TEXT, UNKNOWN,
+                                                  cast_expr, column_def,
+                                                  infer_column_types, sql_value, widen,
+                                                  widest)
+
+
+def _retype_table(conn, table: str, final_types: dict) -> list[str]:
+    """Rebuild *table* so its declared column types match *final_types*.
+
+    A column's type is declared by the first run that writes it, but the evidence is
+    every run: a later run can turn an ``INTEGER`` column real, or a numeric column
+    textual. Leaving the declaration behind is not cosmetic — a schema that claims
+    ``REAL`` over a column holding one ``'n/a'`` makes ``AVG()`` return a plausible
+    wrong number (SQLite reads the text as 0) and ``MAX()`` return the text itself.
+    So once every run has been seen, tables whose verdict moved are rebuilt with the
+    right types and their values brought over (see
+    :func:`~robovast.results_processing.csv_types.cast_expr`).
+
+    Returns the columns whose declared type changed (empty when nothing was rebuilt).
+    """
+    info = [(r[1], r[2]) for r in conn.execute(f'PRAGMA table_info("{table}")')]
+    # PRAGMA reports a column declared without a type as an empty string.
+    declared = {name: (typ or UNKNOWN) for name, typ in info}
+    changed = [name for name, typ in declared.items()
+               if final_types.get(name, typ) != typ]
+    if not changed:
+        return []
+
+    types = {name: final_types.get(name, declared[name]) for name, _ in info}
+    col_defs = ", ".join(column_def(n, types[n]) for n, _ in info)
+    col_list = ", ".join(f'"{n}"' for n, _ in info)
+    select = ", ".join(cast_expr(n, types[n]) for n, _ in info)
+    staging = f"_retype_{table}"
+    # Rename-then-copy rather than ALTER (SQLite cannot change a column's type), and
+    # drop the staging table before recreating the index so the index name is free.
+    conn.execute(f'ALTER TABLE "{table}" RENAME TO "{staging}"')
+    conn.execute(f'CREATE TABLE "{table}" ({col_defs})')
+    conn.execute(f'INSERT INTO "{table}" ({col_list}) SELECT {select} FROM "{staging}"')
+    conn.execute(f'DROP TABLE "{staging}"')
+    conn.execute(f'CREATE INDEX IF NOT EXISTS "idx_{table}_ctx" '
+                 f'ON "{table}" (config_name, run_id)')
+    return changed
 
 
 class BasePostprocessingPlugin:
@@ -530,12 +572,25 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
     param_cols = [f"param_{k}" for k in param_keys]
     all_cols = base_cols + param_cols
 
+    # Param columns are typed from the resolved param values across all configs, so
+    # a numeric factor stays numeric: `ORDER BY param_wind_strength` and
+    # `WHERE param_speed > 0.5` mean what they say instead of comparing text.
+    types = {c: (INTEGER if c in ("run_id", "passed", "errors", "failures",
+                                  "available_cpus")
+                 else REAL if c in ("duration_s", "objective", "available_mem_gb")
+                 else TEXT)
+             for c in base_cols}
+    for key, col in zip(param_keys, param_cols):
+        types[col] = UNKNOWN
+        for params in params_by_config.values():
+            if key in params:
+                value = params[key]
+                types[col] = widen(
+                    types[col],
+                    json.dumps(value) if isinstance(value, (list, dict)) else value)
+
     conn.execute("DROP TABLE IF EXISTS runs")
-    col_defs = ", ".join(
-        (f'"{c}" INTEGER' if c in ("run_id", "errors", "failures", "available_cpus") else
-         f'"{c}" REAL' if c in ("duration_s", "objective", "available_mem_gb") else
-         f'"{c}" TEXT')
-        for c in all_cols)
+    col_defs = ", ".join(column_def(c, types[c]) for c in all_cols)
     conn.execute(f"CREATE TABLE runs ({col_defs})")
     conn.execute('CREATE INDEX idx_runs_ctx ON runs (config_name, run_id)')
 
@@ -565,11 +620,9 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
                          errors, failures, objective,
                          start_time, end_time,
                          instance_type, cpu_name, avail_cpus, avail_mem]
-            param_vals = [
-                json.dumps(params[k]) if isinstance(params.get(k), (list, dict))
-                else params.get(k)
-                for k in param_keys]
-            conn.execute(insert_sql, base_vals + param_vals)
+            param_vals = [params.get(k) for k in param_keys]
+            conn.execute(insert_sql, [sql_value(v, types[c])
+                                      for c, v in zip(all_cols, base_vals + param_vals)])
 
 
 def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str]:
@@ -579,6 +632,14 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
     Each CSV filename (e.g. ``behaviors.csv``) becomes a separate table containing
     data from all configs and all runs, with extra ``config_name`` and ``run_id``
     columns prepended.
+
+    Column types are inferred from the CSV values themselves
+    (:mod:`robovast.results_processing.csv_types`): a column whose every non-empty
+    value is a plain decimal number becomes ``INTEGER``/``REAL`` and is stored as a
+    number, everything else stays ``TEXT``. Without that, every column is text and
+    ``ORDER BY timestamp`` sorts ``"10.022"`` before ``"9.5"`` — a silent, plausible
+    wrong answer rather than an error. A column that is numeric in one run and text
+    in another is logged as a warning; both values are kept.
 
     A ``scenario_timestamps`` table is also created containing the timestamp of
     the first scenario-end rosout entry per run (from ``scenario_execution_ros``
@@ -635,11 +696,33 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
             "PRIMARY KEY (config_name, run_id)"
             ")"
         )
+        # Caveats a column's declared type cannot express, surfaced by
+        # ``describe_data_db`` so they reach whoever writes the SQL (the postprocessing
+        # log does not). Currently: a column that is numeric in some runs and text in
+        # others.
+        conn.execute(
+            "CREATE TABLE _column_notes ("
+            "table_name TEXT NOT NULL, "
+            "column_name TEXT NOT NULL, "
+            "note TEXT NOT NULL, "
+            "PRIMARY KEY (table_name, column_name)"
+            ")"
+        )
         conn.commit()
 
         # Track which SQL tables have been created and their current columns
         # sql_table_name -> set of column names already in the schema
         created_tables: dict[str, set[str]] = {}
+        # sql_table_name -> {column: SQLite type}, inferred from the CSV values
+        # themselves (see robovast.results_processing.csv_types) so numeric columns
+        # are stored numerically instead of as text that only sorts lexicographically.
+        col_types: dict[str, dict[str, str]] = {}
+        # (display_name, sql_table_name, column) whose values disagree across runs —
+        # numeric in the run that created the column, text in a later one. Such a
+        # column ends up TEXT, and both the log and `_column_notes` say so: an
+        # aggregate over it silently reads the text rows as 0, so a caller has to know
+        # to exclude them rather than trust AVG().
+        mixed_columns: set[tuple[str, str, str]] = set()
         # display_name -> sql_table_name
         name_map: dict[str, str] = {}
         # display_name -> total row count across all runs
@@ -731,10 +814,13 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
 
                     context_cols = ["config_name", "run_id"]
                     all_data_cols = context_cols + csv_cols
+                    csv_types = infer_column_types(rows, csv_cols)
 
                     if sql_name not in created_tables:
+                        types = {"config_name": TEXT, "run_id": INTEGER, **csv_types}
+                        col_types[sql_name] = types
                         col_defs = ", ".join(
-                            f'"{c}" TEXT' for c in all_data_cols
+                            column_def(c, types[c]) for c in all_data_cols
                         )
                         conn.execute(f'CREATE TABLE "{sql_name}" ({col_defs})')
                         conn.execute(
@@ -746,12 +832,27 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
                     else:
                         # Add any new columns from this CSV
                         existing = created_tables[sql_name]
+                        types = col_types[sql_name]
                         altered = False
                         for col in csv_cols:
                             if col not in existing:
-                                conn.execute(f'ALTER TABLE "{sql_name}" ADD COLUMN "{col}" TEXT')
+                                types[col] = csv_types[col]
+                                conn.execute(
+                                    f'ALTER TABLE "{sql_name}" ADD COLUMN '
+                                    f'{column_def(col, types[col])}')
                                 existing.add(col)
                                 altered = True
+                                continue
+                            # The declared type came from the first run that wrote this
+                            # column, so a later run can disagree. Widening the stored
+                            # type keeps values honest: SQLite's numeric affinity leaves
+                            # a real in an INTEGER column as a real, and a column that
+                            # was empty until now has no affinity to fight.
+                            widened = widest(types[col], csv_types[col])
+                            if widened != types[col]:
+                                if widened == TEXT and types[col] != UNKNOWN:
+                                    mixed_columns.add((display_name, sql_name, col))
+                                types[col] = widened
                         if altered:
                             conn.commit()
 
@@ -760,8 +861,7 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
                     insert_sql = f'INSERT INTO "{sql_name}" ({col_list}) VALUES ({placeholders})'
                     batch = [
                         [config_name, run_id] + [
-                            json.dumps(v) if isinstance(v, (list, dict)) else v
-                            for v in (row.get(c) for c in csv_cols)
+                            sql_value(row.get(c), types[c]) for c in csv_cols
                         ]
                         for row in rows
                     ]
@@ -781,6 +881,25 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
                     pct = completed_runs / total_runs * 100 if total_runs else 100
                     _log(f"  {completed_runs}/{total_runs} runs ({pct:.0f}%)")
 
+        # Each column was declared from the first run that wrote it; the runs after it
+        # may have widened the verdict. Now that every run has been seen, bring the
+        # declarations back in line with the data — otherwise the schema an agent reads
+        # contradicts what the table holds.
+        retyped: dict[str, list[str]] = {}
+        for sql_name, final_types in col_types.items():
+            changed = _retype_table(conn, sql_name, final_types)
+            if changed:
+                retyped[sql_name] = changed
+        for display_name, sql_name, col in sorted(mixed_columns):
+            conn.execute(
+                "INSERT OR REPLACE INTO _column_notes (table_name, column_name, note) "
+                "VALUES (?, ?, ?)",
+                (sql_name, col,
+                 "numeric in some runs, text in others — stored as TEXT. An aggregate "
+                 "reads the text rows as 0, so exclude them (e.g. WHERE col GLOB "
+                 "'[0-9-]*') instead of trusting AVG/MIN/MAX."))
+        conn.commit()
+
         # Dimension table joining per-run status/duration to scenario parameters,
         # so "how does <param> affect <metric>" is a single SQL join.
         _build_runs_table(conn, campaign_path, config_dirs)
@@ -793,5 +912,15 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
 
     for display_name, row_count in sorted(table_rows.items()):
         _log(f"  table: {display_name} ({row_count} rows)")
+    for sql_name, changed in sorted(retyped.items()):
+        _log(f"  retyped {sql_name}: {', '.join(sorted(changed))} "
+             f"(later runs widened the column)")
+    for display_name, _sql_name, col in sorted(mixed_columns):
+        # Not fatal — every value is still there — but the column is numeric in some
+        # runs and text in others, so an aggregate over it will read the text rows as 0.
+        # Also recorded in ``_column_notes``, which is where a SQL caller will see it.
+        _log(f"  WARNING: {display_name}.{col} is numeric in some runs and text in "
+             f"others; stored as TEXT. Exclude the text rows in aggregates, and check "
+             f"the runs that write it.")
 
     return True, f"Created data.db with {table_count} table(s) in {db_path}"

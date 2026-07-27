@@ -285,6 +285,12 @@ _DESCRIBE_NOTE = (
     "on (config_name, run_id). campaign.db is attached as schema 'campaign' (see "
     "the campaign/batch/unit/run table descriptions). For raw per-run pass/fail, "
     "campaign.run is the source of truth (main.runs is its postprocessed view). "
+    "Each column is listed as 'name TYPE': numeric CSV columns are stored as "
+    "INTEGER/REAL, so compare and ORDER BY them directly. A TEXT column holds text — "
+    "ordering it is lexicographic ('10.022' < '9.5'), so CAST(col AS REAL) first, and "
+    "note that a data.db built before typed ingest has TEXT everywhere (rerun "
+    "postprocessing to retype it). A table's 'column_notes' flags a column whose type "
+    "does not tell the whole story — read it before aggregating that column. "
     "Extra aggregate functions are "
     "available beyond SQLite's built-ins: STDDEV, VARIANCE, MEDIAN, and "
     "PERCENTILE(col, p) where p is 0..100. A REGEXP(pattern, col) function is also "
@@ -292,8 +298,36 @@ _DESCRIBE_NOTE = (
 )
 
 
+#: Internal bookkeeping tables in ``data.db``: not results, so not listed as tables —
+#: ``_column_notes`` is folded into the owning table's entry instead.
+_INTERNAL_TABLES = ("_table_name_map", "_column_notes")
+
+
+def _column_notes(conn: sqlite3.Connection, schema: str) -> dict:
+    """``{table: {column: note}}`` from *schema*'s ``_column_notes``.
+
+    Caveats the declared type cannot carry — currently a column that is numeric in
+    some runs and text in others, where an aggregate silently reads the text rows as
+    0. Absent in a ``data.db`` built before typed ingest, which is not an error.
+    """
+    notes: dict[str, dict[str, str]] = {}
+    try:
+        rows = conn.execute(
+            f"SELECT table_name, column_name, note FROM {schema}._column_notes").fetchall()
+    except sqlite3.Error:
+        return notes
+    for r in rows:
+        notes.setdefault(r["table_name"], {})[r["column_name"]] = r["note"]
+    return notes
+
+
 def _list_tables(conn: sqlite3.Connection) -> list[dict]:
-    """Return ``[{schema, table, columns, rows, description}]`` across attached DBs."""
+    """Return ``[{schema, table, columns, rows, description}]`` across attached DBs.
+
+    Each ``columns`` entry is ``"name TYPE"`` (bare ``"name"`` when the column was
+    declared without a type). A table with recorded caveats also carries
+    ``column_notes`` (see :func:`_column_notes`).
+    """
     tables = []
     # Every attached schema except the transient `temp` one; keep `main`/`campaign`
     # first for readability, then any extra-campaign aliases in attach order.
@@ -302,13 +336,17 @@ def _list_tables(conn: sqlite3.Connection) -> list[dict]:
     ordered = [s for s in ("main", "campaign") if s in names]
     schemas = ordered + [s for s in names if s not in ordered]
     for schema in schemas:
+        internal = ", ".join(f"'{t}'" for t in _INTERNAL_TABLES)
         rows = conn.execute(
             f"SELECT name FROM {schema}.sqlite_master "
             "WHERE type='table' AND name NOT LIKE 'sqlite_%' "
-            "AND name != '_table_name_map' ORDER BY name").fetchall()
+            f"AND name NOT IN ({internal}) ORDER BY name").fetchall()
+        notes = _column_notes(conn, schema)
         for tr in rows:
             name = tr["name"]
-            cols = [r["name"] for r in conn.execute(
+            # "name TYPE" per column: the type is what tells a caller whether a
+            # column can be compared/ordered directly or is text needing a CAST.
+            cols = [f'{r["name"]} {r["type"]}'.strip() for r in conn.execute(
                 f'PRAGMA {schema}.table_info("{name}")').fetchall()]
             try:
                 n = conn.execute(f'SELECT COUNT(*) FROM {schema}."{name}"').fetchone()[0]
@@ -318,6 +356,8 @@ def _list_tables(conn: sqlite3.Connection) -> list[dict]:
             desc = _TABLE_DESCRIPTIONS.get((schema, name))
             if desc:
                 entry["description"] = desc
+            if name in notes:
+                entry["column_notes"] = notes[name]
             tables.append(entry)
     return tables
 
