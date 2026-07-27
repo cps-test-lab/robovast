@@ -85,6 +85,25 @@ def test_error_is_part_of_the_status_contract():
 
 def test_status_defaults():
     s = Status()
-    assert s.phase == "starting"
+    # A Status that exists but has not been advanced claims only that it was accepted:
+    # "starting" would assert pre-flight it has not done.
+    assert s.phase == "initializing"
+    assert s.phase_since > 0
     assert s.error is None
     assert s.runs.completed == 0
+
+
+def test_phase_since_tracks_changes_only():
+    """The phase clock must measure *this* phase, not the last write.
+
+    ``phase_since`` exists so a reader can tell a slow pre-run step from a wedged one;
+    if a defensive re-set of the current phase restarted the clock, a campaign stuck in
+    one phase could keep reporting a fresh age forever.
+    """
+    state = ControllerState()
+    state.set_phase("building")
+    first = state.snapshot().phase_since
+    state.set_phase("building", stage="still going")
+    assert state.snapshot().phase_since == first
+    state.set_phase("running")
+    assert state.snapshot().phase_since > first

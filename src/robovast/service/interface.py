@@ -178,11 +178,12 @@ class JobSummary(BaseModel):
     """
 
     job_name: str
-    status: str = "pending"          # running | pending | completed | failed | blocked
+    # running | pending | waiting | completed | failed | blocked
+    status: str = "pending"
     display_name: Optional[str] = None
-    # Why a job is in its state, when there is something to say — currently the
-    # Kubernetes reason + message for a ``blocked`` job (e.g.
-    # ``"ImagePullBackOff: Back-off pulling image ..."``). ``None`` for a healthy job.
+    # Why a job is in its state, when there is something to say — the Kubernetes reason
+    # + message for a ``blocked`` job (e.g. ``"ImagePullBackOff: Back-off pulling image
+    # ..."``), or Kueue's own wait message for a ``waiting`` one. ``None`` otherwise.
     detail: Optional[str] = None
 
 
@@ -191,6 +192,10 @@ class JobCounts(BaseModel):
 
     running: int = 0
     pending: int = 0
+    # Jobs queued for cluster capacity (Kueue-suspended, no pod yet). Healthy and
+    # expected — every cluster batch starts here — so it is counted apart from both
+    # ``pending`` (pod exists, scheduling) and ``blocked`` (needs a human).
+    waiting: int = 0
     completed: int = 0
     failed: int = 0
     # Jobs that cannot start and will not recover on their own (image pull / config
@@ -304,7 +309,33 @@ class VersionInfo(BaseModel):
     #: Execution lanes this service offers, e.g. ``["local"]``, ``["cluster"]`` or
     #: ``["local", "cluster"]`` for a multi-backend serve. Lets clients (web UI, MCP)
     #: show a backend picker only when >1 and default the selection to cluster.
+    #:
+    #: This is what the service is **configured** with, not what is reachable right
+    #: now: a listed cluster lane whose API server has gone away still appears here.
+    #: ``resource_usage(backend=...)`` is the call that actually touches a lane.
     backends: List[str] = []
+
+    # -- cluster lane, when there is one ------------------------------------
+    # Which cluster a campaign would land in. Reported because the defaults are
+    # invisible and each is a different cluster: an unset context means "whatever
+    # kubectl points at", which is a property of the host the service happens to run
+    # on, not of the service. A campaign started against the wrong one is only
+    # discovered by its absence.
+    #: Kubeconfig context the cluster lane dispatches into; ``None`` = the active one.
+    kube_context: Optional[str] = None
+    #: Where ``kube_context`` came from: ``"--context"``, ``"ROBOVAST_KUBE_CONTEXT"``
+    #: or ``"active kubeconfig context"``. The implicit case is the one that surprises.
+    kube_context_source: Optional[str] = None
+    #: Namespace the cluster lane submits Jobs into.
+    namespace: Optional[str] = None
+    #: True when the service runs *inside* the cluster (it reads the object store
+    #: directly); false off-cluster, where campaigns are driven through a kubectl
+    #: port-forward that is fragile under large result transfers. The two modes fail
+    #: in different ways, so a client diagnosing a stalled transfer needs to know which.
+    in_pod: Optional[bool] = None
+    #: The API server URL the cluster lane resolves to, so "which cluster is this?"
+    #: is answerable without reading the caller's kubeconfig.
+    api_server: Optional[str] = None
 
 
 class ResourceUsage(BaseModel):

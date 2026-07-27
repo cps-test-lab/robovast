@@ -427,9 +427,12 @@ fighting over it. There is nothing to configure — every job RoboVAST creates i
 submitted to the queue automatically.
 
 **Jobs waiting is normal.** A campaign whose jobs sit in the queue is healthy: it
-is waiting for capacity, not stuck. ``vast execution cluster monitor`` and
-``list_campaign_jobs`` report such jobs as ``blocked``, with Kueue's own reason as
-the detail.
+is waiting for capacity, not stuck. ``vast execution cluster monitor``, the web UI
+and ``list_campaign_jobs`` report such jobs as ``waiting`` — a status of its own,
+distinct from ``pending`` (a pod exists and is being scheduled) and from ``blocked``
+(the job cannot start and needs a human). Kueue's own reason rides along as the
+job's ``detail``; the web UI keeps it on the status chip's tooltip rather than
+printing it under every queued job, since it only restates the status.
 
 If the queue is genuinely unusable — setup was never run, or the campaign targets
 a namespace that was never set up — the campaign fails at launch with a message

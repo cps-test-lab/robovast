@@ -56,9 +56,10 @@ export function StatusView({
   // The Launcher hides the campaign log — it's a launch confirmation, not a viewer;
   // the full log lives in Monitor.
   hideLog?: boolean
-  // Monitor cares only about jobs still meaningful right now: show running, failed and
-  // blocked jobs (failed ones linger in kubernetes only briefly; blocked ones can't
-  // start), dropping pending and completed from both the count summary and jobs list.
+  // Monitor cares only about jobs still meaningful right now: show running, waiting,
+  // failed and blocked jobs (failed ones linger in kubernetes only briefly; blocked ones
+  // can't start; waiting ones are queued for cluster capacity), dropping pending and
+  // completed from both the count summary and jobs list.
   liveOnly?: boolean
 }) {
   const { runs, budget } = status
@@ -73,12 +74,17 @@ export function StatusView({
   const failed = counts?.failed ?? runs.no_result
   const shownJobs = liveOnly
     ? jobs?.jobs.filter(
-        (j) => j.status === 'running' || j.status === 'failed' || j.status === 'blocked',
+        (j) =>
+          j.status === 'running' ||
+          j.status === 'waiting' ||
+          j.status === 'failed' ||
+          j.status === 'blocked',
       )
     : jobs?.jobs
-  // Live-view count summary: running + failed + blocked, whichever are present.
+  // Live-view count summary: running + waiting + failed + blocked, whichever are present.
   const liveCountText = [
     counts && counts.running > 0 ? `running ${counts.running}` : null,
+    counts && counts.waiting > 0 ? `waiting ${counts.waiting}` : null,
     counts && counts.failed > 0 ? `failed ${counts.failed}` : null,
     counts && counts.blocked > 0 ? `blocked ${counts.blocked}` : null,
   ]
@@ -110,8 +116,10 @@ export function StatusView({
               ? liveCountText
                 ? `${liveCountText} · `
                 : ''
-              : counts && (counts.running > 0 || counts.pending > 0)
-                ? `running ${counts.running} · pending ${counts.pending} · `
+              : counts && (counts.running > 0 || counts.pending > 0 || counts.waiting > 0)
+                ? `running ${counts.running} · pending ${counts.pending}` +
+                  (counts.waiting > 0 ? ` · waiting ${counts.waiting}` : '') +
+                  ' · '
                 : ''}
             {done}/{runs.total}
             {runs.failed > 0 ? (
@@ -189,6 +197,9 @@ export function StatusView({
 const JOB_STATUS_COLOR: Record<string, 'default' | 'info' | 'success' | 'error' | 'warning'> = {
   running: 'info',
   pending: 'warning',
+  // Queued for cluster capacity: expected, not a problem — neutral, so the red of a
+  // genuinely blocked job still means something.
+  waiting: 'default',
   completed: 'success',
   failed: 'error',
   blocked: 'error',
@@ -233,6 +244,9 @@ function JobRow({ campaignId, job }: { campaignId: string; job: JobSummary }) {
           size="small"
           color={JOB_STATUS_COLOR[job.status] ?? 'default'}
           variant="outlined"
+          // A waiting job's detail is not rendered below (see there); keep Kueue's own
+          // wait message reachable on hover rather than dropping it.
+          title={job.status === 'waiting' ? (job.detail ?? undefined) : undefined}
         />
         <Button
           size="small"
@@ -244,8 +258,11 @@ function JobRow({ campaignId, job }: { campaignId: string; job: JobSummary }) {
         </Button>
       </Stack>
       {/* Why a job is stuck — e.g. a Kubernetes ImagePullBackOff reason + message —
-          so a job that can never start is legible instead of silently pending. */}
-      {job.detail ? (
+          so a job that can never start is legible instead of silently pending. Not
+          shown for `waiting`: queueing for capacity is the normal path, and Kueue's
+          message ("insufficient unused quota for cpu") only restates the status one
+          line above it. It stays on the chip's tooltip. */}
+      {job.detail && job.status !== 'waiting' ? (
         <Typography
           variant="caption"
           sx={{ display: 'block', color: 'error.main', pl: 0.5, wordBreak: 'break-word' }}

@@ -55,11 +55,21 @@ class Phase(StrEnum):
     this enum is the *known* vocabulary, not a lock on the field.
     """
     # -- live: the campaign is still working ------------------------------
-    # Ordered by when they occur: image build (if any) → registration → plugin
-    # install (if any) → config-variation expansion (batch) → the run loop → finish
-    # → postprocess → share. ``building``, ``plugin install`` and ``variation`` precede
-    # ``running`` and exist so the pre-run steps are observable rather than a blank
-    # "starting".
+    # Ordered by when they occur: acceptance → lane pre-flight → image build (if any)
+    # → plugin install (if any) → config-variation expansion (batch) → the run loop
+    # → finish → postprocess → share. ``initializing``, ``building``, ``plugin
+    # install`` and ``variation`` precede ``running`` and exist so the pre-run steps
+    # are observable rather than a blank "starting".
+    #
+    # ``initializing`` is the phase a campaign has from the instant the service
+    # accepts it: registered, listed, and addressable by id, with none of the slow
+    # lane pre-flight done yet (project push, registry/base-image resolution, the
+    # object-store tunnel). It exists because that work used to happen *before* the
+    # campaign was registered, so a caller whose start call timed out could poll
+    # every read path and be told, truthfully and misleadingly, that no such
+    # campaign existed -- which is exactly the state that invites a retry and a
+    # duplicate campaign. Nothing may be slow ahead of this phase.
+    INITIALIZING = "initializing"
     BUILDING = "building"
     STARTING = "starting"
     PLUGIN_INSTALL = "plugin install"
@@ -135,9 +145,9 @@ class Status(BaseModel):
     """The controller's live state, served by ``GET /campaigns/{id}/status``.
 
     ``phase`` is an **open** string the controller advances through a documented
-    vocabulary (``building`` → ``starting`` → ``variation`` → ``running`` →
-    ``finishing`` → ``postprocessing`` → ``sharing`` → ``finished`` / ``failed``);
-    ``stage`` and ``extra`` exist so future markers (e.g.
+    vocabulary (``initializing`` → ``building`` → ``starting`` → ``variation`` →
+    ``running`` → ``finishing`` → ``postprocessing`` → ``sharing`` → ``finished`` /
+    ``failed``); ``stage`` and ``extra`` exist so future markers (e.g.
     ``"upload-to-share-done"``) slot in without a schema change. ``share_provider``
     names the share type of the current upload attempt; it can change across
     retriggers (a failed upload may be retried to a different provider).
@@ -146,7 +156,15 @@ class Status(BaseModel):
     # sub-fields (``runs``, ``budget``) and they coerce to the models.
     model_config = ConfigDict(validate_assignment=True)
 
-    phase: str = Phase.STARTING          # open vocabulary; see the Phase enum
+    # Default ``initializing``, not ``starting``: a Status that exists but has not
+    # been advanced yet must not claim more than it knows. The first phase is set by
+    # construction rather than by a caller remembering to set it.
+    phase: str = Phase.INITIALIZING      # open vocabulary; see the Phase enum
+    # When ``phase`` was last set. A phase alone cannot distinguish "slow" from
+    # "wedged": without this, a campaign stuck in ``initializing`` or ``building``
+    # looks identical to one making progress, forever. Readers render it as an age
+    # ("initializing for 14 min"), which is what makes a hung pre-run step visible.
+    phase_since: float = Field(default_factory=time.time)
     stage: Optional[str] = None
     mode: Optional[str] = None
     campaign_id: Optional[str] = None

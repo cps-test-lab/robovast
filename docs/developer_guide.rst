@@ -1154,10 +1154,15 @@ Status: phase and stage
 
    * - ``phase``
      - Meaning
+   * - ``initializing``
+     - Accepted: registered, listed, and addressable by id, with the lane's pre-flight
+       (project push, registry/base-image resolution) still to do. The first phase every
+       campaign has, and the one that guarantees a caller can always find what it just
+       started — see :ref:`a-started-campaign-is-findable`.
    * - ``building``
      - Building the experiment image (only when the ``.vast`` has a ``build:`` section).
    * - ``starting``
-     - Campaign registered; about to run.
+     - Image settled; handing off to the worker (campaign context, backend construction).
    * - ``plugin install``
      - Installing the declared ``plugins:`` (only when any are declared). ``pip``'s
        output streams live into ``_execution/plugin_install.log``.
@@ -1185,6 +1190,34 @@ Status: phase and stage
    * - ``stopped`` / ``crashed`` / ``unknown``
      - Terminal: cooperatively stopped; the driver died without recording an outcome; or
        (after a restart) not reconstructable from disk.
+
+``phase_since`` records when the current phase was entered (and only moves on an actual
+change, so a defensive re-set does not restart the clock). It exists because a phase name
+alone cannot separate *slow* from *wedged*: an image build in progress and one that will
+never finish both read ``building``. Readers render it as an age — the MCP status returns
+``phase_age_s``, and the web Monitor shows it beside the phase dot while a pre-run phase is
+in effect, where there is no progress bar to watch instead.
+
+.. _a-started-campaign-is-findable:
+
+A started campaign is findable
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+**Invariant: from the moment the service accepts a campaign, its id resolves on every
+read path** — ``get_status``, ``list_campaigns``, ``list_running_campaigns``. This is what
+makes the standing advice ("a timed-out start is not a failed start; check, never retry")
+actually true: retrying a start that in fact succeeded creates a second campaign, and the
+only defence is that the first one can be found.
+
+Two things back it. Registration happens *before* the slow work — ``create_campaign``
+records the campaign in the lane's registry, then builds the image — so the campaign is
+live from ``t=0`` rather than from whenever its results directory appears. And a
+multi-lane service unions its sibling lanes' registries into the listing via
+``_extra_live_ids``: ``list_campaigns`` derives its id set from the *local* lane's "disk ∪
+in-memory" view, so without that a cluster campaign was missing from every listing for the
+whole length of its pre-flight — registered and addressable by id, but undiscoverable by
+anyone who did not already know the id, which is precisely the caller whose start response
+was lost.
 
 Control operations
 ^^^^^^^^^^^^^^^^^^^
@@ -1276,8 +1309,9 @@ up is healthy, and the correct response is to wait — that is Kueue's normal
 operating state. The preflight only ever looks at the *structure* of the
 admission path. While jobs wait, the batch logs Kueue's own reason (read from
 each Workload's ``QuotaReserved`` condition) instead of a bare "still running",
-and ``list_campaign_jobs`` reports them ``blocked`` with that reason as
-``detail``.
+and ``list_campaign_jobs`` reports them ``waiting`` with that reason as
+``detail`` — not ``blocked``, which is reserved for a job that cannot start on its
+own (image pull / config error) and therefore needs a human.
 
 The preflight reads ``localqueues`` (namespaced) and ``clusterqueues``
 (cluster-scoped); both grants are on the service's Role and ClusterRole. An

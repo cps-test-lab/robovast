@@ -32,6 +32,7 @@ lane. (Users who want a serviceless local run still have ``vast exec local run``
 """
 
 import logging
+import time
 
 from fastmcp import FastMCP
 
@@ -111,6 +112,12 @@ def _status_to_dict(campaign_id: str, backend, st) -> dict:
         "batch_runs_failed": st.runs.failed if st.runs else 0,
         "progress": _progress_from_status(st),
     }
+    # How long the campaign has held this phase. A phase alone cannot separate slow
+    # from wedged: an image build and a build that will never finish both read
+    # "building", and a pre-run step that hangs is otherwise invisible until someone
+    # notices the run count has not moved.
+    if getattr(st, "phase_since", None):
+        result["phase_age_s"] = round(max(0.0, time.time() - st.phase_since), 1)
     if st.batches_done:
         result["batches_done"] = st.batches_done
     if st.best_objective is not None:
@@ -121,6 +128,16 @@ def _status_to_dict(campaign_id: str, backend, st) -> dict:
         result["stop"] = st.stop
     if st.error:
         result["error"] = st.error
+    # Postprocessing is a separate fact from ``phase`` on purpose (see Status): a
+    # campaign whose runs all passed but whose postprocessing failed stays
+    # ``finished``, because the runs are the deliverable. That only works if the fact
+    # is *reported* — folded into ``stage`` it reads like a progress note, and a
+    # campaign with no metrics at all looks as green as a complete one.
+    result["postprocessed"] = st.postprocessed
+    if st.postprocessing_error:
+        result["postprocessing_error"] = st.postprocessing_error
+    if st.share_error:
+        result["share_error"] = st.share_error
     return result
 
 
@@ -276,11 +293,22 @@ def get_campaign_status(campaign_id: str) -> dict:
 
     Returns:
         ``{campaign_id, backend, status, mode, batch_runs_done, batch_runs_total,
-        progress, ...}`` — plus search-only fields (``best_objective``, ``budget``,
-        ``batches_done``, ``stop``) when applicable; ``{error}`` when no service is
-        reachable or the campaign is unknown. Run counts are **batch-scoped**;
-        ``progress`` is overall and mode-aware (``None`` when a search's completion
-        cannot be known yet).
+        progress, phase_age_s, postprocessed, ...}`` — plus search-only fields
+        (``best_objective``, ``budget``, ``batches_done``, ``stop``) when applicable;
+        ``{error}`` when no service is reachable or the campaign is unknown. Run
+        counts are **batch-scoped**; ``progress`` is overall and mode-aware (``None``
+        when a search's completion cannot be known yet).
+
+        ``status: "finished"`` does **not** imply usable results. The runs are the
+        deliverable, so a campaign whose trials all passed but whose postprocessing
+        failed still finishes — with ``postprocessed: False`` and
+        ``postprocessing_error`` naming the reason. Check them before reading metrics:
+        no postprocessing means no CSVs and no ``data.db``, and re-running it
+        (``run_postprocessing``) does not need the campaign re-run.
+
+        ``phase_age_s`` is how long the current phase has been held. A pre-run phase
+        (``initializing``, ``building``) that is minutes old with no progress is stuck,
+        not slow; the phase name alone cannot tell you that.
     """
     try:
         client = _service_client()
@@ -388,10 +416,12 @@ def list_campaign_jobs(campaign_id: str) -> dict:
 
     Returns:
         ``{jobs: [{job_name, status, display_name, detail}], counts: {running,
-        pending, completed, failed, blocked, total}}`` where ``status`` is one of
-        ``running`` / ``pending`` / ``completed`` / ``failed`` / ``blocked``. A
-        ``blocked`` job cannot start and will not recover on its own (e.g. an image
-        that can't be pulled); ``detail`` carries the Kubernetes reason + message.
+        pending, waiting, completed, failed, blocked, total}}`` where ``status`` is one
+        of ``running`` / ``pending`` / ``waiting`` / ``completed`` / ``failed`` /
+        ``blocked``. A ``blocked`` job cannot start and will not recover on its own
+        (e.g. an image that can't be pulled); ``detail`` carries the Kubernetes reason
+        + message. A ``waiting`` job is queued for cluster capacity by Kueue — healthy,
+        not stuck — with Kueue's own wait message as ``detail``.
         Returns ``{error}`` if no service is reachable.
     """
     client = _service_client()

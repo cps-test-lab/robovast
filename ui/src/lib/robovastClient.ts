@@ -70,14 +70,16 @@ export const campaignsNewestFirst = (campaigns: CampaignSummary[]) =>
 // union rather than an enum so it stays a plain wire value; `CampaignSummary.phase` is still typed
 // `string`, so an unexpected/future phase never fails to parse.
 export type CampaignPhase =
-  | 'building' | 'starting' | 'plugin install' | 'variation' | 'running' | 'finishing'
-  | 'postprocessing' | 'sharing'
+  | 'initializing' | 'building' | 'starting' | 'plugin install' | 'variation' | 'running'
+  | 'finishing' | 'postprocessing' | 'sharing'
   | 'finished' | 'failed' | 'stopped' | 'crashed' | 'unknown'
 
 // Phases where the campaign is still working, so no final verdict exists yet.
+// `initializing` is the first: the service has accepted the campaign and it is listed and
+// addressable, but the lane's pre-flight (project push, image resolution) has not finished.
 const RUNNING_PHASES: ReadonlySet<string> = new Set<CampaignPhase>([
-  'building', 'starting', 'plugin install', 'variation', 'running', 'finishing',
-  'postprocessing', 'sharing',
+  'initializing', 'building', 'starting', 'plugin install', 'variation', 'running',
+  'finishing', 'postprocessing', 'sharing',
 ])
 
 // The campaign is over, one way or another — the complement of RUNNING_PHASES, mirroring the
@@ -141,6 +143,9 @@ export interface BudgetItem {
 
 export interface Status {
   phase: string
+  // When `phase` was last set (epoch seconds). Rendered as an age so a pre-run phase that
+  // is wedged is distinguishable from one that is merely slow — the name alone never is.
+  phase_since?: number
   stage?: string | null
   mode?: string | null
   campaign_id?: string | null
@@ -172,16 +177,20 @@ export interface LogChunk {
 // the cluster). Mirrors interface.py:JobSummary/JobCounts/ListJobsResponse.
 export interface JobSummary {
   job_name: string
-  status: string // running | pending | completed | failed
+  status: string // running | pending | waiting | completed | failed | blocked
   display_name?: string | null
-  // Why a job is in its state when there's something to say — currently the Kubernetes
-  // reason + message for a job that cannot start (e.g. ImagePullBackOff). null if healthy.
+  // Why a job is in its state when there's something to say — the Kubernetes reason +
+  // message for a job that cannot start (e.g. ImagePullBackOff), or Kueue's wait message
+  // for a job queued for capacity. null if healthy.
   detail?: string | null
 }
 
 export interface JobCounts {
   running: number
   pending: number
+  // Queued for cluster capacity by Kueue (no pod yet) — healthy and expected, so it is
+  // counted apart from both pending and blocked.
+  waiting: number
   completed: number
   failed: number
   // Jobs that cannot start and won't recover on their own (e.g. ImagePullBackOff);

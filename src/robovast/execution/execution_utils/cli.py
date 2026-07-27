@@ -521,7 +521,7 @@ def _monitor_via_service(namespace, kube_context, interval, once):
         except Exception:  # pylint: disable=broad-except
             return {}
         return {"running": counts.running, "pending": counts.pending,
-                "blocked": counts.blocked}
+                "waiting": counts.waiting, "blocked": counts.blocked}
 
     def _campaign_lines(status):
         c = _live_counts(status.get("campaign_id"))
@@ -544,6 +544,10 @@ def _monitor_via_service(namespace, kube_context, interval, once):
         run_line = f"  Runs (this batch): [{bar_str}] {pct:5.1f}%  {completed}/{total}"
         if c:
             run_line += f"   Running: {c.get('running', 0)}  Pending: {c.get('pending', 0)}"
+            if c.get("waiting"):
+                # Queued for cluster capacity — normal, so no reason is printed; it is
+                # on each job's detail (`list_campaign_jobs`) when one is needed.
+                run_line += f"  Waiting: {c['waiting']}"
             if c.get("blocked"):
                 # Jobs that cannot start (e.g. ImagePullBackOff). The reason rides on
                 # each job's detail; the campaign fails with it after a grace window.

@@ -22,12 +22,26 @@ from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
 
 def _make(tmp_path):
-    """A MultiBackendService whose two lanes share one store rooted at ``tmp_path``."""
+    """A MultiBackendService whose two lanes share one store rooted at ``tmp_path``.
+
+    The campaigns root is pinned to ``tmp_path`` as well. It is *not* derived from the
+    store: :meth:`LocalTransport._campaigns_root` prefers an initialized CWD project's
+    ``results_dir``, so on a developer machine that has one, these tests wrote their
+    marker files (``camp-2026-01-01-000000/_execution/backend``) into that real results
+    directory — polluting it with a fake campaign that then showed up in ``vast``
+    listings, and failing on the second run with ``FileExistsError`` because the
+    leftover was still there.
+    """
     store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path)))
     cluster = ClusterService(namespace="ns", cluster_config_name="x",
                              cluster_config_kwargs={}, store=store,
                              reap_on_start=False)
-    return MultiBackendService(cluster, store=store)
+    svc = MultiBackendService(cluster, store=store)
+    root = tmp_path / "campaigns"
+    root.mkdir(exist_ok=True)
+    svc._campaigns_root = lambda: root
+    cluster._campaigns_root = lambda: root
+    return svc
 
 
 def test_requires_shared_store(tmp_path):
@@ -121,3 +135,34 @@ def test_resource_usage_routes_and_defaults_cluster(tmp_path, monkeypatch):
     assert seen == ["docker", "kubernetes"]
     with pytest.raises(ValueError, match="unknown backend"):
         svc.resource_usage("gpu")
+
+
+def test_lists_a_cluster_campaign_before_it_has_a_directory(tmp_path):
+    """A cluster campaign is listable from the instant it is accepted.
+
+    ``list_campaigns`` builds its id set from the *local* lane's "disk ∪ in-memory"
+    view, so a campaign registered in the cluster lane's registry used to be missing
+    from every listing until its results directory appeared on disk — the whole length
+    of the lane's pre-flight (project push, image build). A caller whose start call
+    timed out in that window polled every read path, was told the campaign did not
+    exist, and retried into a duplicate.
+    """
+    svc = _make(tmp_path)
+    cid = "camp-2026-02-02-000000"
+
+    class _Entry:
+        created_at = None
+
+        class state:
+            @staticmethod
+            def snapshot():
+                from robovast.common.status import Status
+                return Status(phase="initializing", campaign_id=cid)
+
+    with svc._cluster._lock:
+        svc._cluster._campaigns[cid] = _Entry()
+
+    listed = svc.list_campaigns()
+    assert [c.campaign_id for c in listed.campaigns] == [cid]
+    assert listed.campaigns[0].phase == "initializing"
+    assert not (tmp_path / "campaigns" / cid).exists()

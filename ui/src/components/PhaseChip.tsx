@@ -1,10 +1,11 @@
 import Box from '@mui/material/Box'
 import Chip from '@mui/material/Chip'
 
-// The controller's phase vocabulary (control_server.Status): building → starting → plugin install →
-// variation → running → finishing → postprocessing → sharing → finished / failed / stopped. Map to
-// MUI colors; unknown phases stay neutral.
+// The controller's phase vocabulary (control_server.Status): initializing → building → starting →
+// plugin install → variation → running → finishing → postprocessing → sharing → finished / failed /
+// stopped. Map to MUI colors; unknown phases stay neutral.
 const COLOR: Record<string, 'default' | 'success' | 'error' | 'warning' | 'info'> = {
+  initializing: 'info',
   building: 'info',
   starting: 'info',
   'plugin install': 'info',
@@ -22,8 +23,8 @@ const COLOR: Record<string, 'default' | 'success' | 'error' | 'warning' | 'info'
 }
 
 const LIVE_PHASES = [
-  'building', 'starting', 'plugin install', 'variation', 'running', 'finishing', 'postprocessing',
-  'sharing',
+  'initializing', 'building', 'starting', 'plugin install', 'variation', 'running', 'finishing',
+  'postprocessing', 'sharing',
 ]
 
 export function PhaseChip({ phase, size = 'small' }: { phase: string; size?: 'small' | 'medium' }) {

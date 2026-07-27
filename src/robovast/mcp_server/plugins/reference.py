@@ -146,6 +146,21 @@ def get_service_info() -> dict:
         ``{code_version, api_version, backend, backends, mcp_plugins}``; ``{error}``
         when no service answers. ``mcp_plugins`` are the plugin groups *this MCP
         process* loaded — same staleness caveat, different process.
+
+        With a cluster lane, also ``{kube_context, kube_context_source, namespace,
+        in_pod, api_server}`` — which cluster a campaign would actually land in.
+        ``kube_context: None`` with source ``"active kubeconfig context"`` means the
+        lane follows whatever ``kubectl`` on the service's host points at, which is a
+        property of that host and can change without the service knowing.
+        ``in_pod: False`` means campaigns are driven **off-cluster** through a kubectl
+        port-forward to the object store — fine for a pilot, fragile under a large
+        campaign's result transfers.
+
+        ``backends`` is what the service is **configured** with, not what is reachable:
+        a cluster lane whose API server has gone away is still listed. Call
+        ``resource_usage(backend="cluster")`` to actually touch the lane before
+        committing a long campaign to it — it reads the cluster's nodes, so it fails
+        when the cluster does.
     """
     from importlib.metadata import entry_points
 
@@ -158,7 +173,7 @@ def get_service_info() -> dict:
         v = client.version()
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
-    return {
+    info = {
         "code_version": v.robovast_version,
         "api_version": v.api_version,
         "backend": v.backend,
@@ -166,6 +181,17 @@ def get_service_info() -> dict:
         "mcp_plugins": sorted(
             ep.name for ep in entry_points(group="robovast.mcp_plugins")),
     }
+    # Only when there is a cluster lane: on a local-only service these would all be
+    # None, and five null fields read as "unknown" rather than "not applicable".
+    if "cluster" in (v.backends or []):
+        info.update({
+            "kube_context": v.kube_context,
+            "kube_context_source": v.kube_context_source,
+            "namespace": v.namespace,
+            "in_pod": v.in_pod,
+            "api_server": v.api_server,
+        })
+    return info
 
 
 # -- Plugin class ------------------------------------------------------------

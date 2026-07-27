@@ -87,7 +87,15 @@ class ControllerState:
             self._status.updated_at = time.time()
 
     def set_phase(self, phase: str, stage: Optional[str] = None) -> None:
+        """Advance to *phase*, stamping when it started.
+
+        ``phase_since`` moves only on an actual change, so re-setting the current
+        phase (some paths do, defensively) does not keep resetting the clock a
+        reader uses to tell "slow" from "wedged".
+        """
         with self._lock:
+            if phase != self._status.phase:
+                self._status.phase_since = time.time()
             self._status.phase = phase
             if stage is not None:
                 self._status.stage = stage

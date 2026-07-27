@@ -167,6 +167,16 @@ class MultiBackendService(LocalTransport):
     def version(self) -> VersionInfo:
         v = super().version()
         v.backends = [_LOCAL, _CLUSTER]
+        # The cluster-lane facts come from the lane that owns them. Reported even
+        # though this serve is local-first: a campaign with no explicit backend
+        # defaults to *cluster* (see _default_backend), so "which cluster?" is a
+        # question about the default lane, not an optional detail.
+        cv = self._cluster.version()
+        v.kube_context = cv.kube_context
+        v.kube_context_source = cv.kube_context_source
+        v.namespace = cv.namespace
+        v.in_pod = cv.in_pod
+        v.api_server = cv.api_server
         return v
 
     def resource_usage(self, backend: Optional[str] = None) -> ResourceUsage:
@@ -209,6 +219,20 @@ class MultiBackendService(LocalTransport):
 
     def delete_campaign(self, campaign_id: str) -> ActionResult:
         return self._route(campaign_id, "delete_campaign", campaign_id)
+
+    def _extra_live_ids(self) -> set[str]:
+        """The cluster lane's live registry, so the inherited listing includes it.
+
+        ``list_campaigns`` starts from the *local* lane's "disk ∪ in-memory" id set;
+        the cluster lane keeps its own registry, so without this a cluster campaign
+        is missing from every listing until its results directory appears — the id is
+        registered the instant the campaign is accepted, but unlistable for as long
+        as the lane's pre-flight (project push, image build) takes. A start whose
+        response was lost then looks, to every read path, like a campaign that was
+        never created.
+        """
+        with self._cluster._lock:  # noqa: SLF001 - sibling lane, one feature
+            return set(self._cluster._campaigns)  # noqa: SLF001
 
     def list_campaigns(
         self, request: Optional[ListCampaignsRequest] = None

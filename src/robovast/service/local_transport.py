@@ -921,6 +921,19 @@ class LocalTransport(RobovastInterface):
                         "Campaign %s did not stop within %ds; exiting anyway",
                         entry.campaign_id, self._SHUTDOWN_JOIN_SECONDS)
 
+    def _extra_live_ids(self) -> set[str]:
+        """Campaigns this service drives that are not in ``self._campaigns``.
+
+        Empty for a single-lane service, where the in-memory registry is the whole
+        picture. A multi-lane service overrides it with its sibling lanes' registries:
+        without that, :meth:`list_campaigns` sees only *this* lane's live entries, and
+        a campaign driven by another lane is unlistable until its results directory
+        exists on disk — which is exactly the window in which a caller whose start
+        call timed out goes looking for it, finds nothing, and retries into a
+        duplicate.
+        """
+        return set()
+
     def list_campaigns(
         self, request: Optional[ListCampaignsRequest] = None
     ) -> ListCampaignsResponse:
@@ -936,6 +949,7 @@ class LocalTransport(RobovastInterface):
                 if d.is_dir() and is_campaign_dir(d.name)} if results_dir.is_dir() else set()
         with self._lock:
             mem = set(self._campaigns)
+        mem |= self._extra_live_ids()
         all_ids = sorted(disk | mem, reverse=True)  # newest first (id ends in timestamp)
         total = len(all_ids)
         window = all_ids[request.offset:request.offset + request.limit]

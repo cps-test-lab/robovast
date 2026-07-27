@@ -28,11 +28,18 @@ import {
   type Status,
 } from '@/lib/robovastClient'
 import { formatLocalTime } from '@/lib/time'
+import { formatDuration } from '@/lib/format'
 import { StatusView } from '@/components/StatusView'
 import { PhaseChip, PhaseDot } from '@/components/PhaseChip'
 import { useDialogs } from '@/components/DialogProvider'
 import { LaunchBar } from './LaunchBar'
 import { PostprocessingDialog } from './PostprocessingDialog'
+
+// Phases before the run loop starts. They have no progress bar of their own, so the only
+// signal that one is wedged rather than slow is how long it has been held.
+const PRE_RUN_PHASES: ReadonlySet<string> = new Set([
+  'initializing', 'building', 'starting', 'plugin install', 'variation',
+])
 
 // One campaign row: fetches its own live Status and polls until the campaign reaches a terminal phase.
 function CampaignCard({ summary }: { summary: CampaignSummary }) {
@@ -110,6 +117,15 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
 
   const phase = status.data?.phase ?? summary.phase
   const running = !isTerminalPhase(phase)
+  // How long the current phase has been held, shown only while a *pre-run* phase is in
+  // effect. Those are the phases with no progress bar to watch, so a stalled project
+  // push or image build otherwise looks exactly like a slow one — indefinitely. Once
+  // the campaign is running, the run counter carries that signal and this is noise.
+  const phaseSince = status.data?.phase_since
+  const phaseAge =
+    phaseSince && PRE_RUN_PHASES.has(phase)
+      ? formatDuration(Math.max(0, Date.now() / 1000 - phaseSince))
+      : null
   // A finished campaign can still carry a post-run step failure (postprocessing / share);
   // prefer the live status, fall back to the list summary. Re-triggerable via the menu.
   const postprocError = status.data?.postprocessing_error ?? summary.postprocessing_error
@@ -124,6 +140,11 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
     <Paper sx={{ p: 2 }}>
       <Stack direction="row" spacing={1} alignItems="center" mb={1.5}>
         <PhaseDot phase={phase} />
+        {phaseAge ? (
+          <Typography variant="caption" color="text.secondary">
+            {phaseAge}
+          </Typography>
+        ) : null}
         <Typography variant="subtitle2" sx={{ fontFamily: 'monospace' }}>
           {id}
         </Typography>

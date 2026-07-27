@@ -389,7 +389,7 @@ def _suspended_job_reasons(job_list, namespace) -> dict:
         return {}
     from .kubernetes_kueue import workload_wait_reasons
     reasons = workload_wait_reasons(namespace, job_names=suspended)
-    return {name: reasons.get(name, "suspended: waiting for Kueue admission")
+    return {name: reasons.get(name, "waiting for Kueue admission")
             for name in suspended}
 
 
@@ -404,10 +404,13 @@ def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
     config error) is reported ``blocked`` with a human ``detail`` (Kubernetes' own
     message) instead of sitting ``pending`` forever.
 
-    A Kueue-**suspended** Job is reported ``blocked`` too, with Kueue's own wait message
-    as ``detail``. It has no pod at all, so the pod-level probe cannot see it and it
-    would otherwise report ``pending`` — indistinguishable from a job about to start,
-    which is how a batch that could never be admitted looked like a slow one.
+    A Kueue-**suspended** Job is its own phase, ``waiting``, carrying Kueue's wait
+    message as ``detail``. It has no pod at all, so the pod-level probe cannot see it
+    and it would otherwise report ``pending`` — indistinguishable from a job about to
+    start, which is how a batch that could never be admitted looked like a slow one.
+    It is deliberately *not* ``blocked``: waiting for quota is Kueue's normal operating
+    state (every cluster batch starts there), so calling it blocked made the healthy
+    case indistinguishable from the broken one and trained readers to ignore both.
 
     ``blocked`` is its own status, distinct from ``failed``: Kubernetes still counts
     the Job active (it keeps retrying the pull), so it has neither completed nor been
@@ -416,9 +419,9 @@ def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
 
     Returns a list of ``(job, phase, detail)`` tuples in the order the API returned
     the Jobs; ``detail`` is ``None`` unless the Job is blocked (image pull / config
-    error, or suspended awaiting Kueue admission) or failed for an infrastructure
-    reason (OOMKilled / evicted / deadline), in which case it carries Kubernetes' or
-    Kueue's own explanation.
+    error), waiting for Kueue admission, or failed for an infrastructure reason
+    (OOMKilled / evicted / deadline), in which case it carries Kubernetes' or Kueue's
+    own explanation.
     """
     job_list = k8s_batch.list_namespaced_job(namespace, label_selector=label_selector)
     try:
@@ -434,8 +437,13 @@ def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
     suspended = _suspended_job_reasons(job_list, namespace)
     out = []
     for job in job_list.items:
-        detail = blocked.get(job.metadata.name) or suspended.get(job.metadata.name)
-        phase = "blocked" if detail else job_phase(job, running)
+        detail = blocked.get(job.metadata.name)
+        if detail:
+            phase = "blocked"
+        elif job.metadata.name in suspended:
+            phase, detail = "waiting", suspended[job.metadata.name]
+        else:
+            phase = job_phase(job, running)
         # A failed job whose pod was OOM-killed / evicted / deadline-exceeded would
         # otherwise show no cause (its scenario log is truncated) — surface it.
         if phase == "failed" and not detail:

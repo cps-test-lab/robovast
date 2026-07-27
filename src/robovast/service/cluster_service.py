@@ -78,6 +78,13 @@ class ClusterService(LocalTransport):
         # client, but the context *name* still resolves per-cluster resource
         # lists — deploy stamps it into ROBOVAST_KUBE_CONTEXT for the in-pod driver.
         self.kube_context = kube_context or os.environ.get("ROBOVAST_KUBE_CONTEXT")
+        # Which of the three sources won, reported in version(). Without it the
+        # implicit case ("whatever kubectl points at") is indistinguishable from a
+        # deliberate one, and that is the case that quietly targets another cluster.
+        self._kube_context_source = (
+            "--context" if kube_context
+            else "ROBOVAST_KUBE_CONTEXT" if os.environ.get("ROBOVAST_KUBE_CONTEXT")
+            else "active kubeconfig context")
         self._config_name = cluster_config_name or os.environ.get(
             "ROBOVAST_CLUSTER_CONFIG_NAME")
         self._config_kwargs = cluster_config_kwargs
@@ -109,7 +116,29 @@ class ClusterService(LocalTransport):
         v = super().version()
         v.backend = "kubernetes"
         v.backends = ["cluster"]
+        v.kube_context = self.kube_context
+        v.kube_context_source = self._kube_context_source
+        v.namespace = self.namespace
+        v.in_pod = bool(os.environ.get("KUBERNETES_SERVICE_HOST"))
+        v.api_server = self._api_server_url()
         return v
+
+    def _api_server_url(self) -> "str | None":
+        """The API server this lane targets, read from config only — never dialled.
+
+        ``version()`` is the call a client makes to find out *where* it is pointed,
+        including when the cluster is unreachable; a probe here would make it hang
+        exactly when the answer matters most. ``None`` when the config cannot be
+        read at all, which is itself the answer to "which cluster?".
+        """
+        try:
+            from kubernetes import client as k8s_client
+
+            from robovast.common.kube import load_kube_config
+            load_kube_config(context=self.kube_context)
+            return k8s_client.Configuration.get_default_copy().host
+        except Exception:  # noqa: BLE001 - informational field, never fatal
+            return None
 
     def _compute_resource_usage(self) -> ResourceUsage:
         """Cluster CPU/memory capacity + current usage from the Kubernetes API.
@@ -442,6 +471,7 @@ class ClusterService(LocalTransport):
         counts = JobCounts(
             running=sum(1 for j in jobs if j.status == "running"),
             pending=sum(1 for j in jobs if j.status == "pending"),
+            waiting=sum(1 for j in jobs if j.status == "waiting"),
             completed=sum(1 for j in jobs if j.status == "completed"),
             failed=sum(1 for j in jobs if j.status == "failed"),
             blocked=sum(1 for j in jobs if j.status == "blocked"),
