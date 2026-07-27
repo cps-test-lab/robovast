@@ -56,10 +56,8 @@ export function StatusView({
   // The Launcher hides the campaign log — it's a launch confirmation, not a viewer;
   // the full log lives in Monitor.
   hideLog?: boolean
-  // Monitor cares only about jobs still meaningful right now: show running, waiting,
-  // failed and blocked jobs (failed ones linger in kubernetes only briefly; blocked ones
-  // can't start; waiting ones are queued for cluster capacity), dropping pending and
-  // completed from both the count summary and jobs list.
+  // Monitor cares only about jobs still meaningful right now: it drops completed ones
+  // from both the count summary and the jobs list (the Launcher lists everything).
   liveOnly?: boolean
 }) {
   const { runs, budget } = status
@@ -72,18 +70,20 @@ export function StatusView({
   // bar's red segment means; a failing *trial* did deliver its result and is reported
   // separately in the caption.
   const failed = counts?.failed ?? runs.no_result
-  const shownJobs = liveOnly
-    ? jobs?.jobs.filter(
-        (j) =>
-          j.status === 'running' ||
-          j.status === 'waiting' ||
-          j.status === 'failed' ||
-          j.status === 'blocked',
-      )
-    : jobs?.jobs
-  // Live-view count summary: running + waiting + failed + blocked, whichever are present.
+  // The jobs list mirrors what actually exists on the cluster — the same set `k9s`
+  // shows: jobs that own a pod. A `waiting` job is the un-admitted Kueue backlog: it has
+  // no pod, nothing distinguishes one queued job from the next, and there is no log to
+  // expand (the row's only affordance). Whole batches sit there at launch, so listing
+  // them buries the handful of jobs that are really doing something. The backlog is
+  // reported by the `waiting N` counter instead, which is what makes it legible anyway.
+  const shownJobs = jobs?.jobs.filter(
+    (j) => j.status !== 'waiting' && (!liveOnly || j.status !== 'completed'),
+  )
+  // Live-view count summary: every non-completed state that is present. `waiting` is
+  // the only way the queued backlog shows up at all now that it has no rows.
   const liveCountText = [
     counts && counts.running > 0 ? `running ${counts.running}` : null,
+    counts && counts.pending > 0 ? `pending ${counts.pending}` : null,
     counts && counts.waiting > 0 ? `waiting ${counts.waiting}` : null,
     counts && counts.failed > 0 ? `failed ${counts.failed}` : null,
     counts && counts.blocked > 0 ? `blocked ${counts.blocked}` : null,
@@ -197,9 +197,6 @@ export function StatusView({
 const JOB_STATUS_COLOR: Record<string, 'default' | 'info' | 'success' | 'error' | 'warning'> = {
   running: 'info',
   pending: 'warning',
-  // Queued for cluster capacity: expected, not a problem — neutral, so the red of a
-  // genuinely blocked job still means something.
-  waiting: 'default',
   completed: 'success',
   failed: 'error',
   blocked: 'error',
@@ -244,9 +241,6 @@ function JobRow({ campaignId, job }: { campaignId: string; job: JobSummary }) {
           size="small"
           color={JOB_STATUS_COLOR[job.status] ?? 'default'}
           variant="outlined"
-          // A waiting job's detail is not rendered below (see there); keep Kueue's own
-          // wait message reachable on hover rather than dropping it.
-          title={job.status === 'waiting' ? (job.detail ?? undefined) : undefined}
         />
         <Button
           size="small"
@@ -258,11 +252,8 @@ function JobRow({ campaignId, job }: { campaignId: string; job: JobSummary }) {
         </Button>
       </Stack>
       {/* Why a job is stuck — e.g. a Kubernetes ImagePullBackOff reason + message —
-          so a job that can never start is legible instead of silently pending. Not
-          shown for `waiting`: queueing for capacity is the normal path, and Kueue's
-          message ("insufficient unused quota for cpu") only restates the status one
-          line above it. It stays on the chip's tooltip. */}
-      {job.detail && job.status !== 'waiting' ? (
+          so a job that can never start is legible instead of silently pending. */}
+      {job.detail ? (
         <Typography
           variant="caption"
           sx={{ display: 'block', color: 'error.main', pl: 0.5, wordBreak: 'break-word' }}

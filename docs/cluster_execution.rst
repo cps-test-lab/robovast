@@ -431,8 +431,12 @@ is waiting for capacity, not stuck. ``vast execution cluster monitor``, the web 
 and ``list_campaign_jobs`` report such jobs as ``waiting`` — a status of its own,
 distinct from ``pending`` (a pod exists and is being scheduled) and from ``blocked``
 (the job cannot start and needs a human). Kueue's own reason rides along as the
-job's ``detail``; the web UI keeps it on the status chip's tooltip rather than
-printing it under every queued job, since it only restates the status.
+job's ``detail``.
+
+A ``waiting`` job has no pod, so it appears in the web UI only as the ``waiting N``
+counter, never as a row: the per-job list mirrors the jobs that actually exist on the
+cluster (what ``k9s`` shows), and those are the ones with a pod and a log to read.
+``list_campaign_jobs`` still returns every one of them with its reason.
 
 If the queue is genuinely unusable — setup was never run, or the campaign targets
 a namespace that was never set up — the campaign fails at launch with a message
