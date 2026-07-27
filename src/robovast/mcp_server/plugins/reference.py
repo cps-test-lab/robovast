@@ -143,9 +143,8 @@ def get_service_info() -> dict:
     service if they differ.
 
     Returns:
-        ``{code_version, api_version, backend, backends, mcp_plugins}``; ``{error}``
-        when no service answers. ``mcp_plugins`` are the plugin groups *this MCP
-        process* loaded — same staleness caveat, different process.
+        ``{code_version, api_version, backend, backends}``; ``{error}`` when no service
+        answers.
 
         With a cluster lane, also ``{kube_context, kube_context_source, namespace,
         in_pod, api_server}`` — which cluster a campaign would actually land in.
@@ -162,8 +161,6 @@ def get_service_info() -> dict:
         committing a long campaign to it — it reads the cluster's nodes, so it fails
         when the cluster does.
     """
-    from importlib.metadata import entry_points
-
     from robovast.mcp_server.plugins.campaign_control import (_NO_SERVICE,
                                                               _service_client)
     client = _service_client()
@@ -178,8 +175,6 @@ def get_service_info() -> dict:
         "api_version": v.api_version,
         "backend": v.backend,
         "backends": v.backends,
-        "mcp_plugins": sorted(
-            ep.name for ep in entry_points(group="robovast.mcp_plugins")),
     }
     # Only when there is a cluster lane: on a local-only service these would all be
     # None, and five null fields read as "unknown" rather than "not applicable".
