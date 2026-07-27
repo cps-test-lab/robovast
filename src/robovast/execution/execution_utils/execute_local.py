@@ -30,6 +30,7 @@ from robovast.common.config_generation import generate_scenario_variations
 from robovast.common.execution import (_apply_local_parameter_overrides,
                                        build_job_parameter_documents,
                                        dump_multi_document_yaml,
+                                       job_artifact_rel,
                                        resolve_robovast_image,
                                        write_job_links_manifest)
 from robovast.execution.packer import build_jobs
@@ -441,8 +442,7 @@ def _build_packed_compose_yaml(
     # artifacts (sysinfo, resource monitor, logs) go to a per-job subdir so they
     # don't collide across jobs. ``job_prefix`` (e.g. "batch-3") namespaces those
     # job dirs so multiple batches sharing one campaign root don't collide.
-    job_artifact_dir = f"/out/_jobs/{job_prefix}/job-{job.index}" if job_prefix \
-        else f"/out/_jobs/job-{job.index}"
+    job_artifact_dir = f"/out/_jobs/{job_artifact_rel(job.index, job_prefix)}"
     packed_env_lines = [
         "      - SCENARIO_PARAMETER_FILE=/config/scenario.params.yaml",
         "      - OUTPUT_RESULT_PER_SCENARIO=true",
@@ -841,7 +841,8 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
     # Canonical record of the per-job artifact links (also used by the cluster
     # share archiver). Local runs create the links inline per job below so a
     # Ctrl+C only loses the job active at cancel time.
-    write_job_links_manifest(os.path.join(config_path_result, "_transient"), jobs)
+    write_job_links_manifest(os.path.join(config_path_result, "_transient"), jobs,
+                             job_prefix)
     total = len(jobs)
     for idx, job in enumerate(jobs, 1):
         documents = build_job_parameter_documents(job, scenario_name)
@@ -882,7 +883,7 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
         # after the compose `down`, before the step's summary/exit), so a
         # Ctrl+C only loses the links for the job active at cancel time.
         # Each <config>/<run>/job points at this job's _jobs[/<prefix>]/job-N dir.
-        job_rel = f"_jobs/{job_prefix}/job-{job.index}" if job_prefix else f"_jobs/job-{job.index}"
+        job_rel = f"_jobs/{job_artifact_rel(job.index, job_prefix)}"
         link_cmds = "".join(
             f'ln -sfn "{os.path.relpath("/" + job_rel, "/" + os.path.join(it.config_name, str(it.run_number)))}" '
             f'"{os.path.join("${RESULTS_DIR}", it.config_name, str(it.run_number))}/job"\n'

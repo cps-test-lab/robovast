@@ -70,9 +70,11 @@ from robovast.common import (COMPAT_VERSION, get_execution_env_variables,
                              normalize_secondary_containers)
 from robovast.common.cluster_context import resolve_resources
 from robovast.common.common import get_scenario_parameters
-from robovast.common.execution import (build_job_parameter_documents,
+from robovast.common.execution import (build_job_links,
+                                       build_job_parameter_documents,
                                        create_job_links,
                                        dump_multi_document_yaml,
+                                       job_artifact_rel,
                                        resolve_robovast_image,
                                        write_job_links_manifest)
 from robovast.common import prepare_campaign_configs
@@ -330,7 +332,7 @@ class BatchJobRunner:
         Nested ``<batch>/job-<idx>`` when batched (matching the local layout), else
         flat ``job-<idx>``. This is the symlink target base used by ``job_links``.
         """
-        return f"{self._batch_tag}/job-{index}" if self._batch_tag else f"job-{index}"
+        return job_artifact_rel(index, self._batch_tag)
 
     def _build_job_manifest(self, *, job_short_name, job_full_name, item_tag,
                             total_jobs, s3_prefix, init_cmd, extra_main_env=()):
@@ -592,11 +594,11 @@ class BatchJobRunner:
             with open(os.path.join(transient_dir, f"{self._job_tag(job.index)}.params.yaml"), "w") as f:
                 f.write(dump_multi_document_yaml(docs))
         # Canonical link manifest, consumed by the controller's upload-to-share
-        # compression to materialise <config>/<run>/job symlinks into the tar.gz.
-        # Skipped in per-batch mode: build_job_links assumes the single-batch
-        # ``_jobs/job-<idx>`` layout, which the batch-namespaced job tag breaks.
-        if not self._batch_tag:
-            write_job_links_manifest(transient_dir, jobs)
+        # compression to materialise <config>/<run>/job symlinks into the tar.gz, and
+        # by readers resolving a job's artifacts while it is still running. Written in
+        # per-batch mode too: the manifest is batch-aware, so the batch-namespaced job
+        # tag no longer breaks the target path.
+        write_job_links_manifest(transient_dir, jobs, self._batch_tag)
 
     def get_remaining_jobs(self, job_names):
         running_jobs = []
@@ -1012,10 +1014,7 @@ class BatchJobRunner:
         if os.path.isfile(manifest):
             with open(manifest, encoding="utf-8") as f:
                 links = yaml.safe_load(f) or {}
-        for job in self._build_jobs():
-            target = f"../../_jobs/{self._job_artifact_path(job.index)}"
-            for item in job.items:
-                links[f"{item.config_name}/{item.run_number}/job"] = target
+        links.update(build_job_links(self._build_jobs(), self._batch_tag))
         with open(manifest, "w", encoding="utf-8") as f:
             yaml.safe_dump(links, f, default_flow_style=False, sort_keys=True)
 

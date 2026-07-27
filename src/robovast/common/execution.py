@@ -878,43 +878,97 @@ def dump_multi_document_yaml(documents) -> str:
 JOB_LINKS_MANIFEST = "job_links.yaml"
 
 
-def build_job_links(jobs) -> dict:
+def job_artifact_rel(index, job_prefix="") -> str:
+    """Path of job *index*'s artifact dir under ``_jobs/`` (no leading ``_jobs/``).
+
+    Nested ``<prefix>/job-<idx>`` when the run is batched, else flat ``job-<idx>``.
+    Both backends lay ``_jobs/`` out this way, so this is the one definition of that
+    layout — the local runner, the cluster runner, and every reader resolve through it.
+    """
+    return f"{job_prefix}/job-{index}" if job_prefix else f"job-{index}"
+
+
+def build_job_links(jobs, job_prefix="") -> dict:
     """Map each work item's ``job`` link to its job's artifact directory.
 
     For a packed job ``N`` running config ``C`` at run ``R``, the work item's
     result dir is ``C/R`` and the job-level artifacts (sysinfo, logs, resource
-    monitor) live in ``_jobs/job-N``. This returns a ``{link: target}`` mapping
-    where the link is ``C/R/job`` and the target is the path to ``_jobs/job-N``
-    relative to the link's directory (``../../_jobs/job-N``), so a user can
-    ``cd C/R/job`` to reach that job's artifacts.
+    monitor) live in ``_jobs[/<prefix>]/job-N``. This returns a ``{link: target}``
+    mapping where the link is ``C/R/job`` and the target is that dir relative to the
+    link's directory, so a user can ``cd C/R/job`` to reach the job's artifacts.
 
     Args:
         jobs: An iterable of :class:`~robovast.execution.packer.JobSpec`.
+        job_prefix: Batch namespace (e.g. ``"batch-3"``) when runs are executed in
+            batches; empty for the flat single-batch layout. Must match the prefix the
+            runner actually writes under, or the manifest points at a dir that
+            never exists.
 
     Returns:
-        dict[str, str]: ``{"<config>/<run>/job": "../../_jobs/job-<idx>"}``.
+        dict[str, str]: ``{"<config>/<run>/job": "../../_jobs[/<prefix>]/job-<idx>"}``.
     """
     links = {}
     for job in jobs:
-        target = f"../../_jobs/job-{job.index}"
+        target = f"../../_jobs/{job_artifact_rel(job.index, job_prefix)}"
         for item in job.items:
             links[f"{item.config_name}/{item.run_number}/job"] = target
     return links
 
 
-def write_job_links_manifest(transient_dir, jobs) -> None:
+def write_job_links_manifest(transient_dir, jobs, job_prefix="") -> None:
     """Write the ``job_links.yaml`` manifest (link → relative target) for *jobs*.
 
     No-op when there are no links (e.g. single-config jobs have no ``_jobs``
     split). The manifest is plain data, so it survives an S3 round-trip and is
     consumed where results are materialised (locally and in the share archiver).
     """
-    links = build_job_links(jobs)
+    links = build_job_links(jobs, job_prefix)
     if not links:
         return
     os.makedirs(transient_dir, exist_ok=True)
     with open(os.path.join(transient_dir, JOB_LINKS_MANIFEST), "w") as f:
         yaml.dump(links, f, default_flow_style=False, sort_keys=True)
+
+
+def read_job_links(campaign_dir) -> dict:
+    """Load a campaign's ``{link: target}`` job-link manifest ({} when absent)."""
+    manifest = os.path.join(campaign_dir, "_transient", JOB_LINKS_MANIFEST)
+    if not os.path.isfile(manifest):
+        return {}
+    with open(manifest) as f:
+        return yaml.safe_load(f) or {}
+
+
+def job_artifact_dir(campaign_dir, job_name) -> str:
+    """Resolve ``<config>/<run>``'s job-artifact dir (logs, sysinfo, resource monitor).
+
+    Those artifacts are written per JOB under ``_jobs/``, never into the run dir, so
+    ``<config>/<run>/logs/`` stays empty and reading there yields a silently blank log.
+
+    Resolution goes through the manifest, not the ``job`` symlink: the manifest is
+    written before the first job starts, while the symlink is only created once a job
+    finishes, so a RUNNING job resolves through the manifest alone. The symlink stays
+    the user-facing affordance (``cd C/R/job``); the manifest is the machine-readable
+    source of truth, and both come from :func:`build_job_links`.
+
+    Args:
+        campaign_dir: The campaign's results directory.
+        job_name: ``"<config>/<run>"``.
+
+    Returns:
+        str: Path to the job's artifact directory, relative to *campaign_dir*'s root
+        in the same sense *campaign_dir* itself is.
+
+    Raises:
+        FileNotFoundError: When the campaign has no manifest entry for *job_name* —
+            the job's artifacts are unlocatable, which must not be reported as
+            "no output".
+    """
+    target = read_job_links(campaign_dir).get(f"{job_name}/job")
+    if not target:
+        raise FileNotFoundError(
+            f"no {JOB_LINKS_MANIFEST} entry for {job_name!r} in {campaign_dir!r}")
+    return os.path.normpath(os.path.join(campaign_dir, job_name, target))
 
 
 def create_job_links(campaign_dir) -> int:
@@ -926,11 +980,7 @@ def create_job_links(campaign_dir) -> int:
     no-op (single-config campaigns have none). Returns the number of links
     created.
     """
-    manifest = os.path.join(campaign_dir, "_transient", JOB_LINKS_MANIFEST)
-    if not os.path.isfile(manifest):
-        return 0
-    with open(manifest) as f:
-        links = yaml.safe_load(f) or {}
+    links = read_job_links(campaign_dir)
     created = 0
     for link_rel, target in links.items():
         link_path = os.path.join(campaign_dir, link_rel)

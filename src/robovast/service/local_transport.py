@@ -813,13 +813,20 @@ class LocalTransport(RobovastInterface):
         return ListJobsResponse(jobs=jobs, counts=counts)
 
     def get_job_log(self, campaign_id: str, job_name: str, offset: int = 0) -> LogChunk:
-        """Serve a run's live ``logs/system.log`` (``job_name`` = ``<config>/<run>``).
+        """Serve a run's live ``job/logs/system.log`` (``job_name`` = ``<config>/<run>``).
 
         The run writes this file in place as it executes, so the same read serves a
         running and a finished run; ``eof`` is set once the run has a result or the
         campaign is no longer driven here.
+
+        The container writes this to the JOB's artifact dir (``_jobs[/<batch>]/job-<j>``),
+        not to the config/run dir -- ``<config>/<run>/logs/`` exists but stays empty, so
+        reading there returns a silently blank job log even though the same output is
+        visible in the campaign log (the local backend also folds container stdout into
+        ``controller.log``). :func:`job_artifact_dir` resolves the real dir.
         """
         from robovast.common.campaign_data import read_test_result
+        from robovast.common.execution import job_artifact_dir
         campaign_dir = self._campaigns_root() / campaign_id
         run_dir = (campaign_dir / job_name).resolve()
         # Guard against path traversal via a crafted job_name.
@@ -833,7 +840,13 @@ class LocalTransport(RobovastInterface):
             run_done = True
         except FileNotFoundError:
             run_done = False
-        return _read_log_slice(run_dir / "logs" / "system.log", offset,
+        try:
+            job_dir = Path(job_artifact_dir(campaign_dir, job_name))
+        except FileNotFoundError:
+            # Before the first job starts there is no manifest yet; that is the
+            # documented startup race, not a broken layout.
+            return LogChunk(text="", next_offset=offset, eof=run_done or not live)
+        return _read_log_slice(job_dir / "logs" / "system.log", offset,
                                eof=run_done or not live)
 
     def stop(self, campaign_id: str) -> ActionResult:
