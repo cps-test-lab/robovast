@@ -103,7 +103,22 @@ read timeout **while the server keeps going and the campaign succeeds** — a re
 failure for work that worked. No timeout value fixes this honestly. The async
 machinery already exists and is discarded: ``_start_cluster_build`` returns a
 ``build_id``, and ``get_image_build_status`` / ``get_image_build_log`` are already
-tools. Return immediately in a ``building`` phase and let the driver await it. This
+tools.
+
+Worse than the timeout: while that build runs, **the work is unobservable**.
+The campaign is created only *after* the build, so ``list_running_campaigns``
+reports nothing, and the only handles on a build are
+``/image-builds/{build_id}/status`` and ``.../log`` — there is no build listing, and
+the timed-out call never returned the id. So a caller is left with a failed request,
+no campaign, and live work it cannot see.
+
+Creating the campaign **first**, in a ``building`` phase, fixes all of it at once and
+makes ``list_running_campaigns`` correct with no change to it: a building campaign is
+a campaign. The status then carries the phase and the ``build_id``, so the build log
+stays reachable. Do **not** instead teach ``list_running_campaigns`` to enumerate
+builds — that needs a listing endpoint that does not exist, returns entries that are
+not campaigns, and creates a second in-flight registry to keep consistent with the
+first. Return immediately in a ``building`` phase and let the driver await it. This
 applies to the local docker build too: building is part of the campaign's driven
 work, not a precondition of its existence. It changes an error path deliberately —
 a failed build becomes an inspectable failed campaign rather than no campaign.
