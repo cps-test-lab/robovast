@@ -8,7 +8,8 @@ import textwrap
 
 from robovast.common.campaign_index import build_campaign_store
 from robovast.common.store import (STORE_FILENAME, CampaignStore,
-                                   read_campaign_created_at)
+                                   read_campaign_created_at,
+                                   read_campaign_description)
 
 VAST = textwrap.dedent("""\
     version: 1
@@ -110,6 +111,20 @@ def test_created_at_is_the_recorded_start_not_the_indexing_time(tmp_path):
     # A rebuild must not restamp it: re-indexing an old campaign must not move it.
     build_campaign_store(campaign, force=True)
     assert read_campaign_created_at(campaign) == "2026-06-17T10:10:10+00:00"
+
+
+def test_rebuild_keeps_the_description(tmp_path):
+    """The launcher's description is the one column no results tree can supply, so a
+    forced rebuild must carry it over instead of blanking it."""
+    campaign = _make_campaign(tmp_path, {"ca": [0]})
+    _write_execution_record(campaign, "2026-06-17T10:10:10Z")
+    build_campaign_store(campaign)
+    with CampaignStore(campaign / STORE_FILENAME) as store:
+        store._conn.execute("UPDATE campaign SET description = ?", ("the full sweep",))
+        store._conn.commit()
+
+    build_campaign_store(campaign, force=True)
+    assert read_campaign_description(campaign) == "the full sweep"
 
 
 def test_created_at_is_null_when_the_start_was_never_recorded(tmp_path):

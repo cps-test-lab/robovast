@@ -146,6 +146,14 @@ def get_service_info() -> dict:
         ``{code_version, api_version, backend, backends}``; ``{error}`` when no service
         answers.
 
+        Also ``{results_address, sources_address}`` — the two file address templates, so
+        the address space is learnable from the service rather than from documentation.
+        ``{results_root, sources_root}`` appear **only** when this caller can actually
+        open them: a local-filesystem service answering on loopback. Then read files with
+        your own tools instead of relaying their bytes through this interface. Their
+        absence is not a hint to go looking — a cluster service's results are objects,
+        and its local fetch scratch holds only whatever it happened to fetch.
+
         With a cluster lane, also ``{kube_context, kube_context_source, namespace,
         in_pod, api_server}`` — which cluster a campaign would actually land in.
         ``kube_context: None`` with source ``"active kubeconfig context"`` means the
@@ -175,7 +183,15 @@ def get_service_info() -> dict:
         "api_version": v.api_version,
         "backend": v.backend,
         "backends": v.backends,
+        "results_address": v.results_address,
+        "sources_address": v.sources_address,
     }
+    # Only when set: a null root reads as "unknown", when the truthful statement is
+    # "this service has no path you can open" — so say nothing rather than say null.
+    if v.results_root:
+        info["results_root"] = v.results_root
+    if v.sources_root:
+        info["sources_root"] = v.sources_root
     # Only when there is a cluster lane: on a local-only service these would all be
     # None, and five null fields read as "unknown" rather than "not applicable".
     if "cluster" in (v.backends or []):

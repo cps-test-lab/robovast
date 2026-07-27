@@ -127,6 +127,62 @@ The MCP server organizes its tools along two dimensions: **operations**
    * - ``artifact``
      - Files generated or consumed during execution
 
+Files are the exception to the ``<verb>_<resource>`` pattern: they are not one resource
+per scope but :ref:`one address space <mcp-files>`.
+
+
+.. _mcp-files:
+
+Files
+-----
+
+Every file RoboVAST can reach has a single address, which is also the URL that serves
+it:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 40 20
+
+   * - Address
+     - What
+     - Writable
+   * - ``/results/<campaign_id>/<path>``
+     - a campaign's outputs
+     - no
+   * - ``/sources/<workspace_id>/<path>``
+     - a workspace's authored inputs
+     - yes
+
+Five tools work over it — ``list_files``, ``read_file``, ``write_file``, ``edit_file``,
+``delete_file`` — instead of a reader and a lister per scope. The path after the owner
+is the **real on-disk path**, so what a listing shows is what you can read:
+
+.. code-block:: text
+
+   /results/<campaign>/  _config/     scenario.osc, <name>.vast, run files, notebooks
+                         _execution/  outcome.json, execution.yaml, controller.log,
+                                      postprocessing.log, data.db (query it with SQL)
+                         _transient/  configurations.yaml, entrypoint.sh
+                         _jobs/job-N/ sysinfo.yaml, logs/system.log
+                         <config_name>/<run>/  test.xml, out.csv, rosbag2/, scene/
+
+``<config_name>`` is the directory name, which is **not** the ``config_identifier``
+that the configuration tools accept — list the campaign root to see the real names.
+
+A trailing slash lists a directory; without one you read a file. Listings are
+non-recursive by default (a campaign has one directory per configuration and one per
+run) and report ``total`` when truncated, so you know to page. ``read_file`` returns
+text and refuses binary — fetch those over HTTP or with ``vast files get``.
+
+Writes are restricted to ``/sources``: campaign results are immutable, and on the
+cluster they are object-store objects that a local write could not change. Inline
+writes accept only ``.vast``/``.osc``; everything else goes through ``create_upload``,
+so its bytes never enter the token stream.
+
+``get_service_info`` reports the two address templates, and — when the service runs on
+your own machine — ``results_root`` / ``sources_root``, so you can read files with your
+own tools rather than through the interface.
+
 
 .. _mcp-control:
 
@@ -146,6 +202,12 @@ the ``vast exec local run`` CLI directly.)
 immediately; poll ``get_campaign_status``. Results live wherever the service
 keeps them — local disk for a local ``vast serve``, the object store for a
 cluster service (retrieve via the web UI or ``get_campaign_download``).
+
+Pass a ``description`` (≤ 200 characters) saying what the run is *for*. It is
+recorded on the campaign row in its ``campaign.db``, so it travels with the
+results and is shown by ``list_campaigns`` and on the campaign card in the web
+UI — where it is the only thing telling two same-day ``campaign-<timestamp>``
+ids apart. The launcher in the web UI has the same field.
 
 **Choosing a lane on a dual-backend serve.** A ``vast serve --backend
 local+cluster`` (a dev host with both Docker and kubeconfig) offers *both* lanes

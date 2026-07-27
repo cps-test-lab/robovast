@@ -229,7 +229,8 @@ def preview_configurations(config_path: str, max_configs: int = 0) -> dict:
 
 def start_campaign(config_filter: str = "", runs: int = 0, backend: str = "",
                    workspace_id: str = "", config_path: str = "",
-                   campaign_name: str = "", upload_to_share: bool = False) -> dict:
+                   campaign_name: str = "", upload_to_share: bool = False,
+                   description: str = "") -> dict:
     """Start a campaign through the robovast-service and return immediately.
 
     The service is the execution authority — there is **no** local subprocess path —
@@ -258,6 +259,15 @@ def start_campaign(config_filter: str = "", runs: int = 0, backend: str = "",
         upload_to_share: When true, a raw (pre-postprocess) archive is delivered to the
             configured share when the campaign finishes. Target/credentials come from
             the service config, not this call.
+        description: **Set this on every start** — one line (max 200 characters) saying
+            what this run is *for*, in the words you would use to answer "why did we run
+            this?" a week later: the question it answers, what changed since the previous
+            campaign, whether it is a pilot or the full sweep. It is stored with the
+            campaign and shown in ``list_campaigns`` and the web UI, so it is what
+            distinguishes one ``campaign-<timestamp>`` from the next; without it a listing
+            of a dozen runs is unreadable. Do not restate the id, the config filter, or the
+            run count — those are already listed. Good: "pilot: 5 reps DWB vs MPPI on
+            open_space, checking the new inflation radius". Bad: "campaign run".
 
     Returns:
         ``{campaign_id, backend}`` on success; ``{error}`` when no service is reachable
@@ -269,10 +279,18 @@ def start_campaign(config_filter: str = "", runs: int = 0, backend: str = "",
             return {"error": _NO_SERVICE}
         if backend and backend not in ("local", "cluster"):
             return {"error": f"unknown backend {backend!r}; use 'local' or 'cluster'"}
-        from robovast.service.interface import CreateCampaignRequest
+        from robovast.service.interface import (DESCRIPTION_MAX_LEN,
+                                                CreateCampaignRequest)
+        # Checked here rather than left to the request model's validator: this returns
+        # the actionable "shorten it and call again" instead of a pydantic traceback
+        # string, and it refuses before anything is launched.
+        if len(description) > DESCRIPTION_MAX_LEN:
+            return {"error": f"description is {len(description)} characters; the limit "
+                             f"is {DESCRIPTION_MAX_LEN} — shorten it to one line"}
         ref = client.create_campaign(CreateCampaignRequest(
             workspace_id=workspace_id, config_path=config_path,
             config_filter=config_filter, campaign_name=campaign_name,
+            description=description,
             # Pass the "unset" value through instead of substituting 1: the service maps a
             # non-positive count to None and falls back to the .vast's execution.runs,
             # which is what this tool documents. Substituting 1 here silently shrank every

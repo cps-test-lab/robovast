@@ -33,8 +33,8 @@ host resolves the campaign dir behind it (local disk or, on the cluster, an obje
 fetch), giving local/cluster transparency for free.
 
 Scope (deliberately narrow): run-scoped **GET → JSON**. Binary/large per-run artifacts are
-already served generically by ``GET /campaigns/{id}/run-files/{config}/{run}/{path}`` — use
-that, not this. Producing the data is a postprocessing plugin's job; this only serves it.
+already served generically by ``GET /results/<campaign>/<config>/<run>/<path>`` — use that,
+not this. Producing the data is a postprocessing plugin's job; this only serves it.
 """
 
 import logging
@@ -55,7 +55,7 @@ ENDPOINT_GROUP = "robovast.service_endpoints"
 #: which registers first and would win anyway). ``costmap`` is intentionally absent — its
 #: core route was removed, freeing the name for the ``robovast_nav`` plugin.
 RESERVED_CAMPAIGN_ENDPOINTS = frozenset({
-    "status", "stop", "describe", "query", "plots", "panels", "run-files",
+    "status", "stop", "describe", "query", "plots", "panels",
     "visualizations", "notebook", "archive", "postprocessing", "panel_assets",
 })
 
@@ -111,7 +111,7 @@ class RunDataContext:
         """Absolute path to one run's artifact directory
         (``<data_dir>/<config_name>/<run_id>``), confined to the campaign dir. Raises
         ``ValueError`` (→ 400) on a ``..``/absolute escape. (For serving a run artifact
-        *file* prefer the generic ``run-files`` endpoint; this is for handlers that need to
+        *file* prefer the ``/results`` address space; this is for handlers that need to
         read run artifacts to compute a JSON response.)"""
         base = Path(self.data_dir).resolve()
         target = (base / str(config_name) / str(run_id)).resolve()

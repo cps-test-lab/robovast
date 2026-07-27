@@ -17,6 +17,7 @@
 
 """Main CLI entry point for RoboVAST."""
 
+import functools
 import logging
 import os
 import shutil
@@ -684,6 +685,149 @@ def workspace_delete(workspace, cluster, namespace, context):
     with service_client(cluster, namespace, context) as (client, target):
         _echo_target(target)
         res = client.delete_workspace(workspace)
+        click.echo(res.message or ('deleted' if res.ok else 'failed'))
+
+
+# ---------------------------------------------------------------------------
+# files — one address space over campaign results and workspace inputs
+# ---------------------------------------------------------------------------
+
+
+def _file_errors(func):
+    """Report the address space's refusals as messages, not tracebacks.
+
+    Every one of them is a *caller* error with an actionable message already attached —
+    a read-only namespace, a malformed address, a binary file, a missing campaign. The
+    interface raises ``ValueError``/``KeyError`` so the HTTP layer can map them to
+    400/404; on the CLI the same information belongs on one line.
+    """
+    @functools.wraps(func)
+    def _wrapped(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except (ValueError, KeyError) as e:
+            # ``str(KeyError("x"))`` is ``"'x'"`` — take the argument itself, or the
+            # message would be shown wrapped in stray quotes.
+            message = e.args[0] if isinstance(e, KeyError) and e.args else str(e)
+            raise click.ClickException(str(message)) from e
+    return _wrapped
+
+
+@cli.group()
+def files():
+    """Read and write files by address.
+
+    Every file the service can reach has one address, which is also the URL that
+    serves it:
+
+    \b
+      /results/<campaign_id>/<path>    a campaign's outputs — read-only
+      /sources/<workspace_id>/<path>   a workspace's inputs — writable
+
+    The path after the owner is the real on-disk path: a run artifact is
+    ``<config_name>/<run_id>/<file>``. A trailing slash lists a directory.
+
+    \b
+      vast files ls  /results/nav-2026-03-04-152130/
+      vast files cat /results/nav-2026-03-04-152130/_execution/outcome.json
+      vast files put /sources/ws-ab12/demo.vast ./demo.vast
+    """
+
+
+@files.command('ls')
+@click.argument('address')
+@click.option('--recursive', '-r', is_flag=True,
+              help='Walk the whole subtree (files only).')
+@click.option('--detail', '-l', is_flag=True, help='Show sizes.')
+@click.option('--limit', default=100, show_default=True, help='Maximum entries.')
+@click.option('--offset', default=0, help='First entry to show.')
+@target_options
+@_file_errors
+def files_ls(address, recursive, detail, limit, offset, cluster, namespace, context):
+    """List the directory at ADDRESS (a trailing slash is optional)."""
+    with service_client(cluster, namespace, context) as (client, target):
+        _echo_target(target)
+        listing = client.list_files(address, recursive=recursive, detail=detail,
+                                    offset=offset, limit=limit)
+        if detail:
+            for e in listing.detailed:
+                size = '-' if e.bytes is None else str(e.bytes)
+                click.echo(f"{size:>12}  {e.name}{'/' if e.is_dir else ''}")
+        else:
+            for name in listing.entries:
+                click.echo(name)
+        shown = len(listing.detailed if detail else listing.entries)
+        if listing.truncated:
+            click.echo(f"({shown} of {listing.total} — raise --limit or page with "
+                       f"--offset {offset + shown})")
+
+
+@files.command('cat')
+@click.argument('address')
+@click.option('--lines', default=200, show_default=True, help='Maximum lines.')
+@click.option('--offset', default=0, help='First line to print.')
+@target_options
+@_file_errors
+def files_cat(address, lines, offset, cluster, namespace, context):
+    """Print a page of the text file at ADDRESS (binary files → ``vast files get``)."""
+    with service_client(cluster, namespace, context) as (client, target):
+        _echo_target(target)
+        page = client.read_file(address, lines=lines, offset=offset)
+        click.echo(page.content)
+        if page.offset + page.returned_lines < page.total_lines:
+            click.echo(f"({page.offset + page.returned_lines} of {page.total_lines} "
+                       f"lines — continue with --offset "
+                       f"{page.offset + page.returned_lines})", err=True)
+
+
+@files.command('get')
+@click.argument('address')
+@click.argument('destination', type=click.Path(dir_okay=False))
+@target_options
+@_file_errors
+def files_get(address, destination, cluster, namespace, context):
+    """Download the file at ADDRESS to DESTINATION, bytes intact.
+
+    The way to fetch one binary artifact (a rosbag, a mesh, a rendered plot) without
+    downloading the campaign archive around it.
+    """
+    from pathlib import Path
+    with service_client(cluster, namespace, context) as (client, target):
+        _echo_target(target)
+        data = client.read_file_bytes(address)
+    Path(destination).write_bytes(data)
+    click.echo(f"wrote {len(data)} bytes to {destination}")
+
+
+@files.command('put')
+@click.argument('address')
+@click.argument('source', type=click.Path(exists=True, dir_okay=False))
+@target_options
+@_file_errors
+def files_put(address, source, cluster, namespace, context):
+    """Upload SOURCE to ADDRESS (``/sources/…`` only — results are immutable).
+
+    ``.vast``/``.osc`` are written inline; every other type goes through the upload
+    side channel with its executable bit preserved.
+    """
+    from pathlib import Path
+
+    from robovast.service.project_push import push_file
+    with service_client(cluster, namespace, context) as (client, target):
+        _echo_target(target)
+        kind = push_file(client, address, Path(source))
+    click.echo(f"{kind} {address}")
+
+
+@files.command('rm')
+@click.argument('address')
+@target_options
+@_file_errors
+def files_rm(address, cluster, namespace, context):
+    """Delete the file at ADDRESS (``/sources/…`` only)."""
+    with service_client(cluster, namespace, context) as (client, target):
+        _echo_target(target)
+        res = client.delete_file(address)
         click.echo(res.message or ('deleted' if res.ok else 'failed'))
 
 

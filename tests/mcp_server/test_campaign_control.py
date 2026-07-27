@@ -115,6 +115,26 @@ def test_service_start_passes_backend(service):
     assert req.backend == "local"
 
 
+def test_service_start_passes_description(service):
+    cc.start_campaign(description="pilot: 5 reps DWB vs MPPI on open_space")
+    _name, req = service.calls[-1]
+    assert req.description == "pilot: 5 reps DWB vs MPPI on open_space"
+
+
+def test_start_without_description_sends_empty(service):
+    cc.start_campaign()
+    _name, req = service.calls[-1]
+    assert req.description == ""
+
+
+def test_start_rejects_overlong_description(service):
+    """Refused before launch, with the limit named — not a pydantic traceback."""
+    from robovast.service.interface import DESCRIPTION_MAX_LEN
+    res = cc.start_campaign(description="x" * (DESCRIPTION_MAX_LEN + 1))
+    assert "error" in res and str(DESCRIPTION_MAX_LEN) in res["error"]
+    assert not service.calls  # never reached the service
+
+
 def test_start_rejects_unknown_backend(service):
     res = cc.start_campaign(backend="gpu")
     assert "error" in res and "unknown backend" in res["error"]

@@ -232,6 +232,41 @@ def test_store_strategy_state_roundtrip(tmp_path):
     store.close()
 
 
+def test_store_description_roundtrip(tmp_path):
+    from robovast.common.store import read_campaign_description
+    with CampaignStore(tmp_path / STORE_FILENAME) as store:
+        store.create_campaign("c", {"version": 1}, description="pilot: 5 reps")
+    assert read_campaign_description(tmp_path) == "pilot: 5 reps"
+
+
+def test_store_without_description_reads_none(tmp_path):
+    """No description is None, not an empty string — the same answer a store written
+    before the column existed gives, so callers need one branch, not two."""
+    from robovast.common.store import read_campaign_description
+    with CampaignStore(tmp_path / STORE_FILENAME) as store:
+        store.create_campaign("c", {"version": 1})
+    assert read_campaign_description(tmp_path) is None
+
+
+def test_description_read_from_pre_column_store_is_none(tmp_path):
+    """A schema-v2 store (no ``description`` column) reads back as "no description"
+    rather than raising — and is left unmigrated, since the read is read-only."""
+    from robovast.common.store import (_MIGRATION_ADD_RUN, _SCHEMA,
+                                       read_campaign_description)
+    db = tmp_path / STORE_FILENAME
+    conn = sqlite3.connect(db)
+    conn.executescript(_SCHEMA)
+    conn.executescript(_MIGRATION_ADD_RUN)
+    conn.execute("PRAGMA user_version = 2")
+    conn.execute(
+        "INSERT INTO campaign (id, name, mode, created_at) VALUES (1, 'old', 'batch', 0)")
+    conn.commit()
+    conn.close()
+
+    assert read_campaign_description(tmp_path) is None
+    assert sqlite3.connect(db).execute("PRAGMA user_version").fetchone()[0] == 2
+
+
 def test_fresh_store_stamps_schema_version(tmp_path):
     from robovast.common.store import SCHEMA_VERSION
     store = CampaignStore(tmp_path / "camp.db")

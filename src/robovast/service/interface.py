@@ -44,6 +44,8 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
+from robovast.common import file_address
+
 # Reused verbatim — the controller's live status model. (The old ``Command`` /
 # ``CommandResult`` RPC envelopes are gone: the controller runs in-process now, so
 # ``stop`` is a direct call rather than an HTTP command to a controller pod.)
@@ -52,6 +54,11 @@ from robovast.execution.control_server import Phase, Status  # noqa: F401
 # ---------------------------------------------------------------------------
 # Request / response models
 # ---------------------------------------------------------------------------
+
+#: Character cap on a campaign description (:attr:`CreateCampaignRequest.description`).
+#: One line in a campaign listing, not a notebook — anything longer belongs in the
+#: ``.vast`` itself, which is archived with the campaign.
+DESCRIPTION_MAX_LEN = 200
 
 
 class CreateCampaignRequest(BaseModel):
@@ -70,6 +77,10 @@ class CreateCampaignRequest(BaseModel):
     config_path: str = ""            # which .vast to run (workspace-relative); "" = the one .vast
     config_filter: str = ""          # optional glob to run only matching configs
     campaign_name: str = ""          # override the campaign name (id = <name>-<timestamp>); "" = metadata.name
+    # Free text about *this* launch ("pilot: 5 reps, DWB vs MPPI"), recorded in the
+    # campaign's store and shown in listings. Capped so it stays a listing-sized label
+    # rather than a place to put notes; the id-shaped `campaign_name` cannot carry it.
+    description: str = Field("", max_length=DESCRIPTION_MAX_LEN)
     runs: int = 1                    # runs per configuration
     postprocess: bool = True         # trigger analysis postprocessing once when done
     upload_to_share: bool = False    # stream a raw (pre-postprocess) archive to the share
@@ -146,6 +157,7 @@ class CampaignSummary(BaseModel):
 
     campaign_id: str
     phase: str = Phase.UNKNOWN       # open vocabulary; see the Phase enum
+    description: str = ""            # the launcher's free text; "" when none was given
     postprocessed: bool = False      # configured postprocessing pipelines have run
     num_runs: int = 0
     num_passed: int = 0
@@ -337,6 +349,29 @@ class VersionInfo(BaseModel):
     #: is answerable without reading the caller's kubeconfig.
     api_server: Optional[str] = None
 
+    # -- how to reach files -------------------------------------------------
+    #: The address templates, so a caller learns the file address space from the
+    #: service rather than from documentation it may not have.
+    results_address: str = "/results/{campaign_id}/{path}"
+    sources_address: str = "/sources/{workspace_id}/{path}"
+    #: Filesystem roots behind those two namespaces — **non-null only when the caller
+    #: can actually open them**: the service must be backed by a local filesystem *and*
+    #: the request must come from loopback. Then a caller on the same machine reads
+    #: files with its own tools instead of relaying every byte through this interface.
+    #:
+    #: A service with a cluster lane reports both as null. Its results live in the
+    #: object store; the ``/tmp/robovast-campaigns`` fetch scratch looks eligible and is
+    #: not — it is ephemeral and holds only already-fetched campaigns, so advertising it
+    #: would name a path that is right for one campaign and absent for the next.
+    #:
+    #: ``/results/<campaign_id>/<path>`` is ``<results_root>/<campaign_id>/<path>``.
+    #: ``/sources/<workspace_id>/<path>`` is
+    #: ``<sources_root>/<workspace_id>/project/<path>`` — **except** for a workspace
+    #: reporting ``read_only: true``, which is a directory pinned in place with
+    #: ``--workspace-dir`` and therefore lives outside this root.
+    results_root: Optional[str] = None
+    sources_root: Optional[str] = None
+
 
 class ResourceUsage(BaseModel):
     """Live compute capacity and current usage of the service's execution backend.
@@ -401,7 +436,10 @@ class FileMeta(BaseModel):
     Echoing content back would double its token cost for no benefit.
     """
 
-    path: str
+    #: The address that was written (``/sources/<workspace_id>/<path>``). No separate
+    #: ``path``: it is this string's tail, and two spellings of one location is how
+    #: they come to disagree.
+    address: str
     bytes: int = 0
     sha256: str = ""
     executable: bool = False
@@ -410,34 +448,74 @@ class FileMeta(BaseModel):
 class WriteFileRequest(BaseModel):
     """Inline authoring — ``.vast``/``.osc`` only (enforced server-side)."""
 
-    workspace_id: str
-    path: str
+    #: ``/sources/<workspace_id>/<path>``. ``/results`` is read-only and refused.
+    address: str
     content: str
 
 
 class EditFileRequest(BaseModel):
     """Old/new-string edit so the validate→fix loop sends a diff, not a file."""
 
-    workspace_id: str
-    path: str
+    address: str
     old_string: str
     new_string: str
 
 
-class FileContent(BaseModel):
-    path: str
-    content: str
+class FileEntry(BaseModel):
+    """One directory entry, when a listing is asked for with ``detail=True``.
+
+    Everything here comes from one ``stat()``. Deliberately no ``sha256``: hashing
+    every file to list a campaign would read the whole tree to answer "what is in this
+    directory".
+    """
+
+    name: str
+    is_dir: bool = False
+    #: ``None`` where the substrate does not report it (not zero — that is a real size).
+    bytes: Optional[int] = None
+    modified: Optional[float] = None
+    #: Whether the file is executable — the run-script bit, carried end-to-end into the
+    #: campaign. ``None`` where the substrate has no such concept (object storage).
+    executable: Optional[bool] = None
 
 
-class ListFilesResponse(BaseModel):
-    files: list[FileMeta] = Field(default_factory=list)
+class FileListing(BaseModel):
+    """What is inside one directory of the address space.
+
+    ``entries`` are **strings** by default, directory names suffixed with ``/`` and all
+    of them relative to :attr:`address` — which is echoed once so the next address is a
+    concatenation rather than a re-derivation. That is a deliberate cost decision: the
+    same listing as objects is an order of magnitude more tokens spent describing sizes
+    that are rarely the question. ``detail=True`` switches to :class:`FileEntry` objects
+    for a caller (the web UI) that renders them.
+
+    ``total`` counts the entries **before** ``offset``/``limit``, so a truncated listing
+    still says how much it left out.
+    """
+
+    address: str
+    entries: list[str] = Field(default_factory=list)
+    detailed: list[FileEntry] = Field(default_factory=list)
+    total: int = 0
+    truncated: bool = False
+    recursive: bool = False
+
+
+class FileText(BaseModel):
+    """A page of a text file. Binary files are refused, not mangled."""
+
+    address: str
+    total_lines: int = 0
+    returned_lines: int = 0
+    offset: int = 0
+    content: str = ""
 
 
 class CreateUploadRequest(BaseModel):
     """Grant an HTTP PUT for any file type (keeps bytes out of the token stream)."""
 
-    workspace_id: str
-    path: str
+    #: ``/sources/<workspace_id>/<path>`` — the same address space as every other file op.
+    address: str
     executable: bool = False
 
 
@@ -614,7 +692,9 @@ class Routes:
     #: MCP / the CLI), pushing the full list on connect and on every change.
     CAMPAIGNS_STREAM = "/campaigns/events"
     WORKSPACES = "/workspaces"
-    #: The file side channel: PUT bytes here with a create_upload token.
+    #: The file side channel: POST an address for a grant, then PUT the bytes to the
+    #: token URL. Not workspace-scoped — the request carries a ``/sources`` address.
+    UPLOADS = "/uploads"
     UPLOAD = "/uploads/{token}"
     #: Authoring help — static, no workspace (config editor).
     CONFIG_SCHEMA = "/config/schema"
@@ -624,22 +704,17 @@ class Routes:
     def workspace(workspace_id: str) -> str:
         return f"/workspaces/{workspace_id}"
 
-    @staticmethod
-    def workspace_files(workspace_id: str) -> str:
-        return f"/workspaces/{workspace_id}/files"
+    #: The two **content** namespaces. Everything else in this table is a *control*
+    #: namespace: a fixed vocabulary of service-owned verbs. File content lives apart
+    #: from it so that no user-chosen name can ever be shadowed by a route — including
+    #: routes added later. See :mod:`robovast.common.file_address`.
+    RESULTS = f"/{file_address.RESULTS}"
+    SOURCES = f"/{file_address.SOURCES}"
 
     @staticmethod
-    def workspace_file(workspace_id: str) -> str:
-        # path passed as a query param so nested paths need no encoding games
-        return f"/workspaces/{workspace_id}/file"
-
-    @staticmethod
-    def workspace_edit(workspace_id: str) -> str:
-        return f"/workspaces/{workspace_id}/edit"
-
-    @staticmethod
-    def workspace_upload(workspace_id: str) -> str:
-        return f"/workspaces/{workspace_id}/uploads"
+    def file(address: str) -> str:
+        """The URL for a file address — which *is* the address (see file_address)."""
+        return address if address.startswith("/") else f"/{address}"
 
     @staticmethod
     def workspace_validate(workspace_id: str) -> str:
@@ -761,14 +836,6 @@ class Routes:
         return f"/campaigns/{campaign_id}/panels/source"
 
     @staticmethod
-    def campaign_run_file(campaign_id: str, config_name: str, run_id: int,
-                          path: str) -> str:
-        # Path-style (not query params) so a browser resource that fetches siblings by
-        # *relative* URL (e.g. scene.json -> scene.bin, tex_0.png) resolves within the
-        # same run directory.
-        return (f"/campaigns/{campaign_id}/run-files/{config_name}/{run_id}/{path}")
-
-    @staticmethod
     def campaign_visualizations(campaign_id: str) -> str:
         return f"/campaigns/{campaign_id}/visualizations"
 
@@ -819,31 +886,66 @@ class RobovastInterface(ABC):
         Campaigns are self-contained, so this never affects existing results.
         """
 
-    # -- workspace files ----------------------------------------------------
+    # -- files (one address space) ------------------------------------------
+    # Every file operation takes an *address* — ``/results/<campaign_id>/<path>`` or
+    # ``/sources/<workspace_id>/<path>`` — which is also the URL that serves it. The
+    # namespace carries the permission: only ``/sources`` is writable, and the write
+    # operations below refuse ``/results`` rather than each caller remembering to.
+    # See :mod:`robovast.common.file_address`.
 
     @abstractmethod
-    def write_project_file(self, request: WriteFileRequest) -> FileMeta:
-        """Write a ``.vast``/``.osc`` file inline (other types → :meth:`create_upload`)."""
+    def list_files(self, address: str, recursive: bool = False, detail: bool = False,
+                   offset: int = 0, limit: int = 100) -> FileListing:
+        """List one directory of the address space.
+
+        **Non-recursive by default**: a campaign holds one directory per configuration
+        and one per run, so a recursive listing of its root is thousands of entries a
+        caller did not ask for. ``total`` reports what was there before ``offset`` /
+        ``limit``, so a truncated page still says how much it left out.
+
+        Raises ``ValueError`` on a malformed address (→ 400) and ``KeyError`` when the
+        campaign/workspace or the directory does not exist (→ 404).
+        """
 
     @abstractmethod
-    def edit_project_file(self, request: EditFileRequest) -> FileMeta:
+    def read_file(self, address: str, lines: int = 200, offset: int = 0) -> FileText:
+        """Read a page of a text file. Binary content is refused, never mangled.
+
+        Line-based paging happens **server-side**, so a caller reading 100 lines of a
+        log on the cluster transfers 100 lines, not the file.
+
+        Raises ``ValueError`` on a malformed address or a binary file (→ 400) and
+        ``KeyError`` when the file does not exist (→ 404).
+        """
+
+    @abstractmethod
+    def read_file_bytes(self, address: str) -> bytes:
+        """Return one file's raw bytes — the representation a browser or ``vast files
+        get`` wants (e.g. the run view's ``scene/scene.json`` and its sibling
+        ``scene.bin``). Same errors as :meth:`read_file`, minus the binary refusal."""
+
+    @abstractmethod
+    def write_file(self, request: WriteFileRequest) -> FileMeta:
+        """Write a ``.vast``/``.osc`` file inline (other types → :meth:`create_upload`).
+
+        ``/sources`` only; a ``/results`` address raises ``ValueError``.
+        """
+
+    @abstractmethod
+    def edit_file(self, request: EditFileRequest) -> FileMeta:
         """Replace a unique string in a ``.vast``/``.osc`` file (token-cheap fix loop)."""
 
     @abstractmethod
-    def read_project_file(self, workspace_id: str, path: str) -> FileContent:
-        """Read a workspace file's text."""
-
-    @abstractmethod
-    def list_project_files(self, workspace_id: str) -> ListFilesResponse:
-        """List the workspace's files with metadata."""
-
-    @abstractmethod
-    def delete_project_file(self, workspace_id: str, path: str) -> ActionResult:
-        """Delete a workspace file."""
+    def delete_file(self, address: str) -> ActionResult:
+        """Delete a file. ``/sources`` only."""
 
     @abstractmethod
     def create_upload(self, request: CreateUploadRequest) -> UploadGrant:
-        """Grant a one-time, TTL-scoped HTTP PUT for any file type."""
+        """Grant a one-time, TTL-scoped HTTP PUT for any file type.
+
+        Takes a ``/sources`` address like every other file operation; the grant's
+        ``url`` is a one-time capability, not an address.
+        """
 
     # -- campaign lifecycle -------------------------------------------------
 
@@ -1070,18 +1172,6 @@ class RobovastInterface(ABC):
         revision (never mutates ``_config/``). The run view reloads its panels
         from the effective `.vast` afterwards."""
 
-
-    @abstractmethod
-    def get_run_file(
-        self, campaign_id: str, config_name: str, run_id: int, path: str,
-    ) -> bytes:
-        """Return the raw bytes of one run artifact file,
-        ``<campaign_root>/<config_name>/<run_id>/<path>`` — e.g. the browser scene
-        descriptor (``scene/scene.json`` + its sibling ``scene.bin``/textures) the
-        run-view's scene3d panel renders. The campaign root is resolved per transport
-        (local disk / object-store fetch), like the data-query endpoints. Raises
-        ``ValueError`` for a ``path`` that escapes the run directory (→ 400) and
-        ``KeyError`` when the file does not exist (→ 404)."""
 
     @abstractmethod
     def list_campaign_visualizations(

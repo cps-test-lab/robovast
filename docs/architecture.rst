@@ -148,6 +148,77 @@ availability by deployment rather than by backend:
      - upload with ``vast workspace init`` / ``create_workspace`` +
        ``update_workspace``; edits need a re-push
 
+.. _file-address-space:
+
+One address space for files
+---------------------------
+
+Every file the service can reach has a single address, and that address **is** the URL
+that serves it — the string a caller passes to ``read_file`` is the string it can
+``GET``:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 34 46 20
+
+   * - Address
+     - Root
+     - Writable
+   * - ``/results/<campaign_id>/<path>``
+     - the campaign directory (on the cluster, its object-store prefix)
+     - **no**
+   * - ``/sources/<workspace_id>/<path>``
+     - the workspace's project directory
+     - yes
+
+Three properties are load-bearing.
+
+**Content lives apart from control.** ``/campaigns/{id}/`` and ``/workspaces/{id}/`` are
+*control* namespaces — a fixed vocabulary of service-owned verbs (``status``, ``logs``,
+``query``, ``validate`` …, plus every name a service-endpoint plugin registers). A user's
+config or output file may be called anything, so putting content there means a route can
+shadow a file name — today, or the next time a route is added. Separate content
+namespaces make "no reserved words, ever" true by construction.
+
+**The namespace is the permission**, dispatched once rather than checked per operation:
+there is no ``PUT``/``POST``/``DELETE`` route under ``/results`` at all, so a write there
+is a 405 from the router. Results are immutable — on the cluster the local tree is a
+cache of object-store objects, so a write would be a cache edit that silently vanishes.
+Each namespace is confined against **its own** root via
+``robovast.common.safe_path.safe_join``; a results address must never resolve inside a
+workspace, or the read-only tree would inherit the writable one's permissions. The
+cluster's results lane has no filesystem to resolve against, so it uses ``check_relative``
+— the substrate-independent half of the same check — before composing an object key.
+
+**The path is the real on-disk path.** ``<config_name>/<run_id>/<file>`` for a run
+artifact; ``_config/``, ``_execution/``, ``_transient/``, ``_jobs/`` by their actual
+names. (The predecessor route interposed a synthetic segment that matched no directory
+and collided with the ``.vast`` ``run_files:`` inputs — two opposite meanings for one
+name.)
+
+A trailing slash means "directory": ``GET`` on it returns a listing, **non-recursive by
+default** with a ``total`` — a campaign holds one directory per configuration and one per
+run, so a recursive listing of its root is thousands of entries. (A bare owner,
+``/results/<campaign>``, also lists: it can only be a directory.) The slash is how a
+*client* says which representation it wants, not part of the path: ``list_files`` and
+``read_file`` mean the same thing whichever way the address was spelled, because the
+HTTP client normalizes before it builds the URL. Making the character load-bearing would
+give one interface call two answers depending on which client made it. Listing entries are
+plain names, directories suffixed ``/``, relative to the echoed address, so the next
+address is a concatenation. ``GET`` on a file returns its bytes (mime-typed, so a browser
+resource fetching siblings by relative URL resolves within its own directory);
+``?as=text`` returns a paginated, binary-refusing text view. Paging happens **server
+side** — reading 100 lines of a cluster log transfers 100 lines.
+
+On the cluster, ``/results`` is served straight from the object store: a read is
+``StorageClient.read_object`` (one object, not ``fetch_campaign``'s whole-prefix
+download), and a non-recursive listing is a *delimited* ``list_entries``, so it is
+non-recursive at the store and not merely in the response.
+
+``get_service_info`` publishes both address templates, plus ``results_root`` /
+``sources_root`` filesystem paths — but only when the service is local-filesystem *and*
+the request came from loopback, so a caller is never handed a path it cannot open.
+
 Token-efficient file transfer
 ------------------------------
 
@@ -155,7 +226,7 @@ Because inline tool content passes through an LLM's context (costing tokens
 twice — once to generate, once per later turn), the file API is split:
 
 * **Inline authoring is limited to ``.vast`` / ``.osc``** — the small text an LLM
-  writes. ``edit_project_file`` sends a diff, so the validate→fix loop stays cheap.
+  writes. ``edit_file`` sends a diff, so the validate→fix loop stays cheap.
 * **Everything else uses the HTTP PUT side channel**: ``create_upload`` returns a
   one-time, TTL-scoped URL the client ``curl``\ s the bytes into
   (``curl -X PUT --data-binary @file <url>``), so run files, notebooks and
@@ -280,14 +351,19 @@ The operation contract (Phase 0 + workspaces + postprocessing shown; data-query
 lives in the ``run_data`` MCP plugin):
 
 * **Workspaces** — ``create_workspace`` / ``list_workspaces`` / ``get_workspace``
-  / ``delete_workspace``; ``write_project_file`` / ``edit_project_file``
-  (``.vast``/``.osc`` only) / ``read_project_file`` / ``list_project_files`` /
-  ``delete_project_file`` / ``create_upload``. Bulk directory sync is **client-side
+  / ``delete_workspace`` / ``create_upload``. A workspace's *files* are not separate
+  operations: they are the writable half of the file address space below.
+* **Files** — ``list_files`` / ``read_file`` / ``read_file_bytes`` / ``write_file``
+  (``.vast``/``.osc`` only) / ``edit_file`` / ``delete_file`` / ``create_upload``, each
+  taking one **address** (see :ref:`file-address-space`). The upload grant is
+  ``POST /uploads`` rather than a workspace sub-route: its request already names the
+  workspace in its address, and a path segment that had to agree with it would be an
+  argument the handler either ignores or has to re-check. Bulk directory sync is **client-side
   glue over these primitives**, not a new operation: ``sync_directory_to_workspace``
   (in ``robovast.service.project_push``) walks a local directory and drives
-  ``write_project_file`` for ``.vast``/``.osc`` and ``create_upload`` for everything
-  else, with an optional ``prune`` that ``delete_project_file``\ s workspace files
-  absent locally. It is the single implementation behind three callers — the
+  ``write_file`` for ``.vast``/``.osc`` and ``create_upload`` for everything
+  else, with an optional ``prune`` that deletes workspace files absent locally. It is
+  the single implementation behind three callers — the
   ``vast workspace init`` / ``vast workspace update`` CLI commands, the
   ``update_workspace`` MCP tool, and the web UI's drag-a-folder upload — so all three
   stay transport-agnostic (in-process ``LocalTransport`` or HTTP client) and can

@@ -128,7 +128,7 @@ class CampaignController:
                  options: RunOptions, store: CampaignStore, campaign_config_dump: dict,
                  vast_dir: str, strategy=None, evaluator=None, compose=None,
                  per_batch: int = 1, postprocessing=None, batch_campaign_data=None,
-                 stop_conditions=None, state=None, notifier=None):
+                 stop_conditions=None, state=None, notifier=None, description=""):
         self.campaign_id = campaign_id
         self.campaign_root = os.path.join(results_dir, campaign_id)
         self.runs = runs
@@ -137,6 +137,9 @@ class CampaignController:
         self.store = store
         self.campaign_config_dump = campaign_config_dump
         self.vast_dir = vast_dir
+        # Free text describing this launch; recorded on the campaign row so it stays
+        # with the results (empty when the launcher gave none).
+        self.description = description
         self.strategy = strategy
         self.evaluator = evaluator
         self.compose = compose
@@ -185,7 +188,7 @@ class CampaignController:
         # campaign's evaluation.visualization notebooks resolve in the GUI.
         campaign_id = self.store.create_campaign(
             self.campaign_id, self.campaign_config_dump, mode=self.mode,
-            config_dir="_config")
+            config_dir="_config", description=self.description)
         if self.state is not None:
             self.state.update(mode=self.mode, campaign_id=self.campaign_id)
             self.state.set_phase(Phase.RUNNING)
@@ -749,7 +752,7 @@ def _install_plugins(vast_file, campaign_config, campaign_root: str, state) -> N
 def run_search_campaign(vast_file, campaign_config, results_dir, runs,
                         backend: ExecutionBackend | None = None,
                         options: RunOptions | None = None, campaign_id=None, state=None,
-                        notifier=None):
+                        notifier=None, description=""):
     """Build and run a search campaign. Requires ``campaign_config.search``."""
     from robovast.search.compose import Compose
     from robovast.search.evaluator import Evaluator
@@ -781,7 +784,8 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
         vast_dir=vast_dir, strategy=build_strategy(search_cfg, vast_dir),
         evaluator=Evaluator(search_cfg, vast_dir), compose=Compose(vast_file),
         per_batch=search_cfg.per_batch, postprocessing=search_cfg.postprocessing,
-        stop_conditions=build_stop_conditions(search_cfg), state=state, notifier=notifier)
+        stop_conditions=build_stop_conditions(search_cfg), state=state, notifier=notifier,
+        description=description)
     try:
         return controller.run()
     finally:
@@ -912,7 +916,7 @@ def _preflight_upload_to_share(backend: ExecutionBackend, opts: RunOptions) -> N
 def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_filter=None,
                        backend: ExecutionBackend | None = None,
                        options: RunOptions | None = None, campaign_id=None, state=None,
-                       notifier=None):
+                       notifier=None, description=""):
     """Build and run a batch campaign (no ``search:`` block)."""
     vast_dir = os.path.dirname(os.path.abspath(vast_file))
     runs = runs if runs is not None else campaign_config.execution.runs
@@ -960,7 +964,7 @@ def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_fil
             backend=be, options=opts,
             store=store, campaign_config_dump=campaign_config.model_dump(),
             vast_dir=vast_dir, batch_campaign_data=campaign_data, state=state,
-            notifier=notifier)
+            notifier=notifier, description=description)
         try:
             return controller.run()
         finally:

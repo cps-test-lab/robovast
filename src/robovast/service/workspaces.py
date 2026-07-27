@@ -28,7 +28,7 @@ Token economics drive the file API (see the plan):
 
 * **Inline writes are restricted to ``.vast``/``.osc``** — the small text an LLM
   authors and iterates on. Their content passes through the model, so it costs
-  tokens twice (generation + every later turn in history); ``edit_project_file``
+  tokens twice (generation + every later turn in history); ``edit_file``
   exists so the validate→fix loop sends a small diff instead of a whole file.
 * **Everything else must use the HTTP PUT side channel** (:meth:`WorkspaceStore.
   create_upload` → a TTL-scoped token; the client ``curl``s the bytes straight in),
@@ -71,6 +71,17 @@ UPLOAD_TTL_SECONDS = 600
 #: Dir names hidden from a *pinned* (read-only) workspace listing / .vast lookup —
 #: campaign outputs, not project inputs (mirrors the CLI ``workspace init`` skip).
 PINNED_SKIP_DIRS = {"results"}
+
+
+def is_skipped(rel_path, skip_dirs=frozenset()) -> bool:
+    """Whether a workspace-relative path is hidden from listings and pushes alike.
+
+    Hidden files/dirs (``.git``, ``.cache``) and anything under a name in *skip_dirs*
+    (campaign outputs, typically ``results/``). One definition because a listing and a
+    push that disagree make ``prune`` delete files it would not restore.
+    """
+    parts = rel_path.split("/") if isinstance(rel_path, str) else Path(rel_path).parts
+    return any(p.startswith(".") or p in skip_dirs for p in parts)
 
 
 def default_workspaces_root() -> Path:
@@ -410,33 +421,33 @@ class WorkspaceStore:
         target.write_text(text.replace(old_string, new_string, 1), encoding="utf-8")
         return self._file_meta(target, rel_path)
 
-    def read_file(self, workspace_id: str, rel_path: str) -> str:
-        workspace_id = self.registry.require(workspace_id)["workspace_id"]
-        target = self._safe_join(workspace_id, rel_path)
-        if not target.is_file():
-            raise WorkspaceError(f"no such file in workspace: {rel_path!r}")
-        return target.read_text(encoding="utf-8", errors="replace")
+    def resolve(self, workspace_id: str, rel_path: str = "") -> Path:
+        """Absolute path of *rel_path* in the workspace — the root when it is empty.
 
-    def list_files(self, workspace_id: str) -> list[dict]:
+        The one seam the generic ``/sources`` file operations resolve through, so they
+        inherit this store's confinement instead of re-deriving the root.
+        """
         workspace_id = self.registry.require(workspace_id)["workspace_id"]
-        base = self.registry.project_dir(workspace_id)
-        if not base.is_dir():
-            return []
-        # A pinned dir is a live project tree, so skip what `workspace init` also
-        # skips — hidden files (.git/.cache) and campaign outputs (results/) — which
-        # a normal project/ never contains, so this is a no-op for those.
-        pinned = self.registry.is_read_only(workspace_id)
-        out = []
-        for p in sorted(base.rglob("*")):
-            if not p.is_file():
-                continue
-            rel = p.relative_to(base)
-            if pinned and any(
-                    part.startswith(".") or part in PINNED_SKIP_DIRS
-                    for part in rel.parts):
-                continue
-            out.append(self._file_meta(p, str(rel)))
-        return out
+        if not rel_path:
+            return self.registry.project_dir(workspace_id)
+        return self._safe_join(workspace_id, rel_path)
+
+    def skip_entry(self, workspace_id: str):
+        """Predicate for entries a listing must hide, or ``None`` when none do.
+
+        A pinned dir is a live project tree, so skip what ``workspace init`` also skips
+        — hidden files (``.git``/``.cache``) and campaign outputs (``results/``). A
+        normal ``project/`` contains neither, so this is a no-op for those.
+
+        Shares :func:`is_skipped` with the push side. They must agree: a
+        ``sync_directory_to_workspace(prune=True)`` deletes what a listing shows but a
+        push would never re-upload, so a rule added to one and not the other makes
+        prune destructive.
+        """
+        workspace_id = self.registry.require(workspace_id)["workspace_id"]
+        if not self.registry.is_read_only(workspace_id):
+            return None
+        return lambda rel, _is_dir: is_skipped(rel, PINNED_SKIP_DIRS)
 
     def delete_file(self, workspace_id: str, rel_path: str) -> None:
         workspace_id = self.registry.require(workspace_id)["workspace_id"]
@@ -457,7 +468,12 @@ class WorkspaceStore:
         return self.tokens.issue(workspace_id, rel_path, executable=executable)
 
     def write_upload(self, token: str, data: bytes) -> dict:
-        """Redeem *token* and write *data* into the workspace (any file type)."""
+        """Redeem *token* and write *data* into the workspace (any file type).
+
+        Returns the file metadata **plus** the ``workspace_id`` the token named: the
+        caller has only an opaque token, so without it there is no way to say which
+        address was written.
+        """
         grant = self.tokens.redeem(token)
         target = self._safe_join(grant["workspace_id"], grant["path"])
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -466,7 +482,8 @@ class WorkspaceStore:
             # From here the existing _is_executable/_EXECUTABLE_META machinery
             # carries the bit through the object store and into the campaign.
             target.chmod(target.stat().st_mode | 0o111)
-        return self._file_meta(target, grant["path"])
+        return {"workspace_id": grant["workspace_id"],
+                **self._file_meta(target, grant["path"])}
 
     # -- helpers ------------------------------------------------------------
 

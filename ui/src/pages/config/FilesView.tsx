@@ -25,7 +25,7 @@ export function FilesView({ workspaceId }: { workspaceId: string }) {
     queryFn: () => robovast.listProjectFiles(workspaceId),
     enabled: !!workspaceId,
   })
-  const paths = useMemo(() => (files.data?.files ?? []).map((f) => f.path), [files.data])
+  const paths = useMemo(() => files.data?.entries ?? [], [files.data])
   const tree = useMemo(() => buildTree(paths), [paths])
   const { dragging, progress, error, onDragOver, onDragLeave, onDrop, uploadPicked } =
     useDirectoryUpload(workspaceId)

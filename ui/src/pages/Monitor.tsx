@@ -216,6 +216,12 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
         ) : null}
       </Stack>
 
+      {summary.description ? (
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+          {summary.description}
+        </Typography>
+      ) : null}
+
       {stop.isError ? (
         <Alert severity="error" sx={{ mb: 1 }}>
           Stop failed: {(stop.error as Error).message}

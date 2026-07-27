@@ -134,6 +134,7 @@ run_data = "robovast.mcp_server.plugins.run_data:RunDataPlugin"
 prompts = "robovast.mcp_server.plugins.prompts:PromptsPlugin"
 campaign_control = "robovast.mcp_server.plugins.campaign_control:CampaignControlPlugin"
 workspace = "robovast.mcp_server.plugins.workspace:WorkspacePlugin"
+files = "robovast.mcp_server.plugins.files:FilesPlugin"
 
 [build-system]
 requires = ["poetry-core"]

@@ -57,3 +57,28 @@ def test_dispatch_tracks_phase_then_finishes(transport):
                                            work=lambda s: s.set_phase(Phase.FINISHED))
     assert again.ok
     transport._campaigns[cid].thread.join(2)
+
+
+def test_dispatch_keeps_the_campaign_description(transport):
+    """The tracked entry a re-run installs answers for the campaign while it is live, so
+    it must carry the recorded description — otherwise re-triggering postprocessing blanks
+    it out of every listing for the duration of the op."""
+    from robovast.common.store import STORE_FILENAME, CampaignStore
+
+    cid = "camp-2026-07-17-130000"
+    cdir = transport._campaigns_root() / cid
+    cdir.mkdir(parents=True)
+    with CampaignStore(cdir / STORE_FILENAME) as store:
+        store.create_campaign(cid, {}, mode="batch", description="the full sweep")
+
+    release = threading.Event()
+    transport._dispatch_background(
+        cid, phase=Phase.POSTPROCESSING,
+        work=lambda state: release.wait(2))
+    try:
+        summary = next(c for c in transport.list_campaigns().campaigns
+                       if c.campaign_id == cid)
+        assert summary.description == "the full sweep"
+    finally:
+        release.set()
+        transport._campaigns[cid].thread.join(2)

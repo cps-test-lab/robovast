@@ -44,7 +44,7 @@ from pathlib import Path
 import yaml
 from fastmcp import FastMCP
 
-from robovast.mcp_server.plugin_common import _is_binary
+from robovast.common.file_view import is_binary
 
 logger = logging.getLogger(__name__)
 
@@ -191,7 +191,7 @@ def get_example(name: str) -> dict:
     for rel in _examples[name]["files"]:
         path = base / rel
         entry: dict = {"path": rel}
-        if _is_binary(path):
+        if is_binary(path):
             entry["note"] = "Binary file — content omitted."
         else:
             all_lines = path.read_text(encoding="utf-8", errors="replace").splitlines()

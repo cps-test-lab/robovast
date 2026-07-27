@@ -53,8 +53,10 @@ from collections import OrderedDict
 from pathlib import Path
 
 from robovast.execution.control_server import Phase, Status, is_running
+from robovast.common import file_address, file_view
 from robovast.service.client import LocalTransport
-from robovast.service.interface import (ActionResult, JobCounts, JobSummary,
+from robovast.service.interface import (ActionResult, FileListing, FileText,
+                                        JobCounts, JobSummary,
                                         ListJobsResponse, LogChunk,
                                         ResourceUsage, VersionInfo)
 
@@ -63,6 +65,17 @@ logger = logging.getLogger(__name__)
 CONTROLLER_LABEL = "app=robovast-controller"
 AUX_LABEL = "app=robovast-aux"
 CONTROLLER_SERVICE_ACCOUNT = "robovast-controller"
+
+
+def _object_entry(name: str, size):
+    """One ``detail=True`` entry for an object-store listing.
+
+    No ``modified`` or ``executable``: a directory here is a *common prefix*, which has
+    neither, and the listing call does not carry per-object metadata. ``None`` says
+    "this substrate did not report it" rather than fabricating a zero.
+    """
+    from robovast.service.interface import FileEntry
+    return FileEntry(name=name.rstrip("/"), is_dir=name.endswith("/"), bytes=size)
 
 
 class ClusterService(LocalTransport):
@@ -121,6 +134,13 @@ class ClusterService(LocalTransport):
         v.namespace = self.namespace
         v.in_pod = bool(os.environ.get("KUBERNETES_SERVICE_HOST"))
         v.api_server = self._api_server_url()
+        # No filesystem roots on this lane. Campaign results live in the object store;
+        # the local ``/tmp/robovast-campaigns`` scratch is ephemeral and holds only
+        # already-fetched campaigns, so a caller told to look there would find one
+        # campaign present and the next missing. Workspaces *are* on this service's
+        # disk, but that disk is the cluster's, not the caller's.
+        v.results_root = None
+        v.sources_root = None
         return v
 
     def _api_server_url(self) -> "str | None":
@@ -1220,6 +1240,97 @@ class ClusterService(LocalTransport):
         into a local cache, so ``describe_campaign_data``/``query_campaign_data_sql``
         (inherited from :class:`LocalTransport`) read the fetched ``data.db``."""
         return self.fetch_campaign(campaign_id)
+
+    # -- files: the /results namespace, served straight from the object store --------
+    #
+    # These override the inherited filesystem implementations for ``/results`` only —
+    # ``/sources`` is a workspace on this service's own disk and stays inherited.
+    #
+    # The point of the override is what it does *not* do: ``_data_dir`` above fetches
+    # the whole campaign prefix, so reading a 2 KB ``outcome.json`` through it would
+    # drag every rosbag the campaign produced, in the deployment where campaigns are
+    # largest. A single-object read is a single object.
+    #
+    # Rendering (binary refusal, line windows, listing assembly) is **not** reimplemented
+    # here — it comes from ``file_view``, so the same file read through either lane
+    # gives the same answer. It did not, once: an inlined ``splitlines()`` counted a
+    # different number of lines than an iterated file.
+
+    def _results_parts(self, address: str):
+        """``(owner, rel)`` for a ``/results`` address, or ``None`` for another
+        namespace — the one place this class decides an override applies."""
+        namespace, owner, rel = file_address.parse_address(address)
+        return (owner, rel) if namespace == file_address.RESULTS else None
+
+    def _results_key(self, campaign_id: str, rel_path: str) -> tuple:
+        """``(storage, bucket, key)`` for one object, with the escapes refused.
+
+        ``safe_join`` cannot serve here — there is no filesystem to resolve against, so
+        no symlink to follow and no ``resolve()`` to verify with. ``check_relative`` is
+        the half of that check which is about the path's *shape*, and it is the half
+        that applies to a key.
+        """
+        from robovast.common.safe_path import check_relative
+        if rel_path:
+            check_relative(rel_path)
+        storage, bucket, prefix = self._campaign_object_location(campaign_id)
+        return storage, bucket, f"{prefix}{rel_path}"
+
+    def _campaign_object_location(self, campaign_id: str):
+        """``(storage, bucket, prefix)`` for a campaign's objects."""
+        from robovast.execution.cluster_execution import in_pod_storage
+        cfg = self._cluster_config()
+        bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
+        return in_pod_storage.storage_client_for(cfg), bucket, prefix
+
+    def read_file_bytes(self, address: str) -> bytes:
+        parts = self._results_parts(address)
+        if parts is None:
+            return super().read_file_bytes(address)
+        owner, rel = parts
+        if not rel:
+            raise ValueError(f"{address!r} is a campaign, not a file — list it instead")
+        storage, bucket, key = self._results_key(owner, rel)
+        data = storage.read_object(bucket, key)
+        if data is None:
+            raise KeyError(f"no file at {address!r}")
+        return data
+
+    def read_file(self, address: str, lines: int = 200, offset: int = 0):
+        parts = self._results_parts(address)
+        if parts is None:
+            return super().read_file(address, lines, offset)
+        owner, rel = parts
+        data = self.read_file_bytes(address)
+        if file_view.is_binary_bytes(data):
+            raise file_view.binary_refused(rel.rsplit("/", 1)[-1])
+        return FileText(
+            address=file_address.format_address(file_address.RESULTS, owner, rel),
+            **file_view.text_page(data.decode("utf-8", errors="replace"), lines, offset))
+
+    def list_files(self, address: str, recursive: bool = False, detail: bool = False,
+                   offset: int = 0, limit: int = 100):
+        parts = self._results_parts(address)
+        if parts is None:
+            return super().list_files(address, recursive, detail, offset, limit)
+        owner, rel = parts
+        storage, bucket, key = self._results_key(owner, rel)
+        base = f"{key.rstrip('/')}/" if key.rstrip("/") else key
+        objects, sub_prefixes = storage.list_entries(bucket, key,
+                                                     delimited=not recursive)
+        entries = [(k[len(base):], size) for k, size in objects]
+        entries += [(p[len(base):], None) for p in sub_prefixes]
+        if not entries:
+            # An object store has no empty directories: nothing under the prefix means
+            # the directory does not exist, which is a 404 rather than an empty listing.
+            raise KeyError(f"no directory at {address!r}")
+        entries.sort(key=lambda e: e[0])
+        return file_view.build_listing(
+            FileListing,
+            file_address.format_address(file_address.RESULTS, owner,
+                                        f"{rel.rstrip('/')}/" if rel else ""),
+            entries, recursive=recursive, detail=detail, offset=offset, limit=limit,
+            detail_fn=_object_entry)
 
     def _publish_config_edit(self, campaign_id: str) -> None:
         """Publish an in-place ``_config/<name>.vast`` edit to the object store.

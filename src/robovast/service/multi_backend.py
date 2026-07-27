@@ -177,6 +177,11 @@ class MultiBackendService(LocalTransport):
         v.namespace = cv.namespace
         v.in_pod = cv.in_pod
         v.api_server = cv.api_server
+        # No results root: this serve holds *both* lanes, so the local tree would be
+        # the right answer for a local campaign and simply absent for a cluster one —
+        # a path that is correct per campaign cannot be advertised per service.
+        v.results_root = None
+        v.sources_root = None
         return v
 
     def resource_usage(self, backend: Optional[str] = None) -> ResourceUsage:
@@ -335,9 +340,28 @@ class MultiBackendService(LocalTransport):
     def list_campaign_panels(self, campaign_id: str):
         return self._route(campaign_id, "list_campaign_panels", campaign_id)
 
-    def get_run_file(self, campaign_id: str, config_name: str, run_id: int, path: str):
-        return self._route(campaign_id, "get_run_file", campaign_id, config_name,
-                           run_id, path)
+    # -- files --------------------------------------------------------------
+    # ``/results`` is per-campaign, so it routes by the campaign in the address.
+    # ``/sources`` is one workspace store shared by both lanes, so it never routes —
+    # the inherited implementation is the only one.
+
+    def _route_address(self, address: str, method: str, *args, **kwargs):
+        from robovast.common import file_address
+        namespace, owner, _ = file_address.parse_address(address)
+        if namespace == file_address.RESULTS:
+            return self._route(owner, method, *args, **kwargs)
+        return getattr(LocalTransport, method)(self, *args, **kwargs)
+
+    def list_files(self, address: str, recursive: bool = False, detail: bool = False,
+                   offset: int = 0, limit: int = 100):
+        return self._route_address(address, "list_files", address, recursive, detail,
+                                   offset, limit)
+
+    def read_file(self, address: str, lines: int = 200, offset: int = 0):
+        return self._route_address(address, "read_file", address, lines, offset)
+
+    def read_file_bytes(self, address: str):
+        return self._route_address(address, "read_file_bytes", address)
 
     def list_campaign_visualizations(self, campaign_id: str):
         return self._route(campaign_id, "list_campaign_visualizations", campaign_id)

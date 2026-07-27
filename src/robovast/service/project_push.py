@@ -28,6 +28,9 @@ import logging
 import os
 from pathlib import Path
 
+from robovast.common.file_address import SOURCES, format_address
+from robovast.service.workspaces import is_skipped as _should_skip
+
 logger = logging.getLogger(__name__)
 
 _INLINE_EXTS = (".vast", ".osc")
@@ -51,25 +54,27 @@ def _is_project_input(rel: Path, main_vast: str) -> bool:
     return True
 
 
-def _upload_one(client, workspace_id: str, rel: str, path: Path) -> str:
-    """Push one local file into the workspace. Returns ``"written"``/``"uploaded"``.
+def push_file(client, address: str, path: Path) -> str:
+    """Push one local file to a ``/sources`` *address*. Returns ``"written"``/``"uploaded"``.
 
     ``.vast``/``.osc`` go inline (last-write-wins, so this both creates and
     overwrites); everything else streams through the PUT side channel with the
     executable bit preserved. The one place that knows about both transports: the
     HTTP client issues an absolute PUT URL (``grant.url``), the in-process
     ``LocalTransport`` exposes ``client.store`` for a direct write.
+
+    Public and address-taking because ``vast files put`` needs exactly this and
+    should not have to reach for a private helper or re-derive the address itself.
     """
     from robovast.service.interface import CreateUploadRequest, WriteFileRequest
 
     if path.suffix.lower() in _INLINE_EXTS:
-        client.write_project_file(WriteFileRequest(
-            workspace_id=workspace_id, path=rel,
-            content=path.read_text(encoding="utf-8")))
+        client.write_file(WriteFileRequest(
+            address=address, content=path.read_text(encoding="utf-8")))
         return "written"
 
     grant = client.create_upload(CreateUploadRequest(
-        workspace_id=workspace_id, path=rel, executable=os.access(path, os.X_OK)))
+        address=address, executable=os.access(path, os.X_OK)))
     data = path.read_bytes()
     if grant.url:  # HTTP service issued an absolute PUT URL
         import requests
@@ -78,13 +83,8 @@ def _upload_one(client, workspace_id: str, rel: str, path: Path) -> str:
         client.store.write_upload(grant.token, data)
     else:
         raise RuntimeError(
-            f"cannot upload {rel!r}: this client has no upload channel")
+            f"cannot upload {address!r}: this client has no upload channel")
     return "uploaded"
-
-
-def _should_skip(rel: Path, skip_dirs) -> bool:
-    """True for hidden files/dirs (``.cache`` etc.) and any part in *skip_dirs*."""
-    return any(p.startswith(".") or p in skip_dirs for p in rel.parts)
 
 
 def _resolve_workspace_id(client, ref: str) -> str:
@@ -128,18 +128,19 @@ def sync_directory_to_workspace(client, workspace_id: str, directory, *,
         if _should_skip(rel, skip_dirs):
             continue
         rel_str = rel.as_posix()
-        kind = _upload_one(client, workspace_id, rel_str, path)
+        kind = push_file(client, format_address(SOURCES, workspace_id, rel_str), path)
         stats["written" if kind == "written" else "uploaded"] += 1
         local_rels.add(rel_str)
         if echo:
             echo(f"  + {rel_str}")
 
     if prune:
-        existing = [f.path for f in client.list_project_files(workspace_id).files]
+        existing = client.list_files(format_address(SOURCES, workspace_id),
+                                     recursive=True, limit=0).entries
         for rel_str in sorted(existing):
             if rel_str in local_rels or _should_skip(Path(rel_str), skip_dirs):
                 continue
-            client.delete_project_file(workspace_id, rel_str)
+            client.delete_file(format_address(SOURCES, workspace_id, rel_str))
             stats["pruned"] += 1
             if echo:
                 echo(f"  - {rel_str} (pruned)")
@@ -168,7 +169,8 @@ def push_project_to_workspace(client, config_path: str, name: str = "") -> str:
         rel_path = path.relative_to(project_dir)
         if not _is_project_input(rel_path, main_vast):
             continue
-        _upload_one(client, workspace_id, rel_path.as_posix(), path)
+        push_file(client, format_address(SOURCES, workspace_id,
+                                        rel_path.as_posix()), path)
     logger.info("Pushed project %s into workspace %s", project_dir, workspace_id)
     return workspace_id
 

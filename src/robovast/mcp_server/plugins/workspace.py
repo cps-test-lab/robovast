@@ -23,14 +23,17 @@ the :class:`~robovast.service.interface.RobovastInterface` workspace ops via a
 is in-process (local Docker) or a remote/cluster ``robovast-service`` reached over
 a tunnel auto-detected on the conventional local port.
 
+A workspace's **files** are addressed as ``/sources/<workspace_id>/<path>`` and read or
+written with the generic file tools (``read_file``, ``write_file``, ``edit_file``,
+``delete_file``, ``list_files``).
+
 Token economics (important for an LLM):
 
-* ``write_project_file`` / ``edit_project_file`` accept **only** ``.vast`` /
-  ``.osc`` — the small text you author. ``edit_project_file`` sends a diff, so the
-  validate→fix loop stays cheap.
-* **Every other file** (run scripts, notebooks, binaries) uses
-  ``create_upload`` → a short-lived URL you ``curl -X PUT --data-binary @file``
-  into, so its bytes never pass through your context.
+* ``write_file`` / ``edit_file`` accept **only** ``.vast`` / ``.osc`` — the small text
+  you author. ``edit_file`` sends a diff, so the validate→fix loop stays cheap.
+* **Every other file** (run scripts, notebooks, binaries) uses ``create_upload`` → a
+  short-lived URL you ``curl -X PUT --data-binary @file`` into, so its bytes never pass
+  through your context.
 """
 
 import logging
@@ -90,65 +93,6 @@ def delete_workspace(workspace_id: str) -> dict:
         return {"error": str(e)}
 
 
-def write_project_file(workspace_id: str, path: str, content: str) -> dict:
-    """Write a ``.vast`` or ``.osc`` file (inline). Other types → ``create_upload``.
-
-    Only these two authored text types may be written inline; the tool returns
-    metadata (``path``/``bytes``/``sha256``), never the content.
-
-    Args:
-        workspace_id: Target workspace.
-        path: Relative path within the workspace (e.g. ``demo.vast``).
-        content: File text.
-    """
-    from robovast.service.interface import WriteFileRequest
-    try:
-        return _client().write_project_file(WriteFileRequest(
-            workspace_id=workspace_id, path=path, content=content)).model_dump()
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
-
-
-def edit_project_file(workspace_id: str, path: str, old_string: str,
-                      new_string: str) -> dict:
-    """Replace a **unique** substring in a ``.vast``/``.osc`` file (cheap fix loop).
-
-    Send a small diff instead of re-uploading the whole file. ``old_string`` must
-    occur exactly once; include surrounding context to disambiguate.
-    """
-    from robovast.service.interface import EditFileRequest
-    try:
-        return _client().edit_project_file(EditFileRequest(
-            workspace_id=workspace_id, path=path,
-            old_string=old_string, new_string=new_string)).model_dump()
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
-
-
-def read_project_file(workspace_id: str, path: str) -> dict:
-    """Read a workspace file's text."""
-    try:
-        return _client().read_project_file(workspace_id, path).model_dump()
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
-
-
-def list_project_files(workspace_id: str) -> dict:
-    """List the workspace's files with metadata (path/bytes/sha256/executable)."""
-    try:
-        return _client().list_project_files(workspace_id).model_dump()
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
-
-
-def delete_project_file(workspace_id: str, path: str) -> dict:
-    """Delete a file from the workspace."""
-    try:
-        return _client().delete_project_file(workspace_id, path).model_dump()
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
-
-
 def update_workspace(workspace_id: str, directory: str, prune: bool = False) -> dict:
     """Re-sync a local DIRECTORY into an existing workspace (id or name).
 
@@ -156,7 +100,7 @@ def update_workspace(workspace_id: str, directory: str, prune: bool = False) -> 
     them to the service — ``.vast``/``.osc`` inline, everything else via the upload
     side channel — so the file bytes never pass through your context. This is the
     cheap way to refresh a whole project at once instead of looping
-    ``write_project_file`` / ``create_upload`` per file. Hidden files/dirs and
+    ``write_file`` / ``create_upload`` per file. Hidden files/dirs and
     ``results/`` are skipped; existing files are overwritten in place.
 
     Args:
@@ -179,8 +123,8 @@ def update_workspace(workspace_id: str, directory: str, prune: bool = False) -> 
         return {"error": str(e)}
 
 
-def create_upload(workspace_id: str, path: str, executable: bool = False) -> dict:
-    """Get a one-time, expiring URL to PUT any non-``.vast``/``.osc`` file into the workspace.
+def create_upload(address: str, executable: bool = False) -> dict:
+    """Get a one-time, expiring URL to PUT any non-``.vast``/``.osc`` file into a workspace.
 
     Use for run files, notebooks, custom postprocessing code, and binaries: the
     bytes travel straight to the server (``curl -X PUT --data-binary @<file>
@@ -188,30 +132,34 @@ def create_upload(workspace_id: str, path: str, executable: bool = False) -> dic
     (a ``#!`` shebang is also auto-detected). The URL expires after ``expires_in``
     seconds — request a new one if it lapses.
 
+    Args:
+        address: ``/sources/<workspace_id>/<path>`` — the same address ``write_file``
+            takes. (The returned ``url`` is a one-time capability, not an address.)
+        executable: Set the executable bit on the stored file.
+
     Returns:
         ``{token, path, expires_in, url}``.
     """
     from robovast.service.interface import CreateUploadRequest
     try:
         return _client().create_upload(CreateUploadRequest(
-            workspace_id=workspace_id, path=path, executable=executable)).model_dump()
+            address=address, executable=executable)).model_dump()
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 
 
 # -- Plugin class ------------------------------------------------------------
 
+# Reading and writing a workspace's files is not here: it is the ``/sources`` half of
+# the one address space (``read_file`` / ``write_file`` / ``edit_file`` / ``delete_file``
+# / ``list_files``). What stays is the workspace *as an object* — create, list, delete,
+# bulk-sync — plus the upload grant, which is a capability rather than a file operation.
 _TOOLS = [
     create_workspace,
     list_workspaces,
     get_workspace,
     delete_workspace,
     update_workspace,
-    write_project_file,
-    edit_project_file,
-    read_project_file,
-    list_project_files,
-    delete_project_file,
     create_upload,
 ]
 

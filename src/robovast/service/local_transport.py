@@ -37,7 +37,10 @@ from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from pathlib import Path
 from typing import Optional
 
-from robovast.common.store import read_campaign_created_at
+from robovast.common import file_address, file_view
+from robovast.common.safe_path import safe_join
+from robovast.common.store import (read_campaign_created_at,
+                                   read_campaign_description)
 from robovast.execution.control_server import (ControllerState, Phase, Status,
                                                failure_detail, is_terminal)
 from robovast.service.interface import (ActionResult, BuildImageRequest,
@@ -45,11 +48,12 @@ from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         CampaignSummary, CreateCampaignRequest,
                                         CreateUploadRequest,
                                         CreateWorkspaceRequest, EditFileRequest,
-                                        FileContent, FileMeta, ImageBuildRef,
+                                        FileEntry, FileListing, FileMeta,
+                                        FileText, ImageBuildRef,
                                         ImageBuildStatus, JobCounts,
                                         JobSummary, ListCampaignsRequest,
                                         ListCampaignsResponse, ListJobsResponse,
-                                        ListFilesResponse, ListWorkspacesResponse,
+                                        ListWorkspacesResponse,
                                         LogChunk,
                                         PreviewConfiguration, PreviewResponse,
                                         ResourceUsage,
@@ -61,6 +65,26 @@ from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         WriteFileRequest)
 
 logger = logging.getLogger(__name__)
+
+
+def _as_dir(rel_path: str) -> str:
+    """The directory form of a relative path — what a listing echoes back, so that
+    concatenating it with an entry yields that entry's address."""
+    return f"{rel_path.rstrip('/')}/" if rel_path else ""
+
+
+def _detail_entry(name: str, path: Path) -> FileEntry:
+    """One ``detail=True`` listing entry, from a single ``stat()``.
+
+    ``name`` already carries the directory mark from ``scan_dir``, so the kind is read
+    from it rather than paying a second syscall to ask the filesystem again.
+    """
+    is_dir = name.endswith("/")
+    st = path.stat()
+    return FileEntry(name=name.rstrip("/"), is_dir=is_dir,
+                     bytes=None if is_dir else st.st_size,
+                     modified=st.st_mtime,
+                     executable=None if is_dir else bool(st.st_mode & 0o111))
 
 
 def _robovast_version() -> str:
@@ -169,13 +193,20 @@ def _read_log_slice(path: Path, offset: int, eof: bool) -> LogChunk:
 class _LocalCampaign:
     """Bookkeeping for one in-process campaign: its live state + worker thread."""
 
-    __slots__ = ("campaign_id", "results_dir", "state", "thread", "error", "created_at")
+    __slots__ = ("campaign_id", "results_dir", "state", "thread", "error", "created_at",
+                 "description")
 
-    def __init__(self, campaign_id: str, results_dir: str, state: ControllerState):
+    def __init__(self, campaign_id: str, results_dir: str, state: ControllerState,
+                 description: str = ""):
         from datetime import datetime, timezone
         self.campaign_id = campaign_id
         self.results_dir = results_dir
         self.state = state
+        # Held here as well as in campaign.db: the store row is written by the
+        # controller, so between accepting the launch and that write (an image build
+        # can make it minutes) this is the only copy — and for a campaign that fails
+        # during the build it stays the only one.
+        self.description = description
         self.thread: Optional[threading.Thread] = None
         self.error: Optional[str] = None
         # Real launch time, recorded the instant the campaign is registered — so a
@@ -218,6 +249,9 @@ class LocalTransport(RobovastInterface):
         # campaign_id -> recorded start time (see _started_at_for). Only known values
         # are held, and a recorded one never changes, so no invalidation is needed.
         self._started_at_cache: dict[str, str] = {}
+        # campaign_id -> recorded description (see _description_for). Same contract as
+        # the start-time cache: write-once values only, so no invalidation is needed.
+        self._description_cache: dict[str, str] = {}
         # Prime psutil's non-blocking CPU sampler so the first resource_usage()
         # reading reflects real load instead of the 0.0 a cold sampler returns.
         import psutil  # pylint: disable=import-outside-toplevel
@@ -309,7 +343,7 @@ class LocalTransport(RobovastInterface):
             if not vasts:
                 raise ValueError(
                     f"workspace {workspace_id!r} has no .vast file; "
-                    "write one with write_project_file() first")
+                    "write one with write_file() first")
             if len(vasts) > 1:
                 rel = ", ".join(v.relative_to(project_dir).as_posix() for v in vasts)
                 raise ValueError(
@@ -337,37 +371,145 @@ class LocalTransport(RobovastInterface):
         self.store.registry.delete(workspace_id)
         return ActionResult(ok=True, message=f"workspace {workspace_id} deleted")
 
-    def write_project_file(self, request: WriteFileRequest) -> FileMeta:
-        return FileMeta.model_validate(self.store.write_file(
-            request.workspace_id, request.path, request.content))
+    # -- files (one address space) ------------------------------------------
+    # ``/results/<campaign>/<path>`` and ``/sources/<workspace>/<path>``, each confined
+    # against **its own** root: a results address must never resolve inside a workspace,
+    # or the read-only tree would inherit the writable one's permissions.
+    #
+    # The strings a caller passes here are the URLs ``app.py`` serves, so this is where
+    # the address space is actually resolved for every surface (MCP, CLI, web UI).
 
-    def edit_project_file(self, request: EditFileRequest) -> FileMeta:
-        return FileMeta.model_validate(self.store.edit_file(
-            request.workspace_id, request.path, request.old_string, request.new_string))
+    def _address_parts(self, address: str, *, for_write: bool = False):
+        """Parse an address into ``(namespace, canonical owner, rel_path)``.
 
-    def read_project_file(self, workspace_id: str, path: str) -> FileContent:
-        return FileContent(path=path,
-                           content=self.store.read_file(workspace_id, path))
+        Separate from :meth:`_address_target` because the write operations hand the
+        path straight back to the store, which resolves it again — computing it here
+        would take the registry's lock a second time to produce a value nobody reads.
 
-    def list_project_files(self, workspace_id: str) -> ListFilesResponse:
-        return ListFilesResponse(files=[
-            FileMeta.model_validate(f) for f in self.store.list_files(workspace_id)])
+        Raises ``ValueError`` for a malformed or read-only-violating address and
+        ``KeyError`` for an unknown workspace — the app maps those to 400 / 404.
+        """
+        namespace, owner, rel = file_address.parse_address(address)
+        if for_write:
+            file_address.require_writable(address, namespace)
+        if namespace == file_address.SOURCES:
+            # Canonicalize once: an address may name a workspace by name, and the
+            # address echoed back must be the one a caller can use again.
+            owner = self.store.registry.require(owner)["workspace_id"]
+        return namespace, owner, rel
 
-    def delete_project_file(self, workspace_id: str, path: str) -> ActionResult:
-        self.store.delete_file(workspace_id, path)
-        return ActionResult(ok=True, message=f"deleted {path}")
+    def _address_target(self, address: str, *, for_write: bool = False):
+        """Resolve an address to ``(namespace, owner, rel_path, absolute path)``."""
+        namespace, owner, rel = self._address_parts(address, for_write=for_write)
+        if namespace == file_address.SOURCES:
+            # Through the store, so ``/sources`` inherits its confinement rather than
+            # re-deriving the root here.
+            return namespace, owner, rel, self.store.resolve(owner, rel)
+        root = Path(self._data_dir(owner))
+        if not root.is_dir():
+            raise KeyError(f"no campaign {owner!r} in the results tree")
+        return namespace, owner, rel, (safe_join(root, rel) if rel else root)
+
+    def list_files(self, address: str, recursive: bool = False, detail: bool = False,
+                   offset: int = 0, limit: int = 100) -> FileListing:
+        namespace, owner, rel, target = self._address_target(address)
+        if target.is_file():
+            # Not a 404: the thing exists, the caller asked the wrong question of it.
+            raise ValueError(
+                f"{address!r} is a file, not a directory — read it instead")
+        if not target.is_dir():
+            raise KeyError(f"no directory at {address!r}")
+        skip = (self.store.skip_entry(owner)
+                if namespace == file_address.SOURCES else None)
+        return file_view.build_listing(
+            FileListing,
+            file_address.format_address(namespace, owner, _as_dir(rel)),
+            file_view.scan_dir(target, recursive=recursive, skip=skip),
+            recursive=recursive, detail=detail, offset=offset, limit=limit,
+            detail_fn=_detail_entry)
+
+    @staticmethod
+    def _require_file(address: str, target: Path) -> None:
+        """Refuse a non-file, saying which kind of 'no' it is.
+
+        A directory is not a missing file — the caller asked the wrong question of
+        something that exists, so it is a 400 pointing at the listing, not a 404.
+        """
+        if target.is_dir():
+            raise ValueError(
+                f"{address!r} is a directory, not a file — list it instead "
+                "(append '/')")
+        if not target.is_file():
+            raise KeyError(f"no file at {address!r}")
+
+    def read_file(self, address: str, lines: int = 200, offset: int = 0) -> FileText:
+        namespace, owner, rel, target = self._address_target(address)
+        self._require_file(address, target)
+        return FileText(address=file_address.format_address(namespace, owner, rel),
+                        **file_view.read_text_page(target, lines, offset))
+
+    def read_file_bytes(self, address: str) -> bytes:
+        _, _, _, target = self._address_target(address)
+        self._require_file(address, target)
+        return target.read_bytes()
+
+    @staticmethod
+    def _written(owner: str, meta: dict) -> FileMeta:
+        """Attach the address to a store's file metadata.
+
+        The **only** place a ``FileMeta`` is built, deliberately: the store below knows
+        paths and workspace ids, not addresses, so letting it construct one is how the
+        upload path came to return metadata with no address at all — a 400 on every
+        non-inline write over HTTP, invisible to the in-process transport that discards
+        the result.
+        """
+        return FileMeta(
+            address=file_address.format_address(file_address.SOURCES, owner,
+                                                meta["path"]),
+            bytes=meta["bytes"], sha256=meta["sha256"],
+            executable=meta["executable"])
+
+    def write_file(self, request: WriteFileRequest) -> FileMeta:
+        _, owner, rel = self._address_parts(request.address, for_write=True)
+        return self._written(owner, self.store.write_file(owner, rel, request.content))
+
+    def edit_file(self, request: EditFileRequest) -> FileMeta:
+        _, owner, rel = self._address_parts(request.address, for_write=True)
+        return self._written(owner, self.store.edit_file(
+            owner, rel, request.old_string, request.new_string))
+
+    def redeem_upload(self, token: str, data: bytes) -> FileMeta:
+        """Redeem a one-time upload grant and report the address that was written.
+
+        Not on the interface: a remote client PUTs its bytes at the grant's URL rather
+        than calling this, so only the process holding the workspace store can serve it
+        (``app.py`` probes for it the way it probes ``resolve_data_dir``).
+        """
+        meta = self.store.write_upload(token, data)
+        return self._written(meta["workspace_id"], meta)
+
+    def delete_file(self, address: str) -> ActionResult:
+        _, owner, rel = self._address_parts(address, for_write=True)
+        self.store.delete_file(owner, rel)
+        return ActionResult(ok=True, message=f"deleted {address}")
 
     def create_upload(self, request: CreateUploadRequest) -> UploadGrant:
-        grant = self.store.create_upload(
-            request.workspace_id, request.path, executable=request.executable)
+        _, owner, rel = self._address_parts(request.address, for_write=True)
+        grant = self.store.create_upload(owner, rel, executable=request.executable)
         return UploadGrant(token=grant["token"], path=grant["path"],
                            expires_in=grant["expires_in"])
 
     # -- interface ----------------------------------------------------------
 
     def version(self) -> VersionInfo:
+        # The filesystem roots are advertised because this lane *is* local disk, so a
+        # caller on the same host can read results with its own tools instead of
+        # relaying every byte through the interface. ``app.py`` blanks them again for a
+        # non-loopback request — the same-host precondition is the caller's, not ours.
         return VersionInfo(robovast_version=_robovast_version(), backend="docker",
-                           backends=["local"])
+                           backends=["local"],
+                           results_root=str(self._campaigns_root()),
+                           sources_root=str(self.store.registry.root))
 
     def resource_usage(self, backend: Optional[str] = None) -> ResourceUsage:
         """Backend capacity/usage, cached for ``_USAGE_CACHE_TTL`` seconds.
@@ -503,7 +645,8 @@ class LocalTransport(RobovastInterface):
                 f"campaign {campaign_id} already exists at {campaign_root}")
 
         state = ControllerState()
-        entry = _LocalCampaign(campaign_id, results_dir, state)
+        entry = _LocalCampaign(campaign_id, results_dir, state,
+                               description=request.description)
         runs = request.runs if request.runs and request.runs > 0 else None
         options = self._run_options(request)
 
@@ -549,12 +692,14 @@ class LocalTransport(RobovastInterface):
                         run_search_campaign(
                             project.config_path, campaign_config, results_dir, runs,
                             backend=backend, options=options,
-                            campaign_id=campaign_id, state=state)
+                            campaign_id=campaign_id, state=state,
+                            description=request.description)
                     else:
                         run_batch_campaign(
                             project.config_path, campaign_config, results_dir, runs,
                             config_filter=config_filter, backend=backend,
-                            options=options, campaign_id=campaign_id, state=state)
+                            options=options, campaign_id=campaign_id, state=state,
+                            description=request.description)
             except CampaignStopped:
                 # Clean cooperative stop (Ctrl+C / Stop): the controller already set
                 # phase "stopped". Not a failure — no error, no traceback. Persist the
@@ -1081,6 +1226,11 @@ class LocalTransport(RobovastInterface):
             # which that helper takes.
             entry.created_at = (read_campaign_created_at(self._campaign_dir(campaign_id))
                                 or entry.created_at)
+            # Likewise the description: a tracked entry answers for the campaign while
+            # it is live, so leaving this empty would blank the description out of every
+            # listing for the duration of a re-triggered postprocess/share.
+            entry.description = (read_campaign_description(self._campaign_dir(campaign_id))
+                                 or "")
             self._campaigns[campaign_id] = entry
 
         def _worker():
@@ -1337,21 +1487,6 @@ class LocalTransport(RobovastInterface):
         self._publish_config_edit(request.campaign_id)
         return PanelsSource(campaign_id=request.campaign_id, content=request.content)
 
-    def get_run_file(
-        self, campaign_id: str, config_name: str, run_id: int, path: str,
-    ) -> bytes:
-        # Confine the lookup to the run directory: the path comes from the URL, so a
-        # ``..``/absolute path must not read outside the run's artifacts. Shared check
-        # (also rejects a ``~`` prefix and symlink escapes, which the old
-        # ``startswith`` test on the resolved path did not).
-        from robovast.common.safe_path import safe_join
-        run_dir = Path(self._data_dir(campaign_id)) / config_name / str(run_id)
-        target = safe_join(run_dir, path)
-        if not target.is_file():
-            raise KeyError(
-                f"no file {path!r} in run {config_name}/{run_id} of campaign {campaign_id}")
-        return target.read_bytes()
-
     # Node levels the web Explorer tree can address (campaign → config → run). The
     # desktop's ``batch`` level is omitted: the web tree has no batch node.
     _VIS_LEVELS = ("run", "config", "campaign")
@@ -1457,6 +1592,7 @@ class LocalTransport(RobovastInterface):
         counts = self._run_counts(campaign_dir, live=entry is not None)
         return CampaignSummary(
             campaign_id=cid, phase=snap.phase, postprocessed=snap.postprocessed,
+            description=self._description_for(cid) or "",
             started_at=started_at,
             num_runs=counts["num_runs"], num_passed=counts["num_passed"],
             num_failed=counts["num_failed"] + counts["num_errors"])
@@ -1531,6 +1667,29 @@ class LocalTransport(RobovastInterface):
         if started is not None:
             self._started_at_cache[cid] = started
         return started
+
+    def _description_for(self, cid: str) -> Optional[str]:
+        """The campaign's description, or None when it was launched without one.
+
+        Same precedence and caching rationale as :meth:`_started_at_for`: the live
+        entry answers for a campaign this process launched (its store row may not
+        exist yet), the durable ``campaign.db`` answers for every other one, and the
+        value is memoised because the SSE stream re-lists once a second. A description
+        is written once with the campaign row and never edited, so a cached value
+        cannot go stale; ``None`` is not cached, since a campaign whose store is not
+        written yet must be re-read on the next poll.
+        """
+        with self._lock:
+            entry = self._campaigns.get(cid)
+        if entry is not None:
+            return entry.description or None
+        cached = self._description_cache.get(cid)
+        if cached is not None:
+            return cached
+        description = read_campaign_description(self._campaigns_root() / cid)
+        if description is not None:
+            self._description_cache[cid] = description
+        return description
 
     def _status_from_disk(self, campaign_id: str) -> Status:
         from robovast.execution.status_recovery import \

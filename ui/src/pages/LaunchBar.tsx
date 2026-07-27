@@ -13,7 +13,7 @@ import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded'
 import TuneRoundedIcon from '@mui/icons-material/TuneRounded'
 import Stack from '@mui/material/Stack'
 import TextField from '@mui/material/TextField'
-import { robovast } from '@/lib/robovastClient'
+import { DESCRIPTION_MAX_LEN, robovast } from '@/lib/robovastClient'
 
 // Pull the `execution.runs` scalar out of a .vast (YAML) so the launcher can prefill "Runs per config"
 // with whatever the file declares. We scan for the top-level `execution:` block and read the integer
@@ -48,6 +48,7 @@ export function LaunchBar() {
   const [workspaceId, setWorkspaceId] = useState('')
   const [configFilter, setConfigFilter] = useState('')
   const [campaignName, setCampaignName] = useState('')
+  const [description, setDescription] = useState('')
   const [runs, setRuns] = useState(1)
   const [postprocess, setPostprocess] = useState(true)
   const [uploadToShare, setUploadToShare] = useState(true)
@@ -90,9 +91,7 @@ export function LaunchBar() {
     queryFn: () => robovast.listProjectFiles(workspaceId),
     enabled: !!workspaceId,
   })
-  const vastFiles = (files.data?.files ?? [])
-    .map((f) => f.path)
-    .filter((p) => p.endsWith('.vast'))
+  const vastFiles = (files.data?.entries ?? []).filter((p) => p.endsWith('.vast'))
 
   // Preselect the first .vast file if the user hasn't chosen one yet.
   useEffect(() => {
@@ -123,6 +122,7 @@ export function LaunchBar() {
         config_path: configPath,
         config_filter: configFilter,
         campaign_name: campaignName.trim(),
+        description: description.trim(),
         runs,
         postprocess,
         upload_to_share: uploadToShare,
@@ -248,6 +248,19 @@ export function LaunchBar() {
               size="small"
               sx={{ minWidth: 260 }}
               slotProps={{ inputLabel: { shrink: true } }}
+            />
+            <TextField
+              label="Description (optional)"
+              value={description}
+              onChange={(e) => setDescription(e.target.value.slice(0, DESCRIPTION_MAX_LEN))}
+              placeholder="what this run is for"
+              size="small"
+              sx={{ minWidth: 320 }}
+              helperText={`${description.length}/${DESCRIPTION_MAX_LEN}`}
+              slotProps={{
+                inputLabel: { shrink: true },
+                htmlInput: { maxLength: DESCRIPTION_MAX_LEN },
+              }}
             />
             <TextField
               label="Runs per config"

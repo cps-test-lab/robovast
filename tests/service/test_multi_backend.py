@@ -152,6 +152,7 @@ def test_lists_a_cluster_campaign_before_it_has_a_directory(tmp_path):
 
     class _Entry:
         created_at = None
+        description = ""
 
         class state:
             @staticmethod
@@ -191,6 +192,7 @@ def test_pre_flight_cluster_campaign_is_listed_first(tmp_path):
 
     class _Entry:
         created_at = datetime.now(timezone.utc).isoformat()
+        description = ""
 
         class state:
             @staticmethod

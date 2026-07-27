@@ -26,7 +26,7 @@ export function useConfigEditor(workspaceId: string) {
   })
 
   const vastFiles = useMemo(
-    () => (files.data?.files ?? []).map((f) => f.path).filter(isVast),
+    () => (files.data?.entries ?? []).filter(isVast),
     [files.data],
   )
   // Auto-select the first .vast on startup / workspace change; when the selection vanishes
@@ -50,7 +50,7 @@ export function useConfigEditor(workspaceId: string) {
     onError: (e) => setPreviewErr((e as Error).message),
   })
 
-  const allNames = useMemo(() => (files.data?.files ?? []).map((f) => f.path), [files.data])
+  const allNames = useMemo(() => files.data?.entries ?? [], [files.data])
   const createVast = useCreateVast(workspaceId, allNames, (name) => {
     setSelected(name)
     setValidation(null)

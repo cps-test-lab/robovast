@@ -29,15 +29,16 @@ so existing imports keep working.
 import logging
 from typing import Optional
 
+from robovast.common import file_address
 from robovast.execution.control_server import Status
 from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         CampaignRef, CreateCampaignRequest,
                                         CreateUploadRequest,
                                         CreateWorkspaceRequest, EditFileRequest,
-                                        FileContent, FileMeta, ImageBuildRef,
+                                        FileListing, FileMeta, FileText, ImageBuildRef,
                                         ImageBuildStatus, ListCampaignsRequest,
                                         ListCampaignsResponse, ListJobsResponse,
-                                        ListFilesResponse, ListWorkspacesResponse,
+                                        ListWorkspacesResponse,
                                         LogChunk, PreviewResponse, ResourceUsage,
                                         RobovastInterface, Routes, UploadGrant,
                                         ValidationReport, VariationTypesResponse,
@@ -74,6 +75,13 @@ class HTTPTransport(RobovastInterface):
     def _post(self, route: str, json=None):
         import requests
         resp = requests.post(f"{self.base_url}{route}", json=json,
+                            timeout=self.timeout)
+        resp.raise_for_status()
+        return resp.json()
+
+    def _put(self, route: str, json=None):
+        import requests
+        resp = requests.put(f"{self.base_url}{route}", json=json,
                             timeout=self.timeout)
         resp.raise_for_status()
         return resp.json()
@@ -132,29 +140,44 @@ class HTTPTransport(RobovastInterface):
     def delete_workspace(self, workspace_id: str) -> ActionResult:
         return ActionResult.model_validate(self._delete(Routes.workspace(workspace_id)))
 
-    def write_project_file(self, request: WriteFileRequest) -> FileMeta:
+    # -- files --------------------------------------------------------------
+    # The address *is* the route: no URL is built here beyond prepending the base.
+
+    def list_files(self, address: str, recursive: bool = False, detail: bool = False,
+                   offset: int = 0, limit: int = 100) -> FileListing:
+        # Normalized to directory form: the route reads the trailing slash, and this
+        # call means "list" regardless of how the caller spelled the address.
+        return FileListing.model_validate(self._get(
+            Routes.file(file_address.as_directory(address)),
+            recursive=int(recursive), detail=int(detail),
+            offset=offset, limit=limit))
+
+    def read_file(self, address: str, lines: int = 200, offset: int = 0) -> FileText:
+        return FileText.model_validate(self._get(
+            Routes.file(address), **{"as": "text", "lines": lines, "offset": offset}))
+
+    def read_file_bytes(self, address: str) -> bytes:
+        import requests
+        resp = requests.get(f"{self.base_url}{Routes.file(address)}",
+                            timeout=self.timeout)
+        resp.raise_for_status()
+        return resp.content
+
+    def write_file(self, request: WriteFileRequest) -> FileMeta:
+        return FileMeta.model_validate(self._put(
+            Routes.file(request.address), json={"content": request.content}))
+
+    def edit_file(self, request: EditFileRequest) -> FileMeta:
         return FileMeta.model_validate(self._post(
-            Routes.workspace_file(request.workspace_id), json=request.model_dump()))
+            Routes.file(request.address),
+            json={"old_string": request.old_string, "new_string": request.new_string}))
 
-    def edit_project_file(self, request: EditFileRequest) -> FileMeta:
-        return FileMeta.model_validate(self._post(
-            Routes.workspace_edit(request.workspace_id), json=request.model_dump()))
-
-    def read_project_file(self, workspace_id: str, path: str) -> FileContent:
-        return FileContent.model_validate(
-            self._get(Routes.workspace_file(workspace_id), path=path))
-
-    def list_project_files(self, workspace_id: str) -> ListFilesResponse:
-        return ListFilesResponse.model_validate(
-            self._get(Routes.workspace_files(workspace_id)))
-
-    def delete_project_file(self, workspace_id: str, path: str) -> ActionResult:
-        return ActionResult.model_validate(
-            self._delete(Routes.workspace_file(workspace_id), path=path))
+    def delete_file(self, address: str) -> ActionResult:
+        return ActionResult.model_validate(self._delete(Routes.file(address)))
 
     def create_upload(self, request: CreateUploadRequest) -> UploadGrant:
         grant = UploadGrant.model_validate(self._post(
-            Routes.workspace_upload(request.workspace_id), json=request.model_dump()))
+            Routes.UPLOADS, json=request.model_dump()))
         # The service returns a relative path (it doesn't know its external base);
         # always hand the caller an absolute URL to `curl -X PUT --data-binary @file`.
         grant.url = f"{self.base_url}{Routes.upload(grant.token)}"
@@ -299,17 +322,6 @@ class HTTPTransport(RobovastInterface):
         return PanelsSource.model_validate(self._post(
             Routes.campaign_panels_source(request.campaign_id),
             json=request.model_dump()))
-
-    def get_run_file(
-        self, campaign_id: str, config_name: str, run_id: int, path: str,
-    ) -> bytes:
-        import requests
-        resp = requests.get(
-            f"{self.base_url}"
-            f"{Routes.campaign_run_file(campaign_id, config_name, run_id, path)}",
-            timeout=self.timeout)
-        resp.raise_for_status()
-        return resp.content
 
     def list_campaign_visualizations(
         self, campaign_id: str

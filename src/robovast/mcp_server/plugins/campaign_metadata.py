@@ -14,10 +14,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""MCP plugin for browsing campaign-level results.
+"""MCP plugin for campaign-level metadata.
 
-Provides tools for listing campaigns, reading campaign metadata,
-scenario descriptions, run files, transient files, and configurations.
+Lists campaigns and answers the parsed questions about one: its summary, how it was
+executed, what postprocessing produced, which configurations it holds.
+
+Campaign **files** are not here — they are reached through the one address space
+(``read_file`` / ``list_files`` over ``/results/<campaign_id>/<path>``), so there is a
+single way to name a file rather than one per scope.
 """
 
 import logging
@@ -25,10 +29,11 @@ from typing import Any
 
 from fastmcp import FastMCP
 
-from robovast.common.store import read_campaign_created_at
+from robovast.common.store import (read_campaign_created_at,
+                                   read_campaign_description)
 from robovast.mcp_server import results_resolver
 
-from ..plugin_common import _list_files_relative, _read_text_paginated, read_campaign_metadata
+from ..plugin_common import read_campaign_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +60,10 @@ def list_campaigns(limit: int = 20, offset: int = 0) -> dict:
     answers "what did I just run?". A campaign whose start time is unrecorded sorts
     last, with ``started_at`` null.
 
+    Each entry carries the ``description`` its launcher gave (see ``start_campaign``),
+    omitted for a campaign started without one — that text is the only thing telling two
+    same-day ``campaign-<timestamp>`` ids apart.
+
     Args:
         limit: Maximum number of campaigns to return (default 20).
         offset: Number of campaigns to skip (default 0).
@@ -65,6 +74,9 @@ def list_campaigns(limit: int = 20, offset: int = 0) -> dict:
     for d in results_resolver.list_campaigns():
         metadata = read_campaign_metadata(d)
         entry = {"campaign_id": d.name, "started_at": read_campaign_created_at(d)}
+        description = read_campaign_description(d)
+        if description:
+            entry["description"] = description
         if metadata:
             exec_info = metadata.get("execution", {})
             entry["execution_time"] = exec_info.get("execution_time")
@@ -147,56 +159,6 @@ def get_campaign_summary(campaign_id: str) -> dict:
     }
 
 
-def get_campaign_scenario(campaign_id: str) -> str:
-    """Return the full scenario description used within a campaign.
-
-    Args:
-        campaign_id: Campaign name.
-    """
-    config_dir = results_resolver.resolve_campaign_path(campaign_id) / "_config"
-    scenario = config_dir / "scenario.osc"
-    if not scenario.exists():
-        return "No scenario.osc found in campaign _config/."
-    return scenario.read_text(encoding="utf-8")
-
-
-def list_campaign_run_files(campaign_id: str) -> list[str]:
-    """List files available during every run in every configuration.
-
-    These files (alongside the docker image and scenario) define
-    the execution during a run.
-
-    Args:
-        campaign_id: Campaign name.
-    """
-    campaign_path = results_resolver.resolve_campaign_path(campaign_id)
-    data = read_campaign_metadata(campaign_path)
-    run_files = data.get("run_files")
-    if run_files is not None:
-        return run_files
-    return _list_files_relative(campaign_path / "_config")
-
-
-def get_campaign_run_file(
-    campaign_id: str, file_name: str, lines: int = 100, offset: int = 0,
-) -> dict:
-    """Read a single campaign run file (or a page of it).
-
-    Returns paginated text content. Binary files are not returned.
-
-    Args:
-        campaign_id: Campaign name.
-        file_name: file name (e.g. ``"files/growth_sim.py"``).
-        lines: Maximum number of lines to return (default 100).
-        offset: Line offset to start reading from (default 0).
-    """
-    config_dir = results_resolver.resolve_campaign_path(campaign_id) / "_config"
-    path = config_dir / file_name
-    if not path.exists():
-        return {"error": f"File not found: {file_name}"}
-    return _read_text_paginated(path, lines, offset)
-
-
 def get_campaign_execution_details(campaign_id: str) -> dict:
     """Return the full execution details for a campaign.
 
@@ -268,55 +230,20 @@ def list_campaign_configurations(
     ]
 
 
-def list_campaign_transient_files(campaign_id: str) -> list[str]:
-    """List transient files of a campaign.
-
-    Transient files are created during configuration processing,
-    execution, and postprocessing.
-
-    Args:
-        campaign_id: Campaign name.
-    """
-    transient_dir = results_resolver.resolve_campaign_path(campaign_id) / "_transient"
-    return _list_files_relative(transient_dir)
-
-
-def get_campaign_transient_file(
-    campaign_id: str, file_name: str, lines: int = 100, offset: int = 0,
-) -> dict:
-    """Read a single campaign transient file (or a page of it).
-
-    Returns paginated text content. Binary files are not returned.
-
-    Args:
-        campaign_id: Campaign name.
-        file_name: Relative path within the campaign transient files.
-        lines: Maximum number of lines to return (default 100).
-        offset: Line offset to start reading from (default 0).
-    """
-    transient_dir = results_resolver.resolve_campaign_path(campaign_id) / "_transient"
-    path = transient_dir / file_name
-    if not path.exists():
-        return {"error": f"File not found: {file_name}"}
-    return _read_text_paginated(path, lines, offset)
-
-
 # -- Plugin class ------------------------------------------------------------
 
-# The campaign config/params/agents are reachable via get_campaign_scenario
-# (scenario + agents/params), get_configuration_variations (resolved per-config
-# params), and the run_data SQL tools (campaign.config_json holds the whole .vast).
+# Files are not here: every campaign file is reached through the one address space
+# (``read_file`` / ``list_files`` over ``/results/<campaign_id>/<path>``) — the scenario
+# is ``_config/scenario.osc``, the run files are ``_config/``, the transient files are
+# ``_transient/``. What stays are the *metadata views*: parsed answers that are not a
+# file. The resolved per-config params come from get_configuration_variations, and the
+# whole .vast from the run_data SQL tools (campaign.config_json).
 _TOOLS = [
     list_campaigns,
     get_campaign_summary,
-    get_campaign_scenario,
-    list_campaign_run_files,
-    get_campaign_run_file,
     get_campaign_execution_details,
     get_campaign_postprocessing_details,
     list_campaign_configurations,
-    list_campaign_transient_files,
-    get_campaign_transient_file,
 ]
 
 

@@ -31,6 +31,19 @@ _FORBIDDEN_NAMES = [
     # so there is nothing for an MCP-side ``vast init`` to bind. ``.robovast_project``
     # remains a CLI-only concept -- see LocalTransport._resolve_project.
     "init_project",
+    # The per-scope file tools, collapsed into read_file/list_files/write_file/
+    # edit_file/delete_file over one address space (``/results/<campaign>/<path>`` and
+    # ``/sources/<workspace>/<path>``). Listed here because a retired tool name left in
+    # a docstring or a doc page is one an LLM will try to call -- so the migration is
+    # described by what the tools *did*, never by their names.
+    "get_campaign_scenario",
+    "list_campaign_run_files", "get_campaign_run_file",
+    "list_campaign_transient_files", "get_campaign_transient_file",
+    "list_configuration_transient_files", "get_configuration_transient_file",
+    "list_configuration_config_files",
+    "list_run_additional_output_files", "get_run_output_file",
+    "read_project_file", "list_project_files", "write_project_file",
+    "edit_project_file", "delete_project_file",
 ]
 
 

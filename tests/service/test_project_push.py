@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from robovast.common.file_address import SOURCES, format_address
 from robovast.service.client import LocalTransport
 from robovast.service.interface import CreateWorkspaceRequest
 from robovast.service.project_push import (_resolve_workspace_id,
@@ -45,8 +46,21 @@ def project(tmp_path):
     return root
 
 
+def _address(wid, rel=""):
+    return format_address(SOURCES, wid, rel)
+
+
 def _paths(client, wid):
-    return sorted(f.path for f in client.list_project_files(wid).files)
+    return sorted(client.list_files(_address(wid), recursive=True, limit=0).entries)
+
+
+def _meta(client, wid):
+    listing = client.list_files(_address(wid), recursive=True, detail=True, limit=0)
+    return {e.name: e for e in listing.detailed}
+
+
+def _content(client, wid, rel):
+    return client.read_file(_address(wid, rel)).content
 
 
 def _wid(client, name="demo"):
@@ -63,13 +77,13 @@ def test_sync_uploads_inline_and_side_channel_skipping_hidden_and_results(client
     assert _paths(client, wid) == ["demo.vast", "run.sh", "scenes/room.json"]
     assert stats == {"written": 1, "uploaded": 2, "pruned": 0}  # .vast inline; run.sh + json uploaded
     # .vast content written inline, nested path preserved.
-    assert client.read_project_file(wid, "demo.vast").content.startswith("configuration:")
+    assert _content(client, wid, "demo.vast").startswith("configuration:")
 
 
 def test_sync_preserves_executable_bit(client, project):
     wid = _wid(client)
     sync_directory_to_workspace(client, wid, project, skip_dirs={"results"})
-    meta = {f.path: f for f in client.list_project_files(wid).files}
+    meta = _meta(client, wid)
     assert meta["run.sh"].executable is True     # shebang / +x preserved
     assert meta["scenes/room.json"].executable is False
 
@@ -82,7 +96,7 @@ def test_sync_overwrites_in_place(client, project):
 
     sync_directory_to_workspace(client, wid, project, skip_dirs={"results"})
     assert _paths(client, wid) == ["demo.vast", "run.sh", "scenes/room.json"]  # no duplicates
-    assert "changed" in client.read_project_file(wid, "demo.vast").content
+    assert "changed" in _content(client, wid, "demo.vast")
 
 
 def test_sync_echo_reports_each_change(client, project):

@@ -35,7 +35,8 @@ from .campaign_data import (aggregate_run_status, list_config_dirs,
                             list_run_dirs, read_execution_metadata,
                             read_run_outcomes, read_scenario_config)
 from .common import load_config
-from .store import STORE_FILENAME, CampaignStore
+from .store import (STORE_FILENAME, CampaignStore,
+                    read_campaign_description)
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,11 @@ def build_campaign_store(campaign_dir, *, force: bool = False) -> Path:
         if store_path.stat().st_mtime >= _newest_mtime(campaign_dir):
             logger.debug("Campaign store up to date: %s", store_path)
             return store_path
+    # Carried across the rebuild: unlike every other column, the description cannot be
+    # recovered from the results tree — the launcher's text exists only in the store. A
+    # rebuild that dropped it would silently blank the description of any campaign whose
+    # store is refreshed.
+    description = read_campaign_description(campaign_dir) or ""
     if store_path.exists():
         store_path.unlink()  # rebuild from scratch (schema/state may have changed)
 
@@ -113,7 +119,7 @@ def build_campaign_store(campaign_dir, *, force: bool = False) -> Path:
         # campaign.db) so the store survives the campaign being relocated.
         campaign_id = store.create_campaign(
             campaign_dir.name, config_json, mode="batch", config_dir="_config",
-            created_at=_recorded_start_time(campaign_dir))
+            created_at=_recorded_start_time(campaign_dir), description=description)
         batch_id = store.open_batch(campaign_id, 0, ".")
         for cfg_dir in list_config_dirs(campaign_dir):
             run_dirs = list_run_dirs(cfg_dir)

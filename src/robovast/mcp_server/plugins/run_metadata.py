@@ -14,13 +14,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""MCP plugin for browsing individual run results.
+"""MCP plugin for individual run metadata.
 
-A run is a single execution of a configuration.  It does not have its own
-configuration or input files — those are inherited from the configuration
-(and transitively from the campaign).  The tools here expose run-specific
-*output*: test results, system information, and output files produced
-during execution.
+A run is a single execution of a configuration. It does not have its own configuration
+or input files — those are inherited from the configuration (and transitively from the
+campaign). The tools here expose the run's *recorded facts*: its test result and the
+system information captured while it ran. Its output **files** are read through the
+address space (``/results/<campaign_id>/<config_name>/<run>/…``).
 """
 
 import logging
@@ -28,9 +28,7 @@ from datetime import datetime
 
 from fastmcp import FastMCP
 
-from robovast.mcp_server import results_resolver
-
-from ..plugin_common import _get_config_by_identifier_or_name, _read_text_paginated
+from ..plugin_common import _get_config_by_identifier_or_name
 
 logger = logging.getLogger(__name__)
 
@@ -126,77 +124,17 @@ def get_run_sysinfo(
     return sysinfo
 
 
-def list_run_additional_output_files(
-    campaign_id: str, configuration_id: str, run: int,
-) -> list[str]:
-    """List additional output files of a single run, beyond the consolidated
-    metrics already queryable via ``describe_campaign_data`` / ``query_campaign_data_sql``.
-
-    These files are produced during execution and postprocessing
-    (e.g. test results, rosbags).
-
-    Args:
-        campaign_id: Campaign name.
-        configuration_id: Configuration name.
-        run: Run number (e.g. ``0``).
-    """
-    config_entry = _get_config_by_identifier_or_name(campaign_id, configuration_id)
-    tr = _get_test_result_entry(campaign_id, configuration_id, run)
-    if tr is not None and tr.get("output_files"):
-        config_name = config_entry.get("name", configuration_id) if config_entry else configuration_id
-        prefix = f"{config_name}/{run}/"
-        files = [
-            f[len(prefix):] if f.startswith(prefix) else f
-            for f in tr["output_files"]
-        ]
-        return [
-            f for f in files
-            if not f.lower().endswith(".csv")
-            and not f.startswith("logs/")
-        ]
-    return []
-
-
-def get_run_output_file(
-    campaign_id: str,
-    configuration_id: str,
-    run: int,
-    file_name: str,
-    lines: int = 100,
-    offset: int = 0,
-) -> dict:
-    """Read a single output file from a run.
-
-    Returns paginated text content. Binary files are not returned.
-
-    Args:
-        campaign_id: Campaign name.
-        configuration_id: Configuration name.
-        run: Run number (e.g. ``0``).
-        file_name: Relative path within the run directory
-            (e.g. ``"out.csv"``, ``"logs/system.log"``).
-        lines: Maximum number of lines to return (default 100).
-        offset: Line offset to start reading from (default 0).
-    """
-    run_path = results_resolver.resolve_run_path(campaign_id, configuration_id, run)
-    config_entry = _get_config_by_identifier_or_name(campaign_id, configuration_id)
-    config_name = config_entry.get("name", configuration_id) if config_entry else configuration_id
-    prefix = f"{config_name}/{run}/"
-    if file_name.startswith(prefix):
-        file_name = file_name[len(prefix):]
-    path = run_path / file_name
-    if not path.exists():
-        return {"error": f"File not found: {file_name} in run {run}"}
-    return _read_text_paginated(path, lines, offset)
-
-
 # -- Plugin class ------------------------------------------------------------
 
+# A run's output files live at ``/results/<campaign_id>/<config_name>/<run>/`` and are
+# read with the generic file tools. Two differences from the tools that used to be here,
+# both deliberate: the listing is of the real directory rather than a ``metadata.yaml``
+# entry written by postprocessing, and it no longer hides ``*.csv`` and ``logs/`` —
+# those are better answered by the SQL and log tools, but hiding them meant a listing
+# that disagreed with the directory.
 _TOOLS = [
     get_run_details,
     get_run_sysinfo,
-    list_run_additional_output_files,
-    get_run_output_file,
 ]
 
 

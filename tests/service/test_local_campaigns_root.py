@@ -89,6 +89,48 @@ def test_started_at_comes_from_the_store(transport):
         created_at, tz=timezone.utc).isoformat()
 
 
+def test_description_comes_from_the_store(transport):
+    """The description a campaign was launched with is listed back with it."""
+    from robovast.common.store import STORE_FILENAME, CampaignStore
+
+    root = transport._campaigns_root()
+    cid = "campaign-2026-07-16-141516"
+    cdir = root / cid
+    cdir.mkdir(parents=True)
+    with CampaignStore(cdir / STORE_FILENAME) as store:
+        store.create_campaign(cid, {}, mode="batch", config_dir="_config",
+                              description="pilot: 5 reps, new inflation radius")
+
+    summary = next(c for c in transport.list_campaigns().campaigns if c.campaign_id == cid)
+    assert summary.description == "pilot: 5 reps, new inflation radius"
+
+
+def test_description_empty_without_store(transport):
+    """A campaign launched without one (or with no store yet) lists an empty string,
+    never a null the UI would have to special-case."""
+    root = transport._campaigns_root()
+    cid = "campaign-2026-07-16-171819"
+    (root / cid).mkdir(parents=True)
+    summary = next(c for c in transport.list_campaigns().campaigns if c.campaign_id == cid)
+    assert summary.description == ""
+
+
+def test_live_campaign_reports_its_description_before_the_store_exists(transport):
+    """A just-accepted campaign is described from the in-memory entry: its store row is
+    written by the controller, which for an image-building campaign is minutes away."""
+    from robovast.execution.control_server import ControllerState
+    from robovast.service.local_transport import _LocalCampaign
+
+    cid = "campaign-2026-07-16-181920"
+    entry = _LocalCampaign(cid, str(transport._campaigns_root()), ControllerState(),
+                           description="full sweep after the pilot")
+    with transport._lock:
+        transport._campaigns[cid] = entry
+
+    summary = next(c for c in transport.list_campaigns().campaigns if c.campaign_id == cid)
+    assert summary.description == "full sweep after the pilot"
+
+
 def test_started_at_none_without_store(transport):
     """A campaign dir with no campaign.db yields started_at=None (not an error)."""
     root = transport._campaigns_root()

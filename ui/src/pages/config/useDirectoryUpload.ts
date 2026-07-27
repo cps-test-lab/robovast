@@ -25,7 +25,7 @@ export function useDirectoryUpload(workspaceId: string) {
       // Snapshot existing paths once for collision detection; add to it as we go so a
       // just-uploaded file doesn't re-prompt within the same batch.
       const existing = new Set(
-        (await robovast.listProjectFiles(workspaceId)).files.map((f) => f.path),
+        (await robovast.listProjectFiles(workspaceId)).entries,
       )
       let overwriteAll = false
       try {

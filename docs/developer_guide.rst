@@ -1523,8 +1523,8 @@ resolves the campaign dir through the public ``impl.resolve_data_dir(campaign_id
 ``ClusterService`` overrides to fetch from the object store — so a plugin endpoint works on both
 deployments unchanged. Endpoint names should be **package-namespaced** (``nav/foo``) to avoid
 collisions; core route names are reserved (``RESERVED_CAMPAIGN_ENDPOINTS``). **Scope:** run-scoped
-GET→JSON only — *binary/large per-run artifacts* already have the generic
-``GET /campaigns/{id}/run-files/{config}/{run}/{path}`` endpoint (``DataProvider.runFileUrl``), and
+GET→JSON only — *binary/large per-run artifacts* are already served by the file address space,
+``GET /results/<campaign>/<config>/<run>/<path>`` (``DataProvider.runFileUrl``), and
 *producing* data is a postprocessing plugin's job. **Reference:** ``robovast_nav``'s
 ``CostmapEndpoint`` (``robovast_nav/service_endpoints.py``), relocated verbatim from core's old
 ``read_costmap_frame`` — it reads the ``costmaps`` table via ``ctx.open_db()`` and returns the frame
@@ -1538,10 +1538,10 @@ builds a three.js ``Group`` and returns an imperative animation API (``jointMap`
 controls + the Z-up wrapper). **Extractability rule: files in this directory import only
 ``three`` — never ``@/…``** (see its README) — it is shared-candidate code, so all
 robovast-specific wiring lives in the consumer, ``ui/src/panels/Scene3DPanel.tsx``, which
-binds the vast spec, fetches the descriptor via ``DataProvider.runFileUrl`` (the
-``GET /campaigns/{id}/run-files/{config}/{run}/{path}`` endpoint — path-style so the
-loader's *relative* sibling fetches, ``scene.bin``/textures, stay in the run dir), and
-drives ``basePose`` from the clock.
+binds the vast spec, fetches the descriptor via ``DataProvider.runFileUrl``
+(``GET /results/<campaign>/<config>/<run>/<path>`` — the address is the run's real
+directory, so the loader's *relative* sibling fetches, ``scene.bin``/textures, stay in
+it), and drives ``basePose`` from the clock.
 
 Deferred: web notebook execution (a server-side kernel; the desktop ``vast eval gui`` keeps that
 role) and a bundle code-split (Monaco + Plotly + Vega + Module Federation make the SPA large).

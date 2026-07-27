@@ -8,9 +8,25 @@
 
 import pytest
 
+from robovast.common.file_address import SOURCES, format_address
+from robovast.service.client import LocalTransport
 from robovast.service.workspaces import (INLINE_EXTENSIONS, WorkspaceError,
                                          WorkspaceRegistry, WorkspaceStore,
                                          _UploadTokens)
+
+
+def _listing(store, workspace_id):
+    """The workspace's files as the ``/sources`` address space reports them.
+
+    Listing is not a store method any more: it is one operation over both namespaces
+    (see :mod:`robovast.common.file_address`), so it is exercised through the transport
+    that resolves an address — which is also what applies this store's pinned-dir skip
+    rule via :meth:`WorkspaceStore.skip_entry`.
+    """
+    transport = LocalTransport.__new__(LocalTransport)
+    transport.store = store
+    return sorted(transport.list_files(format_address(SOURCES, workspace_id),
+                                       recursive=True, limit=0).entries)
 
 
 @pytest.fixture
@@ -61,7 +77,7 @@ def test_registry_survives_reload(tmp_path):
 def test_inline_write_allows_vast_and_osc(store, ws, name):
     meta = store.write_file(ws, name, "content: 1\n")
     assert meta["path"] == name and meta["bytes"] > 0 and meta["sha256"]
-    assert store.read_file(ws, name) == "content: 1\n"
+    assert store.resolve(ws, name).read_text() == "content: 1\n"
 
 
 @pytest.mark.parametrize("name", ["launch.py", "map.pgm", "notes.txt", "mesh.dae"])
@@ -82,7 +98,7 @@ def test_write_returns_metadata_not_content(store, ws):
 def test_edit_replaces_unique_string(store, ws):
     store.write_file(ws, "a.vast", "runs: 1\nname: x\n")
     store.edit_file(ws, "a.vast", "runs: 1", "runs: 5")
-    assert store.read_file(ws, "a.vast") == "runs: 5\nname: x\n"
+    assert store.resolve(ws, "a.vast").read_text() == "runs: 5\nname: x\n"
 
 
 def test_edit_rejects_missing_or_ambiguous(store, ws):
@@ -186,11 +202,10 @@ def test_upload_path_is_confined(store, ws):
 def test_list_and_delete_files(store, ws):
     store.write_file(ws, "a.vast", "x")
     store.write_upload(store.create_upload(ws, "files/b.py")["token"], b"y")
-    paths = {f["path"] for f in store.list_files(ws)}
-    assert paths == {"a.vast", "files/b.py"}
+    assert _listing(store, ws) == ["a.vast", "files/b.py"]
 
     store.delete_file(ws, "a.vast")
-    assert {f["path"] for f in store.list_files(ws)} == {"files/b.py"}
+    assert _listing(store, ws) == ["files/b.py"]
     with pytest.raises(WorkspaceError):
         store.delete_file(ws, "a.vast")
 
@@ -277,12 +292,12 @@ def test_pinned_dir_is_not_persisted_to_registry(pinned):
 
 def test_pinned_listing_skips_hidden_and_results(pinned):
     store, wid, _ = pinned
-    assert sorted(f["path"] for f in store.list_files(wid)) == ["demo.vast", "run.sh"]
+    assert _listing(store, wid) == ["demo.vast", "run.sh"]
 
 
 def test_pinned_reads_but_refuses_writes(pinned):
     store, wid, _ = pinned
-    assert "configuration" in store.read_file(wid, "demo.vast")
+    assert "configuration" in store.resolve(wid, "demo.vast").read_text()
     with pytest.raises(WorkspaceError, match="read-only"):
         store.write_file(wid, "x.vast", "y")
     with pytest.raises(WorkspaceError, match="read-only"):

@@ -40,6 +40,9 @@ export interface ResourceUsage {
 export interface CampaignSummary {
   campaign_id: string
   phase: string
+  // Free text the launcher gave about this run (see start_campaign / CreateCampaignRequest);
+  // empty when none was given. Capped at 200 chars server-side, so it renders on one line.
+  description?: string
   postprocessed: boolean
   // Reason a post-run step's last attempt failed, or null/absent when it succeeded or
   // never ran. A finished campaign can carry either: the runs are the deliverable, the
@@ -102,6 +105,9 @@ export interface CreateCampaignRequest {
   config_path?: string
   config_filter?: string
   campaign_name?: string
+  // One line on what this run is for; shown on the campaign card. Max 200 chars (the
+  // service rejects longer).
+  description?: string
   runs?: number
   postprocess?: boolean
   upload_to_share?: boolean
@@ -109,6 +115,11 @@ export interface CreateCampaignRequest {
   // uses the service default (cluster when available). Single-backend serves ignore it.
   backend?: string
 }
+
+// Mirrors interface.py:DESCRIPTION_MAX_LEN. Enforced here only to keep the field from
+// growing past what a campaign card can show — the service is the authority and rejects
+// a longer one.
+export const DESCRIPTION_MAX_LEN = 200
 
 export interface CampaignRef {
   campaign_id: string
@@ -216,18 +227,30 @@ export interface ListWorkspacesResponse {
 }
 
 export interface FileMeta {
-  path: string
+  /** The address written, e.g. `/sources/ws-ab12/demo.vast`. */
+  address: string
   bytes: number
   sha256: string
   executable: boolean
 }
 
-export interface ListFilesResponse {
-  files: FileMeta[]
+export interface FileListing {
+  /** The directory that was listed; every entry is relative to it. */
+  address: string
+  /** Names, directories suffixed with `/`. The UI never asks for `detail=true`, so
+   *  the server's `detailed` shape is deliberately not modelled here. */
+  entries: string[]
+  /** Entry count *before* offset/limit, so a truncated page says how much it omitted. */
+  total: number
+  truncated: boolean
+  recursive: boolean
 }
 
-export interface FileContent {
-  path: string
+export interface FileText {
+  address: string
+  total_lines: number
+  returned_lines: number
+  offset: number
   content: string
 }
 
@@ -383,6 +406,22 @@ export class RobovastError extends Error {
   }
 }
 
+// -- the file address space -------------------------------------------------
+// One address per file, and it is also the URL that serves it. Segments are encoded
+// individually so the '/' separators survive: a resource that fetches siblings by
+// *relative* URL (scene.json -> scene.bin) must stay inside its own directory.
+
+const encodePath = (path: string) =>
+  path.split('/').map(encodeURIComponent).join('/')
+
+/** `/results/<campaign>/<path>` — a campaign's outputs, read-only. */
+export const resultsUrl = (campaignId: string, path: string) =>
+  `/results/${encodeURIComponent(campaignId)}/${encodePath(path)}`
+
+/** `/sources/<workspace>/<path>` — a workspace's authored inputs, writable. */
+export const sourcesUrl = (workspaceId: string, path: string) =>
+  `/sources/${encodeURIComponent(workspaceId)}/${encodePath(path)}`
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method,
@@ -435,6 +474,7 @@ export const robovast = {
       config_path: '',
       config_filter: '',
       campaign_name: '',
+      description: '',
       runs: 1,
       postprocess: true,
       upload_to_share: false,
@@ -483,35 +523,29 @@ export const robovast = {
   deleteWorkspace: (id: string) =>
     request<ActionResult>('DELETE', `/workspaces/${encodeURIComponent(id)}`),
 
+  // Files live in one address space that is also the URL space (see
+  // robovast/common/file_address.py): /sources/<workspace>/<path> for the inputs a user
+  // authors, /results/<campaign>/<path> for a campaign's outputs (read-only). The path
+  // segments are encoded individually so the '/' separators survive.
+  // Recursive and undetailed: every consumer builds a path tree, and none of them shows
+  // a size — so ask for the names only.
   listProjectFiles: (id: string) =>
-    request<ListFilesResponse>('GET', `/workspaces/${encodeURIComponent(id)}/files`),
+    request<FileListing>('GET', `${sourcesUrl(id, '')}?recursive=1&limit=0`),
 
   readProjectFile: (id: string, path: string) =>
-    request<FileContent>(
-      'GET',
-      `/workspaces/${encodeURIComponent(id)}/file?path=${encodeURIComponent(path)}`,
-    ),
+    request<FileText>('GET', `${sourcesUrl(id, path)}?as=text&lines=0`),
 
   writeProjectFile: (id: string, path: string, content: string) =>
-    request<FileMeta>('POST', `/workspaces/${encodeURIComponent(id)}/file`, {
-      workspace_id: id,
-      path,
-      content,
-    }),
+    request<FileMeta>('PUT', sourcesUrl(id, path), { content }),
 
   deleteProjectFile: (id: string, path: string) =>
-    request<ActionResult>(
-      'DELETE',
-      `/workspaces/${encodeURIComponent(id)}/file?path=${encodeURIComponent(path)}`,
-    ),
+    request<ActionResult>('DELETE', sourcesUrl(id, path)),
 
   // Upload any (non-.vast/.osc) file via the TTL PUT side channel.
   uploadFile: async (id: string, path: string, data: Blob) => {
-    const grant = await request<UploadGrant>(
-      'POST',
-      `/workspaces/${encodeURIComponent(id)}/uploads`,
-      { workspace_id: id, path },
-    )
+    const grant = await request<UploadGrant>('POST', '/uploads', {
+      address: sourcesUrl(id, path),
+    })
     const res = await fetch(`${BASE}${grant.url ?? `/uploads/${grant.token}`}`, {
       method: 'PUT',
       body: data,
@@ -657,14 +691,9 @@ export const robovast = {
       { campaign_id: campaignId },
     ),
 
-  // URL of one run artifact file (fetched directly, e.g. by the scene3d loader). Path-style so a
-  // resource that fetches siblings by *relative* URL (scene.json -> scene.bin) stays in the run dir;
-  // the path's own '/' separators are therefore NOT encoded.
+  // URL of one run artifact file (fetched directly, e.g. by the scene3d loader). The
+  // address is the run's real directory — <config>/<run>/<path> under the campaign —
+  // so a relative sibling fetch (scene.json -> scene.bin) resolves within it.
   runFileUrl: (campaignId: string, configName: string, runId: number | string, path: string) =>
-    `${BASE}/campaigns/${encodeURIComponent(campaignId)}/run-files/${encodeURIComponent(
-      configName,
-    )}/${encodeURIComponent(String(runId))}/${path
-      .split('/')
-      .map(encodeURIComponent)
-      .join('/')}`,
+    `${BASE}${resultsUrl(campaignId, `${configName}/${runId}/${path}`)}`,
 }

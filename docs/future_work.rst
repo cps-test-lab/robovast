@@ -20,9 +20,11 @@ questions are well served: per-run metrics are consolidated into
 a campaign's author-declared charts are exposed as Vega-Lite specs by
 ``list_campaign_plots`` (from ``evaluation.plots`` in the snapshot ``.vast``).
 
-What is **not** reachable is any raster or video output. ``get_run_output_file``
-deliberately refuses binary files, so ``rosbags_to_webm`` recordings and rendered
-PNG plots cannot travel to the model. ``list_campaign_plots`` + SQL covers
+What is **not** reachable is any raster or video output. ``read_file`` deliberately
+refuses binary content (it would be mangled, not read), so ``rosbags_to_webm``
+recordings and rendered PNG plots cannot travel to the model — the bytes *are*
+addressable over HTTP and with ``vast files get``, but nothing turns them into MCP
+image content. ``list_campaign_plots`` + SQL covers
 *charts* (declarative specs the client renders), not *pixels*: a trajectory
 overlay, a costmap, or a landing-scatter image cannot be seen. For a
 robotics-simulation tool this is the main remaining analysis gap — 5000 rows of
@@ -71,10 +73,16 @@ Landed already: ``workspace_id`` is the service's only project binding (the
 ``.robovast_project`` fallback silently ignored ``config_path`` and ran the wrong
 project); one pinned workspace directory, allowed on the off-cluster cluster lane;
 ``get_campaign_log`` routed through the service so it works on the cluster;
-campaign discovery without a project file; and one shared path-confinement check
-(``robovast.common.safe_path.safe_join``).
+campaign discovery without a project file; one shared path-confinement check
+(``robovast.common.safe_path.safe_join``); and **one address space for files** —
+``/results/<campaign>/<path>`` (read-only) and ``/sources/<workspace>/<path>``
+(writable), replacing the dozen per-scope file tools and the synthetic ``run-files``
+route, with the address templates and (loopback-only) filesystem roots published by
+``get_service_info``. See :ref:`file-address-space`.
 
-Not yet done, roughly in dependency order.
+Not yet done, roughly in dependency order. The numbering is historical — items 4 and 5
+were the file address space above, and are not renumbered so that notes referring to
+"item 7" keep meaning item 7.
 
 **1. Cluster campaign discovery (design settled, not implemented).**
 ``ClusterService`` inherits ``LocalTransport.list_campaigns``, which scans a local
@@ -149,35 +157,43 @@ the local lane does not enforce ``execution.timeout`` at all, so a stalled run t
 hangs indefinitely). Interim guidance lives in the ``campaign-execution`` skill,
 but a check that must be remembered will be forgotten; the status should carry it.
 
-**4. One address space for files, read-only where it must be.** Roughly a dozen MCP
-tools are the same operation — list or read a text file under a campaign-relative
-prefix — reached through per-scope tools, all bottoming out in the same three helpers
-in ``plugin_common``. Collapse them into ``read_file`` / ``list_files`` over the
-service's own URL space, so the string a caller passes *is* the string it can GET:
-``/results/<campaign>/<path>`` for outputs (**read-only**; on the cluster the local
-tree is a cache of immutable objects, so a write there would silently vanish) and
-``/sources/<workspace>/<path>`` for inputs (writable). The prefix becomes the
-permission, dispatched once instead of enforced per tool, and each confines against
-its own root via ``safe_join`` — never the other's. Both are separate top-level
-namespaces because ``/campaigns/{id}/`` and ``/workspaces/{id}/`` are control
-namespaces whose literal routes (``status``, ``logs``, ``query``, ``validate`` …)
-would shadow user-chosen config and file names. Two details worth keeping: the path
-after the namespace must be the **real** on-disk relative path (today's
-``run-files/{config}/{run}/{path}`` is a synthetic segment matching no directory,
-and "run files" separately means the ``.vast`` ``run_files:`` inputs — two opposite
-meanings), and ``list_files`` must be **non-recursive by default** with ``total``
-reported, or a campaign with thousands of runs returns an unusable listing.
-On the cluster, back ``read_file`` with a **single-object** read rather than
-``fetch_campaign``, which pulls the whole campaign prefix — otherwise a 2 KB
-``metadata.yaml`` drags the entire campaign, in the primary deployment.
+**5b. The file address space's remaining substrate costs.** The address space landed
+(see :ref:`file-address-space`); these are the object-store paths it did **not**
+optimize, each measured rather than guessed.
 
-**5. Tell the caller how it can reach files.** Extend ``get_service_info`` with the
-address templates plus a filesystem root for the results and sources trees, non-null
-**only** when the service is local-filesystem *and* on loopback — then a caller on
-the same machine can read files with its own tools instead of relaying content
-through the interface. Never advertise a path the caller cannot open: in particular
-the off-cluster fetch cache (``/tmp/robovast-campaigns``) is on the caller's host and
-looks eligible, but it is ephemeral and holds only already-fetched campaigns.
+* *A cluster text read transfers the whole object.* ``read_object`` returns bytes, so
+  paging 200 lines of a 1 GB ``controller.log`` moves 1 GB and peaks around 3.4× that in
+  the service pod — an OOM in a memory-limited deployment, and repeated per page. Both
+  SDKs stream (botocore's ``StreamingBody.iter_lines`` plus ``close()`` to abort the
+  response; GCS ``blob.open("rt")``), which needs one new ``StorageClient`` method and
+  costs the exact ``total_lines`` on a truncated read.
+* *A recursive cluster listing enumerates every key.* ``list_entries(delimited=False)``
+  runs the paginator to exhaustion — ~20 round trips for a 1000-run campaign to show
+  100 names. Both APIs support pushdown (``MaxItems``/``StartingToken``,
+  ``max_results``/``page_token``), which trades the exact ``total`` for an opaque
+  ``next_token``. The non-recursive case is already delimited and does not have this.
+* *A storage client is built per file request.* On S3 that is ~9 ms of CPU; on GCS the
+  fresh credentials mean a **JWT grant exchange per read** (100–250 ms). Memoizing one
+  client per ``(config, endpoint)`` on the service fixes both, but must not weaken
+  ``_resilient``'s reconnect-on-stalled-port-forward path.
+* *Byte reads are fully buffered.* ``vast files get`` on a 2 GB rosbag holds it in the
+  service's RAM. ``FileResponse`` locally (sendfile, plus free ``Range``/``ETag``) and a
+  streamed body on the cluster remove that; the HTTP client would need ``stream=True``
+  to benefit.
+* *``FileEntry.modified``/``executable`` are null on the object store* even though S3
+  returns ``LastModified`` beside ``Size`` and this codebase already writes the
+  executable bit as object metadata. Widening ``list_entries`` to a small record would
+  fill them in.
+
+**5c. One dispatch point for the file namespaces.** ``ClusterService`` overrides three
+methods that each re-open with the same ``if namespace != RESULTS: return super()``, and
+``MultiBackendService`` mirrors each one. Forgetting that guard fails *silently and
+expensively* — the inherited path still returns the right bytes, having fetched the
+entire campaign to do it. A ``FileSpace`` protocol (``list`` / ``read_text`` /
+``read_bytes`` / ``write`` / ``delete``) with a filesystem and an object-store
+implementation would put the namespace comparison in exactly one place, and would also
+close the seam where ``/sources`` writes go through ``WorkspaceStore`` while its reads
+go around it.
 
 **6. Retire "project" from the service, and re-cut the tool taxonomy.**
 ``ProjectConfig`` is a vestigial adapter inside the service — synthesized per call
@@ -203,11 +219,13 @@ relies on has a ``_TABLE_DESCRIPTIONS`` entry — "use SQL instead" must not mea
 
 **8. Docs that do not exist yet.** There is no page describing the HTTP interface —
 only the runtime OpenAPI at ``/docs``, which nobody reading the documentation sees.
-That matters more once the path *is* the ``read_file`` argument. Add
-``docs/http_api.rst``: narrative for the address space and conventions, plus an
+That matters more now that the path *is* the ``read_file`` argument: the address space
+itself is documented (:ref:`file-address-space`), but the rest of the route table is
+not. Add ``docs/http_api.rst``: narrative for the conventions, plus an
 **autogenerated** route table via a directive modelled on the existing
-``.. mcp-tools::`` (``docs/_ext/mcp_tools.py``) — a hand-maintained endpoint list is
-how ``run-files`` came to look documented while matching no directory.
+``.. mcp-tools::`` (``docs/_ext/mcp_tools.py``). A hand-maintained endpoint list is how
+the retired synthetic run-file route came to look documented while matching no
+directory on disk.
 
 **9. Two smaller defects found alongside the above.**
 

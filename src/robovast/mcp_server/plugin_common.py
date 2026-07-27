@@ -14,7 +14,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared helpers for MCP result-browsing plugins."""
+"""Shared metadata lookups for the MCP result-browsing plugins.
+
+Reading and listing files is **not** here: it is the service's job now, behind one
+address space (:mod:`robovast.common.file_address`), so that the cluster can answer a
+read with a single object fetch instead of a client paging a local copy it does not
+have. What remains are lookups into a campaign's ``metadata.yaml``.
+"""
 
 from pathlib import Path
 from typing import Any
@@ -45,68 +51,6 @@ def read_campaign_metadata(campaign_path: Path) -> dict[str, Any]:
         else:
             _metadata_cache[key] = {}
     return _metadata_cache[key]
-
-
-def _is_binary(path: Path) -> bool:
-    """Return True if *path* looks like a binary file."""
-    try:
-        with open(path, "rb") as f:
-            chunk = f.read(8192)
-        return b"\x00" in chunk
-    except OSError:
-        return True
-
-
-def _read_text_paginated(path: Path, lines: int = 100, offset: int = 0) -> dict:
-    """Read *lines* text lines starting at *offset* from *path*.
-
-    Returns a dict with ``content``, ``total_lines``, ``returned_lines``,
-    ``offset``, and ``file_name``.
-    """
-    if _is_binary(path):
-        return {
-            "file_name": path.name,
-            "error": "Binary file — content cannot be displayed.",
-        }
-    text = path.read_text(encoding="utf-8", errors="replace")
-    all_lines = text.splitlines()
-    total = len(all_lines)
-    selected = all_lines[offset : offset + lines]
-    return {
-        "file_name": path.name,
-        "total_lines": total,
-        "returned_lines": len(selected),
-        "offset": offset,
-        "content": "\n".join(selected),
-    }
-
-
-def _list_files_relative(directory: Path) -> list[str]:
-    """Return sorted list of file paths relative to *directory*."""
-    if not directory.is_dir():
-        return []
-    return sorted(str(f.relative_to(directory)) for f in directory.rglob("*") if f.is_file())
-
-
-def _iter_all_configs(
-    campaign_id: str | None = None,
-):
-    """Yield ``(campaign_id_str, config_entry)`` tuples across campaigns.
-
-    When *campaign_id* is given only that campaign is searched; otherwise
-    every campaign in the results directory is visited.
-    """
-    if campaign_id is not None:
-        campaign_path = results_resolver.resolve_campaign_path(campaign_id)
-        data = read_campaign_metadata(campaign_path)
-        for c in data.get("configurations", []):
-            yield campaign_id, c
-    else:
-        for d in results_resolver.list_campaigns():
-            cid = d.name
-            data = read_campaign_metadata(d)
-            for c in data.get("configurations", []):
-                yield cid, c
 
 
 def _get_config_by_identifier_or_name(

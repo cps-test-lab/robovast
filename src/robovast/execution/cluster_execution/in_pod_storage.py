@@ -170,14 +170,34 @@ class StorageClient:
         """
         raise NotImplementedError
 
+    def list_entries(self, bucket: str, prefix: str = "",
+                     delimited: bool = False) -> "tuple[list[tuple[str, int]], list[str]]":
+        """Return ``(objects, sub_prefixes)`` under *prefix*.
+
+        ``objects`` is ``(key, size)`` pairs; ``sub_prefixes`` is empty unless
+        *delimited*, in which case the store rolls everything below the next ``/`` into
+        one entry and returns the immediate children only.
+
+        The delimiter is not an optimization — it is what makes a **non-recursive**
+        listing non-recursive at the store as well as in the API. Enumerating a
+        campaign's every key to display four directory names would make
+        ``list_files(recursive=False)`` true for the caller and false for the object
+        store, in the deployment where campaigns are largest.
+
+        Must not raise on a not-yet-created bucket — implementations return empty.
+        """
+        raise NotImplementedError
+
     def list_keys(self, bucket: str, prefix: str = "") -> list[str]:
         """Return object keys under *prefix* (no trailing-slash pseudo-dirs).
 
         Used by the controller to count completed per-run artifacts in the live
         batch prefix (run-level progress), so it must not raise on a
-        not-yet-created bucket — implementations return ``[]`` in that case.
+        not-yet-created bucket — returns ``[]`` in that case. A thin view of
+        :meth:`list_entries` so there is one enumeration path.
         """
-        raise NotImplementedError
+        objects, _ = self.list_entries(bucket, prefix)
+        return [key for key, _ in objects]
 
     def delete_prefix(self, bucket: str, prefix: str) -> int:
         """Delete every object under *prefix*; return how many were removed.
@@ -370,25 +390,29 @@ class _S3StorageClient(StorageClient):
                 raise
         return self._resilient(op)
 
-    def list_keys(self, bucket: str, prefix: str = "") -> list[str]:
+    def list_entries(self, bucket: str, prefix: str = "", delimited: bool = False):
         from botocore.exceptions import ClientError  # pylint: disable=import-outside-toplevel
         clean = prefix.rstrip("/")
         key_prefix = f"{clean}/" if clean else ""
+        extra = {"Delimiter": "/"} if delimited else {}
 
         def op():
             paginator = self._s3.get_paginator("list_objects_v2")
-            keys = []
+            objects: list[tuple[str, int]] = []
+            sub_prefixes: list[str] = []
             try:
-                for page in paginator.paginate(Bucket=bucket, Prefix=key_prefix):
+                for page in paginator.paginate(Bucket=bucket, Prefix=key_prefix, **extra):
                     for obj in page.get("Contents", []) or []:
                         if not obj["Key"].endswith("/"):
-                            keys.append(obj["Key"])
+                            objects.append((obj["Key"], int(obj.get("Size", 0))))
+                    for common in page.get("CommonPrefixes", []) or []:
+                        sub_prefixes.append(common["Prefix"])
             except ClientError as exc:
                 code = exc.response.get("Error", {}).get("Code", "")
                 if code in ("404", "NoSuchBucket"):
-                    return []
+                    return [], []
                 raise
-            return keys
+            return objects, sub_prefixes
         return self._resilient(op)
 
     def delete_prefix(self, bucket: str, prefix: str) -> int:
@@ -481,16 +505,20 @@ class _GcsStorageClient(StorageClient):
         except NotFound:
             return None
 
-    def list_keys(self, bucket: str, prefix: str = "") -> list[str]:
+    def list_entries(self, bucket: str, prefix: str = "", delimited: bool = False):
         from google.cloud.exceptions import NotFound  # pylint: disable=import-outside-toplevel
         gbucket = self._client.bucket(bucket)
         prefix = prefix.rstrip("/")
         key_prefix = f"{prefix}/" if prefix else ""
         try:
-            return [b.name for b in self._client.list_blobs(gbucket, prefix=key_prefix)
-                    if not b.name.endswith("/")]
+            blobs = self._client.list_blobs(gbucket, prefix=key_prefix,
+                                            delimiter="/" if delimited else None)
+            objects = [(b.name, int(b.size or 0)) for b in blobs
+                       if not b.name.endswith("/")]
+            # ``prefixes`` is only populated once the iterator has been consumed.
+            return objects, sorted(blobs.prefixes) if delimited else []
         except NotFound:
-            return []
+            return [], []
 
     def delete_prefix(self, bucket: str, prefix: str) -> int:
         from google.cloud.exceptions import NotFound  # pylint: disable=import-outside-toplevel

@@ -14,19 +14,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""MCP plugin for browsing configuration-level results.
+"""MCP plugin for configuration-level metadata.
 
-Provides tools for inspecting individual configurations, their run files,
-and transient output files.
+Answers what a configuration *is*: its summary, the scenario parameters it resolved to,
+and the variation steps that produced it. Its files are read through the address space
+(``/results/<campaign_id>/<config_name>/…``), not from here.
 """
 
 import logging
 
 from fastmcp import FastMCP
 
-from robovast.mcp_server import results_resolver
-
-from ..plugin_common import _read_text_paginated, _get_config_by_identifier_or_name
+from ..plugin_common import _get_config_by_identifier_or_name
 
 logger = logging.getLogger(__name__)
 
@@ -81,58 +80,6 @@ def get_configuration_summary(campaign_id: str, configuration_id: str) -> dict:
     }
 
 
-def list_configuration_transient_files(
-    campaign_id: str, configuration_id: str,
-) -> list[str]:
-    """List transient files of a configuration.
-
-    Transient files are created during configuration variatio.
-    (e.g. ``"json-ld/coordinate.json"``).
-
-    Args:
-        campaign_id: Campaign name.
-        configuration_id: Configuration name or identifier.
-    """
-    config_entry = _get_config_by_identifier_or_name(campaign_id, configuration_id)
-    if config_entry is None:
-        return []
-    config_name = config_entry.get("name", configuration_id)
-    prefix = f"{config_name}/_transient/"
-    return [
-        f[len(prefix):] if f.startswith(prefix) else f
-        for f in config_entry.get("transient_files", [])
-    ]
-
-
-def get_configuration_transient_file(
-    campaign_id: str,
-    configuration_id: str,
-    file_name: str,
-    lines: int = 100,
-    offset: int = 0,
-) -> dict:
-    """Read a single configuration transient file.
-
-    Returns paginated text content. Binary files are not returned.
-
-    Args:
-        campaign_id: Campaign name.
-        configuration_id: Configuration name or identifier.
-        file_name: path to transient file (e.g. ``"json-ld/coordinate.json"``).
-        lines: Maximum number of lines to return (default 100).
-        offset: Line offset to start reading from (default 0).
-    """
-    config_entry = _get_config_by_identifier_or_name(campaign_id, configuration_id)
-    if config_entry is None:
-        return {"error": f"Configuration not found: {configuration_id}"}
-    config_name = config_entry.get("name", configuration_id)
-    campaign_path = results_resolver.resolve_campaign_path(campaign_id)
-    path = campaign_path / config_name / "_transient" / file_name
-    if not path.exists():
-        return {"error": f"File not found: {file_name}"}
-    return _read_text_paginated(path, lines, offset)
-
-
 def get_configuration_scenario_parameter(
     campaign_id: str,
     configuration_id: str,
@@ -148,30 +95,6 @@ def get_configuration_scenario_parameter(
         return {"error": f"Configuration not found: {configuration_id}"}
     config = config_entry.get("config", {}) or {}
     return config
-
-
-def list_configuration_config_files(
-    campaign_id: str, configuration_id: str,
-) -> list[str]:
-    """List config files specific to a configuration.
-
-    These files define the execution for runs within this
-    configuration and were created during configuration
-    variation.
-
-    Args:
-        campaign_id: Campaign name.
-        configuration_id: Configuration name or identifier.
-    """
-    config_entry = _get_config_by_identifier_or_name(campaign_id, configuration_id)
-    if config_entry is None:
-        return []
-    config_name = config_entry.get("name", configuration_id)
-    prefix = f"{config_name}/_config/"
-    return [
-        f[len(prefix):] if f.startswith(prefix) else f
-        for f in config_entry.get("config_files", [])
-    ]
 
 
 def get_configuration_variations(campaign_id: str, configuration_id: str) -> list[dict]:
@@ -193,13 +116,14 @@ def get_configuration_variations(campaign_id: str, configuration_id: str) -> lis
 
 # -- Plugin class ------------------------------------------------------------
 
+# A configuration's files live at ``/results/<campaign_id>/<config_name>/`` — its
+# ``_config/`` and ``_transient/`` are read with the generic file tools. Note the
+# listings there are of the **directory**, where the old tools read a ``metadata.yaml``
+# list written by postprocessing: the address space answers before that exists.
 _TOOLS = [
     get_configuration_summary,
     get_configuration_scenario_parameter,
     get_configuration_variations,
-    list_configuration_transient_files,
-    get_configuration_transient_file,
-    list_configuration_config_files,
 ]
 
 

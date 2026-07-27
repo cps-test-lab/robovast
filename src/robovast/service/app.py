@@ -32,16 +32,18 @@ lazily so importing this module stays cheap.
 """
 
 import logging
+from typing import Literal
 
+from robovast.common import file_address
 from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         CampaignRef,
                                         CreateCampaignRequest,
                                         CleanupDataRequest,
                                         CreateUploadRequest,
                                         CreateWorkspaceRequest, EditFileRequest,
-                                        FileContent, FileMeta,
+                                        FileMeta,
                                         ImageBuildRef, ImageBuildStatus,
-                                        ListCampaignsResponse, ListFilesResponse,
+                                        ListCampaignsResponse,
                                         ListJobsResponse,
                                         ListWorkspacesResponse, LogChunk,
                                         PreviewResponse,
@@ -72,7 +74,7 @@ def build_app(impl: RobovastInterface):
 
     import anyio  # pylint: disable=import-outside-toplevel
     from fastapi import (Body, FastAPI,  # pylint: disable=import-outside-toplevel
-                         HTTPException, Request)
+                         HTTPException, Query, Request)
 
     @asynccontextmanager
     async def _lifespan(_app):
@@ -107,7 +109,10 @@ def build_app(impl: RobovastInterface):
         except ValueError as e:            # bad input / not-initialized
             raise HTTPException(status_code=400, detail=str(e)) from e
         except KeyError as e:              # unknown id
-            raise HTTPException(status_code=404, detail=str(e)) from e
+            # ``str(KeyError("x"))`` is ``"'x'"``; take the message itself so the
+            # detail is not delivered wrapped in stray quotes.
+            detail = e.args[0] if e.args else str(e)
+            raise HTTPException(status_code=404, detail=str(detail)) from e
         except RuntimeError as e:          # conflict (e.g. single-flight)
             raise HTTPException(status_code=409, detail=str(e)) from e
 
@@ -206,9 +211,23 @@ def build_app(impl: RobovastInterface):
     def healthz() -> dict:
         return {"ok": True}
 
+    #: Client hosts allowed to learn the service's filesystem roots. Real loopback
+    #: addresses only — a harness name here would make the guard unverifiable by
+    #: reading it, which is the one thing a security-relevant check must not be.
+    _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
+
     @app.get(Routes.VERSION, response_model=VersionInfo)
-    def version() -> VersionInfo:
-        return _guard(impl.version)
+    def version(request: Request) -> VersionInfo:
+        info = _guard(impl.version)
+        # The roots are only useful to a caller on this machine, and only true for one:
+        # over a tunnel or a port-forward the same path names the *server's* disk, which
+        # the client cannot open. Advertising it there would be a path that looks
+        # actionable and is not — so the address space is the only route it gets.
+        host = request.client.host if request.client else ""
+        if host not in _LOOPBACK:
+            info.results_root = None
+            info.sources_root = None
+        return info
 
     @app.get(Routes.USAGE, response_model=ResourceUsage)
     def resource_usage(backend: str | None = None) -> ResourceUsage:
@@ -275,28 +294,6 @@ def build_app(impl: RobovastInterface):
     def delete_workspace(workspace_id: str) -> ActionResult:
         return _guard(lambda: impl.delete_workspace(workspace_id))
 
-    # -- workspace files ----------------------------------------------------
-
-    @app.get("/workspaces/{workspace_id}/files", response_model=ListFilesResponse)
-    def list_project_files(workspace_id: str) -> ListFilesResponse:
-        return _guard(lambda: impl.list_project_files(workspace_id))
-
-    @app.post("/workspaces/{workspace_id}/file", response_model=FileMeta)
-    def write_project_file(workspace_id: str, request: WriteFileRequest) -> FileMeta:
-        return _guard(lambda: impl.write_project_file(request))
-
-    @app.get("/workspaces/{workspace_id}/file", response_model=FileContent)
-    def read_project_file(workspace_id: str, path: str) -> FileContent:
-        return _guard(lambda: impl.read_project_file(workspace_id, path))
-
-    @app.delete("/workspaces/{workspace_id}/file", response_model=ActionResult)
-    def delete_project_file(workspace_id: str, path: str) -> ActionResult:
-        return _guard(lambda: impl.delete_project_file(workspace_id, path))
-
-    @app.post("/workspaces/{workspace_id}/edit", response_model=FileMeta)
-    def edit_project_file(workspace_id: str, request: EditFileRequest) -> FileMeta:
-        return _guard(lambda: impl.edit_project_file(request))
-
     # -- validation / preview (config editor) -------------------------------
 
     @app.post("/workspaces/{workspace_id}/validate", response_model=ValidationReport)
@@ -314,8 +311,14 @@ def build_app(impl: RobovastInterface):
 
     # -- file side channel: grant + raw PUT ---------------------------------
 
-    @app.post("/workspaces/{workspace_id}/uploads", response_model=UploadGrant)
-    def create_upload(workspace_id: str, request: CreateUploadRequest) -> UploadGrant:
+    @app.post(Routes.UPLOADS, response_model=UploadGrant)
+    def create_upload(request: CreateUploadRequest) -> UploadGrant:
+        """Grant a one-time PUT for a ``/sources`` address.
+
+        Not under ``/workspaces/{id}/``: the request already names the workspace in its
+        address, and a path segment that had to agree with it would be an argument the
+        handler either ignores (it did) or has to re-check.
+        """
         grant = _guard(lambda: impl.create_upload(request))
         grant.url = f"{Routes.upload(grant.token)}"
         return grant
@@ -329,11 +332,110 @@ def build_app(impl: RobovastInterface):
         binaries never pass through an LLM's context.
         """
         body = await req.body()
-        store = getattr(impl, "store", None)
-        if store is None:
+        redeem = getattr(impl, "redeem_upload", None)
+        if redeem is None:
             raise HTTPException(status_code=501,
                                 detail="this service has no workspace store")
-        return _guard(lambda: FileMeta.model_validate(store.write_upload(token, body)))
+        return _guard(lambda: redeem(token, body))
+
+    # -- files: one address space -------------------------------------------
+    #
+    # ``/results/<campaign>/<path>`` and ``/sources/<workspace>/<path>``: the address a
+    # caller passes to ``read_file`` is literally the URL that serves it (see
+    # :mod:`robovast.common.file_address`). Content lives in its own namespaces rather
+    # than under ``/campaigns/{id}/`` or ``/workspaces/{id}/`` because those are control
+    # namespaces whose literal segments would shadow user-chosen file names.
+    #
+    # ``/results`` is read-only by *registration*: no PUT/POST/DELETE route exists under
+    # it, so a write is a 405 from the router rather than a check each handler must
+    # remember. The permission is the prefix, dispatched once.
+    #
+    # A trailing slash means "directory" — ``/results/<c>/nav/`` lists, ``/results/<c>/nav``
+    # reads — and a listing suffixes its directory entries the same way, so the shape a
+    # caller sees in a response is the shape it sends back. A bare owner
+    # (``/results/<c>``) is registered separately and always lists: it can only be a
+    # directory, and 404-ing the most obvious URL in the address space would be a poor
+    # way to teach it.
+
+    def _serve_address(address: str, as_: str, lines: int, offset: int,
+                       recursive: bool, detail: bool, limit: int):
+        if file_address.is_directory(address):
+            if as_:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{address!r} is a directory; 'as' selects a "
+                           "representation of a file")
+            return _guard(lambda: impl.list_files(address, recursive, detail,
+                                                  offset, limit))
+        if as_ == "text":
+            return _guard(lambda: impl.read_file(address, lines, offset))
+        import mimetypes  # pylint: disable=import-outside-toplevel
+
+        from fastapi.responses import \
+            Response  # pylint: disable=import-outside-toplevel
+        data = _guard(lambda: impl.read_file_bytes(address))
+        media_type = mimetypes.guess_type(address)[0] or "application/octet-stream"
+        return Response(content=data, media_type=media_type)
+
+    @app.get(Routes.RESULTS + "/{campaign_id}/{path:path}")
+    def get_results_file(campaign_id: str, path: str,
+                         as_: Literal["", "text"] = Query("", alias="as"), lines: int = 200,
+                         offset: int = 0, recursive: bool = False,
+                         detail: bool = False, limit: int = 100):
+        """A campaign's outputs: one file's bytes, its text page, or a directory listing."""
+        return _serve_address(file_address.format_address(
+            file_address.RESULTS, campaign_id, path), as_, lines,
+                              offset, recursive, detail, limit)
+
+    @app.get(Routes.SOURCES + "/{workspace_id}/{path:path}")
+    def get_sources_file(workspace_id: str, path: str,
+                         as_: Literal["", "text"] = Query("", alias="as"), lines: int = 200,
+                         offset: int = 0, recursive: bool = False,
+                         detail: bool = False, limit: int = 100):
+        """A workspace's authored inputs — same representations as ``/results``."""
+        return _serve_address(file_address.format_address(
+            file_address.SOURCES, workspace_id, path), as_, lines,
+                              offset, recursive, detail, limit)
+
+    @app.get(Routes.RESULTS + "/{campaign_id}")
+    def list_results_root(campaign_id: str, recursive: bool = False,
+                          detail: bool = False, offset: int = 0, limit: int = 100):
+        """A campaign root, with or without the trailing slash — always a listing."""
+        return _guard(lambda: impl.list_files(
+            file_address.format_address(file_address.RESULTS, campaign_id),
+            recursive, detail, offset, limit))
+
+    @app.get(Routes.SOURCES + "/{workspace_id}")
+    def list_sources_root(workspace_id: str, recursive: bool = False,
+                          detail: bool = False, offset: int = 0, limit: int = 100):
+        """A workspace root, with or without the trailing slash — always a listing."""
+        return _guard(lambda: impl.list_files(
+            file_address.format_address(file_address.SOURCES, workspace_id),
+            recursive, detail, offset, limit))
+
+    @app.put(Routes.SOURCES + "/{workspace_id}/{path:path}", response_model=FileMeta)
+    def put_sources_file(workspace_id: str, path: str,
+                         content: str = Body("", embed=True)) -> FileMeta:
+        """Write a ``.vast``/``.osc`` file inline (other types → the upload grant)."""
+        return _guard(lambda: impl.write_file(WriteFileRequest(
+            address=file_address.format_address(file_address.SOURCES, workspace_id,
+                                                path),
+            content=content)))
+
+    @app.post(Routes.SOURCES + "/{workspace_id}/{path:path}", response_model=FileMeta)
+    def edit_sources_file(workspace_id: str, path: str,
+                          old_string: str = Body("", embed=True),
+                          new_string: str = Body("", embed=True)) -> FileMeta:
+        """Replace a unique substring — the token-cheap validate→fix loop."""
+        return _guard(lambda: impl.edit_file(EditFileRequest(
+            address=file_address.format_address(file_address.SOURCES, workspace_id,
+                                                path),
+            old_string=old_string, new_string=new_string)))
+
+    @app.delete(Routes.SOURCES + "/{workspace_id}/{path:path}", response_model=ActionResult)
+    def delete_sources_file(workspace_id: str, path: str) -> ActionResult:
+        return _guard(lambda: impl.delete_file(
+            file_address.format_address(file_address.SOURCES, workspace_id, path)))
 
     @app.post(Routes.CAMPAIGNS, response_model=CampaignRef)
     def create_campaign(request: CreateCampaignRequest) -> CampaignRef:
@@ -505,20 +607,6 @@ def build_app(impl: RobovastInterface):
         campaign_id: str, request: UpdatePanelsSourceRequest
     ) -> PanelsSource:
         return _guard(lambda: impl.update_panels_source(request))
-
-    # Path-style (not query params) so browser resources that fetch siblings by
-    # *relative* URL (scene.json -> scene.bin / tex_0.png) resolve within the run dir.
-    @app.get("/campaigns/{campaign_id}/run-files/{config_name}/{run_id}/{path:path}")
-    def get_run_file(campaign_id: str, config_name: str, run_id: int, path: str):
-        """One run artifact file (e.g. the scene3d panel's ``scene/scene.json``)."""
-        import mimetypes  # pylint: disable=import-outside-toplevel
-
-        from fastapi.responses import \
-            Response  # pylint: disable=import-outside-toplevel
-
-        data = _guard(lambda: impl.get_run_file(campaign_id, config_name, run_id, path))
-        media_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
-        return Response(content=data, media_type=media_type)
 
     @app.get("/campaigns/{campaign_id}/visualizations",
              response_model=CampaignVisualizationsResponse)

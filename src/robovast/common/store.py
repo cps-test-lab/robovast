@@ -130,8 +130,17 @@ CREATE TABLE IF NOT EXISTS run (
 CREATE INDEX IF NOT EXISTS idx_run_unit ON run (unit_id);
 """
 
+# 2 -> 3: the campaign's free-text description. ``name`` cannot carry it: it is an id
+# fragment (sanitised, no spaces — see ``campaign_id_for``), whereas this is the
+# launch-time "what is this run for?" a caller passes to ``start_campaign``. Stored
+# beside the campaign it describes, so it survives a service restart and travels with a
+# downloaded results tree instead of living only in the launcher's memory.
+_MIGRATION_ADD_DESCRIPTION = """
+ALTER TABLE campaign ADD COLUMN description TEXT;
+"""
+
 # Current schema version, stored in the database as ``PRAGMA user_version``.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Ordered, append-only migrations: ``_MIGRATIONS[i]`` is the SQL that upgrades a
 # database from ``user_version == i`` to ``user_version == i + 1``. To change the
@@ -144,6 +153,7 @@ _MIGRATIONS = [
     # adopts version 1 without modification.
     _SCHEMA,
     _MIGRATION_ADD_RUN,
+    _MIGRATION_ADD_DESCRIPTION,
 ]
 assert len(_MIGRATIONS) == SCHEMA_VERSION  # one migration per version step
 
@@ -191,7 +201,8 @@ class CampaignStore:
         self.close()
 
     def create_campaign(self, name: str, config: dict, mode: str = "search",
-                        config_dir: str = "", created_at: Any = _STAMP_NOW) -> int:
+                        config_dir: str = "", created_at: Any = _STAMP_NOW,
+                        description: str = "") -> int:
         """Insert the campaign row. ``created_at`` is the campaign's START time.
 
         Omitting it stamps now, which is correct for the live path: the controller calls
@@ -202,12 +213,16 @@ class CampaignStore:
         service reads this column as the campaign's start (listing order, ``started_at``
         in the UI). Passing ``None`` explicitly records NULL: an unknown start time,
         which is the honest answer when the results tree has no record of it.
+
+        ``description`` is the launcher's free text about *this* run (empty when none
+        was given); it is recorded verbatim and never derived from the config.
         """
         cur = self._conn.execute(
-            "INSERT INTO campaign (name, mode, config_dir, config_json, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO campaign (name, mode, config_dir, config_json, created_at, "
+            "description) VALUES (?, ?, ?, ?, ?, ?)",
             (name, mode, config_dir, json.dumps(config, default=str),
-             time.time() if created_at is _STAMP_NOW else created_at),
+             time.time() if created_at is _STAMP_NOW else created_at,
+             description or None),
         )
         self._conn.commit()
         return cur.lastrowid
@@ -390,6 +405,26 @@ def read_campaign_created_at(campaign_dir: str | Path) -> Optional[str]:
     if not row or row[0] is None:
         return None
     return datetime.fromtimestamp(row[0], tz=timezone.utc).isoformat()
+
+
+def read_campaign_description(campaign_dir: str | Path) -> Optional[str]:
+    """Best-effort read of the campaign's free-text description from ``campaign.db``.
+
+    Opened **read-only**, like the other readers here, so listing never migrates or
+    locks a store a running campaign is still writing — which also means a store
+    written before the ``description`` column existed (schema < 3) is *not* migrated
+    on read: the ``sqlite3.Error`` for the unknown column is caught and reported as
+    "no description", the same as a campaign launched without one.
+    """
+    db = Path(campaign_dir) / STORE_FILENAME
+    if not db.is_file():
+        return None
+    try:
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+            row = conn.execute("SELECT description FROM campaign LIMIT 1").fetchone()
+    except sqlite3.Error:
+        return None
+    return row[0] if row and row[0] else None
 
 
 def read_run_counts(campaign_dir: str | Path) -> Optional[dict[str, int]]:

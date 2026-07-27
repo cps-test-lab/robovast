@@ -491,8 +491,10 @@ simulated world — produced by the simulation as an ordinary run artifact. For 
 
 Any other simulator works the same way by emitting the same descriptor format (defined by
 rst's ``rst/export_web.py``; ``rst-export-web --world ... --out ...``
-produces one offline). The browser fetches the descriptor through the campaign
-``run-files`` endpoint, which serves any per-run artifact file by its run-relative path.
+produces one offline). The browser fetches the descriptor from the file address space —
+``GET /results/<campaign>/<config>/<run>/<path>`` serves any per-run artifact by its real
+path inside the run directory, so the loader's *relative* sibling fetches (``scene.bin``,
+textures) resolve alongside it.
 
 .. _costmap-delivery:
 
