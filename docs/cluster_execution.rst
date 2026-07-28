@@ -104,9 +104,10 @@ Available cluster configs (``--list``):
 
    vast execution cluster setup --list
 
-Setup acts on the *cluster*, not on a project: it needs no ``vast init`` /
-``.robovast_project`` and runs from any directory. Its one optional input from a
-``.vast`` is the node labels (:ref:`below <cluster-node-labels>`).
+Setup acts on the *cluster*, not on a project: it neither needs nor reads a ``vast
+init`` / ``.robovast_project``, and runs from any directory. Its one optional input
+from a ``.vast`` is the node labels, taken only from a config you name explicitly
+(:ref:`below <cluster-node-labels>`).
 
 The setup command:
 
@@ -123,23 +124,22 @@ Pinning pods to a node pool
 
 Node selectors for the job pods and the control pod come from
 ``execution.kubernetes.jobs.node_labels`` / ``execution.kubernetes.control.node_labels``
-(see :doc:`configuration`) and are baked into the cluster at setup. Because setup is
-project-free, name the ``.vast`` explicitly:
+(see :doc:`configuration`) and are baked into the cluster at setup. Name that ``.vast``
+explicitly — it is the only config setup will read:
 
 .. code-block:: bash
 
    vast -V my_campaign.vast execution cluster setup rke2
 
-A project's ``.vast`` is used when the command happens to run inside a project — note
-that a ``.robovast_project`` is searched for by walking *up* to the filesystem root, so
-one several directories above the CWD still applies. With neither, no node selectors are
-deployed (logged at INFO) and pods schedule wherever Kubernetes puts them.
+Without ``-V`` no node selectors are deployed (logged at INFO) and pods schedule
+wherever Kubernetes puts them. A project's ``.vast`` is deliberately *not* consulted: a
+``.robovast_project`` is found by walking up to the filesystem root, so one several
+directories above the CWD would otherwise pin a cluster's pods — or, if it names a
+``.vast`` that has since moved, fail the deploy over a file nobody mentioned.
 
-A ``.vast`` that exists but cannot be read is an error rather than a silent "no
-labels" — a config that fails to load cannot be asked whether labels were intended. A
-project pointing at a ``.vast`` that no longer exists is instead treated as the
-no-config case (logged at WARNING, naming the stale project file): nothing was named
-for this setup to read, so a stale record does not block deploying a cluster.
+A named ``.vast`` that cannot be read is an error rather than a silent "no labels" — a
+config that fails to load cannot be asked whether labels were intended, and guessing
+"none" would scatter job and control pods across arbitrary nodes.
 
 To tear everything down after use:
 

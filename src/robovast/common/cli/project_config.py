@@ -18,11 +18,14 @@
 """Project configuration management for VAST CLI."""
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Optional
 
 import click
+
+logger = logging.getLogger(__name__)
 
 PROJECT_FILE = ".robovast_project"
 
@@ -196,19 +199,35 @@ def get_vast_file_override() -> Optional[str]:
 
 
 def resolve_vast_file() -> Optional[str]:
-    """The ``.vast`` config path to use, or ``None`` if nothing names one.
+    """The ``.vast`` config path to use, or ``None`` if nothing usable names one.
 
-    For commands that must work **without** a project: ``--vast-file`` wins, a
-    ``.robovast_project`` is honoured when the command happens to run inside one, and
-    ``None`` means the command has to do without a config rather than fail. Use
-    :func:`get_project_config` instead wherever a config is genuinely required — it
-    raises with the ``vast init`` hint.
+    For commands where a config is a *convenience* rather than a requirement:
+    ``--vast-file`` wins, a ``.robovast_project`` is honoured when the command happens
+    to run inside one, and ``None`` means carry on without a config rather than fail.
+
+    A project's path is returned only if the file is actually there. :meth:`load` never
+    checks — the record can outlive the ``.vast`` it names (moved, renamed, deleted) —
+    and since the project is found by walking up to the filesystem root, that ghost
+    path could come from a directory the caller knows nothing about. Warn and return
+    ``None`` rather than hand a caller a path that does not exist.
+
+    Not for cluster-wide commands: an ambient project must not influence them at all,
+    so they use :func:`get_vast_file_override` directly. Use :func:`get_project_config`
+    wherever a config is genuinely required — it raises with the ``vast init`` hint.
     """
     override = get_vast_file_override()
     if override:
         return override
     config = ProjectConfig.load()
-    return config.config_path if config is not None else None
+    if config is None or not config.config_path:
+        return None
+    if not os.path.isfile(config.config_path):
+        logger.warning(
+            "The .vast named by '%s' does not exist: '%s'. Ignoring that project — "
+            "re-run 'vast init <config>' to fix it, or pass 'vast -V <file>'.",
+            ProjectConfig.find_project_file(), config.config_path)
+        return None
+    return config.config_path
 
 
 def get_project_config() -> ProjectConfig:

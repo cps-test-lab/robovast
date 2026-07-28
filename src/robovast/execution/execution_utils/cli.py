@@ -29,6 +29,7 @@ import yaml
 
 from robovast.common import prepare_campaign_configs
 from robovast.common.cli import get_project_config, handle_cli_exception
+from robovast.common.cli.project_config import get_vast_file_override
 from robovast.common.cli.service_target import echo_target as _echo_target
 from robovast.common.cli.service_target import (detected_service_url,
                                                 service_client, target_options)
@@ -996,15 +997,21 @@ def setup(list_configs, namespace, options, force, kube_context, cluster_config)
 
     Cluster-specific options can be passed using ``--option key=value``.
 
-    Needs no project: this deploys into a cluster and runs from any directory, so
-    there is nothing for ``vast init`` / ``.robovast_project`` to bind here.
+    Ignores projects entirely: this deploys into a cluster and runs from any
+    directory, so a ``.robovast_project`` is neither required nor read here — it is
+    found by walking up to the filesystem root, and a project above an unrelated CWD
+    has no business deciding where a cluster's pods may run.
 
-    Node label selectors for job and control pods are read from a ``.vast`` config
-    under ``execution.kubernetes.jobs.node_labels`` and
-    ``execution.kubernetes.control.node_labels``. Name that file with the global
-    ``vast -V <file> exec cluster setup …``; a project's ``.vast`` is used when the
-    command happens to run inside a project. With neither, no node labels are
-    applied (logged at INFO) and pods schedule wherever Kubernetes puts them.
+    Node label selectors for job and control pods are therefore read only from a
+    ``.vast`` you name explicitly, under
+    ``execution.kubernetes.jobs.node_labels`` and
+    ``execution.kubernetes.control.node_labels``::
+
+        vast -V my_campaign.vast exec cluster setup rke2
+
+    Without ``-V`` no node labels are applied (logged at INFO) and pods schedule
+    wherever Kubernetes puts them. A named ``.vast`` that cannot be read is an error
+    rather than a silent "no labels".
 
     Share credentials (``ROBOVAST_SHARE_TYPE`` and its provider variables — e.g.
     ``ROBOVAST_GCS_BUCKET`` / ``ROBOVAST_GCS_KEY_FILE``) are read from the host
@@ -1024,7 +1031,8 @@ def setup(list_configs, namespace, options, force, kube_context, cluster_config)
         sys.exit(1)
 
     try:
-        require_context_for_multi_cluster(kube_context)
+        # Only an explicitly named config, never an ambient project — see setup_server.
+        require_context_for_multi_cluster(kube_context, get_vast_file_override())
     except ValueError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -1108,7 +1116,7 @@ def run_cleanup(campaign, data, force, cluster, namespace, context):
     Usage: vast execution cluster run-cleanup --campaign campaign-2025-02-27-123456 --data
     """
     try:
-        require_context_for_multi_cluster(context)
+        require_context_for_multi_cluster(context, get_vast_file_override())
         k8s_client = get_kubernetes_client(context=context)
         click.echo("Checking Kubernetes cluster access...")
         k8s_ok, k8s_msg = check_kubernetes_access(k8s_client, namespace=namespace)
@@ -1189,7 +1197,7 @@ def cleanup(config_name, namespace, options, kube_context):
     setup was done in a non-default namespace.
     """
     try:
-        require_context_for_multi_cluster(kube_context)
+        require_context_for_multi_cluster(kube_context, get_vast_file_override())
         cluster_kwargs = {}
         if namespace is not None:
             cluster_kwargs["namespace"] = namespace
@@ -1248,11 +1256,13 @@ def prepare_run(output, config, runs, cluster_config, options, log_tree, kube_co
     Requires project initialization with ``vast init`` first.
     """
     try:
-        require_context_for_multi_cluster(kube_context)
         context_key = kube_context
-        # Get project configuration
+        # Get project configuration. This command runs a *campaign*, so the config it
+        # is about to prepare is also the one whose per-cluster resource lists decide
+        # whether --context is required — resolved before that check, not by it.
         project_config = get_project_config()
         config_path = project_config.config_path
+        require_context_for_multi_cluster(kube_context, config_path)
 
         # Create output directory
         os.makedirs(output, exist_ok=True)

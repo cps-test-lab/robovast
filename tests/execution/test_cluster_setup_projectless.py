@@ -1,20 +1,25 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""``cluster setup`` reads node labels without requiring a project.
+"""``cluster setup`` takes its node labels only from an explicitly named ``.vast``.
 
 Setup deploys into a cluster and runs from any directory, so a ``.robovast_project``
-must not be a precondition — while a ``.vast`` that *is* named (``-V``, or the project's
-when run inside one) must still be honoured, and an unreadable one must fail loudly
-rather than deploy the cluster with no node selectors.
+must neither be a precondition nor an input: it is found by walking *up* to the
+filesystem root, so a project one directory — or ten — above an unrelated CWD would
+otherwise decide which nodes a cluster's pods may run on. Only ``vast -V <file>``
+names the config; a named config that cannot be read still fails loudly.
 """
 
 import json
+from unittest import mock
 
-import click
 import pytest
 
-from robovast.execution.cluster_execution.cluster_setup import \
-    get_kubernetes_node_labels_from_config
+from robovast.execution.cluster_execution import cluster_setup
+from robovast.execution.cluster_execution.cluster_setup import (
+    get_kubernetes_node_labels_from_config, setup_server)
+
+_JOBS = {'node-pool': 'primary'}
+_CONTROL = {'node-pool': 'extra'}
 
 _VAST = """version: 1
 execution:
@@ -30,70 +35,98 @@ execution:
 """
 
 
-def _write_vast(path):
-    path.write_text(_VAST, encoding="utf-8")
-    return path
+@pytest.fixture(name="deploy_stubs")
+def _deploy_stubs(monkeypatch):
+    """Stub out everything ``setup_server`` touches outside label resolution.
 
-
-def _with_vast_file_override(path):
-    """Call the reader inside a Click context carrying ``--vast-file`` = *path*."""
-    result = {}
-
-    @click.command()
-    @click.pass_context
-    def _cmd(ctx):
-        ctx.ensure_object(dict)
-        ctx.obj['vast_file'] = str(path)
-        result['labels'] = get_kubernetes_node_labels_from_config()
-
-    _cmd.main([], standalone_mode=False)
-    return result['labels']
-
-
-def test_no_project_and_no_vast_file_yields_no_labels(tmp_path, monkeypatch):
-    """Project-free setup is legal: no config found means no node selectors."""
-    monkeypatch.chdir(tmp_path)
-    assert get_kubernetes_node_labels_from_config() == (None, None)
-
-
-def test_vast_file_override_supplies_labels(tmp_path, monkeypatch):
-    """``vast -V <file>`` is the project-free way to name the labels' source."""
-    monkeypatch.chdir(tmp_path)
-    vast = _write_vast(tmp_path / "campaign.vast")
-    assert _with_vast_file_override(vast) == ({'node-pool': 'primary'},
-                                             {'node-pool': 'extra'})
-
-
-def test_project_config_still_supplies_labels(tmp_path, monkeypatch):
-    """Run inside a project and its ``.vast`` is used, as before."""
-    _write_vast(tmp_path / "campaign.vast")
-    (tmp_path / ".robovast_project").write_text(json.dumps(
-        {"config": "campaign.vast", "results_dir": "results"}), encoding="utf-8")
-    monkeypatch.chdir(tmp_path)
-    assert get_kubernetes_node_labels_from_config() == ({'node-pool': 'primary'},
-                                                        {'node-pool': 'extra'})
-
-
-def test_unreadable_named_config_raises(tmp_path, monkeypatch):
-    """A named config that cannot be read must abort setup, not mean "no labels"."""
-    monkeypatch.chdir(tmp_path)
-    with pytest.raises(ValueError, match="could not read node labels"):
-        get_kubernetes_node_labels_from_config(str(tmp_path / "missing.vast"))
-
-
-def test_stale_project_pointer_does_not_block_setup(tmp_path, monkeypatch, caplog):
-    """A project naming a .vast that no longer exists is the no-config case.
-
-    ``.robovast_project`` is found by walking up to the root and is never checked
-    against the file it names, so a moved or deleted ``.vast`` — possibly from a
-    project far above the CWD — must not refuse to set up a cluster.
+    Returns the ``apply_kueue_queues`` and ``setup_cluster`` mocks, which is where the
+    resolved job / control labels land.
     """
-    (tmp_path / ".robovast_project").write_text(json.dumps(
-        {"config": "gone.vast", "results_dir": "results"}), encoding="utf-8")
-    deep = tmp_path / "a" / "b"
+    from robovast.execution.cluster_execution import service_deploy
+
+    monkeypatch.setattr(service_deploy, "read_service_config_from_cluster",
+                        lambda *a, **k: (None, None))
+    monkeypatch.setattr(service_deploy, "deploy_service", mock.Mock())
+    for name in ("install_kueue_helm", "verify_kueue_admission_ready",
+                 "apply_controller_rbac"):
+        monkeypatch.setattr(cluster_setup, name, mock.Mock())
+    queues = mock.Mock()
+    monkeypatch.setattr(cluster_setup, "apply_kueue_queues", queues)
+    config = mock.Mock()
+    monkeypatch.setattr(cluster_setup, "get_cluster_config", lambda name: config)
+    return queues, config
+
+
+def _write_project(directory, config_name, write_config=True):
+    """A ``.robovast_project`` in *directory*, optionally with the ``.vast`` it names."""
+    if write_config:
+        (directory / config_name).write_text(_VAST, encoding="utf-8")
+    (directory / ".robovast_project").write_text(json.dumps(
+        {"config": config_name, "results_dir": "results"}), encoding="utf-8")
+
+
+# -- what setup reads --------------------------------------------------------
+
+
+def test_ambient_project_contributes_no_labels(tmp_path, monkeypatch, deploy_stubs):
+    """A project above the CWD must not reach a cluster deploy, even when valid."""
+    queues, config = deploy_stubs
+    _write_project(tmp_path, "campaign.vast")
+    deep = tmp_path / "some" / "other" / "workdir"
     deep.mkdir(parents=True)
     monkeypatch.chdir(deep)
-    with caplog.at_level("WARNING"):
-        assert get_kubernetes_node_labels_from_config() == (None, None)
-    assert "does not exist" in caplog.text
-    assert ".robovast_project" in caplog.text
+
+    setup_server(config_name="rke2", namespace="default")
+
+    assert queues.call_args.kwargs["node_labels"] is None
+    assert config.setup_cluster.call_args.kwargs["control_node_labels"] is None
+
+
+def test_stale_ambient_project_does_not_fail_the_deploy(tmp_path, monkeypatch,
+                                                        deploy_stubs):
+    """The reported failure: a project naming a .vast that no longer exists.
+
+    Not consulted at all now, so a moved/renamed/deleted ``.vast`` cannot abort a
+    deploy that never mentioned it.
+    """
+    queues, _ = deploy_stubs
+    _write_project(tmp_path, "RoboVAST Examples/example.vast", write_config=False)
+    monkeypatch.chdir(tmp_path)
+
+    setup_server(config_name="rke2", namespace="default")
+
+    assert queues.call_args.kwargs["node_labels"] is None
+
+
+def test_named_config_supplies_labels(tmp_path, monkeypatch, deploy_stubs):
+    """``vast -V <file>`` is the one way node labels reach the deploy."""
+    queues, config = deploy_stubs
+    vast = tmp_path / "campaign.vast"
+    vast.write_text(_VAST, encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cluster_setup, "get_vast_file_override", lambda: str(vast))
+
+    setup_server(config_name="rke2", namespace="default")
+
+    assert queues.call_args.kwargs["node_labels"] == _JOBS
+    assert config.setup_cluster.call_args.kwargs["control_node_labels"] == _CONTROL
+
+
+# -- the reader itself -------------------------------------------------------
+
+
+def test_no_config_named_yields_no_labels():
+    """Nothing named a config: legal, and it means no node selectors."""
+    assert get_kubernetes_node_labels_from_config(None) == (None, None)
+
+
+def test_named_config_is_read(tmp_path):
+    vast = tmp_path / "campaign.vast"
+    vast.write_text(_VAST, encoding="utf-8")
+    assert get_kubernetes_node_labels_from_config(str(vast)) == (_JOBS, _CONTROL)
+
+
+def test_unreadable_named_config_raises(tmp_path):
+    """A named config that cannot be read must abort setup, not mean "no labels"."""
+    with pytest.raises(ValueError, match="could not read node labels"):
+        get_kubernetes_node_labels_from_config(str(tmp_path / "missing.vast"))

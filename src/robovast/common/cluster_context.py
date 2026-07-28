@@ -126,22 +126,30 @@ def get_config_context_names(config_path: str) -> set[str]:
     return names
 
 
-def require_context_for_multi_cluster(kube_context: Optional[str]) -> None:
+def require_context_for_multi_cluster(kube_context: Optional[str],
+                                      config_path: Optional[str] = None) -> None:
     """Raise :exc:`ValueError` when a multi-cluster config is used without ``--context``.
 
-    Finds the ``.vast`` config file (``--vast-file``, else the project's if run inside
-    one), scans it for per-cluster resource lists, and raises an informative error when
-    more than one context name is present and no *kube_context* was specified.
+    Scans *config_path* for per-cluster resource lists and raises an informative error
+    when more than one context name is present and no *kube_context* was specified.
+
+    Which config to scan is the **caller's** decision, never discovered here: this used
+    to find a ``.robovast_project`` by walking up to the filesystem root, so a project
+    far above the CWD could demand ``--context`` from a command that was never told
+    about it. Cluster-wide commands therefore pass only an explicitly named config
+    (:func:`~robovast.common.cli.project_config.get_vast_file_override`), while
+    campaign commands pass the config they are about to run.
 
     This is a no-op when:
 
     * *kube_context* is already set (the user supplied ``--context``).
-    * No config file is named — cluster commands run without a project too.
+    * *config_path* is ``None`` — nothing named a config, so there is nothing to scan.
     * The config uses only a single context name (or only plain scalars).
 
     Args:
         kube_context: The Kubernetes context name (``None`` when the user did
                       not pass ``--context``).
+        config_path: The ``.vast`` to scan, or ``None`` when none was named.
 
     Raises:
         ValueError: When multiple context names are found and *kube_context*
@@ -149,10 +157,6 @@ def require_context_for_multi_cluster(kube_context: Optional[str]) -> None:
     """
     if kube_context is not None:
         return
-
-    from robovast.common.cli.project_config import \
-        resolve_vast_file  # pylint: disable=import-outside-toplevel  # local import – avoid cycles
-    config_path = resolve_vast_file()
 
     if not config_path:
         return
