@@ -658,6 +658,114 @@ def campaign_storage_location(cluster_config, campaign_id: str) -> tuple[str, st
     return campaign_bucket, ""
 
 
+# -- the campaign index -----------------------------------------------------
+#
+# A campaign's durable home is the object store, but nothing there could *list* the
+# campaigns: ``StorageClient`` has no bucket listing, and with a per-campaign-bucket
+# deployment each campaign is a bucket named ``campaign_id.lower().replace("_","-")``
+# — a lossy transform, so recovering the id by inverting it invents ids. So a campaign
+# publishes a marker under one known prefix, and that prefix is what gets listed.
+#
+# The marker is a **zero-byte object whose key is the whole record**. There is no body,
+# hence nowhere to put a status: ``_execution/outcome.json`` stays the one canonical
+# terminal record, and the index cannot become a second source of truth for it.
+
+#: Key prefix holding one marker per campaign.
+CAMPAIGN_INDEX_PREFIX = "campaign-index"
+
+#: Bucket for the markers when the deployment has no shared bucket of its own. Same
+#: situation, and the same resolution, as an image build's staged context — see
+#: :func:`~robovast.execution.cluster_execution.cluster_image_build.build_context_bucket`.
+CAMPAIGN_INDEX_BUCKET = "robovast-campaign-index"
+
+
+def campaign_index_bucket(cluster_config) -> str:
+    """The bucket holding the campaign index.
+
+    The deployment's shared bucket when it has one; otherwise a dedicated bucket of our
+    own, which is defensible only on the ``s3`` backend. The reasoning is
+    :func:`~robovast.execution.cluster_execution.cluster_image_build.build_context_bucket`'s
+    verbatim — an index belongs to no campaign, so a per-campaign-bucket deployment has
+    none to hand it, and on GCS a bucket name is global to all of Google Cloud while that
+    client creates no buckets, so a missing shared bucket is a configuration error to
+    report rather than a name to guess.
+    """
+    shared = cluster_config.get_s3_bucket()
+    if shared:
+        return shared
+    backend = cluster_config.get_storage_backend()
+    if backend != "s3":
+        raise ValueError(
+            f"campaign discovery on the '{backend}' storage backend needs a bucket "
+            "configured for this deployment (there is no private namespace to create one "
+            "in). Set it at 'vast exec cluster setup' (GCS: -o gcs_bucket=… or "
+            "ROBOVAST_GCS_BUCKET).")
+    return CAMPAIGN_INDEX_BUCKET
+
+
+def mark_campaign_indexed(storage: StorageClient, cluster_config,
+                          campaign_id: str, created_at: str) -> None:
+    """Publish *campaign_id*'s index marker. Idempotent (an overwrite is the same key).
+
+    *created_at* rides in the key because the **listing** needs it: the service orders
+    every candidate campaign by start time before it paginates, so a start time that cost
+    an object read would mean one round-trip per campaign on every cold listing. In the
+    key, a single list answers the whole ordering pass, and the store is touched again
+    only for the page actually rendered.
+
+    The id comes **first** in the key so that removing a campaign is one ``delete_prefix``
+    of ``campaign-index/<campaign_id>/`` — no need for a single-key delete primitive, and
+    no need for the remover to know a ``created_at`` it does not have.
+
+    The body is empty, so this uploads an empty temp file rather than reaching for a
+    write-bytes primitive that ``StorageClient`` does not have and that this one marker
+    is not reason enough to add: ``upload_file`` already carries bucket creation and the
+    S3 reconnect-and-retry that a hand-rolled put would have to repeat.
+    """
+    bucket = campaign_index_bucket(cluster_config)
+    with tempfile.NamedTemporaryFile(prefix="robovast-index-") as empty:
+        storage.upload_file(empty.name, bucket, _index_key(campaign_id, created_at))
+
+
+def list_indexed_campaigns(storage: StorageClient,
+                           cluster_config) -> list[tuple[str, str]]:
+    """Every indexed campaign as ``(campaign_id, created_at)``, from one listing.
+
+    The id is a key segment **verbatim** — no sanitising was applied on the way in, so
+    none has to be undone on the way out. A key that does not parse is skipped with a
+    warning rather than guessed at: a malformed marker is one campaign that cannot be
+    listed, not a reason to fail the listing.
+    """
+    bucket = campaign_index_bucket(cluster_config)
+    out = []
+    for key in storage.list_keys(bucket, CAMPAIGN_INDEX_PREFIX):
+        rest = key[len(CAMPAIGN_INDEX_PREFIX) + 1:]
+        campaign_id, sep, created_at = rest.partition("/")
+        if not sep or not campaign_id:
+            logger.warning("Skipping malformed campaign-index key %r", key)
+            continue
+        out.append((campaign_id, created_at))
+    return out
+
+
+def unmark_campaign_indexed(storage: StorageClient, cluster_config,
+                            campaign_id: str) -> None:
+    """Drop *campaign_id*'s marker, so a deleted campaign stops being listed.
+
+    Deletes the campaign's whole index sub-prefix, which also clears a stale marker from
+    an earlier launch of the same id — a single-key delete would leave that behind to
+    resurrect the campaign in the next listing.
+    """
+    if not campaign_id:
+        raise ValueError("campaign_id is required to unmark a campaign")
+    bucket = campaign_index_bucket(cluster_config)
+    storage.delete_prefix(bucket, f"{CAMPAIGN_INDEX_PREFIX}/{campaign_id}")
+
+
+def _index_key(campaign_id: str, created_at: str) -> str:
+    return f"{CAMPAIGN_INDEX_PREFIX}/{campaign_id}/{created_at}"
+
+
 def storage_client_for(cluster_config) -> StorageClient:
     """Build a :class:`StorageClient` from a reconstructed cluster config.
 

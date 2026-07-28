@@ -41,6 +41,11 @@ def _make(tmp_path):
     root.mkdir(exist_ok=True)
     svc._campaigns_root = lambda: root
     cluster._campaigns_root = lambda: root
+    # Seed the cluster lane's campaign-index cache empty: discovery reads the object
+    # store, and off-cluster that opens a kubectl port-forward no test has. Tests about
+    # index-based routing set it explicitly.
+    import time as _time
+    cluster._index_cache = (_time.monotonic(), {})
     return svc
 
 
@@ -220,3 +225,42 @@ def test_pre_flight_cluster_campaign_is_listed_first(tmp_path):
         svc._cluster._campaigns[cid] = _Entry()
 
     assert [c.campaign_id for c in svc.list_campaigns().campaigns] == [cid, older]
+
+
+def test_an_indexed_campaign_routes_to_the_cluster_lane(tmp_path):
+    """A cluster campaign whose local scratch is gone has neither an in-memory entry nor
+    an ``_execution/backend`` marker on disk, so lane resolution used to fall through to
+    the historical local default — the one lane that cannot read its records, which then
+    reported ``unknown`` with no counts. Its presence in the object store's index is the
+    durable answer.
+    """
+    import time as _time
+    from robovast.service.multi_backend import _CLUSTER, _LOCAL
+
+    svc = _make(tmp_path)
+    cid = "camp-2026-01-01-000000"
+    assert svc._lane_for(cid) == _LOCAL          # not indexed: unchanged behaviour
+
+    svc._cluster._index_cache = (_time.monotonic(), {cid: "2026-01-01T00:00:00+00:00"})
+    assert svc._lane_for(cid) == _CLUSTER
+
+
+def test_an_indexed_campaign_is_ordered_by_its_recorded_start_time(tmp_path):
+    """The counterpart of routing: the inherited helper knows only the local registry, so
+    an index-only campaign would have no start time and sort last — exactly the campaign
+    a caller is looking for."""
+    import time as _time
+
+    svc = _make(tmp_path)
+    cid = "camp-2026-01-01-000000"
+    svc._cluster._index_cache = (_time.monotonic(), {cid: "2026-01-01T00:00:00+00:00"})
+    assert svc._started_at_for(cid) == "2026-01-01T00:00:00+00:00"
+
+
+def test_the_routers_listing_includes_the_cluster_lanes_stored_campaigns(tmp_path):
+    import time as _time
+
+    svc = _make(tmp_path)
+    cid = "camp-2026-01-01-000000"
+    svc._cluster._index_cache = (_time.monotonic(), {cid: "2026-01-01T00:00:00+00:00"})
+    assert cid in svc._durable_campaign_ids()

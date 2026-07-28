@@ -418,3 +418,96 @@ def test_the_status_says_it_cannot_judge_rather_than_saying_healthy():
     assert out["stalled"] is None
     assert "execution.timeout" in out["stall_verdict"]
     assert out["progress_age_s"] > 0
+
+
+# -- the BUILD phase of the campaign log ------------------------------------
+#
+# A campaign that waits for an experiment image copies that build's output into its own
+# log, so it is reachable with the campaign id alone and survives the build Job's TTL.
+# Being a copy of shared, content-addressed work — and routinely by far the largest
+# section — it is announced rather than returned by default.
+
+def _log_with_build(build_lines=400):
+    from robovast.common.campaign_logs import phase_banner
+    # Shaped like real BuildKit output: one repeated step whose only variation is
+    # standalone numbers, so the summarizer collapses it the way it collapses a run's
+    # flood. (A trailing token like ``pkg7`` would not normalize — numbers glued to a
+    # word are part of the word.)
+    build = "".join(f"#{i} {i}.5 Unpacking libfoo over ({i}) ...\n"
+                    for i in range(build_lines))
+    return (phase_banner("BUILD") + f"waiting for image sim:v3 (build b-1)\n{build}"
+            + phase_banner("RUN") + "batch 0 starting\nrun 0 finished\n")
+
+
+def test_the_build_section_is_announced_but_not_returned_by_default(monkeypatch):
+    """A default read must stay about the campaign. Leading with a BuildKit log would
+    spend the whole 200-line budget on docker layers before reaching the run."""
+    from robovast.mcp_server.plugins import execution
+
+    _service_with_log(monkeypatch, _log_with_build())
+    out = execution.get_campaign_log("camp-2026-01-01-000000")
+
+    assert "apt-get install" not in out["content"]
+    assert "batch 0 starting" in out["content"]
+    # Announced, with its size — so a section left out is reported, never silently absent.
+    build = next(p for p in out["phases"] if p["name"] == "BUILD")
+    assert build["included"] is False and build["lines"] == 401
+    assert next(p for p in out["phases"] if p["name"] == "RUN")["included"] is True
+
+
+def test_a_default_read_is_unchanged_by_a_build_section_being_present(monkeypatch):
+    """The regression that matters: adding BUILD must not move a single line of what a
+    caller already got. Same campaign, with and without the build, byte for byte."""
+    from robovast.common.campaign_logs import phase_banner
+    from robovast.mcp_server.plugins import execution
+
+    own = phase_banner("RUN") + "batch 0 starting\nrun 0 finished\n"
+    _service_with_log(monkeypatch, own)
+    without = execution.get_campaign_log("camp-2026-01-01-000000")
+    _service_with_log(monkeypatch, _log_with_build() )
+    with_build = execution.get_campaign_log("camp-2026-01-01-000000")
+
+    assert with_build["content"] == without["content"]
+    assert with_build["total_lines"] == without["total_lines"]
+
+
+def test_the_build_section_is_readable_on_request(monkeypatch):
+    from robovast.mcp_server.plugins import execution
+
+    _service_with_log(monkeypatch, _log_with_build())
+    out = execution.get_campaign_log("camp-2026-01-01-000000", phase="build")
+
+    assert "waiting for image sim:v3 (build b-1)" in out["content"]
+    assert "batch 0 starting" not in out["content"]
+    assert next(p for p in out["phases"] if p["name"] == "RUN")["included"] is False
+
+
+def test_a_noisy_build_composes_with_summarize(monkeypatch):
+    """400 near-identical layer lines for a handful of tokens — the intended read of a
+    build that is misbehaving."""
+    from robovast.mcp_server.plugins import execution
+
+    _service_with_log(monkeypatch, _log_with_build())
+    out = execution.get_campaign_log("camp-2026-01-01-000000", phase="build",
+                                     summarize=True)
+    top = max(out["patterns"], key=lambda p: p["count"])
+    assert top["count"] == 400
+
+
+def test_phase_all_returns_the_stream_verbatim(monkeypatch):
+    from robovast.mcp_server.plugins import execution
+
+    text = _log_with_build()
+    _service_with_log(monkeypatch, text)
+    out = execution.get_campaign_log("camp-2026-01-01-000000", phase="all", lines=10_000)
+    # Sections tile the stream, so selecting them all reproduces it.
+    assert out["content"] == text.rstrip("\n")
+
+
+def test_an_unknown_phase_is_reported_not_ignored(monkeypatch):
+    """A silently ignored selector would read as "that phase produced nothing"."""
+    from robovast.mcp_server.plugins import execution
+
+    _service_with_log(monkeypatch, _log_with_build())
+    out = execution.get_campaign_log("camp-2026-01-01-000000", phase="biuld")
+    assert "unknown phase" in out["error"]

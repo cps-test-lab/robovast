@@ -134,6 +134,13 @@ class MultiBackendService(LocalTransport):
         marker = self._read_marker(campaign_id)
         if marker is not None:
             return marker
+        # Indexed in the object store: a cluster campaign whose local scratch is gone, so
+        # neither the map nor the on-disk marker can answer. Falling through to the local
+        # default would route it to the lane that cannot read its records, and it would
+        # report `unknown` with no counts. Free — the same cached listing the cluster
+        # lane's discovery already uses.
+        if campaign_id in self._cluster._durable_campaign_ids():  # noqa: SLF001
+            return _CLUSTER
         # No record (a campaign from before this feature, or a bare dir): the
         # historical single-backend default is local.
         return _LOCAL
@@ -239,20 +246,29 @@ class MultiBackendService(LocalTransport):
         with self._cluster._lock:  # noqa: SLF001 - sibling lane, one feature
             return set(self._cluster._campaigns)  # noqa: SLF001
 
-    def _started_at_for(self, cid: str) -> Optional[str]:
-        """The cluster lane's launch times too — the counterpart of _extra_live_ids.
+    def _durable_campaign_ids(self) -> set[str]:
+        """The cluster lane's stored campaigns, so the inherited listing includes them.
 
-        That method puts a pre-flight cluster campaign into the listing before its
-        results directory exists; the inherited helper only knows the *local* registry,
-        so such a campaign would have no start time and sort last — precisely the
-        just-launched campaign that belongs first.
+        The sibling of :meth:`_extra_live_ids`, for the other thing the local lane cannot
+        see: a *finished* cluster campaign whose home is the object store. Off-cluster both
+        lanes share one results dir, so the disk scan usually covers it — until that scratch
+        is cleaned, after which the object store's index is the only record it exists.
+        """
+        return self._cluster._durable_campaign_ids()  # noqa: SLF001
+
+    def _started_at_for(self, cid: str) -> Optional[str]:
+        """The cluster lane's launch times too — the counterpart of the two id hooks.
+
+        Those put a cluster campaign into the listing before (``_extra_live_ids``) and
+        after (``_durable_campaign_ids``) its results directory exists; the inherited
+        helper only knows the *local* registry and disk, so such a campaign would have no
+        start time and sort last — precisely the campaign a caller is looking for. The
+        cluster lane answers for both cases, from its registry and from the index.
         """
         started = LocalTransport._started_at_for(self, cid)
         if started is not None:
             return started
-        with self._cluster._lock:  # noqa: SLF001 - sibling lane, one feature
-            entry = self._cluster._campaigns.get(cid)  # noqa: SLF001
-        return entry.created_at if entry is not None else None
+        return self._cluster._started_at_for(cid)  # noqa: SLF001
 
     def list_campaigns(
         self, request: Optional[ListCampaignsRequest] = None

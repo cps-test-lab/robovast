@@ -29,7 +29,7 @@ Public API
 * :func:`list_campaigns` — list campaign IDs present in storage.
 * :func:`campaign_exists` — check whether a campaign already has data.
 * :func:`delete_campaign` — permanently remove a single campaign's data.
-* :func:`cleanup_campaigns` — remove one or all campaigns, return count.
+* :func:`cleanup_campaigns` — remove one or all campaigns, return what was removed.
 """
 
 import contextlib
@@ -355,7 +355,7 @@ def cleanup_campaigns(
     context: Optional[str] = None,
     campaign_id: Optional[str] = None,
     running_campaigns: set | None = None,
-) -> int:
+) -> list:
     """Remove one or all *finished* campaigns from storage.
 
     Campaigns listed in *running_campaigns* are **always skipped** to prevent
@@ -375,7 +375,11 @@ def cleanup_campaigns(
                         running.
 
     Returns:
-        int: Number of campaigns successfully removed.
+        list[str]: The storage names actually removed — **not** a count, because the
+        caller has to retire each removed campaign's index marker, and one that survived
+        a failed delete must keep its marker or its data becomes invisible. In
+        per-campaign-bucket mode these are sanitized *bucket* names; map an id to one
+        with :func:`_bucket_name` rather than trying to invert it.
     """
     if running_campaigns is None:
         running_campaigns = set()
@@ -388,13 +392,13 @@ def cleanup_campaigns(
         to_remove = [c for c in all_campaigns if c in wanted]
         if not to_remove:
             logger.info("No campaign matching '%s' found in storage.", campaign_id)
-            return 0
+            return []
     else:
         to_remove = all_campaigns
 
     if not to_remove:
         logger.info("No campaigns found to remove.")
-        return 0
+        return []
 
     # Safety: never delete campaigns that still have active jobs.
     skipped = [c for c in to_remove if c in running_campaigns]
@@ -408,13 +412,13 @@ def cleanup_campaigns(
 
     if not to_remove:
         logger.info("No finished campaigns to remove (all still running).")
-        return 0
+        return []
 
-    removed = 0
+    removed = []
     for name in to_remove:
         try:
             delete_campaign(name, cluster_config, namespace, context)
-            removed += 1
+            removed.append(name)
             logger.info("Removed campaign '%s' from storage.", name)
         except Exception as exc:  # pylint: disable=broad-except
             logger.error("Failed to remove campaign '%s': %s", name, exc)

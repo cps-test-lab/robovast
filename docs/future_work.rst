@@ -91,67 +91,31 @@ it.
 
 Finished items are not kept here: they are described where they are implemented — the file
 address space in :ref:`file-address-space`, the SQL results surface in :ref:`mcp-analysis`
-and :ref:`database-or-address-space`, the HTTP route table in :ref:`http-api`, and telling a
-wedged run from a slow one in :ref:`mcp-liveness`. The numbering below is historical and
-deliberately not compacted, so a note elsewhere referring to "item 9" still means item 9.
+and :ref:`database-or-address-space`, the HTTP route table in :ref:`http-api`, telling a
+wedged run from a slow one in :ref:`mcp-liveness`, and campaign discovery plus the
+non-blocking image build in :ref:`campaign-discovery` and :ref:`campaign-building-phase`.
+The numbering below is historical and deliberately not compacted, so a note elsewhere
+referring to "item 9" still means item 9.
 
-**1. Cluster campaign discovery (design settled, not implemented).**
-``ClusterService`` inherits ``LocalTransport.list_campaigns``, which scans a local
-directory — so a finished cluster campaign, whose home is the object store, is
-invisible. Do **not** enumerate buckets: ``StorageClient`` has no bucket listing,
-with a per-campaign-bucket store each campaign *is* a bucket named
-``campaign_id.lower().replace("_","-")`` (a lossy transform to invert), and buckets
-should stay internal. Instead publish a small per-campaign **index object** and read
-it back, under two constraints:
+**2b. Two deviations worth remembering, from the items that landed as**
+:ref:`campaign-discovery` **and** :ref:`campaign-building-phase`. Both were recorded here
+as settled designs and both were implemented differently on purpose; the reasoning is
+easier to lose than the code.
 
-* *Identity only, never status.* ``_execution/outcome.json`` is already the
-  canonical terminal record and already carries ``postprocessing_error`` /
-  ``share_error``; ``_status_from_disk``'s precedence exists so per-campaign status
-  "can never disagree with the list view". A status field in the index would
-  immediately be that second source of truth.
-* *Write it at the earliest store write, not at* ``finalize_campaign``. Finalize is
-  the once-after-completion publish, so indexing there hides exactly the campaigns
-  worth inspecting — one whose upload itself failed, leaving partial data and no
-  entry. Writing early makes postprocessing-failed, share-failed, stopped and
-  crashed-mid-run campaigns discoverable, because the entry predates the failure.
-
-**2. The image build must not block campaign creation.** ``create_campaign`` is
-specified fire-and-forget, but ``_ensure_build_image`` awaits the build inline. A
-cluster start for a project with a ``build:`` section dies on the HTTP client's 30 s
-read timeout **while the server keeps going and the campaign succeeds** — a reported
-failure for work that worked. No timeout value fixes this honestly. The async
-machinery already exists and is discarded: ``_start_cluster_build`` returns a
-``build_id``, and ``get_image_build_status`` / ``get_image_build_log`` are already
-tools.
-
-Worse than the timeout: while that build runs, **the work is unobservable**.
-The campaign is created only *after* the build, so ``list_running_campaigns``
-reports nothing, and the only handles on a build are
-``/image-builds/{build_id}/status`` and ``.../log`` — there is no build listing, and
-the timed-out call never returned the id. So a caller is left with a failed request,
-no campaign, and live work it cannot see.
-
-Creating the campaign **first**, in a ``building`` phase, fixes all of it at once and
-makes ``list_running_campaigns`` correct with no change to it: a building campaign is
-a campaign. The status then carries the phase and the ``build_id``, so the build log
-stays reachable. Do **not** instead teach ``list_running_campaigns`` to enumerate
-builds — that needs a listing endpoint that does not exist, returns entries that are
-not campaigns, and creates a second in-flight registry to keep consistent with the
-first.
-
-Two details the ordering change must respect, because builds are **shared**:
-``build_hash`` is content-addressed over the spec and context, so two campaigns needing
-the same image both wait on one build.
-
-* The phase means *waiting for its image*, not *performing the build* — otherwise two
-  campaigns each appear to be building the same image.
-* Stopping a building campaign must **detach** it, not cancel the build: another campaign
-  may be waiting on it, and the image is a cache entry rather than that campaign's
-  property. Return immediately in a ``building`` phase and let the driver await it.
-
-This applies to the local docker build too: building is part of the campaign's driven
-work, not a precondition of its existence. It changes an error path deliberately —
-a failed build becomes an inspectable failed campaign rather than no campaign.
+* *The index marker is written at driver start, not "at the earliest store write".* The
+  stated reason for the latter was that the entry must predate the failure, so
+  postprocessing-failed / share-failed / stopped / crashed campaigns stay discoverable.
+  Driver start satisfies that strictly better, and it collapses what would have been two
+  best-effort side-writes — in ``kubernetes_backend.run_batch_in_pod`` and in
+  ``controller._record_controller_outcome`` — into one hook in the file that owns the
+  lifecycle. The only new case is a campaign that dies before touching the store at all,
+  which lists as ``unknown`` with no data: the honest record that it existed and produced
+  nothing, and exactly the failed-build campaign the second item wanted inspectable.
+* *The status does not carry a* ``build_id``. That clause existed to keep the build *log*
+  reachable, and the log is now a ``BUILD`` section of the campaign's own log — reachable
+  with the id the caller already has, and durable past the build Job's TTL, which
+  ``/image-builds/{id}/log`` is not. A second handle on the status would have been a
+  second way to ask the same question.
 
 **3b. Log patterns are computed on read, never joinable.** Telling a hanging run from a
 healthy one landed (:ref:`mcp-liveness`): the status carries ``progress_age_s`` and a

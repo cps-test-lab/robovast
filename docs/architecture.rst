@@ -505,8 +505,11 @@ lives in the ``run_data`` MCP plugin):
   registered, without polling. ``list_campaigns`` stays the authoritative pull for
   MCP and the CLI. Both draw from one rule: a campaign tracked in the in-process
   registry reports its live ``ControllerState``; an untracked one is reconstructed
-  from disk (``reconstruct_status_from_disk``) — the same precedence ``get_status``
-  uses.
+  from its recorded facts (``reconstruct_status_from_disk`` over ``_record_dir``) — the
+  same precedence ``get_status`` uses. Which campaigns *exist* is the union of three
+  sources: the results directory, the registries of what is being driven, and — for a
+  lane whose durable home is not that directory — an object-store index
+  (:ref:`campaign-discovery`).
 * **Postprocessing** — ``get_postprocessing`` / ``update_postprocessing`` /
   ``run_postprocessing``. The structured ``*_postprocessing`` pair is the programmatic
   API (MCP, CLI); ``get_postprocessing_source`` / ``update_postprocessing_source`` are

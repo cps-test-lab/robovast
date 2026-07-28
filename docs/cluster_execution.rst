@@ -330,6 +330,27 @@ buckets, so builds there **require** the deployment's bucket to be configured
 guessed at. In-cluster builds do **not** require external-S3 mode, and enabling them
 never changes how campaign results are stored.
 
+.. _campaign-index-storage:
+
+The campaign index
+~~~~~~~~~~~~~~~~~~
+
+One more thing lives in object storage, resolved exactly the same way and for the same
+reason: the **campaign index**, one zero-byte marker per campaign under
+
+.. code-block:: text
+
+   campaign-index/<campaign_id>/<created_at>
+
+in the deployment's shared bucket, or in a dedicated ``robovast-campaign-index`` bucket
+where campaigns get their own (an index belongs to no campaign either). It is what lets the
+service list the campaigns the object store holds: a campaign's home is the store, but the
+service pod's disk is scratch, so after a restart a scan of that disk finds nothing. There
+is no bucket listing to fall back on — and a per-campaign bucket name is the campaign id
+lowercased with underscores replaced, which cannot be reversed. Unlike a staged build
+context this is **not** scratch: it is retired only when the campaign's data is deleted
+(``vast results delete``, or the bucket cleanup below). See :ref:`campaign-discovery`.
+
 A staged context is **scratch, and is cleaned up** — it is a full copy of the project
 directory, so a build per experiment would otherwise pile up copies in the bucket
 indefinitely. Nothing reads it after the build: a rebuild re-stages, the layer cache

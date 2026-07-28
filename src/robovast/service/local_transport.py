@@ -675,33 +675,37 @@ class LocalTransport(RobovastInterface):
         with self._lock:
             self._campaigns[campaign_id] = entry
 
-        # Implicit preflight: if execution.image is a symbolic ``build:<tag>`` ref,
-        # ensure the image exists (idempotent build) and pin it as the explicit
-        # image so the backend uses it (explicit wins in resolve_robovast_image).
-        # Blocks until the image is ready — the campaign shows phase ``building``
-        # meanwhile. A doomed build is recorded as ``failed`` (so it stays visible
-        # in the list and does not wedge the single-flight guard) and re-raised so
-        # the caller sees it before any run starts.
+        # If execution.image is a symbolic ``build:<tag>`` ref the campaign needs an image
+        # built before it can run. The phase is set here, synchronously, so the campaign is
+        # listed as ``building`` from the instant it is accepted; the build itself is
+        # *driven by the worker* (below), because this method must return a handle rather
+        # than block: awaiting the build here made a 30s-read-timeout client report failure
+        # for a campaign that went on to succeed, and left the caller with no id to poll.
+        # The phase means the campaign is **waiting for** its image — builds are
+        # content-addressed and shared, so it is not necessarily performing one.
         spec, _ = self._build_spec_for(target, campaign_config)
         if spec is not None:
-            state.set_phase(Phase.BUILDING)
-        try:
-            built = self._ensure_build_image(target, campaign_config)
-        except Exception as e:  # noqa: BLE001 - recorded via status, then re-raised
-            logger.exception("Campaign %s image build failed", campaign_id)
-            entry.error = str(e)
-            state.update(error=failure_detail(e))
-            state.set_phase(Phase.FAILED, stage=str(e))
-            raise
-        if built:
-            options.image = built
-        state.set_phase(Phase.STARTING)
+            state.set_phase(Phase.BUILDING,
+                            stage=f"waiting for image {spec.tag}")
 
         def _worker():
             from robovast.execution.backends import (
                 CampaignConfigError, CampaignStopped)
             backend = None
             try:
+                # Before anything that can fail, so every later outcome — a doomed build
+                # included — belongs to a campaign that can be found again.
+                self._on_campaign_started(campaign_id, entry.created_at)
+                # Build (or join a sibling's build of) the experiment image and pin the
+                # concrete ref, so the backend uses it (explicit wins in
+                # resolve_robovast_image). A failed build is no longer a failed *request*:
+                # it raises into the handler below and becomes an inspectable ``failed``
+                # campaign, with the reason in its status and the output in its own log.
+                build = self._start_build_image(target, campaign_config)
+                if build is not None:
+                    self._await_build_image(build.build_id, state, campaign_root)
+                    options.image = self._resolve_built_image(target, campaign_config)
+                state.set_phase(Phase.STARTING)
                 with self._campaign_context(campaign_id, target):
                     backend = self._build_backend(state)
                     if is_search:
@@ -782,34 +786,99 @@ class LocalTransport(RobovastInterface):
         project_dir = _Path(project.config_path).resolve().parent
         return spec, project_dir
 
-    def _ensure_build_image(self, project, campaign_config) -> "str | None":
-        """Build (or reuse) the project's ``build:`` image; return the concrete ref.
+    def _start_build_image(self, project, campaign_config) -> "ImageBuildRef | None":
+        """Submit (or join) the build of the project's ``build:`` image; return its ref.
 
-        Returns ``None`` when the project has no ``build:`` section. Blocks until
-        the build finishes; raises ``RuntimeError`` on failure (with the structured
-        error message) so the campaign preflight fails loudly.
+        ``None`` when the project has no ``build:`` section. Returns as soon as the build
+        has a *handle* — it does not wait for it; :meth:`_await_build_image` does that, on
+        the campaign's own worker thread. Overridden by :class:`ClusterService` for the
+        in-cluster BuildKit Job.
         """
         spec, project_dir = self._build_spec_for(project, campaign_config)
         if spec is None:
             return None
-        mgr = self._image_builds
-        ref = mgr.start(spec, project_dir)
-        status = self._await_build(ref.build_id)
+        return self._image_builds.start(spec, project_dir)
+
+    def _resolve_built_image(self, project, campaign_config) -> str:
+        """The concrete image ref to pin once the build is done (see ``_run_options``)."""
+        spec, project_dir = self._build_spec_for(project, campaign_config)
+        return self._image_builds.resolve_ref(spec, project_dir)
+
+    #: Poll cadence of :meth:`_await_build_image`. Each tick is one build-status read plus
+    #: one build-log read, so it is also how often the campaign's ``build.log`` grows.
+    _BUILD_POLL_SECONDS = 2.0
+
+    def _await_build_image(self, build_id: str, state: ControllerState,
+                           campaign_root: str) -> None:
+        """Wait for *build_id*, teeing its log into the campaign's ``_execution/build.log``.
+
+        One implementation for both lanes: ``get_image_build_status`` and
+        ``get_image_build_log`` are interface operations each transport already provides,
+        so the local Docker build and the in-cluster BuildKit Job are waited on by the same
+        loop rather than by two that drift.
+
+        The log is copied into the campaign because it is the campaign's only durable
+        record of the image it ran on: the live source dies with the build (a build Job is
+        reaped at ``ttlSecondsAfterFinished``), and a failed build is exactly when someone
+        comes looking. The header names the build, so a build **shared** by several
+        campaigns reads as shared rather than as this campaign's own work.
+
+        A stop **detaches** — it must never cancel the build. ``build_hash`` is
+        content-addressed over the spec and context, so a sibling campaign may be waiting
+        on this very build, and the image is a cache entry rather than this campaign's
+        property. Hence: raise, touch neither the build Job nor the local build thread.
+
+        Raises:
+            CampaignStopped: the campaign was stopped while waiting.
+            RuntimeError: the build failed (message from ``classify_build_error``).
+        """
+        from robovast.execution.backends import CampaignStopped
+        log_path = Path(campaign_root) / "_execution" / "build.log"
+        offset = 0
+        first = True
+        while True:
+            status = self.get_image_build_status(build_id)
+            if first:
+                first = False
+                self._append_build_log(
+                    log_path,
+                    f"waiting for image {status.tag or '?'} (build {build_id})\n")
+            offset = self._tee_build_log(build_id, log_path, offset)
+            if status.done:
+                break
+            if state.stop_requested:
+                raise CampaignStopped(
+                    f"campaign stopped while waiting for image build {build_id}")
+            time.sleep(self._BUILD_POLL_SECONDS)
         if status.phase not in ("succeeded", "cached"):
             err = status.error
             detail = f" ({err.message})" if err and err.message else ""
             raise RuntimeError(
-                f"experiment image build '{spec.tag}' failed{detail}; "
-                f"see the build log (build_id={ref.build_id})")
-        return mgr.resolve_ref(spec, project_dir)
+                f"experiment image build '{status.tag or build_id}' failed{detail}; "
+                f"see the BUILD section of the campaign log "
+                f"(get_campaign_log with phase='build')")
 
-    def _await_build(self, build_id: str):
-        mgr = self._image_builds
-        while True:
-            status = mgr.status(build_id)
-            if status.done:
-                return status
-            time.sleep(1.0)
+    def _tee_build_log(self, build_id: str, log_path: Path, offset: int) -> int:
+        """Append the build log's delta from *offset* into *log_path*; return the new
+        offset. Best-effort: an unreadable build log must not fail the campaign, which
+        would turn a working build into a failed run."""
+        try:
+            chunk = self.get_image_build_log(build_id, offset)
+        except Exception as e:  # noqa: BLE001 - the build itself is what matters
+            logger.debug("could not read the build log for %s: %s", build_id, e)
+            return offset
+        if chunk.text:
+            self._append_build_log(log_path, chunk.text)
+        return chunk.next_offset
+
+    @staticmethod
+    def _append_build_log(log_path: Path, text: str) -> None:
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(log_path, "a", encoding="utf-8") as fh:
+                fh.write(text)
+        except OSError as e:
+            logger.warning("Could not write %s: %s", log_path, e)
 
     def build_image(self, request) -> "ImageBuildRef":  # noqa: F821
         from robovast.common.common import load_config
@@ -1028,6 +1097,15 @@ class LocalTransport(RobovastInterface):
                                eof=run_done or not live)
 
     def stop(self, campaign_id: str) -> ActionResult:
+        """Request a cooperative stop and kill the compute so the worker unblocks.
+
+        A campaign still in ``building`` is stopped by the flag alone: the teardown below
+        removes the *scenario* container and cannot reach a ``docker buildx`` build thread.
+        That is deliberate and must stay true — an image build is content-addressed and
+        therefore shared, so cancelling it could strand a sibling campaign waiting on the
+        same image, and the image is a cache entry rather than this campaign's property.
+        ``_await_build_image`` detaches instead (see its ``CampaignStopped`` path).
+        """
         with self._lock:
             entry = self._campaigns.get(campaign_id)
         if entry is None:
@@ -1099,19 +1177,46 @@ class LocalTransport(RobovastInterface):
         """
         return set()
 
+    def _durable_campaign_ids(self) -> set[str]:
+        """Campaigns whose durable home is **not** this disk.
+
+        Empty here: a local campaign's home *is* the results directory the scan below
+        reads, so that scan already sees every one of them. :class:`ClusterService`
+        overrides it with the object store's campaign index — without which a finished
+        cluster campaign is unlistable as soon as its local scratch is gone, which in-pod
+        is every campaign from a previous service life.
+
+        Distinct from :meth:`_extra_live_ids` deliberately: that one is about campaigns
+        being *driven* elsewhere right now, this one about campaigns *stored* elsewhere. A
+        campaign can be in either, both, or neither.
+        """
+        return set()
+
+    def _on_campaign_started(self, campaign_id: str, created_at: str) -> None:
+        """The campaign's driver is starting: record it wherever it must be discoverable.
+
+        No-op here — see :meth:`_durable_campaign_ids`. :class:`ClusterService` publishes
+        the campaign's index marker. This is a hook at the very top of the worker rather
+        than a call further down because it has to happen **before anything that can
+        fail**: the marker is what makes a campaign findable, so one written after the
+        build, the run, or the finalize upload would be missing from precisely the
+        campaigns worth looking at.
+        """
+
     def list_campaigns(
         self, request: Optional[ListCampaignsRequest] = None
     ) -> ListCampaignsResponse:
         request = request or ListCampaignsRequest()
         results_dir = self._campaigns_root()
         from robovast.common.execution import is_campaign_dir
-        # Which campaigns exist = those persisted on disk ∪ those being driven now
-        # (registered in-memory, perhaps without a directory yet — a just-launched
-        # one is still building/starting). Not two sources of truth: each id is
-        # resolved to a summary by the same precedence get_status uses (live
-        # snapshot if tracked, else reconstruct from disk).
+        # Which campaigns exist = those persisted on disk ∪ those stored in a durable home
+        # that is not this disk ∪ those being driven now (registered in-memory, perhaps
+        # without a directory yet — a just-launched one is still building/starting). Not
+        # three sources of truth: each id is resolved to a summary by the same precedence
+        # get_status uses (live snapshot if tracked, else reconstruct from its records).
         disk = {d.name for d in results_dir.iterdir()
                 if d.is_dir() and is_campaign_dir(d.name)} if results_dir.is_dir() else set()
+        disk |= self._durable_campaign_ids()
         with self._lock:
             mem = set(self._campaigns)
         mem |= self._extra_live_ids()
@@ -1611,10 +1716,24 @@ class LocalTransport(RobovastInterface):
         return is_terminal(entry.state.snapshot().phase) or (
             entry.thread is not None and not entry.thread.is_alive())
 
+    def _record_dir(self, cid: str) -> Path:
+        """The directory holding *cid*'s **recorded facts** — ``campaign.db`` and
+        ``_execution/outcome.json``.
+
+        Its own directory under the results root, locally: the campaign is written there
+        and read back from there. The seam exists for :class:`ClusterService`, whose
+        durable home is the object store — in-pod there is no local copy at all, so every
+        reader below would answer ``unknown``/zero for a campaign the store holds. Four
+        readers wanted that directory (:meth:`_summary_for`, :meth:`_started_at_for`,
+        :meth:`_description_for`, :meth:`_status_from_disk`) and each resolved it inline,
+        so the override had to be written four times or not at all.
+        """
+        return self._campaign_dir(cid)
+
     def _summary_for(self, cid: str) -> CampaignSummary:
         from robovast.execution.status_recovery import \
             reconstruct_status_from_disk
-        campaign_dir = self._campaigns_root() / cid
+        campaign_dir = self._record_dir(cid)
         with self._lock:
             entry = self._campaigns.get(cid)
         # One precedence rule, shared with get_status: a tracked campaign's live
@@ -1702,7 +1821,7 @@ class LocalTransport(RobovastInterface):
         cached = self._started_at_cache.get(cid)
         if cached is not None:
             return cached
-        started = read_campaign_created_at(self._campaigns_root() / cid)
+        started = read_campaign_created_at(self._record_dir(cid))
         if started is not None:
             self._started_at_cache[cid] = started
         return started
@@ -1725,7 +1844,7 @@ class LocalTransport(RobovastInterface):
         cached = self._description_cache.get(cid)
         if cached is not None:
             return cached
-        description = read_campaign_description(self._campaigns_root() / cid)
+        description = read_campaign_description(self._record_dir(cid))
         if description is not None:
             self._description_cache[cid] = description
         return description
@@ -1733,5 +1852,5 @@ class LocalTransport(RobovastInterface):
     def _status_from_disk(self, campaign_id: str) -> Status:
         from robovast.execution.status_recovery import \
             reconstruct_status_from_disk
-        return reconstruct_status_from_disk(self._campaigns_root() / campaign_id)
+        return reconstruct_status_from_disk(self._record_dir(campaign_id))
 

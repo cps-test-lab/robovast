@@ -23,11 +23,18 @@ from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
 @pytest.fixture
 def cs():
+    import time as _time
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tempfile.mkdtemp()))
     # reap_on_start=False: the reaper talks to the kube API, which no test has.
-    return ClusterService(namespace="ns1", cluster_config_name="rke2",
-                          cluster_config_kwargs={"foo": "bar"}, store=store,
-                          reap_on_start=False)
+    svc = ClusterService(namespace="ns1", cluster_config_name="rke2",
+                         cluster_config_kwargs={"foo": "bar"}, store=store,
+                         reap_on_start=False)
+    # Seed the campaign-index cache empty. Campaign discovery reads the object store (see
+    # _campaign_index), and off-cluster that opens a kubectl port-forward — which no test
+    # has, and which *blocks* rather than failing. Tests that exercise discovery use the
+    # ``indexed`` fixture below, which installs a fake store and clears this.
+    svc._index_cache = (_time.monotonic(), {})
+    return svc
 
 
 def test_version_reports_kubernetes_backend(cs):
@@ -63,12 +70,14 @@ def test_cleanup_campaign_data_runs_server_side(cs, monkeypatch):
                      running_campaigns):
         calls.update(namespace=namespace, context=context, campaign_id=campaign_id,
                      running=running_campaigns)
-        return 3
+        return ["camp-1", "camp-2", "camp-3"]
 
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.bucket_ops.cleanup_campaigns",
         fake_cleanup)
     monkeypatch.setattr(cs, "kube_context", "local")
+    # Retiring the index markers is tested separately; it needs an object store.
+    monkeypatch.setattr(cs, "_unmark_removed", lambda removed: None)
 
     from robovast.service.interface import CleanupDataRequest
     res = cs.cleanup_campaign_data(CleanupDataRequest(campaign_id="camp-1"))
@@ -89,7 +98,8 @@ def test_cleanup_campaign_data_skips_live_campaigns(cs, monkeypatch):
     seen = {}
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.bucket_ops.cleanup_campaigns",
-        lambda *a, **kw: seen.update(kw) or 1)
+        lambda *a, **kw: seen.update(kw) or [])
+    monkeypatch.setattr(cs, "_unmark_removed", lambda removed: None)
 
     from robovast.service.interface import CleanupDataRequest
     cs.cleanup_campaign_data(CleanupDataRequest())  # campaign_id=None → bulk
@@ -188,12 +198,183 @@ def test_postprocessing_is_chained_by_the_builder_not_the_worker(cs):
     assert cs._postprocess_in_process() is False
 
 
-def test_unknown_campaign_status_falls_back_to_object_store(cs, monkeypatch):
-    """A campaign this process is not driving is explained from the durable home."""
-    monkeypatch.setattr(ClusterService, "_read_outcome", lambda self, cid: None)
+# -- discovery: the object store is the durable home ------------------------
+#
+# In-pod the disk is scratch, so a campaign from a previous service life exists only in
+# the object store. Two things make it visible again: the campaign index supplies its id
+# (and the start time the listing orders by), and ``_record_dir`` fetches the two small
+# objects that carry its recorded facts.
+
+
+class _IndexStorage:
+    """Object store holding just the keys these tests exercise."""
+
+    def __init__(self, objects=None):
+        self.objects = dict(objects or {})
+        self.reads: list[str] = []
+        self.prefix_downloads = 0
+
+    # -- index --
+    def upload_file(self, local_path, bucket, key):
+        with open(local_path, "rb") as fh:
+            self.objects[key] = fh.read()
+
+    def list_keys(self, bucket, prefix=""):
+        head = f"{prefix.rstrip('/')}/" if prefix else ""
+        return sorted(k for k in self.objects if k.startswith(head))
+
+    def delete_prefix(self, bucket, prefix):
+        gone = [k for k in self.objects if k.startswith(f"{prefix.rstrip('/')}/")]
+        for key in gone:
+            del self.objects[key]
+        return len(gone)
+
+    # -- single-object reads --
+    def stat_object(self, bucket, key):
+        self.reads.append(key)
+        blob = self.objects.get(key)
+        return None if blob is None else len(blob)
+
+    def download_object(self, bucket, key, dst):
+        with open(dst, "wb") as fh:
+            fh.write(self.objects[key])
+        return True
+
+    def download_prefix(self, *a, **kw):  # pragma: no cover - must never be called
+        self.prefix_downloads += 1
+        raise AssertionError("a campaign summary must not fetch the whole prefix")
+
+
+@pytest.fixture
+def indexed(cs, monkeypatch, tmp_path):
+    """A ClusterService whose object store is an ``_IndexStorage``, with no local disk."""
+    storage = _IndexStorage()
+    monkeypatch.setattr(cs, "_campaigns_root", lambda: tmp_path / "results")
+    monkeypatch.setattr(cs, "_cache_dir", lambda cid: tmp_path / "cache" / cid)
+    monkeypatch.setattr(cs, "_campaign_object_location",
+                        lambda cid: (storage, "bkt", ""))
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.in_pod_storage.storage_client_for",
+        lambda cfg: storage)
+    monkeypatch.setattr(cs, "_cluster_config", lambda: object())
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.in_pod_storage.campaign_index_bucket",
+        lambda cfg: "bkt")
+    cs._index_cache = None  # discovery is the subject here; read it from the fake store
+    return cs, storage
+
+
+def test_a_campaign_with_no_records_anywhere_is_unknown(indexed):
+    """"Not reconstructable" is a phase, not an exception: the id resolves and says so."""
+    cs, _storage = indexed
     status = cs._status_from_disk("nope-2026-07-17-120000")
     assert status.phase == "unknown"
     assert status.campaign_id == "nope-2026-07-17-120000"
+
+
+def test_a_stored_campaign_reports_its_real_phase_not_unknown(indexed):
+    """The durable ``outcome.json`` explains a campaign this process never drove.
+
+    It travels through the *inherited* ``_status_from_disk``: ``_record_dir`` puts the
+    object where every reader already looks, so the list view and the per-campaign status
+    cannot disagree — which is what the deleted cluster-only override promised but could
+    not deliver, since ``_summary_for`` never called it.
+    """
+    cs, storage = indexed
+    cid = "camp-2026-07-17-120000"
+    from robovast.execution.cluster_execution import in_pod_storage
+    in_pod_storage.mark_campaign_indexed(storage, object(), cid, "t")
+    storage.objects["_execution/outcome.json"] = (
+        b'{"phase": "failed", "campaign_id": "' + cid.encode() + b'", '
+        b'"error": "the runs were aborted"}')
+
+    status = cs._status_from_disk(cid)
+    assert status.phase == "failed"
+    assert status.error == "the runs were aborted"
+
+
+def test_records_are_two_single_object_reads_never_a_prefix_fetch(indexed):
+    """A 2 KB record must not drag a 1 TB campaign — the point of the whole seam."""
+    cs, storage = indexed
+    from robovast.execution.cluster_execution import in_pod_storage
+    in_pod_storage.mark_campaign_indexed(
+        storage, object(), "camp-2026-07-17-120000", "t")
+    storage.reads.clear()
+    cs._record_dir("camp-2026-07-17-120000")
+    assert storage.reads == list(ClusterService._RECORD_OBJECTS)
+    assert storage.prefix_downloads == 0
+
+
+def test_a_campaign_this_process_drives_is_never_fetched(indexed, monkeypatch):
+    """Its driver owns ``campaign.db`` and is writing it right now."""
+    cs, storage = indexed
+    cid = "live-2026-07-17-120000"
+    monkeypatch.setitem(cs._campaigns, cid, object())
+    assert cs._record_dir(cid) == cs._campaign_dir(cid)
+    assert storage.reads == []
+
+
+def test_the_index_supplies_the_ids_the_disk_scan_cannot_see(indexed):
+    cs, storage = indexed
+    from robovast.execution.cluster_execution import in_pod_storage
+    in_pod_storage.mark_campaign_indexed(
+        storage, object(), "Camp_One-2026-07-17-120000", "2026-07-17T12:00:00+00:00")
+
+    assert cs._durable_campaign_ids() == {"Camp_One-2026-07-17-120000"}
+
+
+def test_the_ordering_pass_costs_no_object_reads(indexed):
+    """``list_campaigns`` asks every candidate for its start time before it paginates, so
+    a start time read per campaign would be one round-trip per campaign on a listing the
+    SSE stream repeats every second. The marker carries it in its key instead."""
+    cs, storage = indexed
+    from robovast.execution.cluster_execution import in_pod_storage
+    for i in range(5):
+        in_pod_storage.mark_campaign_indexed(
+            storage, object(), f"c{i}-2026-07-17-12000{i}", f"2026-07-17T12:00:0{i}+00:00")
+    storage.reads.clear()
+
+    started = {cid: cs._started_at_for(cid) for cid in cs._durable_campaign_ids()}
+    assert started["c3-2026-07-17-120003"] == "2026-07-17T12:00:03+00:00"
+    assert storage.reads == []
+
+
+def test_an_indexed_campaign_is_marked_at_driver_start(indexed):
+    """Before the image build and the run, so every later failure is still findable."""
+    cs, storage = indexed
+    cs._on_campaign_started("camp-2026-07-17-120000", "2026-07-17T12:00:00+00:00")
+    assert cs._durable_campaign_ids() == {"camp-2026-07-17-120000"}
+
+
+def test_indexing_failure_never_fails_the_campaign(cs, monkeypatch):
+    """Discoverability is worth a warning, not a dead campaign — and a store broken
+    enough to refuse this fails the campaign's own uploads with a real error anyway."""
+    monkeypatch.setattr(cs, "_cluster_config",
+                        lambda: (_ for _ in ()).throw(RuntimeError("no store")))
+    cs._on_campaign_started("camp-2026-07-17-120000", "t")  # must not raise
+
+
+def test_deleting_a_campaign_retires_its_marker(indexed):
+    """Otherwise it keeps being listed with nothing behind it."""
+    cs, storage = indexed
+    cs._on_campaign_started("camp-2026-07-17-120000", "t")
+    cs._unmark_campaign("camp-2026-07-17-120000")
+    assert cs._durable_campaign_ids() == set()
+
+
+def test_an_unreachable_store_keeps_the_last_known_index(indexed, monkeypatch):
+    """A brief outage must not make every stored campaign blink out of the list."""
+    cs, storage = indexed
+    cs._on_campaign_started("camp-2026-07-17-120000", "t")
+    assert cs._durable_campaign_ids() == {"camp-2026-07-17-120000"}
+
+    # Expire the TTL while keeping the value, which is exactly the state a poll after a
+    # brief outage is in.
+    cs._index_cache = (cs._index_cache[0] - 999, cs._index_cache[1])
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.in_pod_storage.list_indexed_campaigns",
+        lambda *a: (_ for _ in ()).throw(RuntimeError("store down")))
+    assert cs._durable_campaign_ids() == {"camp-2026-07-17-120000"}
 
 
 # -- jobs (live) ------------------------------------------------------------
@@ -603,3 +784,37 @@ def test_aux_pod_owner_reference_ties_it_to_the_service_pod():
              "uid": "abc", "controller": False, "blockOwnerDeletion": False}
     m = build_aux_pod_manifest("c-2026-07-17-120000", [_spec()], "ns", owner_ref=owner)
     assert m["metadata"]["ownerReferences"] == [owner]
+
+
+def test_cleanup_retires_the_markers_of_what_it_actually_removed(indexed):
+    """A swept campaign must stop being listed — and a *survivor* must not.
+
+    Driven by what the sweep did rather than what it was asked to do: a campaign whose
+    bucket delete failed keeps its marker, because its data is still there and a listing
+    that omits stored data is the defect this index exists to fix.
+    """
+    cs, storage = indexed
+    from robovast.execution.cluster_execution import in_pod_storage
+    for cid in ("gone_One-2026-07-17-120000", "kept-2026-07-17-120001"):
+        in_pod_storage.mark_campaign_indexed(storage, object(), cid, "t")
+
+    # In per-campaign-bucket mode the sweep reports sanitised *bucket* names; matching is
+    # forward-only (id → bucket name), never the lossy inverse.
+    cs._unmark_removed(["gone-one-2026-07-17-120000"])
+    assert cs._durable_campaign_ids() == {"kept-2026-07-17-120001"}
+
+
+def test_cleanup_that_removed_nothing_does_not_touch_the_store(indexed):
+    cs, storage = indexed
+    storage.reads.clear()
+    cs._unmark_removed([])
+    assert storage.objects == {} and storage.reads == []
+
+
+def test_an_unindexed_campaign_is_never_fetched(indexed):
+    """Nothing of it is in the store, so there is nothing to fetch — and this is what
+    keeps a listing behind an unreachable store to one timeout instead of one per row."""
+    cs, storage = indexed
+    assert cs._record_dir("stranger-2026-07-17-120000") == \
+        cs._campaign_dir("stranger-2026-07-17-120000")
+    assert storage.reads == []

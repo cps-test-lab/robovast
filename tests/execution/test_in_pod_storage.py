@@ -137,3 +137,120 @@ def test_iter_files_keeps_resolvable_symlink_target(tmp_path):
 
 def test_is_executable_tolerates_missing_path(tmp_path):
     assert in_pod_storage._is_executable(str(tmp_path / "gone")) is False
+
+
+# -- the campaign index -----------------------------------------------------
+#
+# The index is what makes a campaign in the object store discoverable at all: without
+# it the service can only list what happens to be on local disk, which in-pod is
+# nothing from a previous service life.
+
+
+class _FakeStorage:
+    """In-memory stand-in for the object-store keys the index cares about."""
+
+    def __init__(self):
+        self.objects: dict[tuple, bytes] = {}
+
+    def upload_file(self, local_path, bucket, key):
+        with open(local_path, "rb") as fh:
+            self.objects[(bucket, key)] = fh.read()
+
+    def list_keys(self, bucket, prefix=""):
+        head = f"{prefix.rstrip('/')}/" if prefix else ""
+        return sorted(k for (b, k) in self.objects if b == bucket and k.startswith(head))
+
+    def delete_prefix(self, bucket, prefix):
+        head = in_pod_storage._delete_key_prefix(bucket, prefix)
+        gone = [(b, k) for (b, k) in self.objects if b == bucket and k.startswith(head)]
+        for key in gone:
+            del self.objects[key]
+        return len(gone)
+
+
+def test_campaign_index_round_trips_the_id_verbatim():
+    """A campaign id survives the index exactly — including ``_`` and upper case.
+
+    This is the whole reason the index exists rather than a bucket listing: a
+    per-campaign bucket is named ``id.lower().replace("_","-")``, so recovering the id
+    from the bucket name is guesswork that silently returns a *different* id. The marker
+    key carries the id verbatim, so nothing has to be undone.
+    """
+    storage, cfg = _FakeStorage(), _S3Config()
+    campaign_id = "My_Campaign-2026-07-28-12000000"
+    in_pod_storage.mark_campaign_indexed(storage, cfg, campaign_id, "2026-07-28T12:00:00+00:00")
+
+    assert in_pod_storage.list_indexed_campaigns(storage, cfg) == [
+        (campaign_id, "2026-07-28T12:00:00+00:00")]
+    # And it is not the sanitised bucket name the old listing would have produced.
+    assert campaign_id != campaign_id.lower().replace("_", "-")
+
+
+def test_campaign_index_marker_has_no_body():
+    """The key *is* the record. There is no body, hence nowhere to put a status —
+    ``_execution/outcome.json`` stays the single source of truth for the phase."""
+    storage, cfg = _FakeStorage(), _S3Config()
+    in_pod_storage.mark_campaign_indexed(storage, cfg, "c-2026-07-28-12000000", "t")
+    assert set(storage.objects.values()) == {b""}
+
+
+def test_campaign_index_marking_is_idempotent():
+    storage, cfg = _FakeStorage(), _S3Config()
+    for _ in range(3):
+        in_pod_storage.mark_campaign_indexed(storage, cfg, "c-2026-07-28-12000000", "t")
+    assert len(in_pod_storage.list_indexed_campaigns(storage, cfg)) == 1
+
+
+def test_unmark_removes_every_marker_for_that_campaign():
+    """Deleting a campaign must not leave a marker that resurrects it in the next
+    listing — including a stale one from an earlier launch of the same id."""
+    storage, cfg = _FakeStorage(), _S3Config()
+    in_pod_storage.mark_campaign_indexed(storage, cfg, "c-2026-07-28-12000000", "t1")
+    in_pod_storage.mark_campaign_indexed(storage, cfg, "c-2026-07-28-12000000", "t2")
+    in_pod_storage.mark_campaign_indexed(storage, cfg, "other-2026-07-28-12000000", "t1")
+
+    in_pod_storage.unmark_campaign_indexed(storage, cfg, "c-2026-07-28-12000000")
+    assert [cid for cid, _ in in_pod_storage.list_indexed_campaigns(storage, cfg)] == [
+        "other-2026-07-28-12000000"]
+
+
+def test_unmark_refuses_an_empty_campaign_id():
+    """An empty id would delete the whole index — every campaign at once."""
+    import pytest
+    with pytest.raises(ValueError):
+        in_pod_storage.unmark_campaign_indexed(_FakeStorage(), _S3Config(), "")
+
+
+def test_malformed_index_key_is_skipped_not_guessed():
+    """One unparseable marker costs one campaign's listing, not the whole listing."""
+    storage, cfg = _FakeStorage(), _S3Config()
+    in_pod_storage.mark_campaign_indexed(storage, cfg, "good-2026-07-28-12000000", "t")
+    bucket = in_pod_storage.campaign_index_bucket(cfg)
+    storage.objects[(bucket, f"{in_pod_storage.CAMPAIGN_INDEX_PREFIX}/nostamp")] = b""
+
+    assert [cid for cid, _ in in_pod_storage.list_indexed_campaigns(storage, cfg)] == [
+        "good-2026-07-28-12000000"]
+
+
+def test_index_bucket_prefers_the_deployments_shared_bucket():
+    """With a shared bucket the index is a prefix in it; nothing extra is created."""
+    class _Shared(_S3Config):
+        def get_s3_bucket(self):
+            return "team-bucket"
+
+    assert in_pod_storage.campaign_index_bucket(_Shared()) == "team-bucket"
+
+
+def test_index_bucket_is_our_own_when_campaigns_get_their_own_buckets():
+    """Per-campaign-bucket mode: the index belongs to no campaign, so it gets a bucket
+    of its own — creatable because the S3 namespace is the deployment's own endpoint."""
+    assert in_pod_storage.campaign_index_bucket(_S3Config()) \
+        == in_pod_storage.CAMPAIGN_INDEX_BUCKET
+
+
+def test_index_bucket_on_gcs_without_a_bucket_is_reported_not_invented():
+    """A GCS bucket name is global to all of Google Cloud and that client creates no
+    buckets, so guessing one would collide with a stranger's bucket or 403."""
+    import pytest
+    with pytest.raises(ValueError, match="needs a bucket"):
+        in_pod_storage.campaign_index_bucket(_GcsConfig())

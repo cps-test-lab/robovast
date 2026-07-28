@@ -52,7 +52,7 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 
-from robovast.execution.control_server import Phase, Status, is_running
+from robovast.execution.control_server import Phase, is_running
 from robovast.common import file_address, file_view
 from robovast.service.client import LocalTransport
 from robovast.service.interface import (ActionResult, FileListing, FileText,
@@ -125,6 +125,11 @@ class ClusterService(LocalTransport):
         # / PodLogTail). LRU-bounded so long-lived services don't accumulate buffers.
         self._job_log_tails: "OrderedDict[tuple, object]" = OrderedDict()
         self._job_log_guard = threading.Lock()
+        # (monotonic, {campaign_id: created_at}) from the object store's campaign index,
+        # or None when it must be re-read. TTL-cached because the campaign-list SSE stream
+        # re-lists once a second; see _campaign_index.
+        self._index_cache: "tuple[float, dict] | None" = None
+        self._index_lock = threading.Lock()
         if reap_on_start:
             self.reap_orphans()
 
@@ -401,28 +406,115 @@ class ClusterService(LocalTransport):
 
     # -- status / listing ---------------------------------------------------
 
-    def _status_from_disk(self, campaign_id: str) -> Status:
-        """Fallback for a campaign this process is not driving.
+    # ``_status_from_disk`` is inherited. It used to be overridden here to read the durable
+    # ``_execution/outcome.json`` out of the object store first, because the local dir it
+    # reconstructs from does not exist in-pod. ``_record_dir`` now puts that object where
+    # every reader already looks, so the inherited implementation — which prefers
+    # ``outcome.json`` and merges ``postprocessed`` from a present ``data.db`` — is the one
+    # precedence for both lanes. That override's own promise, that a per-campaign status can
+    # never disagree with the list view, only became true with it gone: ``_summary_for``
+    # reconstructs directly and never called it.
 
-        Precedence, matching what ``_summary_for``/``list_campaigns`` already do so the
-        per-campaign status can never disagree with the list view:
+    def _durable_campaign_ids(self) -> set[str]:
+        """Campaign ids from the object store's index (see ``in_pod_storage``).
 
-        1. the durable ``_execution/outcome.json`` published to the object store (the
-           canonical terminal record — ``finished`` / ``failed`` / ``stopped``, plus any
-           ``postprocessing_error`` / ``share_error``);
-        2. otherwise reconstruct from the campaign's on-disk artifacts. Off-cluster the
-           driver downloads every campaign under the local results root, so a campaign
-           whose runs finished but that never got a durable outcome (e.g. an older run,
-           or one lost to a restart) reconstructs as ``finished`` from its ``test.xml``
-           results instead of a bare ``unknown``. In-pod there is no local scratch, so
-           this yields ``unknown`` for a missing dir — the same answer as before.
+        This is what makes a finished cluster campaign listable at all: its home is the
+        object store, and the inherited disk scan sees only what this pod happens to still
+        have in scratch.
         """
-        outcome = self._read_outcome(campaign_id)
-        if outcome is not None:
-            return outcome
-        from robovast.execution.status_recovery import \
-            reconstruct_status_from_disk
-        return reconstruct_status_from_disk(self._campaigns_root() / campaign_id)
+        return set(self._campaign_index())
+
+    def _started_at_for(self, cid: str) -> "str | None":
+        """Inherited precedence, plus the index as the last resort.
+
+        The index is consulted **before** the store's ``campaign.db``, and that ordering is
+        the point: ``list_campaigns`` calls this for *every* candidate id to order them
+        before it paginates, so a start time read per campaign would mean one object read
+        per campaign on every cold listing — with a 100-campaign SSE poll behind it. The
+        marker carries the time in its key, so the whole ordering pass costs the one cached
+        listing, and ``_record_dir`` is reached only for the page actually rendered.
+        """
+        with self._lock:
+            entry = self._campaigns.get(cid)
+        if entry is not None:
+            return entry.created_at
+        cached = self._started_at_cache.get(cid)
+        if cached is not None:
+            return cached
+        indexed = self._campaign_index().get(cid)
+        if indexed:
+            self._started_at_cache[cid] = indexed
+            return indexed
+        return super()._started_at_for(cid)
+
+    #: How long a campaign-index listing is reused. The campaign-list SSE stream re-lists
+    #: every second (app.py ``_SSE_LIST_POLL_S``), so without this every one of those polls
+    #: would be an object-store round-trip.
+    _INDEX_CACHE_TTL = 10.0
+
+    def _campaign_index(self) -> dict:
+        """``{campaign_id: created_at}`` from the object store, cached for
+        :data:`_INDEX_CACHE_TTL`.
+
+        Best-effort: an unreachable store means "cannot tell what is stored right now", and
+        the honest response is to list what we *can* see rather than fail the listing. The
+        stale cache is kept in that case, so a brief outage does not make every stored
+        campaign blink out of the list and back.
+        """
+        from robovast.execution.cluster_execution import in_pod_storage
+        now = time.monotonic()
+        with self._index_lock:
+            cached = self._index_cache
+            if cached is not None and now - cached[0] < self._INDEX_CACHE_TTL:
+                return cached[1]
+        try:
+            cfg = self._cluster_config()
+            storage = in_pod_storage.storage_client_for(cfg)
+            index = dict(in_pod_storage.list_indexed_campaigns(storage, cfg))
+        except Exception as e:  # noqa: BLE001 - never fail a listing over discovery
+            logger.warning("Could not read the campaign index: %s", e)
+            with self._index_lock:
+                return {} if self._index_cache is None else self._index_cache[1]
+        with self._index_lock:
+            self._index_cache = (now, index)
+        return index
+
+    def _on_campaign_started(self, campaign_id: str, created_at: str) -> None:
+        """Publish the campaign's index marker, so it is discoverable from here on.
+
+        Called at the top of the driver, before the image build and the run: everything
+        that can go wrong afterwards — a failed build, a crash mid-run, a stop, a failed
+        finalize upload — leaves a campaign that is still listed, which is the whole reason
+        the marker is not written at the end.
+
+        Best-effort: a campaign is not worth failing over its index entry, and a store
+        broken enough to refuse this will fail the campaign's own uploads with a real error
+        moments later.
+        """
+        from robovast.execution.cluster_execution import in_pod_storage
+        try:
+            cfg = self._cluster_config()
+            storage = in_pod_storage.storage_client_for(cfg)
+            in_pod_storage.mark_campaign_indexed(storage, cfg, campaign_id, created_at)
+        except Exception as e:  # noqa: BLE001 - discoverability, not correctness
+            logger.warning("Could not index campaign %s for discovery: %s",
+                           campaign_id, e)
+            return
+        with self._index_lock:
+            self._index_cache = None  # so the next listing sees it without waiting out the TTL
+
+    def _unmark_campaign(self, campaign_id: str) -> None:
+        """Drop a deleted campaign's index marker, so it stops being listed."""
+        from robovast.execution.cluster_execution import in_pod_storage
+        try:
+            cfg = self._cluster_config()
+            storage = in_pod_storage.storage_client_for(cfg)
+            in_pod_storage.unmark_campaign_indexed(storage, cfg, campaign_id)
+        except Exception as e:  # noqa: BLE001 - the data itself is already gone
+            logger.warning("Could not remove campaign %s from the index: %s",
+                           campaign_id, e)
+        with self._index_lock:
+            self._index_cache = None
 
     def get_campaign_logs(self, campaign_id: str, offset: int = 0):
         """Serve the unified infrastructure log — live pod scratch, then object store.
@@ -1007,16 +1099,12 @@ class ClusterService(LocalTransport):
         return LogChunk(text=raw[offset:].decode("utf-8", "replace"),
                         next_offset=len(raw), eof=done)
 
-    def _ensure_build_image(self, project, campaign_config) -> "str | None":
-        """Cluster preflight: build (or reuse) the project's build: image.
-
-        Overrides the LocalTransport (docker) preflight, working directly from the
-        already-resolved project/config. Returns the concrete registry ref to pin as
-        the explicit image, or ``None`` when there is no ``build:`` section. Blocks
-        until the build finishes; raises ``RuntimeError`` on failure.
-        """
+    def _campaign_build_context(self, project, campaign_config):
+        """``(spec, project_dir, cfg, registry)`` for a campaign's ``build:`` image, or
+        ``None`` when it has none. Works from the already-resolved project/config, unlike
+        :meth:`_build_context`, which resolves a standalone ``build_image`` request."""
         from robovast.service.image_build import (extract_build_spec,
-                                                   validate_build_spec)
+                                                  validate_build_spec)
         spec = extract_build_spec(campaign_config)
         if spec is None:
             return None
@@ -1030,51 +1118,37 @@ class ClusterService(LocalTransport):
             raise ValueError(
                 "execution.image is a build:<tag> ref but no container registry is "
                 "configured for this cluster (see 'vast exec cluster setup').")
+        return spec, project_dir, cfg, registry
+
+    def _start_build_image(self, project, campaign_config):
+        """Submit (or join) the in-cluster BuildKit Job for this campaign's image.
+
+        Returns as soon as the build has a handle; ``LocalTransport._await_build_image``
+        waits on it over the interface, so both lanes share one wait loop.
+        """
+        resolved = self._campaign_build_context(project, campaign_config)
+        if resolved is None:
+            return None
+        spec, project_dir, cfg, registry = resolved
         from robovast.execution.cluster_execution.cluster_image_build import \
             build_context_bucket
-        bucket = build_context_bucket(cfg)
+        return self._start_cluster_build(spec, project_dir, cfg, registry,
+                                         build_context_bucket(cfg))
+
+    def _resolve_built_image(self, project, campaign_config) -> str:
+        """The concrete registry ref to pin as the campaign's explicit image."""
+        spec, project_dir, _cfg, registry = self._campaign_build_context(
+            project, campaign_config)
         image_ref, _hash = self._resolve_build_ref(spec, project_dir, registry)
-        ref = self._start_cluster_build(spec, project_dir, cfg, registry, bucket)
-        status = self._await_cluster_build(ref.build_id)
-        if status.phase not in ("succeeded", "cached"):
-            err = status.error
-            detail = f" ({err.message})" if err and err.message else ""
-            raise RuntimeError(
-                f"experiment image build '{spec.tag}' failed{detail}; "
-                f"see the build log (build_id={ref.build_id})")
         return image_ref
 
-    def _await_cluster_build(self, build_id: str):
-        while True:
-            status = self.get_image_build_status(build_id)
-            if status.done:
-                return status
-            time.sleep(3.0)
-
-    def _read_outcome(self, campaign_id: str) -> "Status | None":
-        """Read the campaign's durable terminal outcome from the object store."""
-        from robovast.execution.cluster_execution import in_pod_storage
-        try:
-            cfg = self._cluster_config()
-            bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
-            storage = in_pod_storage.storage_client_for(cfg)
-            raw = storage.read_object(bucket, f"{prefix}_execution/outcome.json")
-        except Exception as e:  # noqa: BLE001 - best-effort; fall back to bare phase
-            logger.debug("could not read outcome for %s: %s", campaign_id, e)
-            return None
-        if not raw:
-            return None
-        try:
-            return Status.model_validate_json(raw)
-        except Exception as e:  # noqa: BLE001 - malformed record; ignore
-            logger.debug("malformed outcome.json for %s: %s", campaign_id, e)
-            return None
-
-    # list_campaigns is inherited from LocalTransport: off-cluster the driver runs
-    # in this process and writes each campaign under the local results dir, so the
-    # disk scan surfaces both live campaigns and ones from before a `vast serve`
-    # restart. (`_summary_for` uses the in-memory snapshot while a campaign is being
-    # driven and otherwise derives `postprocessed` from the on-disk data.db.)
+    # ``list_campaigns`` is inherited from LocalTransport. Its id set is "on disk ∪ durable
+    # ∪ being driven", and this lane contributes the middle one via
+    # ``_durable_campaign_ids``: off-cluster the driver runs in this process and writes each
+    # campaign under the local results dir, so the disk scan already covers those, but in-pod
+    # the disk is scratch and the object store's index is the only record that a campaign
+    # from a previous service life exists. Each id is then resolved by the same precedence
+    # ``get_status`` uses — live snapshot if tracked, else its records via ``_record_dir``.
 
     def stop(self, campaign_id: str) -> ActionResult:
         """Stop a campaign this process is driving.
@@ -1087,6 +1161,13 @@ class ClusterService(LocalTransport):
         run-cleanup`` performs): the running pods terminate now, the batch wait loop
         unblocks (``get_remaining_jobs`` treats a gone Job as finished), and the
         driver winds the campaign down.
+
+        A campaign still in ``building`` is stopped by the flag alone: that teardown is
+        label-scoped to ``jobgroup=scenario-runs`` and cannot reach the
+        ``jobgroup=image-builds`` Job. That is deliberate and must stay true — an image
+        build is content-addressed and therefore shared, so cancelling it could strand a
+        sibling campaign waiting on the same image, and the image is a cache entry rather
+        than this campaign's property. ``_await_build_image`` detaches instead.
         """
         with self._lock:
             entry = self._campaigns.get(campaign_id)
@@ -1188,12 +1269,33 @@ class ClusterService(LocalTransport):
                     # ``cleanup_campaigns`` compares against object-store names.
                     running.add(c.campaign_id)
                     running.add(bucket_ops._bucket_name(c.campaign_id))
-        count = bucket_ops.cleanup_campaigns(
+        removed = bucket_ops.cleanup_campaigns(
             self._cluster_config(), namespace=self.namespace,
             context=self.kube_context, campaign_id=request.campaign_id,
             running_campaigns=running)
+        # Retire the marker of everything actually removed, or those campaigns keep being
+        # listed with nothing behind them. Driven by what the sweep *did*, not by what it
+        # was asked to do: a campaign whose delete failed keeps its marker, because its
+        # data is still there and a listing that omits stored data is the very defect the
+        # index exists to fix. Matching is forward-only (id → bucket name); the reverse is
+        # the lossy transform this index replaced.
+        self._unmark_removed(removed)
         return ActionResult(
-            ok=True, message=f"Removed {count} bucket(s) from the object store.")
+            ok=True, message=f"Removed {len(removed)} bucket(s) from the object store.")
+
+    def _unmark_removed(self, removed) -> None:
+        """Retire index markers for the storage names *removed* names.
+
+        Skips the object store entirely when nothing was removed — the common no-op, and
+        it keeps a cleanup that swept nothing from paying for a listing.
+        """
+        if not removed:
+            return
+        from robovast.execution.cluster_execution import bucket_ops
+        gone = set(removed)
+        for cid in self._campaign_index():
+            if cid in gone or bucket_ops._bucket_name(cid) in gone:
+                self._unmark_campaign(cid)
 
     def delete_campaign(self, campaign_id: str) -> ActionResult:
         """Delete one cluster campaign wholesale: object-store data, leftover Jobs,
@@ -1228,7 +1330,9 @@ class ClusterService(LocalTransport):
         except Exception:  # noqa: BLE001 - cleanup is best-effort
             logger.warning("Leftover-Job cleanup for %s failed", campaign_id,
                            exc_info=True)
-        # 3. Service-local caches: the fetch scratch and any in-pod driver dir.
+        # 3. The index marker, or the campaign keeps being listed with no data behind it.
+        self._unmark_campaign(campaign_id)
+        # 4. Service-local caches: the fetch scratch and any in-pod driver dir.
         shutil.rmtree(self._cache_dir(campaign_id), ignore_errors=True)
         shutil.rmtree(self._campaign_dir(campaign_id), ignore_errors=True)
         with self._lock:
@@ -1257,19 +1361,23 @@ class ClusterService(LocalTransport):
     #: queryable before postprocessing has built ``data.db``.
     _QUERY_DBS = ("_execution/data.db", "campaign.db")
 
-    def _query_dir(self, campaign_id: str):
-        """Materialize just the query databases into the campaign's cache dir; return it.
+    def _materialize(self, campaign_id: str, rel_paths, subject: str) -> Path:
+        """Copy named objects of a campaign into its cache dir; return the dir.
 
-        The same reasoning as the ``/results`` file overrides below, applied to the last
-        caller that still ignored it: a query over a 40 MB ``data.db`` must not drag every
-        rosbag the campaign produced, which is what ``_data_dir``'s whole-prefix fetch
-        does. Writes into the *same* cache dir, so a later full ``fetch_campaign`` finds
-        these files already at the right size and skips them.
+        A **single-object** fetch per path — the same discipline as the ``/results`` file
+        overrides below, and the reason both callers exist: pulling the campaign prefix to
+        read a 40 MB ``data.db`` (or a 2 KB ``outcome.json``) drags every rosbag the
+        campaign produced, in the deployment where campaigns are largest. Writes into the
+        *same* cache dir, so a later full ``fetch_campaign`` finds these files already at
+        the right size and skips them.
 
-        Unlike a run artifact, ``data.db`` is **mutable** — re-postprocessing rewrites it in
-        place, which is what ``fetch_campaign(force=True)`` exists for. So a cached copy is
-        validated by *size*, not by existence: an existence check would pin the first
-        version this service ever saw and serve stale metrics forever.
+        A cached copy is validated by **size, not existence**: ``data.db`` and
+        ``outcome.json`` are both rewritten in place by re-postprocessing, and an existence
+        check would pin the first version this service ever saw and serve it forever.
+
+        A missing object is skipped, not an error: whether "not published yet" is a problem
+        is the caller's question, and each answers it differently (``_open_db`` raises its
+        own clear message; a campaign with no ``outcome.json`` reconstructs to ``unknown``).
         """
         from botocore.exceptions import (  # pylint: disable=import-outside-toplevel
             ClientError, EndpointConnectionError)
@@ -1279,19 +1387,18 @@ class ClusterService(LocalTransport):
         storage, bucket, prefix = self._campaign_object_location(campaign_id)
         with self._fetch_locks_guard:
             lock = self._fetch_locks.setdefault(campaign_id, threading.Lock())
-        # The same lock ``fetch_campaign`` takes: concurrent first-load queries (the
-        # results explorer fires one per sub-view) must not race to write the same
-        # ``data.db``, nor race a whole-campaign fetch writing it too.
+        # The same lock ``fetch_campaign`` takes: concurrent first-load reads (the results
+        # explorer fires one query per sub-view; the campaign list re-summarizes every
+        # second) must not race to write the same file, nor race a whole-campaign fetch
+        # writing it too.
         with lock:
             fetched = total = 0
             started = time.perf_counter()
             try:
-                for rel in self._QUERY_DBS:
+                for rel in rel_paths:
                     dst = dest / Path(rel)
                     size = storage.stat_object(bucket, f"{prefix}{rel}")
                     if size is None:
-                        # Not published (yet). Not an error here — ``_open_db`` decides what
-                        # a missing db means and raises its own clear message.
                         continue
                     total += size
                     if dst.exists() and dst.stat().st_size == size:
@@ -1315,10 +1422,55 @@ class ClusterService(LocalTransport):
             elapsed = time.perf_counter() - started
         if fetched:
             self._last_fetch[campaign_id] = (fetched, elapsed)
-            logger.info(
-                "Fetched query databases for campaign %s (%s of %s) from %s/%s in %.1fs",
-                campaign_id, fmt_size(fetched), fmt_size(total), bucket, prefix, elapsed)
+            logger.info("Fetched %s for campaign %s (%s of %s) from %s/%s in %.1fs",
+                        subject, campaign_id, fmt_size(fetched), fmt_size(total),
+                        bucket, prefix, elapsed)
         return dest
+
+    def _query_dir(self, campaign_id: str):
+        """Materialize just the query databases into the campaign's cache dir; return it."""
+        return self._materialize(campaign_id, self._QUERY_DBS, "query databases")
+
+    #: The campaign's **recorded facts**: its store row (start time, description, per-run
+    #: tallies) and its durable terminal outcome. Both small and both enough to summarize a
+    #: campaign without fetching any of its results.
+    _RECORD_OBJECTS = ("campaign.db", "_execution/outcome.json")
+
+    def _record_dir(self, cid: str) -> Path:
+        """Where *cid*'s recorded facts are, fetching the two small objects if needed.
+
+        The object store is this lane's durable home, so a campaign this process is not
+        driving may have no local copy at all — in-pod that is every campaign from a
+        previous service life, and the inherited readers would answer ``unknown`` and zero
+        for all of them. Materializing exactly two objects makes the whole inherited
+        summary/status path correct without a single new reader.
+
+        Three campaigns are left alone:
+
+        * one this process is **driving** — its driver owns ``campaign.db`` and is writing
+          it right now, and its dir is already the live truth;
+        * one whose driver dir already holds ``campaign.db`` — off-cluster the driver runs
+          here and writes locally, so there is nothing to fetch;
+        * one the index does not list — there is nothing of it in the store to fetch, and
+          the check is free (that listing is already cached for the id set). Without it a
+          listing would attempt a fetch per row, so an *unreachable* store cost one
+          connect timeout per campaign on the page instead of one for the page.
+        """
+        local = self._campaign_dir(cid)
+        with self._lock:
+            tracked = cid in self._campaigns
+        if tracked or (local / "campaign.db").is_file():
+            return local
+        if cid not in self._campaign_index():
+            return local
+        try:
+            return self._materialize(cid, self._RECORD_OBJECTS, "campaign records")
+        except (RuntimeError, KeyError) as e:
+            # Unreachable store, or no bucket for this campaign. Absent records are not a
+            # failed listing: the inherited readers report ``unknown`` / no start time,
+            # which is the honest answer, and the next poll retries.
+            logger.debug("could not materialize records for %s: %s", cid, e)
+            return local
 
     def campaign_data_status(self, campaign_id: str):
         """Cluster: a query reads the object store, so report what that will cost.

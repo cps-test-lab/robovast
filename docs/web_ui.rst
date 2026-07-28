@@ -19,11 +19,13 @@ It provides four views, one per desktop GUI:
   immediately — with its true live phase and its **start time** (shown in your
   browser's locale and timezone) — and every phase change is pushed within a second.
   The phase reflects the whole lifecycle, including the two pre-run steps that used to
-  be invisible: ``building`` (the experiment image is being built) and ``variation``
-  (the campaign's configurations are being expanded), then ``running`` →
-  ``finishing`` → ``postprocessing`` → ``finished`` (or ``failed`` / ``stopped``). A
-  build that fails is shown as a ``failed`` campaign in the list rather than
-  vanishing. The per-batch run bar also distinguishes **finished** runs (the
+  be invisible: ``building`` (the campaign is **waiting for its experiment image** —
+  builds are content-addressed and shared, so it may be waiting on one another campaign
+  triggered) and ``variation`` (the campaign's configurations are being expanded), then
+  ``running`` → ``finishing`` → ``postprocessing`` → ``finished`` (or ``failed`` /
+  ``stopped``). A build that fails is shown as a ``failed`` campaign in the list rather
+  than vanishing, and its builder output is in that campaign's own log under a ``BUILD``
+  divider. The per-batch run bar also distinguishes **finished** runs (the
   solid fill) from those **currently running** (a lighter segment on top), with the
   exact ``running N · pending M`` counts beside it. While a fixed-size campaign runs,
   an **ETA** (``~12m left (≈ 14:35)``, the estimated finish time in your locale)

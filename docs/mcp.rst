@@ -404,6 +404,11 @@ controls, applied in this order:
    * - ``summarize``
      - Return **distinct patterns with counts** instead of lines.
 
+``get_campaign_log`` takes one more, because its stream is several phases concatenated
+under ``===== PHASE =====`` dividers (variation → run → postprocessing): ``phase`` reads
+one of them — or ``"all"``. Every read reports ``phases`` as
+``[{name, lines, included}, …]``, so what a read left out is stated rather than absent.
+
 ``summarize=True`` is the one to reach for on a stalled run, because **filtering
 cannot diagnose a flood — the flood is the signal.** A campaign whose TF was being
 rejected wholesale matched a severity ``grep`` 18226 times; the returned lines looked
@@ -446,7 +451,38 @@ image** (a new ``sim_suite`` package, an apt dependency), the assistant declares
   a **structured** ``error_detail`` (``phase`` = apt / pip / source-build /
   base-pull / push / resource, the offending ``build:`` ``entry``, and
   ``fixable_by`` = ``agent`` or ``infra``).
-* ``get_image_build_log`` — the raw builder log for deep dives.
+* ``get_image_build_log`` — the raw builder log for deep dives, while the build exists.
+
+.. _mcp-build-phase:
+
+**A campaign that needs an image is created first and waits for it afterwards.**
+``start_campaign`` returns its id immediately even when the image has to be built; the
+campaign is then in phase ``building`` with ``stage: "waiting for image <tag>"``, it appears
+in ``list_running_campaigns``, and ``phase_age_s`` separates a slow build from a wedged one.
+Two things follow from that, both worth knowing before reaching for a build tool:
+
+* **The build's output is a** ``BUILD`` **section of the campaign's own log**, so
+  ``get_campaign_log(campaign_id, phase="build")`` reads it with the only id you were
+  given — no ``build_id`` to look up, and it stays readable after the build itself is gone
+  (a build Job is reaped an hour after it finishes, and with it
+  ``get_image_build_log``). For a build that is misbehaving, ``phase="build",
+  summarize=True`` is the read: a few hundred near-identical layer lines collapse to a
+  handful. It is **not** in a default read — it is a copy of shared, content-addressed work
+  rather than this campaign's narrative, and it is routinely the largest section, so leading
+  with it would spend a whole read on docker layers. ``phases`` always lists it with its
+  line count.
+* **A failed build is a failed campaign, not a failed request.** ``start_campaign``
+  succeeds; ``get_campaign_status`` then reports ``failed`` with the reason in ``error``.
+  Do not read that as "the start did not go through" and retry — that creates a second
+  campaign. Note also that BuildKit writes unmarked lines, which RoboVAST's classifier
+  deliberately rates ``warn`` rather than ``error`` (a producer's own marker outranks a
+  keyword, and inventing one would report errors a log never claimed), so
+  ``min_severity="error"`` is not how you find a build failure — the status is.
+
+Because ``build_hash`` is content-addressed, two campaigns needing the same image both wait
+on **one** build: the phase means *waiting for* an image, not performing a build, and
+``stop_campaign`` on a building campaign detaches it rather than cancelling a build a
+sibling may also be waiting on.
 
 The workflow is three steps and stays entirely in the ``.vast`` the assistant
 already edits:

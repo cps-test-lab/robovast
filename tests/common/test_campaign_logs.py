@@ -115,3 +115,58 @@ def test_assemble_from_dir_reads_execution_files(tmp_path):
     assert text.index("VARIATION") < text.index("RUN")
     assert "POSTPROCESSING" not in text  # absent phase file → no section
     assert eof is True
+
+
+# -- splitting the assembled stream back into phases ------------------------
+#
+# A reader that wants one phase (the BUILD aside, say) slices the assembled stream. The
+# sections must tile it exactly, or a filtered read would renumber the lines of the parts
+# it kept and report a different total than an unfiltered one.
+
+def test_sections_tile_the_stream_exactly():
+    from robovast.common.campaign_logs import split_phases
+    store = {"build.log": b"layer 1\nlayer 2\n",
+             "variation.log": b"gen A\n",
+             "controller.log": b"batch 0\nrun 0\n"}
+    text, _, _ = assemble_log(_store_reader(store), offset=0)
+
+    sections = split_phases(text)
+    assert [name for name, _ in sections] == ["BUILD", "VARIATION", "RUN"]
+    assert "".join(body for _, body in sections) == text
+
+
+def test_selecting_a_subset_splices_without_shifting_lines():
+    from robovast.common.campaign_logs import split_phases
+    store = {"build.log": b"layer 1\n", "controller.log": b"batch 0\n"}
+    with_build, _, _ = assemble_log(_store_reader(store), offset=0)
+    without, _, _ = assemble_log(
+        _store_reader({"controller.log": b"batch 0\n"}), offset=0)
+
+    kept = "".join(body for name, body in split_phases(with_build) if name != "BUILD")
+    assert kept == without
+
+
+def test_a_log_line_shaped_like_a_banner_does_not_invent_a_phase():
+    from robovast.common.campaign_logs import split_phases
+    store = {"controller.log": b"===== NOT A PHASE =====\nbatch 0\n"}
+    text, _, _ = assemble_log(_store_reader(store), offset=0)
+
+    assert [name for name, _ in split_phases(text)] == ["RUN"]
+
+
+def test_content_before_the_first_divider_is_not_dropped():
+    from robovast.common.campaign_logs import split_phases
+    text = "stray prologue\n" + phase_banner("RUN") + "batch 0\n"
+    sections = split_phases(text)
+    assert sections[0][0] == ""
+    assert "".join(body for _, body in sections) == text
+
+
+def test_build_is_the_first_phase_and_an_aside():
+    """First because it happens first — and because appending it last would insert bytes
+    *ahead of* later phases as they appear, shifting every byte offset a poller holds.
+    An aside because it is shared, content-addressed work, not this campaign's narrative.
+    """
+    from robovast.common.campaign_logs import ASIDE_PHASES, INFRA_PHASES
+    assert INFRA_PHASES[0][0] == "BUILD"
+    assert "BUILD" in ASIDE_PHASES

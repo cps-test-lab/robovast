@@ -408,20 +408,24 @@ def _select_phases(text: str, phase: str) -> "tuple[str, list[dict]]":
             f"unknown phase {phase!r}; use one of "
             f"{', '.join(sorted(known))} — or 'all'")
 
-    sections = split_phases(text)
     out, phases = [], []
-    for name, body in sections:
+    for name, section in split_phases(text):
         if not name:
-            out.append(body)  # pre-divider remainder; never dropped
+            out.append(section)  # pre-divider remainder; never dropped
             continue
         if wanted and wanted != "all":
             included = name.lower() == wanted
         else:
             included = wanted == "all" or name not in ASIDE_PHASES
-        phases.append({"name": name, "lines": len(body.splitlines()),
+        # Content lines only — the banner is a divider, not log output — so the count is
+        # what a caller would actually receive for this phase.
+        body = section.replace(phase_banner(name), "", 1)
+        phases.append({"name": name, "lines": len(body.strip("\n").splitlines()),
                        "included": included})
         if included:
-            out.append(phase_banner(name) + body)
+            out.append(section)
+    # The sections tile the input, so an all-included read returns it byte for byte:
+    # asking for the log must not change how many lines the log has.
     return "".join(out), phases
 
 

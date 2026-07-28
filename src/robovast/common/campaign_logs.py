@@ -33,6 +33,7 @@ concatenation/offset logic serves a local disk read, a cluster pod-scratch read,
 and an object-store read without duplication.
 """
 
+import re
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -40,11 +41,21 @@ from typing import Callable, Optional
 #: ``filename`` is relative to the campaign's ``_execution/`` directory. Adding a
 #: future infrastructure phase is a one-line change here.
 INFRA_PHASES: list[tuple[str, str]] = [
+    ("BUILD", "build.log"),
     ("PLUGIN INSTALL", "plugin_install.log"),
     ("VARIATION", "variation.log"),
     ("RUN", "controller.log"),
     ("POSTPROCESSING", "postprocessing.log"),
 ]
+
+#: Phases that are **not** the campaign's own work, and so are not part of a default
+#: read of its log. ``BUILD`` is the output of a content-addressed image build that may
+#: be shared by several campaigns and is copied in for reachability and durability (the
+#: build outlives nothing — its Job is reaped at ``ttlSecondsAfterFinished``), not
+#: because it narrates this campaign. It is also, routinely, by far the largest section:
+#: a reader that led with it would spend its whole budget on docker layers before
+#: reaching the run. Readers present it, and fetch it on request.
+ASIDE_PHASES: frozenset[str] = frozenset({"BUILD"})
 
 #: Subdirectory under the campaign root holding the phase log files.
 EXECUTION_DIR = "_execution"
@@ -53,6 +64,12 @@ EXECUTION_DIR = "_execution"
 def phase_banner(name: str) -> str:
     """The textual divider the reader injects before a phase's content."""
     return f"\n===== {name} =====\n"
+
+
+#: :func:`phase_banner`'s shape, line-anchored, for reading a divider back out of an
+#: assembled stream (:func:`split_phases`). Matched against the known phase names, so an
+#: ordinary log line of the same shape cannot pass for one.
+_BANNER_RE = re.compile(r"^===== (?P<name>.+?) =====$", re.MULTILINE)
 
 
 def assemble_log(
@@ -91,6 +108,47 @@ def assemble_log(
     # character (it may render one replacement char at a poll boundary — the same
     # tradeoff the previous single-file reader made).
     return tail.decode("utf-8", "replace"), start + len(tail), eof
+
+
+def split_phases(text: str) -> list[tuple[str, str]]:
+    """Split an assembled log into ``[(phase_name, section), ...]``, in order.
+
+    The inverse of :func:`assemble_log`'s divider, kept here beside it so the format has
+    exactly one definition — a reader that re-derived the banner would be a second copy to
+    drift. Only the known :data:`INFRA_PHASES` names are recognised, so a log line that
+    happens to look like a banner cannot invent a phase.
+
+    Each ``section`` is the **exact substring** of *text*, its banner line included, and
+    the sections tile *text* end to end: concatenating all of them reproduces the input
+    byte for byte, and concatenating a subset splices the log without shifting a single
+    line. That is the property callers need — a filtered read that renumbered the lines of
+    the parts it kept would report a different total than an unfiltered one.
+
+    Anything before the first divider is returned under the name ``""``, so no bytes are
+    dropped even if the stream does not start with a banner.
+    """
+    known = {phase for phase, _ in INFRA_PHASES}
+    marks = []
+    for match in _BANNER_RE.finditer(text):
+        name = match.group("name")
+        if name not in known:
+            continue
+        # The banner owns the newline in front of it (:func:`phase_banner` writes one), so
+        # a normally-assembled stream splits into exactly its phases with no leading
+        # remainder — and dropping a section takes its own separator with it.
+        start = match.start()
+        if start and text[start - 1] == "\n":
+            start -= 1
+        marks.append((start, name))
+    bounds = [m[0] for m in marks] + [len(text)]
+    sections = []
+    if not marks or marks[0][0] > 0:
+        prologue = text[:bounds[0]]
+        if prologue:
+            sections.append(("", prologue))
+    for i, (start, name) in enumerate(marks):
+        sections.append((name, text[start:bounds[i + 1]]))
+    return sections
 
 
 def disk_get_bytes(campaign_dir: "Path | str") -> Callable[[str], Optional[bytes]]:

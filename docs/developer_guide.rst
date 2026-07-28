@@ -1243,15 +1243,129 @@ makes the standing advice ("a timed-out start is not a failed start; check, neve
 actually true: retrying a start that in fact succeeded creates a second campaign, and the
 only defence is that the first one can be found.
 
-Two things back it. Registration happens *before* the slow work — ``create_campaign``
-records the campaign in the lane's registry, then builds the image — so the campaign is
-live from ``t=0`` rather than from whenever its results directory appears. And a
-multi-lane service unions its sibling lanes' registries into the listing via
-``_extra_live_ids``: ``list_campaigns`` derives its id set from the *local* lane's "disk ∪
-in-memory" view, so without that a cluster campaign was missing from every listing for the
-whole length of its pre-flight — registered and addressable by id, but undiscoverable by
-anyone who did not already know the id, which is precisely the caller whose start response
-was lost.
+Three things back it. Registration happens *before* the slow work — ``create_campaign``
+records the campaign in the lane's registry and returns, and the driver builds the image —
+so the campaign is live from ``t=0`` rather than from whenever its results directory
+appears (see :ref:`campaign-building-phase`). A multi-lane service unions its sibling
+lanes' registries into the listing via ``_extra_live_ids``: ``list_campaigns`` derives its
+id set from the *local* lane's "disk ∪ in-memory" view, so without that a cluster campaign
+was missing from every listing for the whole length of its pre-flight — registered and
+addressable by id, but undiscoverable by anyone who did not already know the id, which is
+precisely the caller whose start response was lost. And a campaign whose durable home is
+not this disk is unioned in the same way via ``_durable_campaign_ids``
+(:ref:`campaign-discovery`), which is what keeps the invariant true across a service
+restart rather than only within one process's lifetime.
+
+.. _campaign-discovery:
+
+Discovering campaigns whose home is the object store
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``list_campaigns`` builds its id set from three sources: the results directory on disk,
+the in-memory registry of what is being driven (plus ``_extra_live_ids`` for a sibling
+lane's), and ``_durable_campaign_ids`` for campaigns **stored** somewhere that is not this
+disk. The last one exists for the cluster lane: a finished cluster campaign lives in the
+object store, and in-pod the service's disk is scratch, so every campaign from a previous
+service life was invisible to a listing that only scanned it.
+
+**Why not enumerate buckets.** ``StorageClient`` has no bucket listing; with a
+per-campaign-bucket deployment each campaign *is* a bucket named
+``campaign_id.lower().replace("_","-")``, so recovering the id means inverting a lossy
+transform and returning a *different* id for any name with ``_`` or upper case; and buckets
+should stay internal. Instead each campaign publishes a **marker** under one known prefix,
+and that prefix is what gets listed:
+
+.. code-block:: text
+
+   campaign-index/<campaign_id>/<created_at>      # a zero-byte object
+
+The **key is the whole record** (``in_pod_storage.mark_campaign_indexed``). There is no
+body, so there is nowhere to put a status: ``_execution/outcome.json`` stays the one
+canonical terminal record and the index cannot become a second source of truth for the
+phase. Two details earn their place in the key:
+
+* the id is a segment *verbatim* — nothing was sanitised on the way in, so nothing has to
+  be undone on the way out;
+* ``created_at`` is there because the **listing** needs it. ``list_campaigns`` asks every
+  candidate for its start time to order them *before* it paginates, so a start time that
+  cost an object read would be one round-trip per campaign on every cold listing — with a
+  100-campaign SSE poll behind it. In the key, one cached listing answers the whole
+  ordering pass.
+
+The marker is written by ``_on_campaign_started``, a launch hook called at the top of the
+driver — before the image build and the run — so every later outcome belongs to a campaign
+that can still be found: a failed build, a crash mid-run, a stop, a failed finalize upload.
+It is best-effort with a warning, because a campaign is not worth failing over its index
+entry, and a store broken enough to refuse it will fail the campaign's own uploads with a
+real error moments later. ``delete_campaign`` and ``cleanup_campaign_data`` retire it —
+the latter driven by what the sweep actually removed, so a campaign whose delete *failed*
+keeps its marker and its data stays listed.
+
+**The records themselves come from ``_record_dir``.** Four readers need a campaign's
+recorded facts — ``_summary_for``, ``_started_at_for``, ``_description_for``,
+``_status_from_disk`` — and each used to resolve ``<results>/<id>`` inline, so the cluster
+lane had to override all four or none. They now go through one seam, and ``ClusterService``
+overrides just it: for a campaign with no local copy it materializes exactly two small
+objects — ``campaign.db`` and ``_execution/outcome.json`` — into the campaign's cache dir,
+after which every inherited reader is correct with no second implementation. Deliberately
+a **single-object** fetch (``_materialize``, shared with ``_query_dir``) and never
+``fetch_campaign``: a 2 KB record must not drag a 1 TB campaign. It is skipped for a
+campaign this process is driving (its driver owns ``campaign.db``), for one whose local dir
+already has it, and for one the index does not list — that last check is what keeps a
+listing behind an *unreachable* store to one connect timeout for the page instead of one
+per row.
+
+.. _campaign-building-phase:
+
+A campaign waits for its image; the request does not
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``create_campaign`` is fire-and-forget, so the image build runs on the campaign's worker,
+not on the caller's thread. Awaiting it inline meant a cluster start for a project with a
+``build:`` section died on the HTTP client's 30 s read timeout **while the server kept
+going and the campaign succeeded** — a reported failure for work that worked — and, since
+the campaign was created only after the build, none of that work was observable while it
+ran.
+
+What the caller gets instead: the campaign id immediately, and a campaign in phase
+``building`` whose ``stage`` reads ``waiting for image <tag>``. ``list_running_campaigns``
+needed no change for it to appear there — a building campaign is a campaign, and the
+listing already unions the in-memory registry. (Teaching that tool to enumerate *builds*
+would have needed a listing endpoint that does not exist, returned entries that are not
+campaigns, and created a second in-flight registry to keep consistent with the first.)
+
+Builds are **shared** — ``build_hash`` is content-addressed over the spec and context, so
+two campaigns needing the same image both wait on one build. Two consequences:
+
+* The phase means *waiting for* its image, not *performing* the build; otherwise two
+  campaigns each appear to be building the same one. The ``stage`` and the ``build.log``
+  header both say so.
+* Stopping a building campaign **detaches** it. ``_await_build_image`` raises
+  ``CampaignStopped`` and touches neither the build Job nor the local build thread: a
+  sibling may be waiting on that build, and the image is a cache entry rather than this
+  campaign's property. Nothing cancels a build today — the cluster teardown is label-scoped
+  to ``jobgroup=scenario-runs`` and cannot reach a ``jobgroup=image-builds`` Job, and the
+  local ``docker rm -f robovast`` cannot reach a ``buildx`` thread — and it must stay that
+  way.
+
+One wait loop serves both lanes: ``_await_build_image`` drives ``get_image_build_status``
+and ``get_image_build_log``, which are interface operations each transport implements, so
+the local Docker build and the in-cluster BuildKit Job are waited on by the same code
+rather than by two that drift. It replaced ``_ensure_build_image`` plus a per-lane await
+loop on each side — three methods where there were four, one of them shared.
+
+The loop also **tees the build log into the campaign's own** ``_execution/build.log``,
+which ``INFRA_PHASES`` serves as a leading ``BUILD`` section (see :ref:`the MCP build workflow <mcp-build-phase>`). That
+is the campaign's only durable record of the image it ran on: the live source dies with
+the build, since a build Job is reaped at ``ttlSecondsAfterFinished``, and a failed build
+is exactly when someone comes looking. It is also why
+``controller._record_controller_outcome`` uploads ``build.log`` alongside ``outcome.json``
+— a campaign that died waiting for its image never reaches ``finalize_campaign`` at all.
+
+This changes an error path on purpose: a failed build is now an inspectable ``failed``
+campaign — reason in its status, output in its own log — rather than a 500 and no campaign.
+It applies to the local docker build too: building is part of the campaign's driven work,
+not a precondition of its existence.
 
 Control operations
 ^^^^^^^^^^^^^^^^^^^
