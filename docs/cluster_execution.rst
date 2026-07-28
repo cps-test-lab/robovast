@@ -130,10 +130,16 @@ project-free, name the ``.vast`` explicitly:
 
    vast -V my_campaign.vast execution cluster setup rke2
 
-A project's ``.vast`` is used when the command happens to run inside a project. With
-neither, no node selectors are deployed (logged at INFO) and pods schedule wherever
-Kubernetes puts them; a ``.vast`` that cannot be read is an error rather than a silent
-"no labels".
+A project's ``.vast`` is used when the command happens to run inside a project — note
+that a ``.robovast_project`` is searched for by walking *up* to the filesystem root, so
+one several directories above the CWD still applies. With neither, no node selectors are
+deployed (logged at INFO) and pods schedule wherever Kubernetes puts them.
+
+A ``.vast`` that exists but cannot be read is an error rather than a silent "no
+labels" — a config that fails to load cannot be asked whether labels were intended. A
+project pointing at a ``.vast`` that no longer exists is instead treated as the
+no-config case (logged at WARNING, naming the stale project file): nothing was named
+for this setup to read, so a stale record does not block deploying a cluster.
 
 To tear everything down after use:
 

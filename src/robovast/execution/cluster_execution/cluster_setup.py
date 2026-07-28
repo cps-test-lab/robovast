@@ -18,6 +18,7 @@
 """Setup utilities for cluster execution."""
 
 import logging
+import os
 from importlib.metadata import entry_points
 
 from robovast.common.cli.project_config import resolve_vast_file
@@ -197,9 +198,10 @@ def get_kubernetes_node_labels_from_config(config_path=None):
             or ``None`` when not configured.
 
     Raises:
-        ValueError: If a config file was named but cannot be read. Falling back to
+        ValueError: If a config file exists but cannot be read. Falling back to
             "no labels" would schedule pods on arbitrary nodes while the command
-            reported success.
+            reported success. A config path that does not exist at all is a stale
+            record rather than an unreadable config — see below.
     """
     if config_path is None:
         config_path = resolve_vast_file()
@@ -208,6 +210,24 @@ def get_kubernetes_node_labels_from_config(config_path=None):
                 "No .vast config (neither 'vast -V <file>' nor a .robovast_project) — "
                 "no node labels applied. Pass 'vast -V <file>' to pin pods to a node "
                 "pool via execution.kubernetes.{jobs,control}.node_labels.")
+            return None, None
+        if not os.path.isfile(config_path):
+            # A .robovast_project is found by walking *up* to the root and is never
+            # checked against the file it names, so a project whose .vast was moved,
+            # renamed or deleted — possibly several directories above a CWD that has
+            # nothing to do with it — resolves to a path that is simply not there.
+            # Nothing was named for *this* command to read, which is the no-config
+            # case, not an unreadable one: warn and deploy without node selectors
+            # rather than refuse to set up a cluster over a stale record.
+            from robovast.common.cli.project_config import \
+                ProjectConfig  # pylint: disable=import-outside-toplevel
+            stale = ProjectConfig.find_project_file()
+            where = f" named by '{stale}'" if stale else ""
+            logger.warning(
+                "The .vast config%s does not exist: '%s'. No node labels applied — "
+                "pods schedule wherever Kubernetes puts them. Re-run 'vast init "
+                "<config>' to fix that project, or pass 'vast -V <file>' to name the "
+                "config this setup should read node labels from.", where, config_path)
             return None, None
     try:
         execution = load_config(config_path, subsection="execution", allow_missing=True)

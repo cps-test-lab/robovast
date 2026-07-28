@@ -79,3 +79,21 @@ def test_unreadable_named_config_raises(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     with pytest.raises(ValueError, match="could not read node labels"):
         get_kubernetes_node_labels_from_config(str(tmp_path / "missing.vast"))
+
+
+def test_stale_project_pointer_does_not_block_setup(tmp_path, monkeypatch, caplog):
+    """A project naming a .vast that no longer exists is the no-config case.
+
+    ``.robovast_project`` is found by walking up to the root and is never checked
+    against the file it names, so a moved or deleted ``.vast`` — possibly from a
+    project far above the CWD — must not refuse to set up a cluster.
+    """
+    (tmp_path / ".robovast_project").write_text(json.dumps(
+        {"config": "gone.vast", "results_dir": "results"}), encoding="utf-8")
+    deep = tmp_path / "a" / "b"
+    deep.mkdir(parents=True)
+    monkeypatch.chdir(deep)
+    with caplog.at_level("WARNING"):
+        assert get_kubernetes_node_labels_from_config() == (None, None)
+    assert "does not exist" in caplog.text
+    assert ".robovast_project" in caplog.text
