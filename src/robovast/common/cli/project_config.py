@@ -179,8 +179,13 @@ class ProjectConfig:
         return True, None
 
 
-def _get_vast_file_override() -> Optional[str]:
-    """Return the ``--vast-file`` override from the Click context, if any."""
+def get_vast_file_override() -> Optional[str]:
+    """Return the ``--vast-file`` override from the Click context, if any.
+
+    Public because it is the project-free way to name a ``.vast``: a command that
+    must run without a ``.robovast_project`` (``vast exec cluster setup``) still has
+    to honour an explicitly given config file.
+    """
     try:
         ctx = click.get_current_context(silent=True)
         if ctx and ctx.obj:
@@ -188,6 +193,22 @@ def _get_vast_file_override() -> Optional[str]:
     except RuntimeError:
         pass
     return None
+
+
+def resolve_vast_file() -> Optional[str]:
+    """The ``.vast`` config path to use, or ``None`` if nothing names one.
+
+    For commands that must work **without** a project: ``--vast-file`` wins, a
+    ``.robovast_project`` is honoured when the command happens to run inside one, and
+    ``None`` means the command has to do without a config rather than fail. Use
+    :func:`get_project_config` instead wherever a config is genuinely required — it
+    raises with the ``vast init`` hint.
+    """
+    override = get_vast_file_override()
+    if override:
+        return override
+    config = ProjectConfig.load()
+    return config.config_path if config is not None else None
 
 
 def get_project_config() -> ProjectConfig:
@@ -209,7 +230,7 @@ def get_project_config() -> ProjectConfig:
     Raises:
         click.ClickException: If project is not initialized or configuration is invalid
     """
-    override_path = _get_vast_file_override()
+    override_path = get_vast_file_override()
 
     config = ProjectConfig.load()
     if not config:

@@ -20,7 +20,7 @@
 import logging
 from importlib.metadata import entry_points
 
-from robovast.common.cli.project_config import ProjectConfig
+from robovast.common.cli.project_config import resolve_vast_file
 from robovast.common.common import load_config
 
 from .kubernetes_kueue import (apply_kueue_queues, install_kueue_helm,
@@ -184,22 +184,43 @@ def get_kubernetes_node_labels_from_config(config_path=None):
                 <key>: <value>   # applied as nodeSelector to the robovast control pod
 
     Args:
-        config_path: Path to the ``.vast`` config file.  When ``None`` the
-            active project config is used.
+        config_path: Path to the ``.vast`` config file. When ``None`` it is resolved
+            with :func:`~robovast.common.cli.project_config.resolve_vast_file`
+            (``--vast-file``, else a project config if the command happens to run
+            inside a project). Deploying into a cluster is not a project operation —
+            ``cluster setup`` runs from any directory, and node labels are the only
+            thing it reads from a ``.vast`` — so having no config is not an error
+            here; it means no labels apply.
 
     Returns:
         tuple: ``(jobs_node_labels, control_node_labels)`` — each is a ``dict``
             or ``None`` when not configured.
+
+    Raises:
+        ValueError: If a config file was named but cannot be read. Falling back to
+            "no labels" would schedule pods on arbitrary nodes while the command
+            reported success.
     """
     if config_path is None:
-        pc = ProjectConfig.load()
-        if pc is None or not getattr(pc, 'config_path', None):
+        config_path = resolve_vast_file()
+        if config_path is None:
+            logger.info(
+                "No .vast config (neither 'vast -V <file>' nor a .robovast_project) — "
+                "no node labels applied. Pass 'vast -V <file>' to pin pods to a node "
+                "pool via execution.kubernetes.{jobs,control}.node_labels.")
             return None, None
-        config_path = pc.config_path
     try:
         execution = load_config(config_path, subsection="execution", allow_missing=True)
-    except Exception:
-        return None, None
+    except Exception as exc:
+        # Deploying with "no labels" because the config was unreadable would put job
+        # and control pods on arbitrary nodes for the cluster's whole lifetime, while
+        # setup reported success — the failure has to surface here.
+        raise ValueError(
+            f"could not read node labels from '{config_path}': {exc}\n"
+            "Fix that .vast, or name another one with 'vast -V <file>'. Cluster "
+            "setup needs no project at all — run it from a directory without a "
+            ".robovast_project to deploy with no node selectors on purpose."
+        ) from exc
     k8s = (execution or {}).get("kubernetes") or {}
     jobs_labels = (k8s.get("jobs") or {}).get("node_labels") or None
     control_labels = (k8s.get("control") or {}).get("node_labels") or None

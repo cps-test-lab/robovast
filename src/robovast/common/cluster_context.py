@@ -129,14 +129,14 @@ def get_config_context_names(config_path: str) -> set[str]:
 def require_context_for_multi_cluster(kube_context: Optional[str]) -> None:
     """Raise :exc:`ValueError` when a multi-cluster config is used without ``--context``.
 
-    Discovers the project ``.vast`` config file, scans it for per-cluster
-    resource lists, and raises an informative error when more than one context
-    name is present and no *kube_context* was specified.
+    Finds the ``.vast`` config file (``--vast-file``, else the project's if run inside
+    one), scans it for per-cluster resource lists, and raises an informative error when
+    more than one context name is present and no *kube_context* was specified.
 
     This is a no-op when:
 
     * *kube_context* is already set (the user supplied ``--context``).
-    * No project config can be found.
+    * No config file is named — cluster commands run without a project too.
     * The config uses only a single context name (or only plain scalars).
 
     Args:
@@ -150,25 +150,9 @@ def require_context_for_multi_cluster(kube_context: Optional[str]) -> None:
     if kube_context is not None:
         return
 
-    try:
-        from robovast.common.cli.project_config import \
-            ProjectConfig  # pylint: disable=import-outside-toplevel  # local import – avoid cycles
-        # Prefer the global --vast-file override when available.
-        override_path = None
-        try:
-            import click as _click  # pylint: disable=import-outside-toplevel
-            _ctx = _click.get_current_context(silent=True)
-            if _ctx and _ctx.obj:
-                override_path = _ctx.obj.get('vast_file')
-        except RuntimeError:
-            pass
-        if override_path:
-            config_path = override_path
-        else:
-            pc = ProjectConfig.load()
-            config_path = pc.config_path if pc else None
-    except Exception:
-        config_path = None
+    from robovast.common.cli.project_config import \
+        resolve_vast_file  # pylint: disable=import-outside-toplevel  # local import – avoid cycles
+    config_path = resolve_vast_file()
 
     if not config_path:
         return

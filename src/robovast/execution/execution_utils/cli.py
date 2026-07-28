@@ -340,7 +340,11 @@ def cluster():
     Run scenario configurations as Kubernetes jobs with bind mounts
     for configuration and output data.
 
-    Requires project initialization with ``vast init`` first.
+    The commands that execute a *campaign* (``run``, ``prepare-run``) need a project
+    (``vast init``, or ``-V <file>``) to know which ``.vast`` to run. The ones that
+    act on the *cluster* — ``setup``, ``cleanup``, ``monitor``, ``stop``,
+    ``run-cleanup``, ``download-cleanup`` — do not: they read what they need from the
+    cluster itself and work from any directory.
     """
 
 
@@ -680,21 +684,11 @@ def monitor(interval, once, kube_context, namespace):
         # Build list of (label, kube_context_name) to monitor
         if not kube_context:
             # Use contexts referenced in the .vast config file
-            try:
-                from robovast.common.cli.project_config import \
-                    ProjectConfig  # pylint: disable=import-outside-toplevel
-                # Prefer the global --vast-file override when available.
-                _vast_override = None
-                _click_ctx = click.get_current_context(silent=True)
-                if _click_ctx and _click_ctx.obj:
-                    _vast_override = _click_ctx.obj.get('vast_file')
-                if _vast_override:
-                    config_path = _vast_override
-                else:
-                    pc = ProjectConfig.load()
-                    config_path = pc.config_path if pc else None
-            except Exception:
-                config_path = None
+            # --vast-file, else the project's .vast if run inside one; monitoring a
+            # cluster works without either (it then watches the active context).
+            from robovast.common.cli.project_config import \
+                resolve_vast_file  # pylint: disable=import-outside-toplevel
+            config_path = resolve_vast_file()
 
             config_names = get_config_context_names(config_path) if config_path else set()
             if config_names:
@@ -1002,9 +996,15 @@ def setup(list_configs, namespace, options, force, kube_context, cluster_config)
 
     Cluster-specific options can be passed using ``--option key=value``.
 
-    Node label selectors for job and control pods are read from the ``.vast``
-    config file under ``execution.kubernetes.jobs.node_labels`` and
-    ``execution.kubernetes.control.node_labels``.
+    Needs no project: this deploys into a cluster and runs from any directory, so
+    there is nothing for ``vast init`` / ``.robovast_project`` to bind here.
+
+    Node label selectors for job and control pods are read from a ``.vast`` config
+    under ``execution.kubernetes.jobs.node_labels`` and
+    ``execution.kubernetes.control.node_labels``. Name that file with the global
+    ``vast -V <file> exec cluster setup …``; a project's ``.vast`` is used when the
+    command happens to run inside a project. With neither, no node labels are
+    applied (logged at INFO) and pods schedule wherever Kubernetes puts them.
 
     Share credentials (``ROBOVAST_SHARE_TYPE`` and its provider variables — e.g.
     ``ROBOVAST_GCS_BUCKET`` / ``ROBOVAST_GCS_KEY_FILE``) are read from the host
@@ -1182,8 +1182,9 @@ def cleanup(config_name, namespace, options, kube_context):
     to clean up cluster infrastructure resources (different from run-cleanup
     which only cleans up job pods).
 
-    If ``--cluster-config`` is not specified, it will automatically detect
-    which cluster configuration was used during setup (from the project flag file).
+    If ``--cluster-config`` is not specified, it will automatically detect which
+    cluster configuration was used during setup by reading it back from the deployed
+    ``robovast-service`` — so this works from any host and needs no project.
     When specifying ``--cluster-config`` explicitly, pass ``-n <namespace>`` if the
     setup was done in a non-default namespace.
     """

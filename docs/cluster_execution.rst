@@ -104,6 +104,10 @@ Available cluster configs (``--list``):
 
    vast execution cluster setup --list
 
+Setup acts on the *cluster*, not on a project: it needs no ``vast init`` /
+``.robovast_project`` and runs from any directory. Its one optional input from a
+``.vast`` is the node labels (:ref:`below <cluster-node-labels>`).
+
 The setup command:
 
 * Deploys a ``robovast`` pod containing the MinIO S3 server (embedded-storage
@@ -111,6 +115,25 @@ The setup command:
   helper pod — the bucket is used directly.
 * Installs `Kueue <https://kueue.sigs.k8s.io/>`_ via Helm and sizes its job
   queue to the cluster's available CPU/memory.
+
+.. _cluster-node-labels:
+
+Pinning pods to a node pool
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Node selectors for the job pods and the control pod come from
+``execution.kubernetes.jobs.node_labels`` / ``execution.kubernetes.control.node_labels``
+(see :doc:`configuration`) and are baked into the cluster at setup. Because setup is
+project-free, name the ``.vast`` explicitly:
+
+.. code-block:: bash
+
+   vast -V my_campaign.vast execution cluster setup rke2
+
+A project's ``.vast`` is used when the command happens to run inside a project. With
+neither, no node selectors are deployed (logged at INFO) and pods schedule wherever
+Kubernetes puts them; a ``.vast`` that cannot be read is an error rather than a silent
+"no labels".
 
 To tear everything down after use:
 
