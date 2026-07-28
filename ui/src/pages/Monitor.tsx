@@ -118,13 +118,29 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
   const running = !isTerminalPhase(phase)
   // How long the current phase has been held, shown only while a *pre-run* phase is in
   // effect. Those are the phases with no progress bar to watch, so a stalled project
-  // push or image build otherwise looks exactly like a slow one — indefinitely. Once
-  // the campaign is running, the run counter carries that signal and this is noise.
+  // push or image build otherwise looks exactly like a slow one — indefinitely.
   const phaseSince = status.data?.phase_since
   const phaseAge =
     phaseSince && PRE_RUN_PHASES.has(phase)
       ? formatDuration(Math.max(0, Date.now() / 1000 - phaseSince))
       : null
+  // Once running, the *phase* age is noise but the **progress** age is not: the run
+  // counter was assumed to carry that signal and does not — a wedged run sat at
+  // `progress: 0` indefinitely and looked identical to a slow one. `stalled` is only
+  // asserted against the declared per-run budget; with none, the age is shown alone
+  // rather than a threshold being invented here.
+  const progressSince = status.data?.progress_since
+  const progressDeadline = status.data?.progress_deadline_s
+  const progressAgeS =
+    progressSince && running && !PRE_RUN_PHASES.has(phase)
+      ? Math.max(0, Date.now() / 1000 - progressSince)
+      : null
+  const progressAge = progressAgeS === null ? null : formatDuration(progressAgeS)
+  // Tri-state, matching the status contract: true / false / null ("no declared
+  // execution.timeout, so no verdict"). Rendering null as "not stalled" would put a
+  // reassuring grey label on a run that may already be dead.
+  const stalled =
+    progressAgeS === null || !progressDeadline ? null : progressAgeS > progressDeadline
   // A finished campaign can still carry a post-run step failure (postprocessing / share);
   // prefer the live status, fall back to the list summary. Re-triggerable via the menu.
   const postprocError = status.data?.postprocessing_error ?? summary.postprocessing_error
@@ -142,6 +158,25 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
         {phaseAge ? (
           <Typography variant="caption" color="text.secondary">
             {phaseAge}
+          </Typography>
+        ) : null}
+        {progressAge ? (
+          <Typography
+            variant="caption"
+            color={stalled ? 'error.main' : 'text.secondary'}
+            title={
+              stalled
+                ? `No run has completed for ${progressAge}, past the ${progressDeadline}s expected ` +
+                  `per run — the run is not merely slow. Read what it is repeating in the log ` +
+                  `panel below.`
+                : stalled === null
+                  ? `Time since a run last completed. This .vast declares no ` +
+                    `execution.timeout, so there is no budget to judge it against — ` +
+                    `compare it yourself against how long one run should take.`
+                  : `Time since a run last completed (within the declared per-run budget).`
+            }
+          >
+            {stalled ? `stalled ${progressAge}` : progressAge}
           </Typography>
         ) : null}
         <Typography variant="subtitle2" sx={{ fontFamily: 'monospace' }}>

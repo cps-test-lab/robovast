@@ -40,6 +40,28 @@ poses is not how a human notices a robot driving into a wall.
   generalize, or is a campaign-level artifact route the right home?
 
 
+A freshness contract for locally-derived campaign inputs
+--------------------------------------------------------
+
+A ``build:`` section can only reference packages under the ``.vast``'s own directory (that directory
+*is* the build context, and it is what gets uploaded when the service runs elsewhere). So a campaign
+whose code or assets live outside it stages them in first — wheels built from a working tree, a
+scene descriptor compiled from a world — by running a script by hand.
+
+Those derived inputs have **no freshness contract**. A *missing* one fails loudly: the image build
+cannot find the wheel. A *stale* one succeeds silently — the campaign runs old code, or its 3D view
+shows a world the simulation did not run, and every status the service reports is green. Nothing in
+RoboVAST triggers or checks the staging step: ``build:`` consumes the artifacts, ``pre_command``
+runs in-container per run, and there is no host-side hook between "start" and "build the image".
+
+The building block is small: let a ``.vast`` declare its derived inputs and the sources they come
+from, then compare the newest source mtime against the artifacts at ``start`` and refuse with the
+command to run. What needs deciding is how much further it should go — whether RoboVAST should
+*invoke* the generator (which means running caller-supplied code on the host, and the same question
+the campaign-level artifact route raises above), or only ever verify and refuse. Verifying is the
+cheap 90%: the failure being fixed is forgetting, not being unable.
+
+
 .. _future-llm-analysis:
 
 Server-rendered figures (optional)
@@ -63,15 +85,15 @@ Refocusing the MCP interface for a cluster-first service
 --------------------------------------------------------
 
 What is left of a running programme of work. The shared theme in every item below is a
-**report that does not match reality** — a status that says ``running`` for a doomed run, a
-listing that omits campaigns that exist, a client timeout for work that succeeded. Each was
-found by using the interface rather than reading it.
+**report that does not match reality** — a listing that omits campaigns that exist, a client
+timeout for work that succeeded. Each was found by using the interface rather than reading
+it.
 
 Finished items are not kept here: they are described where they are implemented — the file
 address space in :ref:`file-address-space`, the SQL results surface in :ref:`mcp-analysis`
-and :ref:`database-or-address-space`, the HTTP route table in :ref:`http-api`. The numbering
-below is historical and deliberately not compacted, so a note elsewhere referring to
-"item 9" still means item 9.
+and :ref:`database-or-address-space`, the HTTP route table in :ref:`http-api`, and telling a
+wedged run from a slow one in :ref:`mcp-liveness`. The numbering below is historical and
+deliberately not compacted, so a note elsewhere referring to "item 9" still means item 9.
 
 **1. Cluster campaign discovery (design settled, not implemented).**
 ``ClusterService`` inherits ``LocalTransport.list_campaigns``, which scans a local
@@ -131,27 +153,31 @@ This applies to the local docker build too: building is part of the campaign's d
 work, not a precondition of its existence. It changes an error path deliberately —
 a failed build becomes an inspectable failed campaign rather than no campaign.
 
-**3. A caller cannot tell a hanging run from a healthy one.** ``get_campaign_status``
-returned ``status: running, progress: 0`` for a run whose TF was being rejected
-wholesale, so it could never reach its goal. The log tools *do* take a
-case-insensitive ``grep``, but filtering is not enough when the flood **is** the
-signal: the filtered response came back ``lines_total: 18226, dropped: 773,
-truncated: true``, and the returned lines looked like ordinary noise. Needed, in
-value order: a **count/summarize mode** that normalises lines and returns distinct
-patterns with counts (``TF_OLD_DATA … x18226`` is one line at ~20 tokens instead of
-thousands); **health in the status** (error/warn counts, top repeated message);
-a **documented default severity pattern** so callers stop inventing one; and
-**stall detection** (``progress`` unchanged for N minutes is itself a signal — note
-the local lane does not enforce ``execution.timeout`` at all, so a stalled run there
-hangs indefinitely). Interim guidance lives in the ``campaign-execution`` skill,
-but a check that must be remembered will be forgotten; the status should carry it.
+**3b. Log patterns are computed on read, never joinable.** Telling a hanging run from a
+healthy one landed (:ref:`mcp-liveness`): the status carries ``progress_age_s`` and a
+``stalled`` verdict against the declared per-run budget, and the log tools take
+``min_severity`` and ``summarize`` so a flood of one message costs one line instead of
+thousands. Deliberately, **nothing derived from a log is stored** — the counts are
+recomputed per call, which is what keeps them out of competition with the tables in
+:ref:`database-or-address-space`.
 
-Where the count/summarize output belongs is already decided: normalized pattern plus
-count is an aggregate, so by :ref:`database-or-address-space` it is a table, joinable to
-``run_view`` ("which failed runs share a warning pattern?") rather than a bespoke
-response schema. The raw lines stay files — one TEXT column is not queryable data. The
-open part is the ingest path: this must work on a **live** campaign, where ``data.db``
-does not exist yet and ``campaign.db``'s writer does not tail container logs.
+That is the right split for the *liveness* question and the wrong one for the
+*analysis* question. Normalized pattern plus count is an aggregate, so by that same
+rule it should be a table, joinable to ``run_view`` — "which failed runs share a
+warning pattern?" is a query nobody can currently write, and it is the question that
+turns a flaky sweep into a diagnosis. The raw lines stay files regardless; one TEXT
+column is not queryable data.
+
+The open part is the ingest path, and it is genuinely open. It must work on a **live**
+campaign, where ``data.db`` does not exist yet and ``campaign.db``'s writer does not
+tail container logs. Note the asymmetry that makes this harder than it looks: on the
+local lane the run's own output is folded into ``controller.log``, which the controller
+already writes and could count as lines pass through it; on the cluster that output
+exists only in pod logs, which no in-campaign writer sees. A single ingest point that
+works on both lanes is the thing to design, and until it exists an aggregate written on
+only one lane would be worse than none — it would silently mean different things per
+backend. ``rosout`` (already a DB table, from the rosbag) is the post-hoc half of this
+and may be the model to extend rather than a second mechanism to add.
 
 **5b. The file address space's remaining substrate costs.** The address space landed
 (see :ref:`file-address-space`); these are the object-store paths it did **not**
@@ -205,8 +231,15 @@ way, which a grep for ``detected_service_url`` under ``mcp_server/`` now shows.
 * A campaign that ran and passed reported ``runs: {completed: 0, total: 0}`` in its
   ``_execution/outcome.json`` while ``test.xml`` recorded ``errors=0 failures=0`` and
   every postprocessed artifact was present -- the campaign-level counters were never
-  populated. Harmless for one pilot, but that counter is where a sweep's flakiness
-  rate would be read from, so it must not be trusted until traced.
+  populated. **Traced** for the local lane: ``DockerBackend.count_run_artifacts``
+  returned ``None`` ("results are already on disk"), which made
+  ``_start_progress_poller`` return early, so nothing ever wrote the counters and a live
+  local campaign also published a ``progress`` that could not move. It now counts the
+  per-run ``test.xml`` files, and a backend that genuinely cannot count is logged rather
+  than passed over. What is still unverified is whether the *search* lane's
+  ``batch_history`` and the campaign row's aggregate agree with those counters over a
+  multi-batch run -- that aggregate is where a sweep's flakiness rate would be read
+  from, so it wants one deliberate check before it is trusted.
 
 **10. The cloud instance-type commands are untested.**
 ``get_instance_type_command`` is now wired into the generated entrypoint, so a run records

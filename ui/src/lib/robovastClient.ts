@@ -155,6 +155,13 @@ export interface Status {
   // When `phase` was last set (epoch seconds). Rendered as an age so a pre-run phase that
   // is wedged is distinguishable from one that is merely slow — the name alone never is.
   phase_since?: number
+  // When progress last *advanced* (epoch seconds), and how long it may legitimately
+  // stand still. `phase_since` cannot answer "is this run wedged?": a campaign holds the
+  // `running` phase for its whole life, so its phase age grows either way. `stalled` is
+  // only claimable when `progress_deadline_s` is set — otherwise there is no declared
+  // budget to judge against and the age is all we may show.
+  progress_since?: number
+  progress_deadline_s?: number | null
   stage?: string | null
   mode?: string | null
   campaign_id?: string | null
@@ -722,4 +729,9 @@ export const robovast = {
   // so a relative sibling fetch (scene.json -> scene.bin) resolves within it.
   runFileUrl: (campaignId: string, configName: string, runId: number | string, path: string) =>
     `${BASE}${resultsUrl(campaignId, `${configName}/${runId}/${path}`)}`,
+
+  // URL of a file the whole *campaign* shares rather than one run — a scene descriptor for a world
+  // every run compiled identically, a frozen input under `_config/`. The path is campaign-relative,
+  // so it addresses across runs where `runFileUrl` cannot; sibling fetches resolve the same way.
+  campaignFileUrl: (campaignId: string, path: string) => `${BASE}${resultsUrl(campaignId, path)}`,
 }

@@ -49,6 +49,7 @@ from pathlib import Path
 from robovast.common.campaign_data import (aggregate_run_status, list_run_dirs,
                                            read_execution_metadata,
                                            read_run_outcomes)
+from robovast.common.config import declared_per_run_seconds
 from robovast.common.logging_config import (add_campaign_log_handler,
                                             remove_campaign_log_handler)
 from robovast.common.store import STORE_FILENAME, CampaignStore
@@ -191,7 +192,8 @@ class CampaignController:
             self.campaign_id, self.campaign_config_dump, mode=self.mode,
             config_dir="_config", description=self.description)
         if self.state is not None:
-            self.state.update(mode=self.mode, campaign_id=self.campaign_id)
+            self.state.update(mode=self.mode, campaign_id=self.campaign_id,
+                              progress_deadline_s=self._progress_deadline())
             self.state.set_phase(Phase.RUNNING)
         self._start_progress_poller()
         self.notifier.start_heartbeat(status_fn=self._notify_status)
@@ -230,6 +232,25 @@ class CampaignController:
             self.notifier.stop_heartbeat()
             remove_campaign_log_handler(log_handler)
 
+    def _progress_deadline(self) -> int | None:
+        """How long this campaign's progress may legitimately stand still, in seconds.
+
+        The **declared** per-run budget scaled by ``runs_per_job``: packed runs may
+        publish their results in one burst per job, so the unpacked figure would accuse
+        a healthy packed campaign of stalling. Published on the status because only the
+        controller can see the ``.vast``; readers just compare against it.
+
+        ``None`` when the ``.vast`` declares no ``execution.timeout`` — the cluster's
+        force-kill backstop is deliberately *not* substituted here. It exists so a run
+        cannot hang forever, which is a fine reason to kill at one hour and a terrible
+        reason to call a two-minute pilot healthy for the first fifty-nine.
+        """
+        execution = (self.campaign_config_dump or {}).get("execution") or {}
+        declared = declared_per_run_seconds(execution)
+        if declared is None:
+            return None
+        return declared * int(execution.get("runs_per_job") or 1)
+
     def _record_execution_provenance(self, campaign_id: int, elapsed_s: float) -> None:
         """Lift ``_execution/execution.yaml`` onto the campaign row, and stamp elapsed.
 
@@ -265,23 +286,35 @@ class CampaignController:
     def _start_progress_poller(self) -> None:
         """Start a daemon thread that publishes current-batch run progress.
 
-        Skipped when there is no control channel, or the backend can't introspect
-        storage (returns ``None`` — e.g. the local backend). ``backend.run_batch``
-        blocks for a whole batch, so this runs the count concurrently.
+        Skipped when there is no control channel, or the backend cannot count finished
+        runs. ``backend.run_batch`` blocks for a whole batch, so this runs the count
+        concurrently.
+
+        A backend that cannot count is **logged**, not passed over silently: without
+        the poller the campaign publishes a ``progress`` that never advances, which is
+        exactly what a hung run looks like, so the reason has to be on the record.
         """
         if self.state is None:
             return
         try:
-            if self.backend.count_run_artifacts(self.campaign_id) is None:
-                return
+            probe = self.backend.count_run_artifacts(self.campaign_id, self.campaign_root)
         except Exception:  # pylint: disable=broad-except
+            logger.warning("Backend %s could not count run artifacts; run-level "
+                           "progress is disabled for this campaign.",
+                           type(self.backend).__name__, exc_info=True)
+            return
+        if probe is None:
+            logger.warning("Backend %s does not report finished runs; this campaign's "
+                           "progress will stay at 0 until each batch completes.",
+                           type(self.backend).__name__)
             return
 
         def _poll() -> None:
             while not self._poller_stop.is_set():
                 if self._batch_active.is_set() and not self.state.progress_suspended:
                     try:
-                        done = self.backend.count_run_artifacts(self.campaign_id)
+                        done = self.backend.count_run_artifacts(
+                            self.campaign_id, self.campaign_root)
                         if done is not None:
                             completed = min(max(0, done - self._batch_baseline), self._batch_total)
                             self.state.update_runs(
@@ -314,7 +347,8 @@ class CampaignController:
         if self.state is None or self._poller is None:
             return
         try:
-            self._batch_baseline = self.backend.count_run_artifacts(self.campaign_id) or 0
+            self._batch_baseline = self.backend.count_run_artifacts(
+                self.campaign_id, self.campaign_root) or 0
         except Exception:  # pylint: disable=broad-except
             self._batch_baseline = 0
         self._batch_total = total
@@ -333,7 +367,8 @@ class CampaignController:
         # completed count and the failed remainder — rather than optimistically
         # claiming completed == total, which would hide partial-batch failures.
         try:
-            done = self.backend.count_run_artifacts(self.campaign_id)
+            done = self.backend.count_run_artifacts(
+                self.campaign_id, self.campaign_root)
         except Exception:  # pylint: disable=broad-except
             done = None
         if done is None:
@@ -875,8 +910,12 @@ def _record_controller_outcome(campaign_root, campaign_id, state, backend):
         bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
         exec_dir = os.path.join(campaign_root, "_execution")
         # variation.log included: an early config-expansion crash happens before
-        # _finalize's whole-root upload, so its log would otherwise be lost.
-        for name in ("outcome.json", "controller.log", "variation.log"):
+        # _finalize's whole-root upload, so its log would otherwise be lost. build.log
+        # for the same reason and more sharply: a campaign that died waiting for its
+        # image never reaches _finalize at all, and the live build log dies with the
+        # build Job at ttlSecondsAfterFinished — this copy is the only surviving record
+        # of why the image never arrived.
+        for name in ("outcome.json", "controller.log", "variation.log", "build.log"):
             path = os.path.join(exec_dir, name)
             if os.path.isfile(path):
                 storage.upload_file(path, bucket, f"{prefix}_execution/{name}")

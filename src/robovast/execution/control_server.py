@@ -62,15 +62,45 @@ class ControllerState:
         self._status = Status(**initial)
         self._stop_event = threading.Event()
         self._progress_suspend = threading.Event()
+        self._progress_mark = self._progress_signal()
 
     def snapshot(self) -> Status:
         with self._lock:
             return self._status.model_copy(deep=True)
 
+    def _progress_signal(self) -> tuple:
+        """The values whose change means the campaign *advanced*.
+
+        Exactly the inputs a reader derives ``progress`` from, so "progress moved"
+        and "the progress number changed" cannot disagree: completed runs for a batch
+        campaign, and batch count plus budget positions for a search (whose overall
+        progress is its stopping criteria, not its per-batch run ratio).
+
+        Deliberately **not** ``updated_at``: the progress poller rewrites the same
+        counters every few seconds, so any write-based clock ticks forever on a wedged
+        run and reports it as healthy.
+        """
+        st = self._status
+        return (st.runs.completed if st.runs else 0, st.batches_done,
+                tuple(b.current for b in st.budget))
+
+    def _stamp_progress(self) -> None:
+        """Move ``progress_since`` iff the progress signal actually advanced.
+
+        Caller must hold the lock. Mirrors :meth:`set_phase`'s rule — a value
+        re-written unchanged must not reset the clock a reader uses to tell "slow"
+        from "wedged".
+        """
+        signal = self._progress_signal()
+        if signal != self._progress_mark:
+            self._progress_mark = signal
+            self._status.progress_since = time.time()
+
     def update(self, **fields) -> None:
         with self._lock:
             for key, value in fields.items():
                 setattr(self._status, key, value)
+            self._stamp_progress()
             self._status.updated_at = time.time()
 
     def update_runs(self, **fields) -> None:
@@ -84,6 +114,7 @@ class ControllerState:
         """
         with self._lock:
             self._status.runs = self._status.runs.model_copy(update=fields)
+            self._stamp_progress()
             self._status.updated_at = time.time()
 
     def set_phase(self, phase: str, stage: Optional[str] = None) -> None:
@@ -92,10 +123,17 @@ class ControllerState:
         ``phase_since`` moves only on an actual change, so re-setting the current
         phase (some paths do, defensively) does not keep resetting the clock a
         reader uses to tell "slow" from "wedged".
+
+        Reaching a new phase is itself forward movement, so it also restarts
+        ``progress_since``. Without that, a campaign that spent ten minutes in
+        ``variation`` would enter ``running`` already carrying a ten-minute-old
+        progress clock, and be reported as stalled before its first run had a chance
+        to finish.
         """
         with self._lock:
             if phase != self._status.phase:
                 self._status.phase_since = time.time()
+                self._status.progress_since = self._status.phase_since
             self._status.phase = phase
             if stage is not None:
                 self._status.stage = stage

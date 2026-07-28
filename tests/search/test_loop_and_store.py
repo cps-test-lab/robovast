@@ -183,7 +183,8 @@ def test_end_batch_progress_reports_resultless_runs(tmp_path):
 
     store = CampaignStore(tmp_path / "camp" / STORE_FILENAME)
     backend = FakeBackend()
-    backend.count_run_artifacts = lambda cid: 3   # 3 of the 4 expected runs produced results
+    # 3 of the 4 expected runs produced results
+    backend.count_run_artifacts = lambda cid, root: 3
     state = ControllerState()
     controller = CampaignController(
         campaign_id="camp", results_dir=str(tmp_path), runs=2, backend=backend,

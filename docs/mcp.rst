@@ -327,6 +327,111 @@ Single-backend services (a plain local or in-cluster ``vast serve``, or
    ``⌈num_runs / concurrency⌉ × per_run_time``.
 
 
+.. _mcp-liveness:
+
+Is it working, or is it wedged?
+-------------------------------
+
+``status: "running"`` is not evidence of health, and a caller must not have to know
+which log to grep to find that out. Two separate questions, answered in two places.
+
+**Is it progressing?** ``get_campaign_status`` answers this from facts the controller
+owns, with no log reading at all:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 26 74
+
+   * - Field
+     - Meaning
+   * - ``phase_age_s``
+     - How long the current phase has been held. Meaningful **before** the run loop
+       (``initializing``, ``building``): those phases have no counter to watch, so a
+       wedged project push looks exactly like a slow one without it.
+   * - ``progress_age_s``
+     - Seconds since a run last completed. This is the one that matters *during* a
+       run: a campaign holds ``running`` for its whole life, so its phase age grows
+       either way.
+   * - ``stalled``
+     - **Tri-state.** ``true`` once ``progress_age_s`` passes ``progress_deadline_s``
+       (the declared ``execution.timeout`` scaled by ``runs_per_job``); ``false``
+       inside it; ``null`` when the ``.vast`` declares no timeout, so no verdict is
+       possible — ``stall_verdict`` then says so.
+   * - ``stall_reason``
+     - Present only when ``stalled`` is ``true``. Names the comparison *and the next
+       call*, so the follow-up is not something to remember.
+
+.. important::
+
+   ``stalled`` is tri-state for a reason worth stating plainly. A two-valued flag has
+   to answer ``false`` when there is no budget to check against, and ``false`` reads as
+   *verified healthy* — a clean bill of health for a run that may already be dead. The
+   tempting fix, substituting the enforcement backstop, is worse: it is one hour, so a
+   two-minute pilot that wedged immediately would report ``stalled: false`` for
+   fifty-nine minutes. **Declare** ``execution.timeout`` and the verdict becomes real.
+
+That backstop is not wasted — it is simply a different job. Only the cluster lane
+*enforces* a per-run limit (as a Job ``activeDeadlineSeconds``, falling back to one
+hour so a run cannot hang forever); the local lane enforces nothing at all. Killing
+late still beats never, whereas *reporting* late is worse than reporting nothing, so
+the two figures are deliberately separate (``per_run_deadline_seconds`` versus
+``declared_per_run_seconds``). A stalled local run therefore stays alive to be
+inspected — end it with ``stop_campaign``.
+
+**What is it doing?** That is a log question, and the log tools answer it. All three
+(``get_campaign_log``, ``get_job_log``, ``get_image_build_log``) take the same four
+controls, applied in this order:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 78
+
+   * - Control
+     - Effect
+   * - ``grep``
+     - Keep lines matching a case-insensitive regex. Free text — your pattern.
+   * - ``min_severity``
+     - Keep lines rated at least ``"warn"`` / ``"error"`` by RoboVAST's **own**
+       classifier: a line's ``[WARN]``/``[ERROR]`` marker when it has one, else the
+       published keyword pattern
+       (:data:`~robovast.common.log_summary.DEFAULT_SEVERITY_PATTERN`). Use this
+       instead of hand-writing a severity ``grep`` — it is the same definition
+       everything else uses, and two patterns mean two answers to "is this healthy?".
+       A marker outranks a keyword, so an ``[INFO]`` line reporting ``errors=0`` is
+       not an error.
+   * - ``tail``
+     - Keep the last N of whatever survived the filters.
+   * - ``summarize``
+     - Return **distinct patterns with counts** instead of lines.
+
+``summarize=True`` is the one to reach for on a stalled run, because **filtering
+cannot diagnose a flood — the flood is the signal.** A campaign whose TF was being
+rejected wholesale matched a severity ``grep`` 18226 times; the returned lines looked
+like ordinary noise and the count that was the actual finding went unread. Summarized,
+it is one line:
+
+.. code-block:: text
+
+   get_campaign_log(campaign_id, summarize=True)
+   → patterns: [{pattern: "[tf_bridge] TF_OLD_DATA ignoring data from the past for
+                            frame base_link at time <n> according to authority <…>",
+                 count: 18226, severity: "warn", example: "<the first raw line>"}]
+     patterns_total: 2, severity_counts: {other: 1, warn: 18226, error: 0}
+
+Each line is normalized before grouping — timestamps, coordinates, ids and hashes
+become ``<n>`` / ``<hex>`` / ``<uuid>`` — so the same message with different numbers
+collapses, while the same text from two different nodes stays two findings.
+``example`` keeps the group actionable, since the placeholders have eaten the
+specifics. ``patterns_total`` is the true number of distinct patterns even when
+``top`` capped the list, and ``severity_counts`` counts **lines**, not groups: "18226
+warnings" is the finding, "1 distinct warning" is only how it is reported.
+
+Summarizing replaces the text rather than shortening it: the response carries
+``patterns`` and no ``content``/``text`` key, so a summary can never be mistaken for
+a page of lines. ``dropped`` reports how many lines the filters excluded either way —
+a filtered read is never silently passed off as a complete one.
+
+
 Building experiment images
 ---------------------------
 

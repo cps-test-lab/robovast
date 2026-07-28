@@ -165,6 +165,22 @@ class Status(BaseModel):
     # looks identical to one making progress, forever. Readers render it as an age
     # ("initializing for 14 min"), which is what makes a hung pre-run step visible.
     phase_since: float = Field(default_factory=time.time)
+    # When a progress signal last *advanced*. ``phase_since`` cannot answer this: a
+    # campaign spends its whole run in one ``running`` phase, so its phase age grows
+    # whether or not anything is happening. A hung run reported ``running`` with
+    # ``progress: 0`` indefinitely and looked exactly like a slow one; the age of the
+    # last actual advance is what separates them. See
+    # ``ControllerState._stamp_progress`` for what counts as an advance.
+    progress_since: float = Field(default_factory=time.time)
+    # How long ``progress_since`` may legitimately stand still: the per-run budget
+    # (``execution.timeout``, else the backstop — see
+    # ``common.config.per_run_deadline_seconds``) scaled by ``runs_per_job``, because
+    # packed runs can publish their results in one burst per job. Carried on the status
+    # so a reader calls a run stalled against a *declared* limit instead of a threshold
+    # it invented, and scaled deliberately on the conservative side: a missed stall is
+    # recoverable, a false accusation against a healthy long run is not.
+    # ``None`` when the controller never recorded one — then no reader may claim a stall.
+    progress_deadline_s: Optional[int] = None
     stage: Optional[str] = None
     mode: Optional[str] = None
     campaign_id: Optional[str] = None
@@ -203,6 +219,69 @@ class Status(BaseModel):
     share_error: Optional[str] = None
     extra: dict = Field(default_factory=dict)
     updated_at: float = Field(default_factory=time.time)
+
+
+#: What a caller should do once a run is known to be stalled. Part of the verdict
+#: because the whole defect this fixes was that the next step had to be *remembered*:
+#: the interim procedure lived in a skill, and a check that must be remembered is a
+#: check that will be skipped.
+STALL_NEXT_STEP = ("read what the run is repeating with summarize=True on its log "
+                   "(get_job_log / get_campaign_log, or `vast exec log`)")
+
+
+#: Told to a caller whose campaign declared no budget, so "I cannot judge" is never
+#: mistaken for "it is fine" — and so the fix is stated rather than left to be guessed.
+NO_STALL_VERDICT = ("cannot judge: the .vast declares no execution.timeout, so there "
+                    "is no budget to compare against. Read progress_age_s yourself "
+                    "(is it far past how long one run should take?), or declare "
+                    "execution.timeout to get a verdict here")
+
+
+def stall_report(status: "Status") -> dict:
+    """Has this campaign's progress stopped advancing, and may we say so?
+
+    The single derivation of the stall verdict, shared by every renderer (MCP, CLI,
+    and — via the same fields — the web UI). Two kinds of answer, kept apart:
+
+    * ``progress_age_s`` is a **fact**: seconds since progress last advanced (see
+      ``ControllerState._stamp_progress``). Present whenever the campaign is live.
+    * ``stalled`` is a **verdict**, made only against the budget the ``.vast``
+      actually declared. It is deliberately **tri-state**, because a two-valued one
+      cannot tell "within budget" apart from "no budget to check against" — and
+      collapsing those two returns ``false`` for a run that is already dead, which is
+      a health certificate for a corpse:
+
+      - ``True``  — past the declared budget; not merely slow. ``stall_reason`` says
+        what to do next.
+      - ``False`` — inside the declared budget.
+      - ``None``  — no ``execution.timeout`` declared, so no verdict is possible.
+        ``stall_verdict`` explains that and how to get one. Never a substituted
+        backstop: the cluster's force-kill default exists so a run cannot hang
+        forever, which is a fine reason to kill at one hour and a terrible reason to
+        call a two-minute pilot healthy for the first fifty-nine.
+
+    A terminal campaign gets none of it: its progress stopped advancing because it is
+    over, which is not a stall.
+
+    Returns:
+        ``{}`` for a terminal campaign; otherwise ``{progress_age_s, stalled}`` plus
+        ``progress_deadline_s`` and possibly ``stall_reason`` when a budget was
+        declared, or ``stall_verdict`` when one was not.
+    """
+    if is_terminal(status.phase) or not status.progress_since:
+        return {}
+    age = round(max(0.0, time.time() - status.progress_since), 1)
+    deadline = status.progress_deadline_s
+    if not deadline:
+        return {"progress_age_s": age, "stalled": None,
+                "stall_verdict": NO_STALL_VERDICT}
+    report = {"progress_age_s": age, "progress_deadline_s": deadline,
+              "stalled": age > deadline}
+    if report["stalled"]:
+        report["stall_reason"] = (
+            f"no progress for {age:.0f}s, past the {deadline}s expected per run — "
+            f"the run is not merely slow. Next: {STALL_NEXT_STEP}")
+    return report
 
 
 def failure_detail(exc: BaseException, tail_lines: int = 20) -> str:

@@ -70,6 +70,7 @@ from robovast.common import (COMPAT_VERSION, get_execution_env_variables,
                              normalize_secondary_containers)
 from robovast.common.cluster_context import resolve_resources
 from robovast.common.common import get_scenario_parameters
+from robovast.common.config import per_run_deadline_seconds
 from robovast.common.execution import (build_job_links,
                                        build_job_parameter_documents,
                                        create_job_links,
@@ -234,11 +235,6 @@ class BatchJobRunner:
     #: transient registry blip while never letting a doomed image hang the campaign.
     _BLOCKED_GRACE_SECONDS = 60.0
 
-    #: Fallback wall-clock cap *per run* when ``execution.timeout`` is unset, so a
-    #: scenario Job that never shuts itself down is always force-killed by Kubernetes
-    #: (via ``activeDeadlineSeconds``) rather than hanging the campaign forever. 1 hour.
-    DEFAULT_RUN_DEADLINE_SECONDS = 60 * 60
-
     #: How often the wait loop re-checks the Kueue admission path and reports why jobs
     #: are still suspended. Much slower than the 2s poll: a queue does not break every
     #: two seconds, and a normal quota wait must not spam the campaign log.
@@ -287,10 +283,11 @@ class BatchJobRunner:
         # down is force-killed by Kubernetes (``DeadlineExceeded``) instead of hanging
         # the campaign forever. ``execution.timeout`` is a *per-run* limit; scale by
         # the number of runs packed into a Job (default 1) so a packed Job isn't killed
-        # prematurely. Falls back to ``DEFAULT_RUN_DEADLINE_SECONDS`` when unset.
-        timeout = execution_params.get("timeout")
-        per_run = int(timeout) if timeout else self.DEFAULT_RUN_DEADLINE_SECONDS
-        self._deadline_seconds = per_run * self._runs_per_job()
+        # prematurely. The per-run figure comes from ``common.config`` because the
+        # campaign status uses the same one to decide a run is stalled — were the two
+        # to diverge, a Job could be killed while the status still called it healthy.
+        self._deadline_seconds = (per_run_deadline_seconds(execution_params)
+                                  * self._runs_per_job())
         self.manifest["spec"]["activeDeadlineSeconds"] = self._deadline_seconds
         # Jobs already logged as hard-killed on the deadline, so the wait loop warns
         # once per job rather than every poll.
@@ -1183,14 +1180,20 @@ class KubernetesBackend(ExecutionBackend):
             provider.upload_archive_stream(stream, object_name)
         logger.info("Uploaded %s to the %s share.", object_name, provider.SHARE_TYPE)
 
-    # Per-run JUnit report each scenario run uploads on completion; counting these
-    # under the (flat, campaign-wide) prefix gives cumulative finished runs.
-    _RUN_SENTINEL = "/test.xml"
+    def count_run_artifacts(self, campaign_id: str,
+                            campaign_root: str) -> int | None:
+        """Count the per-run JUnit reports uploaded under the campaign's prefix.
 
-    def count_run_artifacts(self, campaign_id: str) -> int | None:
+        The object-store counterpart of :meth:`DockerBackend.count_run_artifacts`:
+        each finished run uploads its own ``test.xml``, so counting them under the
+        (flat, campaign-wide) prefix gives cumulative finished runs. The local
+        ``campaign_root`` is not the source of truth here — results reach it only when
+        a batch is downloaded — so it is unused.
+        """
+        del campaign_root
         bucket, prefix = in_pod_storage.campaign_storage_location(
             self.cluster_config, campaign_id)
         if self._progress_storage is None:
             self._progress_storage = in_pod_storage.storage_client_for(self.cluster_config)
         keys = self._progress_storage.list_keys(bucket, prefix)
-        return sum(1 for k in keys if k.endswith(self._RUN_SENTINEL))
+        return sum(1 for k in keys if k.endswith(f"/{self.RUN_SENTINEL}"))

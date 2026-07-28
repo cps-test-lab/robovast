@@ -289,3 +289,132 @@ def test_get_campaign_log_falls_back_to_disk_with_no_service(monkeypatch, tmp_pa
     monkeypatch.setattr(execution.results_resolver, "resolve_campaign_path",
                         lambda *a, **k: campaign)
     assert "from disk" in execution.get_campaign_log("camp-2026-01-01-000000")["content"]
+
+
+# -- the hanging run, end to end -------------------------------------------------
+#
+# The incident this closes: a campaign reported ``running, progress: 0`` indefinitely
+# while its bridge rejected TF wholesale. A severity grep matched 18226 times and the
+# returned lines read as ordinary noise, so the count -- the actual finding -- was
+# never seen.
+
+
+def _flooded_log(n=18226):
+    """A campaign log dominated by one repeated warning, as in the incident."""
+    return "===== RUN =====\n" + "".join(
+        f"robovast  | [WARN] [17850922{i:05d}.1] [tf_bridge]: TF_OLD_DATA ignoring "
+        f"data from the past for frame base_link at time {i}.5\n"
+        for i in range(n))
+
+
+def _service_with_log(monkeypatch, text):
+    from robovast.mcp_server import service_access
+
+    class _Chunk:
+        def __init__(self, text):
+            self.text = text
+            self.next_offset = len(text)
+            self.eof = False
+
+        def model_dump(self):
+            return {"text": self.text, "next_offset": self.next_offset,
+                    "eof": self.eof}
+
+    class _Fake:
+        def get_campaign_logs(self, campaign_id, offset=0):
+            return _Chunk(text)
+
+        def get_job_log(self, campaign_id, job_name, offset=0):
+            return _Chunk(text)
+
+    monkeypatch.setattr(service_access, "service_client", lambda: _Fake())
+
+
+def test_a_flooded_campaign_log_summarizes_to_one_counted_line(monkeypatch):
+    """18226 lines of noise for ~20 tokens, with the count as the finding."""
+    from robovast.mcp_server.plugins import execution
+
+    _service_with_log(monkeypatch, _flooded_log())
+    out = execution.get_campaign_log("camp-2026-01-01-000000", summarize=True)
+    # The flood, plus the ``===== RUN =====`` phase divider — which is a real line in
+    # the assembled stream and says which phase the flood is in, so it is counted
+    # rather than filtered.
+    assert out["patterns_total"] == 2
+    assert out["patterns"][0]["count"] == 18226
+    assert "TF_OLD_DATA" in out["patterns"][0]["pattern"]
+    assert out["severity_counts"]["warn"] == 18226
+    # A summary is not a shorter log: the line keys must not linger.
+    assert "content" not in out and "returned_lines" not in out
+
+
+def test_a_flooded_job_log_summarizes_and_keeps_the_poll_offset(monkeypatch):
+    """`next_offset` refers to the unfiltered stream, so summarizing must not break
+    an incremental poll loop."""
+    from robovast.mcp_server.plugins import execution
+
+    text = _flooded_log(50)
+    _service_with_log(monkeypatch, text)
+    out = execution.get_job_log("camp-2026-01-01-000000", "job-0", summarize=True)
+    assert out["patterns"][0]["count"] == 50
+    assert out["next_offset"] == len(text)
+    assert "text" not in out
+
+
+def test_min_severity_uses_the_shared_classifier_not_a_hand_written_grep(monkeypatch):
+    """An INFO line mentioning "error" must not be returned as an error -- which is
+    exactly what the hand-written severity grep in the interim procedure did."""
+    from robovast.mcp_server.plugins import execution
+
+    _service_with_log(monkeypatch, "===== RUN =====\n"
+                      "[INFO] [1.0] [nav2]: error_code: 0, goal reached\n"
+                      "[ERROR] [2.0] [ctrl]: Failed to make progress\n")
+    out = execution.get_campaign_log("camp-2026-01-01-000000", min_severity="error")
+    assert "Failed to make progress" in out["content"]
+    assert "goal reached" not in out["content"]
+
+
+def test_an_invalid_filter_is_reported_rather_than_silently_ignored(monkeypatch):
+    from robovast.mcp_server.plugins import execution
+
+    _service_with_log(monkeypatch, "===== RUN =====\nline\n")
+    cid = "camp-2026-01-01-000000"
+    assert "unknown severity" in execution.get_campaign_log(
+        cid, min_severity="critical")["error"]
+    assert "not a valid regular expression" in execution.get_campaign_log(
+        cid, grep="[")["error"]
+
+
+# -- the status now carries the liveness signal ----------------------------------
+
+
+def test_the_status_reports_a_stall_and_names_the_next_call():
+    """The status must be able to say "unhealthy" on its own; previously the only way
+    to learn it was to know which log to grep."""
+    import time
+
+    from robovast.common.status import Status
+    from robovast.mcp_server.plugins import execution
+
+    st = Status(phase="running", mode="batch", runs={"completed": 0, "total": 10},
+                progress_deadline_s=600, progress_since=time.time() - 700)
+    out = execution._status_to_dict("camp", "service", st)
+    assert out["stalled"] is True
+    assert out["progress_age_s"] >= 700
+    assert "summarize=True" in out["stall_reason"]
+
+
+def test_the_status_says_it_cannot_judge_rather_than_saying_healthy():
+    """Without a declared ``execution.timeout`` the tool must return ``stalled: null``
+    and say why -- ``false`` would read as a clean bill of health for a run that has
+    not moved in a day."""
+    import time
+
+    from robovast.common.status import Status
+    from robovast.mcp_server.plugins import execution
+
+    st = Status(phase="running", mode="batch", runs={"completed": 0, "total": 10},
+                progress_since=time.time() - 99999)
+    out = execution._status_to_dict("camp", "service", st)
+    assert out["stalled"] is None
+    assert "execution.timeout" in out["stall_verdict"]
+    assert out["progress_age_s"] > 0

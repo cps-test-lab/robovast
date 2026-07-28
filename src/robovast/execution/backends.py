@@ -37,6 +37,7 @@ import subprocess  # nosec - invokes the generated, trusted robovast run script
 import tempfile
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from pathlib import Path
 
 from robovast.common import prepare_campaign_configs
 # Re-exported: config generation and campaign staging raise the same user-error
@@ -151,14 +152,25 @@ class ExecutionBackend(ABC):
             results_dir, "_archives")
         campaign_archive.make_campaign_tarball(campaign_root, archive_dir)
 
-    def count_run_artifacts(self, campaign_id: str) -> int | None:
+    #: The per-run JUnit report a finished run publishes. Counting these is what
+    #: "a run completed" means to the progress poller, on either lane — the object
+    #: store counts keys ending in it, the filesystem counts files named it.
+    RUN_SENTINEL = "test.xml"
+
+    def count_run_artifacts(self, campaign_id: str,
+                            campaign_root: str) -> int | None:
         """Completed per-run artifacts published so far (controller progress poll).
 
         Returns the cumulative number of finished runs visible to the backend, or
-        ``None`` when the backend can't introspect (the local
-        :class:`DockerBackend`, whose results are already on disk). The
-        controller's run-level progress poller calls this **concurrently** with
-        :meth:`run_batch`, so it must be cheap and read-only.
+        ``None`` when the backend genuinely cannot introspect. Both shipped backends
+        count: ``None`` disables run-level progress entirely, so a campaign on such a
+        backend reports a ``progress`` that can never advance — indistinguishable from
+        a hang — and the controller says so in the log rather than degrading quietly.
+
+        The poller calls this **concurrently** with :meth:`run_batch`, so it must be
+        cheap and read-only. ``campaign_root`` is passed rather than derived because a
+        backend may hold no handle on it, and the poller probes this before the first
+        batch has run.
         """
         return None
 
@@ -258,6 +270,31 @@ class DockerBackend(ExecutionBackend):
             logger.warning(
                 "Batch %s run script exited with code %d (some runs failed); "
                 "continuing to evaluate produced results.", batch_tag, returncode)
+
+    def count_run_artifacts(self, campaign_id: str,
+                            campaign_root: str) -> int | None:
+        """Count the ``test.xml`` files finished runs have written under the campaign.
+
+        The local lane writes results straight into ``campaign_root`` as each run
+        finishes, so the count is a plain glob — the filesystem counterpart of the
+        cluster backend counting object keys with the same sentinel.
+
+        This used to return ``None`` ("results are already on disk"), which switched
+        the controller's progress poller off entirely: a live local campaign reported
+        ``batch_runs_total: 0`` and a ``progress`` that never moved, so a wedged pilot
+        and a working one were indistinguishable — and that ``0/0`` also reached the
+        durable ``outcome.json`` of campaigns that had passed.
+        """
+        del campaign_id  # the root already identifies the campaign on this lane
+        try:
+            # ``<config_name>/<run_number>/test.xml``. The run number must be numeric,
+            # the same convention ``list_run_dirs`` uses, so nothing under a reserved
+            # ``_config``/``_jobs``/``_transient`` dir can inflate the count.
+            return sum(1 for p in Path(campaign_root).glob(f"*/*/{self.RUN_SENTINEL}")
+                       if p.parent.name.isdigit())
+        except OSError:
+            # The campaign dir may not exist yet when the poller first probes.
+            return 0
 
     def _run_watching_stop(self, cmd) -> int:
         """Run *cmd* to completion, terminating it if ``stop_requested`` is set.

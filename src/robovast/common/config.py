@@ -252,6 +252,45 @@ class ExecutionConfig(BaseModel):
         return v
 
 
+#: Fallback wall-clock budget *per run* when ``execution.timeout`` is unset. One hour:
+#: long enough for any scenario this substrate runs, short enough that a run which
+#: never shuts itself down is eventually recognised as broken.
+DEFAULT_RUN_DEADLINE_SECONDS = 60 * 60
+
+
+def declared_per_run_seconds(execution_params: dict) -> Optional[int]:
+    """The per-run budget the ``.vast`` **actually declared**, or ``None``.
+
+    Distinct from :func:`per_run_deadline_seconds`, and the distinction matters
+    because the two answer different questions:
+
+    * *Enforcement* ("never let a campaign hang forever") may fall back to a
+      backstop, because killing a wedged run an hour late still beats never.
+    * *Reporting* ("is this run broken?") may **not**. Judging a two-minute pilot
+      against an hour-long backstop yields ``stalled: false`` for the first hour of a
+      run that is already dead — a health certificate for a corpse, which is worse
+      than saying nothing. With no declared budget there is no honest threshold, so
+      this returns ``None`` and the reader must decline to give a verdict.
+    """
+    timeout = (execution_params or {}).get("timeout")
+    return int(timeout) if timeout else None
+
+
+def per_run_deadline_seconds(execution_params: dict) -> int:
+    """How long a single run may take before it is force-killed, in seconds.
+
+    The **enforcement** figure: the cluster backend sets it as a Job
+    ``activeDeadlineSeconds`` so a scenario that never shuts itself down cannot hang
+    the campaign forever. Falls back to :data:`DEFAULT_RUN_DEADLINE_SECONDS`, which is
+    why it must not be used to *report* health — see
+    :func:`declared_per_run_seconds`.
+
+    Only the cluster lane enforces this; locally nothing does (see ``execute_local``,
+    which says so in the generated ``run.sh``).
+    """
+    return declared_per_run_seconds(execution_params) or DEFAULT_RUN_DEADLINE_SECONDS
+
+
 #: A symbolic ``execution.image`` value that points at the image produced by the
 #: ``build:`` section. The bare name after the prefix is the ``build.tag``. The
 #: real (registry-qualified, digest-pinned) image is resolved server-side; no

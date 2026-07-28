@@ -346,7 +346,10 @@ so it is lifted onto the ``campaign`` row. Applied to what a campaign writes:
    * - ``rosout`` (from the rosbag)
      - DB — structured messages with severity/node/stamp
    * - ``system.log``, ``controller.log``
-     - File + the log tools — unstructured, and the live case is the point of reading them
+     - File + the log tools — unstructured, and the live case is the point of reading
+       them. The tools reduce them on read (``min_severity``, ``summarize`` — see
+       :ref:`mcp-liveness`); nothing derived from them is stored, so no aggregate here
+       competes with the tables above
 
 Two consequences worth stating. A **file** is never *also* a table: putting
 ``configurations.yaml`` in the DB would create a second source of truth for the resolved
