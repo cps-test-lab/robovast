@@ -228,26 +228,13 @@ class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
         )
 
     def _inject_poses(self, config):
-        """Return a deep copy of *config* with start_pose / goal_pose converted to
-        Pose objects and injected into config['config']. Explicit variation parameters
-        take priority; otherwise the existing config values are used (and converted if
-        they are still in dict form from YAML parameters)."""
+        """Return a deep copy of *config* with start_pose converted to a Pose object.
+        goal_poses passes through unchanged — the scenario uses the full list."""
         effective = copy.deepcopy(config)
 
-        # Determine source poses (variation parameters override config)
         raw_start = self.parameters.start_pose or effective['config'].get('start_pose')
-        raw_goal = self.parameters.goal_pose or (
-            effective['config'].get('goal_pose')
-            or (effective['config'].get('goal_poses') or [None])[0]
-        )
-
         if raw_start is not None:
             effective['config']['start_pose'] = self._dict_to_pose(raw_start)
-        if raw_goal is not None:
-            effective['config']['goal_pose'] = self._dict_to_pose(raw_goal)
-            # Remove goal_poses so the base class derives it from goal_pose alone,
-            # avoiding unknown parameter errors in the OSC scenario.
-            effective['config'].pop('goal_poses', None)
 
         return effective
 
