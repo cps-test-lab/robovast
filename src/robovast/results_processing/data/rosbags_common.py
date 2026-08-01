@@ -17,8 +17,9 @@
 
 import json
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 
 def write_provenance_entry(
@@ -89,6 +90,11 @@ def find_rosbags(directory, bag_dir_name="rosbag2"):
     run directories on a network filesystem) are scanned concurrently rather
     than sequentially.
 
+    A directory matches when its name is *bag_dir_name*'s first segment exactly, or when it
+    is that name plus ``ros2 bag record``'s default timestamp suffix (``rosbag2_2026_07_15-
+    10_30_00``) -- a bag recorded without an explicit ``-o`` was previously invisible here,
+    and the CLI reported "0 rosbags found" as a success.
+
     Args:
         directory: Root directory to search under.
         bag_dir_name: Subdirectory name to look for (default: "rosbag2").
@@ -96,8 +102,19 @@ def find_rosbags(directory, bag_dir_name="rosbag2"):
 
     Returns:
         Sorted list of found rosbag directory paths.
+
+    Raises:
+        ValueError: if one directory holds more than one matching bag. Handlers derive
+            their output path from the bag's parent, so two bags there would write the
+            same CSV -- and since bags are processed by a worker pool, which one survived
+            would be nondeterministic. Ambiguity is the user's to resolve.
     """
-    prune_top = bag_dir_name.split("/")[0]
+    parts = bag_dir_name.split("/")
+    prune_top = parts[0]
+    prune_rest = "/".join(parts[1:])
+    # ros2 bag record's default output name: <prefix>_%Y_%m_%d-%H_%M_%S. Matching the shape
+    # rather than any "<prefix>_*" keeps a rosbag2_backup or results_old out of the results.
+    timestamped = re.compile(re.escape(prune_top) + r"_\d{4}_\d{2}_\d{2}-\d{2}_\d{2}_\d{2}$")
     found: List[str] = []
 
     def _scan(path: str):
@@ -109,15 +126,36 @@ def find_rosbags(directory, bag_dir_name="rosbag2"):
                 for entry in it:
                     if not entry.is_dir(follow_symlinks=False):
                         continue
-                    if entry.name == prune_top:
-                        candidate = os.path.join(path, bag_dir_name)
+                    if entry.name == prune_top or timestamped.fullmatch(entry.name):
+                        if not prune_rest:
+                            bags.append(entry.path)
+                            continue  # do not recurse into bag dir
+                        candidate = os.path.join(entry.path, prune_rest)
                         if os.path.isdir(candidate):
                             bags.append(candidate)
-                        # do not recurse into bag dir
+                        else:
+                            # Name matched but the bag isn't below it: an ordinary directory
+                            # that happens to share the prefix. Recursing is what the caller
+                            # wants -- not recursing hid every bag under it.
+                            subdirs.append(entry.path)
                     else:
                         subdirs.append(entry.path)
         except OSError:
             pass
+        # Two bags sharing a parent directory would share an output CSV (see Raises).
+        by_parent: Dict[str, List[str]] = {}
+        for bag in bags:
+            by_parent.setdefault(os.path.dirname(bag), []).append(bag)
+        for parent, siblings in by_parent.items():
+            if len(siblings) > 1:
+                raise ValueError(
+                    f"Ambiguous rosbag layout: {parent} holds {len(siblings)} "
+                    f"'{bag_dir_name}' bags "
+                    f"({', '.join(sorted(os.path.basename(b) for b in siblings))}). "
+                    f"Postprocessing writes one CSV per bag parent, so these would "
+                    f"overwrite each other. Keep one bag per run directory, or point "
+                    f"--bag-dir at the one you want."
+                )
         return bags, subdirs
 
     n_workers = min(64, (os.cpu_count() or 4) * 8)
