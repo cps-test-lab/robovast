@@ -468,7 +468,7 @@ class Nav2BtLogToCsvHandler(RosbagHandler):
 
     nav2's ``bt_navigator`` publishes ``/behavior_tree_log``
     (``nav2_msgs/msg/BehaviorTreeLog``): each message carries a ``timestamp`` and a
-    repeated ``event_log[]`` of status changes ``{timestamp, node_name,
+    repeated ``event_log[]`` of status changes ``{timestamp, node_name, uid,
     previous_status, current_status}``. We explode that array to one CSV row per
     transition — the generic ``to_csv`` handler can't: it writes one row per published
     message and smears the variable-length ``event_log`` across indexed columns, which
@@ -477,6 +477,14 @@ class Nav2BtLogToCsvHandler(RosbagHandler):
     The log is topology-free (transitions keyed by ``node_name`` only); tree structure is
     reconstructed downstream from the BT XML (see robovast_nav's ``Nav2BtTree``), which
     joins against this table's ``node_name`` column.
+
+    ``uid`` is nav2's per-node id, and the only thing separating two nodes that share a
+    ``node_name`` — an unnamed ``RecoveryNode`` or ``RateController`` appears once per
+    instance in a default nav2 tree, so the name-keyed join above silently merges them.
+    It is not a key into the BT XML (uids are assigned at tree construction and appear
+    nowhere in the definition), which is why the join stays on the name; it tells a reader
+    of this table which rows belong to one node. Absent from pre-Jazzy
+    ``BehaviorTreeStatusChange``, where the column is empty.
 
     ``timestamp`` is the **bag receive time**, like every other table here, and not the event's own
     stamp. nav2 fills that stamp from a wall clock even under ``use_sim_time``, so it lands ~1.8e9 s
@@ -489,7 +497,7 @@ class Nav2BtLogToCsvHandler(RosbagHandler):
 
     _BT_LOG_TOPIC = "/behavior_tree_log"
     _FIELDNAMES = [
-        "timestamp", "node_name", "previous_status", "current_status", "event_timestamp",
+        "timestamp", "node_name", "uid", "previous_status", "current_status", "event_timestamp",
     ]
 
     def __init__(self, csv_filename: str = "nav2_behavior_tree.csv") -> None:
@@ -525,6 +533,7 @@ class Nav2BtLogToCsvHandler(RosbagHandler):
             self._writer.writerow({
                 "timestamp": timestamp / 1_000_000_000.0,
                 "node_name": event.node_name,
+                "uid": getattr(event, "uid", ""),
                 "previous_status": str(event.previous_status).upper(),
                 "current_status": str(event.current_status).upper(),
                 "event_timestamp": event_ts,
