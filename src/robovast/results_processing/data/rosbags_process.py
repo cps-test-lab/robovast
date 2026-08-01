@@ -218,7 +218,26 @@ def quat_to_rpy(x: float, y: float, z: float, w: float) -> Tuple[float, float, f
 
 
 class TfToCsvHandler(RosbagHandler):
-    """Extract TF transforms to CSV (one file per bag)."""
+    """Extract TF transforms to CSV (one file per bag).
+
+    ``frames`` names the child frames to resolve against ``map``, or ``all`` for every child frame the
+    bag carries. ``all`` exists for the viewer: a 3D scene animates a body per TF frame, and a world
+    with people and movable props has one frame per skeleton bone and per prop -- listing them is
+    per-world busywork that a new prop silently invalidates.
+
+    ``require`` is what keeps ``all`` from costing anything. A named frame that yields nothing is a
+    hard error (see :meth:`on_end`), and that assertion is load-bearing -- it is how a ground-truth
+    frame missing from one simulator's bags was caught rather than silently analysed as absent. ``all``
+    has no such expectation to check, so it takes the frames to assert on from ``require``; an explicit
+    ``frames`` list implies ``require: <the same list>``, exactly as before.
+
+    What neither mode captures: a frame published **once** on ``/tf_static`` before the dynamic chain
+    to ``map`` exists. A transform is resolved when it arrives, and a robot description's static links
+    are latched at bag start, while ``map -> odom`` only appears once localization begins -- so the
+    lookup fails and is never retried. This is why ``all`` over a nav2 bag yields the moving frames
+    rather than every link in the URDF. It costs a viewer nothing (a body welded in the scene is
+    already baked at that pose), but asking for such a frame by name is a hard error, correctly.
+    """
 
     _FIELDNAMES = [
         "frame", "timestamp",
@@ -226,8 +245,19 @@ class TfToCsvHandler(RosbagHandler):
         "orientation.roll", "orientation.pitch", "orientation.yaw",
     ]
 
-    def __init__(self, frames: Optional[List[str]] = None, csv_filename: str = "poses.csv") -> None:
-        self._frames = frames or ["base_link"]
+    #: ``frames`` value selecting every child frame in the bag instead of a fixed list.
+    ALL = "all"
+
+    def __init__(
+        self,
+        frames: Optional[List[str] | str] = None,
+        csv_filename: str = "poses.csv",
+        require: Optional[List[str]] = None,
+    ) -> None:
+        self._all_frames = isinstance(frames, str) and frames.lower() == self.ALL
+        self._frames = [] if self._all_frames else (frames or ["base_link"])
+        # Without `require`, an explicit list asserts on itself -- the pre-existing contract.
+        self._require = list(require) if require else list(self._frames)
         self._csv_filename = csv_filename
         self._tf_buffer = None
         self._csvfile = None
@@ -269,7 +299,14 @@ class TfToCsvHandler(RosbagHandler):
             self._found_tfs.add(
                 f"{transform.header.frame_id} -> {transform.child_frame_id}"
             )
-            for frame in self._frames:
+            # In `all` mode the frame set is whatever the bag turns out to carry, discovered here as
+            # transforms arrive rather than declared up front.
+            if self._all_frames:
+                self._record_counts.setdefault(transform.child_frame_id, 0)
+                candidates = [transform.child_frame_id]
+            else:
+                candidates = self._frames
+            for frame in candidates:
                 if transform.child_frame_id != frame:
                     continue
                 try:
@@ -303,22 +340,27 @@ class TfToCsvHandler(RosbagHandler):
         if self._csvfile is not None:
             self._csvfile.close()
         total = sum(self._record_counts.values())
-        # Every configured frame was asked for explicitly, so one yielding nothing is a defect in the
-        # run, not an empty result: the frame was never published, or it is not connected to `map` in
-        # the TF tree. Reporting success on the remaining frames would hand the analysis a CSV that is
-        # silently missing a whole trajectory -- e.g. the ground-truth frame a sim-vs-sim comparison
-        # is measured against.
-        missing = [f for f in self._frames if not self._record_counts.get(f)]
+        # A *required* frame yielding nothing is a defect in the run, not an empty result: the frame
+        # was never published, or it is not connected to `map` in the TF tree. Reporting success would
+        # hand the analysis a CSV that is silently missing a whole trajectory -- e.g. the ground-truth
+        # frame a sim-vs-sim comparison is measured against. An explicit `frames` list requires itself,
+        # so this is the pre-existing check; `all` mode requires only what `require` names, because
+        # "every frame in the bag" states no expectation that could be violated.
+        missing = [f for f in self._require if not self._record_counts.get(f)]
         if missing:
             found = "\n".join(f"    - {t}" for t in sorted(self._found_tfs)) or "    (none)"
             got = ", ".join(
                 f"{f}: {c}" for f, c in self._record_counts.items() if c
             ) or "nothing"
             raise RuntimeError(
-                f"no map-relative poses for requested TF frame(s) {', '.join(missing)} "
+                f"no map-relative poses for required TF frame(s) {', '.join(missing)} "
                 f"(extracted {got}). Either the frame is not published, or it does not connect to "
                 f"'map'. Transforms present in the bag:\n{found}")
-        summary = ", ".join(f"{f}: {c}" for f, c in self._record_counts.items())
+        # In `all` mode the counts include frames that were seen but never resolved against `map`
+        # (a frame in another tree, or `map`'s own ancestors); those wrote nothing, so listing them
+        # would bury the frames that did.
+        counts = self._record_counts.items()
+        summary = ", ".join(f"{f}: {c}" for f, c in counts if c or not self._all_frames)
         print(f"  ✓ {self._output_file}: {total} records ({summary})")
         return total, [self._output_file]
 
@@ -327,6 +369,7 @@ class TfToCsvHandler(RosbagHandler):
         return cls(
             frames=config.get("frames"),
             csv_filename=config.get("csv_filename", "poses.csv"),
+            require=config.get("require"),
         )
 
 
