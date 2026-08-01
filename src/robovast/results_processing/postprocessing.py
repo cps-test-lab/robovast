@@ -452,6 +452,9 @@ def is_postprocessing_needed(
     Returns:
         ``True`` if postprocessing should be run, ``False`` otherwise.
     """
+    # Same normalisation as run_postprocessing, so the two agree on which directory a
+    # relative path names before one of them answers a question about the other's work.
+    results_dir = os.path.abspath(results_dir)
     if not os.path.exists(results_dir):
         return False
 
@@ -512,6 +515,12 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
             output_callback(msg)
         else:
             print(msg)
+
+    # Absolute from here on: container plugins are launched with cwd set to the package's
+    # data/ directory (see RosbagsProcessPlugin), so a relative results_dir resolves against
+    # that instead of the user's. docker_exec.sh then finds no directory to mount, skips the
+    # -v silently, and the container reports 0 rosbags found as a success.
+    results_dir = os.path.abspath(results_dir)
 
     # Validate results directory
     if not os.path.exists(results_dir):
