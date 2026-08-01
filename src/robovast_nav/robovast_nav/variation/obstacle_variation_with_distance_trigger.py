@@ -53,7 +53,8 @@ class ObstacleVariationWithDistanceTriggerConfig(ObstacleVariationConfig):
     - trigger_distance:        arc-length (m) before the obstacle; a single float or a list
                                of floats (one output config per value).
     - start_pose:              optional explicit start pose (dict).
-    - goal_pose:               optional explicit goal pose (dict).
+    - goal_pose:               optional explicit goal pose (dict); only for scenarios
+                               declaring the singular parameter.
 
     Exactly one obstacle must be configured (i.e. a single ObstacleConfig entry with amount=1).
     """
@@ -148,6 +149,8 @@ class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
     - ``count``: Number of obstacle configurations to generate (default: ``1``).
     - ``start_pose``: Optional explicit start pose (dict with ``x``, ``y``, ``yaw``).
     - ``goal_pose``: Optional explicit goal pose (dict with ``x``, ``y``, ``yaw``).
+      Applies to scenarios declaring the singular ``goal_pose`` parameter; a
+      scenario taking ``goal_poses`` gets its list from the config unchanged.
 
     Generated outputs:
 
@@ -228,13 +231,29 @@ class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
         )
 
     def _inject_poses(self, config):
-        """Return a deep copy of *config* with start_pose converted to a Pose object.
-        goal_poses passes through unchanged — the scenario uses the full list."""
+        """Return a deep copy of *config* with its poses converted to Pose objects.
+
+        Conversion is in place: whichever spelling the config already carries
+        (``goal_pose`` or ``goal_poses``) is the one written back. Neither key is
+        added nor removed — the scenario's own parameter set decides which exists,
+        and injecting the other spelling makes the OSC reject an undeclared
+        parameter at startup. Explicit variation parameters override the config
+        values; YAML-sourced poses arrive as dicts and must be converted, since the
+        base class plans the path itself when no path variation ran before it.
+        """
         effective = copy.deepcopy(config)
 
         raw_start = self.parameters.start_pose or effective['config'].get('start_pose')
         if raw_start is not None:
             effective['config']['start_pose'] = self._dict_to_pose(raw_start)
+
+        raw_goal = self.parameters.goal_pose or effective['config'].get('goal_pose')
+        if raw_goal is not None:
+            effective['config']['goal_pose'] = self._dict_to_pose(raw_goal)
+
+        raw_goals = effective['config'].get('goal_poses')
+        if raw_goals:
+            effective['config']['goal_poses'] = [self._dict_to_pose(g) for g in raw_goals]
 
         return effective
 
