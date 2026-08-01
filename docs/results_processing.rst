@@ -169,6 +169,31 @@ recorded topics and message counts). It is present only when the scenario
 records a bag, and is distinct from the separate, job-level ``/rosout``
 recording under ``_jobs/job-N/logs/``.
 
+.. _run-clock:
+
+One clock per run
+"""""""""""""""""
+
+**Every table a postprocessing step derives from a bag timestamps its rows with the bag's
+receive time.** Under ``bag_record(use_sim_time: true)`` that is the *simulator's* clock, and it
+is the right one to key on: it is what the simulator actually stepped, so it is identical across
+simulators and independent of how fast the machine ran — the same trial can take 520 s of wall
+time on one backend and 100 s on another and still span the same sim seconds.
+
+That shared clock is what lets the poses, the costmaps and the behaviour trees be read against
+each other at all, and it is the timeline the web :ref:`Run view <run-view>` scrubs. So a topic
+that carries a **clock of its own** must be converted, with its original stamp kept in a
+separately-named column rather than used as ``timestamp``. There is a real instance:
+``/behavior_tree_log`` is stamped by nav2 from a wall clock even under ``use_sim_time``, roughly
+1.8e9 s away from sim time. Keying ``nav2_behavior_tree`` on it made the table unjoinable with
+every other one and put each transition outside the run's timeline entirely, so the behaviour-tree
+panel had nothing to show at any playback time; it is now the receive time, with nav2's stamp in
+``event_timestamp``.
+
+Recording ``/clock`` in the scenario's ``bag_record(...)`` is worth the negligible space: it makes
+the sim↔wall mapping recoverable, so a foreign-clock topic can be *related* to sim time afterwards
+instead of guessed at.
+
 ``test.xml`` — JUnit Test Result
 """""""""""""""""""""""""""""""""
 

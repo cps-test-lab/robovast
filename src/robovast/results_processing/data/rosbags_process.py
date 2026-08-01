@@ -434,10 +434,20 @@ class Nav2BtLogToCsvHandler(RosbagHandler):
     The log is topology-free (transitions keyed by ``node_name`` only); tree structure is
     reconstructed downstream from the BT XML (see robovast_nav's ``Nav2BtTree``), which
     joins against this table's ``node_name`` column.
+
+    ``timestamp`` is the **bag receive time**, like every other table here, and not the event's own
+    stamp. nav2 fills that stamp from a wall clock even under ``use_sim_time``, so it lands ~1.8e9 s
+    away from the simulator's clock: a run whose bag spans 4-92 s of sim time produced BT events
+    stamped 1785100900. Keying the table on that made it unjoinable with the poses, the costmaps and
+    the scenario tree, and put every node transition outside the run view's timeline -- the behaviour
+    tree panel simply had nothing to show at any playback time. The event's own stamp is still
+    recorded, as ``event_timestamp``, since it is the only view of nav2's wall-clock pacing.
     """
 
     _BT_LOG_TOPIC = "/behavior_tree_log"
-    _FIELDNAMES = ["timestamp", "node_name", "previous_status", "current_status"]
+    _FIELDNAMES = [
+        "timestamp", "node_name", "previous_status", "current_status", "event_timestamp",
+    ]
 
     def __init__(self, csv_filename: str = "nav2_behavior_tree.csv") -> None:
         self._csv_filename = csv_filename
@@ -459,21 +469,22 @@ class Nav2BtLogToCsvHandler(RosbagHandler):
         if topic != self._BT_LOG_TOPIC:
             return
         for event in msg.event_log:
-            # Prefer the event's own timestamp; fall back to the bag receive time.
+            # The bag receive time is the run's one clock (see the class docstring): every other table
+            # here is on it, so this one is too. The event's own stamp rides along in its own column.
             event_stamp = getattr(event, "timestamp", None)
+            event_ts = ""
             if event_stamp is not None and (event_stamp.sec or event_stamp.nanosec):
-                ts = event_stamp.sec + event_stamp.nanosec / 1_000_000_000.0
-            else:
-                ts = timestamp / 1_000_000_000.0
+                event_ts = event_stamp.sec + event_stamp.nanosec / 1_000_000_000.0
             if self._csvfile is None:
                 self._csvfile = open(self._output_file, "w", newline="")
                 self._writer = csv.DictWriter(self._csvfile, fieldnames=self._FIELDNAMES)
                 self._writer.writeheader()
             self._writer.writerow({
-                "timestamp": ts,
+                "timestamp": timestamp / 1_000_000_000.0,
                 "node_name": event.node_name,
                 "previous_status": str(event.previous_status).upper(),
                 "current_status": str(event.current_status).upper(),
+                "event_timestamp": event_ts,
             })
             self._record_count += 1
 
