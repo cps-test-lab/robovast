@@ -407,19 +407,48 @@ and the tree structure from the BT XML nav2 ran. *This panel ships with the*
 ``robovast_nav`` *package* as a package-provided (Module-Federation) panel, so it is
 available whenever ``robovast_nav`` is installed; the ``.vast`` references it as
 ``- nav2_behavior_tree:`` with ``source: { table: nav2_behaviors }``. See
-:repo_link:`configs/examples/basic_nav_rst` for a complete campaign using it.
+:repo_link:`configs/examples/basic_nav` for a complete campaign using it.
 
 **3D scene** (``scene3d``) — the 3D world view, typically the run view's full-bleed
 **base layer** (``position: { anchor: fill }``): the simulated world's actual geometry
 (floor, walls, furniture, the robot's meshes) rendered in the browser (orbit/zoom with the
-mouse), with the robot replayed along its recorded trajectory — at every clock instant the
-recorded map-frame pose nearest ``t`` seats the robot's base body. Bindings: ``scene.path``
-(the run-relative descriptor path, default ``scene/scene.json``) and ``robot`` — the scene
-``body`` to drive (default ``base_link``) and the pose ``source``
-(``{ table: poses, filter: { frame: base_link } }``, the ``rosbags_tf_to_csv`` output). It
-requires the :ref:`scene descriptor <scene-descriptor-delivery>` run artifact — when a run
-has none, the panel says so and shows an empty viewport. See
-:repo_link:`configs/examples/basic_nav_rst` for a complete campaign using it.
+mouse), with **everything that moved** replayed — at every clock instant each driven body is
+seated at the recorded pose nearest ``t``.
+
+*Nothing has to be listed.* A dynamic body's pose reaches a viewer as a TF transform whose
+``child_frame_id`` **is** its exported scene body name, so the set of bodies to animate is the
+intersection of "frames this run recorded" and "bodies this scene has" — discovered, not
+enumerated. A world that gains a walker (one frame per skeleton bone) or a movable prop replays
+it with no config change, and frames that are not bodies (``map``, ``odom``) fall out for free.
+This is a contract on the *simulator*: emit a frame per moving body, named after the body.
+Bindings:
+
+.. code-block:: yaml
+
+   - scene3d:
+       position: { anchor: fill }
+       scene:
+         path: scene/scene.json     # descriptor path (default)
+         scope: run                 # or `campaign` — see below
+       poses:
+         source: { table: poses, key: frame }   # the frame-keyed pose table (defaults)
+         decimate_hz: 20            # cap samples per body; a viewport needs no more
+         max_rows: 100000           # bound on the single grouped query
+         bind:                      # ONLY where a frame's name is not its body's
+         - { body: base_link, frame: turtlebot4_base_link_gt }
+
+``bind`` is for the exceptions. There is one in practice: a ground-truth pose plugin publishes
+``<model>_base_link_gt`` rather than the body name, deliberately, so a rosbag carries the same
+frame name under any simulator. When *no* recorded frame names a body, the panel says so and
+names how many frames it did find, rather than showing a silently static world.
+
+One query serves every body, decimated per frame, because the number of series is a property of
+the world — a robot is one, a walker is 17 bones, each prop one more — so per-body fetching would
+make the round-trip count scale with how much is moving.
+
+It requires the :ref:`scene descriptor <scene-descriptor-delivery>` artifact — when a run has
+none, the panel says which of the two delivery paths is missing. See
+:repo_link:`configs/examples/basic_nav` for a nav campaign with the other panels.
 
 **2D scene** (``scene``) — a top-down/side 2D plot of "where the thing is right now": one
 column against another (e.g. a quadrotor's ``x`` vs altitude ``z``) from any table with a
@@ -490,18 +519,24 @@ campaign's data — no core change, and it works the same on local ``vast serve`
 service. So an analysis package can own the whole chain end-to-end — *postprocessing step →
 service endpoint → panel* — with nothing in core. The costmap panel is exactly this: its
 ``rosbags_costmap_to_csv`` step, its ``costmap`` endpoint, and its panel all ship in
-``robovast_nav``. (Large binary per-run artifacts don't even need an endpoint — serve them as
-ordinary run files via ``data.runFileUrl(path)``, as the ``scene3d`` panel does.) See the developer
-guide for the endpoint contract.
+``robovast_nav``. (Large binary artifacts don't even need an endpoint — serve them as ordinary files
+via ``data.runFileUrl(path)`` for one run's, or ``data.campaignFileUrl(path)`` for one the whole
+campaign shares, as the ``scene3d`` panel does.) See the developer guide for the endpoint contract.
 
 .. _scene-descriptor-delivery:
 
 **3D scene data delivery.** The ``scene3d`` panel renders a **scene descriptor** —
-``scene.json`` + ``scene.bin`` (+ textures), a compact browser-renderable export of the
-simulated world — produced by the simulation as an ordinary run artifact. For rst
-(MuJoCo) campaigns, set the ``SIM_SUITE_SCENE_EXPORT_DIR`` environment variable in the
-``.vast`` and every run exports its *exact* compiled world (per-configuration
-``world_overrides`` included) into that run-relative directory:
+``scene.json`` + ``scene.bin`` + one PNG per texture, a compact browser-renderable export of
+the simulated world. It is a *directory*, not a file: the loader fetches ``scene.bin`` and the
+textures as **relative siblings** of ``scene.json``, which is why the file address space encodes
+path segments individually and preserves the ``/``.
+
+There are two delivery paths, and which one fits is decided by whether the world *varies*.
+
+**Per run** (``scope: run``, the default) — the simulation writes a descriptor into each run
+directory. For rst (MuJoCo) campaigns driven through the ``MujocoSim`` adapter, set
+``SIM_SUITE_SCENE_EXPORT_DIR`` and every run exports its *exact* compiled world,
+per-configuration ``world_overrides`` included:
 
 .. code-block:: yaml
 
@@ -516,16 +551,32 @@ simulated world — produced by the simulation as an ordinary run artifact. For 
      - scene3d:
          position: { anchor: fill }
          scene: { path: scene/scene.json }
-         robot:
-           body: base_link
-           source: { table: poses, filter: { frame: base_link } }
 
-Any other simulator works the same way by emitting the same descriptor format (defined by
-rst's ``rst/export_web.py``; ``rst-export-web --world ... --out ...``
-produces one offline). The browser fetches the descriptor from the file address space —
-``GET /results/<campaign>/<config>/<run>/<path>`` serves any per-run artifact by its real
-path inside the run directory, so the loader's *relative* sibling fetches (``scene.bin``,
-textures) resolve alongside it.
+**Per campaign** (``scope: campaign``) — when every run compiles the *same* world, a per-run
+export is N copies of one artifact, and a descriptor is megabytes. Ship it once instead: generate
+it offline with ``rst-export-web --world <world.yaml> --out <dir>``, put it under the ``.vast``'s
+own directory so ``run_files`` freezes it into the campaign, and address it campaign-relative:
+
+.. code-block:: yaml
+
+   execution:
+     run_files: ["files/*"]        # freezes files/scene/ into <campaign>/_config/files/scene/
+
+   visualization:
+     panels:
+     - scene3d:
+         scene: { path: _config/files/scene/scene.json, scope: campaign }
+
+The trade is explicit: one copy and identical behaviour on every lane, against an artifact that is
+**not** regenerated by the run, so it must be rebuilt whenever the world changes or the 3D view
+shows the old world while the simulation ran the new one. Tie that rebuild to whatever already
+refreshes the campaign's other derived inputs.
+
+Any other simulator works the same way by emitting the same descriptor format (defined by rst's
+``rst/export_web.py``). Either way the browser fetches it from the file address space —
+``GET /results/<campaign>/<config>/<run>/<path>`` for a run artifact,
+``GET /results/<campaign>/<path>`` for a campaign one — by its real path, so the sibling fetches
+resolve alongside it.
 
 .. _costmap-delivery:
 

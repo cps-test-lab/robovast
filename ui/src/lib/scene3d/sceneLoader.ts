@@ -117,6 +117,11 @@ export interface SceneModel {
   root: Group
   jointMap: Record<string, (value: number) => void>
   initialJoints: Record<string, number>
+  /** Every body name in the descriptor, i.e. every name `basePose` accepts. A consumer matching an
+   *  external pose stream onto the scene needs this: the substrate names a dynamic body's TF frame
+   *  after its body, so the intersection of "frames recorded" and "bodies present" is the set of
+   *  things to animate — discovered rather than enumerated by hand. */
+  bodies: string[]
   /** The descriptor's baked initial camera, passed through verbatim (absent when unauthored). */
   view?: SceneDescriptor['view']
   /**
@@ -483,5 +488,12 @@ export async function loadScene(sceneUrl: string): Promise<SceneModel> {
     nodes[i].matrixWorldNeedsUpdate = true
   }
 
-  return { root, jointMap, initialJoints: scene.initialJoints, basePose, view: scene.view }
+  return {
+    root,
+    jointMap,
+    initialJoints: scene.initialJoints,
+    bodies: scene.bodies.map((b) => b.name),
+    basePose,
+    view: scene.view,
+  }
 }

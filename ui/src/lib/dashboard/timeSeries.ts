@@ -113,3 +113,72 @@ export function useTimeSeries(binding: TimeSeriesBinding, data: DataProvider, co
     retry: false,
   })
 }
+
+/** How a .vast spec names a *multi-keyed* table: one series per distinct value of `key`. `poses` is
+ *  the canonical one -- keyed by `frame`, it holds every TF frame a run recorded, which is one series
+ *  per moving thing in the world rather than one per table. */
+export interface TimeSeriesGroupBinding extends TimeSeriesBinding {
+  key: string
+  /** Cap the samples per series at this rate (see SeriesOptions.decimate). */
+  decimate_hz?: number
+}
+
+/** Resolve a multi-keyed table to one TimeSeriesSource per key value, in **one** query.
+ *
+ * Deliberately not N queries: the number of series is a property of the *world* (a robot is 1, a
+ * walker is 17 bones, each prop is 1 more), so per-series fetching would make the round-trip count
+ * scale with how much is moving. One decimated query stays flat instead.
+ */
+export async function buildTimeSeriesGroups(
+  binding: TimeSeriesGroupBinding,
+  data: DataProvider,
+  columns?: string[],
+  maxRows?: number,
+): Promise<Map<string, TimeSeriesSource>> {
+  const timeCol = binding.time_column ?? DEFAULT_TIME_COLUMN
+  const cols = columns?.length
+    ? Array.from(new Set([binding.key, timeCol, ...columns]))
+    : undefined
+  const rows = await data.series(binding.table, {
+    timeCol,
+    columns: cols,
+    match: binding.filter,
+    maxRows,
+    decimate: binding.decimate_hz ? { hz: binding.decimate_hz, key: binding.key } : undefined,
+  })
+  const byKey = new Map<string, DataRow[]>()
+  for (const row of rows) {
+    const k = row[binding.key]
+    if (k == null) continue
+    const list = byKey.get(String(k))
+    if (list) list.push(row)
+    else byKey.set(String(k), [row])
+  }
+  return new Map(
+    Array.from(byKey, ([k, list]) => [k, timeSeriesFromRows(list, timeCol)] as const),
+  )
+}
+
+/** React Query wrapper around {@link buildTimeSeriesGroups}. */
+export function useTimeSeriesGroups(
+  binding: TimeSeriesGroupBinding,
+  data: DataProvider,
+  columns?: string[],
+  maxRows?: number,
+) {
+  const timeCol = binding.time_column ?? DEFAULT_TIME_COLUMN
+  return useQuery({
+    queryKey: [
+      'time-series-groups',
+      binding.table,
+      binding.key,
+      timeCol,
+      binding.filter ?? null,
+      binding.decimate_hz ?? null,
+      columns ?? null,
+      maxRows ?? null,
+    ],
+    queryFn: () => buildTimeSeriesGroups(binding, data, columns, maxRows),
+    retry: false,
+  })
+}
