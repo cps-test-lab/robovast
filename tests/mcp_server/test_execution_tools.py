@@ -80,7 +80,7 @@ class _FakeAuthoringClient:
             configs=1, runs_per_config=2, total_trials=2,
             configurations=[PreviewConfiguration(
                 name="cell-0", parameters={"growth_rate": 0.1},
-                previews=[{"remote": "not for an MCP caller"}])])
+                previews=[{"variation_type": "not for an MCP caller"}])])
 
 
 @pytest.fixture

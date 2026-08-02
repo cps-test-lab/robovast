@@ -1,65 +1,36 @@
-// Typed REST client — the browser binding of the RobovastInterface contract. It mirrors
-// src/robovast/service/interface.py (the `Routes` paths + request/response models) exactly, the same
-// way the Python HTTPTransport does; the UI never talks to anything but the service. Keep this file the
-// single seam: if interface.py changes, change it here.
+// Typed REST client — the browser binding of the RobovastInterface contract, the same one
+// the Python HTTPTransport binds. The UI never talks to anything but the service.
+//
+// The **types** are generated from the service's own OpenAPI schema
+// (`npm run generate:api` → api.generated.ts) and re-exported below. They used to be
+// hand-written: 41 interfaces mirroring pydantic models with nothing tying them together,
+// so a field renamed in interface.py stayed "correct" here until something broke at
+// runtime. The **functions** stay hand-written — they carry real behaviour (SSE URLs, the
+// upload side channel, error mapping) that codegen has no opinion about.
 //
 // Base URL is "" by default — the service serves this SPA same-origin, so relative paths hit its API.
 // In dev the Vite proxy forwards the API prefixes to a running `vast serve`, so "" works there too.
 // Override with VITE_ROBOVAST_URL to point at an arbitrary service.
 
+import type { components } from './api.generated'
+
+type Schemas = components['schemas']
+
 const BASE = (import.meta.env.VITE_ROBOVAST_URL ?? '').replace(/\/$/, '')
 
 // -- interface models (mirror interface.py / control_server.Status) ---------
 
-export interface VersionInfo {
-  robovast_version: string
-  api_version: string
-  backend?: string | null
-  // Execution lanes this service offers, e.g. ["local"], ["cluster"], or
-  // ["local","cluster"] for a dual-backend serve. The launch UI shows a backend
-  // picker only when there is more than one, and defaults the choice to cluster.
-  backends?: string[]
-}
+export type VersionInfo = Schemas['VersionInfo']
 
 // Live capacity/usage of the service's execution backend (mirrors
 // interface.py:ResourceUsage). Backend-neutral: `parallel_runs` says whether runs
 // go one-at-a-time (local Docker) or in parallel (cluster); CPU in cores, memory
 // in bytes. `used` is host utilization locally / summed pod requests on the cluster.
-export interface ResourceUsage {
-  backend: string
-  cpu_capacity: number
-  cpu_used: number
-  memory_capacity_bytes: number
-  memory_used_bytes: number
-  parallel_runs: boolean
-  // Backend-wide scenario-run counts (0 on backends without Jobs, e.g. local Docker).
-  jobs_running: number
-  jobs_pending: number
-}
+export type ResourceUsage = Schemas['ResourceUsage']
 
-export interface CampaignSummary {
-  campaign_id: string
-  phase: string
-  // Free text the launcher gave about this run (see start_campaign / CreateCampaignRequest);
-  // empty when none was given. Capped at 200 chars server-side, so it renders on one line.
-  description?: string
-  postprocessed: boolean
-  // Reason a post-run step's last attempt failed, or null/absent when it succeeded or
-  // never ran. A finished campaign can carry either: the runs are the deliverable, the
-  // step failure is separate and re-triggerable (see runPostprocessing / runShare).
-  postprocessing_error?: string | null
-  share_error?: string | null
-  num_runs: number
-  num_passed: number
-  num_failed: number
-  started_at?: string | null
-  finished_at?: string | null
-}
+export type CampaignSummary = Schemas['CampaignSummary']
 
-export interface ListCampaignsResponse {
-  campaigns: CampaignSummary[]
-  total: number
-}
+export type ListCampaignsResponse = Schemas['ListCampaignsResponse']
 
 // Campaign lists arrive newest-first: the service orders them by recorded start time
 // before it applies limit/offset, so the order and the page contents agree (see
@@ -100,146 +71,41 @@ export const isFailed = (c: CampaignSummary) => c.phase === 'failed'
 // for what the Results topic (Explorer / Run / Data) shows.
 export const hasResults = (c: CampaignSummary) => isFinished(c) && c.postprocessed
 
-export interface CreateCampaignRequest {
-  workspace_id: string
-  config_path?: string
-  config_filter?: string
-  campaign_name?: string
-  // One line on what this run is for; shown on the campaign card. Max 200 chars (the
-  // service rejects longer).
-  description?: string
-  runs?: number
-  postprocess?: boolean
-  upload_to_share?: boolean
-  // On a multi-backend serve, which lane to run on ("local" | "cluster"). Omitted
-  // uses the service default (cluster when available). Single-backend serves ignore it.
-  backend?: string
-}
+export type CreateCampaignRequest = Schemas['CreateCampaignRequest']
 
 // Mirrors interface.py:DESCRIPTION_MAX_LEN. Enforced here only to keep the field from
 // growing past what a campaign card can show — the service is the authority and rejects
 // a longer one.
 export const DESCRIPTION_MAX_LEN = 200
 
-export interface CampaignRef {
-  campaign_id: string
-}
+export type CampaignRef = Schemas['CampaignRef']
 
-export interface ActionResult {
-  ok: boolean
-  message?: string | null
-}
+export type ActionResult = Schemas['ActionResult']
 
 // control_server.Status (reused verbatim by the interface) — the live monitor model.
-export interface RunProgress {
-  // Runs that produced a result — including a *failing* one.
-  completed: number
-  total: number
-  // Runs that delivered nothing at all, once the batch's jobs have all reached a
-  // terminal state (0 while the batch is still running).
-  no_result: number
-  // Runs whose own verdict is a failure: the trial ran and did not pass. Distinct
-  // from no_result, and 0 until the batch's outcomes are recorded.
-  failed: number
-}
+export type RunProgress = Schemas['RunProgress']
 
-export interface BudgetItem {
-  label: string
-  current?: number | null
-  limit: number
-  done: boolean
-}
+export type BudgetItem = Schemas['BudgetItem']
 
-export interface Status {
-  phase: string
-  // When `phase` was last set (epoch seconds). Rendered as an age so a pre-run phase that
-  // is wedged is distinguishable from one that is merely slow — the name alone never is.
-  phase_since?: number
-  // When progress last *advanced* (epoch seconds), and how long it may legitimately
-  // stand still. `phase_since` cannot answer "is this run wedged?": a campaign holds the
-  // `running` phase for its whole life, so its phase age grows either way. `stalled` is
-  // only claimable when `progress_deadline_s` is set — otherwise there is no declared
-  // budget to judge against and the age is all we may show.
-  progress_since?: number
-  progress_deadline_s?: number | null
-  stage?: string | null
-  mode?: string | null
-  campaign_id?: string | null
-  batch: number
-  batches_done: number
-  budget: BudgetItem[]
-  runs: RunProgress
-  best_objective?: number | null
-  batch_history: Record<string, unknown>[]
-  stop?: Record<string, unknown> | null
-  error?: string | null
-  share_provider?: string | null
-  // Per-step failure markers (postprocessing / upload-to-share); see CampaignSummary.
-  postprocessing_error?: string | null
-  share_error?: string | null
-  extra: Record<string, unknown>
-  updated_at: number
-}
+export type Status = Schemas['Status']
 
 // An incremental slice of a campaign's controller.log. Poll from `next_offset`
 // and append `text`; stop once `eof` is set (mirrors service/interface.py:LogChunk).
-export interface LogChunk {
-  text: string
-  next_offset: number
-  eof: boolean
-}
+export type LogChunk = Schemas['LogChunk']
 
 // One execution unit of a campaign's current batch (a run locally, a k8s Job on
 // the cluster). Mirrors interface.py:JobSummary/JobCounts/ListJobsResponse.
-export interface JobSummary {
-  job_name: string
-  status: string // running | pending | waiting | completed | failed | blocked
-  display_name?: string | null
-  // Why a job is in its state when there's something to say — the Kubernetes reason +
-  // message for a job that cannot start (e.g. ImagePullBackOff), or Kueue's wait message
-  // for a job queued for capacity. null if healthy.
-  detail?: string | null
-}
+export type JobSummary = Schemas['JobSummary']
 
-export interface JobCounts {
-  running: number
-  pending: number
-  // Queued for cluster capacity by Kueue (no pod yet) — healthy and expected, so it is
-  // counted apart from both pending and blocked.
-  waiting: number
-  completed: number
-  failed: number
-  // Jobs that cannot start and won't recover on their own (e.g. ImagePullBackOff);
-  // distinct from failed — Kubernetes still counts them active. See JobSummary.detail.
-  blocked: number
-  total: number
-}
+export type JobCounts = Schemas['JobCounts']
 
-export interface ListJobsResponse {
-  jobs: JobSummary[]
-  counts: JobCounts
-}
+export type ListJobsResponse = Schemas['ListJobsResponse']
 
-export interface WorkspaceInfo {
-  workspace_id: string
-  name: string
-  created_at?: string | null
-  /** A directory pinned read-only with `vast serve --workspace-dir`: used in
-   *  place, so it cannot be edited through the service (edit files on disk). */
-  read_only?: boolean
-}
+export type WorkspaceInfo = Schemas['WorkspaceInfo']
 
-export interface ListWorkspacesResponse {
-  workspaces: WorkspaceInfo[]
-}
+export type ListWorkspacesResponse = Schemas['ListWorkspacesResponse']
 
-export interface FileMeta {
-  /** The address written, e.g. `/sources/ws-ab12/demo.vast`. */
-  address: string
-  bytes: number
-  sha256: string
-  executable: boolean
-}
+export type FileMeta = Schemas['FileMeta']
 
 export interface FileListing {
   /** The directory that was listed; every entry is relative to it. */
@@ -261,29 +127,13 @@ export interface FileText {
   content: string
 }
 
-export interface UploadGrant {
-  token: string
-  path: string
-  expires_in: number
-  url?: string | null
-}
+export type UploadGrant = Schemas['UploadGrant']
 
 // -- config-editor models (mirror interface.py) ----------------------------
 
-export interface ValidationProblem {
-  stage: string
-  config?: string | null
-  field?: string | null
-  message: string
-}
+export type ValidationProblem = Schemas['ValidationProblem']
 
-export interface ValidationReport {
-  valid: boolean
-  problems: ValidationProblem[]
-  configs: number
-  runs_per_config: number
-  total_trials: number
-}
+export type ValidationReport = Schemas['ValidationReport']
 
 export interface VariationRemote {
   name: string
@@ -297,37 +147,15 @@ export interface VariationPreview {
   remote?: VariationRemote | null
 }
 
-export interface PreviewConfiguration {
-  name: string
-  parameters: Record<string, unknown>
-  previews: VariationPreview[]
-}
+export type PreviewConfiguration = Schemas['PreviewConfiguration']
 
-export interface PreviewResponse {
-  configs: number
-  runs_per_config: number
-  total_trials: number
-  configurations: PreviewConfiguration[]
-  truncated: boolean
-}
+export type PreviewResponse = Schemas['PreviewResponse']
 
-export interface VariationTypeParam {
-  name: string
-  type: string
-  required: boolean
-  default?: unknown
-  description?: string | null
-}
+export type VariationTypeParam = Schemas['VariationTypeParam']
 
-export interface VariationTypeInfo {
-  name: string
-  summary: string
-  params: VariationTypeParam[]
-}
+export type VariationTypeInfo = Schemas['VariationTypeInfo']
 
-export interface VariationTypesResponse {
-  types: VariationTypeInfo[]
-}
+export type VariationTypesResponse = Schemas['VariationTypesResponse']
 
 // -- results data query (eval viewer) ---------------------------------------
 
@@ -338,37 +166,14 @@ export interface DataTable {
   rows: number | null
 }
 
-export interface DataDescribe {
-  campaign_id: string
-  tables: DataTable[]
-  note: string
-}
+export type DataDescribe = Schemas['DataDescribe']
 
-export interface DataQueryResult {
-  campaign_id: string
-  columns: string[]
-  rows: Record<string, unknown>[]
-  row_count: number
-  truncated: boolean
-}
+export type DataQueryResult = Schemas['DataQueryResult']
 
 // Whether querying a campaign has to transfer its databases from the object store first.
 // `fetch_required: false` (a local service) means the question does not apply — the backend
 // difference is resolved server-side, so a view reads the same fields either way.
-export interface CampaignDataStatus {
-  campaign_id: string
-  source: 'local-disk' | 'object-store'
-  fetch_required: boolean
-  cached: boolean
-  // "cluster-network" (in-pod, fast) vs "port-forward" (off-cluster driver, slow): the same
-  // store reached two ways, differing by orders of magnitude.
-  transfer: 'none' | 'cluster-network' | 'port-forward'
-  db_bytes: number
-  fetch_in_progress: boolean
-  last_fetch_seconds: number | null
-  last_fetch_bytes: number | null
-  note: string
-}
+export type CampaignDataStatus = Schemas['CampaignDataStatus']
 
 export interface PlotSpec {
   title: string
@@ -376,48 +181,28 @@ export interface PlotSpec {
   vega_lite: Record<string, unknown>
 }
 
-export interface CampaignPlotsResponse {
-  campaign_id: string
-  plots: PlotSpec[]
-}
+export type CampaignPlotsResponse = Schemas['CampaignPlotsResponse']
 
 // The run-view panels declared for a campaign (its .vast top-level visualization.panels). Each entry
 // is the raw panel dict (type + position + panel-specific data bindings); the UI normalizes it.
-export interface CampaignPanelsResponse {
-  campaign_id: string
-  panels: Record<string, unknown>[]
-  // Optional visualization.timeline: which table/column defines the run's playback range.
-  timeline?: { table: string; time_column?: string }
-}
+export type CampaignPanelsResponse = Schemas['CampaignPanelsResponse']
 
 // The campaign's run-view `visualization:` block as editable YAML text. Saving overwrites that
 // block in the campaign's own `_config/<name>.vast` in place.
-export interface PanelsSource {
-  campaign_id: string
-  content: string
-}
+export type PanelsSource = Schemas['PanelsSource']
 
 // The campaign's `results_processing.postprocessing` block as editable YAML text (the same
 // shape as PanelsSource — see the postprocessing rerun dialog). Saving overwrites that block in
 // the campaign's own `_config/<name>.vast` in place; the raw rosbags are preserved, so
 // postprocessing can be edited and re-run any number of times.
-export interface PostprocessingSource {
-  campaign_id: string
-  content: string
-}
+export type PostprocessingSource = Schemas['PostprocessingSource']
 
 // One evaluation.visualization notebook workload + the node levels it defines a notebook for
 // (subset of run/config/campaign). The Explorer shows a tab per workload and renders the
 // workload's notebook, executed against the selected node, as HTML.
-export interface CampaignVisualization {
-  name: string
-  levels: string[]
-}
+export type CampaignVisualization = Schemas['CampaignVisualization']
 
-export interface CampaignVisualizationsResponse {
-  campaign_id: string
-  workloads: CampaignVisualization[]
-}
+export type CampaignVisualizationsResponse = Schemas['CampaignVisualizationsResponse']
 
 // -- transport --------------------------------------------------------------
 
@@ -494,7 +279,7 @@ export const robovast = {
       `/campaigns/${encodeURIComponent(campaignId)}/logs?offset=${offset}`,
     ),
 
-  createCampaign: (req: CreateCampaignRequest) =>
+  createCampaign: (req: Partial<CreateCampaignRequest> & { workspace_id: string }) =>
     request<CampaignRef>('POST', '/campaigns', {
       config_path: '',
       config_filter: '',

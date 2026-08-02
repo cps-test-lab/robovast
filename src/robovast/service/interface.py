@@ -40,7 +40,7 @@ operations extend :class:`RobovastInterface` in later phases.
 """
 
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -164,6 +164,12 @@ class CampaignSummary(BaseModel):
     num_failed: int = 0
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
+    # A campaign whose runs all passed still *finishes* when a post-run step fails -- the
+    # runs are the deliverable -- so the failure has to travel with the listing or it is
+    # invisible once the live Status is gone (a service restart drops the tracked entry).
+    # The web UI already tries to read these off a summary and falls back to nothing.
+    postprocessing_error: str = ""
+    share_error: str = ""
 
 
 class ListCampaignsRequest(BaseModel):
@@ -554,6 +560,27 @@ class ValidationReport(BaseModel):
     total_trials: int = 0
 
 
+class VariationRemote(BaseModel):
+    """Where a variation type's Module-Federation preview bundle is served from.
+
+    Field-for-field what ``local_transport._plugin_remotes`` builds — the container name
+    (``REMOTE_NAME``, defaulting to the entry-point name), the ``remoteEntry.js`` URL, and
+    the exposed module.
+    """
+
+    name: str = ""
+    remote_entry_url: str = ""
+    module: str = ""
+
+
+class VariationPreview(BaseModel):
+    """One variation's web preview: its type, its resolved params, and its renderer."""
+
+    variation_type: str = ""
+    params: dict = Field(default_factory=dict)
+    remote: Optional[VariationRemote] = None
+
+
 class PreviewConfiguration(BaseModel):
     """One resolved configuration a ``.vast`` expands to."""
 
@@ -561,7 +588,7 @@ class PreviewConfiguration(BaseModel):
     parameters: dict = Field(default_factory=dict)
     #: Per-variation preview descriptors (Phase 2b — Module Federation remotes /
     #: host-native built-ins); empty when a variation contributes no preview.
-    previews: list = Field(default_factory=list)
+    previews: list[VariationPreview] = Field(default_factory=list)
 
 
 class PreviewResponse(BaseModel):
@@ -599,6 +626,19 @@ class VariationTypesResponse(BaseModel):
 # -- results data query (eval viewer) ---------------------------------------
 
 
+class DataTable(BaseModel):
+    """One queryable table, as :meth:`describe_campaign_data` reports it."""
+
+    schema_: str = Field("", alias="schema")
+    table: str = ""
+    columns: list[str] = Field(default_factory=list)
+    rows: Optional[int] = None
+    description: str = ""
+    column_notes: dict = Field(default_factory=dict)
+
+    model_config = {"populate_by_name": True}
+
+
 class DataDescribe(BaseModel):
     """Schema of a campaign's ``data.db`` (+ attached ``campaign.db``).
 
@@ -608,7 +648,7 @@ class DataDescribe(BaseModel):
     """
 
     campaign_id: str
-    tables: list[dict] = Field(default_factory=list)
+    tables: list["DataTable"] = Field(default_factory=list)
     note: str = ""
 
 
@@ -641,7 +681,7 @@ class CampaignDataStatus(BaseModel):
 
     campaign_id: str
     #: ``"local-disk"`` (files on the service's own disk) or ``"object-store"``.
-    source: str
+    source: Literal["local-disk", "object-store"]
     #: Can a query have to transfer data before it can answer? False on local, where there
     #: is nothing to fetch and so nothing to warn about.
     fetch_required: bool
@@ -652,7 +692,7 @@ class CampaignDataStatus(BaseModel):
     #: speed) or ``"port-forward"`` (off-cluster driver — the slow one). The two cluster
     #: modes differ by orders of magnitude, so "object store" alone would not tell a caller
     #: whether to expect seconds or minutes.
-    transfer: str
+    transfer: Literal["none", "cluster-network", "port-forward"]
     #: Size of what a *query* needs (``data.db`` + ``campaign.db``) — not of the campaign,
     #: which is typically orders of magnitude larger and irrelevant here.
     db_bytes: int = 0
@@ -667,12 +707,32 @@ class CampaignDataStatus(BaseModel):
     note: str = ""
 
 
+class PlotSpec(BaseModel):
+    """One declared plot: a runnable query plus the Vega-Lite spec that charts it."""
+
+    title: str = ""
+    query: str = ""
+    vega_lite: dict = Field(default_factory=dict)
+
+
 class CampaignPlotsResponse(BaseModel):
     """User-declared plots for a campaign (from its snapshot ``.vast``
     ``evaluation.plots``). Each entry is ``{title, query, vega_lite}``."""
 
     campaign_id: str
-    plots: list[dict] = Field(default_factory=list)
+    plots: list["PlotSpec"] = Field(default_factory=list)
+
+
+class PlaybackTimeline(BaseModel):
+    """The table and column defining a non-ROS run's playback range.
+
+    Typed rather than a bare dict because the run view feeds ``table`` straight into a
+    query: as ``Optional[dict]`` the generated client saw ``{}``, and only a hand-written
+    type that happened to say ``string`` kept that call type-checking.
+    """
+
+    table: str = ""
+    time_column: str = "timestamp"
 
 
 class CampaignPanelsResponse(BaseModel):
@@ -685,7 +745,7 @@ class CampaignPanelsResponse(BaseModel):
 
     campaign_id: str
     panels: list[dict] = Field(default_factory=list)
-    timeline: Optional[dict] = None
+    timeline: Optional["PlaybackTimeline"] = None
 
 
 # NOTE: the costmap frame endpoint (``CostmapFrame`` model + ``get_costmap_frame`` +

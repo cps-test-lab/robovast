@@ -10,9 +10,15 @@ rather than only in the docs build.
 
 import pathlib
 import re
+import sys
+
+import pytest
 
 from robovast.service.app import (ROUTE_TAG_ORDER, api_routes, build_app,
                                  route_description)
+
+# ``tools/`` is a sibling of ``src/``, not a package on the path.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
 
 class _Stub:
@@ -149,3 +155,31 @@ def test_the_dev_proxy_covers_every_served_prefix():
     assert not missing, (
         f"top-level API prefixes the dev server would not proxy: {missing}. Add them to "
         "API_PREFIXES in ui/vite.config.ts.")
+
+
+def test_the_generated_ui_client_is_up_to_date():
+    """``ui/src/lib/api.generated.ts`` must match the schema the app publishes now.
+
+    The UI's ~40 response types used to be hand-written mirrors of the pydantic models
+    with nothing tying them together, so a renamed or newly-optional field stayed
+    "correct" in TypeScript until something broke at runtime. They are generated now; this
+    is what makes that real, because a generated file nobody regenerates is just a slower
+    hand-written one.
+
+    Regenerate with ``cd ui && npm run generate:api``.
+    """
+    import json
+
+    ui = pathlib.Path(__file__).resolve().parents[2] / "ui"
+    committed = ui / "openapi.json"
+    if not committed.is_file():
+        pytest.skip("ui/openapi.json not present (no web UI checkout)")
+
+    from robovast.service.app import build_app
+    from tools.dump_openapi import _mark_response_fields_required  # noqa: PLC0415
+
+    current = build_app(_Stub()).openapi()
+    _mark_response_fields_required(current)
+    assert json.loads(committed.read_text()) == current, (
+        "ui/openapi.json is stale — the service's schema changed. Run "
+        "`cd ui && npm run generate:api` and commit the result.")

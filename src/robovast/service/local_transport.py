@@ -1779,7 +1779,11 @@ class LocalTransport(RobovastInterface):
             description=self._description_for(cid) or "",
             started_at=started_at,
             num_runs=counts["num_runs"], num_passed=counts["num_passed"],
-            num_failed=counts["num_failed"] + counts["num_errors"])
+            num_failed=counts["num_failed"] + counts["num_errors"],
+            # From the same snapshot as the phase, so a listing cannot show a campaign as
+            # finished-and-fine while its Status says postprocessing failed.
+            postprocessing_error=snap.postprocessing_error or "",
+            share_error=snap.share_error or "")
 
     def _run_counts(self, campaign_dir: Path, *, live: bool) -> dict:
         """Pass/fail tallies for the summary, from ``campaign.db`` when possible.
