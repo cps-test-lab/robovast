@@ -99,8 +99,19 @@ def list_files(address: str, recursive: bool = False, offset: int = 0,
         return {"error": str(e)}
 
 
+#: Ratio at which a page stops being "the file" and becomes a sample of it. Below this,
+#: naming a download URL is noise; above it, a caller that does not know the rest exists
+#: will reason about the sample as if it were the whole thing.
+_PAGE_IS_A_SAMPLE = 2
+
+
 def read_file(address: str, limit: int = 200, offset: int = 0) -> dict:
     """Read a page of a text file, by its address. ``list_files`` shows what is there.
+
+    A binary file, or one much larger than the page returned, comes back with a ``url``:
+    the address **is** the URL that serves it, so fetch those bytes over HTTP rather than
+    through this interface — a rosbag is tens of megabytes and would be neither readable
+    nor affordable as text.
 
     Args:
         address: ``/results/<campaign_id>/<path>`` (read-only) or
@@ -110,13 +121,35 @@ def read_file(address: str, limit: int = 200, offset: int = 0) -> dict:
         offset: First line to return (line index).
 
     Returns:
-        ``{address, total_lines, returned_lines, offset, content}``. Binary files are
-        refused rather than mangled — fetch those over HTTP or with ``vast files get``.
+        ``{address, total_lines, returned_lines, offset, content}``, plus ``url`` when the
+        file is much longer than this page. For a binary: ``{address, url, binary, note}``
+        and no content. ``url`` is absent when the service is in-process and there is no
+        URL to hand out.
     """
+    from robovast.common.file_address import AddressError
+    from robovast.mcp_server import service_access
+    from robovast.service.interface import Routes
+    client = _client()
     try:
-        return _client().read_file(address, lines=limit, offset=offset).model_dump()
-    except Exception as e:  # noqa: BLE001
+        page = client.read_file(address, lines=limit, offset=offset).model_dump()
+    except AddressError as e:
         return {"error": str(e)}
+    except Exception as e:  # noqa: BLE001
+        url = service_access.web_url(client, Routes.file(address))
+        # A binary read is a refusal only in the text lane; over HTTP it is an ordinary
+        # GET. Answering with the URL turns "you cannot have this" into "here is where it
+        # is" — the caller wanted the bytes, and they are one request away.
+        if "binary" in str(e).lower() and url:
+            return {"address": address, "url": url, "binary": True,
+                    "note": "Binary — fetch the URL (or 'vast files get'); not text."}
+        return {"error": str(e)}
+
+    total, returned = page.get("total_lines", 0), page.get("returned_lines", 0)
+    if returned and total > returned * _PAGE_IS_A_SAMPLE:
+        url = service_access.web_url(client, Routes.file(address))
+        if url:
+            page["url"] = url
+    return page
 
 
 def write_file(address: str, content: str) -> dict:

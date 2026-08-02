@@ -468,6 +468,23 @@ class LocalTransport(RobovastInterface):
         self._require_file(address, target)
         return target.read_bytes()
 
+    def local_file(self, address: str) -> Path:
+        """The file's real path on this host, for a lane that has one.
+
+        Lets the HTTP layer serve it with ``FileResponse`` — streamed, with ``Range`` and
+        conditional-request handling — instead of reading it whole into memory. A
+        campaign's rosbag is tens of megabytes and up, and ``read_file_bytes`` buffers all
+        of it per request just to hand it back.
+
+        The cluster service does **not** override this (its results are object-store
+        entries, with no path to hand out), so the HTTP layer treats its absence as "this
+        lane cannot stream" rather than as an error. That is a real difference between the
+        substrates, not a fallback for one behaviour.
+        """
+        _, _, _, target = self._address_target(address)
+        self._require_file(address, target)
+        return target
+
     @staticmethod
     def _written(owner: str, meta: dict) -> FileMeta:
         """Attach the address to a store's file metadata.
@@ -1512,6 +1529,15 @@ class LocalTransport(RobovastInterface):
         result = query_data_db(self._query_dir(campaign_id), sql, max_rows,
                                extra_dirs=extra_dirs)
         return DataQueryResult(campaign_id=campaign_id, **result)
+
+    def stream_campaign_query_csv(self, campaign_id: str, sql: str,
+                                  extra_campaign_ids=None):
+        # Resolved through _query_dir like the JSON path, so the cluster service's
+        # object-store fetch happens here too rather than needing its own override.
+        from robovast.results_processing.data_query import stream_query_csv
+        extra_dirs = {f"c{i + 1}": self._query_dir(cid)
+                      for i, cid in enumerate(extra_campaign_ids or [])}
+        return stream_query_csv(self._query_dir(campaign_id), sql, extra_dirs=extra_dirs)
 
     def campaign_data_status(self, campaign_id: str) -> "CampaignDataStatus":
         """Local: a query never transfers anything, so there is nothing to warn about.

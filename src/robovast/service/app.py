@@ -422,11 +422,22 @@ def build_app(impl: RobovastInterface):
             return _guard(lambda: impl.read_file(address, lines, offset))
         import mimetypes  # pylint: disable=import-outside-toplevel
 
-        from fastapi.responses import \
-            Response  # pylint: disable=import-outside-toplevel
-        data = _guard(lambda: impl.read_file_bytes(address))
+        from fastapi.responses import (  # pylint: disable=import-outside-toplevel
+            FileResponse, Response)
         media_type = mimetypes.guess_type(address)[0] or "application/octet-stream"
-        return Response(content=data, media_type=media_type)
+
+        # Stream from disk where the lane has a disk. A campaign's rosbag runs to tens of
+        # megabytes and beyond, and buffering it whole per request costs that much service
+        # memory to hand back bytes it never looks at. FileResponse also brings Range and
+        # conditional requests, which is what lets a browser seek a .webm rather than
+        # download it before playing.
+        local = getattr(impl, "local_file", None)
+        if local is not None:
+            return _guard(lambda: FileResponse(local(address), media_type=media_type))
+        # A cluster campaign's results are object-store entries with no path to stream
+        # from; ranged object reads are a separate change.
+        return Response(content=_guard(lambda: impl.read_file_bytes(address)),
+                        media_type=media_type)
 
     @app.get(Routes.RESULTS + "/{campaign_id}/{path:path}", tags=["files"])
     def get_results_file(campaign_id: str, path: str,
@@ -665,6 +676,26 @@ def build_app(impl: RobovastInterface):
     ) -> DataQueryResult:
         return _guard(lambda: impl.query_campaign_data_sql(
             campaign_id, sql, max_rows, extra_campaign_ids))
+
+    @app.get(Routes.campaign_query_csv("{campaign_id}"), tags=["results"])
+    def query_campaign_data_csv(campaign_id: str, sql: str,
+                                extra_campaign_ids: str = ""):
+        """Stream the same read-only ``SELECT`` as CSV, with no row cap.
+
+        The JSON query clamps at 5000 rows and says ``truncated``; this is where the rest
+        of the result lives. Streamed, so a result larger than memory is fine at both
+        ends, and an MCP tool can hand over this URL instead of spending context on rows.
+        """
+        from fastapi.responses import \
+            StreamingResponse  # pylint: disable=import-outside-toplevel
+        extras = [c for c in extra_campaign_ids.split(",") if c]
+        # Called inside _guard so a rejected (non-read) query is a 400 with the same
+        # message the JSON path gives, rather than a 500 mid-stream.
+        rows = _guard(lambda: impl.stream_campaign_query_csv(campaign_id, sql, extras))
+        return StreamingResponse(
+            rows, media_type="text/csv",
+            headers={"Content-Disposition":
+                     f'attachment; filename="{campaign_id}-query.csv"'})
 
     @app.get(Routes.campaign_plots("{campaign_id}"), response_model=CampaignPlotsResponse,
              tags=["results"])

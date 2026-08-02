@@ -896,6 +896,12 @@ class Routes:
         return f"/campaigns/{campaign_id}/query"
 
     @staticmethod
+    def campaign_query_csv(campaign_id: str) -> str:
+        # The uncapped, streamed twin of ``campaign_query``. A GET (not the POST the JSON
+        # query uses) so the whole thing is one URL a browser or curl can follow.
+        return f"/campaigns/{campaign_id}/query.csv"
+
+    @staticmethod
     def campaign_data_status(campaign_id: str) -> str:
         # A **control** route, not a ``/results`` path: every segment under ``/results`` is
         # a user-chosen file name (see :mod:`robovast.common.file_address`), so a literal
@@ -1225,6 +1231,19 @@ class RobovastInterface(ABC):
         extra_campaign_ids: Optional[list[str]] = None,
     ) -> DataQueryResult:
         """Run a read-only ``SELECT`` over a campaign's data (``campaign.db`` attached)."""
+
+    @abstractmethod
+    def stream_campaign_query_csv(
+        self, campaign_id: str, sql: str,
+        extra_campaign_ids: Optional[list[str]] = None,
+    ):
+        """The same ``SELECT``, yielded as CSV text with **no row cap**.
+
+        :meth:`query_campaign_data_sql` clamps at 5000 rows and reports ``truncated``,
+        which left a caller who wanted the whole result with nowhere to go. This is that
+        somewhere: streamed, so neither end holds it, and cheap enough for an MCP tool to
+        hand over the URL rather than spend context on rows.
+        """
 
     @abstractmethod
     def campaign_data_status(self, campaign_id: str) -> CampaignDataStatus:

@@ -866,6 +866,12 @@ def get_simulation_screenshot(
     Raises:
         NavDataError: No ``.webm`` in the run directory, or more than one (an image tool
             has no result dict to carry an ``{"error": …}`` in, so it raises instead).
+
+    Note:
+        The whole recording is also a file in the address space, so
+        ``read_file('/results/<campaign_id>/<config_name>/<run_id>/<name>.webm')`` returns
+        a URL for it. Prefer that when a human wants to watch the run rather than have
+        one frame described — a video is not something to move through this interface.
     """
     import cv2  # pylint: disable=import-outside-toplevel
 

@@ -650,6 +650,59 @@ def query_data_db(campaign_dir, sql: str, max_rows: int = 500,
         conn.close()
 
 
+def stream_query_csv(campaign_dir, sql: str, extra_dirs: dict | None = None):
+    """Yield the same ``SELECT`` as CSV text, row by row and with **no row cap**.
+
+    :func:`query_data_db` clamps to 5000 rows because its result is a JSON payload someone
+    has to hold — reasonable for a caller reading the answer, useless for a caller who
+    wants the data. This is the way out: the HTTP layer streams it, so a result larger
+    than memory is fine at both ends, and an MCP tool can hand over the URL instead of
+    reporting ``truncated`` and leaving the rest unreachable.
+
+    Same authorizer, so it is exactly as read-only as the JSON path — a second query entry
+    point must not be a second security decision. Cells are **not** width-capped here: the
+    cap exists to keep a JSON reply readable, and truncating an exported value would
+    corrupt the export.
+    """
+    import csv
+    import io
+
+    conn = _open_db(campaign_dir, extra_dirs=extra_dirs)
+    try:
+        conn.set_authorizer(_readonly_authorizer)
+        try:
+            cursor = conn.execute(sql)
+        except sqlite3.DatabaseError as e:
+            msg = str(e)
+            if "not authorized" in msg.lower():
+                raise DataQueryError(
+                    f"Only read-only SELECT queries are allowed (rejected: {msg}).") from e
+            raise DataQueryError(f"SQL error: {msg}") from e
+        if cursor.description is None:
+            raise DataQueryError("query returned no result set (only SELECT is supported)")
+
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+
+        def _flush() -> str:
+            text = buffer.getvalue()
+            buffer.seek(0)
+            buffer.truncate(0)
+            return text
+
+        writer.writerow([d[0] for d in cursor.description])
+        yield _flush()
+        while True:
+            batch = cursor.fetchmany(1000)
+            if not batch:
+                return
+            writer.writerows(batch)
+            yield _flush()
+    finally:
+        conn.set_authorizer(None)
+        conn.close()
+
+
 # NOTE: the costmap-frame reader lived here; it moved to ``robovast_nav`` as a
 # package-provided service endpoint (``robovast_nav/service_endpoints.py:CostmapEndpoint``),
 # which reads the ``costmaps`` table via :func:`open_data_db`. Core keeps only the generic

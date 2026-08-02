@@ -240,3 +240,35 @@ def test_unknown_namespace_names_the_valid_ones(env):
     resp = client.get("/campaigns/camp-1/run-files/nav/3/scene/scene.json")
     # The retired route is simply gone; nothing answers on it.
     assert resp.status_code == 404
+
+
+# -- large files are streamed, not buffered ----------------------------------
+
+
+def test_a_binary_read_is_streamed_and_seekable(env):
+    """Served with FileResponse, so ``Range`` works and the service holds no copy.
+
+    The route used to read the whole file into memory and return it as one Response.
+    A campaign's rosbag is tens of megabytes and up, so every request cost that much
+    service memory to hand back bytes it never inspects — and without ``Range`` a browser
+    had to download a whole ``.webm`` before it could play a second of it.
+    """
+    client, _lt, _ws = env
+    url = "/results/camp-1/nav/3/scene/scene.bin"
+
+    whole = client.get(url)
+    assert whole.status_code == 200
+    assert whole.content == b"\x00\x01\x02"
+    assert whole.headers["accept-ranges"] == "bytes"
+
+    part = client.get(url, headers={"Range": "bytes=1-2"})
+    assert part.status_code == 206, "a ranged read must not return the whole file"
+    assert part.content == b"\x01\x02"
+
+
+def test_a_missing_file_still_refuses_by_address(env):
+    """The streaming path must keep the address-space error, not leak a filesystem one."""
+    client, _lt, _ws = env
+    res = client.get("/results/camp-1/nav/3/scene/nope.bin")
+    assert res.status_code == 404
+    assert "nope.bin" in res.json()["detail"]

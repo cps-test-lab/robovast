@@ -34,6 +34,7 @@ from robovast.common.log_summary import DEFAULT_TOP
 from robovast.common.status import stall_report
 from robovast.mcp_server import results_resolver, service_access
 from robovast.mcp_server.service_access import NO_SERVICE
+from robovast.service.interface import Routes
 
 logger = logging.getLogger(__name__)
 
@@ -311,7 +312,7 @@ def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
                 "total_lines": view["lines_total"], "dropped": view["dropped"]}
     all_lines = view["content"].splitlines()
     selected = all_lines[offset:offset + limit]
-    return {
+    result = {
         "file_name": name,
         "phases": phases,
         "total_lines": len(all_lines),
@@ -320,6 +321,16 @@ def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
         "content": "\n".join(selected),
         "dropped": view["dropped"],
     }
+    # Point at the whole thing only when this page is a sample of it. Paging a 20k-line
+    # log through here costs a fortune in context and reads worse than the summary; the
+    # URL is for a human, and summarize=True is for the caller.
+    if selected and len(all_lines) > len(selected) * 2:
+        url = service_access.web_url(client, Routes.campaign_logs(campaign_id))
+        if url:
+            result["url"] = url
+            result["stream_url"] = service_access.web_url(
+                client, Routes.campaign_logs_stream(campaign_id))
+    return result
 
 
 def _select_phases(text: str, phase: str) -> "tuple[str, list[dict]]":

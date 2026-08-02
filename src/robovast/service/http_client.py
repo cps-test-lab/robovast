@@ -331,6 +331,24 @@ class HTTPTransport(RobovastInterface):
             Routes.campaign_describe(campaign_id),
             timeout=max(self.timeout, self.DATA_TIMEOUT)))
 
+    def stream_campaign_query_csv(self, campaign_id: str, sql: str,
+                                  extra_campaign_ids=None):
+        """Stream the CSV export through, chunk by chunk.
+
+        Not ``_get``: that decodes a JSON body, and the point of this route is that the
+        result may be larger than memory at either end. ``DATA_TIMEOUT`` because the first
+        query on a cluster campaign fetches its databases inside the request, exactly as
+        the JSON query does.
+        """
+        import requests
+        params = {"sql": sql}
+        if extra_campaign_ids:
+            params["extra_campaign_ids"] = ",".join(extra_campaign_ids)
+        resp = requests.get(f"{self.base_url}{Routes.campaign_query_csv(campaign_id)}",
+                            params=params, timeout=self.DATA_TIMEOUT, stream=True)
+        self.raise_for_status(resp)
+        return resp.iter_content(chunk_size=64 * 1024, decode_unicode=True)
+
     def campaign_data_status(self, campaign_id: str) -> "CampaignDataStatus":
         # Deliberately the *default* timeout: this is the cheap probe, and if it hangs the
         # answer is "the service is unwell", not "be patient".

@@ -67,3 +67,15 @@ def client_or_local():
     """
     from robovast.service.local_transport import LocalTransport
     return service_client() or LocalTransport()
+
+
+def web_url(client, route: str) -> str:
+    """An absolute URL for *route*, or ``""`` when this caller has no URL to give.
+
+    The address space is also the URL space, so pointing at the web API for a large
+    payload costs nothing to build — but only an HTTP transport has a base to build it
+    from. An in-process ``LocalTransport`` has none, and per AGENTS.md §4 a field that
+    cannot be used is **omitted** rather than reported as null or, worse, guessed at.
+    """
+    base = getattr(client, "base_url", "")
+    return f"{base}{route}" if base else ""

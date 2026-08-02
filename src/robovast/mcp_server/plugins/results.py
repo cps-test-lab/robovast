@@ -29,6 +29,7 @@ through the address space (``/results/<campaign_id>/<path>``).
 
 import logging
 from typing import Any
+from urllib.parse import quote
 
 from fastmcp import Context, FastMCP
 
@@ -267,6 +268,10 @@ async def query_campaign_data_sql(campaign_id: str, sql: str, limit: int = 500,
     any metric table on ``(config_name, run_id)`` — ``run_id`` restarts at 0 in every
     configuration, so filtering on it alone silently spans configurations.
 
+    When the result is capped, a ``csv_url`` comes back with it: the same query, streamed
+    uncapped over HTTP. Follow it (or give it to the user) instead of paging thousands of
+    rows through this interface.
+
     Args:
         campaign_id: Campaign identifier or absolute path (schema ``main``).
         sql: A single ``SELECT``.
@@ -275,7 +280,7 @@ async def query_campaign_data_sql(campaign_id: str, sql: str, limit: int = 500,
             ``campaign.db`` as ``c1_campaign``, …) so one query can compare campaigns.
 
     Returns:
-        ``{campaign_id, columns, rows, row_count, truncated, fetch[, attached]}``
+        ``{campaign_id, columns, rows, row_count, truncated, fetch[, attached, csv_url]}``
         or ``{error}``. See ``describe_campaign_data`` for what ``fetch`` costs.
 
     Examples::
@@ -289,10 +294,21 @@ async def query_campaign_data_sql(campaign_id: str, sql: str, limit: int = 500,
         SELECT 'A' AS campaign, AVG(objective) FROM runs
         UNION ALL SELECT 'B', AVG(objective) FROM c1.runs
     """
-    return await _announced(
+    result = await _announced(
         ctx, campaign_id,
         lambda pf: data_access.query(campaign_id, sql, limit, extra_campaign_ids,
                                      preflight=pf))
+    # Only when it was actually capped: an uncapped result needs no second way to get it,
+    # and offering one anyway trains a reader to ignore the field.
+    if result.get("truncated"):
+        from robovast.service.interface import Routes
+        url = service_access.web_url(
+            service_access.service_client(), Routes.campaign_query_csv(campaign_id))
+        if url:
+            result["csv_url"] = f"{url}?sql={quote(sql)}" + (
+                "&extra_campaign_ids=" + quote(",".join(extra_campaign_ids))
+                if extra_campaign_ids else "")
+    return result
 
 
 def list_campaign_plots(campaign_id: str) -> dict:
