@@ -40,7 +40,8 @@ from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         ListCampaignsResponse, ListJobsResponse,
                                         ListWorkspacesResponse,
                                         LogChunk, PreviewResponse, ResourceUsage,
-                                        RobovastInterface, Routes, UploadGrant,
+                                        RobovastInterface, Routes, ServiceError,
+                                        UploadGrant,
                                         ValidationReport, VariationTypesResponse,
                                         VersionInfo, WorkspaceInfo,
                                         WriteFileRequest)
@@ -62,6 +63,34 @@ class HTTPTransport(RobovastInterface):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 
+    @staticmethod
+    def raise_for_status(resp) -> None:
+        """Raise :class:`ServiceError` carrying the service's own message.
+
+        ``requests``' own ``raise_for_status`` reports the status line and the URL and
+        throws the body away — which is where every actionable refusal this service
+        writes was being lost. One helper, so no call site can forget; used for the
+        streaming reads too, which do not go through :meth:`_get`.
+        """
+        if resp.ok:
+            return
+        detail = ""
+        try:
+            body = resp.json()
+            if isinstance(body, dict):
+                detail = body.get("detail") or ""
+                # FastAPI's request-validation errors are a list of per-field dicts, not
+                # a string; render them rather than printing a repr at the caller.
+                if isinstance(detail, list):
+                    detail = "; ".join(
+                        f"{'.'.join(str(p) for p in d.get('loc', []))}: {d.get('msg', '')}"
+                        for d in detail if isinstance(d, dict))
+        except ValueError:
+            detail = (resp.text or "").strip()[:500]
+        raise ServiceError(resp.status_code,
+                           detail or f"{resp.status_code} {resp.reason}",
+                           resp.url)
+
     # First arg is the URL *route*; **params are query params — named `route` (not
     # `path`) so an endpoint whose query param is itself `path` (workspace file
     # read/delete) doesn't collide with this positional. `timeout` is keyword-only for the
@@ -70,28 +99,28 @@ class HTTPTransport(RobovastInterface):
         import requests
         resp = requests.get(f"{self.base_url}{route}", params=params or None,
                             timeout=timeout or self.timeout)
-        resp.raise_for_status()
+        self.raise_for_status(resp)
         return resp.json()
 
     def _post(self, route: str, json=None, *, timeout: "float | None" = None):
         import requests
         resp = requests.post(f"{self.base_url}{route}", json=json,
                             timeout=timeout or self.timeout)
-        resp.raise_for_status()
+        self.raise_for_status(resp)
         return resp.json()
 
     def _put(self, route: str, json=None):
         import requests
         resp = requests.put(f"{self.base_url}{route}", json=json,
                             timeout=self.timeout)
-        resp.raise_for_status()
+        self.raise_for_status(resp)
         return resp.json()
 
     def _delete(self, route: str, **params):
         import requests
         resp = requests.delete(f"{self.base_url}{route}", params=params or None,
                                timeout=self.timeout)
-        resp.raise_for_status()
+        self.raise_for_status(resp)
         return resp.json()
 
     def version(self) -> VersionInfo:
@@ -161,7 +190,7 @@ class HTTPTransport(RobovastInterface):
         import requests
         resp = requests.get(f"{self.base_url}{Routes.file(address)}",
                             timeout=self.timeout)
-        resp.raise_for_status()
+        self.raise_for_status(resp)
         return resp.content
 
     def write_file(self, request: WriteFileRequest) -> FileMeta:
@@ -362,7 +391,7 @@ class HTTPTransport(RobovastInterface):
         resp = requests.get(
             f"{self.base_url}{Routes.campaign_notebook(campaign_id)}",
             params=params, timeout=max(self.timeout, 600))
-        resp.raise_for_status()
+        self.raise_for_status(resp)
         return resp.text
 
 

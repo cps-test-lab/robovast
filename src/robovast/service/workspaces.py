@@ -272,7 +272,13 @@ class WorkspaceRegistry:
         if len(matches) == 1:
             return matches[0]
         if not matches:
-            raise WorkspaceError(f"unknown workspace {id_or_name!r}")
+            known = ", ".join(
+                f"{wid} ({e.get('name')})" if e.get("name") else wid
+                for wid, e in sorted(merged.items())) or "(none yet)"
+            raise WorkspaceError(
+                f"unknown workspace {id_or_name!r}. Known: {known}. Create one with "
+                "create_workspace, or pin a directory with "
+                "'vast serve --workspace-dir <dir>'.")
         raise WorkspaceError(
             f"workspace name {id_or_name!r} is ambiguous ({len(matches)} matches); "
             "delete it by its ws-… id instead")
@@ -409,7 +415,9 @@ class WorkspaceStore:
         self._require_inline_type(rel_path)
         target = self._safe_join(workspace_id, rel_path)
         if not target.is_file():
-            raise WorkspaceError(f"no such file in workspace: {rel_path!r}")
+            raise WorkspaceError(
+                f"no such file in workspace: {rel_path!r} — list the workspace "
+                f"with list_files('/sources/{workspace_id}/') to see what is there.")
         text = target.read_text(encoding="utf-8")
         count = text.count(old_string)
         if count == 0:
@@ -454,7 +462,9 @@ class WorkspaceStore:
         self._require_writable(workspace_id)
         target = self._safe_join(workspace_id, rel_path)
         if not target.is_file():
-            raise WorkspaceError(f"no such file in workspace: {rel_path!r}")
+            raise WorkspaceError(
+                f"no such file in workspace: {rel_path!r} — list the workspace "
+                f"with list_files('/sources/{workspace_id}/') to see what is there.")
         target.unlink()
 
     # -- upload side channel (everything that is not .vast/.osc) ------------

@@ -717,6 +717,31 @@ class CampaignVisualizationsResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class ServiceError(OSError):
+    """A refusal from the service, carrying what the service actually said.
+
+    The HTTP transport used to call ``raise_for_status()``, which discards FastAPI's
+    ``{"detail": ...}`` body. Every 4xx therefore reached an MCP tool or the CLI as
+    ``"400 Client Error: Bad Request for url: http://…?as=text&lines=200"`` — the status
+    line and the URL, with the actual message dropped. The service's refusals are written
+    to say what to do next ("is a binary file — read it as bytes…", "stop it first"), and
+    none of that survived the trip, while the web UI, which parses ``detail`` itself, saw
+    the real text. Two client families, two answers about the same call.
+
+    Subclasses ``OSError`` deliberately: ``requests.HTTPError`` already did (via
+    ``IOError``), so every existing ``except OSError`` — notably
+    :data:`robovast.mcp_server.data_access._REPORTED`, which relies on it to turn a
+    service-side SQL rejection into a reported error rather than a traceback — keeps
+    working unchanged.
+    """
+
+    def __init__(self, status: int, detail: str, url: str = ""):
+        self.status = status
+        self.detail = detail
+        self.url = url
+        super().__init__(detail)
+
+
 API_VERSION = "0"
 
 

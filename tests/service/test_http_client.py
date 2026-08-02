@@ -12,20 +12,39 @@ positional argument (``self._delete(route, path=path)`` → "multiple values for
 argument 'path'"). It is now a path segment, so there is nothing to collide with.
 """
 
+import pytest
 import requests
 
 from robovast.service.http_client import HTTPTransport
-from robovast.service.interface import EditFileRequest, WriteFileRequest
+from robovast.service.interface import (EditFileRequest, ServiceError,
+                                        WriteFileRequest)
 
 
 class _Resp:
-    def __init__(self):
-        self.content = b"bytes"
+    """A successful response, shaped like the ``requests`` one the client now inspects.
 
-    def raise_for_status(self):
-        pass
+    ``ok``/``status_code`` matter because the transport no longer delegates to
+    ``requests.Response.raise_for_status`` — it reads the status itself so it can carry
+    the service's ``{detail}`` through instead of discarding it.
+    """
+
+    def __init__(self, status_code: int = 200, payload=None, text: str = ""):
+        self.content = b"bytes"
+        self.status_code = status_code
+        self.ok = status_code < 400
+        self.reason = {200: "OK", 400: "Bad Request", 404: "Not Found",
+                       422: "Unprocessable Entity", 502: "Bad Gateway"}[status_code]
+        self.url = "http://svc/x"
+        self.text = text
+        self._payload = payload
 
     def json(self):
+        if self._payload is not None:
+            return self._payload
+        if self.text:
+            # A proxy or a crashed worker answers with HTML, and ``requests`` raises
+            # here rather than returning None — the branch that falls back to the body.
+            raise ValueError("not JSON")
         # One permissive payload standing in for every response model these tests touch:
         # the assertions are about the *request* (url, params, timeout), so the body only
         # has to validate.
@@ -115,3 +134,77 @@ def test_the_readiness_probe_keeps_the_default_timeout(monkeypatch):
 
     assert calls["get"]["url"] == "http://svc/campaigns/camp-1/data-status"
     assert calls["get"]["timeout"] == 7.0
+
+
+# -- what the service said must survive the trip -----------------------------
+#
+# The transport used to call ``requests.Response.raise_for_status()``, which reports the
+# status line and the URL and drops the body. Every refusal this service writes to be
+# acted on -- the binary-file advice, "stop it first", the address hint -- reached an MCP
+# tool or the CLI as ``"400 Client Error: Bad Request for url: ...?as=text&lines=200"``.
+# The web UI parses ``detail`` itself, so the two client families disagreed about what the
+# same call had said.
+
+
+def _refusing(monkeypatch, status: int, payload=None, text: str = ""):
+    def _call(url, params=None, timeout=None, json=None, **kw):
+        return _Resp(status_code=status, payload=payload, text=text)
+    for method in ("get", "put", "post", "delete"):
+        monkeypatch.setattr(requests, method, _call)
+
+
+def test_a_refusal_carries_the_services_own_message(monkeypatch):
+    advice = ("rosbag2_0.mcap is a binary file — read it as bytes (GET the address "
+              "without 'as=text'), or download the campaign archive.")
+    _refusing(monkeypatch, 400, {"detail": advice})
+
+    with pytest.raises(ServiceError) as excinfo:
+        HTTPTransport("http://svc").read_file("/results/camp-1/rosbag2_0.mcap")
+
+    assert str(excinfo.value) == advice
+    assert excinfo.value.status == 400
+    assert "Client Error" not in str(excinfo.value)
+
+
+def test_a_refusal_is_still_an_oserror(monkeypatch):
+    """``requests.HTTPError`` was one (via ``IOError``), and callers rely on that.
+
+    ``data_access._REPORTED`` catches ``OSError`` to turn a service-side SQL rejection
+    into a reported error rather than a traceback; changing the exception's base would
+    have silently converted those into crashes.
+    """
+    _refusing(monkeypatch, 400, {"detail": "no such column: nope"})
+    with pytest.raises(OSError):
+        HTTPTransport("http://svc").query_campaign_data_sql("camp-1", "SELECT nope")
+
+
+def test_a_validation_error_is_rendered_not_repr_d(monkeypatch):
+    """FastAPI sends 422 as a list of per-field dicts, which str()s into noise."""
+    _refusing(monkeypatch, 422, {"detail": [
+        {"loc": ["body", "runs"], "msg": "Input should be a valid integer"}]})
+
+    with pytest.raises(ServiceError) as excinfo:
+        HTTPTransport("http://svc").get_status("camp-1")
+
+    assert "body.runs: Input should be a valid integer" in str(excinfo.value)
+
+
+def test_a_non_json_body_still_says_something(monkeypatch):
+    """A proxy or a crash can answer with HTML; the status alone is not an answer."""
+    _refusing(monkeypatch, 502, text="<html>Bad Gateway</html>")
+
+    with pytest.raises(ServiceError) as excinfo:
+        HTTPTransport("http://svc").version()
+
+    assert "Bad Gateway" in str(excinfo.value)
+    assert excinfo.value.status == 502
+
+
+def test_byte_reads_report_the_detail_too(monkeypatch):
+    """read_file_bytes bypasses the request helpers, so it needed the same treatment."""
+    _refusing(monkeypatch, 404, {"detail": "no file at '/results/camp-1/nope.bin'"})
+
+    with pytest.raises(ServiceError) as excinfo:
+        HTTPTransport("http://svc").read_file_bytes("/results/camp-1/nope.bin")
+
+    assert "no file at" in str(excinfo.value)
