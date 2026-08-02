@@ -609,6 +609,11 @@ Locally this is an ephemeral ``docker run``; in-cluster a sidecar on the control
    are substituted and a **literal** brace must be doubled (``{{`` / ``}}``) — relevant when
    the command passes JSON or a shell parameter expansion.
 
+   A bare command name is looked up **beside the interpreter composing the campaign
+   first**, then on ``PATH``. So a tool installed into the same environment as RoboVAST is
+   found with no ``PATH`` setup, and one that is missing is reported with both locations
+   named rather than as a bare "no such file". Give an absolute path to bypass the search.
+
 **Failures are loud, always.** An unknown generator, a missing declared input, a command
 that exits non-zero, or one that reports success but writes nothing — each stops the
 campaign with an error naming the entry, before any compute is spent. On failure the

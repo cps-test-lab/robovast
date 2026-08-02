@@ -230,6 +230,37 @@ def test_shell_keeps_a_manifest_the_command_wrote(tmp_path):
     assert run_input_generators(str(tmp_path), entries)[0]["cached"] is False
 
 
+def test_shell_finds_a_tool_installed_beside_the_interpreter(tmp_path, monkeypatch):
+    """A console script belongs to its environment, not to the launching shell's PATH.
+
+    A service inherits the PATH of whatever started it, which the .vast author cannot see;
+    resolving beside ``sys.executable`` first makes "the tool this environment provides"
+    the answer instead.
+    """
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    (fake_bin / "python").write_text("")
+    tool = fake_bin / "mytool"
+    # No external commands: PATH is blanked below, and the runner already made "$1".
+    tool.write_text("#!/bin/sh\necho made > \"$1/out.txt\"\n")
+    tool.chmod(0o755)
+    monkeypatch.setattr(sys, "executable", str(fake_bin / "python"))
+    monkeypatch.setenv("PATH", "/nonexistent")
+
+    entries = [{"shell": {"out": "files/thing", "command": "mytool {out}"}}]
+    records = run_input_generators(str(tmp_path), entries)
+    assert records[0]["outputs"] == ["files/thing/out.txt"]
+
+
+def test_shell_reports_where_it_looked_for_a_missing_tool(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", "/nonexistent")
+    entries = [{"shell": {"out": "files/thing", "command": "absent-tool {out}"}}]
+    with pytest.raises(CampaignConfigError) as excinfo:
+        run_input_generators(str(tmp_path), entries)
+    message = str(excinfo.value)
+    assert "absent-tool" in message and "Looked in:" in message
+
+
 def test_write_and_read_manifest_roundtrip(tmp_path):
     (tmp_path / "a").write_text("x")
     write_manifest(str(tmp_path), [str(tmp_path / "a"), str(tmp_path / "missing")])

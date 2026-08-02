@@ -556,6 +556,35 @@ def _make_writable(path):
         pass
 
 
+def _resolve_command(name):
+    """Find *name*, searching beside the running interpreter before ``PATH``.
+
+    A console script sits in the same ``bin/`` as the interpreter that installed it, so
+    "the tool belonging to this environment" is a more useful answer than "whatever the
+    shell that happened to launch the service had on its PATH" — and it is the difference
+    between a campaign that composes and one that does not, for a reason invisible in the
+    ``.vast``. An explicit path is passed through untouched.
+    """
+    import shutil  # pylint: disable=import-outside-toplevel,redefined-outer-name
+    import sys  # pylint: disable=import-outside-toplevel
+
+    if os.sep in name or (os.altsep and os.altsep in name):
+        return name
+    interpreter_bin = os.path.dirname(os.path.abspath(sys.executable))
+    search = interpreter_bin + os.pathsep + os.environ.get("PATH", "")
+    found = shutil.which(name, path=search)
+    if found:
+        return found
+    raise CampaignConfigError(
+        f"shell generator: {name!r} was not found, neither in the environment composing "
+        f"this campaign nor on its PATH.\n"
+        f"  Environment: {sys.prefix}\n"
+        f"  Looked in:   {interpreter_bin}, then PATH\n"
+        f"Install the tool into THAT environment (for a running service that is the one "
+        f"'vast serve' was started from, not your shell), give an absolute path in "
+        f"'command', or add 'image:' so the command runs in a container that has it.")
+
+
 class Shell(BaseInputGenerator):
     """Run a shell command that writes a campaign input — the generic escape hatch.
 
@@ -631,6 +660,7 @@ class Shell(BaseInputGenerator):
         else:
             argv = [part.format(out=out_dir, inputs=resolved)
                     for part in shlex.split(str(command))]
+            argv[0] = _resolve_command(argv[0])
             subprocess.run(argv, check=True)  # nosec B603 - argv from the trusted .vast
 
         # Only fall back to the declared inputs when the command reported nothing itself.
