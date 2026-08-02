@@ -620,6 +620,15 @@ campaign with an error naming the entry, before any compute is spent. On failure
 previous contents of ``out`` are left untouched rather than half-overwritten, and
 ``vast config validate`` reports all of it without starting a run.
 
+.. warning::
+
+   **Inputs outside the project directory work in place, but not from a workspace.** Only
+   the project directory is copied into a service workspace, so a generator reading a
+   sibling checkout (``../other_repo/world.yaml``) composes fine when the campaign is run
+   from the tree and fails when the same ``.vast`` is started from a workspace — which is
+   how the cluster lane runs it. Validation emits a warning naming the path. Keep generator
+   inputs under the ``.vast``'s own directory unless the campaign is only ever run in place.
+
 ``shell`` is built in. Other generators come from installed packages (the
 ``robovast.input_generators`` entry-point group) or from a ``./path.py:Class`` file
 reference next to the ``.vast`` — see :ref:`extending-input-generation` for writing one.

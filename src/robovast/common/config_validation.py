@@ -235,7 +235,32 @@ def _generator_problems(raw, vast_dir):
             resolve_input_generator(name, vast_dir, plugins)
         except Exception as e:  # noqa: BLE001
             problems.append(_problem("generate", str(e), field=f"{field}.{name}"))
+        _warn_escaping_inputs(params.get("inputs"), vast_dir, f"{field}.{name}")
     return problems
+
+
+def _warn_escaping_inputs(inputs, vast_dir, field):
+    """Advise when a declared input lives outside the project directory.
+
+    An advisory, not a problem: composing from the project tree in place, such a path
+    resolves fine, and a campaign deliberately reading a sibling checkout is a legitimate
+    arrangement. But only the project directory is copied into a service workspace, so the
+    same ``.vast`` started from a workspace (as the cluster lane does) composes against a
+    path that is not there — a difference invisible until the lane changes, and one that
+    then reads as a lane fault rather than a config one.
+    """
+    vast_dir = os.path.abspath(vast_dir)
+    for path in inputs or []:
+        if not isinstance(path, str):
+            continue
+        resolved = os.path.abspath(os.path.join(vast_dir, path))
+        if os.path.commonpath([resolved, vast_dir]) == vast_dir:
+            continue
+        logger.warning(
+            "%s: input %r resolves outside the project directory (%s). It composes from "
+            "this tree in place, but only the project directory is copied into a service "
+            "workspace, so started from one (as the cluster lane does) this generator "
+            "would not find it.", field, path, resolved)
 
 
 def _generated_out_dirs(raw):

@@ -273,3 +273,35 @@ def test_read_manifest_returns_none_when_absent(tmp_path):
 
 def test_resolve_builtin_shell():
     assert resolve_input_generator("shell", "") is Shell
+
+
+def test_input_outside_the_project_is_advised_not_rejected(tmp_path, caplog):
+    """Legitimate from the tree, broken from a workspace — say so without failing it.
+
+    Only the project directory is copied into a service workspace, so a sibling-checkout
+    input composes in place and vanishes on the cluster lane. That is a warning, because
+    reading a sibling checkout on purpose is a real arrangement, not a mistake.
+    """
+    from robovast.common.config_validation import _generator_problems
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    (tmp_path / "outside.yaml").write_text("x: 1\n")
+    raw = {"execution": {"generate": [
+        {"shell": {"out": "files/scene", "inputs": ["../outside.yaml"],
+                   "command": "true"}}]}}
+    with caplog.at_level("WARNING"):
+        problems = _generator_problems(raw, str(project))
+    assert problems == []
+    assert "outside the project directory" in caplog.text
+
+
+def test_input_inside_the_project_is_not_advised(tmp_path, caplog):
+    from robovast.common.config_validation import _generator_problems
+
+    (tmp_path / "world.yaml").write_text("x: 1\n")
+    raw = {"execution": {"generate": [
+        {"shell": {"out": "files/scene", "inputs": ["world.yaml"], "command": "true"}}]}}
+    with caplog.at_level("WARNING"):
+        assert _generator_problems(raw, str(tmp_path)) == []
+    assert "outside the project directory" not in caplog.text
