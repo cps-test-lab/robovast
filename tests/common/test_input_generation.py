@@ -305,3 +305,27 @@ def test_input_inside_the_project_is_not_advised(tmp_path, caplog):
     with caplog.at_level("WARNING"):
         assert _generator_problems(raw, str(tmp_path)) == []
     assert "outside the project directory" not in caplog.text
+
+
+def test_inputs_the_host_cannot_see_are_never_cached(tmp_path):
+    """A containerized generator reports paths inside the container.
+
+    None of them exist here, so a key built by hashing them reduces to the generator's own
+    name and parameters — constant, and the first stamp would then satisfy every later
+    composition however much the image changed. Unverifiable inputs mean regenerate.
+    """
+    (tmp_path / "gen.py").write_text(textwrap.dedent("""\
+        import json, os
+        from robovast.common.input_generation import BaseInputGenerator, MANIFEST_NAME
+
+        class G(BaseInputGenerator):
+            def __call__(self, vast_dir, out_dir, **kw):
+                with open(os.path.join(out_dir, "scene.json"), "w") as fh:
+                    fh.write("v1")
+                with open(os.path.join(out_dir, MANIFEST_NAME), "w") as fh:
+                    json.dump({"inputs": ["/usr/local/share/pkg/world.yaml"]}, fh)
+                return True, "ok"
+    """))
+    entries = [{"./gen.py:G": {"out": "files/scene"}}]
+    run_input_generators(str(tmp_path), entries)
+    assert run_input_generators(str(tmp_path), entries)[0]["cached"] is False

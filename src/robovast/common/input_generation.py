@@ -400,6 +400,16 @@ def _run_one(name, generator_cls, params, out, out_dir, vast_dir, field, progres
     stamps = FileCache2(vast_dir, "input_generation_", suffix=".json") if use_cache else None
 
     prior = read_manifest(out_dir) if os.path.isdir(out_dir) else None
+    # Every recorded input must be visible here, because the key is built by hashing them:
+    # a generator that ran in a container reports paths inside it, none of which exist on
+    # the host, and the key would then reduce to the generator's own name and parameters --
+    # constant, so the first stamp would satisfy every later composition no matter what
+    # changed. Unverifiable inputs mean regenerate, the same rule as no manifest at all.
+    if prior and not all(os.path.isfile(p) for p in prior):
+        logger.debug("input generator '%s': manifest names paths not visible here "
+                     "(a containerized run?); regenerating rather than trusting a key "
+                     "built from nothing", name)
+        prior = None
     if stamps is not None and prior:
         key = _cache_key(name, generator_cls, params, out, prior, vast_dir)
         cached = stamps.get_json(key)
