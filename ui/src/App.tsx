@@ -5,9 +5,18 @@ import RocketLaunchRoundedIcon from '@mui/icons-material/RocketLaunchRounded'
 import InsightsRoundedIcon from '@mui/icons-material/InsightsRounded'
 import { Sidebar, type NavTopic } from '@/components/Sidebar'
 import { KeepAlive } from '@/components/KeepAlive'
-import { ConfigPage } from '@/pages/config/ConfigPage'
-import { Monitor } from '@/pages/Monitor'
-import { ResultsPage } from '@/pages/results/ResultsPage'
+import { lazyView } from '@/lib/lazyView'
+
+// Each page is fetched on first visit rather than in the entry bundle. Config and Results
+// pull in Monaco, Plotly, Three and Vega between them — several megabytes that the campaign
+// list, which is where the app opens, never touches. `lazyView` retries a failed import and
+// puts a boundary behind it, because the service is often reached through a port-forward.
+const ConfigPage = lazyView('Config', () => import('@/pages/config/ConfigPage')
+  .then((m) => ({ default: m.ConfigPage })))
+const Monitor = lazyView('Campaigns', () => import('@/pages/Monitor')
+  .then((m) => ({ default: m.Monitor })))
+const ResultsPage = lazyView('Results', () => import('@/pages/results/ResultsPage')
+  .then((m) => ({ default: m.ResultsPage })))
 
 // The whole navigation lives in the left sidebar: each topic is a top-level entry; a topic with
 // several views expands to show them nested. The active topic/view is mirrored in the URL hash
@@ -90,7 +99,8 @@ export function App() {
         onSelect={select}
       />
       {/* Each view is kept alive (mounted-but-hidden) once visited, so its state persists across
-          navigation instead of resetting on unmount. */}
+          navigation instead of resetting on unmount. That also means a view that throws stays
+          mounted and keeps throwing — hence a boundary per view, inside lazyView. */}
       <Box component="main" sx={{ flexGrow: 1, minWidth: 0, p: 3 }}>
         <KeepAlive active={nav.topicId === 'config'}>
           <ConfigPage />

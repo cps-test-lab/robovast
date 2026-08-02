@@ -5,9 +5,19 @@ import Box from '@mui/material/Box'
 import CircularProgress from '@mui/material/CircularProgress'
 import { robovast, hasResults } from '@/lib/robovastClient'
 import { KeepAlive } from '@/components/KeepAlive'
-import { ExplorerView } from './ExplorerView'
-import { DataBrowser } from './DataBrowser'
-import { RunView } from './RunView'
+import { lazyView } from '@/lib/lazyView'
+
+// The three sub-views are fetched separately because their dependencies barely overlap:
+// Run view brings Three.js (the 3D scene) and Plotly (the panels), the Data browser brings
+// Monaco (the SQL editor), and the Explorer brings neither. Bundled together, picking any
+// one of them downloaded all of it. `KeepAlive` still holds each mounted once visited, so
+// this changes when a chunk arrives, not how the views behave.
+const ExplorerView = lazyView('Explorer', () => import('./ExplorerView')
+  .then((m) => ({ default: m.ExplorerView })))
+const RunView = lazyView('Run view', () => import('./RunView')
+  .then((m) => ({ default: m.RunView })))
+const DataBrowser = lazyView('Data browser', () => import('./DataBrowser')
+  .then((m) => ({ default: m.DataBrowser })))
 
 // Persist the Data-browser campaign across reloads (kept from the old Eval page).
 const LAST_CAMPAIGN_KEY = 'eval.campaignId'

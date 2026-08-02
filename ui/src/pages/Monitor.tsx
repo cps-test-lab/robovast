@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { lazyView } from '@/lib/lazyView'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
@@ -32,7 +33,12 @@ import { StatusView } from '@/components/StatusView'
 import { PhaseChip, PhaseDot } from '@/components/PhaseChip'
 import { useDialogs } from '@/components/DialogProvider'
 import { LaunchBar } from './LaunchBar'
-import { PostprocessingDialog } from './PostprocessingDialog'
+// Deferred, not statically imported: this dialog embeds a Monaco editor, and Monaco is
+// ~3.9 MB. Monitor is the view the app opens on, so importing it here put the whole editor
+// on the critical path of the campaign list — for a dialog reached by a menu item most
+// sessions never click. Mounted only once opened, so the chunk is fetched on first use.
+const PostprocessingDialog = lazyView('Postprocessing settings',
+  () => import('./PostprocessingDialog').then((m) => ({ default: m.PostprocessingDialog })))
 
 // Phases before the run loop starts. They have no progress bar of their own, so the only
 // signal that one is wedged rather than slow is how long it has been held.
@@ -319,7 +325,9 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
         </Stack>
       )}
 
-      <PostprocessingDialog campaignId={id} open={ppOpen} onClose={() => setPpOpen(false)} />
+      {ppOpen && (
+        <PostprocessingDialog campaignId={id} open onClose={() => setPpOpen(false)} />
+      )}
     </Paper>
   )
 }
