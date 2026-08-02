@@ -111,6 +111,9 @@ optuna = "robovast.search.strategies.optuna:OptunaStrategy"
 [tool.poetry.plugins."robovast.extractors"]
 failure_rate = "robovast.search.extractors.failure_rate:FailureRate"
 
+[tool.poetry.plugins."robovast.input_generators"]
+shell = "robovast.common.input_generation:Shell"
+
 [tool.poetry.plugins."robovast.postprocessing_commands"]
 command = "robovast.results_processing.postprocessing_plugins:Command"
 compress = "robovast.results_processing.postprocessing_plugins:Compress"

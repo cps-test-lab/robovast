@@ -244,6 +244,8 @@ before building the image.
 Extending RoboVAST
 ------------------
 
+.. _extending-variation:
+
 Add Variation Plugin
 ^^^^^^^^^^^^^^^^^^^^
 
@@ -581,6 +583,105 @@ graph.
    campaign-relative IRIs with ``campaign_namespace["some/path"]``.
    ``rdflib`` is a required dependency of the core ``robovast`` package.
 
+
+.. _extending-input-generation:
+
+Add Input Generator Plugin
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Input generators produce a campaign's **derived** inputs before it is composed — the mirror
+image of postprocessing, at the other end of the campaign. They are declared as
+:ref:`execution.generate <execution-generate>` and registered in the
+``robovast.input_generators`` entry-point group. Implementation:
+:mod:`robovast.common.input_generation`.
+
+**Where it runs in composition.** ``run_input_generators()`` is called from
+``generate_scenario_variations()`` *before* ``collect_filtered_files()``, and each entry's
+outputs are appended to ``run_files``. That position is the whole design, and everything else
+follows from it: the outputs reach ``hash_run_files()`` (so they enter the configuration
+identity), ``prepare_campaign_configs()`` copies them into ``<campaign>/_config/``, and the
+run container bind-mounts them at ``/config/<path>``. There is no second code path for
+generated files anywhere downstream. It also means generation is **host-side, before
+publication**, so the cluster lane gets the artifacts with no extra work.
+
+**Generation vs. variation.** Both can produce artifacts, and the test for which you want is:
+*does it produce configurations, or only files?* A generator produces files, once per
+campaign. Something that multiplies the configuration set — one config per floorplan, with the
+generated paths bound to scenario parameters — is a :ref:`variation <extending-variation>`
+even when it also generates, because ``execution.generate`` has no way to emit configurations.
+
+**Return value:** ``(success: bool, message: str)``, or ``None`` for success. Raising and
+returning ``False`` are reported identically, so use whichever carries the better message.
+
+**Reserved key.** ``out`` belongs to RoboVAST, not the plugin: it is validated, created as a
+temporary directory, and swapped into place only on success. So outputs can be expanded into
+``run_files`` without importing the plugin (which the isolated compose subprocess relies on),
+and a half-written artifact can never be mistaken for a finished one.
+
+**Staleness.** Declare what was read by calling ``write_manifest(out_dir, paths)``, which
+writes ``.generated.json`` into the output directory; the next composition hashes those paths
+and skips the generator when nothing moved. Report the *real* set — for anything compiled from
+a description that can reference others, that includes the transitive ones. A generator that
+reports nothing is never cached, and a cached result is honoured only while its outputs are
+still on disk unchanged: staleness fails towards doing the work, never towards serving a stale
+artifact.
+
+**Creating an Input Generator:**
+
+.. code-block:: python
+
+    from robovast.common.input_generation import BaseInputGenerator, write_manifest
+
+
+    class MyGenerator(BaseInputGenerator):
+        """Compile <thing> into a campaign input."""
+
+        #: Bump when the OUTPUT FORMAT changes, so an upgraded plugin regenerates
+        #: even though none of its inputs moved.
+        FORMAT_VERSION = 1
+
+        @classmethod
+        def get_required_container(cls, parameters):
+            """Optional: an aux image, when the tool is not installed alongside RoboVAST.
+
+            Same contract as a variation's — ephemeral ``docker run`` locally, a
+            controller-pod sidecar in-cluster. Reached via ``self.container_runner``,
+            whose ``workspace`` is visible at the same path on both sides (use
+            ``stage_for_container`` / ``collect_from_container``).
+            """
+            return None
+
+        def __call__(self, vast_dir, out_dir, source=None, **params):
+            sources = compile_thing(os.path.join(vast_dir, source), out_dir)
+            write_manifest(out_dir, sources)
+            return True, f"compiled {source}"
+
+**Registration:**
+
+.. code-block:: toml
+
+    [tool.poetry.plugins."robovast.input_generators"]
+    my_generator = "your_package.generators:MyGenerator"
+
+A project can also skip packaging entirely and reference a local file:
+``- ./tools/gen.py:MyGenerator: {out: files/thing}``.
+
+**Usage in .vast config:**
+
+.. code-block:: yaml
+
+    execution:
+      generate:
+      - my_generator:
+          out: files/thing
+          source: things/input.yaml
+
+.. note::
+
+   The generator must be importable **by the process that composes the campaign**, which for
+   a running service is ``vast serve`` — not the shell the user typed in. The unresolved-name
+   error prints ``sys.prefix`` for exactly this reason. An aux container sidesteps the
+   question entirely, which is the main argument for declaring one.
 
 .. _extending-postprocessing:
 

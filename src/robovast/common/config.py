@@ -185,6 +185,16 @@ class ExecutionConfig(BaseModel):
     runs: int
     scenario_file: Optional[str] = None
     run_files: Optional[list[str]] = None
+    #: Campaign inputs *derived* before composition, rather than authored next to the
+    #: ``.vast`` — a map compiled from a floorplan, a browser scene descriptor compiled
+    #: from a simulation world. Each entry is ``- <generator>: {out: <dir>, ...params}``
+    #: (the single-key shorthand ``postprocessing`` uses), where ``out`` is a directory
+    #: relative to the ``.vast``. Generation runs host-side *before* ``run_files`` are
+    #: collected, and the produced files are appended to ``run_files`` — so they are
+    #: content-hashed into the config identity, frozen into ``<campaign>/_config/`` and
+    #: bind-mounted into the run exactly like a hand-written input. See
+    #: :mod:`robovast.common.input_generation`.
+    generate: Optional[list[Union[dict[str, Any], str]]] = None
     timeout: Optional[int] = None  # Maximum execution time in seconds per run
     # Simulation backend passed to scenario_execution as ``--simulation <module:Class>``.
     # Required by scenarios using wait_for_simulation_end() (e.g. MagBotSim).

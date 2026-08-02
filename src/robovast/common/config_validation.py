@@ -192,6 +192,114 @@ def _panel_entry(entry):
     return None, {}
 
 
+def _generator_problems(raw, vast_dir):
+    """Validate ``execution.generate``: entry shape, ``out``, and generator resolution.
+
+    Resolution is checked here rather than left to composition because the failure it
+    catches — a generator that is not installed *in the process that composes* — is
+    otherwise discovered after the user has already committed to a run.
+    """
+    from robovast.common.input_generation import (  # pylint: disable=import-outside-toplevel
+        load_input_generators, parse_generate_entry, resolve_input_generator,
+        resolve_out_dir)
+
+    problems = []
+    entries = ((raw.get("execution") or {}).get("generate")) or []
+    if not isinstance(entries, list):
+        return [_problem("generate", "execution.generate must be a list of generator "
+                                     "entries", field="execution.generate")]
+    plugins = load_input_generators()
+    claimed = {}
+    for i, entry in enumerate(entries):
+        field = f"execution.generate[{i}]"
+        try:
+            name, params = parse_generate_entry(entry, i)
+        except Exception as e:  # noqa: BLE001 - reported as a validation problem
+            problems.append(_problem("generate", str(e), field=field))
+            continue
+        try:
+            resolve_out_dir(params.get("out"), vast_dir, f"{field}.{name}")
+        except Exception as e:  # noqa: BLE001
+            problems.append(_problem("generate", str(e), field=f"{field}.out"))
+            continue
+        out = params.get("out")
+        if out in claimed:
+            problems.append(_problem(
+                "generate",
+                f"out {out!r} is already written by execution.generate[{claimed[out]}]; "
+                f"two generators cannot share an output directory.",
+                field=f"{field}.out"))
+            continue
+        claimed[out] = i
+        try:
+            resolve_input_generator(name, vast_dir, plugins)
+        except Exception as e:  # noqa: BLE001
+            problems.append(_problem("generate", str(e), field=f"{field}.{name}"))
+    return problems
+
+
+def _generated_out_dirs(raw):
+    """The ``out`` directories ``execution.generate`` declares (normalised, no slash)."""
+    outs = []
+    for entry in ((raw.get("execution") or {}).get("generate")) or []:
+        params = entry.get(next(iter(entry))) if isinstance(entry, dict) and len(entry) == 1 else None
+        out = (params or {}).get("out") if isinstance(params, dict) else None
+        if isinstance(out, str) and out:
+            outs.append(out.strip("/"))
+    return outs
+
+
+def _scene_descriptor_problems(raw, vast_dir):
+    """A campaign-scope ``scene3d`` descriptor must be produced by *something*.
+
+    This is the check whose absence was the original bug: the descriptor was built by a
+    side script and delivered through a ``run_files`` glob, so forgetting the script left
+    a campaign that ran, passed, and only 404'd in the browser afterwards. Nothing in the
+    campaign declared the dependency, so nothing could complain.
+
+    Only campaign-scope paths under ``_config/`` are checkable here — a ``scope: run``
+    descriptor is written by the simulation at run time and cannot exist yet.
+    """
+    from robovast.common.config_generation import \
+        matches_patterns  # pylint: disable=import-outside-toplevel
+
+    problems = []
+    viz = raw.get("visualization") or {}
+    if not isinstance(viz, dict):
+        return problems
+    patterns = ((raw.get("execution") or {}).get("run_files")) or []
+    generated = _generated_out_dirs(raw)
+    for i, entry in enumerate(viz.get("panels") or []):
+        ptype, props = _panel_entry(entry)
+        if ptype != "scene3d" or not isinstance(props, dict):
+            continue
+        scene = props.get("scene")
+        if not isinstance(scene, dict):
+            continue
+        path = scene.get("path")
+        if not isinstance(path, str) or str(scene.get("scope", "run")) != "campaign":
+            continue
+        if not path.startswith("_config/"):
+            continue
+        # Campaign-relative '_config/<rel>' addresses the same '<rel>' that run_files
+        # and generators write, relative to the .vast.
+        rel = path[len("_config/"):]
+        field = f"visualization.panels[{i}].scene.path"
+        if any(rel == out or rel.startswith(out + "/") for out in generated):
+            continue
+        abs_path = os.path.join(vast_dir, rel)
+        if os.path.isfile(abs_path) and matches_patterns(abs_path, patterns, vast_dir):
+            continue
+        problems.append(_problem(
+            "panel",
+            f"{path!r} is not produced by anything in this campaign — no "
+            f"execution.run_files pattern matches it and no execution.generate entry "
+            f"writes it. The panel would 404 at view time. Add a generator that builds "
+            f"the descriptor, or a run_files pattern covering an existing one.",
+            field=field))
+    return problems
+
+
 def _panel_problems(raw, vast_dir):
     """Validate ``visualization.panels`` beyond the schema: a ``custom`` panel's built
     bundle must exist next to the ``.vast``. Package panels (entry-point types) are only
@@ -483,8 +591,16 @@ def validate_project_file(config_path):
     # Top-level plugin refs (postprocessing / search strategy / extractor).
     problems.extend(_plugin_ref_problems(raw, vast_dir))
 
+    # Derived campaign inputs: the generator must resolve *in this process*, and its
+    # 'out' must be a sane project-relative directory — both before compute is spent.
+    problems.extend(_generator_problems(raw, vast_dir))
+
     # Custom run-view panel bundles must exist next to the .vast.
     problems.extend(_panel_problems(raw, vast_dir))
+
+    # A campaign-scope 3D scene descriptor must be produced by a generator or matched by
+    # a run_files pattern — otherwise the panel 404s only once someone opens the run.
+    problems.extend(_scene_descriptor_problems(raw, vast_dir))
 
     # A build: section's workspace-path python_packages must exist (fail-fast at
     # submit, before any image build runs). Schema-level checks (tag shape, the

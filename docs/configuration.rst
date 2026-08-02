@@ -534,6 +534,91 @@ List of glob patterns specifying which files from the scenario directory should 
      - "**/models/*.sdf"
      - "**/maps/*"
 
+.. note::
+
+   Patterns are matched against the path *relative to the ``.vast``*, and ``*`` crosses
+   ``/`` — so ``"files/*"`` also picks up ``files/scene/scene.json`` and
+   ``files/__pycache__/*.pyc``. Since run files are content-hashed into the configuration
+   identity, a stray ``.pyc`` changes that identity; prefer per-extension patterns over a
+   blanket directory glob.
+
+.. _execution-generate:
+
+generate
+^^^^^^^^
+
+**Type:** List of generator entries
+
+**Required:** No
+
+Campaign inputs that are **derived** rather than authored — a navigation map compiled from
+a floorplan, a browser scene descriptor compiled from a simulation world, a mesh converted
+from CAD. Building those with a side script the user must remember to re-run is the failure
+this replaces: the campaign starts happily against a **stale or absent** artifact, passes,
+and only the results look wrong.
+
+Each entry is ``- <generator>: {out: <dir>, ...}`` — the same single-key shorthand
+:ref:`postprocessing <configuration>` uses. ``out`` is a directory relative to the ``.vast``:
+
+.. code-block:: yaml
+
+   execution:
+     generate:
+     - shell:
+         out: files/scene
+         inputs: ["../worlds/depot.yaml"]
+         command: >-
+           rst-export-web --world {inputs[0]} --out {out}
+           --manifest {out}/.generated.json
+
+Generation runs **once per campaign preparation, before ``run_files`` are collected**, and
+the produced files are appended to ``run_files``. So a generated file behaves exactly like a
+hand-written one: it is frozen into ``<campaign>/_config/``, bind-mounted into the run at
+``/config/<path>``, and **content-hashed into the configuration identity** — a campaign run
+against a changed world therefore gets a different identifier instead of silently reusing
+the old one. Nothing needs listing twice; do *not* also add a ``run_files`` pattern for the
+generated directory.
+
+**Staleness.** A generator is skipped when nothing it read has changed. What it read is
+reported by the generator itself, in a ``.generated.json`` manifest
+(``{"inputs": ["<path>", ...]}``) written into its output directory — which is why the
+example passes ``--manifest``. This matters more than it looks: the true dependency set of a
+compiled world includes the worlds it inherits from and their meshes, and a hand-written
+list goes stale the first time someone replaces one. Where a tool cannot report its inputs,
+``shell`` falls back to the declared ``inputs``, and a generator that reports nothing at all
+simply re-runs every time — staleness always fails towards doing the work.
+
+**Auxiliary containers.** A generator whose tool is not installed alongside RoboVAST can run
+in a container instead, so the *service's* environment stops mattering. With ``shell``, add
+``image``; inputs are copied into the container's workspace and results copied back, so
+``{out}`` and ``{inputs[i]}`` are valid paths inside it:
+
+.. code-block:: yaml
+
+     - shell:
+         out: files/maps
+         image: ghcr.io/secorolab/scenery_builder
+         inputs: ["floorplans/rooms.fpm"]
+         command: floorplan --input {inputs[0]} --output {out}
+
+Locally this is an ephemeral ``docker run``; in-cluster a sidecar on the controller pod.
+
+.. note::
+
+   ``command`` is expanded with Python's ``str.format``, so ``{out}`` and ``{inputs[i]}``
+   are substituted and a **literal** brace must be doubled (``{{`` / ``}}``) — relevant when
+   the command passes JSON or a shell parameter expansion.
+
+**Failures are loud, always.** An unknown generator, a missing declared input, a command
+that exits non-zero, or one that reports success but writes nothing — each stops the
+campaign with an error naming the entry, before any compute is spent. On failure the
+previous contents of ``out`` are left untouched rather than half-overwritten, and
+``vast config validate`` reports all of it without starting a run.
+
+``shell`` is built in. Other generators come from installed packages (the
+``robovast.input_generators`` entry-point group) or from a ``./path.py:Class`` file
+reference next to the ``.vast`` — see :ref:`extending-input-generation` for writing one.
+
 env
 ^^^
 

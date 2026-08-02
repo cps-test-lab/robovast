@@ -75,6 +75,15 @@ _PLUGIN_GROUPS: dict[str, dict] = {
         ),
         "loader_module": "robovast.common.variation.loader",
     },
+    "robovast.input_generators": {
+        "description": (
+            "Derived campaign inputs produced before composition, declared as "
+            "``execution.generate`` (a map compiled from a floorplan, a browser scene "
+            "descriptor compiled from a simulation world …). Their outputs join "
+            "``run_files``, so they are hashed into the config identity."
+        ),
+        "loader_module": "robovast.common.input_generation",
+    },
     "robovast.postprocessing_commands": {
         "description": (
             "Post-processing pipeline steps executed after each run "
