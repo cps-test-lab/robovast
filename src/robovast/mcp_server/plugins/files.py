@@ -36,25 +36,25 @@ from fastmcp import FastMCP
 
 logger = logging.getLogger(__name__)
 
-#: The layout block every read/list tool carries. It is the discoverability the retired
+#: The campaign layout, carried by ``list_files``. It is the discoverability the retired
 #: per-scope tool *names* used to provide — a tool called "list the campaign's transient
 #: files" told a reader that transient files exist and where. One table costs a fraction
 #: of the ten tool schemas it replaces, and unlike them it also covers what has no tool.
+#:
+#: Attached to ``list_files`` alone, not to both discovery tools: every tool description
+#: is sent on every request, so a table repeated across two of them is paid for twice per
+#: turn, and the tool that *finds* a path is the one that needs it.
 _LAYOUT = """
-Campaign layout — what lives where under ``/results/<campaign_id>/``:
-
-  _config/            scenario.osc, <name>.vast, run files, analysis notebooks
-  _execution/         outcome.json (why it ended), execution.yaml, controller.log,
-                      postprocessing.log, data.db (query it with SQL, don't read it)
-  _transient/         configurations.yaml, entrypoint.sh
-  _jobs/job-N/        sysinfo.yaml, resource_usage_*.csv, logs/system.log
-  <config_name>/      _config/ (config.yaml, maps/), _transient/, then one dir per run
+Under ``/results/<campaign_id>/``:
+  _config/              scenario.osc, <name>.vast, run files, notebooks
+  _execution/           outcome.json (why it ended), execution.yaml, controller.log,
+                        postprocessing.log, data.db (query with SQL, do not read)
+  _transient/           configurations.yaml, entrypoint.sh
+  _jobs/job-N/          sysinfo.yaml, resource_usage_*.csv, logs/system.log
+  <config_name>/        _config/ (config.yaml, maps/), _transient/, one dir per run
   <config_name>/<run>/  test.xml (JUnit), out.csv, rosbag2/, scene/scene.json
 
-``<config_name>`` is the directory name, which is not the ``config_identifier`` some
-tools take — list the campaign root to see the real names.
-
-Under ``/sources/<workspace_id>/`` the layout is whatever the project author wrote.
+Under ``/sources/<workspace_id>/``: whatever the project author wrote.
 """
 
 
@@ -74,21 +74,23 @@ def _client():
 
 def list_files(address: str, recursive: bool = False, offset: int = 0,
                limit: int = 100) -> dict:
-    """List one directory of the file address space.
+    """List a directory. **This is how you find a campaign's configuration names.**
+
+    SQL knows only configurations that produced runs, so on a stopped or partly-run
+    campaign the directory listing is the complete one.
 
     Args:
-        address: ``/results/<campaign_id>/<path>`` or ``/sources/<workspace_id>/<path>``.
-            A campaign root is ``/results/<campaign_id>/``.
-        recursive: Walk the whole subtree (files only). Off by default — a campaign has
-            one directory per configuration and one per run, so a recursive listing of
-            its root is thousands of entries.
-        offset: First entry to return.
+        address: ``/results/<campaign_id>/<path>`` (read-only) or
+            ``/sources/<workspace_id>/<path>``. A campaign root is
+            ``/results/<campaign_id>/``.
+        recursive: Walk the subtree (files only). Off by default — a campaign root has a
+            directory per configuration and per run, so recursion means thousands.
+        offset: First entry to return (entry index).
         limit: Maximum entries; ``total`` reports how many there were.
 
     Returns:
         ``{address, entries, total, truncated, recursive}``. Directory entries end in
-        ``/``; every entry is relative to ``address``, so the next address is
-        ``address + entry``.
+        ``/``; each is relative to ``address``, so the next address is ``address + entry``.
     """
     try:
         r = _client().list_files(address, recursive=recursive, offset=offset, limit=limit)
@@ -97,22 +99,22 @@ def list_files(address: str, recursive: bool = False, offset: int = 0,
         return {"error": str(e)}
 
 
-def read_file(address: str, lines: int = 200, offset: int = 0) -> dict:
-    """Read a page of a text file, by its address.
+def read_file(address: str, limit: int = 200, offset: int = 0) -> dict:
+    """Read a page of a text file, by its address. ``list_files`` shows what is there.
 
     Args:
         address: ``/results/<campaign_id>/<path>`` (read-only) or
-            ``/sources/<workspace_id>/<path>``. Example:
+            ``/sources/<workspace_id>/<path>``, e.g.
             ``/results/nav-2026-03-04-152130/_execution/outcome.json``.
-        lines: Maximum lines to return.
-        offset: First line to return.
+        limit: Maximum lines to return (``0`` = the whole file).
+        offset: First line to return (line index).
 
     Returns:
         ``{address, total_lines, returned_lines, offset, content}``. Binary files are
         refused rather than mangled — fetch those over HTTP or with ``vast files get``.
     """
     try:
-        return _client().read_file(address, lines=lines, offset=offset).model_dump()
+        return _client().read_file(address, lines=limit, offset=offset).model_dump()
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 
@@ -168,10 +170,7 @@ def delete_file(address: str) -> dict:
         return {"error": str(e)}
 
 
-# The layout table is appended to the two discovery tools rather than repeated in all
-# five: it answers "what is there to read", which is only a question for read/list.
-for _fn in (list_files, read_file):
-    _fn.__doc__ = f"{_fn.__doc__}\n{_LAYOUT}"
+list_files.__doc__ = f"{list_files.__doc__}\n{_LAYOUT}"
 
 
 # -- Plugin class ------------------------------------------------------------

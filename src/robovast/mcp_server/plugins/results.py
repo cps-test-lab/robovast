@@ -32,73 +32,122 @@ from typing import Any
 
 from fastmcp import Context, FastMCP
 
-from robovast.common.store import (read_campaign_created_at,
-                                   read_campaign_description)
-from robovast.mcp_server import data_access, results_resolver
+from robovast.mcp_server import data_access, service_access
 
 logger = logging.getLogger(__name__)
 
+#: Page size used when the whole list has to be walked (``running_only``). The service
+#: pages *before* the filter can be applied, so asking for the caller's ``limit`` would
+#: filter a window instead of the list — a long-running campaign started last week would
+#: drop out of "what is running now" simply for not being among the 20 newest.
+_WALK_PAGE = 200
 
-def _newest_first(entry: dict) -> tuple:
-    """Sort key ordering campaigns by recorded start time, unknown last.
 
-    Used with ``reverse=True``. Deliberately not the campaign id: that is
-    ``<name>-<timestamp>`` with a user-supplied name, so sorting on it orders
-    alphabetically by name. The id only breaks ties between identical start times.
+def _summary_to_dict(summary) -> dict:
+    """Render a service ``CampaignSummary`` into the MCP listing entry.
+
+    ``description`` and ``finished_at`` are omitted when empty rather than reported as
+    ``""``/null: a campaign started without a description has none, which is not the same
+    fact as "the description is the empty string".
     """
-    started = entry.get("started_at")
-    return (started is not None, started or "", entry["campaign_id"])
+    entry = {
+        "campaign_id": summary.campaign_id,
+        "status": summary.phase,
+        "started_at": summary.started_at,
+        "postprocessed": summary.postprocessed,
+        "num_runs": summary.num_runs,
+        "num_passed": summary.num_passed,
+        "num_failed": summary.num_failed,
+    }
+    if summary.description:
+        entry["description"] = summary.description
+    if summary.finished_at:
+        entry["finished_at"] = summary.finished_at
+    return entry
 
 
-def list_campaigns(limit: int = 20, offset: int = 0) -> dict:
-    """List available campaigns, newest first.
+def _walk_all(client) -> list:
+    """Every campaign summary the service knows, newest first.
 
-    Ordered by the campaign's recorded start time (``campaign.created_at`` in its
-    ``campaign.db``), so ``limit`` returns the most recent campaigns — the first page
-    answers "what did I just run?". A campaign whose start time is unrecorded sorts
-    last, with ``started_at`` null.
+    Only for ``running_only``, which cannot be answered from one page.
+    """
+    from robovast.service.interface import ListCampaignsRequest
+    out: list = []
+    offset = 0
+    while True:
+        page = client.list_campaigns(
+            ListCampaignsRequest(limit=_WALK_PAGE, offset=offset))
+        out.extend(page.campaigns)
+        offset += _WALK_PAGE
+        if offset >= page.total or not page.campaigns:
+            return out
 
-    Each entry carries the ``description`` its launcher gave (see ``start_campaign``),
-    omitted for a campaign started without one — that text is the only thing telling two
-    same-day ``campaign-<timestamp>`` ids apart.
 
-    ``postprocessed`` says whether the campaign's metric tables exist yet. Either way its
-    per-run outcomes are queryable (``run_view``); only per-run *metrics* need
-    postprocessing.
+def list_campaigns(limit: int = 20, offset: int = 0,
+                   running_only: bool = False) -> dict:
+    """What has been run? Campaigns newest first — the first page answers "what did I
+    just run?".
 
     Args:
-        limit: Maximum number of campaigns to return (default 20).
-        offset: Number of campaigns to skip (default 0).
-    """
-    campaigns: list[dict] = []
-    for d in results_resolver.list_campaigns():
-        entry = {"campaign_id": d.name, "started_at": read_campaign_created_at(d)}
-        description = read_campaign_description(d)
-        if description:
-            entry["description"] = description
-        entry["postprocessed"] = (d / "_execution" / "data.db").is_file()
-        campaigns.append(entry)
+        limit: Maximum campaigns to return.
+        offset: Campaigns to skip (campaign index).
+        running_only: Only the campaigns the service considers live, across all lanes.
+            The whole list is walked before filtering, so a long-running campaign started
+            days ago still appears; ``total`` then counts the live ones.
 
-    campaigns.sort(key=_newest_first, reverse=True)
+    Returns:
+        ``{campaigns, total, offset, source}`` — each campaign ``{campaign_id, status,
+        started_at, postprocessed, num_runs, num_passed, num_failed}`` plus
+        ``description`` and ``finished_at`` where recorded — or ``{error}``.
+
+        ``description`` is what its launcher said the run was for, and is usually the
+        only thing telling two same-day ``campaign-<timestamp>`` ids apart.
+        ``postprocessed`` says whether the metric tables exist; per-run *outcomes* are
+        queryable either way (``run_view``). ``source`` names who answered — the service,
+        or this host's results root when none is reachable, since "no campaigns" means
+        different things from the two.
+    """
+    from robovast.service.interface import ListCampaignsRequest
+    client = service_access.service_client()
+    source = "service"
+    if client is None:
+        from robovast.service.local_transport import LocalTransport
+        client = LocalTransport()
+        source = "local results root"
+    try:
+        if running_only:
+            from robovast.execution.control_server import is_running
+            matched = [c for c in _walk_all(client) if is_running(c.phase)]
+            total = len(matched)
+            window = matched[offset:offset + limit]
+        else:
+            page = client.list_campaigns(
+                ListCampaignsRequest(limit=limit, offset=offset))
+            total = page.total
+            window = page.campaigns
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
     return {
-        "campaigns": campaigns[offset: offset + limit],
-        "total": len(campaigns),
+        "campaigns": [_summary_to_dict(c) for c in window],
+        "total": total,
         "offset": offset,
+        "source": source,
     }
 
 
 def get_campaign_summary(campaign_id: str) -> dict:
-    """Get aggregated statistics about a campaign: pass/fail counts and provenance.
+    """Did it pass? Configuration/run counts, pass-fail tallies, and provenance.
 
-    Returns the number of configurations and runs, the pass/fail/unknown tallies, the 3
-    configurations with the most non-passing runs, and the execution provenance (which
-    robovast, which image, which lane). Works before postprocessing.
-
-    For anything more specific — a single run, one configuration's parameters, a metric —
-    use ``describe_campaign_data`` and ``query_campaign_data_sql``.
+    The one aggregate worth a dedicated tool; works before postprocessing. For anything
+    more specific — a run, a configuration's parameters, a metric — write SQL.
 
     Args:
-        campaign_id: Campaign name (e.g. ``campaign-2026-03-04-152130``).
+        campaign_id: Campaign name, e.g. ``campaign-2026-03-04-152130``.
+
+    Returns:
+        ``{campaign_id, num_configs, num_runs, num_success, num_failed, num_unknown,
+        worst_configs}`` plus the execution provenance (which robovast, image, lane)
+        once the campaign has produced it; or ``{error}``.
     """
     per_config = data_access.rows(campaign_id, """
         SELECT config_name,
@@ -168,126 +217,110 @@ async def _announced(ctx, campaign_id: str, call):
     return await anyio.to_thread.run_sync(lambda: call(preflight))
 
 
-def campaign_data_status(campaign_id: str) -> dict:
-    """Check whether querying this campaign will first have to fetch data — and how much.
+async def describe_campaign_data(campaign_id: str, preflight_only: bool = False,
+                                 ctx: Context | None = None) -> dict:
+    """The schema to write SQL against. Call this before ``query_campaign_data_sql``.
 
-    Cheap (two metadata lookups). Worth calling before a **batch** of queries against a
-    campaign you have not touched yet, so you can tell the user why the first one is slow
-    instead of appearing to hang; a single query does not need it, since it reports the same
-    thing in its ``fetch`` field afterwards.
+    Read the returned ``note`` first — it carries ready-made queries for the common
+    questions. Lists the flat views (``run_view``, ``config_view``), then the metric
+    tables and the attached ``campaign`` schema, each column as ``"name TYPE"``: a TEXT
+    column orders lexicographically, so ``CAST(col AS REAL)`` before comparing it.
 
     Args:
-        campaign_id: Campaign identifier or an absolute campaign path.
+        campaign_id: Campaign identifier, or an absolute campaign path.
+        preflight_only: Return just the ``fetch`` verdict (two metadata lookups, no
+            schema read). Worth it before a **batch** of queries against a cluster
+            campaign you have not touched yet, so a slow first call is explainable
+            rather than looking like a hang.
 
     Returns:
+        ``{campaign_id, tables, note, fetch}`` — each table
+        ``{schema, table, columns, rows, description}``. With ``preflight_only``,
         ``{campaign_id, source, fetch_required, cached, transfer, db_bytes,
-        fetch_in_progress, last_fetch_seconds, last_fetch_bytes, note}``.
-        ``fetch_required: false`` (a local service) means the question does not apply.
-        ``transfer`` distinguishes ``"cluster-network"`` (fast) from ``"port-forward"``
-        (slow) — the same object store reached two very different ways. Or ``{error}``
-        when no service answers.
+        fetch_in_progress, last_fetch_seconds, last_fetch_bytes, note}``. Or ``{error}``.
+
+        ``fetch`` is what this call cost: the first read of a cluster campaign transfers
+        its two databases from the object store, and ``transfer`` separates
+        ``cluster-network`` (fast) from ``port-forward`` (slow). ``fetch_required: false``
+        means the campaign is local and the question does not apply.
     """
-    status = data_access.data_status(campaign_id)
-    if status is None:
-        return {"error": (
-            "no robovast-service answered, so there is nothing to fetch from: campaign "
-            "data is read from local disk in this process. (A service too old to serve "
-            "/data-status reports the same.)")}
-    return status
-
-
-async def describe_campaign_data(campaign_id: str, ctx: Context | None = None) -> dict:
-    """Describe a campaign's queryable data — the schema to write SQL against.
-
-    Call this before :func:`query_campaign_data_sql`, and read the returned ``note``: it
-    carries ready-made queries for the common questions. Lists the flat views
-    (``run_view``, ``config_view``) first, then the metric tables and the attached
-    ``campaign`` schema, each with its columns as ``"name TYPE"`` — a ``TEXT`` column
-    orders lexicographically and needs ``CAST(col AS REAL)``.
-
-    The **first** call for a cluster campaign also transfers its databases from the object
-    store, so it can take noticeably longer than the calls after it; the returned ``fetch``
-    says what that cost. :func:`campaign_data_status` answers it in advance.
-
-    Args:
-        campaign_id: Campaign identifier or an absolute campaign path.
-
-    Returns:
-        ``{campaign_id, tables: [{schema, table, columns, rows, description}], note}``
-        or ``{error}``; plus ``fetch`` when a service resolved the campaign.
-    """
+    if preflight_only:
+        status = data_access.data_status(campaign_id)
+        if status is None:
+            return {"error": (
+                "no robovast-service answered, so there is nothing to fetch from: "
+                "campaign data is read from local disk in this process. (A service too "
+                "old to serve /data-status reports the same.)")}
+        return status
     return await _announced(
         ctx, campaign_id,
         lambda pf: data_access.describe(campaign_id, preflight=pf))
 
 
-async def query_campaign_data_sql(campaign_id: str, sql: str, max_rows: int = 500,
+async def query_campaign_data_sql(campaign_id: str, sql: str, limit: int = 500,
                                   extra_campaign_ids: list | None = None,
                                   ctx: Context | None = None) -> dict:
-    """Run a **read-only** SQL query over a campaign's data.
+    """Run one read-only ``SELECT`` over a campaign's data. This answers most questions.
 
-    Only ``SELECT`` is permitted. Discover the schema first with
-    :func:`describe_campaign_data`; ``run_view`` and ``config_view`` are the entry points,
-    queried unqualified.
-
-    The **first** query on a cluster campaign also transfers its databases from the object
-    store, so it can take noticeably longer than later ones; the returned ``fetch`` says
-    what that cost, and :func:`campaign_data_status` answers it in advance.
-
-    To **compare campaigns**, pass ``extra_campaign_ids``: each is attached under a
-    schema alias ``c1``, ``c2``, … (its ``campaign.db`` as ``c1_campaign``, …), so a
-    single query can span several campaigns. The returned ``attached`` maps each
-    alias back to its campaign id.
+    Get the schema from ``describe_campaign_data`` first; ``run_view`` and ``config_view``
+    are the entry points and are queried unqualified. Join ``run_view`` (or ``runs``) to
+    any metric table on ``(config_name, run_id)`` — ``run_id`` restarts at 0 in every
+    configuration, so filtering on it alone silently spans configurations.
 
     Args:
-        campaign_id: Campaign identifier or absolute campaign path (schema ``main``).
-        sql: A single ``SELECT`` statement.
-        max_rows: Maximum rows to return (clamped to ``1..5000``); ``truncated``
-            marks when more rows matched.
-        extra_campaign_ids: Additional campaigns to attach as ``c1``, ``c2``, ….
+        campaign_id: Campaign identifier or absolute path (schema ``main``).
+        sql: A single ``SELECT``.
+        limit: Maximum rows (clamped to 1..5000); ``truncated`` marks when more matched.
+        extra_campaign_ids: Campaigns to attach as ``c1``, ``c2``, … (their
+            ``campaign.db`` as ``c1_campaign``, …) so one query can compare campaigns.
 
     Returns:
-        ``{campaign_id, columns, rows, row_count, truncated[, attached]}`` or
-        ``{error}``; plus ``fetch`` when a service resolved the campaign.
+        ``{campaign_id, columns, rows, row_count, truncated, fetch[, attached]}``
+        or ``{error}``. See ``describe_campaign_data`` for what ``fetch`` costs.
 
-    Example — mean of a metric per parameter value::
+    Examples::
 
         SELECT r.param_wind_strength, AVG(m.error) AS mean_error
         FROM runs r JOIN landing_error m
           ON r.config_name = m.config_name AND r.run_id = m.run_id
-        GROUP BY r.param_wind_strength ORDER BY r.param_wind_strength
+        GROUP BY r.param_wind_strength
 
-    Example — compare two campaigns (``extra_campaign_ids=["campaign-B"]``)::
-
+        -- with extra_campaign_ids=["campaign-B"]
         SELECT 'A' AS campaign, AVG(objective) FROM runs
         UNION ALL SELECT 'B', AVG(objective) FROM c1.runs
     """
     return await _announced(
         ctx, campaign_id,
-        lambda pf: data_access.query(campaign_id, sql, max_rows, extra_campaign_ids,
+        lambda pf: data_access.query(campaign_id, sql, limit, extra_campaign_ids,
                                      preflight=pf))
 
 
 def list_campaign_plots(campaign_id: str) -> dict:
-    """List the plots a campaign's author declared in its ``.vast`` ``evaluation.plots``.
+    """What the campaign's author thought worth looking at — start an analysis here.
 
-    Each plot pairs a **runnable** ``query`` (feed it to
-    :func:`query_campaign_data_sql`) with a **Vega-Lite** spec describing how to
-    chart the result — so this is the fastest way to learn what the campaign author
-    considered worth looking at, and to reproduce those views. Returns declared
-    plots only; you can always write your own SQL beyond them.
+    Each plot pairs a **runnable** ``query`` (feed it to ``query_campaign_data_sql``)
+    with a Vega-Lite spec for charting the result. Declared plots only; write your own
+    SQL beyond them.
 
     Args:
         campaign_id: Campaign identifier or an absolute campaign path.
 
     Returns:
-        ``{campaign_id, plots: [{title, query, vega_lite}]}`` or ``{error}``.
+        ``{campaign_id, plots}`` of ``{title, query, vega_lite}``, or ``{error}``.
     """
     # Both transports implement this, so a reachable service answers for a cluster
     # campaign and LocalTransport answers from disk otherwise. Resolved explicitly
     # rather than through ``RobovastClient(detected_service_url())``: an empty URL there
     # silently yields the local transport, so "no service answered" would read as a local
     # answer instead of being reported.
+    #
+    # This stays a call to the interface rather than a query over ``config_view``, and
+    # that was checked rather than assumed: the service reads the campaign's immutable
+    # ``_config/<name>.vast`` snapshot (``local_transport.list_campaign_plots``), which
+    # exists from t=0, whereas ``config_view`` is built from
+    # ``campaign.campaign.config_json`` and has nothing until the store has a campaign
+    # row. Moving to SQL would make a just-started campaign's plots unreadable and would
+    # duplicate a reader the service already owns for the web UI.
     from robovast.service.local_transport import LocalTransport  # noqa: PLC0415
     try:
         client = data_access.service_client() or LocalTransport()
@@ -315,7 +348,6 @@ _TOOLS = [
     get_campaign_summary,
     describe_campaign_data,
     query_campaign_data_sql,
-    campaign_data_status,
     list_campaign_plots,
 ]
 

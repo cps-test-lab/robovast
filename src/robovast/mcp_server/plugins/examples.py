@@ -153,37 +153,31 @@ if _examples_dir is not None:
 # -- Tool functions ----------------------------------------------------------
 
 
-def list_examples() -> list[dict] | str:
-    """List the available RoboVAST example projects.
+def get_example(name: str = "") -> dict:
+    """Worked RoboVAST example projects: the catalogue, or one project's files.
 
-    Only examples committed to git are listed (uncommitted examples are
-    work-in-progress and may not run). Returns records with ``name`` (use in
-    ``get_example``), ``description``, and the list of authored ``files``.
-    """
-    if not _examples:
-        return (
-            "No examples found. Set ROBOVAST_EXAMPLES_DIR to a configs/examples "
-            "path inside a git checkout."
-        )
-    return [
-        {"name": name, "description": _examples[name]["description"], "files": _examples[name]["files"]}
-        for name in sorted(_examples)
-    ]
-
-
-def get_example(name: str) -> dict:
-    """Retrieve a RoboVAST example project's authored files with their contents.
-
-    Returns the canonical (git-tracked) files only — generated artifacts are
-    never included. Text files are inlined (capped per file); binary files are
-    listed with a note instead of their bytes.
+    Copy one into a workspace as the starting point for a new ``.vast``. Only
+    git-committed examples are exposed; generated artifacts never are.
 
     Args:
-        name: Example name from ``list_examples`` (e.g. ``"basic_nav"``).
+        name: Example to retrieve, e.g. ``"basic_nav"``. Empty lists what is available.
+
+    Returns:
+        Listing: ``{examples, total}`` of ``{name, description, files}``.
+        One example: ``{name, description, files}`` where each file is
+        ``{path, content}`` — capped per file, with ``truncated``/``total_lines`` when
+        it was cut, and a ``note`` instead of bytes for a binary. Or ``{error}``.
     """
+    if not _examples:
+        return {"error": "no examples found; set ROBOVAST_EXAMPLES_DIR to a "
+                         "configs/examples path inside a git checkout."}
+    if not name:
+        examples = [{"name": n, "description": _examples[n]["description"],
+                     "files": _examples[n]["files"]} for n in sorted(_examples)]
+        return {"examples": examples, "total": len(examples)}
     if name not in _examples:
-        available = ", ".join(sorted(_examples)) or "(none)"
-        raise ValueError(f"Unknown example {name!r}. Available: {available}")
+        return {"error": f"unknown example {name!r}; available: "
+                         f"{', '.join(sorted(_examples))}"}
 
     assert _examples_dir is not None  # guaranteed when _examples is non-empty
     base = _examples_dir / name
@@ -211,7 +205,6 @@ def get_example(name: str) -> dict:
 # -- Plugin class ------------------------------------------------------------
 
 _TOOLS = [
-    list_examples,
     get_example,
 ]
 

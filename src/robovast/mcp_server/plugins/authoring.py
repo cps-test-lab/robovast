@@ -31,11 +31,11 @@ logger = logging.getLogger(__name__)
 
 
 def create_workspace(name: str = "") -> dict:
-    """Create a new workspace to author a project (``.vast`` + scenario + files).
+    """Create a workspace — the only project binding a campaign can be started from.
 
-    A workspace holds only editable inputs and is **independent of campaigns**:
-    once you run a campaign it is self-contained, so editing or deleting the
-    workspace later never affects existing results.
+    Holds editable inputs only, and is independent of campaigns: a started campaign is
+    self-contained, so editing or deleting the workspace never affects its results.
+    Put files in it with ``write_file`` / ``update_workspace`` / ``create_upload``.
 
     Args:
         name: Optional human-friendly label.
@@ -51,18 +51,25 @@ def create_workspace(name: str = "") -> dict:
         return {"error": str(e)}
 
 
-def list_workspaces() -> dict:
-    """List all workspaces (newest first)."""
-    try:
-        return service_access.client_or_local().list_workspaces().model_dump()
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+def list_workspaces(workspace_id: str = "") -> dict:
+    """List the workspaces (newest first), or return one.
 
+    Args:
+        workspace_id: Return just this workspace. Empty lists all of them.
 
-def get_workspace(workspace_id: str) -> dict:
-    """Return one workspace's info."""
+    Returns:
+        ``{workspaces, total}`` of ``{workspace_id, name, created_at, read_only}``,
+        or ``{error}``. A ``read_only`` workspace is a directory pinned with
+        ``vast serve --workspace-dir``: edit it on the serve host, not through this API.
+    """
     try:
-        return service_access.client_or_local().get_workspace(workspace_id).model_dump()
+        client = service_access.client_or_local()
+        if workspace_id:
+            found = [client.get_workspace(workspace_id).model_dump()]
+        else:
+            found = [w.model_dump()
+                     for w in client.list_workspaces().workspaces]
+        return {"workspaces": found, "total": len(found)}
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 
@@ -76,17 +83,15 @@ def delete_workspace(workspace_id: str) -> dict:
 
 
 def update_workspace(workspace_id: str, directory: str, prune: bool = False) -> dict:
-    """Re-sync a local DIRECTORY into an existing workspace (id or name).
+    """Push a whole local DIRECTORY into an existing workspace — the cheap bulk write.
 
-    Reads files from *directory* **on the host running this MCP server** and pushes
-    them to the service — ``.vast``/``.osc`` inline, everything else via the upload
-    side channel — so the file bytes never pass through your context. This is the
-    cheap way to refresh a whole project at once instead of looping
-    ``write_file`` / ``create_upload`` per file. Hidden files/dirs and
-    ``results/`` are skipped; existing files are overwritten in place.
+    Reads *directory* on the **MCP-server host** and sends it to the service
+    (``.vast``/``.osc`` inline, the rest via the upload side channel), so the bytes never
+    enter your context. Prefer this over looping ``write_file``/``create_upload``. Hidden
+    files and ``results/`` are skipped; existing files are overwritten in place.
 
     Args:
-        workspace_id: Target workspace ``ws-…`` id, or a unique workspace name.
+        workspace_id: Target ``ws-…`` id, or a unique workspace name.
         directory: Local project directory on the MCP-server host.
         prune: Also delete workspace files absent from *directory* (full mirror).
 
@@ -106,21 +111,19 @@ def update_workspace(workspace_id: str, directory: str, prune: bool = False) -> 
 
 
 def create_upload(address: str, executable: bool = False) -> dict:
-    """Get a one-time, expiring URL to PUT any non-``.vast``/``.osc`` file into a workspace.
+    """One-time URL to PUT a file whose bytes should not pass through your context.
 
-    Use for run files, notebooks, custom postprocessing code, and binaries: the
-    bytes travel straight to the server (``curl -X PUT --data-binary @<file>
-    <url>``) instead of through your context. Set ``executable=True`` for scripts
-    (a ``#!`` shebang is also auto-detected). The URL expires after ``expires_in``
-    seconds — request a new one if it lapses.
+    For run files, notebooks, postprocessing code and binaries — anything
+    ``write_file`` refuses (it takes only ``.vast``/``.osc``). PUT the bytes yourself:
+    ``curl -X PUT --data-binary @<file> <url>``.
 
     Args:
-        address: ``/sources/<workspace_id>/<path>`` — the same address ``write_file``
-            takes. (The returned ``url`` is a one-time capability, not an address.)
-        executable: Set the executable bit on the stored file.
+        address: ``/sources/<workspace_id>/<path>`` — the address ``write_file`` takes.
+        executable: Set the executable bit (a ``#!`` shebang is also auto-detected).
 
     Returns:
-        ``{token, path, expires_in, url}``.
+        ``{token, path, expires_in, url}``; the URL lapses after ``expires_in`` seconds,
+        so request a new one rather than reusing a stale grant.
     """
     from robovast.service.interface import CreateUploadRequest
     try:
@@ -130,35 +133,70 @@ def create_upload(address: str, executable: bool = False) -> dict:
         return {"error": str(e)}
 
 
-def validate_project(config_path: str) -> dict:
-    """Validate a RoboVAST project (``.vast`` file), reporting ALL problems at once.
+#: Shared note for the two tools that take *address*. Written once: the two make the same
+#: choice, and stating it twice is how the two halves drift apart — and every tool
+#: description is sent on every request, so a duplicated paragraph is paid for twice.
+#:
+#: The lane matters beyond tidiness. Against a cluster or ``--attach`` service the
+#: workspace is not on this host at all, so a filesystem read would check a different
+#: file, or none, and report the verdict as if it were about the one the campaign runs.
+_ADDRESS_LANE = """
+A ``/sources/<workspace_id>/<path>`` address is checked **through the service**, so this
+is the file the campaign will actually run. Anything else is read as a path on the
+MCP-server host — for authoring before a workspace exists, and the only lane with no
+service running. ``lane`` says which answered.
+"""
 
-    A ``.vast`` file defines a *project* (a campaign is one execution of it). This
-    checks the whole file — YAML, schema, the scenario file, scenario-parameter
-    references, and every plugin reference (variation types and their parameters,
-    the ``results_processing``/``search`` postprocessing commands, and the search
-    strategy/extractor), whether installed entry-point names or local
-    ``./path.py:Class`` file refs — and returns **every** problem it finds in one
-    pass, each tagged with the config block and field, so the file can be fixed in
-    as few iterations as possible. When valid, it also returns the config/run
-    counts (same math as ``vast config info``). Same collect-all core as the
-    ``vast configuration validate`` CLI command.
 
-    Reads the ``.vast`` straight off disk — no workspace, no service, and no
-    initialized project needed, so it works before anything else exists.
+def _address_lane(address: str):
+    """``(workspace_id, rel_path)`` for a ``/sources`` address, or ``None`` for a path.
+
+    Returning ``None`` rather than guessing is the point: an absolute filesystem path
+    also starts with ``/``, so the two are told apart by whether the string parses as an
+    address in a known namespace — never by a prefix test that would send
+    ``/home/me/x.vast`` to the service as workspace ``home``.
+    """
+    from robovast.common.file_address import (RESULTS, SOURCES, AddressError,
+                                              parse_address)
+    try:
+        namespace, owner, rel_path = parse_address(address)
+    except AddressError:
+        return None
+    if namespace == RESULTS:
+        raise ValueError(
+            f"{address!r} is a campaign result, which is immutable and is not a project "
+            f"to validate. Read it with read_file, or copy it into a /{SOURCES}/ "
+            "workspace to work on it.")
+    return owner, rel_path
+
+
+def validate_project(address: str) -> dict:
+    """Check a ``.vast`` before running it. Reports **every** problem in one pass.
+
+    Covers YAML, schema, the scenario file and its parameter references, and every
+    plugin reference (variation types and their parameters, postprocessing commands, the
+    search strategy) — installed entry-point names and local ``./path.py:Class`` refs
+    alike — each problem tagged with its config block and field, so the file is fixed in
+    as few iterations as possible.
 
     Args:
-        config_path: Path to the ``.vast`` file. Required: there is no server-side
-            "current project" to fall back to, and guessing one would validate a
-            different file than the caller named.
+        address: ``/sources/<workspace_id>/<path>``, or a path on the MCP-server host.
 
     Returns:
-        ``{valid, configs, runs_per_config, total_trials, problems}`` where each
-        problem is ``{stage, config, field, message}``.
+        ``{valid, configs, runs_per_config, total_trials, problems, lane}``, each
+        problem ``{stage, config, field, message}``.
     """
     from robovast.common.config_validation import validate_project_file
+    from robovast.service.project_push import _resolve_workspace_id
     try:
-        return validate_project_file(config_path)
+        target = _address_lane(address)
+        if target is None:
+            return {**validate_project_file(address), "lane": "local file"}
+        client = service_access.client_or_local()
+        workspace_id, rel_path = target
+        report = client.validate_project(
+            _resolve_workspace_id(client, workspace_id), rel_path)
+        return {**report.model_dump(), "lane": "workspace"}
     except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
         return {"valid": False, "configs": 0, "runs_per_config": 0,
                 "total_trials": 0,
@@ -166,51 +204,64 @@ def validate_project(config_path: str) -> dict:
                               "field": None, "message": str(e)}]}
 
 
-def preview_configurations(config_path: str, max_configs: int = 0) -> dict:
-    """Preview the resolved configurations a ``.vast`` would generate — WITHOUT running.
+def preview_configurations(address: str, limit: int = 0) -> dict:
+    """What would this ``.vast`` actually run? The resolved cells, without running them.
 
-    ``validate_project`` returns only the counts; this returns the actual resolved
-    per-configuration parameter sets, so you can eyeball what each variation cell
-    expands to before starting a campaign (the read-only, in-memory equivalent of
-    ``vast configuration generate`` / ``vast exec local prepare-run``, which stage
-    the same tree to disk). Nothing is executed and nothing is written.
-
-    Reads the ``.vast`` straight off disk — no workspace, service, or initialized
-    project needed.
+    ``validate_project`` gives only the counts; this gives each variation cell's resolved
+    parameters. Check the sweep here before spending compute on it. Nothing is executed
+    and nothing is written.
 
     Args:
-        config_path: Path to the ``.vast`` file. Required, for the same reason as
-            ``validate_project``: there is no server-side "current project".
-        max_configs: Cap the number of configurations returned (``0`` = all). The
-            ``configs`` count always reflects the true total; ``truncated`` marks
-            when the returned list was shortened.
+        address: ``/sources/<workspace_id>/<path>``, or a path on the MCP-server host.
+        limit: Maximum configurations to return (``0`` = all). ``configs`` is always the
+            true total; ``truncated`` marks a shortened list.
 
     Returns:
-        ``{configs, runs_per_config, total_trials, configurations, truncated}``
-        where each configuration is ``{name, parameters}`` and ``parameters`` is
-        the resolved parameter-name → value mapping for that cell. On failure,
-        ``{error}``.
+        ``{configs, runs_per_config, total_trials, configurations, truncated, lane}``,
+        each configuration ``{name, parameters}``; or ``{error}``.
     """
     from robovast.common.config_generation import generate_scenario_variations
+    from robovast.service.project_push import _resolve_workspace_id
     try:
-        campaign_data, _ = generate_scenario_variations(
-            variation_file=config_path, output_dir=None)
-        configs = campaign_data["configs"]
-        runs = campaign_data.get("execution", {}).get("runs", 1)
-        items = [{"name": c["name"], "parameters": c.get("config", {})}
-                 for c in configs]
-        truncated = bool(max_configs) and len(items) > max_configs
-        if truncated:
-            items = items[:max_configs]
+        target = _address_lane(address)
+        if target is None:
+            campaign_data, _ = generate_scenario_variations(
+                variation_file=address, output_dir=None)
+            configs = campaign_data["configs"]
+            runs = campaign_data.get("execution", {}).get("runs", 1)
+            items = [{"name": c["name"], "parameters": c.get("config", {})}
+                     for c in configs]
+            truncated = bool(limit) and len(items) > limit
+            return {
+                "configs": len(configs),
+                "runs_per_config": runs,
+                "total_trials": len(configs) * runs,
+                "configurations": items[:limit] if truncated else items,
+                "truncated": truncated,
+                "lane": "local file",
+            }
+        client = service_access.client_or_local()
+        workspace_id, rel_path = target
+        resp = client.preview_configurations(
+            _resolve_workspace_id(client, workspace_id), limit, rel_path)
+        # ``previews`` carries the web UI's Module-Federation asset refs for rendering a
+        # variation; they are useless to an MCP caller and would be the bulk of the reply.
         return {
-            "configs": len(configs),
-            "runs_per_config": runs,
-            "total_trials": len(configs) * runs,
-            "configurations": items,
-            "truncated": truncated,
+            "configs": resp.configs,
+            "runs_per_config": resp.runs_per_config,
+            "total_trials": resp.total_trials,
+            "configurations": [{"name": c.name, "parameters": c.parameters}
+                               for c in resp.configurations],
+            "truncated": resp.truncated,
+            "lane": "workspace",
         }
     except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
         return {"error": str(e)}
+
+
+for _fn in (validate_project, preview_configurations):
+    _fn.__doc__ = _fn.__doc__.replace(
+        "    Args:\n", f"{_ADDRESS_LANE}\n    Args:\n", 1)
 
 
 # -- Plugin class ------------------------------------------------------------
@@ -222,7 +273,6 @@ def preview_configurations(config_path: str, max_configs: int = 0) -> dict:
 _TOOLS = [
     create_workspace,
     list_workspaces,
-    get_workspace,
     delete_workspace,
     update_workspace,
     create_upload,

@@ -13,10 +13,18 @@ RoboVAST ships an `MCP (Model Context Protocol) <https://modelcontextprotocol.io
 server that exposes RoboVAST to AI assistants (Claude, Open WebUI, etc.). The
 server spans two concerns:
 
+* **Run** — author a project (``.vast``), check it, then start, monitor and stop
+  campaigns on the local Docker backend or on a Kubernetes cluster.
 * **Analyze** — inspect campaigns, configurations, runs, logs, and tabular run
   data (read-only).
-* **Control** — validate a project (``.vast``), then start, monitor, and stop
-  campaigns on the local Docker backend or on a Kubernetes cluster.
+
+That order is deliberate, and the server's MCP ``instructions`` say the same thing.
+Introducing itself as an archive — the earlier text was "provides access to the results
+created by RoboVAST" — is why assistants ran experiments by hand on the host and came
+here only to read files afterwards. A hand-started simulator has no pinned image, no
+recorded provenance and no repetitions, so its output cannot be compared with a
+campaign's; the instructions say so, and so does ``start_campaign``. Two MCP prompts
+cover the halves: ``run_experiments`` and ``analyze_campaigns``.
 
 A campaign always runs a **workspace's** ``.vast``: ``workspace_id`` is the only
 project binding the service accepts, and ``config_path`` selects among several
@@ -108,15 +116,67 @@ reading results. Each phase is one plugin, so the generated table below is also 
 The grouping used to be a mix: some modules by scope (one per campaign / configuration /
 run) and some by capability, with a 20-tool module holding everything else — so "which
 module owns this?" had no answer, and the biggest one owned build, postprocessing, share,
-cleanup, delete and download, none of which are execution control.
+deletion and download, none of which are execution control.
 
-Names still read ``<verb>_<resource>``: ``get`` retrieves one object, ``list`` enumerates,
-``search`` filters, ``describe``/``query`` are the SQL pair, and ``validate`` /
-``preview`` / ``start`` / ``stop`` / ``run`` do what they say.
+Names read ``<verb>_<resource>``: ``get`` retrieves, ``list`` enumerates, ``search``
+filters, ``describe``/``query`` are the SQL pair, and ``validate`` / ``preview`` /
+``start`` / ``stop`` / ``run`` / ``build`` / ``delete`` do what they say.
 
 Two whole classes of question are deliberately *not* one tool per scope: files are
 :ref:`one address space <mcp-files>`, and reading what a campaign did is
 :ref:`read-only SQL <mcp-analysis>`.
+
+
+.. _mcp-one-tool-per-question:
+
+One tool per question, not per shape of answer
+----------------------------------------------
+
+Every tool description and JSON Schema is injected into the model's context on **every**
+request, so the surface is a cost paid per turn rather than once. A read/list pair over
+the same object charges twice for it, and additionally costs a round trip: the caller
+must call the lister to learn the name the getter needs. So an **empty argument means
+"all of them"**, and the pair is one tool:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 46 54
+
+   * - Call
+     - Answers
+   * - ``get_cli_help()`` / ``get_cli_help("exec cluster run")``
+     - the command tree / one command's ``--help``
+   * - ``search_docs()`` / ``(query=…)`` / ``(page=…)``
+     - the page list / matching excerpts / one page in full
+   * - ``get_example()`` / ``get_example("basic_nav")``
+     - the catalogue / one project's files
+   * - ``list_workspaces()`` / ``list_workspaces("ws-ab12")``
+     - all workspaces / one
+   * - ``list_plugins()`` / ``(group=…)`` / ``(query=…)``
+     - the group catalogue / a group's plugins / a name search
+   * - ``list_campaigns()`` / ``(running_only=True)``
+     - every campaign / the live ones
+   * - ``describe_campaign_data(id)`` / ``(preflight_only=True)``
+     - the schema / just the fetch verdict, without reading it
+   * - ``delete_campaign(id)`` / ``(id, data_only=True)``
+     - remove the campaign / free only its object-store data
+   * - ``nav_get_trajectory(…)`` / ``(…, stats_only=True)``
+     - the points / distance, duration, speeds, bounding box
+   * - ``nav_get_map_info(…)`` / ``(…, occupancy=True)``
+     - map metadata / metadata plus cell counts
+
+The same reasoning fixes the vocabulary. One concept has one argument name across the
+surface — ``campaign_id``, ``config_name``, ``run_id``, ``address``, ``limit``,
+``offset``, ``backend`` — and one name has one meaning. Two divergences were real bugs
+waiting: the nav tools took ``campaign``/``config``/``run`` while every other tool took
+the long forms, and ``config_path`` meant a *workspace-relative* path in the execution
+tools but an *absolute filesystem* path in the authoring ones. ``tail`` (last N lines)
+and ``top`` (top N patterns) stay distinct from ``limit`` because they are different
+operations.
+
+:mod:`tests.mcp_server.test_plugin_registry_sync` enforces all of this — the vocabulary,
+the single ``{"error": …}`` convention, that no retired name survives in text an LLM
+reads, and a ceiling on the surface's total token cost.
 
 
 .. _mcp-analysis:
@@ -166,6 +226,25 @@ What survives as a tool is the one aggregate asked constantly —
 implemented over the same SQL — and ``list_campaigns``, which spans campaigns rather than
 querying one.
 
+**The nav analysis tools follow the same rule.** ``nav_get_trajectory``,
+``nav_get_path_deviation`` and ``nav_get_action_feedback`` query ``data.db`` — the tables
+postprocessing already ingested each CSV into, keyed on ``(config_name, run_id)``. They
+used to re-parse ``poses.csv`` off local disk, which meant they answered "campaign not
+found" for every cluster campaign, transferred a whole recording to compute eight numbers,
+and read ``orientation.x/y/z/w`` from a file that records ``orientation.roll/pitch/yaw`` —
+so every reported yaw was ``0.0``, a wrong answer with the shape of a right one.
+
+Maps, videos and the resolved scenario parameters stay file-sourced, because no table
+holds them; they are reached through the ``/results/<campaign_id>/…`` address space, which
+is what makes them work on the cluster too. Where a fact genuinely is not in the database
+— a nav variation's planned path is written to ``_transient/configurations.yaml`` and to
+nothing else — the tool's docstring says so and names what was checked.
+
+An aggregate over a distance needs a square root, and SQLite's own ``sqrt`` is a
+compile-time option, so a query could work on the MCP host and fail in the service.
+``SQRT(x)`` is therefore registered alongside ``STDDEV``/``MEDIAN``/``PERCENTILE`` and is
+available to every SQL caller.
+
 Two limits worth knowing, both stated in ``describe_campaign_data``'s output:
 
 * **To list a campaign's configurations, list its directories**
@@ -194,7 +273,7 @@ That is reported rather than left to be guessed at:
 * With the result, as a ``fetch`` field — ``{source, transfer, cold[, seconds, bytes]}`` —
   which is the measured cost of that call, not an estimate. It also reaches clients that
   ignore notifications, via the warning channel every tool result carries.
-* On demand, from ``campaign_data_status`` — a cheap pre-flight (two metadata lookups)
+* On demand, from ``describe_campaign_data(preflight_only=True)`` — a cheap pre-flight (two metadata lookups)
   worth calling before a *batch* of queries against a campaign you have not touched yet.
   ``fetch_required: false`` means the question does not apply. ``transfer`` separates
   ``cluster-network`` (in-pod, fast) from ``port-forward`` (off-cluster driver, slow): the
@@ -292,7 +371,7 @@ in one service and routes per campaign. There, three tools take an optional
   ``"cluster"`` dispatches Kubernetes Jobs. Empty uses the service's **default
   lane (cluster when available)**.
 * ``build_experiment_image(backend=…)`` — build for the lane you will run on.
-* ``resource_usage(backend=…)`` — size the lane you target.
+* ``get_resource_usage(backend=…)`` — size the lane you target.
 
 Every other tool is scoped to an existing ``campaign_id`` (or ``build_id``), so
 the service resolves the lane itself and no ``backend`` argument is needed.
@@ -303,8 +382,8 @@ Single-backend services (a plain local or in-cluster ``vast serve``, or
 
    ``stop_campaign`` is a cooperative stop through the service, which owns the
    teardown (terminating a local Docker container, or the cluster's in-flight
-   scenario Jobs). ``list_running_campaigns`` reports the campaigns the service
-   considers live (all lanes).
+   scenario Jobs). ``list_campaigns(running_only=True)`` reports the campaigns the
+   service considers live (all lanes).
 
 .. note::
 
@@ -317,7 +396,7 @@ Single-backend services (a plain local or in-cluster ``vast serve``, or
 
 .. note::
 
-   ``resource_usage`` reports an execution lane's CPU/memory capacity and current
+   ``get_resource_usage`` reports an execution lane's CPU/memory capacity and current
    usage, plus a ``parallel_runs`` flag. The fields mean the same thing on either
    lane, so an assistant reads them uniformly. Use it to size a ``.vast`` run
    against free capacity: with ``free_cpu = cpu_capacity - cpu_used`` (and the same
@@ -380,7 +459,8 @@ inspected — end it with ``stop_campaign``.
 
 **What is it doing?** That is a log question, and the log tools answer it. All three
 (``get_campaign_log``, ``get_job_log``, ``get_image_build_log``) take the same four
-controls, applied in this order:
+controls, applied in this order — a claim this page made while ``get_campaign_log`` was
+in fact the one tool without ``tail``, so it now has one:
 
 .. list-table::
    :header-rows: 1
@@ -458,7 +538,8 @@ image** (a new ``sim_suite`` package, an apt dependency), the assistant declares
 **A campaign that needs an image is created first and waits for it afterwards.**
 ``start_campaign`` returns its id immediately even when the image has to be built; the
 campaign is then in phase ``building`` with ``stage: "waiting for image <tag>"``, it appears
-in ``list_running_campaigns``, and ``phase_age_s`` separates a slow build from a wedged one.
+in ``list_campaigns(running_only=True)``, and ``phase_age_s`` separates a slow build from a
+wedged one.
 Two things follow from that, both worth knowing before reaching for a build tool:
 
 * **The build's output is a** ``BUILD`` **section of the campaign's own log**, so

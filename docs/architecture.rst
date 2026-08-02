@@ -253,7 +253,7 @@ Both seams write into the *same* cache directory, so a later whole-campaign fetc
 two databases already at the right size and skips them, and ``delete_campaign`` still clears
 one place.
 
-``campaign_data_status`` (``GET /campaigns/{id}/data-status``) reports whether a query would
+The data-status probe (``GET /campaigns/{id}/data-status``, exposed as ``describe_campaign_data(preflight_only=True)``) reports whether a query would
 transfer anything and what it would cost, so a caller can explain the wait *before* it waits.
 It is bounded to two ``stat_object`` calls — a probe that itself enumerated the prefix would
 only move the cost it exists to warn about. It is a **control** route, not a ``/results``

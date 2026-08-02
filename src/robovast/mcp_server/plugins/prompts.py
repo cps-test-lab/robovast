@@ -87,7 +87,53 @@ address space with `list_files` / `read_file` on `/results/<campaign_id>/<path>`
   genuinely empty result from a likely filter/JOIN-key mismatch.
 
 In case of any ambiguity about tool usage, parameters, or the data model, ask
-for clarification or refer to the documentation using `list_docs` and `search_docs`.
+for clarification or refer to the documentation using `search_docs`.
+"""
+
+
+_RUN_PROMPT = """\
+I'm a robotics engineer running experiments with RoboVAST. You drive them through this
+server's tools.
+
+## Run the experiment here, not on this machine
+
+A campaign runs in a pinned container image, repeats each configuration, and records what
+produced it. A simulator, `docker compose` or test script started by hand on this host has
+no pinned image, no provenance and no repetitions — it answers a different question, and
+its output cannot be compared with a campaign's or with a published result. So: anything
+that needs a simulation run, a sweep, or a repeated trial is `start_campaign`.
+
+If no service answers, the control tools say so. Tell me, and stop. Do not work around it.
+
+## The loop
+
+1. **Author.** `create_workspace`, then `write_file` (`.vast`/`.osc` inline) or
+   `update_workspace` (a whole directory at once — cheaper, and the bytes stay out of
+   context). `get_example` has worked projects to start from; `get_config_schema` and
+   `get_plugin_details` describe the `.vast` and each variation's parameters.
+2. **Check before spending compute.** `validate_project` returns *every* problem at once;
+   fix them in one pass. `preview_configurations` shows what the sweep expands to — read
+   the cell count before launching, not after.
+3. **Size it.** `get_resource_usage` for the lane you intend to use. It touches the lane,
+   so it also tells you the lane is actually reachable.
+4. **Pilot, then scale.** One configuration, `runs=1`, and confirm it produced data.
+   Only then the full sweep. A sweep that fails in its last cell has cost everything.
+5. **Describe every run.** `description` is what tells two same-day
+   `campaign-<timestamp>` ids apart a week later. Say what the run is *for*.
+6. **Watch it.** `get_campaign_status`: `status` alone says nothing — read `stalled`
+   (`null` means no verdict is possible, not "healthy") and `postprocessed` (`finished`
+   does not imply results). On anything wrong, `get_campaign_log(summarize=True)` first:
+   a wedged run repeats one message thousands of times, and the summary is one line.
+   `list_campaign_jobs` + `get_job_log(summarize=True)` for a single job.
+7. **Verify the output, not the exit code.** `get_campaign_summary`, then
+   `list_files("/results/<campaign_id>/")` to see the runs actually wrote something.
+
+## Images
+
+Only when the experiment needs code or system packages *inside* the container: add a
+`build:` section, set `execution.image: build:<tag>`, and `start_campaign` builds it as
+its first step. A failed build is a **failed campaign, not a failed request** — the start
+succeeded, so read `get_campaign_status`, do not retry and create a second campaign.
 """
 
 
@@ -101,10 +147,21 @@ def analyze_campaigns() -> str:
     return _SYSTEM_PROMPT
 
 
+def run_experiments() -> str:
+    """Return a prompt for driving experiments: author, check, pilot, run, watch.
+
+    The counterpart to :func:`analyze_campaigns`. Both halves of the surface need one:
+    a server whose only prompt was about reading results presented itself as an archive,
+    and the execution tools went unused while experiments were run by hand on the host.
+    """
+    return _RUN_PROMPT
+
+
 class PromptsPlugin:
-    """Registers MCP prompts for campaign analysis workflows."""
+    """Registers MCP prompts for the two halves: running experiments, and analysing them."""
 
     name = "prompts"
 
     def register(self, mcp: FastMCP) -> None:
+        mcp.prompt()(run_experiments)
         mcp.prompt()(analyze_campaigns)

@@ -37,7 +37,7 @@ def test_preview_configurations_resolves_without_running():
     assert set(first) == {"name", "parameters"}
     assert isinstance(first["parameters"], dict) and first["parameters"]
     # Truncation caps the returned list but keeps the true total.
-    capped = authoring.preview_configurations(str(_GROWTH_SIM), max_configs=1)
+    capped = authoring.preview_configurations(str(_GROWTH_SIM), limit=1)
     assert len(capped["configurations"]) == 1
     assert capped["truncated"] is True
     assert capped["configs"] == result["configs"]
@@ -45,6 +45,89 @@ def test_preview_configurations_resolves_without_running():
 
 def test_preview_configurations_bad_path_returns_error():
     assert "error" in authoring.preview_configurations("/no/such/file.vast")
+
+
+# -- which lane answered: the workspace, or a file on this host ---------------
+#
+# An absolute filesystem path and a ``/sources`` address both start with ``/``. Telling
+# them apart by parsing, not by a prefix test, is what keeps ``/home/me/x.vast`` from
+# being sent to the service as workspace ``home``.
+
+
+class _FakeAuthoringClient:
+    """A service stand-in for the workspace lane, recording what it was asked."""
+
+    def __init__(self):
+        self.calls = []
+
+    def list_workspaces(self):
+        from robovast.service.interface import (ListWorkspacesResponse,
+                                                WorkspaceInfo)
+        return ListWorkspacesResponse(
+            workspaces=[WorkspaceInfo(workspace_id="ws-ab12", name="demo")])
+
+    def validate_project(self, workspace_id, path=""):
+        from robovast.service.interface import ValidationReport
+        self.calls.append(("validate_project", workspace_id, path))
+        return ValidationReport(valid=True, configs=3, runs_per_config=2,
+                                total_trials=6)
+
+    def preview_configurations(self, workspace_id, max_configs=0, path=""):
+        from robovast.service.interface import (PreviewConfiguration,
+                                                PreviewResponse)
+        self.calls.append(("preview_configurations", workspace_id, max_configs, path))
+        return PreviewResponse(
+            configs=1, runs_per_config=2, total_trials=2,
+            configurations=[PreviewConfiguration(
+                name="cell-0", parameters={"growth_rate": 0.1},
+                previews=[{"remote": "not for an MCP caller"}])])
+
+
+@pytest.fixture
+def authoring_service(monkeypatch):
+    fake = _FakeAuthoringClient()
+    monkeypatch.setattr(service_access, "client_or_local", lambda: fake)
+    return fake
+
+
+def test_validate_routes_a_sources_address_to_the_service(authoring_service):
+    """With a cluster service the workspace is on no local disk — only it can answer."""
+    report = authoring.validate_project("/sources/ws-ab12/demo.vast")
+    assert report["valid"] is True and report["lane"] == "workspace"
+    assert ("validate_project", "ws-ab12", "demo.vast") in authoring_service.calls
+
+
+def test_validate_resolves_a_workspace_name(authoring_service):
+    """A name works where an id does, as it already does for ``update_workspace``."""
+    authoring.validate_project("/sources/demo/demo.vast")
+    assert ("validate_project", "ws-ab12", "demo.vast") in authoring_service.calls
+
+
+@pytest.mark.skipif(not _GROWTH_SIM.exists(),
+                    reason="growth_sim example not present")
+def test_validate_reads_a_filesystem_path_locally(authoring_service):
+    """A bare path is authoring before a workspace exists; it must not reach the service."""
+    report = authoring.validate_project(str(_GROWTH_SIM))
+    assert report["lane"] == "local file"
+    assert not authoring_service.calls
+
+
+def test_validate_refuses_a_results_address(authoring_service):
+    """Results are immutable and are not a project; say so instead of half-answering."""
+    report = authoring.validate_project("/results/camp-2026-01-01-000000/_config/x.vast")
+    assert report["valid"] is False
+    assert "immutable" in report["problems"][0]["message"]
+    assert not authoring_service.calls
+
+
+def test_preview_strips_web_previews_and_reports_the_lane(authoring_service):
+    """``previews`` is Module-Federation asset data for the web UI, not for a caller."""
+    result = authoring.preview_configurations("/sources/ws-ab12/demo.vast", limit=5)
+    assert result["lane"] == "workspace"
+    assert result["configurations"] == [{"name": "cell-0",
+                                         "parameters": {"growth_rate": 0.1}}]
+    assert ("preview_configurations", "ws-ab12", 5, "demo.vast") \
+        in authoring_service.calls
 
 
 # -- client-server routing (a reachable service) ----------------------------
@@ -155,17 +238,10 @@ def test_service_stop_routes_to_client(service):
     assert ("stop", "svc-campaign-1") in service.calls
 
 
-def test_service_list_running_filters_terminal(service):
-    listing = execution.list_running_campaigns()
-    ids = [e["campaign_id"] for e in listing["running"]]
-    assert ids == ["svc-running"]  # 'svc-done' (finished) filtered out
-    assert listing["count"] == 1
-
-
 def test_resource_usage_passes_backend(service):
-    execution.resource_usage(backend="cluster")
+    execution.get_resource_usage(backend="cluster")
     assert ("resource_usage", "cluster") in service.calls
-    execution.resource_usage()  # unset -> None (service default)
+    execution.get_resource_usage()  # unset -> None (service default)
     assert ("resource_usage", None) in service.calls
 
 
@@ -196,12 +272,59 @@ def test_stop_without_service_fails_loudly(no_service):
     assert "no robovast-service" in execution.stop_campaign("x")["error"]
 
 
-def test_list_running_without_service_fails_loudly(no_service):
-    assert "no robovast-service" in execution.list_running_campaigns()["error"]
+# -- the download link follows the campaign's lane, not the service's default ---------
+
+
+@pytest.fixture
+def dual_lane(monkeypatch):
+    """A ``--backend local+cluster`` service: two lanes, ``version().backend`` docker."""
+    from robovast.mcp_server import data_access
+
+    class _Dual:
+        base_url = "http://127.0.0.1:8800"
+
+        def version(self):
+            from robovast.service.interface import VersionInfo
+            # What a MultiBackendService actually reports: the *default* lane, while
+            # offering both. Asking it which lane a campaign used gives the wrong answer.
+            return VersionInfo(robovast_version="x", backend="docker",
+                               backends=["local", "cluster"])
+
+    monkeypatch.setattr(service_access, "service_client", _Dual)
+    recorded = {}
+
+    def _rows(campaign_id, sql, max_rows=5000):
+        return [{"execution_type": recorded[campaign_id]}] if campaign_id in recorded \
+            else []
+    monkeypatch.setattr(data_access, "rows", _rows)
+    return recorded
+
+
+def test_download_offers_the_url_for_a_cluster_campaign_on_a_dual_lane_service(dual_lane):
+    """It used to read the service's default backend, which is ``docker`` here.
+
+    Every cluster campaign on a dev host was therefore told its results were on the local
+    filesystem — a real capability denied, and a place to look that holds nothing.
+    """
+    dual_lane["camp-cluster"] = "cluster"
+    result = results_lifecycle.get_campaign_download("camp-cluster")
+    assert result["url"].endswith("/campaigns/camp-cluster/archive")
+
+
+def test_download_says_there_is_none_for_a_local_campaign(dual_lane):
+    dual_lane["camp-local"] = "local"
+    result = results_lifecycle.get_campaign_download("camp-local")
+    assert "url" not in result and "no HTTP download" in result["note"]
+
+
+def test_download_falls_back_to_the_service_backend_before_execution(dual_lane):
+    """A campaign with no record yet has nothing better to ask than the service."""
+    result = results_lifecycle.get_campaign_download("camp-unstarted")
+    assert "url" not in result  # this service's default lane is docker
 
 
 def test_resource_usage_without_service_fails_loudly(no_service):
-    assert "no robovast-service" in execution.resource_usage()["error"]
+    assert "no robovast-service" in execution.get_resource_usage()["error"]
 
 
 # -- get_campaign_download — returns a web link, never writes a file ---------
@@ -499,7 +622,7 @@ def test_phase_all_returns_the_stream_verbatim(monkeypatch):
 
     text = _log_with_build()
     _service_with_log(monkeypatch, text)
-    out = execution.get_campaign_log("camp-2026-01-01-000000", phase="all", lines=10_000)
+    out = execution.get_campaign_log("camp-2026-01-01-000000", phase="all", limit=10_000)
     # Sections tile the stream, so selecting them all reproduces it.
     assert out["content"] == text.rstrip("\n")
 

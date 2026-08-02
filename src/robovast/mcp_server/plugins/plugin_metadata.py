@@ -16,9 +16,13 @@
 
 """MCP plugin exposing robovast's plugin extension system.
 
-Provides tools for discovering and describing all plugin extension groups
-registered in ``importlib.metadata``, including MCP plugins, CLI plugins,
-cluster backends, variation strategies, post-processing steps, and more.
+Discovers and describes the extension groups registered in ``importlib.metadata`` — MCP
+plugins, CLI plugins, cluster backends, variation strategies, postprocessing steps.
+
+``list_plugins`` answers three questions that were three tools (the group catalogue, one
+group's plugins, and a name search). They differ only in which filter is applied, so the
+distinction cost the caller three tool schemas to read and a choice to get wrong, while
+the implementation was one enumeration behind three signatures.
 """
 
 import fnmatch
@@ -126,121 +130,67 @@ def _load_doc(ep, max_lines: int = 1) -> str | None:  # type: ignore[type-arg]
 # Tool functions
 # ---------------------------------------------------------------------------
 
-def list_plugin_groups() -> list[dict]:
-    """List all RoboVAST plugin extension groups.
-
-    Returns the complete catalogue of known extension groups with their
-    group key, a human-readable description, and the module responsible
-    for loading them at runtime.
-    """
-    return [
-        {
-            "group": group,
-            "description": meta["description"],
-            "loader_module": meta["loader_module"],
-        }
-        for group, meta in _PLUGIN_GROUPS.items()
-    ]
+def _matches(ep_name: str, query: str) -> bool:
+    """Case-insensitive glob when *query* has wildcards, else a substring test."""
+    needle = query.lower()
+    name = ep_name.lower()
+    if any(c in query for c in ("*", "?", "[")):
+        return fnmatch.fnmatch(name, needle)
+    return needle in name
 
 
-def list_plugins(group: str = "") -> list[dict]:
-    """List all installed plugins for a given extension group.
-
-    If group is not set, all plugins across all groups are returned.
-
-    Enumerates ``importlib.metadata`` entry points for *group* and returns
-    one record per plugin with its entry-point name, dotted import target,
-    and the first paragraph of the class or function docstring.
-
-    Works for any group name – not limited to the eight built-in groups.
+def list_plugins(group: str = "", query: str = "") -> dict:
+    """What is installed: the extension groups, or the plugins in/matching one.
 
     Args:
-        group: Entry-point group name, e.g. ``"robovast.mcp_plugins"``
-               or ``"robovast.postprocessing_commands"``.
-    """
-    if group:
-        groups = [group] if group in _PLUGIN_GROUPS else []
-    else:
-        groups = list(_PLUGIN_GROUPS.keys())
+        group: Restrict to one entry-point group, e.g. ``"robovast.variation_types"``.
+        query: Match entry-point names case-insensitively — a substring, or a glob when
+            it contains ``*``/``?``.
 
-    if not groups:
-        return [{"error": f"No plugins found in group '{group}'."}]
+    Returns:
+        With neither argument, the group catalogue: ``{groups, total}``, each
+        ``{group, description, loader_module, plugins}`` (a count). Otherwise
+        ``{plugins, total}``, each ``{group, name, class, doc}`` — ``doc`` being the
+        docstring's first line. Use ``get_plugin_details`` for a plugin's parameters.
+    """
+    if not group and not query:
+        return {
+            "groups": [{"group": g, "description": m["description"],
+                        "loader_module": m["loader_module"],
+                        "plugins": len(list(entry_points(group=g)))}
+                       for g, m in _PLUGIN_GROUPS.items()],
+            "total": len(_PLUGIN_GROUPS),
+        }
+    if group and group not in _PLUGIN_GROUPS:
+        return {"error": f"unknown plugin group {group!r}; known groups: "
+                         f"{', '.join(sorted(_PLUGIN_GROUPS))}"}
 
     records = []
-    for grp in groups:
+    for grp in [group] if group else _PLUGIN_GROUPS:
         for ep in entry_points(group=grp):
-            records.append(
-                {
-                    "group": grp,
-                    "name": ep.name,
-                    "class": ep.value,
-                    "doc": _load_doc(ep),
-                }
-            )
-    return sorted(records, key=lambda r: (r["group"], r["name"]))
+            if query and not _matches(ep.name, query):
+                continue
+            records.append({"group": grp, "name": ep.name, "class": ep.value,
+                            "doc": _load_doc(ep)})
+    records.sort(key=lambda r: (r["group"], r["name"]))
+    return {"plugins": records, "total": len(records)}
 
 
-def search_plugin(name: str) -> list[dict]:
-    """Search for a plugin by name across all extension groups.
+def get_plugin_details(group: str, name: str, limit: int = 0) -> dict:
+    """One plugin's docstring and — where it declares one — its parameter schema.
 
-    Matches the entry-point name case-insensitively across every known
-    robovast extension group.  Two matching modes are supported:
-
-    * **Wildcard** – when *name* contains ``*`` or ``?``, it is treated as a
-      ``fnmatch``-style glob pattern (e.g. ``"Floor*"``, ``"*Generation*"``).
-    * **Substring** – otherwise a plain case-insensitive substring match is
-      used (e.g. ``"FloorplanGeneration"``).
-
-    Each result includes:
-
-    * ``group`` – the extension group the plugin is registered in.
-    * ``name`` – exact entry-point name.
-    * ``class`` – dotted import target (``"module:ClassName"``).
-    * ``doc`` – first paragraph of the plugin's docstring, if available.
+    ``parameters`` is the only place a variation type's or search strategy's accepted
+    fields are visible: they dispatch by plugin name, so ``get_config_schema`` shows the
+    block only as a generic object. Read this before authoring that block.
 
     Args:
-        name: Substring or wildcard pattern to match against plugin names
-              (case-insensitive).
-    """
-    use_glob = any(c in name for c in ("*", "?", "["))
-    needle = name.lower()
-    results = []
-    for group in _PLUGIN_GROUPS:
-        for ep in entry_points(group=group):
-            ep_name_lower = ep.name.lower()
-            matched = (
-                fnmatch.fnmatch(ep_name_lower, needle)
-                if use_glob
-                else needle in ep_name_lower
-            )
-            if matched:
-                results.append(
-                    {
-                        "group": group,
-                        "name": ep.name,
-                        "class": ep.value,
-                        "doc": _load_doc(ep),
-                    }
-                )
-    return sorted(results, key=lambda r: (r["group"], r["name"]))
-
-
-def get_plugin_details(group: str, name: str, max_lines: int = 0) -> dict:
-    """Get full details for a specific plugin.
-
-    Loads the entry point identified by *group* and *name* and returns its
-    import target together with the plugin's docstring. When the plugin declares
-    a parameter model (variation types via ``CONFIG_CLASS``, search strategies
-    via ``PARAMS_MODEL``), a ``parameters`` field lists each accepted parameter's
-    ``name``, ``type``, whether it is ``required``, and its ``default`` — the
-    field schema is not expressible in the top-level ``.vast`` JSON Schema, so
-    this is the only place to see it before authoring a config.
-
-    Args:
-        group: Extension group name, e.g. ``"robovast.postprocessing_commands"``.
+        group: Extension group, e.g. ``"robovast.postprocessing_commands"``.
         name: Exact entry-point name, e.g. ``"FloorplanGeneration"``.
-        max_lines: Maximum number of non-blank docstring lines to return.
-                   ``0`` (default) means unlimited – the full docstring.
+        limit: Maximum non-blank docstring lines; ``0`` = the whole docstring.
+
+    Returns:
+        ``{group, name, class, doc[, parameters]}`` where each parameter is
+        ``{name, type, required, default}``; or ``{error}``.
     """
     matches = [ep for ep in entry_points(group=group) if ep.name == name]
     if not matches:
@@ -256,7 +206,7 @@ def get_plugin_details(group: str, name: str, max_lines: int = 0) -> dict:
         "group": group,
         "name": ep.name,
         "class": ep.value,
-        "doc": _doc_from_obj(obj, max_lines) if obj is not None else None,
+        "doc": _doc_from_obj(obj, limit) if obj is not None else None,
     }
     parameters = schema_from_object(obj) if obj is not None else None
     if parameters is not None:
@@ -269,9 +219,7 @@ def get_plugin_details(group: str, name: str, max_lines: int = 0) -> dict:
 # ---------------------------------------------------------------------------
 
 _TOOLS = [
-    list_plugin_groups,
     list_plugins,
-    search_plugin,
     get_plugin_details,
 ]
 

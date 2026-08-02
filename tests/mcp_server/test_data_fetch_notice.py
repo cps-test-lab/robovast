@@ -164,7 +164,7 @@ def test_no_service_is_not_an_unknown(monkeypatch):
 def test_preflight_tool_reports_the_status(monkeypatch):
     _use(monkeypatch, _Client(_COLD))
 
-    status = results.campaign_data_status("camp-1")
+    status = asyncio.run(results.describe_campaign_data("camp-1", preflight_only=True))
 
     assert status["cached"] is False
     assert status["transfer"] == "port-forward"
@@ -174,7 +174,7 @@ def test_preflight_tool_reports_the_status(monkeypatch):
 def test_preflight_tool_explains_a_missing_service(monkeypatch):
     _use(monkeypatch, None)
 
-    assert "error" in results.campaign_data_status("camp-1")
+    assert "error" in asyncio.run(results.describe_campaign_data("camp-1", preflight_only=True))
 
 
 def test_announced_once_not_once_per_layer(monkeypatch, caplog):

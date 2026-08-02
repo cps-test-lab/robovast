@@ -161,11 +161,31 @@ class _Percentile:
         return xs[lo] * (hi - k) + xs[hi] * (k - lo)
 
 
+def _sqrt(value):
+    """``SQRT(x)`` — ``None`` for a non-numeric or negative input, never an error.
+
+    Registered rather than relied upon: SQLite's own ``sqrt`` needs
+    ``SQLITE_ENABLE_MATH_FUNCTIONS`` at compile time, so whether a query works would
+    otherwise depend on how the *answering process* was built — the MCP host and the
+    service can be different machines. A query that computes a distance must not
+    succeed here and fail there.
+
+    Returning ``None`` rather than raising follows the aggregates above: one bad row in
+    a large scan should leave a NULL in that row, not abort the whole result.
+    """
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return math.sqrt(f) if f >= 0 else None
+
+
 def _register_aggregates(conn: sqlite3.Connection) -> None:
     conn.create_aggregate("STDDEV", 1, _Stddev)
     conn.create_aggregate("VARIANCE", 1, _Variance)
     conn.create_aggregate("MEDIAN", 1, _Median)
     conn.create_aggregate("PERCENTILE", 2, _Percentile)
+    conn.create_function("SQRT", 1, _sqrt)
 
 
 def _attach_ro(conn: sqlite3.Connection, db_path: Path, alias: str) -> None:
@@ -444,8 +464,9 @@ _DESCRIBE_NOTE = (
     "postprocessing to retype it). A table's 'column_notes' flags a column whose type "
     "does not tell the whole story — read it before aggregating that column. "
     "Extra aggregate functions are available beyond SQLite's built-ins: STDDEV, VARIANCE, "
-    "MEDIAN, and PERCENTILE(col, p) where p is 0..100. A REGEXP(pattern, col) function is "
-    "also registered."
+    "MEDIAN, and PERCENTILE(col, p) where p is 0..100. REGEXP(pattern, col) and SQRT(x) "
+    "are also registered — SQRT is always present here, whereas SQLite's own is a "
+    "compile-time option, so use it for distances rather than assuming."
 )
 
 

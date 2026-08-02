@@ -8,26 +8,42 @@ from robovast.mcp_server.plugins.plugin_metadata import (get_plugin_details,
                                                          list_plugins)
 
 
-def test_list_plugins_no_group_spans_all_groups():
+def test_no_arguments_lists_the_group_catalogue():
+    """With nothing to filter by, the useful answer is what groups exist — with counts."""
+    result = list_plugins()
+    groups = {g["group"] for g in result["groups"]}
+    assert "robovast.variation_types" in groups
+    assert result["total"] == len(result["groups"])
+    assert all("plugins" in g for g in result["groups"])
+
+
+def test_a_query_spans_every_group():
     """Regression: the loop used to ``return`` after the first group only."""
-    records = list_plugins("")
-    groups = {r.get("group") for r in records if "group" in r}
-    # More than one extension group has plugins registered, so an all-groups
-    # listing must contain more than one distinct group.
+    result = list_plugins(query="*")
+    groups = {p["group"] for p in result["plugins"]}
     assert len(groups) > 1
-    # Variation types are always registered by the base package.
     assert "robovast.variation_types" in groups
 
 
-def test_list_plugins_single_group_filters():
-    records = list_plugins("robovast.variation_types")
-    assert records, "expected variation plugins to be registered"
-    assert all(r["group"] == "robovast.variation_types" for r in records)
+def test_a_group_filters_to_that_group():
+    result = list_plugins("robovast.variation_types")
+    assert result["plugins"], "expected variation plugins to be registered"
+    assert all(p["group"] == "robovast.variation_types" for p in result["plugins"])
+    assert result["total"] == len(result["plugins"])
 
 
-def test_list_plugins_unknown_group_reports_error():
+def test_a_query_matches_by_substring_and_by_glob():
+    """One search, two idioms — the wildcard is detected, not selected by a flag."""
+    substring = list_plugins(query="parametervariation")
+    glob = list_plugins(query="ParameterVariation*")
+    assert {p["name"] for p in substring["plugins"]} == {p["name"] for p in glob["plugins"]}
+    assert substring["plugins"]
+
+
+def test_unknown_group_reports_error_as_a_dict():
+    """Not a list holding an error dict: a listing shape must not double as a refusal."""
     result = list_plugins("robovast.not_a_real_group")
-    assert result == [{"error": "No plugins found in group 'robovast.not_a_real_group'."}]
+    assert "error" in result and "robovast.variation_types" in result["error"]
 
 
 def test_get_plugin_details_includes_parameter_schema():

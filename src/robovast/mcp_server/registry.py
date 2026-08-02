@@ -28,10 +28,20 @@ ENTRY_POINT_GROUP = "robovast.mcp_plugins"
 logger = logging.getLogger(__name__)
 
 
-def _get_tool_names(mcp: FastMCP) -> set[str]:
-    """Return the set of currently registered tool names."""
+def registered_tools(mcp: FastMCP) -> dict:
+    """``{tool_name: Tool}`` for every tool registered on *mcp*.
+
+    The one place that reaches into FastMCP's component store. Its public
+    ``list_tools()`` is a coroutine, and every caller here is synchronous —
+    ``load_plugins`` runs during server construction, and the docs directive
+    renders in Sphinx — so introducing an event loop to read a dict would be the
+    larger hazard. Pinned against ``fastmcp == 3.4.4`` (see ``pyproject.toml``):
+    if that pin moves and this attribute is gone, this function is the only thing
+    to fix, and :mod:`tests.mcp_server.test_plugin_registry_sync` fails loudly.
+    """
     from fastmcp.tools.tool import Tool  # pylint: disable=import-outside-toplevel
-    return {c.name for c in mcp._local_provider._components.values() if isinstance(c, Tool)}  # pylint: disable=protected-access
+    return {c.name: c for c in mcp._local_provider._components.values()  # pylint: disable=protected-access
+            if isinstance(c, Tool)}
 
 
 def load_plugins(mcp: FastMCP) -> list[MCPPlugin]:
@@ -59,9 +69,9 @@ def load_plugins(mcp: FastMCP) -> list[MCPPlugin]:
                     "Entry point %r does not satisfy MCPPlugin protocol – skipped.", ep.name
                 )
                 continue
-            before = _get_tool_names(mcp)
+            before = set(registered_tools(mcp))
             plugin.register(mcp)
-            after = _get_tool_names(mcp)
+            after = set(registered_tools(mcp))
             plugin_tools[plugin.name] = sorted(after - before)
             loaded.append(plugin)
             logger.debug("Loaded MCP plugin %r from %r.", plugin.name, ep.value)
@@ -80,13 +90,6 @@ def get_plugin_tools() -> dict[str, list[str]]:
     return dict(_last_plugin_tools)
 
 
-def _tools_by_name(mcp: FastMCP) -> dict:
-    """Return ``{tool_name: Tool}`` for every tool registered on *mcp*."""
-    from fastmcp.tools.tool import Tool  # pylint: disable=import-outside-toplevel
-    return {c.name: c for c in mcp._local_provider._components.values()  # pylint: disable=protected-access
-            if isinstance(c, Tool)}
-
-
 def get_plugin_tool_details(mcp: FastMCP) -> dict[str, list[dict]]:
     """Return ``{plugin_name: [{name, summary}, ...]}`` for the plugins on *mcp*.
 
@@ -95,7 +98,7 @@ def get_plugin_tool_details(mcp: FastMCP) -> dict[str, list[dict]]:
     (notably the docs ``.. mcp-tools::`` directive) get a description **without**
     reaching into FastMCP internals themselves.
     """
-    by_name = _tools_by_name(mcp)
+    by_name = registered_tools(mcp)
 
     def _summary(name: str) -> str:
         tool = by_name.get(name)

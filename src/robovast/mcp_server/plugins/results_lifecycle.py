@@ -17,9 +17,14 @@
 """MCP plugin: what happens to a campaign's results after it has run.
 
 Re-deriving them (postprocessing), publishing them (share), and disposing of them
-(cleanup, delete, download). Separate from :mod:`execution` because these act on a
-campaign that has already finished, and separate from :mod:`results` because they *change*
-or move the results rather than read them.
+(delete, download). Separate from :mod:`execution` because these act on a campaign that
+has already finished, and separate from :mod:`results` because they *change* or move the
+results rather than read them.
+
+Removal is one verb with a scope flag rather than two tools. A caller facing
+``delete_campaign`` beside ``cleanup_campaign_data`` has to know that one erases the
+campaign and the other only frees its buckets — a distinction the names do not carry,
+between two irreversible operations. ``data_only`` states the scope at the call site.
 """
 
 import logging
@@ -116,94 +121,101 @@ def run_share(campaign_id: str) -> dict:
         return {"error": str(e)}
 
 
-def cleanup_campaign_data(campaign_id: str = "", force: bool = False) -> dict:
-    """Delete campaign result data (object-store bucket(s)) for a cluster campaign.
+def delete_campaign(campaign_id: str = "", data_only: bool = False,
+                    force: bool = False) -> dict:
+    """Irreversibly remove a campaign, or just free the storage its results occupy.
 
-    Frees storage once results have been downloaded or published and are no longer
-    needed. This goes **through the robovast-service**, which owns the object-store
-    credentials and knows which campaigns are still live — so there is **no
-    infrastructure to deal with** here: no kubeconfig, no S3 keys, no namespaces.
+    Runs through the robovast-service, which holds the object-store credentials and the
+    authoritative live-campaign set — no kubeconfig, S3 keys or namespaces here. A
+    running campaign is refused; stop it first. The external share copy is never touched.
 
     Args:
-        campaign_id: The campaign whose data to delete. Empty string deletes **all**
-            finished campaigns' data (campaigns still running are always skipped).
-        force: Delete a named campaign even if the service still considers it live.
+        campaign_id: The campaign to remove. Required unless ``data_only`` — with
+            ``data_only`` an empty id sweeps **all** finished campaigns.
+        data_only: Free the object-store bucket(s) only, keeping the campaign itself.
+            Use once results are downloaded or published. Cluster campaigns only; a
+            local service has no object store.
+        force: Act on a named campaign the service still considers live.
 
     Returns:
-        ``{ok, message}`` (``message`` reports how many buckets were removed), or
-        ``{error}`` if no service is reachable / the backend has no object store.
+        ``{ok, message}`` — for ``data_only``, how many buckets were removed — or
+        ``{error}``.
     """
-    from robovast.service.interface import CleanupDataRequest
     client = service_access.service_client()
     if client is None:
-        return {"error": f"{NO_SERVICE}. The data to clean up lives with the "
-                          "service, not on this host."}
+        return {"error": f"{NO_SERVICE}. The campaign lives with the service, not "
+                          "on this host."}
+    # An empty id means "every finished campaign" only for the bucket sweep, which is
+    # what cleanup has always meant. Wholesale deletion has no such form, and letting an
+    # empty id fall through to it would erase the entire corpus from a missing argument.
+    if not campaign_id and not data_only:
+        return {"error": "campaign_id is required to delete a campaign. (An empty id "
+                         "is only meaningful with data_only=True, which sweeps every "
+                         "finished campaign's object-store data.)"}
     try:
-        res = client.cleanup_campaign_data(
-            CleanupDataRequest(campaign_id=campaign_id or None, force=force))
+        if data_only:
+            from robovast.service.interface import CleanupDataRequest
+            res = client.cleanup_campaign_data(
+                CleanupDataRequest(campaign_id=campaign_id or None, force=force))
+        else:
+            res = client.delete_campaign(campaign_id)
         return {"ok": res.ok, "message": res.message}
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 
 
-def delete_campaign(campaign_id: str) -> dict:
-    """Permanently delete **one** campaign wholesale, through the robovast-service.
+def _campaign_lane(campaign_id: str, client) -> str:
+    """``"cluster"`` or ``"local"`` — the lane **this campaign** ran on.
 
-    Removes the campaign's durable home — its local directory on a local service,
-    or its object-store data (plus any leftover Kubernetes Jobs and the service's
-    cache) on a cluster service. This is the full "forget this campaign" action, as
-    opposed to :func:`cleanup_campaign_data`, which only frees object-store buckets.
+    Read from the campaign's own record rather than from the service's default backend.
+    A ``vast serve --backend local+cluster`` reports ``version().backend == "docker"``
+    while offering both lanes, so asking the service told every cluster campaign on a
+    dev host that its results were on the local filesystem — a capability denied, and a
+    place to look that holds nothing.
 
-    The service refuses a campaign that is still running — stop it first with
-    :func:`stop_campaign`. The external share copy (if any) is never touched. This
-    is irreversible.
-
-    Args:
-        campaign_id: The campaign to delete.
-
-    Returns:
-        ``{ok, message}`` on success, or ``{error}`` if no service is reachable or
-        the campaign is still running.
+    Falls back to the service's backend for a campaign with no record yet (it has not
+    reached execution), which is the only case where there is nothing better to ask.
     """
-    client = service_access.service_client()
-    if client is None:
-        return {"error": NO_SERVICE}
+    from robovast.mcp_server import data_access
     try:
-        res = client.delete_campaign(campaign_id)
-        return {"ok": res.ok, "message": res.message}
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+        rows = data_access.rows(
+            campaign_id, "SELECT execution_type FROM campaign.campaign LIMIT 1",
+            max_rows=1)
+    except Exception:  # noqa: BLE001 - a provenance read must not fail the answer
+        logger.debug("could not read the lane of %s from its record.", campaign_id,
+                     exc_info=True)
+        rows = []
+    recorded = (rows[0].get("execution_type") if rows else None)
+    if recorded:
+        return "cluster" if recorded == "cluster" else "local"
+    return "cluster" if client.version().backend == "kubernetes" else "local"
 
 
 def get_campaign_download(campaign_id: str) -> dict:
-    """Return **where to download** a campaign — a web link, not a file on this host.
+    """Where to download a campaign — a link for a human to open, not a file fetched here.
 
-    Downloading is a browser action: the campaign archive is served by the
-    robovast-service (and its web UI) at a fixed path, so this returns that URL for
-    **you** to open where your robovast web UI runs — it never writes a file onto the
-    MCP-server host (which you may not be able to reach if the server runs elsewhere).
+    Never writes to the MCP-server host, which may not be a machine you can reach.
 
     Args:
-        campaign_id: The campaign id to download.
+        campaign_id: The campaign to download.
 
     Returns:
-        For a **cluster** service: ``{campaign_id, url, path, note}`` — ``url`` is the
-        postprocessed ``tar.gz`` (full campaign, incl. derived data) streamed from the
-        object store. For a **local** service: ``{campaign_id, note}`` — the results
-        already live on the service host's filesystem, so there is no HTTP download.
-        ``{error}`` when no service is reachable.
+        Cluster service: ``{campaign_id, url, path, note}`` — the postprocessed
+        ``tar.gz`` streamed from the object store. Local service: ``{campaign_id, note}``
+        — the results are already on the service host's filesystem, so there is no HTTP
+        download. Or ``{error}``.
     """
     client = service_access.service_client()
     if client is None:
         return {"error": f"{NO_SERVICE}. The campaign lives with the service, not "
                           "on this host."}
     try:
-        backend = client.version().backend
+        lane = _campaign_lane(campaign_id, client)
     except Exception as e:  # noqa: BLE001
         return {"error": f"could not reach the service: {e}"}
 
     path = f"/campaigns/{campaign_id}/archive"
-    if backend == "kubernetes":
+    if lane == "cluster":
         return {
             "campaign_id": campaign_id,
             "url": f"{client.base_url}{path}",
@@ -215,7 +227,7 @@ def get_campaign_download(campaign_id: str) -> dict:
         }
     return {
         "campaign_id": campaign_id,
-        "note": ("This is a local service — the campaign results are already on the "
+        "note": ("This campaign ran on the local lane — its results are already on the "
                  "service host's filesystem; there is no HTTP download."),
     }
 
@@ -227,7 +239,6 @@ _TOOLS = [
     update_postprocessing,
     run_postprocessing,
     run_share,
-    cleanup_campaign_data,
     delete_campaign,
     get_campaign_download,
 ]

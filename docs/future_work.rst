@@ -36,7 +36,7 @@ poses is not how a human notices a robot driving into a wall.
 * Is video better delivered as a short-lived artifact/link than inline, given
   size?
 * The ``nav`` plugin (``robovast_nav``) already returns images via
-  ``draw_map`` / ``display_simulation_screenshot`` — is that the pattern to
+  ``draw_map`` / ``get_simulation_screenshot`` — is that the pattern to
   generalize, or is a campaign-level artifact route the right home?
 
 

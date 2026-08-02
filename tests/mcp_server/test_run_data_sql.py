@@ -92,8 +92,8 @@ def test_sql_rejects_writes(campaign, bad):
     assert "error" in query_campaign_data_sql(campaign, bad)
 
 
-def test_sql_truncates_at_max_rows(campaign):
-    r = query_campaign_data_sql(campaign, "SELECT * FROM runs", max_rows=1)
+def test_sql_truncates_at_limit(campaign):
+    r = query_campaign_data_sql(campaign, "SELECT * FROM runs", limit=1)
     assert r["row_count"] == 1 and r["truncated"] is True
 
 

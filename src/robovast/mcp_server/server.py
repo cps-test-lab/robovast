@@ -170,6 +170,43 @@ def _install_debug_logging(mcp: FastMCP, level: int) -> None:
     mcp.add_middleware(_DebugLoggingMiddleware())
 
 
+#: What every MCP client injects into the model's system prompt. This is the only text
+#: read before any tool is chosen, so it is where the server says what it is *for*.
+#:
+#: It used to read "This server provides access to the results created by RoboVAST" —
+#: true, and the reason agents kept running experiments by hand on the host and then
+#: coming here to read files. A server that introduces itself as an archive is not
+#: offered as a place to run anything; the execution half of the surface went unused
+#: while ``docker compose`` runs produced results with no pinned image, no recorded
+#: provenance and no repetitions, which cannot be compared with anything.
+_INSTRUCTIONS = """\
+RoboVAST runs robotics experiments and keeps what they produced.
+
+**Run experiments here, not on this host.** A campaign executes in a pinned container
+image on a local Docker or Kubernetes lane, repeats each configuration, and records its
+provenance, so its results are comparable and reproducible. A `docker compose`, a
+`pytest`, or a simulator started by hand has none of that: it answers a different
+question and its output cannot be compared with a campaign's. If a task needs a
+simulation run, a sweep, or a repeated trial, that is `start_campaign`.
+
+The loop:
+1. `create_workspace`, then `write_file` / `update_workspace` to put a `.vast` in it.
+2. `validate_project` — reports every problem at once, before any compute is spent.
+3. `preview_configurations` — what the sweep actually expands to.
+4. `get_resource_usage` — does this lane have room, and is it reachable?
+5. `start_campaign` — **pilot one configuration first** (`config_filter`, `runs=1`),
+   then the full sweep. Always pass `description`.
+6. `get_campaign_status` — read `stalled` and `postprocessed`, not just `status`.
+7. Read results with SQL: `describe_campaign_data`, then `query_campaign_data_sql`.
+
+If no service is reachable, every control tool says so. **Stop and report that** — do
+not substitute a local run, which silently answers a different question.
+
+Files live at `/results/<campaign_id>/<path>` (read-only) and
+`/sources/<workspace_id>/<path>` (writable) — one address space, five tools.
+"""
+
+
 def create_server(
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
@@ -188,9 +225,7 @@ def create_server(
         ``0`` disables it, ``1`` logs each tool call with its arguments, and
         ``2`` also logs the result.
     """
-    mcp = FastMCP(name="RoboVAST Results API", instructions="""
-                This server provides access to the results created by RoboVAST.
-                """,
+    mcp = FastMCP(name="RoboVAST", instructions=_INSTRUCTIONS,
                 icons=[
                     Icon(
                         src="https://raw.githubusercontent.com/cps-test-lab/robovast/refs/heads/main/docs/images/icon.png",

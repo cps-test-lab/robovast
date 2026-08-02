@@ -17,6 +17,7 @@ from importlib.metadata import entry_points
 import pytest
 
 from robovast.mcp_server.registry import load_registered_tool_details
+from robovast.mcp_server.server import create_server
 
 _PLUGINS_DIR = pathlib.Path(__file__).resolve().parents[2] / \
     "src" / "robovast" / "mcp_server" / "plugins"
@@ -56,7 +57,55 @@ _FORBIDDEN_NAMES = [
     "get_configuration_variations", "get_run_details", "get_run_sysinfo",
     "list_campaign_configurations", "get_campaign_execution_details",
     "get_campaign_postprocessing_details",
+    # The read/list pairs, collapsed onto one tool each with an empty argument meaning
+    # "all of them". Two tools over one object cost two schemas in every request and a
+    # round trip to learn the name the second one needs.
+    "list_cli_commands",       # -> get_cli_help(command="")
+    "list_docs",               # -> search_docs(query="", page="")
+    "list_examples",           # -> get_example(name="")
+    "list_workspaces_info",    # -> list_workspaces(workspace_id="")
+    "get_workspace",           # -> list_workspaces(workspace_id="")
+    "list_plugin_groups",      # -> list_plugins()
+    "search_plugin",           # -> list_plugins(query=...)
+    "list_running_campaigns",  # -> list_campaigns(running_only=True)
+    "campaign_data_status",    # -> describe_campaign_data(preflight_only=True)
+    "cleanup_campaign_data",   # -> delete_campaign(data_only=True)
+    # Nav: the stats variants became a flag on the tool that reads the same data, and the
+    # data-model blurb moved into the docstrings of the tools it described.
+    "nav_describe_data_model",
+    "nav_get_planned_path", "nav_get_path",
+    "nav_get_trajectory_stats",        # -> nav_get_trajectory(stats_only=True)
+    "nav_get_map_occupancy_stats",     # -> nav_get_map_info(occupancy=True)
+    "display_simulation_screenshot",   # -> get_simulation_screenshot
+    "resource_usage",                  # -> get_resource_usage
 ]
+
+#: Commands that do not exist on the ``vast`` CLI. A tool that tells an LLM to run one
+#: sends it somewhere there is nothing to run: four nav error messages named
+#: ``vast analysis postprocess``, which has never been a command.
+_FORBIDDEN_COMMANDS = [
+    "vast analysis ",
+]
+
+
+def _registered_plugin_modules():
+    """Every module a ``robovast.mcp_plugins`` entry point resolves to.
+
+    The guards below used to scan ``mcp_server/plugins/`` only, which is one
+    distribution's worth of plugins. The ``nav`` plugin ships from ``robovast_nav`` and
+    was therefore unguarded — it accumulated a tool function dropped from ``_TOOLS`` but
+    left in the file, and four error messages naming a ``vast`` command that does not
+    exist. Resolving the modules from the registry covers whatever is installed.
+    """
+    mods = {}
+    for ep in entry_points(group="robovast.mcp_plugins"):
+        module_path = ep.value.split(":", 1)[0]
+        mods[module_path] = importlib.import_module(module_path)
+    for f in _PLUGINS_DIR.glob("*.py"):
+        if f.stem != "__init__":
+            name = f"robovast.mcp_server.plugins.{f.stem}"
+            mods.setdefault(name, importlib.import_module(name))
+    return mods
 
 
 def _plugin_classes_in_source():
@@ -88,15 +137,12 @@ def test_every_plugin_class_is_registered():
 
 
 def test_no_orphan_public_functions_in_plugins():
-    """Every public function in a plugin module must be a registered tool.
+    """Every public function in a registered plugin module must be a registered tool.
 
     A public function dropped from ``_TOOLS`` but left in the file is dead code an
     LLM can't call but a reader assumes exists."""
     orphans = {}
-    for f in _PLUGINS_DIR.glob("*.py"):
-        if f.stem == "__init__":
-            continue
-        mod = importlib.import_module(f"robovast.mcp_server.plugins.{f.stem}")
+    for path, mod in _registered_plugin_modules().items():
         tools = getattr(mod, "_TOOLS", None)
         if tools is None:
             continue  # e.g. prompts registers a prompt, not tools
@@ -104,7 +150,7 @@ def test_no_orphan_public_functions_in_plugins():
         for name, obj in vars(mod).items():
             if (inspect.isfunction(obj) and obj.__module__ == mod.__name__
                     and not name.startswith("_") and name not in tool_names):
-                orphans.setdefault(f.stem, []).append(name)
+                orphans.setdefault(path, []).append(name)
     assert not orphans, f"Public plugin functions not in _TOOLS (dead code): {orphans}"
 
 
@@ -139,17 +185,50 @@ def _registered_tool_names():
     return names
 
 
+def _llm_facing_text() -> dict[str, str]:
+    """Everything an LLM reads from this server, keyed by where it came from.
+
+    Deliberately not "every occurrence in the source": ``get_workspace``,
+    ``resource_usage`` and ``cleanup_campaign_data`` are live ``RobovastInterface``
+    methods that the tools call. Forbidding the *identifier* would forbid the code; what
+    must not survive is the retired name in text an LLM is given and will try to call.
+    """
+    text = {"server instructions": create_server().instructions or ""}
+    for plugin, tools in load_registered_tool_details().items():
+        for tool in tools:
+            text[f"tool {tool['name']}"] = tool["name"] + "\n" + (tool["summary"] or "")
+    for path, mod in _registered_plugin_modules().items():
+        for name, obj in vars(mod).items():
+            if inspect.isfunction(obj) and obj.__module__ == mod.__name__ and obj.__doc__:
+                text[f"{path}.{name} docstring"] = obj.__doc__
+    from robovast.mcp_server.plugins import prompts
+    text["analyze prompt"] = prompts._SYSTEM_PROMPT
+    text["run prompt"] = prompts._RUN_PROMPT
+    # Only the tool-surface page. ``developer_guide.rst`` and ``architecture.rst``
+    # document ``RobovastInterface``, where ``get_workspace`` and
+    # ``cleanup_campaign_data`` are current method names — correct there, and a name
+    # that survives as a method is not a name an LLM is being offered as a tool.
+    text["mcp.rst"] = (_DOCS_DIR / "mcp.rst").read_text(encoding="utf-8")
+    return text
+
+
 @pytest.mark.parametrize("phantom", _FORBIDDEN_NAMES)
-def test_no_phantom_tool_names_in_source_or_docs(phantom):
-    """Known phantom tool names must not appear in source or docs."""
-    hits = []
-    for base, pattern in ((_PLUGINS_DIR.parent, "**/*.py"), (_DOCS_DIR, "**/*.rst")):
-        for f in base.glob(pattern):
-            if "_build" in f.parts:
-                continue
-            if phantom in f.read_text(encoding="utf-8", errors="ignore"):
-                hits.append(str(f.relative_to(base.parents[0] if pattern.endswith('py') else base)))
-    assert not hits, f"phantom tool name {phantom!r} still referenced in: {hits}"
+def test_no_phantom_tool_names_in_llm_facing_text(phantom):
+    """A retired tool name in text an LLM reads is a name it will try to call.
+
+    Matched on word boundaries, so ``resource_usage`` does not flag its own replacement
+    ``get_resource_usage``, nor ``nav_get_path`` flag ``nav_get_path_deviation``.
+    """
+    pattern = re.compile(rf"\b{re.escape(phantom)}\b")
+    hits = [where for where, text in _llm_facing_text().items() if pattern.search(text)]
+    assert not hits, f"retired tool name {phantom!r} still referenced in: {hits}"
+
+
+@pytest.mark.parametrize("phantom", _FORBIDDEN_COMMANDS)
+def test_no_phantom_cli_commands_in_llm_facing_text(phantom):
+    """A tool that tells an LLM to run a command sends it somewhere; the command must exist."""
+    hits = [where for where, text in _llm_facing_text().items() if phantom in text]
+    assert not hits, f"non-existent CLI command {phantom!r} referenced in: {hits}"
 
 
 # SQL identifiers the prompt legitimately backticks. They collide with the verb
@@ -163,18 +242,141 @@ _NON_TOOL_IDENTIFIERS = {
 }
 
 
-def test_prompt_references_only_real_tools():
-    """Every tool-shaped name backticked in the analyze prompt must resolve to a
-    registered tool (catches the phantom `query_run_data_table` class of bug)."""
+@pytest.mark.parametrize("source", ["_SYSTEM_PROMPT", "_RUN_PROMPT", "instructions"])
+def test_prompt_references_only_real_tools(source):
+    """Every tool-shaped name backticked in text an LLM is given must resolve to a tool.
+
+    Catches the phantom ``query_run_data_table`` class of bug — a name the model will
+    happily call once, fail on, and route around."""
     from robovast.mcp_server.plugins import prompts
+    text = (create_server().instructions if source == "instructions"
+            else getattr(prompts, source))
     registered = _registered_tool_names()
     # tool-shaped: verb-prefixed snake_case, the convention tools follow.
     verbs = ("get", "list", "query", "describe", "search", "inspect", "draw",
              "display", "create", "write", "edit", "read", "delete", "update",
-             "run", "start", "stop", "validate", "preview", "init")
-    candidates = set(re.findall(r"`([a-z]+_[a-z0-9_]+)`", prompts._SYSTEM_PROMPT))
+             "run", "start", "stop", "validate", "preview", "init", "build")
+    candidates = set(re.findall(r"`([a-z]+_[a-z0-9_]+)`", text))
     tool_like = {c for c in candidates
                  if c.split("_", 1)[0] in verbs and c not in _NON_TOOL_IDENTIFIERS}
     unresolved = {c for c in tool_like if c not in registered}
     assert not unresolved, (
-        f"analyze prompt references non-registered tools: {sorted(unresolved)}")
+        f"{source} references non-registered tools: {sorted(unresolved)}")
+
+
+def test_the_server_says_it_runs_experiments_before_any_tool_is_read():
+    """The instructions are the only text read before a tool is chosen.
+
+    They used to say the server "provides access to the results created by RoboVAST" —
+    true, and the reason agents ran experiments by hand on the host and came here only to
+    read files. An archive is not offered as a place to run anything.
+    """
+    instructions = (create_server().instructions or "").lower()
+    assert "run" in instructions and "not on this host" in instructions
+    assert "start_campaign" in instructions
+    # And the refusal has to be part of the framing, not only of the error string.
+    assert "stop and report" in instructions
+
+
+#: One name per concept, one concept per name. Each entry was a divergence: the nav tools
+#: took ``campaign``/``config``/``run`` where the other 51 took the long forms; the
+#: "how many to return" argument had eight names (``max_rows``, ``max_points``,
+#: ``max_configs``, ``max_lines``, ``lines``, plus ``limit``); and ``config_path`` meant a
+#: workspace-relative path in the execution tools and an absolute filesystem path in the
+#: authoring ones — the same word for two address spaces.
+#:
+#: ``tail`` (last N) and ``top`` (top N patterns) are deliberately *not* ``limit``: they
+#: are different operations, and collapsing them would hide that.
+_BANNED_PARAMETERS = {
+    "campaign": "campaign_id",
+    "config": "config_name",
+    "run": "run_id",
+    "max_rows": "limit",
+    "max_points": "limit",
+    "max_configs": "limit",
+    "max_lines": "limit",
+    "lines": "limit",
+}
+
+
+def _tool_parameters() -> dict[str, dict]:
+    import asyncio
+
+    async def _tools():
+        return await create_server().list_tools()
+
+    return {t.name: (getattr(t, "parameters", None) or {}).get("properties", {})
+            for t in asyncio.run(_tools())}
+
+
+def test_tools_share_one_parameter_vocabulary():
+    """A concept must have the same argument name everywhere it appears."""
+    offenders = {}
+    for tool, props in _tool_parameters().items():
+        for param in props:
+            if param in _BANNED_PARAMETERS:
+                offenders.setdefault(tool, []).append(
+                    f"{param} -> {_BANNED_PARAMETERS[param]}")
+    assert not offenders, f"tools using a retired parameter name: {offenders}"
+
+
+def test_every_tool_returns_a_dict_or_an_image():
+    """One error convention: ``{"error": …}`` in the result dict.
+
+    Four coexisted. ``list_docs``/``list_examples`` were typed ``list[dict] | str`` and
+    returned a bare *sentence* when the directory was missing; ``list_plugins`` returned
+    a one-element list holding an error dict, so a listing's shape doubled as a refusal;
+    and the nav tools raised, which reaches an MCP client as a broken server rather than
+    as an answer. A caller could not write one branch that handled failure.
+
+    The two image tools are the stated exception — an ``Image`` has nowhere to put an
+    ``error`` key, so they raise, and say so in their docstrings.
+    """
+    from fastmcp.utilities.types import Image
+    wrong = {}
+    for path, mod in _registered_plugin_modules().items():
+        for fn in getattr(mod, "_TOOLS", []):
+            annotation = inspect.signature(fn).return_annotation
+            if annotation not in (dict, "dict", Image, "Image"):
+                wrong[f"{path}.{fn.__name__}"] = str(annotation)
+    assert not wrong, f"tools whose return type is neither dict nor Image: {wrong}"
+
+
+def test_a_shared_parameter_name_keeps_one_type():
+    """``limit`` must not be an integer on one tool and a string on another."""
+    types: dict[str, set] = {}
+    for props in _tool_parameters().values():
+        for param, spec in props.items():
+            if spec.get("type"):
+                types.setdefault(param, set()).add(spec["type"])
+    mixed = {p: sorted(t) for p, t in types.items() if len(t) > 1}
+    assert not mixed, f"parameters with more than one type across tools: {mixed}"
+
+
+#: Budget for the tool surface, in approximate tokens. Every description and schema is
+#: injected into the model's context on **every** request, so this is a recurring cost
+#: paid per turn, not a one-off. It stood at ~14.3k across 61 tools; the ceiling is set
+#: above the current figure with room for a tool or two, and is meant to force a
+#: deliberate decision — compress something, or merge something — rather than to drift.
+_SURFACE_TOKEN_BUDGET = 11_000
+
+
+def test_the_tool_surface_stays_within_its_token_budget():
+    import asyncio
+    import json
+
+    async def _tools():
+        return await create_server().list_tools()
+
+    total = 0
+    per_tool = {}
+    for tool in asyncio.run(_tools()):
+        chars = len(tool.description or "") + len(
+            json.dumps(getattr(tool, "parameters", None) or {}))
+        per_tool[tool.name] = chars // 4
+        total += chars // 4
+    worst = sorted(per_tool.items(), key=lambda kv: -kv[1])[:5]
+    assert total <= _SURFACE_TOKEN_BUDGET, (
+        f"tool surface is ~{total} tokens, over the {_SURFACE_TOKEN_BUDGET} budget. "
+        f"Largest: {worst}. Compress a description or merge two tools — do not just "
+        "raise the budget.")

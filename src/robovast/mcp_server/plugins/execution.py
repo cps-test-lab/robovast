@@ -118,47 +118,35 @@ def start_campaign(config_filter: str = "", runs: int = 0, backend: str = "",
                    workspace_id: str = "", config_path: str = "",
                    campaign_name: str = "", upload_to_share: bool = False,
                    description: str = "") -> dict:
-    """Start a campaign through the robovast-service and return immediately.
+    """**Run the experiment.** Launches a campaign in containers and returns immediately.
 
-    The service is the execution authority — there is **no** local subprocess path —
-    so a service must be reachable (a ``vast serve`` locally, or ``vast serve
-    --attach`` / a tunnel to a cluster); otherwise this fails loudly. Results land
-    wherever the service keeps them (local disk, or the cluster object store); poll
-    :func:`get_campaign_status`. For a serviceless local run use the ``vast exec
-    local run`` CLI instead.
+    This is how a RoboVAST experiment is executed — not a local ``docker compose`` or a
+    script on this host, which produce no pinned image, no recorded provenance and no
+    repetitions, so their output is not comparable with anything. Poll
+    ``get_campaign_status``; size the lane first with ``get_resource_usage``.
+
+    Pilot one configuration before the full sweep (``config_filter`` + ``runs=1``).
 
     Args:
-        config_filter: Optional glob to run only matching configurations.
-        runs: Runs per configuration; ``0`` uses the value from the ``.vast`` file.
-        backend: On a multi-backend service (``vast serve --backend local+cluster``),
-            which lane to run on — ``"local"`` (pilot: Docker on the serve host) or
-            ``"cluster"`` (scaled: Kubernetes). Empty uses the service's **default
-            lane (cluster when available)**. Single-backend services ignore it.
-        workspace_id: **Required** — the workspace whose project to run. A campaign
-            always runs a workspace's ``.vast``; there is no server-side "current
-            project". Get an id from ``list_workspaces()`` (a directory the operator
-            pinned with ``vast serve --workspace-dir``) or by uploading one with
+        workspace_id: **Required** — the workspace holding the project to run. There is
+            no server-side "current project". From ``list_workspaces``, or
             ``create_workspace`` + ``update_workspace``.
-        config_path: Which ``.vast`` when the workspace has several (empty = the sole
-            one, and an error naming the candidates when it is ambiguous).
-        campaign_name: Override the campaign name; the id becomes ``<name>-<timestamp>``.
-            Empty uses the ``.vast`` ``metadata.name``.
-        upload_to_share: When true, a raw (pre-postprocess) archive is delivered to the
-            configured share when the campaign finishes. Target/credentials come from
-            the service config, not this call.
-        description: **Set this on every start** — one line (max 200 characters) saying
-            what this run is *for*, in the words you would use to answer "why did we run
-            this?" a week later: the question it answers, what changed since the previous
-            campaign, whether it is a pilot or the full sweep. It is stored with the
-            campaign and shown in ``list_campaigns`` and the web UI, so it is what
-            distinguishes one ``campaign-<timestamp>`` from the next; without it a listing
-            of a dozen runs is unreadable. Do not restate the id, the config filter, or the
-            run count — those are already listed. Good: "pilot: 5 reps DWB vs MPPI on
-            open_space, checking the new inflation radius". Bad: "campaign run".
+        config_path: Which ``.vast``, when the workspace holds several.
+        config_filter: Glob selecting which configurations to run.
+        runs: Runs per configuration; ``0`` uses the ``.vast`` value.
+        backend: ``"local"`` (Docker on the serve host) or ``"cluster"`` (Kubernetes), on
+            a service offering both. Empty uses its default lane.
+        campaign_name: Override the name; the id becomes ``<name>-<timestamp>``.
+        upload_to_share: Deliver a raw archive to the configured share when it finishes.
+        description: **Set this every time.** One line (≤200 chars) saying what the run
+            is *for* — it is what tells two same-day ``campaign-<timestamp>`` ids apart in
+            ``list_campaigns`` and the web UI. Not the id, filter or run count, which are
+            already recorded. Good: "pilot: 5 reps DWB vs MPPI on open_space, new
+            inflation radius". Bad: "campaign run".
 
     Returns:
-        ``{campaign_id, backend}`` on success; ``{error}`` when no service is reachable
-        or the start is refused.
+        ``{campaign_id, backend}``, or ``{error}`` — including when no service is
+        reachable, which means **stop and say so**, not run the experiment another way.
     """
     try:
         client = service_access.service_client()
@@ -191,49 +179,36 @@ def start_campaign(config_filter: str = "", runs: int = 0, backend: str = "",
 
 
 def get_campaign_status(campaign_id: str) -> dict:
-    """Report a campaign's live status, progress, and whether it is wedged.
+    """Is it progressing, is it wedged, and are there results? Poll this after starting.
 
-    **Neither terminal state is self-explanatory — two fields decide what to do next.**
+    Two fields decide what to do next, and ``status`` is neither of them.
 
-    ``stalled`` answers "is this run broken?" while it is still ``running``, which
-    ``status`` cannot: a campaign holds ``running`` for its whole life whether or not
-    anything is happening.
+    ``stalled`` — a campaign holds ``running`` for its whole life whether or not anything
+    is happening. ``true``: nothing completed for longer than one run may take
+    (``progress_age_s`` vs ``progress_deadline_s``); ``stall_reason`` names the next call.
+    ``false``: inside the declared budget. ``null``: the ``.vast`` declares no
+    ``execution.timeout``, so **no verdict is possible** — this is not "healthy"; judge
+    ``progress_age_s`` yourself. The local lane does not enforce the timeout, so a stalled
+    local run stays alive to inspect: end it with ``stop_campaign``.
 
-    * ``true`` — nothing has completed for longer than one run is allowed to take
-      (``progress_age_s`` vs ``progress_deadline_s``). Not merely slow.
-      ``stall_reason`` names the exact next call.
-    * ``false`` — inside the declared budget.
-    * ``null`` — the ``.vast`` declares no ``execution.timeout``, so **no verdict is
-      possible**; ``stall_verdict`` says so. This is not "healthy": read
-      ``progress_age_s`` (seconds since a run last completed) and judge it against how
-      long one run should take.
-
-    ``postprocessed`` answers "are there results?", which ``status: "finished"`` does
-    not imply: the runs are the deliverable, so a campaign whose trials all passed but
-    whose postprocessing failed still finishes — ``postprocessed: false`` with
-    ``postprocessing_error``. No postprocessing means no CSVs and no ``data.db``;
-    ``run_postprocessing`` fixes that without re-running the campaign.
+    ``postprocessed`` — ``status: "finished"`` does not imply results. The runs are the
+    deliverable, so a campaign whose trials passed but whose postprocessing failed still
+    finishes, with ``postprocessing_error`` and no CSVs or ``data.db``.
+    ``run_postprocessing`` fixes that without re-running anything.
 
     Args:
-        campaign_id: The id returned by :func:`start_campaign`.
+        campaign_id: The id from ``start_campaign``.
 
     Returns:
-        ``{campaign_id, backend, status, mode, batch_runs_done, batch_runs_total,
-        batch_runs_failed, batch_runs_no_result, progress, phase_age_s,
-        progress_age_s, stalled, postprocessed, stage}``, plus
-        ``progress_deadline_s`` / ``stall_reason`` or ``stall_verdict`` per the
-        tri-state above, plus search-only fields (``best_objective``, ``budget``,
-        ``batches_done``, ``stop``) when applicable; ``{error}`` when no service is
-        reachable or the campaign is unknown. Run counts are **batch-scoped**;
-        ``progress`` is overall and mode-aware (``None`` when a search's completion
-        cannot be known yet).
+        ``{campaign_id, backend, status, mode, stage, progress, phase_age_s,
+        progress_age_s, stalled, postprocessed, batch_runs_done, batch_runs_total,
+        batch_runs_failed, batch_runs_no_result}``, plus ``progress_deadline_s`` +
+        ``stall_reason`` or ``stall_verdict``, plus search fields (``best_objective``,
+        ``budget``, ``batches_done``, ``stop``) when they apply; or ``{error}``.
 
-        ``phase_age_s`` is how long the current phase has been held — the pre-run
-        equivalent of ``progress_age_s``, and the only signal for a phase
-        (``initializing``, ``building``) that has no run counter to watch.
-
-        Note the local lane does not *enforce* ``execution.timeout``, so a stalled
-        local run stays alive to be inspected; end it with ``stop_campaign``.
+        Run counts are batch-scoped; ``progress`` is overall (``null`` when a search's
+        completion cannot honestly be known). ``phase_age_s`` is the only signal for a
+        phase with no run counter — ``initializing``, ``building``.
     """
     try:
         client = service_access.service_client()
@@ -247,85 +222,50 @@ def get_campaign_status(campaign_id: str) -> dict:
         return {"error": str(e)}
 
 
-def get_campaign_log(campaign_id: str, lines: int = 200, offset: int = 0,
-                     grep: str = "", min_severity: str = "",
+def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
+                     grep: str = "", tail: int = 0, min_severity: str = "",
                      summarize: bool = False, top: int = DEFAULT_TOP,
                      phase: str = "") -> dict:
-    """Read a campaign's unified infrastructure log.
+    """What is the campaign doing? Its infrastructure log, in phases.
 
-    Returns the campaign's whole infrastructure log — the same divider-separated
-    stream the web UI log panel shows — assembled from the per-phase files under
-    ``_execution/`` in phase order, each under a ``===== PHASE =====`` divider:
+    **On a stalled or failed run, start with ``summarize=True``** — filtering cannot
+    diagnose a flood, because the flood *is* the finding. One wedged run matched a
+    severity filter 18226 times and the returned lines read as ordinary noise; summarized
+    it is one pattern with its count.
 
-    * **VARIATION** — config generation / composition (incl. plugin subprocess output).
-    * **RUN** — the controller driving batches/runs (``controller.log``). For local
-      Docker campaigns this also includes the ``run.sh`` / ``docker compose`` output.
-    * **POSTPROCESSING** — rosbag→CSV→``data.db`` (on the cluster, the separate
-      conversion Job's output followed by the host stage).
-    * **BUILD** — the experiment image this campaign waited for, when it has a
-      ``build:`` section. **Not in a default read** — ask for it with ``phase="build"``.
-      It is the output of a content-addressed build that may be shared with other
-      campaigns rather than this campaign's own narrative, and it is routinely the
-      largest section by far, so leading with it would spend a whole read on docker
-      layers. It is always listed in ``phases`` with its line count, so it is announced
-      rather than hidden — and it is the place to look when a campaign failed before it
-      ever ran.
-
-    A phase's section is absent until that phase has produced output; ``phases`` reports
-    which are present and how large each is.
-
-    Served by the robovast-service, which knows where the log lives for its backend —
-    on the cluster the durable copy is in the object store and the live one is pod
-    scratch, neither of them on this host. With no service reachable it falls back to
-    reading a local results directory, so an archived campaign is still readable
-    offline.
-
-    Filtered by :func:`~robovast.mcp_server.log_view.view_log` — the same four controls
-    every log tool takes. Each line of a run's output arrives stamped with the relay
-    prefix of whatever forwarded it (``robovast  | [INFO] [<ts>]
-    [scenario_execution_ros]: ``); that prefix is dropped where the payload carries its
-    own level and timestamp, which is most of them.
-
-    **When a run looks stuck, start with ``summarize=True``.** Filtering cannot
-    diagnose a flood, because the flood *is* the signal: a wedged run matched a
-    severity ``grep`` 18226 times and the returned lines read as ordinary noise. The
-    summary shows that as one line with its count.
+    Phases, concatenated under ``===== PHASE =====`` dividers: ``variation`` (config
+    generation), ``run`` (the controller, plus docker compose output locally),
+    ``postprocessing``, and ``build`` — the image this campaign waited for.
+    ``build`` is **excluded from a default read** (it is shared, content-addressed work
+    and usually the largest section) but always listed in ``phases``; it is where a
+    campaign that failed before it ever ran explains itself.
 
     Args:
-        campaign_id: The id returned by :func:`start_campaign`.
-        lines: Maximum number of lines to return (default 200). Ignored when
-            ``summarize`` is set — a summary is already small.
-        offset: Line offset to start reading from (default 0), for pagination.
-        grep: Keep only lines matching this regex (case-insensitive). Applied before
-            ``offset``/``lines``, so paging walks the matches.
-        min_severity: Keep only lines this severe — ``"warn"`` or ``"error"``. Uses
-            RoboVAST's own classifier (a line's ``[WARN]``/``[ERROR]`` marker, else
-            :data:`~robovast.common.log_summary.DEFAULT_SEVERITY_PATTERN`), so do
-            **not** hand-write a severity ``grep``: this is the same definition the
-            campaign status uses, and two different patterns give two different
-            answers to "is this run healthy?".
-        summarize: Return distinct **patterns with counts** instead of lines: each
-            line is normalized (timestamps, coordinates and ids replaced) and equal
-            shapes are grouped. This is how you read a 20k-line log for ~20 tokens.
-        top: With ``summarize``, the maximum number of patterns to return (default
-            ``DEFAULT_TOP``; ``0`` = all). ``patterns_total`` always states the true
-            number.
-        phase: Read one phase only — ``"build"``, ``"variation"``, ``"run"``,
-            ``"postprocessing"``, ``"plugin install"`` — or ``"all"`` for every phase
-            including the asides. Empty (the default) reads the campaign's own phases.
-            Combine ``phase="build"`` with ``summarize=True`` to read a noisy image
-            build for a handful of tokens.
+        campaign_id: The id from ``start_campaign``.
+        limit: Maximum lines to return. Ignored with ``summarize``.
+        offset: First line to return (line offset, for paging the matches).
+        grep: Keep lines matching this regex (case-insensitive), before offset/limit.
+        tail: Keep only the last N of what survived the filters. Ignored with
+            ``summarize``.
+        min_severity: ``"warn"`` or ``"error"``, by RoboVAST's own classifier. Use this
+            instead of a hand-written severity ``grep``: it is the definition the
+            campaign status uses, and two patterns mean two answers to "is this healthy?".
+        summarize: Return distinct **patterns with counts** instead of lines — timestamps,
+            coordinates and ids are normalized so equal shapes group. Reads a 20k-line log
+            for a few dozen tokens.
+        top: With ``summarize``, maximum patterns (``0`` = all).
+        phase: One of ``build``/``variation``/``run``/``postprocessing``/``plugin
+            install``, or ``"all"``. Empty reads the campaign's own phases.
+            ``phase="build", summarize=True`` reads a noisy image build cheaply.
 
     Returns:
         Lines: ``{file_name, phases, total_lines, returned_lines, offset, content,
         dropped}``. With ``summarize``: ``{file_name, phases, patterns, patterns_total,
-        severity_counts, matched_lines, total_lines, dropped}`` — no ``content``, and
-        each pattern is ``{pattern, count, severity, example}``.
-        ``phases`` is always the full list of sections the log has —
-        ``[{name, lines, included}, ...]`` — so a section left out of this read is
-        reported, never silently absent.
-        ``{error}`` if the campaign is unknown, ``grep`` is not a valid regex,
-        ``min_severity`` is not a known severity, or ``phase`` is not a known phase.
+        severity_counts, matched_lines, total_lines, dropped}`` — no ``content``, each
+        pattern ``{pattern, count, severity, example}``. Or ``{error}``.
+
+        ``phases`` always lists every section as ``{name, lines, included}``, so what a
+        read left out is stated rather than absent.
     """
     from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
 
@@ -356,7 +296,7 @@ def get_campaign_log(campaign_id: str, lines: int = 200, offset: int = 0,
     except ValueError as e:
         return {"error": str(e)}
     try:
-        view = view_log(text, grep=grep, min_severity=min_severity,
+        view = view_log(text, grep=grep, tail=tail, min_severity=min_severity,
                         summarize=summarize, top=top)
     except ValueError as e:
         return {"error": str(e)}
@@ -370,7 +310,7 @@ def get_campaign_log(campaign_id: str, lines: int = 200, offset: int = 0,
                 "matched_lines": view["lines"],
                 "total_lines": view["lines_total"], "dropped": view["dropped"]}
     all_lines = view["content"].splitlines()
-    selected = all_lines[offset:offset + lines]
+    selected = all_lines[offset:offset + limit]
     return {
         "file_name": name,
         "phases": phases,
@@ -430,27 +370,20 @@ def _select_phases(text: str, phase: str) -> "tuple[str, list[dict]]":
 
 
 def list_campaign_jobs(campaign_id: str) -> dict:
-    """List a campaign's current-batch jobs (live) with aggregate status counts.
-
-    A "job" is one execution unit of the campaign: a single **run** on the local
-    Docker backend (sequential, so at most one is ``running``), or a **Kubernetes
-    Job** on the cluster backend. Reports live status only — pair with
-    :func:`get_job_log` to read a running job's log.
-
-    Requires a reachable robovast-service (bring up a ``vast serve`` or a tunnel).
+    """The campaign's current-batch jobs, live — one run locally, one Kubernetes Job each
+    on the cluster. Pair with ``get_job_log`` to read a running one.
 
     Args:
-        campaign_id: The id returned by :func:`start_campaign`.
+        campaign_id: The id from ``start_campaign``.
 
     Returns:
-        ``{jobs: [{job_name, status, display_name, detail}], counts: {running,
-        pending, waiting, completed, failed, blocked, total}}`` where ``status`` is one
-        of ``running`` / ``pending`` / ``waiting`` / ``completed`` / ``failed`` /
-        ``blocked``. A ``blocked`` job cannot start and will not recover on its own
-        (e.g. an image that can't be pulled); ``detail`` carries the Kubernetes reason
-        + message. A ``waiting`` job is queued for cluster capacity by Kueue — healthy,
-        not stuck — with Kueue's own wait message as ``detail``.
-        Returns ``{error}`` if no service is reachable.
+        ``{jobs, counts}`` where each job is ``{job_name, status, display_name, detail}``
+        and counts tallies ``running/pending/waiting/completed/failed/blocked/total``.
+        Or ``{error}``.
+
+        ``blocked`` cannot start and will not recover on its own (an unpullable image,
+        say) — ``detail`` carries the reason. ``waiting`` is queued for cluster capacity
+        by Kueue: healthy, not stuck.
     """
     client = service_access.service_client()
     if client is None:
@@ -483,48 +416,29 @@ def _log_response(base: dict, view: dict) -> dict:
 def get_job_log(campaign_id: str, job_name: str, offset: int = 0,
                 grep: str = "", tail: int = 0, min_severity: str = "",
                 summarize: bool = False, top: int = DEFAULT_TOP) -> dict:
-    """Read a **running** job's live log (its containers' stdout/stderr).
+    """What is one **running** job doing? Its containers' live stdout/stderr.
 
-    Streams the live log of one job from :func:`list_campaign_jobs` — the running
-    pod's log on the cluster, or the live ``logs/system.log`` file locally. On the
-    cluster all of the pod's containers are merged into one stream: with more than
-    one container each line is tagged ``[<container>] `` (the main ``robovast``
-    container plus any secondary sim/SUT servers) and merged in timestamp order.
-    Live source only: a finished job whose pod has been garbage-collected has no
-    live log. Poll incrementally by passing the previous call's ``next_offset`` back
-    as ``offset``.
+    **This is what a stalled status points at. Call it with ``summarize=True`` first:**
+    a run that cannot reach its goal usually says so by repeating one message thousands
+    of times, which is a single line here.
 
-    Requires a reachable robovast-service.
-
-    ``grep`` / ``min_severity`` / ``tail`` / ``summarize`` filter the returned text
-    (see :func:`~robovast.mcp_server.log_view.view_log`); ``next_offset`` still refers
-    to the **unfiltered** stream, so incremental polling stays correct.
-
-    **This is the tool a stalled campaign status points at.** Call it with
-    ``summarize=True`` first: a run that cannot reach its goal usually says so by
-    repeating one message thousands of times, and that is a single line here.
+    Live source only — a finished job whose pod was garbage-collected has none; read the
+    campaign log instead. On the cluster every container in the pod is merged in
+    timestamp order, each line tagged ``[<container>]`` when there is more than one.
 
     Args:
-        campaign_id: The id returned by :func:`start_campaign`.
-        job_name: A ``job_name`` from :func:`list_campaign_jobs`.
-        offset: Byte offset to resume from (default 0).
-        grep: Keep only lines matching this regex (case-insensitive).
-        tail: Keep only the last N matching lines (``0`` = all). Ignored when
-            ``summarize`` is set.
-        min_severity: Keep only lines this severe — ``"warn"`` or ``"error"``. Uses
-            RoboVAST's own classifier, so do **not** hand-write a severity ``grep``
-            (see :func:`get_campaign_log`).
-        summarize: Return distinct **patterns with counts** instead of lines.
-        top: With ``summarize``, the maximum number of patterns
-            (default ``DEFAULT_TOP``; ``0`` = all).
+        campaign_id: The id from ``start_campaign``.
+        job_name: A ``job_name`` from ``list_campaign_jobs``.
+        offset: **Byte** offset to resume from — pass back the previous call's
+            ``next_offset`` to poll incrementally. It indexes the *unfiltered* stream, so
+            filtering never breaks a poll loop.
+        grep, tail, min_severity, summarize, top: The filters ``get_campaign_log``
+            documents, applied in that order.
 
     Returns:
         Lines: ``{text, next_offset, eof, lines, lines_total, dropped, truncated}``.
-        With ``summarize``: ``{patterns, patterns_total, severity_counts, next_offset,
-        eof, lines, lines_total, dropped}`` — no ``text``, and each pattern is
-        ``{pattern, count, severity, example}``.
-        ``{error}`` if no service is reachable, the job's live log source is gone, or
-        a filter argument is invalid.
+        With ``summarize``: the same minus ``text``, plus ``{patterns, patterns_total,
+        severity_counts}``. Or ``{error}``.
     """
     from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
     client = service_access.service_client()
@@ -545,18 +459,16 @@ def get_job_log(campaign_id: str, job_name: str, offset: int = 0,
 
 
 def stop_campaign(campaign_id: str) -> dict:
-    """Stop a running campaign (cooperative stop via the service).
+    """Stop a running campaign. The service owns the teardown (containers, cluster Jobs).
 
-    The service drives the campaign in-process and owns the teardown (terminating a
-    local Docker container or the cluster's scenario Jobs), so this is a single
-    interface call.
+    On a campaign still waiting for an image this detaches it rather than cancelling a
+    build a sibling campaign may also be waiting on.
 
     Args:
-        campaign_id: The id returned by :func:`start_campaign`.
+        campaign_id: The id from ``start_campaign``.
 
     Returns:
-        ``{campaign_id, stopped, status, note}`` or ``{error}`` when no service is
-        reachable.
+        ``{campaign_id, stopped, status, note}`` or ``{error}``.
     """
     try:
         client = service_access.service_client()
@@ -569,48 +481,24 @@ def stop_campaign(campaign_id: str) -> dict:
         return {"error": str(e)}
 
 
-def list_running_campaigns() -> dict:
-    """List campaigns the service currently reports as live (all lanes).
+def get_resource_usage(backend: str = "") -> dict:
+    """Can this lane run my sweep, and how long will it take? Capacity, usage, parallelism.
 
-    Returns:
-        ``{count, running: [entry, ...]}`` where each entry carries ``campaign_id``,
-        ``backend``, and ``status``; ``{error}`` when no service is reachable.
-    """
-    from robovast.execution.control_server import is_running  # noqa: PLC0415
-    try:
-        client = service_access.service_client()
-        if client is None:
-            return {"error": NO_SERVICE}
-        resp = client.list_campaigns()
-        running = [{"campaign_id": c.campaign_id, "backend": "service",
-                    "status": c.phase}
-                   for c in resp.campaigns if is_running(c.phase)]
-        return {"count": len(running), "running": running}
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    Also the way to confirm a lane is actually reachable — it reads the cluster's nodes,
+    so it fails when the cluster does, which ``get_service_info``'s configured
+    ``backends`` list cannot tell you.
 
-
-def resource_usage(backend: str = "") -> dict:
-    """Report an execution lane's CPU/memory capacity, usage, and parallelism.
-
-    Use this to size a ``.vast`` run against free capacity and estimate its runtime:
-    ``free_cpu = cpu_capacity - cpu_used`` (same for memory). If ``parallel_runs`` is
-    False, runs execute one at a time (concurrency = 1); if True, they run in
-    parallel and ``concurrency = min(floor(free_cpu / run_cpu_request),
-    floor(free_mem / run_mem_request))`` using the per-run reservations declared in
-    the ``.vast``. Then ``wall_time ~= ceil(num_runs / concurrency) * per_run_time``.
-
-    Requires a reachable robovast-service (a ``vast serve`` or a tunnel).
+    Size a run: ``free = capacity - used``; concurrency is ``1`` when ``parallel_runs``
+    is false, else ``min(⌊free_cpu / run_cpu⌋, ⌊free_mem / run_mem⌋)`` from the ``.vast``
+    per-run reservations. Then ``wall_time ≈ ⌈num_runs / concurrency⌉ × per_run_time``.
 
     Args:
-        backend: On a multi-backend service, which lane to size — ``"local"`` or
-            ``"cluster"``. Empty uses the service's default lane (cluster when
-            available). Single-backend services ignore it.
+        backend: ``"local"`` or ``"cluster"`` on a service offering both; empty uses its
+            default lane.
 
     Returns:
         ``{backend, cpu_capacity, cpu_used, memory_capacity_bytes, memory_used_bytes,
-        parallel_runs}`` — CPU in cores, memory in bytes; ``{error}`` when no service
-        is reachable.
+        parallel_runs}`` — cores and bytes — or ``{error}``.
     """
     if backend and backend not in ("local", "cluster"):
         return {"error": f"unknown backend {backend!r}; use 'local' or 'cluster'"}
@@ -625,50 +513,36 @@ def resource_usage(backend: str = "") -> dict:
 
 def build_experiment_image(workspace_id: str = "", config_path: str = "",
                            backend: str = "") -> dict:
-    """Build the experiment container image declared by the project's ``build:`` section.
+    """Bake new code or system packages into the experiment image, from ``build:``.
 
-    Use this when the experiment needs new *code or system packages baked into the
-    image* — e.g. a new/updated ``sim_suite`` package, or an Ubuntu (apt) dependency.
-    Files that ship to ``/config`` at runtime (``run_files``, ``scenario_file``) never
-    need a build.
+    Needed only when the experiment needs something *in the container* — a new
+    ``sim_suite`` package, an apt dependency. Files shipped to ``/config`` at runtime
+    (``run_files``, ``scenario_file``) never need a build.
 
-    Declarative and registry-free. Put a ``build:`` section in the ``.vast``:
+    **Optional**: ``start_campaign`` (re)builds a ``build:<tag>`` image as its first step.
+    Call this to build ahead of time. Idempotent — a no-op cache hit when nothing changed.
+    Poll ``get_image_build_status``. You never handle a registry ref or credentials.
+
+    Declare it in the ``.vast``::
 
         build:
-          system_packages: [ros-jazzy-nav2-smac-planner]   # apt
-          python_packages: [packages/sim_suite_mobile]      # source dir / pip spec / wheel
+          system_packages: [ros-jazzy-nav2-smac-planner]  # apt
+          python_packages: [packages/sim_suite_mobile]    # source dir / pip spec / wheel
           tag: sim-suite-mobile
         execution:
-          image: build:sim-suite-mobile                     # symbolic ref
+          image: build:sim-suite-mobile
 
-    On success the image is wired in automatically — you never handle a registry ref
-    or credentials. **Idempotent**: safe to always call; if nothing changed it is a
-    no-op cache hit. Poll :func:`get_image_build_status` until ``done``; on failure the
-    structured error names the offending ``build:`` entry (or use
-    :func:`get_image_build_log`). You may also skip this and just ``start_campaign`` —
-    a ``build:<tag>`` image is (re)built automatically as the campaign's first step.
-
-    **Order ``python_packages`` so what changes often comes last.** Each entry is
-    copied and installed in its own layers, so a change to one entry only rebuilds the
-    entries after it — putting a large, stable asset package before the small code
-    package you keep editing turns a full rebuild into a few seconds. Dependencies come
-    first regardless (an entry's deps must already be installed when it runs).
-
-    Requires a reachable robovast-service (a local ``vast serve`` or a tunnel).
+    Order ``python_packages`` with what changes most often **last**: each entry installs
+    in its own layers, so a change only rebuilds the entries after it. Dependencies still
+    come first.
 
     Args:
-        workspace_id: **Required** — which workspace's project to build. Same rule as
-            ``start_campaign``: there is no server-side "current project".
-        config_path: Which ``.vast`` when the workspace has several (empty = the sole
-            one, and an error naming the candidates when it is ambiguous).
-        backend: On a multi-backend service, which lane to build for — ``"local"``
-            (Docker on the serve host) or ``"cluster"`` (a cluster build Job). Build
-            for the same lane you will ``start_campaign`` on. Empty uses the service's
-            default lane (cluster when available). Single-backend services ignore it.
+        workspace_id: **Required** — whose project to build (as ``start_campaign``).
+        config_path: Which ``.vast``, when the workspace holds several.
+        backend: Build for the lane you will run on — ``"local"`` or ``"cluster"``.
 
     Returns:
-        ``{build_id, tag, cached}`` on submit; ``{error}`` when no service is reachable
-        or the ``build:`` section is missing/invalid.
+        ``{build_id, tag, cached}`` or ``{error}``.
     """
     if backend and backend not in ("local", "cluster"):
         return {"error": f"unknown backend {backend!r}; use 'local' or 'cluster'"}
@@ -686,16 +560,18 @@ def build_experiment_image(workspace_id: str = "", config_path: str = "",
 
 
 def get_image_build_status(build_id: str) -> dict:
-    """Return an image build's status: ``phase``, ``done``, and a structured error.
+    """Poll an image build. On failure, ``error_detail`` says what to change.
 
-    On failure ``error_detail`` names the ``phase`` (apt / pip / source-build /
-    base-pull / push / resource), the offending ``build:`` ``entry``, a ``message``,
-    and ``fixable_by`` — ``agent`` (edit the ``build:`` section) or ``infra``
-    (server-side registry/base issue, not fixable by editing the ``.vast``). Use
-    :func:`get_image_build_log` for the raw builder output.
+    ``error_detail`` names the ``phase`` (apt / pip / source-build / base-pull / push /
+    resource), the offending ``build:`` ``entry``, a ``message``, and ``fixable_by`` —
+    ``agent`` (edit the ``build:`` section) or ``infra`` (a registry/base problem no
+    ``.vast`` edit will fix). Read this before reaching for the builder log.
 
     Args:
-        build_id: The id returned by :func:`build_experiment_image`.
+        build_id: The id from ``build_experiment_image``.
+
+    Returns:
+        ``{build_id, tag, phase, done, cached, image_ref[, error_detail]}`` or ``{error}``.
     """
     client = service_access.service_client()
     if client is None:
@@ -714,42 +590,30 @@ def get_image_build_status(build_id: str) -> dict:
 def get_image_build_log(build_id: str, offset: int = 0, grep: str = "",
                         tail: int = 200, min_severity: str = "",
                         summarize: bool = False, top: int = DEFAULT_TOP) -> dict:
-    """Return the builder log from byte *offset* onward, filtered for reading.
+    """The raw builder log. **Read ``get_image_build_status`` first** — its
+    ``error_detail`` usually contains the whole story; come here for more.
 
-    **For a failure, read :func:`get_image_build_status` first** — its ``error`` names
-    the phase and its ``log_tail`` usually contains the whole story. Come here when you
-    need more than that tail.
+    Dominated by per-layer byte counters, so it defaults to the last ``tail`` lines
+    rather than the tens of thousands there are. ``summarize=True`` is the cheapest read:
+    those counters collapse into one pattern. Note BuildKit writes unmarked lines, which
+    the classifier rates ``warn`` — ``min_severity="error"`` is **not** how you find a
+    build failure; the status is.
 
-    A builder log is dominated by per-layer byte counters, so this defaults to the last
-    ``tail`` lines rather than the entire stream (which runs to tens of thousands of
-    lines). Narrow it with ``min_severity="error"``, or ``grep`` — e.g.
-    ``grep="x509|denied"`` — or page with ``offset``; all four controls are the same
-    ones the other log tools take (see
-    :func:`~robovast.mcp_server.log_view.view_log`). ``summarize=True`` is the cheapest
-    way to see what a long build was actually doing, since those byte counters collapse
-    into one pattern.
-
-    Streaming: poll from ``0``, append ``text``, resume from the returned
-    ``next_offset`` (a byte offset into the **unfiltered** stream, so filtering never
-    breaks a poll loop); ``eof`` is true once the build is done.
+    Available only while the build exists (a build Job is reaped an hour after it
+    finishes). The same output survives as the campaign log's ``build`` phase.
 
     Args:
-        build_id: The id returned by :func:`build_experiment_image`.
-        offset: Byte offset to resume from.
-        grep: Keep only lines matching this regex (case-insensitive).
-        tail: Keep only the last N matching lines (default 200; ``0`` = all). Ignored
-            when ``summarize`` is set.
-        min_severity: Keep only lines this severe — ``"warn"`` or ``"error"`` (see
-            :func:`get_campaign_log`).
-        summarize: Return distinct **patterns with counts** instead of lines.
-        top: With ``summarize``, the maximum number of patterns
-            (default ``DEFAULT_TOP``; ``0`` = all).
+        build_id: The id from ``build_experiment_image``.
+        offset: **Byte** offset to resume from; poll with the returned ``next_offset``,
+            which indexes the unfiltered stream.
+        grep, tail, min_severity, summarize, top: The filters ``get_campaign_log``
+            documents; ``grep="x509|denied"`` is the usual registry-failure read.
+            ``tail`` defaults to 200 here, not 0.
 
     Returns:
         Lines: ``{text, next_offset, eof, lines, lines_total, dropped, truncated}``.
-        With ``summarize``: ``{patterns, patterns_total, severity_counts, next_offset,
-        eof, lines, lines_total, dropped}`` — no ``text``.
-        ``{error}`` if no service is reachable or a filter argument is invalid.
+        With ``summarize``: the same minus ``text``, plus ``{patterns, patterns_total,
+        severity_counts}``. Or ``{error}``.
     """
     from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
     client = service_access.service_client()
@@ -776,8 +640,7 @@ _TOOLS = [
     list_campaign_jobs,
     get_job_log,
     stop_campaign,
-    list_running_campaigns,
-    resource_usage,
+    get_resource_usage,
     build_experiment_image,
     get_image_build_status,
     get_image_build_log,

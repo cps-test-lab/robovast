@@ -1238,7 +1238,7 @@ A started campaign is findable
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 **Invariant: from the moment the service accepts a campaign, its id resolves on every
-read path** — ``get_status``, ``list_campaigns``, ``list_running_campaigns``. This is what
+read path** — ``get_status`` and ``list_campaigns`` (also the MCP's ``running_only`` filter). This is what
 makes the standing advice ("a timed-out start is not a failed start; check, never retry")
 actually true: retrying a start that in fact succeeded creates a second campaign, and the
 only defence is that the first one can be found.
@@ -1297,7 +1297,7 @@ driver — before the image build and the run — so every later outcome belongs
 that can still be found: a failed build, a crash mid-run, a stop, a failed finalize upload.
 It is best-effort with a warning, because a campaign is not worth failing over its index
 entry, and a store broken enough to refuse it will fail the campaign's own uploads with a
-real error moments later. ``delete_campaign`` and ``cleanup_campaign_data`` retire it —
+real error moments later. ``delete_campaign`` retires it, wholesale or (``data_only``) its object-store data —
 the latter driven by what the sweep actually removed, so a campaign whose delete *failed*
 keeps its marker and its data stays listed.
 
@@ -1328,7 +1328,7 @@ the campaign was created only after the build, none of that work was observable 
 ran.
 
 What the caller gets instead: the campaign id immediately, and a campaign in phase
-``building`` whose ``stage`` reads ``waiting for image <tag>``. ``list_running_campaigns``
+``building`` whose ``stage`` reads ``waiting for image <tag>``. ``list_campaigns(running_only=True)``
 needed no change for it to appear there — a building campaign is a campaign, and the
 listing already unions the in-memory registry. (Teaching that tool to enumerate *builds*
 would have needed a listing endpoint that does not exist, returned entries that are not

@@ -16,9 +16,10 @@
 
 """MCP plugin that exposes the RoboVAST documentation as resources and tools.
 
-Documentation pages are available as ``docs://<name>`` resources (e.g.
-``docs://configuration``).  Use ``docs_list()`` to see all pages and
-``docs_search(query)`` for keyword search across all pages.
+Pages are also available as ``docs://<name>`` MCP resources. ``search_docs`` covers all
+three operations (list / search / read one) because not every client surfaces resources,
+and a caller that could search but not read had to be told to fetch a URI its client may
+have no way to fetch.
 
 The docs directory is resolved in this order:
 1. ``ROBOVAST_DOCS_DIR`` environment variable.
@@ -339,62 +340,52 @@ if _docs_dir is not None:
 # -- Tool functions ----------------------------------------------------------
 
 
-def list_docs() -> list[dict] | str:
-    """List all available RoboVAST documentation pages.
-
-    Returns a list of records with ``name`` (use in docs://<name>) and
-    ``title`` (human-readable heading from the document).
-    """
-    if not _doc_files:
-        return (
-            "Documentation directory not found. "
-            "Set the ROBOVAST_DOCS_DIR environment variable to the docs/ path."
-        )
-    return [
-        {"name": name, "title": _doc_meta[name]}
-        for name in sorted(_doc_files)
-    ]
+def _no_docs() -> dict:
+    return {"error": "documentation directory not found; set ROBOVAST_DOCS_DIR to the "
+                     "docs/ path."}
 
 
-def search_docs(query: str) -> list[dict]:
-    """Search across all RoboVAST documentation pages for a keyword or phrase.
-
-    Returns matching excerpts (with 2 lines of surrounding context) grouped
-    by page.  Fetch the full page via the ``docs://<name>`` resource.
+def search_docs(query: str = "", page: str = "") -> dict:
+    """The RoboVAST documentation: list the pages, search them, or read one.
 
     Args:
-        query: Case-insensitive search term.
+        query: Case-insensitive search term. Returns matching excerpts with 2 lines of
+            context, grouped by page.
+        page: Read this page in full (a ``name`` from the listing).
+
+    Returns:
+        Listing (neither argument): ``{pages, total}`` of ``{name, title}``.
+        Search: ``{results, total}`` of ``{page, title, matches}``.
+        Page: ``{page, title, content}``. Or ``{error}``.
     """
+    if not _doc_files:
+        return _no_docs()
+
+    if page:
+        if page not in _doc_files:
+            return {"error": f"unknown documentation page {page!r}; available: "
+                             f"{', '.join(sorted(_doc_files))}"}
+        return {"page": page, "title": _doc_meta[page], "content": _doc_content[page]}
+
+    if not query:
+        pages = [{"name": name, "title": _doc_meta[name]} for name in sorted(_doc_files)]
+        return {"pages": pages, "total": len(pages)}
+
     results = []
     query_lower = query.lower()
-    for name in _doc_files:
+    for name in sorted(_doc_files):
         lines = _doc_content[name].splitlines()
-        matches = []
-        for i, line in enumerate(lines):
-            if query_lower in line.lower():
-                start = max(0, i - 2)
-                end = min(len(lines), i + 3)
-                matches.append(
-                    {
-                        "line": i + 1,
-                        "excerpt": "\n".join(lines[start:end]),
-                    }
-                )
+        matches = [{"line": i + 1,
+                    "excerpt": "\n".join(lines[max(0, i - 2):min(len(lines), i + 3)])}
+                   for i, line in enumerate(lines) if query_lower in line.lower()]
         if matches:
-            results.append(
-                {
-                    "page": name,
-                    "title": _doc_meta[name],
-                    "matches": matches,
-                }
-            )
-    return results
+            results.append({"page": name, "title": _doc_meta[name], "matches": matches})
+    return {"results": results, "total": len(results)}
 
 
 # -- Plugin class ------------------------------------------------------------
 
 _TOOLS = [
-    list_docs,
     search_docs,
 ]
 

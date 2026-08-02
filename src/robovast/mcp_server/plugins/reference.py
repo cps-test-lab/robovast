@@ -16,14 +16,14 @@
 
 """MCP plugin exposing generated reference material.
 
-Everything here is derived from live objects at call time, so it can never
-drift from the code:
+Everything here is derived from live objects at call time, so it can never drift from
+the code: the ``.vast`` schema comes from the ``ConfigV1`` pydantic model, and the CLI
+reference is rendered from the live click command tree (plugin subcommands included).
 
-* :func:`get_config_schema` — the ``.vast`` project schema, generated from the
-  ``ConfigV1`` pydantic model as JSON Schema.
-* :func:`list_cli_commands` / :func:`get_cli_help` — the ``vast`` command
-  reference, rendered from the live click command tree (including plugin
-  subcommands).
+``get_cli_help`` covers both listing and detail. They were two tools; a caller that has
+to call ``list_cli_commands`` before ``get_cli_help`` pays two round trips and two tool
+schemas to answer one question, and an empty argument already means "all of them"
+everywhere else on this surface.
 """
 
 import logging
@@ -37,16 +37,11 @@ logger = logging.getLogger(__name__)
 
 
 def get_config_schema() -> dict:
-    """Return the RoboVAST ``.vast`` project configuration schema (JSON Schema).
+    """JSON Schema of the ``.vast`` project file — field names, types, what is required.
 
-    Generated from the ``ConfigV1`` pydantic model, so it always matches the
-    version the server validates against. Use it to author or check a ``.vast``
-    file's structure, field names, types, and which fields are required.
-
-    Note: variation entries (the ``variations`` block) dispatch dynamically by
-    plugin name and so appear here only as a generic object. Each variation's
-    accepted parameter fields are exposed by ``get_plugin_details(group=
-    "robovast.variation_types", name=...)`` instead.
+    A ``variations`` entry dispatches by plugin name, so it appears here only as a
+    generic object; for one variation's parameters use
+    ``get_plugin_details("robovast.variation_types", <name>)``.
     """
     from robovast.common.config import ConfigV1  # pylint: disable=import-outside-toplevel
 
@@ -90,13 +85,8 @@ def _resolve_command(command: str):
     return cmd, ctx
 
 
-def list_cli_commands() -> list[dict]:
-    """List the ``vast`` CLI commands with their one-line help.
-
-    Walks the live click command tree (plugin subcommands included). Returns
-    records with the full ``command`` path and its short ``help``; pass a path
-    to :func:`get_cli_help` for full usage.
-    """
+def _command_tree() -> list[dict]:
+    """Every ``vast`` command path with its short help, from the live click tree."""
     import click  # pylint: disable=import-outside-toplevel
 
     out: list[dict] = []
@@ -119,55 +109,47 @@ def list_cli_commands() -> list[dict]:
     return out
 
 
-def get_cli_help(command: str = "") -> str:
-    """Return the full ``--help`` text for a ``vast`` command.
+def get_cli_help(command: str = "") -> dict:
+    """``vast`` CLI reference: the command tree, or one command's full ``--help``.
 
     Args:
-        command: Space-separated command path (e.g. ``"exec cluster run"``).
-            Empty for the top-level ``vast`` help. Use :func:`list_cli_commands`
-            to discover paths.
+        command: Space-separated path, e.g. ``"exec cluster run"``. Empty lists every
+            command with its one-line help.
+
+    Returns:
+        ``{commands, total}`` when listing, else ``{command, help}``.
     """
+    if not command:
+        commands = _command_tree()
+        return {"commands": commands, "total": len(commands)}
     cmd, ctx = _resolve_command(command)
-    return cmd.get_help(ctx)
+    return {"command": command, "help": cmd.get_help(ctx)}
 
 
 def get_service_info() -> dict:
-    """Report which robovast-service is answering, and which code it is running.
+    """Which robovast-service is answering, which code it runs, and which lanes it offers.
 
-    A service is a long-lived process: it loads robovast's code and its plugin entry
-    points **once, at startup**. After editing robovast or installing a plugin, a
-    reachable service is not necessarily a current one — it keeps behaving like the
-    code it started with, which surfaces as a fix that "did not work". ``code_version``
-    is the git revision that process is running (with ``+dirty`` when its working tree
-    had uncommitted changes); compare it with the tree you just edited, and restart the
-    service if they differ.
+    Call this first when something behaves unexpectedly: a service loads robovast **once,
+    at startup**, so after an edit a reachable service may still be running the old code —
+    compare ``code_version`` (git revision, ``+dirty`` if its tree was modified) with your
+    tree, and restart it if they differ.
 
     Returns:
-        ``{code_version, api_version, backend, backends}``; ``{error}`` when no service
-        answers.
+        ``{code_version, api_version, backend, backends, results_address,
+        sources_address}``, or ``{error}``.
 
-        Also ``{results_address, sources_address}`` — the two file address templates, so
-        the address space is learnable from the service rather than from documentation.
-        ``{results_root, sources_root}`` appear **only** when this caller can actually
-        open them: a local-filesystem service answering on loopback. Then read files with
-        your own tools instead of relaying their bytes through this interface. Their
-        absence is not a hint to go looking — a cluster service's results are objects,
-        and its local fetch scratch holds only whatever it happened to fetch.
+        ``backends`` is what the service is *configured* with, not what is reachable —
+        use ``get_resource_usage(backend=…)`` to actually touch a lane before committing
+        a long campaign to it.
 
-        With a cluster lane, also ``{kube_context, kube_context_source, namespace,
-        in_pod, api_server}`` — which cluster a campaign would actually land in.
-        ``kube_context: None`` with source ``"active kubeconfig context"`` means the
-        lane follows whatever ``kubectl`` on the service's host points at, which is a
-        property of that host and can change without the service knowing.
-        ``in_pod: False`` means campaigns are driven **off-cluster** through a kubectl
-        port-forward to the object store — fine for a pilot, fragile under a large
-        campaign's result transfers.
+        ``results_root``/``sources_root`` appear only when **you** can open them (a
+        local-filesystem service on loopback); then read files directly instead of
+        relaying bytes through this interface.
 
-        ``backends`` is what the service is **configured** with, not what is reachable:
-        a cluster lane whose API server has gone away is still listed. Call
-        ``resource_usage(backend="cluster")`` to actually touch the lane before
-        committing a long campaign to it — it reads the cluster's nodes, so it fails
-        when the cluster does.
+        With a cluster lane: ``kube_context``, ``kube_context_source``, ``namespace``,
+        ``in_pod``, ``api_server`` — which cluster a campaign would land in.
+        ``in_pod: false`` means campaigns are driven off-cluster through a port-forward:
+        fine for a pilot, fragile for a large campaign's result transfers.
     """
     from robovast.mcp_server import service_access
     from robovast.mcp_server.service_access import NO_SERVICE
@@ -209,7 +191,6 @@ def get_service_info() -> dict:
 
 _TOOLS = [
     get_config_schema,
-    list_cli_commands,
     get_cli_help,
     get_service_info,
 ]
