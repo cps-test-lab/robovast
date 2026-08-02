@@ -101,7 +101,7 @@ export function App() {
       {/* Each view is kept alive (mounted-but-hidden) once visited, so its state persists across
           navigation instead of resetting on unmount. That also means a view that throws stays
           mounted and keeps throwing — hence a boundary per view, inside lazyView. */}
-      <Box component="main" sx={{ flexGrow: 1, minWidth: 0, p: 3 }}>
+      <Box component="main" sx={{ flexGrow: 1, minWidth: 0, p: 3, position: 'relative' }}>
         <KeepAlive active={nav.topicId === 'config'}>
           <ConfigPage />
         </KeepAlive>

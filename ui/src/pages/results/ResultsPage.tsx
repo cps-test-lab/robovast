@@ -57,7 +57,7 @@ export function ResultsPage({ view }: { view: string }) {
     return <Alert severity="error">{(campaigns.error as Error).message}</Alert>
 
   return (
-    <Box>
+    <Box sx={{ position: 'relative' }}>
       <KeepAlive active={view !== 'data' && view !== 'run'}>
         <ExplorerView campaigns={list} />
       </KeepAlive>
