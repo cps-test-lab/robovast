@@ -10,6 +10,9 @@ venv
 /results
 ui/node_modules
 ui/dist
+# TypeScript's incremental-build caches: machine-specific, and rewritten by every
+# `npm run build`, so committing them meant a dirty tree after any UI build.
+**/*.tsbuildinfo
 # Node build deps for any package-shipped web bundle (e.g. src/robovast_nav/web,
 # the run-view panel remotes). Their built output lands elsewhere as package data.
 **/node_modules

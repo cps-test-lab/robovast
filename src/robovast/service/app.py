@@ -292,7 +292,7 @@ def build_app(impl: RobovastInterface):
     def list_variation_types() -> VariationTypesResponse:
         return _guard(impl.list_variation_types)
 
-    @app.get("/variation_types/{name}/assets/{path:path}", tags=["authoring"])
+    @app.get(Routes.variation_asset("{name}", "{path:path}"), tags=["authoring"])
     def variation_asset(name: str, path: str):
         """Serve a variation plugin's web-preview asset (Module Federation remote).
 
@@ -304,7 +304,7 @@ def build_app(impl: RobovastInterface):
             FileResponse  # pylint: disable=import-outside-toplevel
         return FileResponse(str(_guard(lambda: _resolve_variation_asset(name, path))))
 
-    @app.get("/panel_types/{name}/assets/{path:path}", tags=["authoring"])
+    @app.get(Routes.panel_types_asset("{name}", "{path:path}"), tags=["authoring"])
     def panel_type_asset(name: str, path: str):
         """Serve a package-provided run-view panel's web asset (Module Federation remote).
 
@@ -316,7 +316,7 @@ def build_app(impl: RobovastInterface):
         return FileResponse(str(_guard(
             lambda: _resolve_plugin_asset("robovast.panel_types", name, path, "WEB_PANEL"))))
 
-    @app.get("/campaigns/{campaign_id}/panel_assets/{path:path}", tags=["authoring"])
+    @app.get(Routes.campaign_panel_asset("{campaign_id}", "{path:path}"), tags=["authoring"])
     def campaign_panel_asset(campaign_id: str, path: str):
         """Serve a user-authored ``custom`` panel's bundle, staged into the campaign's
         immutable ``_config/`` snapshot (Module Federation remoteEntry + chunks)."""
@@ -335,24 +335,24 @@ def build_app(impl: RobovastInterface):
     def list_workspaces() -> ListWorkspacesResponse:
         return _guard(impl.list_workspaces)
 
-    @app.get("/workspaces/{workspace_id}", response_model=WorkspaceInfo, tags=["workspaces"])
+    @app.get(Routes.workspace("{workspace_id}"), response_model=WorkspaceInfo, tags=["workspaces"])
     def get_workspace(workspace_id: str) -> WorkspaceInfo:
         return _guard(lambda: impl.get_workspace(workspace_id))
 
-    @app.delete("/workspaces/{workspace_id}", response_model=ActionResult, tags=["workspaces"])
+    @app.delete(Routes.workspace("{workspace_id}"), response_model=ActionResult, tags=["workspaces"])
     def delete_workspace(workspace_id: str) -> ActionResult:
         return _guard(lambda: impl.delete_workspace(workspace_id))
 
     # -- validation / preview (config editor) -------------------------------
 
-    @app.post("/workspaces/{workspace_id}/validate", response_model=ValidationReport,
+    @app.post(Routes.workspace_validate("{workspace_id}"), response_model=ValidationReport,
               tags=["workspaces"])
     def validate_project(
         workspace_id: str, path: str = Body("", embed=True)
     ) -> ValidationReport:
         return _guard(lambda: impl.validate_project(workspace_id, path))
 
-    @app.post("/workspaces/{workspace_id}/preview", response_model=PreviewResponse,
+    @app.post(Routes.workspace_preview("{workspace_id}"), response_model=PreviewResponse,
               tags=["workspaces"])
     def preview_configurations(
         workspace_id: str, max_configs: int = Body(0, embed=True),
@@ -374,7 +374,7 @@ def build_app(impl: RobovastInterface):
         grant.url = f"{Routes.upload(grant.token)}"
         return grant
 
-    @app.put("/uploads/{token}", response_model=FileMeta, tags=["uploads"])
+    @app.put(Routes.UPLOAD, response_model=FileMeta, tags=["uploads"])
     async def put_upload(token: str, req: Request) -> FileMeta:
         """Redeem a one-time TTL token and store the raw body.
 
@@ -511,11 +511,11 @@ def build_app(impl: RobovastInterface):
             _sse_campaign_list(request),
             media_type="text/event-stream", headers=_SSE_HEADERS)
 
-    @app.get("/campaigns/{campaign_id}/status", response_model=Status, tags=["campaigns"])
+    @app.get(Routes.campaign_status("{campaign_id}"), response_model=Status, tags=["campaigns"])
     def get_status(campaign_id: str) -> Status:
         return _guard(lambda: impl.get_status(campaign_id))
 
-    @app.get("/campaigns/{campaign_id}/logs", response_model=LogChunk, tags=["campaigns"])
+    @app.get(Routes.campaign_logs("{campaign_id}"), response_model=LogChunk, tags=["campaigns"])
     def get_campaign_logs(campaign_id: str, offset: int = 0) -> LogChunk:
         return _guard(lambda: impl.get_campaign_logs(campaign_id, offset))
 
@@ -550,7 +550,7 @@ def build_app(impl: RobovastInterface):
                 _last_event_offset(request)),
             media_type="text/event-stream", headers=_SSE_HEADERS)
 
-    @app.post("/campaigns/{campaign_id}/stop", response_model=ActionResult, tags=["campaigns"])
+    @app.post(Routes.campaign_stop("{campaign_id}"), response_model=ActionResult, tags=["campaigns"])
     def stop(campaign_id: str) -> ActionResult:
         return _guard(lambda: impl.stop(campaign_id))
 
@@ -580,7 +580,7 @@ def build_app(impl: RobovastInterface):
     def get_image_build_log(build_id: str, offset: int = 0) -> LogChunk:
         return _guard(lambda: impl.get_image_build_log(build_id, offset))
 
-    @app.get("/campaigns/{campaign_id}/archive", tags=["results"])
+    @app.get(Routes.campaign_archive("{campaign_id}"), tags=["results"])
     def download_campaign_archive(campaign_id: str):
         """Stream a ``tar.gz`` of the **postprocessed** campaign from the object store.
 
@@ -610,42 +610,42 @@ def build_app(impl: RobovastInterface):
             media_type="application/gzip",
             headers={"Content-Disposition": f'attachment; filename="{campaign_id}.tar.gz"'})
 
-    @app.get("/campaigns/{campaign_id}/postprocessing", tags=["results"])
+    @app.get(Routes.campaign_postprocessing("{campaign_id}"), tags=["results"])
     def get_postprocessing(campaign_id: str):
         return _guard(lambda: impl.get_postprocessing(campaign_id))
 
-    @app.post("/campaigns/{campaign_id}/postprocessing", tags=["results"])
+    @app.post(Routes.campaign_postprocessing("{campaign_id}"), tags=["results"])
     def update_postprocessing(campaign_id: str, request: UpdatePostprocessingRequest):
         return _guard(lambda: impl.update_postprocessing(request))
 
-    @app.get("/campaigns/{campaign_id}/postprocessing/source",
+    @app.get(Routes.campaign_postprocessing_source("{campaign_id}"),
              response_model=PostprocessingSource, tags=["results"])
     def get_postprocessing_source(campaign_id: str) -> PostprocessingSource:
         return _guard(lambda: impl.get_postprocessing_source(campaign_id))
 
-    @app.post("/campaigns/{campaign_id}/postprocessing/source",
+    @app.post(Routes.campaign_postprocessing_source("{campaign_id}"),
               response_model=PostprocessingSource, tags=["results"])
     def update_postprocessing_source(
         campaign_id: str, request: UpdatePostprocessingSourceRequest
     ) -> PostprocessingSource:
         return _guard(lambda: impl.update_postprocessing_source(request))
 
-    @app.post("/campaigns/{campaign_id}/postprocessing/run", response_model=ActionResult,
+    @app.post(Routes.campaign_postprocessing_run("{campaign_id}"), response_model=ActionResult,
               tags=["results"])
     def run_postprocessing(campaign_id: str, request: RunPostprocessingRequest) -> ActionResult:
         return _guard(lambda: impl.run_postprocessing(request))
 
-    @app.post("/campaigns/{campaign_id}/share/run", response_model=ActionResult, tags=["results"])
+    @app.post(Routes.campaign_share_run("{campaign_id}"), response_model=ActionResult, tags=["results"])
     def run_share(campaign_id: str, request: RunShareRequest) -> ActionResult:
         return _guard(lambda: impl.run_share(request))
 
     # -- results data query (eval viewer) -----------------------------------
 
-    @app.get("/campaigns/{campaign_id}/describe", response_model=DataDescribe, tags=["results"])
+    @app.get(Routes.campaign_describe("{campaign_id}"), response_model=DataDescribe, tags=["results"])
     def describe_campaign_data(campaign_id: str) -> DataDescribe:
         return _guard(lambda: impl.describe_campaign_data(campaign_id))
 
-    @app.get("/campaigns/{campaign_id}/data-status", response_model=CampaignDataStatus,
+    @app.get(Routes.campaign_data_status("{campaign_id}"), response_model=CampaignDataStatus,
              tags=["results"])
     def campaign_data_status(campaign_id: str) -> CampaignDataStatus:
         """Whether querying this campaign transfers data first — ask *before* the wait.
@@ -657,7 +657,7 @@ def build_app(impl: RobovastInterface):
         """
         return _guard(lambda: impl.campaign_data_status(campaign_id))
 
-    @app.post("/campaigns/{campaign_id}/query", response_model=DataQueryResult, tags=["results"])
+    @app.post(Routes.campaign_query("{campaign_id}"), response_model=DataQueryResult, tags=["results"])
     def query_campaign_data_sql(
         campaign_id: str, sql: str = Body(..., embed=True),
         max_rows: int = Body(500, embed=True),
@@ -666,29 +666,29 @@ def build_app(impl: RobovastInterface):
         return _guard(lambda: impl.query_campaign_data_sql(
             campaign_id, sql, max_rows, extra_campaign_ids))
 
-    @app.get("/campaigns/{campaign_id}/plots", response_model=CampaignPlotsResponse,
+    @app.get(Routes.campaign_plots("{campaign_id}"), response_model=CampaignPlotsResponse,
              tags=["results"])
     def list_campaign_plots(campaign_id: str) -> CampaignPlotsResponse:
         return _guard(lambda: impl.list_campaign_plots(campaign_id))
 
-    @app.get("/campaigns/{campaign_id}/panels", response_model=CampaignPanelsResponse,
+    @app.get(Routes.campaign_panels("{campaign_id}"), response_model=CampaignPanelsResponse,
              tags=["results"])
     def list_campaign_panels(campaign_id: str) -> CampaignPanelsResponse:
         return _guard(lambda: impl.list_campaign_panels(campaign_id))
 
-    @app.get("/campaigns/{campaign_id}/panels/source", response_model=PanelsSource,
+    @app.get(Routes.campaign_panels_source("{campaign_id}"), response_model=PanelsSource,
              tags=["results"])
     def get_panels_source(campaign_id: str) -> PanelsSource:
         return _guard(lambda: impl.get_panels_source(campaign_id))
 
-    @app.post("/campaigns/{campaign_id}/panels/source", response_model=PanelsSource,
+    @app.post(Routes.campaign_panels_source("{campaign_id}"), response_model=PanelsSource,
               tags=["results"])
     def update_panels_source(
         campaign_id: str, request: UpdatePanelsSourceRequest
     ) -> PanelsSource:
         return _guard(lambda: impl.update_panels_source(request))
 
-    @app.get("/campaigns/{campaign_id}/visualizations",
+    @app.get(Routes.campaign_visualizations("{campaign_id}"),
              response_model=CampaignVisualizationsResponse, tags=["results"])
     def list_campaign_visualizations(campaign_id: str) -> CampaignVisualizationsResponse:
         return _guard(lambda: impl.list_campaign_visualizations(campaign_id))
@@ -696,7 +696,7 @@ def build_app(impl: RobovastInterface):
     # Sync ``def`` so Starlette runs the (blocking, multi-second) notebook execution in
     # the threadpool, off the event loop. Returns the executed notebook's HTML verbatim
     # for the Explorer's iframe; a cache hit (see notebook_render) makes repeats instant.
-    @app.get("/campaigns/{campaign_id}/notebook", tags=["results"])
+    @app.get(Routes.campaign_notebook("{campaign_id}"), tags=["results"])
     def render_campaign_notebook(
         campaign_id: str, workload: str, level: str,
         config_name: str = "", run_id: int | None = None, theme: str = "light",

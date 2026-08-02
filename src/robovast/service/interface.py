@@ -825,6 +825,12 @@ class Routes:
         return f"/campaigns/{campaign_id}/stop"
 
     @staticmethod
+    def campaign_archive(campaign_id: str) -> str:
+        # The postprocessed tar.gz, streamed from the object store. Named here like every
+        # other path so the MCP's download link and the route serving it are one string.
+        return f"/campaigns/{campaign_id}/archive"
+
+    @staticmethod
     def campaign_logs(campaign_id: str) -> str:
         return f"/campaigns/{campaign_id}/logs"
 

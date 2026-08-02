@@ -8,7 +8,28 @@ import { fileURLToPath, URL } from 'node:url'
 // with ROBOVAST_SERVICE_URL. The RobovastInterface routes all live at the root, so we proxy them by
 // prefix rather than a shared /api mount.
 const SERVICE = process.env.ROBOVAST_SERVICE_URL ?? 'http://127.0.0.1:8800'
-const API_PREFIXES = ['/campaigns', '/workspaces', '/uploads', '/version', '/healthz', '/config', '/variation_types', '/docs', '/openapi.json']
+
+// Every top-level path segment the service owns. This list was hand-maintained and had
+// drifted: `/results`, `/sources`, `/usage` and `/panel_types` were missing, so under
+// `npm run dev` the file browser, the editor's load and save, uploads, run-view artifacts,
+// the capacity meter and remote panel assets all failed against a service that was
+// answering them perfectly well in production. Whenever this changes, check it against
+// `Routes` in src/robovast/service/interface.py — the same table
+// tests/service/test_route_docs.py holds the app to.
+//
+// Safe despite the SPA having its own /config page: navigation is **hash**-based
+// (`#/config`), so the browser only ever requests `/`, and a `/config` prefix here cannot
+// shadow it.
+const API_PREFIXES = [
+  // control
+  '/campaigns', '/workspaces', '/uploads', '/image-builds',
+  // metadata + authoring help
+  '/version', '/healthz', '/usage', '/config', '/variation_types', '/panel_types',
+  // the two content namespaces (files by address)
+  '/results', '/sources',
+  // FastAPI's own pages
+  '/docs', '/openapi.json',
+]
 
 // The heavy dependencies, split off the entry chunk and named so they cache independently.
 // Grouped by library rather than by page: Monaco is shared by the config editor, the SQL
