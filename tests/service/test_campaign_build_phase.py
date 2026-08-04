@@ -21,7 +21,8 @@ import time
 
 import pytest
 
-from robovast.common.status import Phase, is_running
+from robovast.common.errors import ImageBuildFailed
+from robovast.common.status import Phase, failure_detail, is_running
 from robovast.execution.backends import CampaignStopped
 from robovast.execution.control_server import ControllerState
 from robovast.service.interface import ImageBuildRef, ImageBuildStatus, LogChunk
@@ -98,9 +99,16 @@ def test_a_failed_build_raises_and_points_at_the_log(svc, monkeypatch, tmp_path)
     _wire(svc, build, monkeypatch)
     build.done.set()
 
-    with pytest.raises(RuntimeError, match="phase='build'"):
+    with pytest.raises(ImageBuildFailed, match="phase='build'") as excinfo:
         svc._await_build_image("b-1", ControllerState(),
                                str(tmp_path / "results" / "c-2026-07-28-120000"))
+    # A build failure is diagnosed from the builder's output, which
+    # classify_build_error has already reduced to one actionable line. The Python
+    # stack is this wait loop and adds nothing, so neither the log line nor the
+    # durable record carries one — a traceback here read as a RoboVAST crash.
+    assert failure_detail(excinfo.value) == str(excinfo.value)
+    # Still a RuntimeError, so a caller written before the class still catches it.
+    assert isinstance(excinfo.value, RuntimeError)
 
 
 def test_stopping_while_building_detaches_and_never_cancels(svc, monkeypatch, tmp_path):

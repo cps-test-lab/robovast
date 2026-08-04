@@ -1102,7 +1102,17 @@ class ClusterService(LocalTransport):
     def _campaign_build_context(self, project, campaign_config):
         """``(spec, project_dir, cfg, registry)`` for a campaign's ``build:`` image, or
         ``None`` when it has none. Works from the already-resolved project/config, unlike
-        :meth:`_build_context`, which resolves a standalone ``build_image`` request."""
+        :meth:`_build_context`, which resolves a standalone ``build_image`` request.
+
+        Raises :class:`CampaignConfigError` — *not* ``ValueError`` as the request path
+        does — because this runs on the campaign's worker thread, where the failure is
+        recorded as the campaign's outcome rather than answered as a 400. An
+        unconfigured registry and a broken ``build:`` section are both bad input with a
+        self-contained message, so the campaign fails with that message alone; a
+        ``ValueError`` fell through to the worker's catch-all and printed a stack trace,
+        which reads as a RoboVAST bug rather than as something to go and configure.
+        """
+        from robovast.common.errors import CampaignConfigError
         from robovast.service.image_build import (extract_build_spec,
                                                   validate_build_spec)
         spec = extract_build_spec(campaign_config)
@@ -1111,11 +1121,12 @@ class ClusterService(LocalTransport):
         project_dir = Path(project.config_path).resolve().parent
         problems = validate_build_spec(spec, project_dir)
         if problems:
-            raise ValueError("invalid build: section:\n  - " + "\n  - ".join(problems))
+            raise CampaignConfigError(
+                "invalid build: section:\n  - " + "\n  - ".join(problems))
         cfg = self._cluster_config()
         registry = self._resolve_registry_objects(cfg.get_registry_config())
         if not registry.enabled():
-            raise ValueError(
+            raise CampaignConfigError(
                 "execution.image is a build:<tag> ref but no container registry is "
                 "configured for this cluster (see 'vast exec cluster setup').")
         return spec, project_dir, cfg, registry

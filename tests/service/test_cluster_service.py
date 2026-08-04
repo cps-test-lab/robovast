@@ -198,6 +198,49 @@ def test_postprocessing_is_chained_by_the_builder_not_the_worker(cs):
     assert cs._postprocess_in_process() is False
 
 
+# -- a build the lane cannot do is a config error, not a crash ---------------
+
+def _project_needing_a_build(tmp_path):
+    import types
+    (tmp_path / "p.vast").write_text("")
+    build = types.SimpleNamespace(tag="sim:v3", base_image=None,
+                                  system_packages=[], python_packages=[])
+    return (types.SimpleNamespace(config_path=str(tmp_path / "p.vast")),
+            types.SimpleNamespace(build=build))
+
+
+def test_a_build_ref_without_a_registry_fails_the_campaign_without_a_traceback(
+        cs, monkeypatch, tmp_path):
+    """The worker prints a stack trace for every exception it does not recognize, so a
+    plain ValueError here made an unconfigured deployment read as a RoboVAST bug. It is
+    bad input with an actionable message: the campaign fails carrying that message
+    alone."""
+    from robovast.common.errors import CampaignConfigError
+    from robovast.execution.cluster_config.base_config import RegistryConfig
+
+    import types
+    monkeypatch.setattr(
+        cs, "_cluster_config",
+        lambda: types.SimpleNamespace(get_registry_config=RegistryConfig))
+    monkeypatch.setattr(cs, "_resolve_registry_objects",
+                        lambda registry: RegistryConfig(registry_prefix=""))
+    project, campaign_config = _project_needing_a_build(tmp_path)
+
+    with pytest.raises(CampaignConfigError, match="no container registry"):
+        cs._start_build_image(project, campaign_config)
+    assert CampaignConfigError.include_traceback is False
+
+
+def test_a_broken_build_section_is_a_config_error_too(cs, monkeypatch, tmp_path):
+    from robovast.common.errors import CampaignConfigError
+
+    project, campaign_config = _project_needing_a_build(tmp_path)
+    campaign_config.build.python_packages = ["./not_here"]
+
+    with pytest.raises(CampaignConfigError, match="build.python_packages"):
+        cs._start_build_image(project, campaign_config)
+
+
 # -- discovery: the object store is the durable home ------------------------
 #
 # In-pod the disk is scratch, so a campaign from a previous service life exists only in

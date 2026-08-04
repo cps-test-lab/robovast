@@ -56,6 +56,21 @@ class ClusterUnreachableError(Exception):
     include_traceback = False
 
 
+class ImageBuildFailed(RuntimeError):
+    """Raised when a campaign's experiment image did not build.
+
+    The builder's own output is the diagnosis, and ``classify_build_error`` has
+    already reduced it to one actionable line (which apt/pip entry, or which
+    server-side knob) plus a pointer to the campaign's BUILD log. The Python stack
+    is the wait loop and names nothing the message does not, so — like a config
+    error — this carries no traceback.
+
+    A ``RuntimeError`` so callers that predate the class still catch it.
+    """
+
+    include_traceback = False
+
+
 def missing_input_error(entries, *, hint=True):
     """Build a :class:`CampaignConfigError` for missing project input files.
 

@@ -706,8 +706,7 @@ class LocalTransport(RobovastInterface):
                             stage=f"waiting for image {spec.tag}")
 
         def _worker():
-            from robovast.execution.backends import (
-                CampaignConfigError, CampaignStopped)
+            from robovast.execution.backends import CampaignStopped
             backend = None
             try:
                 # Before anything that can fail, so every later outcome — a doomed build
@@ -744,19 +743,18 @@ class LocalTransport(RobovastInterface):
                 logger.info("Campaign %s stopped by request", campaign_id)
                 self._record_campaign_stopped(campaign_id, results_dir, state, backend)
                 return
-            except CampaignConfigError as e:
-                # Bad user input (e.g. a typo'd --config filter), not a bug. The
-                # message is self-contained and actionable, so surface it as
-                # phase=failed *without* a stack trace, which would only be noise.
-                logger.warning("Campaign %s: %s", campaign_id, e)
-                entry.error = str(e)
-                state.update(error=str(e))
-                state.set_phase(Phase.FAILED, stage=str(e))
-                self._record_campaign_failure(
-                    campaign_id, results_dir, state, e, backend)
-                return
             except Exception as e:  # noqa: BLE001 - surfaced via status
-                logger.exception("Campaign %s failed", campaign_id)
+                # Not every failed campaign is a bug. A typo'd --config filter, a
+                # missing input file, an image build pip could not resolve: the message
+                # is self-contained and actionable and the stack names nothing it does
+                # not, so such an error opts out of the traceback via
+                # ``include_traceback``. Printing one anyway read as a RoboVAST crash
+                # and sent the reader to the wrong place. The failure is still an ERROR
+                # — only the noise goes. Genuine bugs keep their traceback; same test
+                # the controller and the CLI apply, and ``failure_detail`` applies it to
+                # the durable record.
+                logger.error("Campaign %s failed: %s", campaign_id, e,
+                             exc_info=getattr(e, "include_traceback", True))
                 entry.error = str(e)
                 state.update(error=failure_detail(e))
                 state.set_phase(Phase.FAILED, stage=str(e))
@@ -847,7 +845,9 @@ class LocalTransport(RobovastInterface):
 
         Raises:
             CampaignStopped: the campaign was stopped while waiting.
-            RuntimeError: the build failed (message from ``classify_build_error``).
+            ImageBuildFailed: the build failed. The message comes from
+                ``classify_build_error`` and is the whole diagnosis, so the campaign
+                records it without a traceback.
         """
         from robovast.execution.backends import CampaignStopped
         log_path = Path(campaign_root) / "_execution" / "build.log"
@@ -868,9 +868,10 @@ class LocalTransport(RobovastInterface):
                     f"campaign stopped while waiting for image build {build_id}")
             time.sleep(self._BUILD_POLL_SECONDS)
         if status.phase not in ("succeeded", "cached"):
+            from robovast.common.errors import ImageBuildFailed
             err = status.error
             detail = f" ({err.message})" if err and err.message else ""
-            raise RuntimeError(
+            raise ImageBuildFailed(
                 f"experiment image build '{status.tag or build_id}' failed{detail}; "
                 f"see the BUILD section of the campaign log "
                 f"(get_campaign_log with phase='build')")
