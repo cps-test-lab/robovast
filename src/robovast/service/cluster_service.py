@@ -706,12 +706,12 @@ class ClusterService(LocalTransport):
 
     def _resolve_build_ref(self, spec, project_dir, registry) -> "tuple[str, str]":
         """Return (concrete_registry_ref, image_hash) for a project's build image."""
-        from robovast.common.execution import resolve_robovast_image
+        from robovast.common.execution import resolve_build_base_image
         from robovast.execution.cluster_execution.cluster_image_build import \
             concrete_image_ref
         from robovast.service.image_build import build_hash
         base_ref = (spec.base_image or registry.base_experiment_image
-                    or resolve_robovast_image())
+                    or resolve_build_base_image())
         image_hash = build_hash(spec, project_dir, base_ref)
         ref = concrete_image_ref(registry.registry_prefix, spec.tag, image_hash)
         return ref, image_hash
@@ -730,7 +730,7 @@ class ClusterService(LocalTransport):
         from robovast.service.image_build import generate_dockerfile
         from robovast.service.interface import ImageBuildRef, ImageBuildStatus
         from robovast.common.config import BUILD_IMAGE_PREFIX
-        from robovast.common.execution import resolve_robovast_image
+        from robovast.common.execution import resolve_build_base_image
 
         image_ref, image_hash = self._resolve_build_ref(spec, project_dir, registry)
         build_id = build_id_for(spec.tag, image_hash)
@@ -791,7 +791,7 @@ class ClusterService(LocalTransport):
         try:
             # Stage the context (project dir + generated Dockerfile) to S3.
             base_ref = (spec.base_image or registry.base_experiment_image
-                        or resolve_robovast_image())
+                        or resolve_build_base_image())
             dockerfile = generate_dockerfile(spec, project_dir, base_ref)
             build_prefix = context_prefix(build_id)
             storage = in_pod_storage.storage_client_for(cfg)

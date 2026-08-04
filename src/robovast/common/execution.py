@@ -74,7 +74,9 @@ def build_image_tag(image: str) -> str:
 
 
 def _resolve_image(default: str, env_var: str, *, explicit: str | None = None,
-                   config_image: str | None = None, required: bool = False) -> str:
+                   config_image: str | None = None, required: bool = False,
+                   role: str = "container image",
+                   pin_hint: str = "--image, execution.image") -> str:
     """Resolve a container image with a fixed precedence.
 
     Precedence (highest first): *explicit* (e.g. a ``--image`` flag) →
@@ -110,12 +112,16 @@ def _resolve_image(default: str, env_var: str, *, explicit: str | None = None,
                 "against must be pinned.")
         else:
             # Non-required (e.g. the build base image): fall through to the built-in
-            # default, but never silently — it is a mutable ``:latest`` tag.
+            # default, but never silently — it is a mutable ``:latest`` tag. *role* and
+            # *pin_hint* name what was being resolved and the knob that pins it: this
+            # warning fired at "execution.image" while resolving the build's FROM, for
+            # a campaign whose execution.image *was* set (to a build: ref) — sending
+            # the reader to a knob that was not the unpinned one.
             resolved = default
             logger.warning(
-                "No container image configured (checked --image, execution.image, "
-                "%s); using the built-in default %r. This is a mutable tag — pin an "
-                "explicit image for a reproducible run.", env_var, resolved)
+                "No %s configured (checked %s, %s); using the built-in default %r. "
+                "This is a mutable tag — pin it for a reproducible run.",
+                role, pin_hint, env_var, resolved)
     if is_build_image_ref(resolved):
         raise ValueError(
             f"unresolved build image ref '{resolved}': the 'build:' image must be "
@@ -132,12 +138,28 @@ def resolve_robovast_image(explicit: str | None = None,
     Overridable via ``ROBOVAST_IMAGE``. Used both for the image a campaign *runs*
     (the job pods / local docker run — pass ``required=True`` there so an
     unconfigured run fails loudly instead of using a mutable default tag) and as
-    the default *base* image for building experiment images (``required=False``,
-    the framework's own published image is the natural base).
+    the default *base* image for building experiment images (see
+    :func:`resolve_build_base_image`, which is that call spelled out so its warning
+    names the knob that actually pins it).
     """
     return _resolve_image(DEFAULT_ROBOVAST_IMAGE, "ROBOVAST_IMAGE",
                           explicit=explicit, config_image=config_image,
                           required=required)
+
+
+def resolve_build_base_image(config_image: str | None = None) -> str:
+    """Resolve the ``FROM`` an experiment image is built on (``build.base_image``).
+
+    Never *required*: building on the framework's own published image is the normal
+    case. But the fall-through is to a mutable ``:latest`` tag, and the warning that
+    says so has to name ``build.base_image`` — a campaign reaching here has its
+    ``execution.image`` set (to the ``build:`` ref that got us here), so a warning
+    about ``execution.image`` reads as a bug in the campaign that is not there.
+    """
+    return _resolve_image(DEFAULT_ROBOVAST_IMAGE, "ROBOVAST_IMAGE",
+                          config_image=config_image,
+                          role="build base image",
+                          pin_hint="build.base_image")
 
 
 def resolve_controller_image(explicit: str | None = None,
@@ -149,7 +171,9 @@ def resolve_controller_image(explicit: str | None = None,
     the canonical image.
     """
     return _resolve_image(DEFAULT_ROBOVAST_CONTROLLER_IMAGE, "ROBOVAST_CONTROLLER_IMAGE",
-                          explicit=explicit, config_image=config_image)
+                          explicit=explicit, config_image=config_image,
+                          role="controller image",
+                          pin_hint="--controller-image")
 
 
 def get_app_version() -> str:

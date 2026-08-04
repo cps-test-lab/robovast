@@ -83,6 +83,21 @@ def test_run_image_required_fails_loud(monkeypatch):
 def test_build_base_image_keeps_default(monkeypatch):
     # The build BASE image is not required: it defaults to the framework's own
     # published image (the normal base for experiment images).
-    from robovast.common.execution import DEFAULT_ROBOVAST_IMAGE
+    from robovast.common.execution import (DEFAULT_ROBOVAST_IMAGE,
+                                           resolve_build_base_image)
     monkeypatch.delenv("ROBOVAST_IMAGE", raising=False)
-    assert resolve_robovast_image() == DEFAULT_ROBOVAST_IMAGE
+    assert resolve_build_base_image() == DEFAULT_ROBOVAST_IMAGE
+
+
+def test_the_unpinned_base_warning_names_the_base_knob(monkeypatch, caplog):
+    """It fires while building an image for a campaign whose ``execution.image`` IS
+    set — to the ``build:`` ref that got us here. Naming that key sends the reader to
+    a knob that is not the unpinned one; the unpinned one is ``build.base_image``."""
+    from robovast.common.execution import resolve_build_base_image
+    monkeypatch.delenv("ROBOVAST_IMAGE", raising=False)
+
+    with caplog.at_level("WARNING"):
+        resolve_build_base_image()
+
+    assert "build.base_image" in caplog.text
+    assert "execution.image" not in caplog.text
