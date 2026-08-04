@@ -124,17 +124,25 @@ def test_read_service_config_from_cluster_parses_env(monkeypatch):
         template=types.SimpleNamespace(spec=types.SimpleNamespace(
             containers=[container]))))
 
+    seen = {}
+
     class _Apps:
-        def read_namespaced_deployment(self, name, namespace):
+        def read_namespaced_deployment(self, name, namespace, **kwargs):
+            seen["request_timeout"] = kwargs.get("_request_timeout")
             return dep
 
     monkeypatch.setattr(service_deploy, "SERVICE_NAME", "robovast-service")
     import kubernetes
     monkeypatch.setattr(kubernetes.config, "load_kube_config", lambda **k: None)
-    monkeypatch.setattr(kubernetes.client, "AppsV1Api", lambda: _Apps())
+    # The preflight builds its own ApiClient so it can bound retries, so this takes it.
+    monkeypatch.setattr(kubernetes.client, "AppsV1Api", lambda *a, **k: _Apps())
 
     name, kwargs = service_deploy.read_service_config_from_cluster("default", "local")
     assert name == "rke2" and kwargs == {"namespace": "ns9"}
+    # Explicitly bounded: the process-wide policy times out each *attempt*, and urllib3
+    # would retry a failed connect three more times — so an unreachable cluster took
+    # 4x the limit to report, when a caller told "10 seconds" expects one.
+    assert seen["request_timeout"] is not None
 
 
 # -- launch hooks -----------------------------------------------------------

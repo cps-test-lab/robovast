@@ -98,14 +98,16 @@ def apply_controller_rbac(namespace="default", kube_context=None):
     :mod:`.service_deploy`) when campaigns stopped running in their own pod; only
     the cluster-scoped node access is applied here.
     """
-    from kubernetes import client, config  # pylint: disable=import-outside-toplevel
+    from kubernetes import client  # pylint: disable=import-outside-toplevel
     from kubernetes.client.rest import \
         ApiException  # pylint: disable=import-outside-toplevel
 
+    from robovast.common.kube import \
+        load_kube_config  # pylint: disable=import-outside-toplevel
     from robovast.execution.cluster_execution.service_deploy import \
         SERVICE_ACCOUNT  # pylint: disable=import-outside-toplevel
 
-    config.load_kube_config(context=kube_context)
+    load_kube_config(context=kube_context)
     rbac = client.RbacAuthorizationV1Api()
     cluster_role, cluster_binding = _controller_rbac_manifests(namespace)
 
@@ -140,12 +142,15 @@ def delete_controller_rbac(namespace="default", kube_context=None):
     before that change — so this still deletes them to leave nothing behind.
     Best-effort throughout.
     """
-    from kubernetes import client, config  # pylint: disable=import-outside-toplevel
+    from kubernetes import client  # pylint: disable=import-outside-toplevel
     from kubernetes.client.rest import \
         ApiException  # pylint: disable=import-outside-toplevel
 
+    from robovast.common.kube import \
+        load_kube_config  # pylint: disable=import-outside-toplevel
+
     try:
-        config.load_kube_config(context=kube_context)
+        load_kube_config(context=kube_context)
     except Exception as exc:  # pragma: no cover - best-effort cleanup
         logger.warning("Failed to load kube config for RBAC cleanup: %s", exc)
         return

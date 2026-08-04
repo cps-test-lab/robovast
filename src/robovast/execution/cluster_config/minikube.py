@@ -19,7 +19,9 @@ import io
 import logging
 
 import yaml
-from kubernetes import client, config
+from kubernetes import client
+
+from robovast.common.kube import load_kube_config
 
 from ..cluster_execution.kubernetes import apply_manifests, delete_manifests
 from .base_config import BaseConfig
@@ -87,7 +89,7 @@ class MinikubeClusterConfig(BaseConfig):
         control_node_labels = kwargs.pop('control_node_labels', None)
         logging.info("Setting up RoboVAST MinIO S3 server in minikube cluster...")
 
-        config.load_kube_config(context=kwargs.get('kube_context'))
+        load_kube_config(context=kwargs.get('kube_context'))
         k8s_client = client.ApiClient()
 
         try:
@@ -111,7 +113,7 @@ class MinikubeClusterConfig(BaseConfig):
             **kwargs: Additional cluster-specific options (ignored)
         """
         logging.debug("Cleaning up RoboVAST MinIO in minikube cluster...")
-        config.load_kube_config(context=kwargs.get('kube_context'))
+        load_kube_config(context=kwargs.get('kube_context'))
         core_v1 = client.CoreV1Api()
 
         try:

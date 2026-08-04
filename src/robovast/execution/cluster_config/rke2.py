@@ -18,7 +18,9 @@ import io
 import logging
 
 import yaml
-from kubernetes import client, config
+from kubernetes import client
+
+from robovast.common.kube import load_kube_config
 
 from ..cluster_execution.kubernetes import (apply_manifests, check_pod_running,
                                             delete_manifests)
@@ -94,7 +96,7 @@ class Rke2ClusterConfig(BaseConfig):
         logging.info("Setting up RoboVAST MinIO S3 server in RKE2 cluster...")
         logging.info("")
 
-        config.load_kube_config(context=kwargs.get('kube_context'))
+        load_kube_config(context=kwargs.get('kube_context'))
         k8s_client = client.ApiClient()
 
         try:
@@ -118,7 +120,7 @@ class Rke2ClusterConfig(BaseConfig):
             **kwargs: Additional cluster-specific options (ignored)
         """
         logging.debug("Cleaning up RoboVAST MinIO in RKE2 cluster...")
-        config.load_kube_config(context=kwargs.get('kube_context'))
+        load_kube_config(context=kwargs.get('kube_context'))
         core_v1 = client.CoreV1Api()
 
         try:
@@ -188,7 +190,7 @@ MinIO console is available at port 9001.
         """
         del kube_context
         if k8s_client is None:
-            config.load_kube_config()
+            load_kube_config()
             k8s_client = client.CoreV1Api()
         pod_ok, pod_msg = check_pod_running(k8s_client, "robovast", namespace)
         if not pod_ok:

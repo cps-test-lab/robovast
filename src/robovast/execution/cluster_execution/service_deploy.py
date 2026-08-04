@@ -552,11 +552,14 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
     real API server / admission, persists nothing) — useful to check the
     manifests without an image or scheduling.
     """
-    from kubernetes import client, config  # pylint: disable=import-outside-toplevel
+    from kubernetes import client  # pylint: disable=import-outside-toplevel
     from kubernetes.client.rest import \
         ApiException  # pylint: disable=import-outside-toplevel
 
-    config.load_kube_config(context=kube_context)
+    from robovast.common.kube import \
+        load_kube_config  # pylint: disable=import-outside-toplevel
+
+    load_kube_config(context=kube_context)
     core = client.CoreV1Api()
     rbac = client.RbacAuthorizationV1Api()
     apps = client.AppsV1Api()
@@ -623,22 +626,30 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
 
 
 def _load_kube_config(kube_context=None):
-    """Load the local kubeconfig, turning setup problems into a clean error.
+    """Load kube config through the shared loader, with a CLI-friendly error.
 
-    ``kubernetes.config.load_kube_config`` raises noisy, low-level exceptions
-    (``ConfigException``/``FileNotFoundError``) when ``KUBECONFIG`` is unset,
-    points at a missing/invalid file, or names a context that isn't present.
-    Wrap them in a ``click.ClickException`` so the CLI prints a short, actionable
-    message instead of a traceback.
+    Goes through :func:`robovast.common.kube.load_kube_config` rather than calling
+    ``kubernetes.config`` directly — that is what installs the process-wide **connect
+    timeout**. Calling the generated client's loader here instead left every API call on
+    this path with ``timeout=None``, so ``vast serve --backend local+cluster`` against an
+    unreachable cluster hung on a TCP connect for minutes and then died in a urllib3
+    traceback, rather than failing in seconds saying which cluster it could not reach.
+
+    The wrapping remains: the underlying loaders raise low-level exceptions
+    (``ConfigException``/``FileNotFoundError``/``RuntimeError``) when ``KUBECONFIG`` is
+    unset, points at a missing file, or names a context that is not there, and the CLI
+    should print one actionable line instead of a stack.
     """
     import click  # pylint: disable=import-outside-toplevel
-    from kubernetes import config  # pylint: disable=import-outside-toplevel
     from kubernetes.config.config_exception import \
         ConfigException  # pylint: disable=import-outside-toplevel
 
+    from robovast.common.kube import \
+        load_kube_config  # pylint: disable=import-outside-toplevel
+
     try:
-        config.load_kube_config(context=kube_context)
-    except (ConfigException, FileNotFoundError) as exc:
+        load_kube_config(context=kube_context)
+    except (ConfigException, FileNotFoundError, RuntimeError) as exc:
         hint = (f" (does context {kube_context!r} exist?)"
                 if kube_context else " (is KUBECONFIG set?)")
         raise click.ClickException(
@@ -661,14 +672,49 @@ def read_service_config_from_cluster(namespace="default", kube_context=None):
     from kubernetes.client.rest import \
         ApiException  # pylint: disable=import-outside-toplevel
 
+    import click  # pylint: disable=import-outside-toplevel
+    from urllib3.exceptions import \
+        HTTPError  # pylint: disable=import-outside-toplevel
+
+    from robovast.common.kube import \
+        CONNECT_TIMEOUT_SECONDS  # pylint: disable=import-outside-toplevel
     _load_kube_config(kube_context)
-    apps = client.AppsV1Api()
+    # One attempt, explicitly bounded. The process-wide policy sets a connect timeout per
+    # *attempt*, and urllib3 retries a failed connect three more times — so an
+    # unreachable cluster took 4 x the limit to report, which is not what a caller told
+    # "10 seconds" expects. This read is a startup preflight: if the cluster does not
+    # answer the first time, waiting for three more identical failures tells nobody
+    # anything. Campaign monitoring keeps the retries; it wants them.
+    preflight = client.Configuration.get_default_copy()
+    preflight.retries = 0
+    apps = client.AppsV1Api(client.ApiClient(configuration=preflight))
     try:
-        dep = apps.read_namespaced_deployment(SERVICE_NAME, namespace)
+        dep = apps.read_namespaced_deployment(
+            SERVICE_NAME, namespace,
+            _request_timeout=(CONNECT_TIMEOUT_SECONDS, CONNECT_TIMEOUT_SECONDS))
     except ApiException as e:
         if e.status == 404:
             return None, {}
         raise
+    except HTTPError as exc:
+        # An unreachable cluster is **not** "no service deployed": returning (None, {})
+        # here would send the caller off to suggest `vast exec cluster setup` for a
+        # cluster it cannot even connect to. Say which cluster, and that it did not
+        # answer — one line, not a urllib3 stack.
+        host = ""
+        try:
+            host = client.Configuration.get_default_copy().host or ""
+        except Exception:  # noqa: BLE001 - only used to enrich the message
+            pass
+        where = f" at {host}" if host else ""
+        for_ctx = f" (context {kube_context!r})" if kube_context else ""
+        raise click.ClickException(
+            f"the Kubernetes cluster{where}{for_ctx} did not answer within "
+            f"{CONNECT_TIMEOUT_SECONDS:g}s — check the cluster is up and reachable "
+            "(kubectl get nodes), or start a local-only service with "
+            "'vast serve --backend local'. Raise the limit with "
+            "ROBOVAST_KUBE_CONNECT_TIMEOUT=<seconds> if the cluster is simply slow."
+        ) from exc
     containers = dep.spec.template.spec.containers or []
     env = {e.name: e.value for c in containers for e in (c.env or [])}
     name = env.get("ROBOVAST_CLUSTER_CONFIG_NAME")
@@ -683,12 +729,15 @@ def delete_service(namespace="default", kube_context=None):
     ``cluster cleanup`` → ``cluster setup`` cycle that updates the service
     keeps the campaign data it left behind.
     """
-    from kubernetes import client, config  # pylint: disable=import-outside-toplevel
+    from kubernetes import client  # pylint: disable=import-outside-toplevel
     from kubernetes.client.rest import \
         ApiException  # pylint: disable=import-outside-toplevel
 
+    from robovast.common.kube import \
+        load_kube_config  # pylint: disable=import-outside-toplevel
+
     try:
-        config.load_kube_config(context=kube_context)
+        load_kube_config(context=kube_context)
     except Exception as exc:  # pragma: no cover - best-effort cleanup
         logger.warning("Failed to load kube config for service cleanup: %s", exc)
         return
