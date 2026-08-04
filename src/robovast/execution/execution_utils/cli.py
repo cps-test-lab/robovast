@@ -84,8 +84,6 @@ def local():
               help='Start the robovast container with a shell, skipping the entrypoint script')
 @click.option('--no-gui',  is_flag=True,
               help='Disable host GUI support')
-@click.option('--network-host',  is_flag=True,
-              help='Use host network mode')
 @click.option('--image', '-i', default=None,
               help='Use a custom Docker image (overrides execution.image, ROBOVAST_IMAGE '
                    'and the built-in default)')
@@ -106,7 +104,7 @@ def local():
 @click.option('--upload-to-share', 'upload_to_share', is_flag=True,
               help='Before postprocessing, write a raw <campaign>.tar.gz to the '
                    'results _archives/ dir (the local upload-to-share deliverable).')
-def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_failure,
+def run(config, runs, output, start_only, no_gui, image, abort_on_failure,
         use_resource_allocation, log_tree, debug, campaign_id, campaign_name, upload_to_share):
     """Execute the project locally using Docker.
 
@@ -155,8 +153,6 @@ def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_
             cmd = [run_script_path, "--start-only"]
             if no_gui:
                 cmd.append("--no-gui")
-            if network_host:
-                cmd.append("--network-host")
             # Only an explicit --image is forwarded; otherwise the generated
             # run.sh already bakes in the resolved image (config/ROBOVAST_IMAGE/default).
             if image:
@@ -165,7 +161,7 @@ def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_
             return
 
         options = RunOptions(
-            gui=not no_gui, start_only=start_only, network_host=network_host,
+            gui=not no_gui, start_only=start_only,
             abort_on_failure=abort_on_failure, image=image, log_tree=log_tree,
             debug=debug, skip_resource_allocation=not use_resource_allocation,
             upload_to_share=upload_to_share)
@@ -173,7 +169,6 @@ def run(config, runs, output, start_only, no_gui, network_host, image, abort_on_
         if campaign_config.search is not None:
             ignored = [name for name, set_ in (
                 ("--config", config), ("--start-only", start_only),
-                ("--network-host", network_host),
                 ("--abort-on-failure", abort_on_failure),
             ) if set_]
             if ignored:
@@ -208,7 +203,7 @@ VAST = {vast!r}
 RESULTS_DIR = {results_dir!r}
 RUNS = {runs!r}                      # None -> execution.runs from the vast
 CONFIG_FILTER = {config_filter!r}    # batch only: name/glob to run a subset
-OPTIONS = RunOptions(gui={gui}, network_host={network_host}, abort_on_failure={abort},
+OPTIONS = RunOptions(gui={gui}, abort_on_failure={abort},
                      image={image!r}, log_tree={log_tree}, debug={debug},
                      skip_resource_allocation={skip_ra})
 
@@ -232,7 +227,7 @@ def _write_controller_run_script(output_dir, *, vast, results_dir, runs,
     """Write an editable run.py that runs the controller for this project."""
     content = _RUN_PY_TEMPLATE.format(
         vast=vast, results_dir=results_dir, runs=runs, config_filter=config_filter,
-        gui=options.gui, network_host=options.network_host,
+        gui=options.gui,
         abort=options.abort_on_failure, image=options.image,
         log_tree=options.log_tree, debug=options.debug,
         skip_ra=options.skip_resource_allocation)

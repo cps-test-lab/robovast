@@ -68,7 +68,6 @@ class RunOptions:
     """Per-run execution options (mostly local docker-compose specific)."""
     gui: bool = False
     start_only: bool = False
-    network_host: bool = False
     abort_on_failure: bool = False
     # None ⇒ resolve via resolve_robovast_image() (config / ROBOVAST_IMAGE / default);
     # a non-None value is an explicit ``--image`` and wins over everything.
@@ -253,8 +252,6 @@ class DockerBackend(ExecutionBackend):
                 cmd.append("--no-gui")
             if options.start_only:
                 cmd.append("--start-only")
-            if options.network_host:
-                cmd.append("--network-host")
             if options.abort_on_failure:
                 cmd.append("--abort-on-failure")
             if image != DEFAULT_ROBOVAST_IMAGE:

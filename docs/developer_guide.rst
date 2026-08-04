@@ -52,10 +52,7 @@ Afterwards you can verify the scenario, the RoboVAST-configuration and the docke
     ./test_run/run.sh --image <your-container-image>
 
     # analyze issues by using an interactive shell
-    ./test_run/run.sh --shell
-
-    # analyze network traffic, by using host network mode
-    ./test_run/run.sh --network-host
+    ./test_run/run.sh --start-only
 
     # check that a standalone non-GUI environment (like in Kubernetes) works
     ./test_run/run.sh --no-gui

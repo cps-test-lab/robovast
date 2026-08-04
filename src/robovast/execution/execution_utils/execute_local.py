@@ -302,6 +302,17 @@ while [ $# -gt 0 ]; do
             RESULTS_DIR="$2"
             shift 2
             ;;
+        -*)
+            # An unknown *option* is an error, not something to walk past. This case
+            # used to `break`, which silently discarded it — and everything after it,
+            # since parsing stopped there. That is how `--network-host` survived as a
+            # documented, forwarded, entirely dead flag: nothing ever said it was
+            # unknown. Non-option arguments still end parsing (the case below).
+            echo "Error: unknown option '$1'" >&2
+            echo "" >&2
+            show_help >&2
+            exit 2
+            ;;
         *)
             break
             ;;

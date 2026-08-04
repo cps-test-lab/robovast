@@ -30,7 +30,7 @@ def _run_script(tmp_path, **execution_overrides):
     campaign_data, _transient = build_campaign_data(VAST, str(tmp_path / "gen"))
     campaign_data["execution"].update(execution_overrides)
     options = RunOptions(
-        gui=False, start_only=False, network_host=False, abort_on_failure=False,
+        gui=False, start_only=False, abort_on_failure=False,
         image="img:1", log_tree=False, debug=False, skip_resource_allocation=True,
         postprocess=False, namespace="default", upload_to_share=False)
     path = stage_run_script(campaign_data, str(tmp_path / "work"), 2, options,
