@@ -263,6 +263,12 @@ class LocalTransport(RobovastInterface):
     def __init__(self, store=None, workspace_dir=None):
         self._campaigns: dict[str, _LocalCampaign] = {}
         self._lock = threading.Lock()
+        # Container exec gets its own lock: creating its manager reaps a stray container
+        # first, and on the cluster that waits for a pod to finish terminating. Doing
+        # that under the campaign lock would stall every status read and campaign start
+        # for as long as the wait takes.
+        self._exec_lock = threading.Lock()
+        self._exec_mgr = None
         self._usage_lock = threading.Lock()
         self._usage_cache: "tuple[float, ResourceUsage] | None" = None
         # campaign_id -> recorded start time (see _started_at_for). Only known values
@@ -556,10 +562,28 @@ class LocalTransport(RobovastInterface):
         with self._usage_lock:
             cached = self._usage_cache
             if cached is not None and time.monotonic() - cached[0] < self._USAGE_CACHE_TTL:
-                return cached[1]
-            usage = self._compute_resource_usage()
-            self._usage_cache = (time.monotonic(), usage)
-            return usage
+                usage = cached[1]
+            else:
+                usage = self._compute_resource_usage()
+                self._usage_cache = (time.monotonic(), usage)
+        # Attached outside the cache: a held exec container comes and goes far faster
+        # than the sampling window, and a stale "still holding 6 GB" would be worse than
+        # not reporting it at all.
+        return usage.model_copy(update={"exec_container": self._exec_container_state()})
+
+    def _exec_container_state(self):
+        """The held exec container, or ``None`` — without creating a manager.
+
+        Reading capacity must not start a reaper thread or reap a stray container as a
+        side effect; a service that never execs should behave exactly as before.
+        """
+        if self._exec_mgr is None:
+            return None
+        try:
+            return self._exec_mgr.state()
+        except Exception as e:  # noqa: BLE001 - capacity must still be answerable
+            logger.debug("could not read exec container state: %s", e)
+            return None
 
     def _compute_resource_usage(self) -> ResourceUsage:
         """Local host capacity + live utilisation via ``psutil``.
@@ -919,6 +943,135 @@ class LocalTransport(RobovastInterface):
 
     def get_image_build_log(self, build_id: str, offset: int = 0):
         return self._image_builds.log(build_id, offset)
+
+    # -- container exec (diagnostic; produces no campaign) ------------------
+
+    #: Whether a staged entrypoint is rendered for the cluster. Local runs get the
+    #: local init/post-run blocks; :class:`ClusterService` flips this.
+    _EXEC_CLUSTER_LANE = False
+
+    @property
+    def _exec_manager(self):
+        """The single-container manager, created on first use.
+
+        Lazily built so a service that never execs starts no reaper thread, and so a
+        stray container from a previous process is reaped exactly once, when the
+        capability is first used rather than on every import.
+        """
+        from robovast.service.container_exec import ContainerExecManager
+        # The reap stays *inside* this lock so a second caller cannot start a container
+        # that the reap is about to remove — but it is deliberately not the campaign lock.
+        with self._exec_lock:
+            if self._exec_mgr is None:
+                self._exec_mgr = ContainerExecManager(self._exec_lane())
+                self._reap_stray_exec_container()
+            return self._exec_mgr
+
+    def _exec_lane(self):
+        from robovast.service.docker_exec_lane import DockerExecLane
+        return DockerExecLane()
+
+    def _reap_stray_exec_container(self) -> None:
+        """Remove a container left behind by a previous service process.
+
+        A fixed container name makes this a one-liner; without it an orphaned
+        diagnostic container would hold memory with nothing able to name it.
+        """
+        from robovast.service.container_exec import CONTAINER_NAME
+        try:
+            done = subprocess.run(  # noqa: S603,S607
+                ["docker", "rm", "-f", CONTAINER_NAME],
+                check=False, capture_output=True, text=True)
+            if done.returncode == 0 and done.stdout.strip():
+                logger.info("removed stray exec container %s from a previous run",
+                            CONTAINER_NAME)
+        except OSError as e:
+            logger.debug("could not check for a stray %s: %s", CONTAINER_NAME, e)
+
+    def _exec_vast_file(self, request) -> str:
+        """The ``.vast`` this request runs, from whichever source it named.
+
+        A campaign's ``_config/`` *is* a project, so the two sources differ only here.
+        """
+        from robovast.service.container_exec import vast_in_dir
+        if request.campaign_id:
+            config_dir = self._campaign_dir(request.campaign_id) / "_config"
+            if not config_dir.is_dir():
+                raise ValueError(
+                    f"campaign {request.campaign_id} has no _config/ to run — it is not "
+                    "a campaign directory, or was created before its config was staged")
+            return vast_in_dir(str(config_dir), request.config_path)
+        return self._resolve_project(request.workspace_id, request.config_path).config_path
+
+    def exec_in_container(self, request) -> "ExecResult":  # noqa: F821
+        from robovast.common.execution import is_build_image_ref
+        from robovast.service.container_exec import result_from, stage, validate
+        validate(request)
+        vast_file = self._exec_vast_file(request)
+        spec, _campaign_data, limit_s, limit_source = stage(
+            vast_file, request.config_name, cluster=self._EXEC_CLUSTER_LANE,
+            command=request.command)
+        # Ownership of spec's staging tree passes to the manager: a held container mounts
+        # it as /config, so it must outlive this call. On the way *in*, though, a failure
+        # before that handover is ours to clean up.
+        try:
+            spec.image = self._exec_image(vast_file)
+            if is_build_image_ref(spec.image):
+                # Defensive: _exec_image resolves build: refs, and handing docker a
+                # symbolic one would fail with a confusing pull error instead.
+                raise ValueError(f"unresolved image ref {spec.image!r}")
+            if request.workspace_id:
+                spec.workspace_id = self.store.registry.require(
+                    request.workspace_id)["workspace_id"]
+                spec.workspace_dir = str(
+                    self.store.registry.project_dir(spec.workspace_id))
+        except Exception:
+            spec.close()
+            raise
+        identity = (request.workspace_id, request.campaign_id,
+                    request.config_path, request.config_name, spec.image)
+        started = time.monotonic()
+        out = self._exec_manager.run(spec, limit_s,
+                                    keep_alive=request.keep_alive,
+                                    identity=identity)
+        return result_from(out, spec=spec, limit_s=limit_s,
+                           limit_source=limit_source,
+                           duration_s=time.monotonic() - started,
+                           container=self._exec_manager.state())
+
+    def _exec_image(self, vast_file: str) -> str:
+        """The concrete image to exec in, resolved exactly as a run would resolve it.
+
+        A ``build:<tag>`` must already exist locally: building implicitly would turn a
+        seconds-long check into a multi-minute one the caller never asked for. A project
+        with **no** ``build:`` section is ordinary, not an error — it falls back to
+        ``execution.image`` and then the default, like any run.
+        """
+        from robovast.common.common import load_config
+        from robovast.common.execution import (is_build_image_ref,
+                                               resolve_robovast_image)
+        campaign_config = load_config(vast_file) or {}
+        configured = (campaign_config.get("execution") or {}).get("image")
+        if not is_build_image_ref(configured):
+            return resolve_robovast_image(config_image=configured, required=True)
+
+        target = WorkspaceTarget(config_path=vast_file)
+        spec, project_dir = self._build_spec_for(target, campaign_config)
+        if spec is None:
+            raise ValueError(
+                f"execution.image is {configured!r} but the project has no 'build:' "
+                "section to resolve it from")
+        ref = self._image_builds.resolve_ref(spec, project_dir)
+        if not self._image_builds.image_exists(ref):
+            raise ValueError(
+                f"image {configured!r} is not built — call build_experiment_image "
+                "first. This never builds implicitly, so a quick check cannot silently "
+                "become a full image build.")
+        return ref
+
+    def stop_exec_container(self, backend: "str | None" = None) -> "ExecStopResult":  # noqa: F821
+        del backend            # single-lane service; a multi-backend one overrides
+        return self._exec_manager.stop()
 
     def _postprocess(self, campaign_id, results_dir, state, entry):
         """Run analysis postprocessing for a just-finished local campaign.

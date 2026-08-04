@@ -509,7 +509,9 @@ def get_resource_usage(backend: str = "") -> dict:
 
     Returns:
         ``{backend, cpu_capacity, cpu_used, memory_capacity_bytes, memory_used_bytes,
-        parallel_runs}`` — cores and bytes — or ``{error}``.
+        parallel_runs}`` — cores and bytes — or ``{error}``. ``exec_container`` appears
+        while an ``exec_in_container`` container is held: it can hold a stack's worth of
+        memory, so a full lane names it rather than leaving you to guess.
     """
     if backend and backend not in ("local", "cluster"):
         return {"error": f"unknown backend {backend!r}; use 'local' or 'cluster'"}
@@ -643,6 +645,99 @@ def get_image_build_log(build_id: str, offset: int = 0, grep: str = "",
     return _log_response({"next_offset": chunk.next_offset, "eof": chunk.eof}, view)
 
 
+def exec_in_container(command: str = "", workspace_id: str = "", config_path: str = "",
+                      campaign_id: str = "", config_name: str = "",
+                      keep_alive: bool = False, tail: int = 200,
+                      backend: str = "") -> dict:
+    """**Test a container and its setup.** Runs a command in the experiment image.
+
+    **Produces no campaign data** — nothing durable, no provenance, no repetitions, no
+    entry in ``list_campaigns``, and no results to compare with anything. To run the
+    experiment, use ``start_campaign``.
+
+    Two questions it answers:
+
+    - is the image set up correctly? Omit ``config_name`` — imports, ``ros2 pkg list``,
+      file checks. Build the image first if the project declares one.
+    - does one config run? Name a ``config_name``; an empty ``command`` starts that
+      config's scenario, detached, so a follow-up call can inspect it.
+
+    ``keep_alive=True`` holds the container open for follow-up calls; ``stop_container``
+    ends it. **At most one container exists at a time**, so ``reused: false`` means a
+    fresh one — anything the previous container was running is gone.
+
+    A started scenario logs to the returned ``log_path`` *inside* the container, not to
+    ``stdout``; read it with a follow-up ``command="tail -200 <log_path>"``.
+
+    Args:
+        command: Shell command; pipes and ``&&`` work. Empty needs ``config_name``.
+        workspace_id, config_path: A workspace and which ``.vast`` in it.
+        campaign_id: Use an existing campaign's ``_config/`` as the project instead —
+            exactly one source, this or ``workspace_id``. A *running* campaign's
+            container is never touched; to inspect a live stack, start it here.
+        config_name: Stage this config. Omitted always means the bare image.
+        keep_alive: Leave the container running for follow-up calls.
+        tail: Lines kept per stream.
+        backend: ``"local"`` or ``"cluster"`` on a service offering both.
+
+    Returns:
+        ``{exit_code, stdout, stderr, timed_out, duration_s, limit_s, limit_source,
+        log_path, container}`` or ``{error}``. ``limit_source`` — ``command`` (fixed cap),
+        ``execution.timeout``, or ``default`` (the project set none) — makes a
+        ``timed_out`` result name its own remedy.
+    """
+    from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
+    from robovast.service.interface import ExecRequest  # noqa: PLC0415
+    if backend and backend not in ("local", "cluster"):
+        return {"error": f"unknown backend {backend!r}; use 'local' or 'cluster'"}
+    client = service_access.service_client()
+    if client is None:
+        return {"error": NO_SERVICE}
+    try:
+        result = client.exec_in_container(ExecRequest(
+            command=command, workspace_id=workspace_id, config_path=config_path,
+            campaign_id=campaign_id, config_name=config_name,
+            keep_alive=keep_alive, backend=backend or None))
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
+    out = result.model_dump()
+    # Trim through the same filter the log tools use, so "the last N lines" and the
+    # dropped accounting mean one thing across the surface.
+    for stream in ("stdout", "stderr"):
+        try:
+            view = view_log(out.get(stream) or "", tail=tail)
+        except ValueError as e:
+            return {"error": str(e)}
+        out[stream] = view.get("content", "")
+        if view.get("truncated"):
+            out[f"{stream}_truncated"] = True
+            out[f"{stream}_lines_total"] = view.get("lines_total")
+    if not out.get("log_path"):
+        out.pop("log_path", None)
+    return out
+
+
+def stop_container(backend: str = "") -> dict:
+    """Stop the held ``exec_in_container`` container. Frees the memory it holds.
+
+    Args:
+        backend: ``"local"`` or ``"cluster"`` on a service offering both.
+
+    Returns:
+        ``{stopped, target}`` — ``stopped: false`` when there was nothing to stop, which
+        is an empty result, not an error. Or ``{error}``.
+    """
+    if backend and backend not in ("local", "cluster"):
+        return {"error": f"unknown backend {backend!r}; use 'local' or 'cluster'"}
+    client = service_access.service_client()
+    if client is None:
+        return {"error": NO_SERVICE}
+    try:
+        return client.stop_exec_container(backend or None).model_dump()
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
+
+
 # -- Plugin class ------------------------------------------------------------
 
 _TOOLS = [
@@ -656,6 +751,8 @@ _TOOLS = [
     build_experiment_image,
     get_image_build_status,
     get_image_build_log,
+    exec_in_container,
+    stop_container,
 ]
 
 

@@ -11,7 +11,8 @@ from .execution import (COMPAT_VERSION, check_campaign_inputs,
                         create_execution_yaml,
                         generate_execution_yaml_script, get_campaign,
                         get_campaign_timestamp, get_execution_env_variables,
-                        is_campaign_dir, prepare_campaign_configs)
+                        is_campaign_dir, prepare_campaign_configs,
+                        scenario_env)
 from .file_cache import FileCache
 from .progress import ProgressBar, fmt_size, make_download_progress_callback
 
@@ -29,6 +30,7 @@ __all__ = [
     'CampaignConfigError',
     'missing_input_error',
     'get_execution_env_variables',
+    'scenario_env',
     'VariationConfig',
     'get_validated_config',
     'filter_configs',

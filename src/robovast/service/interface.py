@@ -149,6 +149,86 @@ class ImageBuildStatus(BaseModel):
     finished_at: Optional[str] = None
 
 
+class ExecRequest(BaseModel):
+    """Run one command in the experiment image — a diagnostic, never a campaign.
+
+    Names exactly one source of the image (and, with ``config_name``, of a staged
+    configuration): a workspace project, or an existing campaign whose ``_config/`` is
+    itself a project. A running campaign's container is deliberately not addressable;
+    see :meth:`RobovastInterface.exec_in_container`.
+
+    Carries **no timeout field**, so no client can set one: the limit is derived from
+    what is being run (``execution.timeout`` for a scenario, a fixed cap for a command)
+    and reported back in :class:`ExecResult`.
+    """
+
+    #: Shell command. Empty means "run the staged config's scenario as the campaign
+    #: would" and requires ``config_name``; empty with no config is an error.
+    command: str = ""
+    workspace_id: str = ""
+    config_path: str = ""            # which .vast (workspace-relative); "" = the sole .vast
+    campaign_id: str = ""            # a campaign as *config source* — never a container to attach to
+    #: Omitted always means the bare image; a config is never inferred, not even when
+    #: the project has exactly one.
+    config_name: str = ""
+    keep_alive: bool = False         # hold the one container open for follow-up calls
+    #: No ``tail`` here: like the three log operations, this returns the captured text
+    #: and the *reading* surface trims it (the MCP tool via ``log_view.view_log``), so a
+    #: CLI caller still gets everything.
+    backend: Optional[str] = None    # "local" | "cluster"; honoured only by a multi-backend service
+
+
+class ExecContainerState(BaseModel):
+    """State of the single exec container, as of one call.
+
+    Also embedded in :class:`ResourceUsage`, so a caller that finds the lane full can
+    attribute the shortfall to its own held container instead of guessing.
+    """
+
+    kept: bool = False               # container left running for follow-up calls
+    #: False on a ``keep_alive`` call means a *fresh* container — the previous one, and
+    #: anything running in it, is gone. Load-bearing: an agent that assumed its stack
+    #: survived would misread every later observation.
+    reused: bool = False
+    image: str = ""
+    config: str = ""                 # staged config name; "" for a bare-image container
+    #: Seconds until the idle reap. Counts only while no process this tool started is
+    #: still alive; ``None`` while something is running.
+    idle_expires_in_s: Optional[int] = None
+    deadline_in_s: Optional[int] = None   # seconds until the hard stop
+
+
+class ExecResult(BaseModel):
+    """What one :class:`ExecRequest` produced. No campaign, no provenance, nothing durable."""
+
+    exit_code: int = 0
+    stdout: str = ""
+    stderr: str = ""
+    timed_out: bool = False
+    duration_s: float = 0.0
+    limit_s: int = 0
+    #: Which rule set ``limit_s`` — ``command`` (fixed cap), ``execution.timeout`` (the
+    #: project's own value), or ``default`` (the project set none). Distinguishing the
+    #: last two is what makes a truncation self-explaining.
+    limit_source: str = ""
+    #: Where a started scenario's output went *inside the container*. Set only for an
+    #: empty command, whose output ``entrypoint.sh`` redirects to a file rather than
+    #: stdout; read it with a follow-up ``tail`` command.
+    log_path: str = ""
+    container: ExecContainerState = Field(default_factory=ExecContainerState)
+
+
+class ExecStopResult(BaseModel):
+    """Outcome of :meth:`RobovastInterface.stop_exec_container`.
+
+    Not :class:`ActionResult`: "there was nothing to stop" is an empty result, not a
+    failure, and ``ok=False`` would conflate it with one.
+    """
+
+    stopped: bool = False
+    target: Optional[str] = None     # what was stopped, when something was
+
+
 class CampaignSummary(BaseModel):
     """One row of :meth:`RobovastInterface.list_campaigns`.
 
@@ -414,6 +494,10 @@ class ResourceUsage(BaseModel):
     parallel_runs: bool              # runs execute in parallel? cluster=True, local=False
     jobs_running: int = 0            # scenario-run pods in phase Running, backend-wide
     jobs_pending: int = 0            # scenario-run pods admitted/queued but not yet Running
+    #: The held container-exec container, when one exists. A diagnostic container can
+    #: hold a ROS stack's worth of memory, and a caller told only "the lane is full"
+    #: has no way to discover that its own container is the reason.
+    exec_container: Optional[ExecContainerState] = None
 
 
 # -- workspaces (editable project inputs; independent of campaigns) ---------
@@ -931,6 +1015,11 @@ class Routes:
     def image_build_log(build_id: str) -> str:
         return f"/image-builds/{build_id}/log"
 
+    #: Diagnostic command execution in an experiment image. POST runs a command,
+    #: DELETE stops the held container. Produces no campaign, so it is not under
+    #: ``/campaigns``.
+    EXEC = "/exec"
+
     @staticmethod
     def campaign_postprocessing(campaign_id: str) -> str:
         return f"/campaigns/{campaign_id}/postprocessing"
@@ -1201,6 +1290,41 @@ class RobovastInterface(ABC):
         Same streaming protocol as :meth:`get_campaign_logs` (poll, append
         :attr:`LogChunk.text`, resume from :attr:`LogChunk.next_offset`). The raw
         builder output for deep dives when :class:`ImageBuildError` is not enough.
+        """
+
+    # -- container exec (diagnostic; produces no campaign) ------------------
+
+    @abstractmethod
+    def exec_in_container(self, request: ExecRequest) -> ExecResult:
+        """Run one command in the experiment image and return what it produced.
+
+        This is for **testing a container and its setup**, not for running experiments:
+        nothing it does is durable — no campaign directory, no ``/out`` mount, no
+        provenance, no repetitions — so its output cannot be compared with a campaign's.
+        Use :meth:`create_campaign` to run the experiment.
+
+        Two shapes, distinguished by ``config_name``: omitted, the bare image (imports,
+        ``ros2 pkg list``, file checks); named, that config staged as a campaign would
+        stage it, where an empty ``command`` starts its scenario.
+
+        **A running campaign is never a target.** There is no path from here to a job's
+        container or pod: a campaign in flight is provenance-recorded, reproducible
+        compute, and attaching to it would perturb the thing it exists to produce. To
+        inspect a live stack, start it here with ``keep_alive`` and exec into your own
+        container.
+
+        At most one exec container exists at a time (see :class:`ExecContainerState`);
+        ``keep_alive=False`` also stops a held one. Raises ``ValueError`` when the
+        request names no source, names both, names an unknown ``config_name``, or asks
+        for an empty command with no config staged.
+        """
+
+    @abstractmethod
+    def stop_exec_container(self, backend: Optional[str] = None) -> ExecStopResult:
+        """Stop the held exec container, if there is one.
+
+        Idempotent: with nothing held this reports ``stopped=False`` rather than
+        failing. Never touches a campaign's container.
         """
 
     # -- postprocessing (editable, re-runnable; never mutates _config) ------

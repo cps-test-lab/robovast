@@ -68,13 +68,20 @@ if ! command -v ros2 > /dev/null 2>&1 && ! command -v scenario_execution > /dev/
     exit 1
 fi
 
-# Collect system information (non-fatal)
-log "Collecting system information..."
-# Replaced with the cluster provider's INSTANCE_TYPE command (get_instance_type_command);
-# left as an empty assignment on the local lane, which has no instance to identify.
-# @@INSTANCE_TYPE_BLOCK@@
-SYSINFO_FILE="${OUTPUT_DIR}/sysinfo.yaml"
-python3 /config/collect_sysinfo.py --output "${SYSINFO_FILE}" --external "instance_type=${INSTANCE_TYPE}" --external "available_cpus=${AVAILABLE_CPUS}" --external "available_mem=${AVAILABLE_MEM}"
+# Collect system information (default: true). A container-exec diagnostic sets
+# COLLECT_SYSINFO=false: it mounts no /config/collect_sysinfo.py, and under `set -e`
+# the missing script would abort before the requested command ever ran. A run records
+# its host, so nothing but that diagnostic path should disable this.
+if [ "${COLLECT_SYSINFO}" != "false" ]; then
+  log "Collecting system information..."
+  # Replaced with the cluster provider's INSTANCE_TYPE command (get_instance_type_command);
+  # left as an empty assignment on the local lane, which has no instance to identify.
+  # @@INSTANCE_TYPE_BLOCK@@
+  SYSINFO_FILE="${OUTPUT_DIR}/sysinfo.yaml"
+  python3 /config/collect_sysinfo.py --output "${SYSINFO_FILE}" --external "instance_type=${INSTANCE_TYPE}" --external "available_cpus=${AVAILABLE_CPUS}" --external "available_mem=${AVAILABLE_MEM}"
+else
+  log "System information collection disabled (COLLECT_SYSINFO=false)"
+fi
 
 # Check if X11 is enabled (default: true for backward compatibility)
 if [ "${ENABLE_X11}" != "false" ]; then

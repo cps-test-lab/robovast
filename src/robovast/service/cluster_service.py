@@ -81,6 +81,11 @@ def _object_entry(name: str, size):
 class ClusterService(LocalTransport):
     """Interface implementation that drives campaigns in-process over Kubernetes."""
 
+    #: A staged entrypoint must carry the *cluster* init and post-run blocks here, since
+    #: that is where the exec actually runs. Copying a campaign's rendered entrypoint
+    #: across lanes is what this flag exists to prevent.
+    _EXEC_CLUSTER_LANE = True
+
     def __init__(self, namespace=None, cluster_config_name=None,
                  cluster_config_kwargs=None, store=None,
                  reap_on_start=True, kube_context=None):
@@ -1217,6 +1222,28 @@ class ClusterService(LocalTransport):
             except Exception:  # noqa: BLE001 - shutdown must not mask the exit
                 logger.warning("Could not tear down jobs for %s during shutdown",
                                entry.campaign_id, exc_info=True)
+
+    # -- container exec -----------------------------------------------------
+
+    def _exec_lane(self):
+        """The in-cluster exec lane: one aux pod, driven through ``pods/exec``."""
+        from robovast.execution.cluster_execution.container_runner import \
+            service_pod_owner_reference
+        from robovast.service.kube_exec_lane import KubeExecLane
+        owner = None
+        try:
+            owner = service_pod_owner_reference(self._k8s(), self.namespace)
+        except Exception as e:  # noqa: BLE001 - off-cluster there is no service pod
+            logger.debug("no service-pod owner reference for the exec pod: %s", e)
+        return KubeExecLane(self.namespace, owner_ref=owner,
+                            kube_context=self.kube_context)
+
+    def _reap_stray_exec_container(self) -> None:
+        """Delete an exec pod (and its ConfigMap) left by a previous service process."""
+        try:
+            self._exec_lane().stop_held()
+        except Exception as e:  # noqa: BLE001 - a missing cluster must not break startup
+            logger.debug("could not check for a stray exec pod: %s", e)
 
     # -- shutdown -----------------------------------------------------------
 

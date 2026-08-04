@@ -102,7 +102,8 @@ reading results. Each phase is one plugin, so the generated table below is also 
    * - ``execution``
      - Starting a campaign and watching it: status, logs, per-job view, capacity, stop.
        Building the experiment image lives here too — a build is part of a campaign's
-       driven work, not a stage of its own.
+       driven work, not a stage of its own. So does
+       :ref:`testing a container <mcp-container-exec>`, which produces no campaign data.
    * - ``results``
      - Reading what a campaign did: :ref:`read-only SQL <mcp-analysis>` plus the campaign
        listing and one aggregate.
@@ -449,13 +450,14 @@ owns, with no log reading at all:
    two-minute pilot that wedged immediately would report ``stalled: false`` for
    fifty-nine minutes. **Declare** ``execution.timeout`` and the verdict becomes real.
 
-That backstop is not wasted — it is simply a different job. Only the cluster lane
-*enforces* a per-run limit (as a Job ``activeDeadlineSeconds``, falling back to one
-hour so a run cannot hang forever); the local lane enforces nothing at all. Killing
-late still beats never, whereas *reporting* late is worse than reporting nothing, so
-the two figures are deliberately separate (``per_run_deadline_seconds`` versus
-``declared_per_run_seconds``). A stalled local run therefore stays alive to be
-inspected — end it with ``stop_campaign``.
+That backstop is not wasted — it is simply a different job. Both lanes now *enforce* a
+per-run limit from ``execution.timeout`` (a Job ``activeDeadlineSeconds`` on the cluster,
+a ``timeout``-wrapped compose step locally), but only the cluster falls back to one hour
+when none is declared — locally an undeclared timeout stays unbounded. Killing late still
+beats never, whereas *reporting* late is worse than reporting nothing, so the two figures
+are deliberately separate (``per_run_deadline_seconds`` versus
+``declared_per_run_seconds``). A wedged local run with no declared timeout therefore stays
+alive to be inspected — end it with ``stop_campaign``.
 
 **What is it doing?** That is a log question, and the log tools answer it. All three
 (``get_campaign_log``, ``get_job_log``, ``get_image_build_log``) take the same four
@@ -581,6 +583,88 @@ credentials** — the symbolic ``build:<tag>`` is all it ever sees. Requires a
 reachable ``robovast-service`` (a ``vast serve`` or a tunnel); on the cluster it
 also requires a registry configured at ``vast exec cluster setup`` (see
 :doc:`cluster_execution`).
+
+.. _mcp-container-exec:
+
+Testing a container and its setup
+----------------------------------
+
+``exec_in_container`` runs one command in an experiment image. It is for **testing a
+container and its setup**, and it **produces no campaign data**: no campaign directory,
+no ``/out`` mount, no provenance, no repetitions, and no entry in ``list_campaigns``.
+This page argues throughout that a hand-started run "has no pinned image, no recorded
+provenance and no repetitions, so its output cannot be compared with a campaign's" — this
+tool is in that category *by design*, which is exactly why nothing it does is durable.
+To run the experiment, use ``start_campaign``.
+
+It exists because the alternative was worse. Answering "is the package installed?", "does
+it import?", "is the launch file in ``share/``?" meant authoring a campaign and starting
+it — a multi-minute cycle per question, repeated until the image was right. There was no
+cheaper way to ask.
+
+**Two questions, one knob.** ``config_name`` decides which:
+
+* omitted — the bare image: ``python3 -c 'import rst'``, ``ros2 pkg list | grep <pkg>``,
+  ``ls`` of an install tree. This is the loop that diagnoses the ament/``AMENT_PREFIX_PATH``
+  pitfalls in :ref:`configuration <config-build-section>` in one call each.
+* named — that configuration staged exactly as a campaign stages it, so an empty
+  ``command`` starts its scenario.
+
+**Both sources are projects.** ``workspace_id`` + ``config_path`` names a workspace's
+``.vast``; ``campaign_id`` uses an existing campaign's ``_config/``, which *is* a project.
+Nothing about the campaign case is special — same staging, same environment. The image
+resolves from that project's ``.vast`` like any run, so a rebuilt image is picked up
+rather than a historical digest. A ``build:<tag>`` must already exist: this never builds
+implicitly, because a quick check silently becoming a full image build is the cost it was
+added to remove.
+
+**A running campaign is never a target.** There is no way from here to a job's container
+or pod. A campaign in flight is provenance-recorded, reproducible compute, and attaching
+to it would perturb the thing it exists to produce. To inspect a live stack, start that
+stack here instead — and to ask why a *campaign* is wedged, use
+``get_campaign_status`` (``stalled`` / ``stall_reason``), ``get_campaign_log``,
+``get_job_log`` and ``get_simulation_screenshot``.
+
+**At most one container exists at a time.** That is what keeps this from growing session
+ids, a listing tool, and a leak class. ``keep_alive=True`` holds it open; every result
+reports ``container.reused``, and ``reused: false`` on a ``keep_alive`` call means a fresh
+container — anything the previous one was running is gone. ``stop_container`` ends it, and
+``get_resource_usage`` reports it while it lives, so a lane with no room for a campaign
+can be traced to your own held container instead of guessed at.
+
+Asking for a different project while something is still running in the held container is
+**refused**, naming ``stop_container``: replacing it would kill a scenario you deliberately
+started, inferred from a changed argument rather than asked for. An idle container is
+replaced freely.
+
+**Time limits are derived, not passed.** A command gets a fixed cap; a scenario gets the
+project's own ``execution.timeout``; a project that sets none gets the same fixed cap,
+reported as ``limit_source: "default"`` — never the campaign lane's one-hour fallback,
+which for a diagnostic container is a leak rather than a limit. Because the source is
+reported, a ``timed_out`` result names its own remedy.
+
+**Backgrounding, and where a scenario's output goes.** ``entrypoint.sh`` redirects its own
+stdout when it is given no argv, so a *started scenario* writes to a file inside the
+container and ``stdout`` comes back near-empty. The result carries ``log_path``; read it
+with a follow-up ``command="tail -200 <log_path>"``. A command that backgrounds something
+itself must detach it — ``setsid nohup … & disown`` — or it is torn down with the exec
+that started it, which looks like "the stack died" rather than "I killed it":
+
+.. code-block:: text
+
+   exec_in_container(campaign_id=cid, config_name="platform-1", keep_alive=True)
+   # -> the scenario, detached; note the returned log_path
+
+   exec_in_container(campaign_id=cid, config_name="platform-1", keep_alive=True,
+                     command="ros2 node list; ros2 topic list")
+   # -> the live stack, reused: true
+
+   stop_container()
+
+There are no ``grep`` / ``min_severity`` parameters, unlike the three log tools: the
+command *is* a shell, so ``| grep``, ``tail`` and ``sed`` are already available and
+strictly more expressive. ``tail`` trims the captured output through the same
+:func:`~robovast.mcp_server.log_view.view_log` filter those tools use.
 
 .. _mcp-tools:
 

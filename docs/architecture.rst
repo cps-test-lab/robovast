@@ -148,6 +148,67 @@ availability by deployment rather than by backend:
      - upload with ``vast workspace init`` / ``create_workspace`` +
        ``update_workspace``; edits need a re-push
 
+.. _container-exec-architecture:
+
+Container exec: a diagnostic that cannot become a run
+------------------------------------------------------
+
+``exec_in_container`` runs one command in an experiment image. Everything about its design
+follows from one requirement: it must be **structurally incapable of producing a result**,
+not merely discouraged from it. An exec that could write ``/out`` or leave a
+campaign-shaped directory would become the path of least resistance, and its output would
+*look* like a campaign's while having no pinned provenance and no repetitions.
+
+So: no campaign id, no campaign directory, ``/out`` never mounted, and ``OUTPUT_DIR``
+pointing at a container-local path that dies with the container. A staged ``/config`` is
+read-only, and the workspace — mounted at its own ``/sources/<id>`` address so a path from
+``write_file`` is usable verbatim — is read-only too.
+
+**Two sources, one path.** A workspace project (``workspace_id`` + ``config_path``) and an
+existing campaign (``campaign_id``) both resolve to a *project directory*, because a
+campaign's ``_config/`` is one. From there the staging is identical:
+``build_campaign_data`` → ``filter_configs_by_name`` → ``prepare_campaign_configs``, and
+the image resolves from that project's ``.vast`` exactly as a run resolves it.
+
+**The entrypoint is rendered, never inherited.** ``prepare_campaign_configs`` substitutes
+lane-specific init and post-run blocks into ``entrypoint.sh`` (``fixuid`` locally, config
+fetch and S3 mirroring in-cluster), so a script rendered for one lane is wrong on the
+other. Reusing a cluster campaign's staged entrypoint for a local exec would run cluster
+post-run logic on a developer's machine. ``render_entrypoint`` exists so the bare-image
+case can have that script without expanding a config tree it does not need.
+
+**Why reuse the entrypoint at all**, rather than building an environment: the environment a
+run sees is the ROS overlay, ``/ws/install``, the init block, ``execution.env`` and
+``PRE_COMMAND`` — and it will grow. A diagnostic that reconstructed it would drift and
+answer a different question than the run. Reuse also has a visible consequence worth
+knowing: the entrypoint redirects its own stdout when given no argv, so a *started
+scenario* logs to a file inside the container and the result carries ``log_path`` instead
+of that output.
+
+**A running campaign is never a target.** There is no code path from this operation to a
+job's container or pod. An earlier draft made exec'ing a live campaign "safe" by annotating
+its log; that was an admission the operation was wrong rather than a fix. To inspect a live
+stack, the caller starts that stack in its own exec container.
+
+**One container, so there is no state to manage.** At most one exists at a time, under a
+fixed name (``robovast-exec`` — deliberately not the campaign container's single-flight
+``robovast``, which ``LocalTransport`` force-removes to unblock a stop). That removes
+session ids, a listing operation, and the leak class: a stray container is found and reaped
+by name at service start. Its cost is reported instead of hidden — ``ResourceUsage`` carries
+``exec_container``, so a lane with no room can be attributed to the caller's own container.
+
+Two clocks bound it, and keeping them apart is load-bearing: an **idle** reap that runs
+only while nothing the tool started is alive (otherwise a running scenario would be killed
+while it worked), and a **hard deadline** at ``max(idle cap, limit + grace)`` so a project
+declaring ``timeout: 900`` is not truncated at the idle cap. Limits are derived rather than
+passed — ``ExecRequest`` has no timeout field — and the result reports which rule applied,
+so a ``timed_out`` result names its own remedy.
+
+The lane-specific half is a small protocol (``ExecLane``): ``DockerExecLane`` runs
+``docker run``/``docker exec``, ``KubeExecLane`` an aux pod plus ``pods/exec`` with
+``/config`` delivered as a ConfigMap. Everything else — validation, staging, limits, the
+lifetime state machine — is shared.
+
 .. _file-address-space:
 
 One address space for files

@@ -66,7 +66,7 @@ import time
 import yaml
 from kubernetes import client
 
-from robovast.common import (COMPAT_VERSION, get_execution_env_variables,
+from robovast.common import (COMPAT_VERSION, get_execution_env_variables, scenario_env,
                              normalize_secondary_containers)
 from robovast.common.cluster_context import resolve_resources
 from robovast.common.common import get_scenario_parameters
@@ -483,17 +483,10 @@ class BatchJobRunner:
             if self.log_tree:
                 containers[0]['env'].append({'name': 'SCENARIO_EXECUTION_PARAMETERS', 'value': '-t'})
 
-            containers[0]['env'].append({'name': 'SCENARIO_FILE', 'value': scenario_file_name})
-
-            # Simulation backend (execution.simulation) -> --simulation in entrypoint.sh
-            simulation = self.campaign_data.get('execution', {}).get('simulation')
-            if simulation:
-                containers[0]['env'].append({'name': 'SIMULATION', 'value': str(simulation)})
-
-            # Runner selection (execution.mode) -> SCENARIO_MODE in entrypoint.sh
-            mode = self.campaign_data.get('execution', {}).get('mode', 'auto')
-            if mode and mode != 'auto':
-                containers[0]['env'].append({'name': 'SCENARIO_MODE', 'value': str(mode)})
+            # SCENARIO_FILE / SIMULATION / SCENARIO_MODE, derived from the .vast by the
+            # same helper the local lane and container-exec use.
+            for name, val in scenario_env(self.campaign_data).items():
+                containers[0]['env'].append({'name': name, 'value': str(val)})
 
             for k, v in extra_main_env:
                 containers[0]['env'].append({'name': k, 'value': v})

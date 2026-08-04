@@ -392,6 +392,41 @@ def get_execution_env_variables(run_num, config_name, additional_env=None):
     return env_vars
 
 
+def scenario_env(campaign_data):
+    """The scenario-shaping env vars a run's config implies, for ``entrypoint.sh``.
+
+    Covers only what is derived from the ``.vast`` and is therefore identical on every
+    lane: which scenario file to run, the simulation backend, and the runner selection.
+    Both execution backends built these separately (compose YAML lines vs a Kubernetes
+    ``env`` list) from the same config keys, so the two could drift while looking
+    correct; container-exec would have been a third copy.
+
+    Deliberately *not* here:
+
+    - **Path-valued vars** (``SCENARIO_PARAMETER_FILE``, ``OUTPUT_DIR``,
+      ``SCENARIO_OUTPUT_DIR``). Those genuinely differ by lane, because the mount
+      layout and job packing do — the caller owns them.
+    - **``SCENARIO_EXECUTION_PARAMETERS``**. Its derivation is not yet common: the
+      local lane builds ``-t``/``-d`` from ``log_tree``/``debug`` and otherwise defers
+      to a ``run.sh`` shell variable, while the cluster lane knows only ``log_tree``.
+      Sharing it would freeze that difference into one contract.
+    """
+    execution = campaign_data.get("execution") or {}
+    env = {
+        'SCENARIO_FILE': os.path.basename(
+            campaign_data.get("scenario_file", "scenario.osc")),
+    }
+    simulation = execution.get("simulation")
+    if simulation:
+        env['SIMULATION'] = str(simulation)
+    # 'auto' is the entrypoint's own default (detect ros2 on PATH); passing it would
+    # only restate that, so it stays unset.
+    mode = execution.get("mode", "auto")
+    if mode and mode != "auto":
+        env['SCENARIO_MODE'] = str(mode)
+    return env
+
+
 _LOCAL_INIT_BLOCK = "command -v fixuid > /dev/null 2>&1 || { echo 'ERROR: fixuid not found in container image. Please rebuild the image.' >&2; exit 1; }; eval $(fixuid -q)\nEXTRA_REQUIRED_TOOLS=\"fixuid\""
 
 # Cluster runs mirror output to S3 in a post-run step (and pull config via an
@@ -601,6 +636,33 @@ def check_campaign_inputs(campaign_data):
         raise missing_input_error(missing)
 
 
+def render_entrypoint(*, cluster=False, instance_type_command=None):
+    """The container entrypoint script, with its lane-specific blocks substituted.
+
+    The template carries three markers whose content depends on *where* the container
+    runs: the init block (``fixuid`` locally, config fetch in-cluster), the post-run
+    block (local cleanup vs mirroring results to S3), and the instance-type probe. A
+    script rendered for one lane is therefore wrong on the other — which is why a
+    campaign's staged ``entrypoint.sh`` must never be reused by something running
+    elsewhere, and why container-exec renders its own instead of copying one.
+
+    Separate from :func:`prepare_campaign_configs` because a diagnostic that runs a bare
+    command needs the entrypoint *without* a config tree — and demanding a valid
+    scenario file to produce one would fail checks that have nothing to do with the
+    question being asked.
+    """
+    entrypoint_src = str(files('robovast.execution.data').joinpath('entrypoint.sh'))
+    with open(entrypoint_src, 'r', encoding='utf-8') as f:
+        content = f.read()
+    init_block = _CLUSTER_INIT_BLOCK if cluster else _LOCAL_INIT_BLOCK
+    post_run_block = _CLUSTER_POST_RUN_BLOCK if cluster else _LOCAL_POST_RUN_BLOCK
+    content = content.replace('# @@INIT_BLOCK@@', init_block)
+    content = content.replace('# @@INSTANCE_TYPE_BLOCK@@',
+                              instance_type_command or _NO_INSTANCE_TYPE)
+    content = content.replace('    # @@POST_RUN_BLOCK@@', post_run_block)
+    return content
+
+
 def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
                              instance_type_command=None):
     """Stage a campaign's config tree, including the generated entrypoint.
@@ -624,19 +686,11 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
     campaign_transient_dir = os.path.join(out_dir, "_transient")
     os.makedirs(campaign_transient_dir, exist_ok=True)
 
-    # Inject the run-mode-specific post-run block into the shared entrypoint template
-    entrypoint_src = str(files('robovast.execution.data').joinpath('entrypoint.sh'))
-    with open(entrypoint_src, 'r', encoding='utf-8') as f:
-        entrypoint_content = f.read()
     init_block = _CLUSTER_INIT_BLOCK if cluster else _LOCAL_INIT_BLOCK
-    entrypoint_content = entrypoint_content.replace('# @@INIT_BLOCK@@', init_block)
-    entrypoint_content = entrypoint_content.replace(
-        '# @@INSTANCE_TYPE_BLOCK@@', instance_type_command or _NO_INSTANCE_TYPE)
-    post_run_block = _CLUSTER_POST_RUN_BLOCK if cluster else _LOCAL_POST_RUN_BLOCK
-    entrypoint_content = entrypoint_content.replace('    # @@POST_RUN_BLOCK@@', post_run_block)
     entrypoint_dst = os.path.join(campaign_transient_dir, "entrypoint.sh")
     with open(entrypoint_dst, 'w', encoding='utf-8') as f:
-        f.write(entrypoint_content)
+        f.write(render_entrypoint(cluster=cluster,
+                                 instance_type_command=instance_type_command))
 
     # Copy secondary_entrypoint.sh into _transient/ (with init block replacement)
     secondary_entrypoint_src = str(files('robovast.execution.data').joinpath('secondary_entrypoint.sh'))

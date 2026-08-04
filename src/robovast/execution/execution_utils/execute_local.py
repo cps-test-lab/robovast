@@ -23,7 +23,7 @@ import tempfile
 from robovast.common import (COMPAT_VERSION, generate_execution_yaml_script,
                              get_execution_env_variables, load_config,
                              normalize_secondary_containers,
-                             prepare_campaign_configs)
+                             prepare_campaign_configs, scenario_env)
 from robovast.common.cli import get_project_config
 from robovast.common.common import get_scenario_parameters
 from robovast.common.config_generation import generate_scenario_variations
@@ -392,10 +392,8 @@ def _build_packed_compose_yaml(
     use_gui_block,
     skip_resource_allocation=True,
     scenario_execution_params='',
-    scenario_file_name='scenario.osc',
+    scenario_env_vars=None,
     job_prefix='',
-    simulation='',
-    mode='auto',
 ):
     """Build docker-compose YAML for one job.
 
@@ -415,6 +413,11 @@ def _build_packed_compose_yaml(
 
     def quote(s):
         return s.replace('"', '\\"')
+
+    # SCENARIO_FILE both names the mount and reaches the entrypoint, so it is read
+    # from the one derived env rather than passed a second time alongside it.
+    scenario_env_vars = dict(scenario_env_vars or {})
+    scenario_file_name = scenario_env_vars.get('SCENARIO_FILE', 'scenario.osc')
 
     has_secondaries = bool(secondary_containers)
 
@@ -480,11 +483,8 @@ def _build_packed_compose_yaml(
         lines.append(f'      - POST_COMMAND={post_command}')
     lines.append("      - AVAILABLE_CPUS=${AVAILABLE_CPUS}")
     lines.append("      - AVAILABLE_MEM=${AVAILABLE_MEM}")
-    lines.append(f"      - SCENARIO_FILE={scenario_file_name}")
-    if simulation:
-        lines.append(f"      - SIMULATION={simulation}")
-    if mode and mode != "auto":
-        lines.append(f"      - SCENARIO_MODE={mode}")
+    for key, value in scenario_env_vars.items():
+        lines.append(f"      - {key}={value}")
     lines.extend(packed_env_lines)
     if scenario_execution_params:
         lines.append(f"      - SCENARIO_EXECUTION_PARAMETERS={scenario_execution_params}")
@@ -774,9 +774,7 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
 
     script += generate_execution_yaml_script(runs, execution_params=campaign_data.get("execution", {}))
 
-    scenario_file_name = os.path.basename(campaign_data.get("scenario_file", "scenario.osc"))
-    simulation = campaign_data.get("execution", {}).get("simulation", "")
-    mode = campaign_data.get("execution", {}).get("mode", "auto")
+    scenario_env_vars = scenario_env(campaign_data)
     _static_params = " ".join(p for p, enabled in [("-t", log_tree), ("-d", debug)] if enabled)
     scenario_execution_params = _static_params if _static_params else "${SCENARIO_EXECUTION_PARAMS}"
 
@@ -874,10 +872,8 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
             secondary_containers=normalized_secondary, use_gui_block=True,
             skip_resource_allocation=skip_resource_allocation,
             scenario_execution_params=scenario_execution_params,
-            scenario_file_name=scenario_file_name,
+            scenario_env_vars=scenario_env_vars,
             job_prefix=job_prefix,
-            simulation=simulation,
-            mode=mode,
         )
         # Create this job's artifact links right after it finishes (injected
         # after the compose `down`, before the step's summary/exit), so a

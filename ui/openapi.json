@@ -725,6 +725,199 @@
         "title": "DataTable",
         "type": "object"
       },
+      "ExecContainerState": {
+        "description": "State of the single exec container, as of one call.\n\nAlso embedded in :class:`ResourceUsage`, so a caller that finds the lane full can\nattribute the shortfall to its own held container instead of guessing.",
+        "properties": {
+          "config": {
+            "default": "",
+            "title": "Config",
+            "type": "string"
+          },
+          "deadline_in_s": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deadline In S"
+          },
+          "idle_expires_in_s": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idle Expires In S"
+          },
+          "image": {
+            "default": "",
+            "title": "Image",
+            "type": "string"
+          },
+          "kept": {
+            "default": false,
+            "title": "Kept",
+            "type": "boolean"
+          },
+          "reused": {
+            "default": false,
+            "title": "Reused",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "config",
+          "deadline_in_s",
+          "idle_expires_in_s",
+          "image",
+          "kept",
+          "reused"
+        ],
+        "title": "ExecContainerState",
+        "type": "object"
+      },
+      "ExecRequest": {
+        "description": "Run one command in the experiment image \u2014 a diagnostic, never a campaign.\n\nNames exactly one source of the image (and, with ``config_name``, of a staged\nconfiguration): a workspace project, or an existing campaign whose ``_config/`` is\nitself a project. A running campaign's container is deliberately not addressable;\nsee :meth:`RobovastInterface.exec_in_container`.\n\nCarries **no timeout field**, so no client can set one: the limit is derived from\nwhat is being run (``execution.timeout`` for a scenario, a fixed cap for a command)\nand reported back in :class:`ExecResult`.",
+        "properties": {
+          "backend": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Backend"
+          },
+          "campaign_id": {
+            "default": "",
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "command": {
+            "default": "",
+            "title": "Command",
+            "type": "string"
+          },
+          "config_name": {
+            "default": "",
+            "title": "Config Name",
+            "type": "string"
+          },
+          "config_path": {
+            "default": "",
+            "title": "Config Path",
+            "type": "string"
+          },
+          "keep_alive": {
+            "default": false,
+            "title": "Keep Alive",
+            "type": "boolean"
+          },
+          "workspace_id": {
+            "default": "",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "title": "ExecRequest",
+        "type": "object"
+      },
+      "ExecResult": {
+        "description": "What one :class:`ExecRequest` produced. No campaign, no provenance, nothing durable.",
+        "properties": {
+          "container": {
+            "$ref": "#/components/schemas/ExecContainerState"
+          },
+          "duration_s": {
+            "default": 0.0,
+            "title": "Duration S",
+            "type": "number"
+          },
+          "exit_code": {
+            "default": 0,
+            "title": "Exit Code",
+            "type": "integer"
+          },
+          "limit_s": {
+            "default": 0,
+            "title": "Limit S",
+            "type": "integer"
+          },
+          "limit_source": {
+            "default": "",
+            "title": "Limit Source",
+            "type": "string"
+          },
+          "log_path": {
+            "default": "",
+            "title": "Log Path",
+            "type": "string"
+          },
+          "stderr": {
+            "default": "",
+            "title": "Stderr",
+            "type": "string"
+          },
+          "stdout": {
+            "default": "",
+            "title": "Stdout",
+            "type": "string"
+          },
+          "timed_out": {
+            "default": false,
+            "title": "Timed Out",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "container",
+          "duration_s",
+          "exit_code",
+          "limit_s",
+          "limit_source",
+          "log_path",
+          "stderr",
+          "stdout",
+          "timed_out"
+        ],
+        "title": "ExecResult",
+        "type": "object"
+      },
+      "ExecStopResult": {
+        "description": "Outcome of :meth:`RobovastInterface.stop_exec_container`.\n\nNot :class:`ActionResult`: \"there was nothing to stop\" is an empty result, not a\nfailure, and ``ok=False`` would conflate it with one.",
+        "properties": {
+          "stopped": {
+            "default": false,
+            "title": "Stopped",
+            "type": "boolean"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target"
+          }
+        },
+        "required": [
+          "stopped",
+          "target"
+        ],
+        "title": "ExecStopResult",
+        "type": "object"
+      },
       "FileMeta": {
         "description": "Result of a write/upload \u2014 metadata only, never the content.\n\nEchoing content back would double its token cost for no benefit.",
         "properties": {
@@ -1276,6 +1469,16 @@
             "title": "Cpu Used",
             "type": "number"
           },
+          "exec_container": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExecContainerState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "jobs_pending": {
             "default": 0,
             "title": "Jobs Pending",
@@ -1303,6 +1506,7 @@
           "backend",
           "cpu_capacity",
           "cpu_used",
+          "exec_container",
           "jobs_pending",
           "jobs_running",
           "memory_capacity_bytes",
@@ -3607,6 +3811,88 @@
         "summary": "Get Config Schema",
         "tags": [
           "authoring"
+        ]
+      }
+    },
+    "/exec": {
+      "delete": {
+        "operationId": "stop_exec_container_exec_delete",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "backend",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Backend",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecStopResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stop Exec Container",
+        "tags": [
+          "exec"
+        ]
+      },
+      "post": {
+        "operationId": "exec_in_container_exec_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExecRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Exec In Container",
+        "tags": [
+          "exec"
         ]
       }
     },

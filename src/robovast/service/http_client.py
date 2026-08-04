@@ -267,6 +267,22 @@ class HTTPTransport(RobovastInterface):
         return LogChunk.model_validate(
             self._get(Routes.image_build_log(build_id), offset=offset))
 
+    # -- container exec -----------------------------------------------------
+
+    def exec_in_container(self, request):
+        from robovast.service.interface import ExecResult
+        # The read timeout must outlast the command's own limit, or a legitimately
+        # long-running exec would surface as a transport failure rather than its result.
+        from robovast.service.container_exec import COMMAND_LIMIT_S
+        return ExecResult.model_validate(
+            self._post(Routes.EXEC, json=request.model_dump(),
+                       timeout=COMMAND_LIMIT_S + 30))
+
+    def stop_exec_container(self, backend=None):
+        from robovast.service.interface import ExecStopResult
+        return ExecStopResult.model_validate(
+            self._delete(Routes.EXEC, backend=backend or ""))
+
     def get_postprocessing(self, campaign_id: str):
         from robovast.service.interface import PostprocessingInfo
         return PostprocessingInfo.model_validate(

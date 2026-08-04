@@ -36,6 +36,7 @@ from typing import Literal
 
 from robovast.common import file_address
 from robovast.service.interface import (ActionResult, BuildImageRequest,
+                                        ExecRequest, ExecResult, ExecStopResult,
                                         CampaignRef,
                                         CreateCampaignRequest,
                                         CleanupDataRequest,
@@ -76,7 +77,7 @@ FRAMEWORK_PATHS = frozenset({"/openapi.json", "/docs", "/docs/oauth2-redirect", 
 #: ungrouped. Kept here rather than in the docs extension because it is a property of the
 #: API, and :mod:`tests.service.test_route_docs` checks the two stay in step.
 ROUTE_TAG_ORDER = ("meta", "authoring", "workspaces", "uploads", "files", "campaigns",
-                   "image-builds", "results", "plugin-endpoints")
+                   "image-builds", "exec", "results", "plugin-endpoints")
 
 
 def api_routes(app):
@@ -590,6 +591,16 @@ def build_app(impl: RobovastInterface):
     @app.get(Routes.image_build_log("{build_id}"), response_model=LogChunk, tags=["image-builds"])
     def get_image_build_log(build_id: str, offset: int = 0) -> LogChunk:
         return _guard(lambda: impl.get_image_build_log(build_id, offset))
+
+    # -- container exec (diagnostic; produces no campaign) ------------------
+
+    @app.post(Routes.EXEC, response_model=ExecResult, tags=["exec"])
+    def exec_in_container(request: ExecRequest) -> ExecResult:
+        return _guard(lambda: impl.exec_in_container(request))
+
+    @app.delete(Routes.EXEC, response_model=ExecStopResult, tags=["exec"])
+    def stop_exec_container(backend: str = "") -> ExecStopResult:
+        return _guard(lambda: impl.stop_exec_container(backend or None))
 
     @app.get(Routes.campaign_archive("{campaign_id}"), tags=["results"])
     def download_campaign_archive(campaign_id: str):

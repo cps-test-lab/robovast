@@ -527,6 +527,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/exec": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Exec In Container */
+        post: operations["exec_in_container_exec_post"];
+        /** Stop Exec Container */
+        delete: operations["stop_exec_container_exec_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -1349,6 +1367,149 @@ export interface components {
             table: string;
         };
         /**
+         * ExecContainerState
+         * @description State of the single exec container, as of one call.
+         *
+         *     Also embedded in :class:`ResourceUsage`, so a caller that finds the lane full can
+         *     attribute the shortfall to its own held container instead of guessing.
+         */
+        ExecContainerState: {
+            /**
+             * Config
+             * @default
+             */
+            config: string;
+            /** Deadline In S */
+            deadline_in_s: number | null;
+            /** Idle Expires In S */
+            idle_expires_in_s: number | null;
+            /**
+             * Image
+             * @default
+             */
+            image: string;
+            /**
+             * Kept
+             * @default false
+             */
+            kept: boolean;
+            /**
+             * Reused
+             * @default false
+             */
+            reused: boolean;
+        };
+        /**
+         * ExecRequest
+         * @description Run one command in the experiment image — a diagnostic, never a campaign.
+         *
+         *     Names exactly one source of the image (and, with ``config_name``, of a staged
+         *     configuration): a workspace project, or an existing campaign whose ``_config/`` is
+         *     itself a project. A running campaign's container is deliberately not addressable;
+         *     see :meth:`RobovastInterface.exec_in_container`.
+         *
+         *     Carries **no timeout field**, so no client can set one: the limit is derived from
+         *     what is being run (``execution.timeout`` for a scenario, a fixed cap for a command)
+         *     and reported back in :class:`ExecResult`.
+         */
+        ExecRequest: {
+            /** Backend */
+            backend?: string | null;
+            /**
+             * Campaign Id
+             * @default
+             */
+            campaign_id: string;
+            /**
+             * Command
+             * @default
+             */
+            command: string;
+            /**
+             * Config Name
+             * @default
+             */
+            config_name: string;
+            /**
+             * Config Path
+             * @default
+             */
+            config_path: string;
+            /**
+             * Keep Alive
+             * @default false
+             */
+            keep_alive: boolean;
+            /**
+             * Workspace Id
+             * @default
+             */
+            workspace_id: string;
+        };
+        /**
+         * ExecResult
+         * @description What one :class:`ExecRequest` produced. No campaign, no provenance, nothing durable.
+         */
+        ExecResult: {
+            container: components["schemas"]["ExecContainerState"];
+            /**
+             * Duration S
+             * @default 0
+             */
+            duration_s: number;
+            /**
+             * Exit Code
+             * @default 0
+             */
+            exit_code: number;
+            /**
+             * Limit S
+             * @default 0
+             */
+            limit_s: number;
+            /**
+             * Limit Source
+             * @default
+             */
+            limit_source: string;
+            /**
+             * Log Path
+             * @default
+             */
+            log_path: string;
+            /**
+             * Stderr
+             * @default
+             */
+            stderr: string;
+            /**
+             * Stdout
+             * @default
+             */
+            stdout: string;
+            /**
+             * Timed Out
+             * @default false
+             */
+            timed_out: boolean;
+        };
+        /**
+         * ExecStopResult
+         * @description Outcome of :meth:`RobovastInterface.stop_exec_container`.
+         *
+         *     Not :class:`ActionResult`: "there was nothing to stop" is an empty result, not a
+         *     failure, and ``ok=False`` would conflate it with one.
+         */
+        ExecStopResult: {
+            /**
+             * Stopped
+             * @default false
+             */
+            stopped: boolean;
+            /** Target */
+            target: string | null;
+        };
+        /**
          * FileMeta
          * @description Result of a write/upload — metadata only, never the content.
          *
@@ -1734,6 +1895,7 @@ export interface components {
             cpu_capacity: number;
             /** Cpu Used */
             cpu_used: number;
+            exec_container: components["schemas"]["ExecContainerState"] | null;
             /**
              * Jobs Pending
              * @default 0
@@ -3149,6 +3311,70 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+        };
+    };
+    exec_in_container_exec_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExecRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stop_exec_container_exec_delete: {
+        parameters: {
+            query?: {
+                backend?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecStopResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
