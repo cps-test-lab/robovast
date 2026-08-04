@@ -26,6 +26,7 @@ from robovast.common import (COMPAT_VERSION, generate_execution_yaml_script,
                              prepare_campaign_configs, scenario_env)
 from robovast.common.cli import get_project_config
 from robovast.common.common import get_scenario_parameters
+from robovast.common.config import declared_per_run_seconds
 from robovast.common.config_generation import generate_scenario_variations
 from robovast.common.execution import (_apply_local_parameter_overrides,
                                        build_job_parameter_documents,
@@ -571,8 +572,23 @@ def _build_packed_compose_yaml(
     return "\n".join(lines)
 
 
+def _timeout_prefix(step_timeout_s):
+    """``timeout`` prefix enforcing a step's wall-clock limit, or ``""`` for none.
+
+    SIGTERM first, so ``docker compose`` stops its containers the same way Ctrl+C makes
+    it — a scenario gets its shutdown, and ``test.xml`` still lands for a run that was
+    cut off. ``--kill-after`` is the backstop for a compose that ignores the term.
+
+    A timed-out step exits 124, which the step's existing failure handling already treats
+    as a failed run: a truncated batch must report failed, not pass as a shorter success.
+    """
+    if not step_timeout_s:
+        return ""
+    return f'timeout --signal=TERM --kill-after=30s {int(step_timeout_s)} '
+
+
 def _emit_compose_step(compose_file, compose_yaml, idx, total, label, has_secondaries, noun,
-                       post_down=""):
+                       post_down="", step_timeout_s=None):
     """Return the shell text that writes, runs, waits on and tears down one compose stack.
 
     Shared by the single-config and packed (multi-config) code paths. ``idx`` is
@@ -600,7 +616,7 @@ def _emit_compose_step(compose_file, compose_yaml, idx, total, label, has_second
     # Explicit signals (SIGTERM/SIGKILL) are sent by handle_sigint as needed.
     compose_bg = (
         f'( trap \'\' SIGINT; export COMPOSE_MENU=false;'
-        f' docker compose -f "{compose_file}" up'
+        f' {_timeout_prefix(step_timeout_s)}docker compose -f "{compose_file}" up'
         f' --abort-on-container-exit'
         f' --exit-code-from robovast'
         f' 2> >(grep -v "Aborting on container exit" >&2)'
@@ -644,7 +660,11 @@ def _emit_compose_step(compose_file, compose_yaml, idx, total, label, has_second
         f'    docker compose -f "{compose_file}" logs --follow 2>/dev/null &\n'
         '    LOG_PID=$!\n'
         '    WAIT_OUT="$(mktemp)"\n'
-        '    ( trap \'\' SIGINT; docker wait robovast > "$WAIT_OUT" 2>/dev/null ) &\n'
+        # The limit lands on the wait, not the detached ``up``: with secondaries the
+        # step's duration is however long the main container runs. Timing out leaves the
+        # containers up, and this step's ``down`` below removes them.
+        f'    ( trap \'\' SIGINT; {_timeout_prefix(step_timeout_s)}'
+        'docker wait robovast > "$WAIT_OUT" 2>/dev/null ) &\n'
         '    COMPOSE_PID=$!\n'
         '    wait "$COMPOSE_PID" 2>/dev/null\n'
         '    WAIT_CODE=$?\n'
@@ -742,8 +762,20 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
     main_memory = resources.get("memory")
     main_gpu = resources.get("gpu")
 
-    # Execution timeout (seconds) – None means no limit
-    timeout = execution_params.get("timeout")
+    # Per-step wall-clock limit, or None for no limit.
+    #
+    # ``execution.timeout`` is a *per-run* figure and a step may pack several runs, so it
+    # is scaled by ``runs_per_job`` — the same arithmetic the cluster applies to a Job's
+    # ``activeDeadlineSeconds`` (see ``kubernetes_backend``), so one key means one thing
+    # on both lanes.
+    #
+    # ``declared_per_run_seconds``, not ``per_run_deadline_seconds``: the latter falls
+    # back to an hour, and inventing a limit where the user set none is a different
+    # decision from enforcing one they did set. An undeclared timeout stays unbounded
+    # here, exactly as before.
+    declared_timeout = declared_per_run_seconds(execution_params)
+    runs_per_job = int(execution_params.get("runs_per_job") or 1)
+    step_timeout_s = declared_timeout * runs_per_job if declared_timeout else None
 
     # Secondary containers
     secondary_containers = execution_params.get("secondary_containers") or []
@@ -762,10 +794,10 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
         '@@COMPAT_VERSION@@', str(COMPAT_VERSION),
     )
 
-    # Warn if timeout is configured (not respected in local runs)
-    if timeout:
-        script += f'echo "Warning: execution.timeout is set to {timeout}s but is not enforced during local runs."\n'
-        script += f'echo ""\n'
+    if step_timeout_s:
+        script += (f'echo "Per-step limit: {step_timeout_s}s '
+                   f'(execution.timeout {declared_timeout}s x runs_per_job {runs_per_job})."\n')
+        script += 'echo ""\n'
 
     # Copy out_template to results dir
     script += f'echo "Copying out_template contents to ${{RESULTS_DIR}}..."\n'
@@ -887,7 +919,8 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
         )
         script += _emit_compose_step(
             compose_file, compose_yaml, idx, total,
-            f"Job {idx}/{total}", has_secondaries, "job(s)", post_down=link_cmds)
+            f"Job {idx}/{total}", has_secondaries, "job(s)", post_down=link_cmds,
+            step_timeout_s=step_timeout_s)
 
     try:
         with open(output_script_path, 'w') as f:

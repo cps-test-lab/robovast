@@ -300,7 +300,7 @@ requirement that truly needs numpy 2 gets an honest resolver conflict instead of
 runtime break. A project needing otherwise sets its own ``build.base_image``.
 
 One way a ``build:`` fails that the schema cannot catch
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 ``validate_project`` checks that every entry is *resolvable*, not that the resulting
 image will build. This is the failure that actually happens, and it costs a full apt+pip
@@ -440,14 +440,26 @@ timeout
 
 **Required:** No
 
-**Applies to:** Cluster execution (Kubernetes). For local execution, this value is currently not enforced.
+**Applies to:** Both execution lanes.
 
-Maximum wall-clock time (in seconds) allowed for a single run.
+Maximum wall-clock time (in seconds) allowed for a single run. Because ``timeout`` is
+*per run* and one unit of work may pack several runs (see ``runs_per_job``), both lanes
+enforce ``timeout * runs_per_job``.
 
-- **Local (Docker Compose):** Currently not enforced; local runs will continue past this timeout and must be stopped manually.
-- **Cluster (Kubernetes):** Sets ``activeDeadlineSeconds`` on the Job spec so Kubernetes force-terminates the Job (marking it ``DeadlineExceeded``) when the deadline expires — this is the backstop that stops a scenario that never shuts itself down. Because ``timeout`` is *per run* and a Job may pack several runs (see ``runs_per_job``), the Job's ``activeDeadlineSeconds`` is set to ``timeout * runs_per_job``.
+- **Local (Docker Compose):** each compose step is wrapped in ``timeout``, which
+  SIGTERMs ``docker compose`` — the same shutdown Ctrl+C triggers, so the scenario gets
+  a chance to finish writing its results — and SIGKILLs it 30s later if it ignores that.
+  A step killed this way tears its stack down and counts as a **failed** run, so a
+  truncated batch cannot pass as a shorter successful one.
+- **Cluster (Kubernetes):** sets ``activeDeadlineSeconds`` on the Job spec so Kubernetes
+  force-terminates the Job (marking it ``DeadlineExceeded``) when the deadline expires.
 
-If omitted (or ``null``), cluster runs fall back to a **default of 1 hour per run** (``activeDeadlineSeconds = 3600 * runs_per_job``) so a hung Job is always eventually killed rather than hanging the campaign indefinitely. Set ``timeout`` explicitly to override this default. (Local runs still have no enforced limit.)
+If omitted (or ``null``), cluster runs fall back to a **default of 1 hour per run**
+(``activeDeadlineSeconds = 3600 * runs_per_job``) so a hung Job is always eventually
+killed rather than hanging the campaign indefinitely. Set ``timeout`` explicitly to
+override this default. **Local runs have no such fallback**: with no ``timeout`` declared
+they remain unbounded, because enforcing a limit the user set is a different decision
+from inventing one they did not.
 
 A Job hard-killed on its deadline is logged with ``HARD-KILLED by activeDeadlineSeconds`` in the service log for later analysis.
 
