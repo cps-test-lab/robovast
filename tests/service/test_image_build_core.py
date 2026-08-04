@@ -14,6 +14,7 @@ import pytest
 
 from robovast.common.build_context import render_dockerignore
 from robovast.service.image_build import (BuildSpec, build_hash,
+                                          classify_build_error,
                                           generate_dockerfile)
 
 BASE = "ghcr.io/x/robovast:latest"
@@ -84,7 +85,8 @@ def test_apt_order_does_not_affect_hash(tmp_path):
 
 
 def test_python_package_order_affects_hash(tmp_path):
-    """Install order is semantic (deps must already be present) → part of the key."""
+    """Order no longer decides whether a build *works*, but it is still what gets
+    built — the specs are passed to pip in the order listed — so it stays in the key."""
     a = BuildSpec(tag="t", python_packages=["rst", "rst_assets"])
     b = BuildSpec(tag="t", python_packages=["rst_assets", "rst"])
     assert build_hash(a, tmp_path, BASE) != build_hash(b, tmp_path, BASE)
@@ -133,8 +135,9 @@ def test_no_blanket_context_copy(tmp_path):
             "/robovast_build_context/wheels/pkg-1.0-py3-none-any.whl") in df
 
 
-def test_each_context_entry_copied_immediately_before_its_install(tmp_path):
-    """A change to entry k must rebuild only k onward, so COPY/RUN must interleave."""
+def test_each_context_entry_is_copied_before_its_groups_install(tmp_path):
+    """Per-entry COPY (not ``COPY .``) so an unrelated file invalidates no pip layer,
+    and the group's install follows the copies it needs."""
     for name in ("a", "b"):
         (tmp_path / name).mkdir()
         (tmp_path / name / "setup.py").write_text("")
@@ -142,9 +145,107 @@ def test_each_context_entry_copied_immediately_before_its_install(tmp_path):
     lines = [ln for ln in generate_dockerfile(spec, tmp_path, BASE).splitlines()
              if ln.startswith(("COPY", "RUN --mount"))]
     assert lines[0].startswith("COPY a ")
-    assert "-e /robovast_build_context/a" in lines[1]
-    assert lines[2].startswith("COPY b ")
-    assert "-e /robovast_build_context/b" in lines[3]
+    assert lines[1].startswith("COPY b ")
+    assert "-e /robovast_build_context/a" in lines[2]
+    assert "-e /robovast_build_context/b" in lines[2]
+
+
+# ---------------------------------------------------------------------------
+# install groups — one pip resolution pass each
+# ---------------------------------------------------------------------------
+
+def _wheels(tmp_path, *names):
+    (tmp_path / "wheels").mkdir(exist_ok=True)
+    out = []
+    for name in names:
+        rel = f"wheels/{name}-0.1.0-py3-none-any.whl"
+        _wheel(tmp_path / rel, {f"{name}/__init__.py": ""})
+        out.append(rel)
+    return out
+
+
+def _installs(spec, tmp_path):
+    return [ln for ln in generate_dockerfile(spec, tmp_path, BASE).splitlines()
+            if ln.startswith("RUN --mount")]
+
+
+def test_a_flat_list_is_one_resolution_pass(tmp_path):
+    """The default has to be the correct one: pip sees every local wheel at once, so a
+    wheel's dependency on a sibling resolves against the sibling. Installed one at a
+    time, pip went to the index instead and the build died with
+    'No matching distribution found for rst_manipulation'."""
+    rst, manip = _wheels(tmp_path, "rst", "rst_manipulation")
+    # Deliberately dependency-hostile order: the dependent wheel first.
+    spec = BuildSpec(tag="t", python_packages=[manip, rst, "shapely>=2.0"])
+
+    installs = _installs(spec, tmp_path)
+
+    assert len(installs) == 1
+    assert manip in installs[0] and rst in installs[0] and "'shapely>=2.0'" in installs[0]
+
+
+def test_nesting_chooses_the_layer_boundaries(tmp_path):
+    """One RUN per group, in order — the author's caching lever."""
+    rst, assets, glue = _wheels(tmp_path, "rst", "rst_assets", "glue")
+    spec = BuildSpec(tag="t", python_packages=["mujoco>=3.0", [rst, assets], glue])
+
+    installs = _installs(spec, tmp_path)
+
+    assert len(installs) == 3
+    assert "'mujoco>=3.0'" in installs[0]          # bare string beside a list: group of one
+    assert rst in installs[1] and assets in installs[1]
+    assert glue in installs[2]
+
+
+def test_grouping_changes_the_hash(tmp_path):
+    """Same specs, different layers — the hash is what decides whether to rebuild."""
+    one = BuildSpec(tag="t", python_packages=["a>=1", "b>=1"])
+    two = BuildSpec(tag="t", python_packages=[["a>=1"], ["b>=1"]])
+    assert build_hash(one, tmp_path, BASE) != build_hash(two, tmp_path, BASE)
+
+
+# ---------------------------------------------------------------------------
+# the venv the packages land in
+# ---------------------------------------------------------------------------
+
+def test_installs_target_the_venv_not_the_debian_interpreter(tmp_path):
+    """Debian's numpy/scipy carry no RECORD, so pip cannot uninstall them and any
+    dependency wanting another version killed the build. Inside a venv pip leaves what
+    is outside it alone."""
+    df = generate_dockerfile(BuildSpec(tag="t", python_packages=["shapely>=2.0"]),
+                             tmp_path, BASE)
+    assert "--break-system-packages" not in df
+    assert "pip --python /usr/local/bin/python3 install" in df
+
+
+def test_the_venv_is_created_before_any_install_and_only_if_absent(tmp_path):
+    lines = generate_dockerfile(
+        BuildSpec(tag="t", python_packages=["shapely>=2.0"]), tmp_path, BASE).splitlines()
+    venv = next(i for i, ln in enumerate(lines) if "python3 -m venv" in ln)
+    install = next(i for i, ln in enumerate(lines) if ln.startswith("RUN --mount"))
+    assert venv < install
+    # Idempotent: a base that already carries the venv spends a cached layer, not a
+    # second venv over the first.
+    assert lines[venv].startswith("RUN test -f /usr/local/pyvenv.cfg || (")
+    assert "--system-site-packages" in lines[venv]   # ROS's own python stays importable
+
+
+def test_the_venv_is_handed_back_to_the_system_interpreter(tmp_path):
+    """``ros2 launch`` starts nodes with /usr/bin/python3, which does not see a venv.
+    Without this .pth the image builds green and the RUN fails on import."""
+    df = generate_dockerfile(BuildSpec(tag="t", python_packages=["shapely>=2.0"]),
+                             tmp_path, BASE)
+    assert "site.addsitedir" in df and "robovast_venv.pth" in df
+    # Asked for, not spelled out — the interpreter version is not baked into the image.
+    assert "python3.12" not in df
+
+
+def test_the_ament_path_covers_the_prefix_packages_are_installed_into(tmp_path):
+    """So a project never has to set AMENT_PREFIX_PATH to find its own ROS package."""
+    df = generate_dockerfile(BuildSpec(tag="t", python_packages=["shapely>=2.0"]),
+                             tmp_path, BASE)
+    assert "ENV AMENT_PREFIX_PATH=/usr/local" in df
+    assert "ENV VIRTUAL_ENV=/usr/local" in df
 
 
 def test_pip_spec_entry_has_no_copy(tmp_path):
@@ -187,9 +288,30 @@ def test_privilege_bracket_is_preserved(tmp_path):
 
 
 def test_empty_spec_renders_a_valid_noop(tmp_path):
-    df = generate_dockerfile(BuildSpec(tag="t"), tmp_path, BASE)
-    assert df.splitlines() == ["# syntax=docker/dockerfile:1", f"FROM {BASE}",
-                               "USER root", "USER ubuntu:ubuntu"]
+    lines = generate_dockerfile(BuildSpec(tag="t"), tmp_path, BASE).splitlines()
+    assert lines[:3] == ["# syntax=docker/dockerfile:1", f"FROM {BASE}", "USER root"]
+    assert lines[-1] == "USER ubuntu:ubuntu"
+    assert not [ln for ln in lines if ln.startswith(("COPY", "RUN --mount"))]
+
+
+# ---------------------------------------------------------------------------
+# failure classification
+# ---------------------------------------------------------------------------
+
+def test_a_base_whose_pip_predates_python_option_says_which_knob():
+    """The install targets the venv through the base's own pip. Only a hand-picked
+    base_image can be too old for that, and no package edit fixes it."""
+    err = classify_build_error("ERROR: no such option: --python\n")
+    assert err.entry == "base_image"
+    assert "pip >= 22.3" in err.message and "base_image" in err.message
+
+
+def test_a_missing_distribution_still_names_the_requirement():
+    """Installing a group in one pass costs the per-entry attribution, not this: the
+    name comes from pip's own message."""
+    err = classify_build_error(
+        "ERROR: No matching distribution found for rst_manipulation\n")
+    assert err.phase == "pip" and err.entry == "rst_manipulation"
 
 
 # ---------------------------------------------------------------------------

@@ -179,6 +179,15 @@ def validate_project(address: str) -> dict:
     alike — each problem tagged with its config block and field, so the file is fixed in
     as few iterations as possible.
 
+    ``valid: true`` means the file is well-formed and every reference resolves. It does
+    **not** mean a ``build:`` section will build. One failure passes validation and then
+    costs a full apt+pip cycle; if the project has a ``build:``, read
+    ``search_docs("build fails schema cannot catch")`` before starting it:
+
+    * an ``ament_python`` package installed as a wheel has **no ament libexec dir**, so
+      ``Node(package=..., executable=...)`` and ``ros2 run`` cannot find its executables.
+      Start such nodes with ``ExecuteProcess`` + ``python3 -m pkg.node``.
+
     Args:
         address: ``/sources/<workspace_id>/<path>``, or a path on the MCP-server host.
 

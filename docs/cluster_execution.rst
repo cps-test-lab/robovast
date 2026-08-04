@@ -416,12 +416,12 @@ between builds. Two registry-backed mechanisms replace that:
   ``<prefix>/<tag>:buildcache`` (``mode=max``, so intermediate layers are kept too).
   This tag is *not* hash-qualified — that is the point: the build for a new hash
   reuses the layers of the previous one, so changing one late ``python_packages``
-  entry no longer rebuilds the ones before it. A failing cache **export** never fails
+  group no longer rebuilds the ones before it. A failing cache **export** never fails
   the build (the image is already pushed by then); a failing **import** just makes the
   build slower. Both refs inherit the deployment's ``INSECURE`` / CA settings, since
   they address the same registry as the push.
 
-The registry therefore needs room for one extra tag per ``build.tag``. Ordering the
+The registry therefore needs room for one extra tag per ``build.tag``. Grouping the
 ``python_packages`` list by change frequency is what makes the layer cache pay off —
 see :ref:`the build section <config-build-caching>`.
 

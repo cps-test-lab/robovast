@@ -543,9 +543,10 @@ def build_experiment_image(workspace_id: str = "", config_path: str = "",
         execution:
           image: build:sim-suite-mobile
 
-    Order ``python_packages`` with what changes most often **last**: each entry installs
-    in its own layers, so a change only rebuilds the entries after it. Dependencies still
-    come first.
+    ``python_packages`` is a list of **install groups**: a flat list is one pip pass, so
+    its order does not matter (a local wheel resolves its siblings from the same pass).
+    Nest — ``[a, b]`` — to split it into layers, with what changes most often **last**;
+    a change then only rebuilds that group onward.
 
     Args:
         workspace_id: **Required** — whose project to build (as ``start_campaign``).

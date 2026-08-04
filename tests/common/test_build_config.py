@@ -47,6 +47,38 @@ def test_build_section_needs_ref():
         validate_config(_cfg(execution={"image": "plain:1", "runs": 1}))
 
 
+def test_python_packages_accept_install_groups():
+    """A group is a list of specs pip resolves in one pass; a bare spec is a group of
+    one. Both forms in one list, because an author should not have to bracket a
+    single-package layer."""
+    c = validate_config(_cfg(build={
+        "tag": "sim-suite",
+        "python_packages": ["mujoco>=3.0",
+                            ["wheels/a-1.0-py3-none-any.whl",
+                             "wheels/b-1.0-py3-none-any.whl"]]}))
+    assert c.build.python_packages[0] == "mujoco>=3.0"
+    assert len(c.build.python_packages[1]) == 2
+
+
+@pytest.mark.parametrize("entry, match", [
+    ([[]], "empty install group"),
+    ([["a", "  "]], r"entry 0, item 1 is blank"),
+    ([""], r"entry 0 is blank"),
+])
+def test_python_packages_reject_empty_specs_and_groups(entry, match):
+    """Emptiness is what the ``str | list[str]`` annotation cannot catch on its own."""
+    with pytest.raises(ValueError, match=match):
+        validate_config(_cfg(build={"tag": "sim-suite", "python_packages": entry}))
+
+
+def test_a_group_is_flat():
+    """A group is one pip invocation, so it cannot contain another group. The
+    annotation rejects it — no second opinion in the validator."""
+    with pytest.raises(ValueError, match="python_packages"):
+        validate_config(_cfg(build={"tag": "sim-suite",
+                                    "python_packages": [["a", ["b"]]]}))
+
+
 def test_tag_rejects_registry_host():
     with pytest.raises(ValueError, match="bare image name"):
         validate_config({"version": 1,

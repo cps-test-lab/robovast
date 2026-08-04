@@ -92,7 +92,24 @@ RUN  git clone --depth=1 "https://github.com/cps-test-lab/scenario-execution.git
      . "/opt/ros/${ROS_DISTRO}/setup.bash" && \
      colcon build
 
+# Pip constraints every experiment image build inherits (PIP_CONSTRAINT is read by pip
+# itself, so it applies to each install without a project repeating it).
+#
+# numpy<2 is an ABI floor of THIS image, not a preference: python3-transforms3d above is
+# Debian-built against numpy 1.x and dies on numpy 2 with "np.maximum_sctype was removed
+# in the NumPy 2.0 release". Without the constraint a dependency pulling numpy 2 breaks
+# tf maths at runtime, long after the build looked fine. With it, pip steers the resolve
+# instead (scipy>=1.13 lands on a 1.x-compatible scipy) or reports an honest conflict.
+RUN mkdir -p /etc/robovast && \
+    printf '# python3-transforms3d (apt, above) uses np.maximum_sctype, removed in numpy 2\nnumpy<2\n' \
+        > /etc/robovast/pip-constraints.txt
+ENV PIP_CONSTRAINT=/etc/robovast/pip-constraints.txt
+
 # Environment variables
+# Unbuffered: a campaign's only view of a run is its streamed log, and a buffered
+# interpreter withholds output for as long as it likes -- including the traceback of a
+# crash, which is exactly when the log is read.
+ENV PYTHONUNBUFFERED=1
 ENV DISPLAY=:0
 ENV XDG_RUNTIME_DIR=/tmp/runtime-user
 ENV SIZEW=1600

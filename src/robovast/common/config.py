@@ -334,19 +334,29 @@ class BuildConfig(BaseModel):
     base_image: Optional[str] = None
     #: apt packages installed into the image (``apt-get install -y``).
     system_packages: Optional[list[str]] = None
-    #: Python packages installed into the image. Same vocabulary as the top-level
-    #: ``plugins:`` field -- an index pin (``shapely>=2.0``), a git URL
-    #: (``pkg @ git+https://host/repo@ref``), or an uploaded workspace wheel
-    #: (``./plugins/foo.whl``) -- PLUS a source directory relative to this ``.vast``
-    #: (``packages/sim_suite_mobile``, installed with ``pip install -e``). The
-    #: source-dir flavor works here (and not in ``plugins:``) because the build
-    #: copies the workspace project dir into the image build context.
-    python_packages: Optional[list[str]] = None
+    #: Python packages installed into the image, as **install groups**. Same
+    #: vocabulary as the top-level ``plugins:`` field -- an index pin
+    #: (``shapely>=2.0``), a git URL (``pkg @ git+https://host/repo@ref``), or an
+    #: uploaded workspace wheel (``./plugins/foo.whl``) -- PLUS a source directory
+    #: relative to this ``.vast`` (``packages/sim_suite_mobile``, installed with
+    #: ``pip install -e``). The source-dir flavor works here (and not in
+    #: ``plugins:``) because the build copies the workspace project dir into the
+    #: image build context.
+    #:
+    #: Each element is either a spec (a group of one) or a **list** of specs
+    #: installed together in one pip resolution pass, which is one image layer. If
+    #: no element is a list the whole list is a single group -- the common case, and
+    #: the one where the order does not matter at all, because pip sees every local
+    #: wheel at once and resolves an inter-package dependency against it instead of
+    #: against PyPI. Nest as soon as you want to choose the layer boundaries: order
+    #: *of* groups is install order (a group may depend on an earlier one) and is
+    #: what the layer cache keys on.
+    python_packages: Optional[list[Union[str, list[str]]]] = None
     #: Bare image name, optionally ``name:version`` -- no registry host/namespace.
     #: The registry prefix and a content hash are added server-side.
     tag: str
 
-    @field_validator('system_packages', 'python_packages')
+    @field_validator('system_packages')
     @classmethod
     def _validate_nonempty_strings(cls, v):
         if v is None:
@@ -354,6 +364,33 @@ class BuildConfig(BaseModel):
         for entry in v:
             if not isinstance(entry, str) or not entry.strip():
                 raise ValueError("each entry must be a non-empty string")
+        return v
+
+    @field_validator('python_packages')
+    @classmethod
+    def _validate_install_groups(cls, v):
+        """Only what the ``str | list[str]`` annotation cannot say itself.
+
+        Shape (a spec is a string, a group is a flat list of strings) is the
+        annotation's job and pydantic rejects the rest before this runs; repeating it
+        here would be two validators with one opinion. What is left is emptiness: a
+        blank spec and an empty group both pass the type and mean nothing.
+        """
+        if v is None:
+            return v
+        for i, entry in enumerate(v):
+            if isinstance(entry, str):
+                if not entry.strip():
+                    raise ValueError(f"entry {i} is blank; expected a package spec")
+                continue
+            if not entry:
+                raise ValueError(
+                    f"entry {i} is an empty install group; a group holds the specs "
+                    "installed in one pip pass")
+            for j, spec in enumerate(entry):
+                if not spec.strip():
+                    raise ValueError(
+                        f"entry {i}, item {j} is blank; expected a package spec")
         return v
 
     @field_validator('tag')

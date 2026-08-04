@@ -259,6 +259,73 @@ builds the image on demand and resolves that symbolic reference to the real
    execution:
      image: build:sim-suite-mobile          # symbolic → the built image
 
+The list above is **one install group**: pip resolves all of it in a single pass, so the
+order does not matter — a local wheel depending on a sibling resolves against the sibling
+rather than against the index. Nest to choose the layer boundaries instead:
+
+.. code-block:: yaml
+
+   python_packages:
+     - mujoco>=3.0                          # a bare spec is a group of one
+     - [wheels/assets-0.1.0-…whl,           # one group: installed together,
+        wheels/robots-0.1.0-…whl]           #   order inside it is irrelevant
+     - wheels/my_nodes-0.1.0-…whl           # its own layer, rebuilt on every code change
+
+Each group is one ``pip install`` and one image layer. Order *of* groups is install order
+— a later group may depend on an earlier one — and is what the layer cache keys on.
+
+Where the packages land
+^^^^^^^^^^^^^^^^^^^^^^^
+
+``python_packages`` installs into a **virtualenv at** ``/usr/local``, created by the
+generated Dockerfile. That prefix is where pip on a Debian base already installed, so
+``PATH``, ``share/ament_index`` and ``AMENT_PREFIX_PATH`` are unchanged; only the python
+package directory moves (``site-packages`` rather than ``dist-packages``), and a one-line
+``robovast_venv.pth`` hands it back to ``/usr/bin/python3`` — the interpreter ``ros2
+launch`` starts nodes with — ahead of Debian's own packages.
+
+The venv is what makes a dependency upgrade possible at all. Debian-packaged
+distributions (``numpy``, ``scipy``, ``opencv`` …) carry no ``RECORD`` file, so pip
+cannot uninstall them; before the venv, any resolver decision that wanted to *replace*
+one killed the build minutes in with ``Cannot uninstall numpy 1.26.4, RECORD file not
+found``. Inside a venv pip leaves what is outside it alone (``Not uninstalling numpy at
+/usr/lib/python3/dist-packages, outside environment /usr/local``) and installs its own
+copy, which the path order then shadows.
+
+One constraint is applied on top, from the base image itself: **numpy<2**, because the
+base's ``python3-transforms3d`` is built against the 1.x API and raises
+``np.maximum_sctype was removed in the NumPy 2.0 release`` under numpy 2. It steers the
+resolver rather than blocking it (``scipy>=1.13`` lands on a 1.x-compatible scipy), and a
+requirement that truly needs numpy 2 gets an honest resolver conflict instead of a
+runtime break. A project needing otherwise sets its own ``build.base_image``.
+
+One way a ``build:`` fails that the schema cannot catch
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``validate_project`` checks that every entry is *resolvable*, not that the resulting
+image will build. This is the failure that actually happens, and it costs a full apt+pip
+cycle before it surfaces.
+
+**An ``ament_python`` package installed as a wheel has no ament libexec dir.**
+``python_packages`` installs with pip, which puts console scripts in
+``/usr/local/bin``. ``launch_ros``'s ``Node(package=..., executable=...)`` and
+``ros2 run`` both resolve executables through the package's ament libexec directory,
+which a wheel never creates::
+
+    package 'my_pkg' found at '/usr/local', but libexec directory
+    '/usr/local/lib/my_pkg' does not exist
+
+Launch files and ``share/`` data still resolve normally — only executables break, so
+this surfaces at *launch* time. Start your own nodes with ``ExecuteProcess`` running
+``python3 -m my_pkg.my_node`` (append ``--ros-args`` for parameters); that works under
+both a wheel and a colcon install. Nodes from properly colcon-built packages
+(``rviz2``, ``robot_state_publisher``, ``nav2_*``) are unaffected.
+
+``AMENT_PREFIX_PATH`` needs no attention: the generated Dockerfile sets it to the prefix
+it installs into, so ``ros2 launch <pkg> ...`` finds a pip-installed ament package's
+``share/`` without the project saying anything. (A ``.vast`` that still sets
+``AMENT_PREFIX_PATH: "/usr/local"`` by hand is a harmless no-op.)
+
 The build is **idempotent** (content-addressed): rebuild only happens when the
 ``build:`` section or a referenced source changes. It runs **wherever the backend
 runs** — a local ``docker buildx`` for a local ``vast serve``, an in-cluster
@@ -278,36 +345,39 @@ permission under the ``image-builds/`` prefix — see
 
 .. _config-build-caching:
 
-Caching, and how the entry order affects it
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Caching, and how the grouping affects it
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Two independent caches apply, and the second one is worth authoring for.
 
-*Whole image.* The cache key covers the base image, the apt list (order-insensitive)
-and each ``python_packages`` entry — for a workspace wheel by its **logical zip
-content** (member names, CRCs, sizes), not its bytes. Rebuilding a wheel from
-unchanged sources therefore does **not** trigger an image rebuild, even though the
-regenerated file differs byte-for-byte (pip stamps zip members with their source
+*Whole image.* The cache key covers the base image, the apt list (order-insensitive),
+each ``python_packages`` entry and how the entries are grouped — for a workspace wheel
+by its **logical zip content** (member names, CRCs, sizes), not its bytes. Rebuilding a
+wheel from unchanged sources therefore does **not** trigger an image rebuild, even though
+the regenerated file differs byte-for-byte (pip stamps zip members with their source
 mtimes, so a branch switch or a fresh clone rewrites all of them). Nothing outside
 ``build:`` is part of the key: editing the ``.vast``, the scenario or a run file never
 rebuilds the image.
 
-*Layers.* Each entry is copied and installed in its **own pair of layers**, in the
-order listed, so a change to entry *k* rebuilds only *k* onward. Order the list so
+*Layers.* Every entry is copied in its **own** ``COPY`` layer, and every install *group*
+is one ``pip install`` layer, in the order listed — so a change inside group *k* rebuilds
+that group's install and everything after it, and never re-copies its siblings. Group so
 that what changes often comes **last**:
 
 .. code-block:: yaml
 
    python_packages:
      - mujoco>=3.0                       # index pin: no context, never invalidated
-     - wheels/assets-0.1.0-...whl        # ~100 MB of meshes/textures, changes rarely
+     - [wheels/assets-0.1.0-...whl,      # ~100 MB of meshes/textures, changes rarely
+        wheels/robots-0.1.0-...whl]
      - wheels/my_nodes-0.1.0-...whl      # a few KB of code, changes constantly
 
-With that order an edit to ``my_nodes`` reuses the asset layers instead of
-reinstalling them. Dependencies constrain this — an entry's ``rst_*``-style deps must
-already be installed when it runs — so sort by change frequency only within what the
-dependency graph allows. pip's download cache is a BuildKit cache mount, so even a
-rebuilt layer does not re-download from the index.
+With that grouping an edit to ``my_nodes`` reuses the asset layers instead of
+reinstalling them. Dependencies no longer constrain the *entries* — a group is resolved
+in one pip pass, so its members can be in any order — only the groups, since a group may
+depend on one installed before it. Grouping is a caching decision; leaving the list flat
+is always correct. pip's download cache is a BuildKit cache mount, so even a rebuilt
+layer does not re-download from the index.
 
 On the cluster each build runs in a fresh BuildKit pod, so layer reuse there comes
 from a registry-backed cache (``<prefix>/<tag>:buildcache``) rather than a local one;

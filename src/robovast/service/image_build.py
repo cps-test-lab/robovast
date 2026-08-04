@@ -66,16 +66,47 @@ _LOCAL_BUILDER = "default"
 #: BuildKit frontend pin — required for the ``RUN --mount=type=cache`` below. Honoured by both
 #: builders we drive: ``docker buildx`` locally and ``buildctl --frontend dockerfile.v0`` in-cluster.
 _SYNTAX_DIRECTIVE = "# syntax=docker/dockerfile:1"
-#: pip invocation for the build steps. The base is an externally-managed (PEP 668) Debian Python and
-#: the target *is* that interpreter, so the marker has to be overridden rather than worked around
-#: with a venv, which ``ros2 launch``'s /usr/bin/python3 would not see.
+#: Prefix the experiment's packages are installed into. ``/usr/local`` and not a fresh directory:
+#: it is where pip on a Debian base already installs, so ``PATH``, ``share/ament_index`` and every
+#: ``AMENT_PREFIX_PATH`` a project may already set keep pointing at the same place. Only the python
+#: package dir moves (``site-packages`` rather than ``dist-packages``), which ``_VENV_SETUP`` bridges.
+_VENV = "/usr/local"
+#: Make the prefix a venv, and make it visible to the system interpreter again.
+#:
+#: **Why a venv at all.** The base's numpy/scipy are Debian-packaged and carry no ``RECORD``, so pip
+#: cannot uninstall them: any dependency resolving to a different version killed the build minutes in
+#: ("Cannot uninstall numpy 1.26.4, RECORD file not found"), and pinning only moved the error from
+#: numpy to scipy. Inside a venv pip declines to touch what lives outside it -- "Not uninstalling
+#: numpy at /usr/lib/python3/dist-packages, outside environment /usr/local" -- and installs its own
+#: copy, which the path order then shadows. The whole failure class goes away.
+#:
+#: **Why the .pth.** A venv is invisible to /usr/bin/python3, the interpreter ``ros2 launch`` starts
+#: nodes with. The one-line ``.pth`` in the system's own site dir hands the venv back to it via
+#: ``addsitedir`` (which also processes the nested ``.pth`` files an editable install writes), and
+#: lands ahead of Debian's ``dist-packages`` -- restoring exactly the precedence ``/usr/local``
+#: already had before it became a venv. Without it the image builds green and the *run* fails on
+#: import, so this line is not decoration.
+#:
+#: ``--without-pip`` because the base has no ``python3.12-venv`` (ensurepip fails); the system pip
+#: installs into the venv with ``--python`` instead. Both site dirs are asked for rather than spelled
+#: out, so the interpreter version is not baked in. Idempotent, so it costs one cached layer on a
+#: base that already has it.
+_VENV_SETUP = (
+    f"RUN test -f {_VENV}/pyvenv.cfg || ( "
+    f"python3 -m venv --system-site-packages --without-pip {_VENV} && "
+    "printf 'import site; site.addsitedir(\"%s\")\\n' "
+    f"\"$({_VENV}/bin/python3 -c 'import sysconfig; print(sysconfig.get_paths()[\"purelib\"])')\" "
+    "> \"$(/usr/bin/python3 -c 'import site; print(site.getsitepackages()[0])')"
+    "/robovast_venv.pth\" )")
+#: pip invocation for the build steps. ``--python`` targets the venv from the system pip, so no
+#: ``--break-system-packages``: the venv is not externally managed (PEP 668).
 #:
 #: The pip download cache lives in a BuildKit cache mount rather than being suppressed with
 #: ``--no-cache-dir``: a mount is never committed to a layer, so the image stays the same size while a
 #: rebuilt layer stops re-downloading its wheels (mujoco alone is tens of MB). ``sharing=locked``
 #: serialises concurrent builds sharing the mount instead of letting them corrupt the cache.
 _PIP_INSTALL = ("RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked "
-                "pip install --break-system-packages")
+                f"pip --python {_VENV}/bin/python3 install")
 #: Files/dirs never hashed or copied into the build context. Sourced from
 #: ``common`` so the in-cluster staging path skips exactly the same set (a
 #: mismatch would break the context hash — see build_context).
@@ -89,7 +120,30 @@ class BuildSpec:
     tag: str
     base_image: Optional[str] = None
     system_packages: list = field(default_factory=list)
+    #: As authored: each element is a spec, or a list of specs installed together.
+    #: Read it through :attr:`install_groups` (what to install, and in how many
+    #: passes) or :attr:`python_specs` (every spec, flat).
     python_packages: list = field(default_factory=list)
+
+    @property
+    def install_groups(self) -> list:
+        """The specs grouped into pip invocations — one group is one resolution pass.
+
+        A list with no nested list is **one** group: pip then sees every local wheel at
+        once, so a wheel's dependency on a sibling resolves against the sibling rather
+        than against PyPI, and the author never has to derive an install order. Nesting
+        is how an author takes that back to choose layer boundaries; a bare string
+        beside a nested list is a group of one.
+        """
+        if not any(isinstance(entry, list) for entry in self.python_packages):
+            return [list(self.python_packages)] if self.python_packages else []
+        return [list(entry) if isinstance(entry, list) else [entry]
+                for entry in self.python_packages]
+
+    @property
+    def python_specs(self) -> list:
+        """Every spec, flat — for hashing, validation and context classification."""
+        return [spec for group in self.install_groups for spec in group]
 
 
 def extract_build_spec(campaign_config) -> Optional[BuildSpec]:
@@ -189,71 +243,83 @@ def build_hash(spec: BuildSpec, project_dir: Path, base_ref: str) -> str:
     does not.
     """
     h = hashlib.sha256()
-    # v3: the rendered Dockerfile changed again (per-entry COPY, sorted apt list, pip cache mount)
-    # and context wheels are now hashed by logical content instead of raw bytes. Both change what a
-    # given hash *means*, so the epoch bump forces a rebuild rather than serving a v2 image.
-    h.update(b"v3")
+    # v4: the rendered Dockerfile changed again (installs into a venv at /usr/local, one pip pass
+    # per install group instead of one per entry). The Dockerfile text is not itself an input --
+    # only the epoch makes a robovast upgrade rebuild rather than serve the image the old renderer
+    # produced, which would silently keep the old install semantics.
+    h.update(b"v4")
     h.update(base_ref.encode())
     for pkg in sorted(spec.system_packages):
         h.update(b"|apt|")
         h.update(pkg.encode())
-    for entry in spec.python_packages:  # order matters (install order) → not sorted
-        h.update(b"|py|")
-        h.update(entry.encode())
-        if _is_source_dir(entry, project_dir):
-            _hash_dir(h, (project_dir / entry).resolve())
-        elif _is_context_wheel(entry, project_dir):
-            _hash_wheel(h, (project_dir / entry).resolve())
+    for group in spec.install_groups:  # order matters (install order) → not sorted
+        # Grouping is part of what gets built -- the same specs in one pass and in two
+        # render different layers -- so the boundary is hashed, not just the specs.
+        h.update(b"|grp|")
+        for entry in group:
+            h.update(b"|py|")
+            h.update(entry.encode())
+            if _is_source_dir(entry, project_dir):
+                _hash_dir(h, (project_dir / entry).resolve())
+            elif _is_context_wheel(entry, project_dir):
+                _hash_wheel(h, (project_dir / entry).resolve())
     return h.hexdigest()[:12]
 
 
 # ---------------------------------------------------------------------------
-# Dockerfile generation — one step per entry, for clean error attribution
+# Dockerfile generation — one pip pass per install group
 # ---------------------------------------------------------------------------
 
 def generate_dockerfile(spec: BuildSpec, project_dir: Path, base_ref: str,
                         base_user: str = DEFAULT_IMAGE_USER) -> str:
     """Render a deterministic Dockerfile from *spec*.
 
-    Each ``build:`` entry becomes its own ``RUN`` so a failing step maps back to
-    exactly one entry (see :func:`classify_build_error`). The base image supplies
-    the ROS/nav2 scaffolding *and* ``/etc/robovast_compat_version``, so the result
-    stays compat-valid — we never rewrite that marker.
+    Each **install group** becomes one ``RUN``, so pip resolves the group's specs
+    together (see :attr:`BuildSpec.install_groups`). The base image supplies the
+    ROS/nav2 scaffolding *and* ``/etc/robovast_compat_version``, so the result stays
+    compat-valid — we never rewrite that marker.
 
-    A robovast base image ends as an unprivileged user and carries Debian's PEP 668
-    marker, so the build steps run as root and pip needs ``--break-system-packages``
-    to reach the system interpreter — the one ``ros2 launch`` starts nodes with, and
-    therefore the only one an installed package is visible from. *base_user* is
-    restored afterwards so the image still runs unprivileged.
+    A robovast base image ends as an unprivileged user, so the build steps run as root
+    and *base_user* is restored afterwards, or a cluster pod — which takes its user
+    from the image — would run the scenario as root.
 
-    Layer caching drives the shape of the output. Each entry gets its **own** ``COPY``
-    of just the path it installs, immediately before its ``RUN``, rather than one
+    Layer caching drives the rest of the shape. Each entry gets its **own** ``COPY``
+    of just the path it installs, before its group's ``RUN``, rather than one
     ``COPY .`` of the whole project up front: a blanket copy makes every unrelated
     file (the ``.vast`` itself, a scenario, a run file) invalidate all the pip layers,
     which for a project carrying large asset packages means reinstalling hundreds of
-    MB to pick up a few KB of changed code. With per-entry copies a change to entry
-    *k* rebuilds only *k* onward, and a change outside ``python_packages`` rebuilds
-    nothing. The apt list is sorted to match :func:`build_hash`, so reordering the
-    YAML is a cache hit rather than a rebuild.
+    MB to pick up a few KB of changed code. A change outside ``python_packages``
+    rebuilds nothing. The apt list is sorted to match :func:`build_hash`, so
+    reordering the YAML is a cache hit rather than a rebuild.
     """
-    lines = [_SYNTAX_DIRECTIVE, f"FROM {base_ref}", "USER root"]
+    lines = [_SYNTAX_DIRECTIVE, f"FROM {base_ref}", "USER root", _VENV_SETUP,
+             f"ENV VIRTUAL_ENV={_VENV}",
+             # The packages this file installs land under the venv prefix, so this file
+             # is what must make their ament resources findable -- including on a base
+             # too old to know about the venv. Sourcing the ROS setup prepends and keeps
+             # this entry, and a project that still sets the same value by hand is then
+             # a no-op rather than a broken launch.
+             f"ENV AMENT_PREFIX_PATH={_VENV}"]
     if spec.system_packages:
         pkgs = " ".join(sorted(spec.system_packages))
         lines.append(
             "RUN apt-get update "
             f"&& apt-get install -y --no-install-recommends {pkgs} "
             "&& rm -rf /var/lib/apt/lists/*")
-    for entry in spec.python_packages:
-        if _is_source_dir(entry, project_dir):
-            lines.append(f"COPY {entry} {_CONTEXT_DIR}/{entry}")
-            lines.append(f"{_PIP_INSTALL} -e {_CONTEXT_DIR}/{entry}")
-        elif _is_context_wheel(entry, project_dir):
-            lines.append(f"COPY {entry} {_CONTEXT_DIR}/{entry}")
-            lines.append(f"{_PIP_INSTALL} {_CONTEXT_DIR}/{entry}")
-        else:
-            # index pin or git URL — reused verbatim from plugins: vocabulary. Nothing
-            # to copy, so it never carries a context layer.
-            lines.append(f"{_PIP_INSTALL} '{entry}'")
+    for group in spec.install_groups:
+        args = []
+        for entry in group:
+            if _is_source_dir(entry, project_dir):
+                lines.append(f"COPY {entry} {_CONTEXT_DIR}/{entry}")
+                args.append(f"-e {_CONTEXT_DIR}/{entry}")
+            elif _is_context_wheel(entry, project_dir):
+                lines.append(f"COPY {entry} {_CONTEXT_DIR}/{entry}")
+                args.append(f"{_CONTEXT_DIR}/{entry}")
+            else:
+                # index pin or git URL — reused verbatim from plugins: vocabulary.
+                # Nothing to copy, so it never carries a context layer.
+                args.append(f"'{entry}'")
+        lines.append(f"{_PIP_INSTALL} {' '.join(args)}")
     lines.append(f"USER {base_user}")
     return "\n".join(lines) + "\n"
 
@@ -282,6 +348,16 @@ def classify_build_error(log: str, spec: Optional[BuildSpec] = None) -> ImageBui
             phase="apt", fixable_by="agent", entry=m.group(1),
             message=f"apt could not locate package '{m.group(1)}' "
                     "(check build.system_packages)",
+            log_tail=tail)
+
+    if "no such option: --python" in log:
+        # The install targets the venv from the base's own pip, which has needed
+        # ``--python`` since 22.3. Only a hand-picked base_image can be older, and no
+        # amount of editing the package list fixes it — say which knob does.
+        return ImageBuildError(
+            phase="pip", fixable_by="agent", entry="base_image",
+            message="the base image's pip is too old to install into the experiment "
+                    "venv (needs pip >= 22.3); pick a newer build.base_image",
             log_tail=tail)
 
     m = _PIP_MISS.search(log) or _PIP_NAME.search(log)
@@ -350,7 +426,7 @@ def validate_build_spec(spec: BuildSpec, project_dir: Path) -> list:
         if "/" in pkg or " " in pkg.strip():
             problems.append(
                 f"build.system_packages: '{pkg}' does not look like an apt package name")
-    for entry in spec.python_packages:
+    for entry in spec.python_specs:
         if _is_source_dir(entry, project_dir) or _is_context_wheel(entry, project_dir):
             continue
         is_pip_url = ("git+" in entry or "://" in entry or " @ " in entry)

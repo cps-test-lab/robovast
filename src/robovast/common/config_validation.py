@@ -562,12 +562,18 @@ def _build_problems(raw, vast_dir):
     ``.whl``) must actually exist in the project; index pins / git URLs are pip
     specs and are not checked here (not resolvable offline). Tag shape and the
     ``execution.image`` <-> ``build.tag`` consistency are enforced by the schema.
+
+    Entries may be grouped (a list of specs installed in one pip pass), so this
+    walks one level in: a path is a path in either form.
     """
     problems = []
     build = raw.get("build")
     if not isinstance(build, dict):
         return problems
-    for entry in build.get("python_packages", []) or []:
+    authored = build.get("python_packages", []) or []
+    entries = [spec for e in authored
+               for spec in (e if isinstance(e, list) else [e])]
+    for entry in entries:
         if not isinstance(entry, str) or not entry.strip():
             continue
         p = os.path.abspath(os.path.join(vast_dir, entry))
