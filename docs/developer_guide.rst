@@ -1629,8 +1629,11 @@ returning :class:`~robovast.service.interface.ResourceUsage` (CPU cores + memory
 capacity vs. used, and a ``parallel_runs`` flag). The local↔cluster split lives entirely
 in the implementations: ``LocalTransport._compute_resource_usage`` reads the host via
 ``psutil``; ``ClusterService`` overrides it to sum node ``allocatable`` (capacity, reusing
-``kubernetes_kueue._parse_resource``) and non-terminal pod requests (used) — so callers (the
-top-bar chip, the ``resource_usage`` MCP tool) never branch on backend. Both share one
+``kubernetes_kueue._parse_resource``) and the requests of the non-terminal pods *bound to
+those same nodes* (used) — so callers (the top-bar chip, the ``resource_usage`` MCP tool)
+never branch on backend. Summing both sides over one node set is what keeps ``used <=
+capacity``: a pod still queued for a node requests cores nothing has granted, and counting
+it reported "29.7/24" on a 24-core cluster. Pending work is ``jobs_pending``, not usage. Both share one
 TTL-cached path on the base class (``LocalTransport.resource_usage`` memoises for
 ``_USAGE_CACHE_TTL`` under a lock), so many polling clients cost one sampling per window.
 The cluster read needs cluster-scoped RBAC (nodes are not namespaced): setup grants the

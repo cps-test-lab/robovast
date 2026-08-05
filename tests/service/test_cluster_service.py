@@ -511,36 +511,82 @@ def test_list_jobs_reports_active_but_pending_pod_as_pending(cs, monkeypatch):
 def test_resource_usage_counts_scenario_jobs_pod_accurate(cs, monkeypatch):
     """Backend-wide jobs tally splits Running from still-waiting scenario-run pods,
     ignoring non-scenario pods (the service pod, someone else's workload)."""
-    import types
-
-    def _node(cpu, mem):
-        return types.SimpleNamespace(
-            status=types.SimpleNamespace(allocatable={"cpu": cpu, "memory": mem}))
-
-    def _pod_full(labels, phase):
-        return types.SimpleNamespace(
-            metadata=types.SimpleNamespace(labels=labels),
-            status=types.SimpleNamespace(phase=phase),
-            spec=types.SimpleNamespace(containers=[]))
-
     pods = [
-        _pod_full({"jobgroup": "scenario-runs"}, "Running"),
-        _pod_full({"jobgroup": "scenario-runs"}, "Running"),
-        _pod_full({"jobgroup": "scenario-runs"}, "Pending"),
-        _pod_full({"app": "robovast-service"}, "Running"),  # not a scenario run
+        _usage_pod({"jobgroup": "scenario-runs"}, "Running", node="n1"),
+        _usage_pod({"jobgroup": "scenario-runs"}, "Running", node="n1"),
+        _usage_pod({"jobgroup": "scenario-runs"}, "Pending"),
+        _usage_pod({"app": "robovast-service"}, "Running", node="n1"),  # not a scenario run
     ]
 
-    class _Core:
-        def list_node(self):
-            return types.SimpleNamespace(items=[_node("4", "8Gi")])
-
-        def list_pod_for_all_namespaces(self, field_selector):
-            return types.SimpleNamespace(items=pods)
-
-    monkeypatch.setattr(cs, "_k8s", lambda: _Core())
+    monkeypatch.setattr(cs, "_k8s", lambda: _UsageCore([_usage_node("n1", "4", "8Gi")], pods))
     usage = cs.resource_usage()
 
     assert (usage.jobs_running, usage.jobs_pending) == (2, 1)
+
+
+def test_resource_usage_ignores_pods_no_node_granted(cs, monkeypatch):
+    """Only pods bound to a live node count as used — a queue of pending runs must
+    not report more cores in use than the cluster has ("29.7/24")."""
+    pods = [
+        # committed: 2 x 4 cores on the one node
+        _usage_pod({"jobgroup": "scenario-runs"}, "Running", node="workstation", cpu="4",
+                   mem=str(4 * 1024 ** 3)),
+        _usage_pod({"jobgroup": "scenario-runs"}, "Running", node="workstation", cpu="4",
+                   mem=str(4 * 1024 ** 3)),
+        # queued for a node that has no room yet — demand, not usage
+        _usage_pod({"jobgroup": "scenario-runs"}, "Pending", cpu="4", mem=str(4 * 1024 ** 3)),
+        _usage_pod({"jobgroup": "scenario-runs"}, "Pending", cpu="4", mem=str(4 * 1024 ** 3)),
+        # left behind by a node that was removed: its request is granted by nothing
+        _usage_pod({"jobgroup": "scenario-runs"}, "Running", node="gone", cpu="8",
+                   mem=str(8 * 1024 ** 3)),
+    ]
+
+    monkeypatch.setattr(
+        cs, "_k8s",
+        lambda: _UsageCore([_usage_node("workstation", "24", str(64 * 1024 ** 3))], pods))
+    usage = cs.resource_usage()
+
+    assert usage.cpu_capacity == 24
+    assert usage.cpu_used == 8
+    assert usage.memory_used_bytes == 8 * 1024 ** 3
+    assert usage.cpu_used <= usage.cpu_capacity
+    # the queued runs stay visible where pending work belongs
+    assert (usage.jobs_running, usage.jobs_pending) == (3, 2)
+
+
+def _usage_node(name, cpu, mem):
+    import types
+    return types.SimpleNamespace(
+        metadata=types.SimpleNamespace(name=name),
+        status=types.SimpleNamespace(allocatable={"cpu": cpu, "memory": mem}))
+
+
+def _usage_pod(labels, phase, node=None, cpu=None, mem=None):
+    import types
+    requests = {}
+    if cpu is not None:
+        requests["cpu"] = cpu
+    if mem is not None:
+        requests["memory"] = mem
+    containers = [types.SimpleNamespace(
+        resources=types.SimpleNamespace(requests=requests))] if requests else []
+    return types.SimpleNamespace(
+        metadata=types.SimpleNamespace(labels=labels),
+        status=types.SimpleNamespace(phase=phase),
+        spec=types.SimpleNamespace(containers=containers, node_name=node))
+
+
+class _UsageCore:
+    def __init__(self, nodes, pods):
+        import types
+        self._nodes = types.SimpleNamespace(items=nodes)
+        self._pods = types.SimpleNamespace(items=pods)
+
+    def list_node(self):
+        return self._nodes
+
+    def list_pod_for_all_namespaces(self, field_selector):
+        return self._pods
 
 
 def _pod(name="pod-1", phase="Running"):

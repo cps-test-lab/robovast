@@ -1872,9 +1872,11 @@ export interface components {
          *
          *     ``cpu_used`` / ``memory_used`` semantics differ by backend but answer the same
          *     question ("how much is currently claimed"): on the **cluster** they are the sum
-         *     of resource *requests* of non-terminal pods (schedulability, matching how Kueue
-         *     reasons about quota); on **local** they are live host utilisation. ``cpu_*`` are
-         *     CPU cores; ``memory_*`` are bytes.
+         *     of resource *requests* of the non-terminal pods bound to a node (schedulability,
+         *     matching how Kueue reasons about quota — pods still queued for a node are
+         *     reported by ``jobs_pending``, not here, so ``used`` never exceeds ``capacity``);
+         *     on **local** they are live host utilisation. ``cpu_*`` are CPU cores;
+         *     ``memory_*`` are bytes.
          *
          *     ``parallel_runs`` is a backend-intrinsic flag, **not** a count: ``False`` means
          *     scenario runs execute one at a time (local Docker is single-flight), ``True``

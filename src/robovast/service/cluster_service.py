@@ -179,11 +179,20 @@ class ClusterService(LocalTransport):
         """Cluster CPU/memory capacity + current usage from the Kubernetes API.
 
         Capacity is the sum of every node's ``allocatable`` (the same measure Kueue
-        quota is derived from); usage is the sum of resource *requests* of all
-        non-terminal pods cluster-wide (what the scheduler has committed). Both are
+        quota is derived from); usage is the sum of resource *requests* of the pods
+        **bound to those same nodes** — what the scheduler has actually committed,
+        the number ``kubectl describe node`` calls "Allocated resources". Both are
         read behind :meth:`LocalTransport.resource_usage`'s TTL cache, and the pod
         list is filtered server-side to skip finished pods — so a poll costs at most
         one ``list_node`` + one filtered ``list_pod`` per cache window.
+
+        Summing over one node set keeps ``used <= capacity``, which a cluster-wide
+        pod sum does not: a pod still waiting for a node (or left behind by one that
+        was removed) requests resources nothing has granted, so a queue of pending
+        scenario runs used to report more cores in use than the cluster has —
+        "29.7/24" on a 24-core workstation. Pending work is already visible as
+        ``jobs_pending``, which is why that tally deliberately stays outside the
+        node filter below.
 
         Requires the service's ClusterRole (nodes/pods get,list — see
         ``service_deploy._service_rbac_manifests``).
@@ -194,10 +203,12 @@ class ClusterService(LocalTransport):
 
         cpu_capacity = 0.0
         mem_capacity = 0
+        node_names = set()
         for node in v1.list_node().items:
             alloc = node.status.allocatable or {}
             cpu_capacity += _parse_resource(alloc.get("cpu"))
             mem_capacity += int(_parse_resource(alloc.get("memory")))
+            node_names.add(node.metadata.name)
 
         cpu_used = 0.0
         mem_used = 0
@@ -206,11 +217,12 @@ class ClusterService(LocalTransport):
         pods = v1.list_pod_for_all_namespaces(
             field_selector="status.phase!=Succeeded,status.phase!=Failed")
         for pod in pods.items:
-            for container in (pod.spec.containers or []):
-                requests = (container.resources.requests
-                            if container.resources else None) or {}
-                cpu_used += _parse_resource(requests.get("cpu"))
-                mem_used += int(_parse_resource(requests.get("memory")))
+            if getattr(pod.spec, "node_name", None) in node_names:
+                for container in (pod.spec.containers or []):
+                    requests = (container.resources.requests
+                                if container.resources else None) or {}
+                    cpu_used += _parse_resource(requests.get("cpu"))
+                    mem_used += int(_parse_resource(requests.get("memory")))
             # Backend-wide scenario-run tally, pod-accurate (Running vs still-waiting)
             # so the sidebar's jobs bar matches k9s. Free — same pod list as above.
             if (pod.metadata.labels or {}).get("jobgroup") == "scenario-runs":

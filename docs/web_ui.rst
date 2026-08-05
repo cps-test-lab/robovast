@@ -235,7 +235,9 @@ A connection indicator in the top bar turns green once the service answers, and
 shows the backend's live **resource usage** — used vs. total CPU cores and memory
 (``cpu 6/16 · mem 22/62 GiB``). The numbers are backend-appropriate: the host
 machine's utilisation for a local ``vast serve``, and the cluster's node
-capacity vs. summed pod requests for an in-cluster service. Hovering the chip
+capacity vs. the summed requests of the pods scheduled onto those nodes for an
+in-cluster service (runs still queued for a node show up in the jobs meter as
+pending, not as CPU in use). Hovering the chip
 reveals the RoboVAST version, the backend, and whether runs execute in parallel
 (cluster) or one at a time (local). The reading is sampled at most once every few
 seconds and shared across browser tabs, so it never loads the backend.
