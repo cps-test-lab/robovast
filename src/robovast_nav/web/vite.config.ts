@@ -8,10 +8,10 @@
 // this container name; the service then points each type's asset URL at this one bundle. Adding a
 // panel = one more entry in `exposes` + one panel class.
 //
-// A remote is for a panel that needs something the host cannot provide -- costmap has its own
-// service endpoint for binary grids. A package that merely produces a *table* in an existing schema
-// needs no panel: it points a built-in one at its table with `source: { table }`, which is how
-// nav2_behaviors is rendered by the core scenario_tree panel.
+// A remote is for a panel the host cannot otherwise serve. costmap needs its own service endpoint
+// for binary grids. behaviorTree needs no renderer -- it *derives* from the host's built-in
+// scenario tree (passed in via PanelProps.builtins) and only supplies nav2's table, title and
+// empty-state hint, so a package panel does not mean a second copy of a panel.
 //
 // `react`/`react-dom` are shared singletons pinned to the host's version (^18) so the remote reuses
 // the host's React rather than bundling its own -- a version mismatch here breaks loading.
@@ -29,8 +29,10 @@ export default defineConfig({
       filename: 'remoteEntry.js',
       exposes: {
         // Each key is a panel's PANEL_MODULE in robovast_nav/panels.py:
-        //   costmap -> loadRemote('robovast_nav/costmap')
+        //   costmap      -> loadRemote('robovast_nav/costmap')
+        //   behaviorTree -> loadRemote('robovast_nav/behaviorTree')
         './costmap': './src/costmap.tsx',
+        './behaviorTree': './src/behaviorTree.tsx',
       },
       shared: {
         react: { singleton: true, requiredVersion: '^18' },

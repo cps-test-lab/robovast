@@ -169,9 +169,18 @@ function rowAt(node: TreeNode, t: number): DataRow | null {
   return node.series.at(t)
 }
 
+//: How to produce the table, said when the run has none. Overridable via `missing_hint` in the
+//: panel's config, because the answer depends on which table the panel was pointed at: a
+//: derived panel (robovast_nav's nav2 tree) names its own postprocessing rather than bt_log,
+//: which has nothing to do with it. Keeps this panel from knowing about any particular producer.
+const DEFAULT_MISSING_HINT =
+  'The behaviour tree is recorded by default; an execution image whose scenario_execution ' +
+  'predates --bt-log produces none, as does bt_log: false under execution:.'
+
 function ScenarioTreePanel({ spec, clock, data }: PanelProps) {
   const source = (spec.config.source ?? {}) as { table?: string }
   const table = source.table ?? 'behaviors'
+  const missingHint = String(spec.config.missing_hint ?? DEFAULT_MISSING_HINT)
   const { t } = useClock(clock)
 
   const tree = useQuery({
@@ -213,9 +222,7 @@ function ScenarioTreePanel({ spec, clock, data }: PanelProps) {
   if (d.kind === 'missing')
     return (
       <Alert severity="warning" sx={{ m: 1 }}>
-        No <code>{d.table}</code> data. The behaviour tree is recorded by default; an execution
-        image whose <code>scenario_execution</code> predates <code>--bt-log</code> produces none,
-        as does <code>bt_log: false</code> under <code>execution:</code>.
+        No <code>{d.table}</code> data. {missingHint}
       </Alert>
     )
   if (d.kind === 'stale')

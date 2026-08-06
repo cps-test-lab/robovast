@@ -50,3 +50,23 @@ class CostmapPanelType:
     WEB_PANEL = "web/dist"
     PANEL_MODULE = "./costmap"
     REMOTE_NAME = REMOTE_NAME
+
+
+class Nav2BehaviorTreePanelType:
+    """The nav2 behavior-tree viewer: a live-updating, node-colored tree of nav2's BT.
+
+    Renders the ``nav2_behaviors`` table (produced by this package's ``Nav2BtTree``
+    postprocessing plugin, in the shared ``behaviors`` schema) via the generic ``data.series``
+    seam -- no dedicated service endpoint. Structure comes from the BT XML; per-node status
+    over time comes from nav2's ``/behavior_tree_log``.
+
+    The panel *derives* from the host's built-in scenario tree rather than drawing its own:
+    what nav2 needs is that renderer with a different table, title and empty-state hint. It
+    exists as a type at all so a ``.vast`` can say ``- nav2_behavior_tree:`` and get those
+    defaults -- and so the configs that already say it keep working.
+    """
+
+    TYPE = "nav2_behavior_tree"
+    WEB_PANEL = "web/dist"
+    PANEL_MODULE = "./behaviorTree"
+    REMOTE_NAME = REMOTE_NAME

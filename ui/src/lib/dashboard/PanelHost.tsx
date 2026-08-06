@@ -120,6 +120,10 @@ function layoutStyle(
 // queries the run's data.db the same way. Guarded loading/error states, never a silent drop.
 function RemotePanel({ spec, clock, data }: PanelProps) {
   const { Comp, err } = useRemoteComponent<PanelProps>(spec.remote!)
+  // Built-ins a remote can render rather than reimplement (see PanelBuiltins). Read from the
+  // registry at mount rather than threaded down from PanelFrame: the registry is already the
+  // one place a panel component lives, so there is no second list to keep in step.
+  const builtins = { ScenarioTree: getPanel('scenario_tree')?.component }
   if (err) {
     return (
       <Box sx={{ p: 2, color: 'error.main', fontSize: 13 }}>
@@ -130,7 +134,7 @@ function RemotePanel({ spec, clock, data }: PanelProps) {
   if (!Comp) {
     return <Box sx={{ p: 2, color: 'text.secondary', fontSize: 13 }}>loading panel “{spec.remote!.name}”…</Box>
   }
-  return <Comp spec={spec} clock={clock} data={data} />
+  return <Comp spec={spec} clock={clock} data={data} builtins={builtins} />
 }
 
 function PanelFrame({

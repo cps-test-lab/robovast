@@ -407,13 +407,19 @@ The panel renders *any* table in the ``behaviors`` schema — point it at anothe
 ``source: { table: <name> }``. Columns a table does not have are simply not shown, so an
 older or differently-produced table still renders.
 
-**nav2's behavior tree** uses exactly that: the ``nav2_behaviors`` table produced by the
-:ref:`nav2 BT postprocessing <configuration>` (``rosbags_nav2bt_to_csv`` +
-``nav2_bt_tree``) — node status over time from nav2's ``/behavior_tree_log``, tree
-structure from the BT XML nav2 ran — displayed by this same panel with
-``- scenario_tree:`` and ``source: { table: nav2_behaviors }``. The ``robovast_nav``
-package ships no tree panel of its own. See :repo_link:`configs/examples/basic_nav` for a
-complete campaign.
+**Nav2 behavior tree** (``nav2_behavior_tree``) — the same tree view for **nav2's own**
+behavior tree, reading the ``nav2_behaviors`` table produced by the :ref:`nav2 BT
+postprocessing <configuration>` (``rosbags_nav2bt_to_csv`` + ``nav2_bt_tree``): node status
+over time from nav2's ``/behavior_tree_log``, tree structure from the BT XML nav2 ran.
+Declare it as ``- nav2_behavior_tree:`` and it brings its own table, title and — when the
+table is absent — the nav2 postprocessing steps to add, rather than the scenario's
+``bt_log``.
+
+*This type ships with the* ``robovast_nav`` *package*, so it is available whenever that
+package is installed, but it is not a second implementation: it renders the built-in panel
+above with different defaults, and so gains its behaviour automatically. Both trees can be
+shown at once — the scenario's says what the trial did, nav2's says why the navigator
+recovered. See :repo_link:`configs/examples/basic_nav` for a complete campaign.
 
 **3D scene** (``scene3d``) — the 3D world view, typically the run view's full-bleed **base layer**
 (``position: { anchor: fill }``): the simulated world's actual geometry rendered in the browser
@@ -519,12 +525,14 @@ class sets a shared ``REMOTE_NAME`` (the container name) so the service points e
 the one bundle. Adding a panel is then one more ``exposes`` entry plus one panel class — no
 new build, and React/vendor chunks stay shared.
 
-**Before shipping a panel at all**, check whether a built-in one already renders your data.
-A package that merely produces a *table in an existing schema* needs no panel: it points a
-built-in one at its table with ``source: { table }``. That is what ``robovast_nav`` does for
-``nav2_behaviors`` — it ships the postprocessing that builds the table and no tree panel.
-A remote is for a panel the host genuinely cannot serve, like ``costmap`` with its own
-binary-grid endpoint.
+**Before writing a renderer**, check whether a built-in panel already draws your data. A
+package whose data is a *table in an existing schema* should still ship its own **type** — so a
+``.vast`` names it and gets its table, title and empty-state guidance — but that type can
+**derive** from a built-in panel instead of reimplementing one. The host passes its own panel
+components to a remote as ``props.builtins``; ``robovast_nav``'s ``nav2_behavior_tree`` is a few
+lines that render ``builtins.ScenarioTree`` with nav2's defaults, and inherits every later
+improvement to it. Write a renderer only when the host cannot draw the data at all — ``costmap``,
+whose binary grids need their own endpoint.
 
 **Serving a panel's data.** A panel reads the run's postprocessed ``data.db`` through ``data``
 (``fetchRun`` for anything beyond plain table rows). When that data comes from a table your own

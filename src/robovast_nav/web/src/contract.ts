@@ -40,8 +40,18 @@ export interface PanelSpec {
   config: Record<string, unknown>
 }
 
+/** Built-in panels the host offers a package panel, so one can be *derived* rather than
+ *  reimplemented -- this package's nav2 behavior tree is the scenario tree with a different
+ *  table, title and empty-state hint. They arrive as props because a remote shares only
+ *  react/react-dom with the host and cannot import its modules. Optional: a host predating
+ *  this must leave the panel degrading, not crashing. */
+export interface PanelBuiltins {
+  ScenarioTree?: (props: PanelProps) => JSX.Element | null
+}
+
 export interface PanelProps {
   spec: PanelSpec
   clock: PlaybackClock
   data: DataProvider
+  builtins?: PanelBuiltins
 }
