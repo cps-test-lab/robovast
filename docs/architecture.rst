@@ -227,10 +227,22 @@ the identity changes, so ``/config`` never needs refreshing under a live pod. A 
 is torn down with its pod; a tree left by a dead service process is reaped at the next
 stop, since nothing else would.
 
-The aux pod for variation plugins keeps its own tar-over-exec mirror, and that is not
-duplication: its contract is a *bidirectional* mirror around every ``run()`` on a
-kept-alive pod, which an init container — running once, before the pod starts — cannot
-serve.
+**The per-campaign aux pod stages the same way**, so there is one in-cluster transport
+rather than three. Its contract is harder than the exec lane's — a *bidirectional* mirror
+around every ``run()`` on a kept-alive pod, which an init container running once before
+the pod starts cannot serve — so the init container injects ``mc`` into an ``emptyDir``
+instead of fetching anything, and the runner mirrors through the store on each call. The
+binary has to be injected because the aux image belongs to a plugin author and is not ours
+to add tools to; that is the trick the rosbag postprocess Job already used to run ``mc``
+inside the system-under-test's own image.
+
+What this replaced was a base64 tarball piped through ``pods/exec``. It worked, but the
+exec channel is a text websocket the client cannot half-close, so a receiver waiting for
+EOF waited forever — observed for 2m47s against a live pod, on an *empty* workspace. Going
+through the store needs no stdin at all, which removes that failure mode by construction
+along with the ~1.33x encoding overhead and the whole-tarball buffering in the service.
+The cost is that campaign *composition* now needs the object store reachable; it fails
+loudly rather than falling back, since a second transport is the thing being removed.
 
 .. _file-address-space:
 

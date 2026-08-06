@@ -388,10 +388,30 @@ class ClusterService(LocalTransport):
 
         specs = required_container_specs(project.config_path)
         with AuxPodSession(campaign_id, specs, self.namespace,
-                           core_v1=self._k8s() if specs else None) as session:
+                           core_v1=self._k8s() if specs else None,
+                           **(self._aux_store_kwargs() if specs else {})) as session:
             if specs:
                 set_container_runner_factory(session.runner_factory())
             yield
+
+    def _aux_store_kwargs(self) -> dict:
+        """Storage wiring for an aux pod's workspace mirror.
+
+        The same bucket an image-build context stages to — an aux workspace belongs to no
+        campaign's results either, and is scratch that is deleted when the runner closes.
+        The pod is given the *cluster-internal* endpoint, while this process keeps its own
+        client (which off-cluster reaches the store through a port-forward).
+        """
+        from robovast.execution.cluster_execution import in_pod_storage
+        from robovast.execution.cluster_execution.cluster_image_build import \
+            build_context_bucket
+        cfg = self._cluster_config()
+        access_key, secret_key = cfg.get_s3_credentials()
+        return {
+            "storage": in_pod_storage.storage_client_for(cfg),
+            "bucket": build_context_bucket(cfg),
+            "s3": (cfg.get_s3_endpoint(), access_key, secret_key),
+        }
 
     def _record_campaign_failure(self, campaign_id, results_dir, state, exc, backend):
         """Record the terminal outcome *and* publish it to the object store.
@@ -1546,7 +1566,8 @@ class ClusterService(LocalTransport):
         @contextlib.contextmanager
         def context():
             with AuxPodSession(tag, [spec], self.namespace, core_v1=self._k8s(),
-                               pull_secret=pull_secret) as session:
+                               pull_secret=pull_secret,
+                               **self._aux_store_kwargs()) as session:
                 yield session.runner_factory()
 
         return context

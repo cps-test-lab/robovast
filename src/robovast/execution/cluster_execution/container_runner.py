@@ -31,6 +31,21 @@ impossible. Instead each campaign gets its own aux Pod, and this module **emulat
 the shared workspace** by tar-copying it into the pod before every ``run()`` and
 copying the results back afterwards, at the *same absolute path*.
 
+**How the workspace is mirrored.** Through the **object store**, the same transport a
+campaign Job, an image-build context and the container-exec lane use: the service
+uploads the workspace to a prefix, the container runs ``mc mirror`` to pull it down, and
+the reverse afterwards. ``mc`` is injected into the pod from the sidecar image at
+creation, into an ``emptyDir`` at ``/tools``, because the aux image belongs to a plugin
+author and is not ours to add tools to — the trick the rosbag postprocess Job already
+uses to run ``mc`` inside the system-under-test's own image.
+
+This replaced piping a base64 tarball through the ``pods/exec`` channel. That worked,
+but the channel is a text websocket the client **cannot half-close**, so a receiver
+waiting for EOF waited forever — observed against a live pod for 2m47s, on a workspace
+with nothing in it. It was fixed by framing the read with ``head -c <n>``; going through
+the store removes the need for stdin at all, so the failure mode is gone by construction,
+along with the ~1.33x base64 inflation and buffering whole tarballs in the service.
+
 Consequences to know:
 
 * The plugin contract is preserved for the *stage inputs → run → read outputs*
@@ -38,15 +53,11 @@ Consequences to know:
   the two sides no longer share a live filesystem, so a command that expects the
   caller to observe its writes *while it is still running* (or vice versa) will
   not see them — only the state at copy-in/copy-out boundaries.
-* The aux image must provide ``tar``, ``base64`` and ``head`` (all three are in any
-  normal userland image). Transfers are base64-framed because the exec channel is
-  text-oriented and would corrupt raw binary.
-* **A copy-in is length-framed, not EOF-framed.** The Kubernetes stream client can
-  write to stdin but cannot half-close it, so a receiver waiting for EOF
-  (``base64 -d | tar xzf -``) never terminates and the exec hangs forever — which
-  is exactly what it did, on a workspace with nothing in it. ``head -c <n>``
-  bounds the read instead, so the pipeline finishes on the last byte the sender
-  announced. See :meth:`ClusterContainerRunner._copy_in`.
+* An **empty workspace transfers nothing**: a generator whose inputs all live in its own
+  image stages no files, and a round trip per ``run()`` for zero bytes is pure latency.
+* Composition now needs the object store to be reachable. That is not a new dependency in
+  practice — the campaign being composed cannot run without it either — but it is a new
+  dependency *at composition time*, and it fails loudly rather than falling back.
 * Aux compute is scheduled by Kubernetes as its own pod, so it never competes
   with the service (the control plane) for resources.
 
@@ -55,13 +66,11 @@ Kubernetes garbage-collects it if the service is replaced), carries an
 ``activeDeadlineSeconds`` backstop, and is deleted when the campaign ends.
 """
 
-import base64
 import contextlib
-import io
 import logging
 import os
+import shutil
 import subprocess
-import tarfile
 import tempfile
 import time
 
@@ -79,6 +88,49 @@ AUX_EXEC_LIMIT_S = 2 * 60 * 60
 
 #: Label selector identifying every aux pod (one per campaign that needs one).
 AUX_LABEL = "app=robovast-aux"
+
+#: Key prefix every mirrored aux workspace lives under, inside the deployment's bucket.
+AUX_WORKSPACE_PREFIX = "aux-workspaces"
+
+#: The ``mc`` alias the aux containers address the store by. Same name the campaign job's
+#: init and the build context's fetch use, so all three read alike.
+_MC_ALIAS = "mystore"
+#: Where the sidecar's ``mc`` — and a config dir it can actually write — are injected.
+_TOOLS_MOUNT = "/tools"
+_MC = f"{_TOOLS_MOUNT}/mc"
+_MC_CONFIG = f"{_TOOLS_MOUNT}/mc-config"
+
+
+def aux_workspace_prefix(owner_id: str, workspace_name: str) -> str:
+    """Where one runner's workspace is mirrored.
+
+    Keyed on the runner's own temp-directory name rather than on its container, because
+    a runner is built per *variation*: two variations sharing one aux container would
+    otherwise share a prefix, and whichever finished first would delete the other's
+    files in :meth:`ClusterContainerRunner.close`.
+    """
+    return f"{aux_owner_prefix(owner_id)}/{workspace_name}"
+
+
+def aux_owner_prefix(owner_id: str) -> str:
+    """Everything mirrored on behalf of one campaign (or scene build), for the sweep."""
+    from robovast.execution.cluster_execution.cluster_execution import \
+        _label_safe_campaign
+    return f"{AUX_WORKSPACE_PREFIX}/{_label_safe_campaign(owner_id)}"
+
+
+def mc_host_env(endpoint: str, access_key: str, secret_key: str) -> dict:
+    """``MC_HOST_<alias>``, so no ``mc alias set`` has to run in the aux container.
+
+    An alias command would write to ``$HOME/.mc``, and the aux image is not ours: its
+    ``HOME`` may not exist, may not be writable, and ``run_as_user`` can change who is
+    asking. Credentials in the environment match what every campaign pod already carries.
+    """
+    from urllib.parse import quote, urlsplit
+    parts = urlsplit(endpoint)
+    creds = f"{quote(access_key, safe='')}:{quote(secret_key, safe='')}"
+    return {f"MC_HOST_{_MC_ALIAS}":
+            f"{parts.scheme}://{creds}@{parts.netloc}{parts.path}".rstrip("/")}
 
 
 def aux_pod_name(campaign_id: str) -> str:
@@ -250,7 +302,7 @@ def cleanup_aux_pods(namespace="default", kube_context=None, campaign=None):
 
 def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None,
                            deadline_seconds: int = DEFAULT_AUX_DEADLINE_SECONDS,
-                           pull_secret: str = "") -> dict:
+                           pull_secret: str = "", s3: tuple | None = None) -> dict:
     """Manifest for a campaign's aux Pod: one kept-alive container per spec.
 
     Each container runs the aux image with its one-shot entrypoint overridden by
@@ -265,9 +317,20 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None,
     (``ghcr.io/secorolab/scenery_builder``), so none was needed; a spec naming the
     *campaign's own* image points at a private registry, and ``imagePullPolicy:
     IfNotPresent`` hides that until the first node that has not cached it.
+
+    *s3* is ``(endpoint, access_key, secret_key)``. Given, the pod gains an init
+    container that injects ``mc`` into an ``emptyDir`` and every aux container mounts it,
+    so the workspace can be mirrored through the object store rather than piped through
+    the exec channel. The binary comes from the sidecar image because the aux image is
+    not ours to add tools to — the same trick the rosbag postprocess Job uses to run
+    ``mc`` inside the system-under-test's own image.
     """
     from robovast.execution.cluster_execution.cluster_execution import \
         _label_safe_campaign
+    from robovast.execution.cluster_execution.postprocess_job import SIDECAR_IMAGE
+
+    tools_mount = {"name": "aux-tools", "mountPath": _TOOLS_MOUNT}
+    host_env = mc_host_env(*s3) if s3 else {}
 
     containers = []
     for spec in specs:
@@ -277,8 +340,12 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None,
             "imagePullPolicy": "IfNotPresent",
             "command": list(spec.keep_alive_command),
         }
-        if spec.env:
-            container["env"] = [{"name": k, "value": str(v)} for k, v in spec.env.items()]
+        env = dict(spec.env or {})
+        env.update(host_env)
+        if env:
+            container["env"] = [{"name": k, "value": str(v)} for k, v in env.items()]
+        if s3:
+            container["volumeMounts"] = [tools_mount]
         if spec.run_as_user:
             uid = spec.run_as_user.split(":", 1)[0]
             try:
@@ -301,6 +368,19 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None,
         "activeDeadlineSeconds": int(deadline_seconds),
         "containers": containers,
     }
+    if s3:
+        spec["volumes"] = [{"name": "aux-tools", "emptyDir": {}}]
+        spec["initContainers"] = [{
+            "name": "mc-tools", "image": SIDECAR_IMAGE,
+            "imagePullPolicy": "IfNotPresent",
+            # The config dir is created here, world-writable: an emptyDir belongs to
+            # root, and a spec's ``run_as_user`` means the container that has to run
+            # ``mc`` may be nobody in particular.
+            "command": ["sh", "-c",
+                        f'cp "$(command -v mc)" {_MC} && chmod 0755 {_MC} && '
+                        f'mkdir -p {_MC_CONFIG} && chmod 0777 {_MC_CONFIG}'],
+            "volumeMounts": [tools_mount],
+        }]
     if pull_secret:
         spec["imagePullSecrets"] = [{"name": pull_secret}]
     return {
@@ -347,7 +427,8 @@ class AuxPodSession:
     """
 
     def __init__(self, campaign_id, specs, namespace, core_v1=None,
-                 ready_timeout: float = 300.0, pull_secret: str = ""):
+                 ready_timeout: float = 300.0, pull_secret: str = "",
+                 storage=None, bucket: str = "", s3: tuple | None = None):
         self.campaign_id = campaign_id
         self.pull_secret = pull_secret
         self.specs = list(specs or [])
@@ -356,6 +437,16 @@ class AuxPodSession:
         self._core_v1 = core_v1
         self._ready_timeout = ready_timeout
         self._created = False
+        # All three or none: a pod built with ``mc`` but no client to stage through (or
+        # the reverse) fails at the first ``run()``, deep inside a plugin, instead of
+        # here where the cause is legible.
+        if bool(storage) != bool(bucket) or bool(storage) != bool(s3):
+            raise ValueError(
+                "aux workspace mirroring needs storage, bucket and s3 together; "
+                f"got storage={bool(storage)} bucket={bool(bucket)} s3={bool(s3)}")
+        self._storage = storage
+        self._bucket = bucket
+        self._s3 = s3
 
     def _client(self):
         if self._core_v1 is None:
@@ -376,7 +467,7 @@ class AuxPodSession:
         manifest = build_aux_pod_manifest(
             self.campaign_id, self.specs, self.namespace,
             owner_ref=service_pod_owner_reference(core, self.namespace),
-            pull_secret=self.pull_secret)
+            pull_secret=self.pull_secret, s3=self._s3)
         try:
             core.create_namespaced_pod(self.namespace, manifest)
         except ApiException as e:
@@ -410,8 +501,31 @@ class AuxPodSession:
         """A ``factory(spec) -> ClusterContainerRunner`` bound to this campaign's pod."""
         def factory(spec):
             return ClusterContainerRunner(
-                spec, self.pod_name, self.namespace, self._client())
+                spec, self.pod_name, self.namespace, self._client(),
+                storage=self._storage, bucket=self._bucket,
+                owner_id=self.campaign_id)
         return factory
+
+    def _sweep_workspaces(self) -> None:
+        """Drop anything this campaign's runners mirrored.
+
+        Each runner deletes its own prefix in ``close()``; this catches the ones whose
+        close never ran — a composition that raised, or a service that died mid-campaign.
+        Best-effort, because a leftover copy of a workspace must not fail a campaign that
+        otherwise finished.
+        """
+        if not self._storage:
+            return
+        try:
+            removed = self._storage.delete_prefix(self._bucket,
+                                                  aux_owner_prefix(self.campaign_id))
+        except Exception as e:  # noqa: BLE001 - cleanup never fails the campaign
+            logger.warning("Could not sweep aux workspaces for %s: %s",
+                           self.campaign_id, e)
+            return
+        if removed:
+            logger.info("Swept %d leftover aux workspace object(s) for %s",
+                        removed, self.campaign_id)
 
     def __exit__(self, exc_type, exc, tb):
         if not self._created:
@@ -421,6 +535,7 @@ class AuxPodSession:
             logger.info("Aux pod %s deleted", self.pod_name)
         except Exception as e:  # pylint: disable=broad-except - GC/reaper is the backstop
             logger.warning("Could not delete aux pod %s: %s", self.pod_name, e)
+        self._sweep_workspaces()
         return False
 
 
@@ -434,14 +549,19 @@ class ClusterContainerRunner:
     """
 
     def __init__(self, spec, pod_name, namespace, core_v1=None,
-                 exec_limit_s: float = AUX_EXEC_LIMIT_S):
+                 exec_limit_s: float = AUX_EXEC_LIMIT_S, storage=None,
+                 bucket: str = "", owner_id: str = ""):
         self._spec = spec
         self._pod = pod_name
         self._namespace = namespace
         self._core_v1 = core_v1
         self._container = spec.container_name()
         self._exec_limit_s = exec_limit_s
+        self._storage = storage
+        self._bucket = bucket
         self.workspace = tempfile.mkdtemp(prefix="robovast_aux_")
+        self._prefix = aux_workspace_prefix(owner_id or namespace,
+                                            os.path.basename(self.workspace))
 
     def _client(self):
         if self._core_v1 is None:
@@ -497,41 +617,59 @@ class ClusterContainerRunner:
 
     # -- workspace mirroring ------------------------------------------------
 
+    def _require_store(self):
+        if self._storage is None or not self._bucket:
+            raise RuntimeError(
+                "the aux container's workspace is mirrored through the object store, "
+                "and this runner was built without one. That is a service configuration "
+                "problem, not something a plugin can work around.")
+        return self._storage
+
+    def _mirror(self, *, down: bool) -> str:
+        """The ``mc mirror`` argv running inside the aux container.
+
+        ``--overwrite`` because the transport this replaced extracted a tar over the
+        destination: without it ``mc`` skips a file whose size and time already match,
+        which would silently keep a stale copy on a regenerated artifact.
+        """
+        remote = f"{_MC_ALIAS}/{self._bucket}/{self._prefix}/"
+        local = f"{self.workspace}/"
+        src, dst = (remote, local) if down else (local, remote)
+        return (f"mkdir -p '{self.workspace}' && "
+                f"{_MC} --config-dir {_MC_CONFIG} mirror --overwrite --quiet "
+                f"'{src}' '{dst}'")
+
     def _copy_in(self) -> None:
-        """Mirror the local workspace into the container at the same path.
+        """Mirror the local workspace into the container at the same path, via the store.
 
-        Two things here are load-bearing, and both exist because the exec channel is not a pipe:
+        The bytes do not travel through the exec channel. That channel is a text
+        websocket the client cannot half-close, so the tar-over-stdin version this
+        replaced had to base64-encode its payload (~1.33x) and frame the read by length
+        (``head -c <n>``) — because a receiver waiting for EOF waited forever, which is
+        exactly what it did, for 2m47s against a live pod, on an *empty* workspace.
+        Mirroring needs no stdin at all, so that whole failure mode is gone by
+        construction, and the size ceiling with it.
 
-        **The read is length-framed.** ``kubernetes.stream`` can write stdin but offers no way to
-        half-close it, so a receiver that waits for EOF -- ``base64 -d | tar xzf -`` -- waits for
-        input that never ends: the command never exits, and ``_exec``'s ``while resp.is_open()``
-        loop spins until something kills it. ``head -c <n>`` ends the read at the byte count the
-        sender already knows, so the pipeline completes without an EOF ever arriving.
-
-        **An empty workspace copies nothing.** A generator whose inputs all live inside its image
-        (a world installed from a wheel, say) stages no files, and an exec that transfers zero
-        bytes is pure latency -- one round trip per ``run()``, for nothing.
+        **An empty workspace still copies nothing.** A generator whose inputs all live
+        inside its image (a world installed from a wheel, say) stages no files, and a
+        round trip per ``run()`` for zero bytes is pure latency.
         """
         if not any(os.scandir(self.workspace)):
             self._retrying_exec(["sh", "-c", f"mkdir -p '{self.workspace}'"])
             return
-        buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-            tar.add(self.workspace, arcname=".")
-        payload = base64.b64encode(buf.getvalue()).decode("ascii")
-        self._retrying_exec(
-            ["sh", "-c",
-             f"mkdir -p '{self.workspace}' && head -c {len(payload)} "
-             f"| base64 -d | tar xzf - -C '{self.workspace}'"],
-            stdin_data=payload)
+        self._require_store().upload_dir(self.workspace, self._bucket, self._prefix)
+        self._retrying_exec(["sh", "-c", self._mirror(down=True)])
 
     def _copy_out(self) -> None:
-        """Mirror the container's workspace back over the local one."""
-        out = self._retrying_exec(
-            ["sh", "-c", f"tar czf - -C '{self.workspace}' . | base64"])
-        raw = base64.b64decode("".join(out.split()))
-        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as tar:
-            tar.extractall(self.workspace)  # noqa: S202 - our own aux container
+        """Mirror the container's workspace back over the local one, via the store.
+
+        ``force=True`` on the download for the same reason ``--overwrite`` is set going
+        up: a same-size regenerated file is a real case, and the default size check would
+        keep the stale one.
+        """
+        self._retrying_exec(["sh", "-c", self._mirror(down=False)])
+        self._require_store().download_prefix(self._bucket, self._prefix,
+                                              self.workspace, force=True)
 
     def run(self, command, progress_update_callback=None) -> None:
         progress_update_callback = progress_update_callback or logger.debug
@@ -548,6 +686,16 @@ class ClusterContainerRunner:
                 logger.warning("Could not copy aux workspace back: %s", e)
 
     def close(self):
-        # The aux pod is torn down with the campaign by AuxPodSession; the local
-        # temp workspace is small and reaped with the pod's scratch.
-        pass
+        """Drop this runner's mirrored prefix and its local scratch.
+
+        The aux pod itself is torn down with the campaign by ``AuxPodSession``. Both of
+        these are per-*variation*, though — a search campaign builds a runner per
+        generation — so leaving them would accumulate for the campaign's whole life.
+        """
+        if self._storage is not None and self._bucket:
+            try:
+                self._storage.delete_prefix(self._bucket, self._prefix)
+            except Exception as e:  # noqa: BLE001 - cleanup never fails a variation
+                logger.warning("Could not drop the aux workspace mirror %s: %s",
+                               self._prefix, e)
+        shutil.rmtree(self.workspace, ignore_errors=True)
