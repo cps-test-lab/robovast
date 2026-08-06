@@ -707,7 +707,8 @@ in a container instead, so the *service's* environment stops mattering. With ``s
          inputs: ["floorplans/rooms.fpm"]
          command: floorplan --input {inputs[0]} --output {out}
 
-Locally this is an ephemeral ``docker run``; in-cluster a sidecar on the controller pod.
+Locally this is an ephemeral ``docker run``; in-cluster a container in the campaign's
+auxiliary pod.
 
 .. note::
 

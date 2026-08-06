@@ -113,7 +113,11 @@ If no service answers, the control tools say so. Tell me, and stop. Do not work 
    `get_plugin_details` describe the `.vast` and each variation's parameters.
 2. **Check before spending compute.** `validate_project` returns *every* problem at once;
    fix them in one pass. `preview_configurations` shows what the sweep expands to — read
-   the cell count before launching, not after.
+   the cell count before launching, not after. Then check the *image*, which validation
+   cannot see into: `build_experiment_image` if the project declares a `build:` section,
+   then `exec_in_container` to run an import, `ros2 pkg list`, or one config's scenario
+   inside it. Do this instead of learning from a failed campaign that a package is
+   missing — that is the same answer, minutes later.
 3. **Size it.** `get_resource_usage` for the lane you intend to use. It touches the lane,
    so it also tells you the lane is actually reachable.
 4. **Pilot, then scale.** One configuration, `runs=1`, and confirm it produced data.

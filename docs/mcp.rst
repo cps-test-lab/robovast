@@ -618,6 +618,16 @@ rather than a historical digest. A ``build:<tag>`` must already exist: this neve
 implicitly, because a quick check silently becoming a full image build is the cost it was
 added to remove.
 
+**The two lanes answer the same way.** On a service offering both, ``backend`` picks one
+(``"local"`` for Docker on the serve host, ``"cluster"`` for Kubernetes); omitting it uses
+the service's default lane, the same rule ``start_campaign`` follows. Ask the lane you
+will *run* on: an image checked on one says nothing about the other. Both stage the
+project's ``/config`` and, when ``workspace_id`` is given, mount that workspace read-only
+at ``/sources/<workspace_id>`` — the same address, so a path returned by ``write_file`` is
+usable verbatim in the command either way. In-cluster the staging goes through the object
+store, exactly as a campaign job's does, so anything a campaign can stage this can stage
+too — there is no separate size ceiling to run into.
+
 **A running campaign is never a target.** There is no way from here to a job's container
 or pod. A campaign in flight is provenance-recorded, reproducible compute, and attaching
 to it would perturb the thing it exists to produce. To inspect a live stack, start that

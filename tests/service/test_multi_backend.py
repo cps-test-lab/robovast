@@ -264,3 +264,88 @@ def test_the_routers_listing_includes_the_cluster_lanes_stored_campaigns(tmp_pat
     cid = "camp-2026-01-01-000000"
     svc._cluster._index_cache = (_time.monotonic(), {cid: "2026-01-01T00:00:00+00:00"})
     assert cid in svc._durable_campaign_ids()
+
+
+# -- container exec -----------------------------------------------------------
+
+
+def _exec_request(backend=""):
+    from robovast.service.interface import ExecRequest
+    return ExecRequest(command="ls", workspace_id="ws-1", backend=backend)
+
+
+@pytest.mark.parametrize("backend,expected", [("cluster", "cluster"),
+                                              ("local", "local"),
+                                              ("", "cluster")])
+def test_exec_goes_to_the_lane_the_caller_named(tmp_path, monkeypatch, backend,
+                                                expected):
+    """Without this override the field was accepted, validated and transported, then
+    dropped: ``backend="cluster"`` was answered by Docker on the serve host — the wrong
+    image, the wrong kernel, and no sign of it in the result.
+
+    An unnamed backend follows the service's default, the same rule ``resource_usage``
+    and ``create_campaign`` use.
+    """
+    svc = _make(tmp_path)
+    seen = []
+    monkeypatch.setattr(LocalTransport, "exec_in_container",
+                        lambda self, request: seen.append("local"))
+    monkeypatch.setattr(ClusterService, "exec_in_container",
+                        lambda self, request: seen.append("cluster"))
+    svc.exec_in_container(_exec_request(backend))
+    assert seen == [expected]
+
+
+def test_an_unknown_exec_backend_is_refused(tmp_path):
+    svc = _make(tmp_path)
+    with pytest.raises(ValueError, match="unknown backend"):
+        svc.exec_in_container(_exec_request("kubernetes"))
+
+
+def test_stopping_without_a_backend_stops_both_lanes(tmp_path, monkeypatch):
+    """Each lane holds its own container. A caller saying "stop the container" wants the
+    resource freed, and one left on the other lane would sit there until its deadline
+    with nothing pointing at it."""
+    from robovast.service.interface import ExecStopResult
+
+    svc = _make(tmp_path)
+    seen = []
+
+    def _stop(lane):
+        def stop(self, *a, **k):
+            seen.append(lane)
+            return ExecStopResult(stopped=False, target=None)
+        return stop
+
+    monkeypatch.setattr(LocalTransport, "stop_exec_container", _stop("local"))
+    monkeypatch.setattr(ClusterService, "stop_exec_container", _stop("cluster"))
+    svc.stop_exec_container()
+    assert sorted(seen) == ["cluster", "local"]
+
+
+def test_stopping_reports_the_lane_that_actually_had_one(tmp_path, monkeypatch):
+    from robovast.service.interface import ExecStopResult
+
+    svc = _make(tmp_path)
+    monkeypatch.setattr(LocalTransport, "stop_exec_container",
+                        lambda self, *a, **k: ExecStopResult(stopped=False, target=None))
+    monkeypatch.setattr(ClusterService, "stop_exec_container",
+                        lambda self, *a, **k: ExecStopResult(stopped=True,
+                                                             target="robovast-exec"))
+    result = svc.stop_exec_container()
+    assert result.stopped and result.target == "robovast-exec"
+
+
+def test_stopping_a_named_lane_leaves_the_other_alone(tmp_path, monkeypatch):
+    from robovast.service.interface import ExecStopResult
+
+    svc = _make(tmp_path)
+    seen = []
+    monkeypatch.setattr(LocalTransport, "stop_exec_container",
+                        lambda self, *a, **k: (seen.append("local"),
+                                               ExecStopResult(stopped=True))[1])
+    monkeypatch.setattr(ClusterService, "stop_exec_container",
+                        lambda self, *a, **k: (seen.append("cluster"),
+                                               ExecStopResult(stopped=True))[1])
+    svc.stop_exec_container("cluster")
+    assert seen == ["cluster"]

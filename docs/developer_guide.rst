@@ -642,7 +642,8 @@ artifact.
             """Optional: an aux image, when the tool is not installed alongside RoboVAST.
 
             Same contract as a variation's — ephemeral ``docker run`` locally, a
-            controller-pod sidecar in-cluster. Reached via ``self.container_runner``,
+            container in the campaign's aux pod in-cluster. Reached via
+            ``self.container_runner``,
             whose ``workspace`` is visible at the same path on both sides (use
             ``stage_for_container`` / ``collect_from_container``).
             """

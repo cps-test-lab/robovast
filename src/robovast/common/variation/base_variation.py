@@ -134,8 +134,8 @@ class Variation():
         ``None`` (the default) to require no container.
 
         The declaration is backend-agnostic: locally the backend satisfies it
-        with an ephemeral ``docker run``; in-cluster it adds a sidecar to the
-        controller pod. Either way the plugin talks to it through
+        with an ephemeral ``docker run``; in-cluster it adds a container to the
+        campaign's auxiliary pod. Either way the plugin talks to it through
         ``self.container_runner`` (see
         :mod:`robovast.common.variation.container_runner`).
 

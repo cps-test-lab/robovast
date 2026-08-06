@@ -210,13 +210,21 @@ def build_context_bucket(cluster_config) -> str:
     return BUILD_CONTEXT_BUCKET
 
 
-def s3_init_env(s3_endpoint, s3_access_key, s3_secret_key, bucket, build_prefix):
+def s3_init_env(s3_endpoint, s3_access_key, s3_secret_key, bucket, build_prefix,
+                prefix_var: str = 'S3_BUILD_PREFIX'):
+    """The env an ``mc``-based init container needs to mirror one prefix down.
+
+    *prefix_var* names the variable carrying the prefix. It is a parameter because the
+    container-exec lane stages the same way but reads ``S3_EXEC_PREFIX``: sharing the
+    connection half while each caller names its own prefix keeps one definition of "how
+    an init container reaches the store" without pretending an exec is a build.
+    """
     return [
         {'name': 'S3_ENDPOINT', 'value': s3_endpoint},
         {'name': 'S3_BUCKET', 'value': bucket},
         {'name': 'S3_ACCESS_KEY', 'value': s3_access_key},
         {'name': 'S3_SECRET_KEY', 'value': s3_secret_key},
-        {'name': 'S3_BUILD_PREFIX', 'value': build_prefix},
+        {'name': prefix_var, 'value': build_prefix},
     ]
 
 

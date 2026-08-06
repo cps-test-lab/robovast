@@ -205,9 +205,32 @@ passed — ``ExecRequest`` has no timeout field — and the result reports which
 so a ``timed_out`` result names its own remedy.
 
 The lane-specific half is a small protocol (``ExecLane``): ``DockerExecLane`` runs
-``docker run``/``docker exec``, ``KubeExecLane`` an aux pod plus ``pods/exec`` with
-``/config`` delivered as a ConfigMap. Everything else — validation, staging, limits, the
-lifetime state machine — is shared.
+``docker run``/``docker exec``, ``KubeExecLane`` an aux pod plus ``pods/exec``. Everything
+else — validation, staging, limits, the lifetime state machine — is shared, as are the
+pod primitives both in-cluster users need (``wait_pod_ready``, ``wait_pod_gone``,
+``exec_stream`` in ``robovast.common.kube``; they live in ``common`` because the execution
+engine may not import ``robovast.service``).
+
+**The diagnostic stages the way a run stages.** In-cluster, ``/config`` is uploaded to the
+object store and mirrored down by an ``mc`` init container on the shared sidecar image —
+the same transport a campaign Job and an image-build context use. This replaced a
+ConfigMap, which was simpler but capped the tree at ~900 KiB and answered "too big" with
+"run it as a campaign instead", the exact expense this tool exists to save. It is
+deliberately not the aux pod's tar-over-``pods/exec`` either: that needs the pod *running*
+before its files exist, and needs ``tar``/``base64`` in an image we do not control, while
+``mc`` is already required of every cluster experiment image. The deeper reason is that a
+diagnostic with its own staging path can pass on a config the run would fail to stage.
+
+Staging fits an init container because it happens exactly once per pod: the manager
+discards a redundant staging when it reuses a held pod, and replaces the pod outright when
+the identity changes, so ``/config`` never needs refreshing under a live pod. A staged tree
+is torn down with its pod; a tree left by a dead service process is reaped at the next
+stop, since nothing else would.
+
+The aux pod for variation plugins keeps its own tar-over-exec mirror, and that is not
+duplication: its contract is a *bidirectional* mirror around every ``run()`` on a
+kept-alive pod, which an init container — running once, before the pod starts — cannot
+serve.
 
 .. _file-address-space:
 
