@@ -660,12 +660,27 @@ class ClusterContainerRunner:
         Mirroring needs no stdin at all, so that whole failure mode is gone by
         construction, and the size ceiling with it.
 
-        **An empty workspace still copies nothing.** A generator whose inputs all live
+        **A workspace with no files copies nothing.** A generator whose inputs all live
         inside its image (a world installed from a wheel, say) stages no files, and a
         round trip per ``run()`` for zero bytes is pure latency.
+
+        Emptiness is measured in *files*, matching what ``upload_dir`` actually ships, not
+        in directory entries: ``stage_for_container`` always creates an output directory, so
+        a no-input generator's workspace holds one empty dir and no files. Counting entries
+        called that non-empty, uploaded nothing, and then mirrored *from a prefix that does
+        not exist* — ``mc`` exits 1, and building a scene descriptor failed with an object
+        storage error. On that path the staged directory skeleton is created directly
+        instead, because the generator was handed those paths to write into. When there are
+        files, ``mc mirror`` makes the directories itself.
         """
-        if not any(os.scandir(self.workspace)):
-            self._retrying_exec(["sh", "-c", f"mkdir -p '{self.workspace}'"])
+        staged_dirs = [self.workspace]
+        staged_files = 0
+        for root, dirs, names in os.walk(self.workspace):
+            staged_dirs.extend(os.path.join(root, name) for name in dirs)
+            staged_files += len(names)
+        if not staged_files:
+            quoted = " ".join(f"'{path}'" for path in staged_dirs)
+            self._retrying_exec(["sh", "-c", f"mkdir -p {quoted}"])
             return
         self._require_store().upload_dir(self.workspace, self._bucket, self._prefix)
         self._retrying_exec(["sh", "-c", self._mirror(down=True)])

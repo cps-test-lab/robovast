@@ -155,6 +155,33 @@ def test_copy_in_of_an_empty_workspace_transfers_nothing(monkeypatch):
     assert store.uploads == [], "and nothing reaches the store either"
 
 
+def test_copy_in_of_a_workspace_holding_only_empty_dirs_transfers_nothing(monkeypatch):
+    """The shape ``stage_for_container`` produces for a generator with no inputs.
+
+    It always creates an output directory for the generator to write into, so such a
+    workspace holds one empty dir and no files. Measuring emptiness in directory *entries*
+    called that non-empty: nothing was uploaded, and ``mc mirror`` then read a prefix that
+    did not exist and exited 1 -- which is how building a scene descriptor failed with an
+    object storage error. The directory still has to arrive, because the generator was
+    handed that path.
+    """
+    store = _FakeStore()
+    runner = _runner(store)
+    staged_out = os.path.join(runner.workspace, "out")
+    os.makedirs(staged_out)
+    rec = _Recorder()
+    monkeypatch.setattr(runner, "_retrying_exec", rec)
+
+    runner._copy_in()
+
+    (command, payload), = rec.calls
+    assert payload is None
+    assert store.uploads == [], "no files, so nothing may reach the store"
+    assert "mirror" not in command[2], "and nothing may be mirrored from an absent prefix"
+    assert f"'{staged_out}'" in command[2], "the staged output directory still arrives"
+    assert f"'{runner.workspace}'" in command[2]
+
+
 def test_a_runner_without_a_store_refuses_instead_of_running_unstaged(monkeypatch):
     spec = ContainerSpec(image="example/img:1")
     runner = ClusterContainerRunner(spec, "pod-x", "ns", core_v1=object())
