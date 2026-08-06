@@ -44,6 +44,7 @@ from robovast.common.store import (read_campaign_created_at,
                                    read_campaign_description)
 from robovast.execution.control_server import (ControllerState, Phase, Status,
                                                failure_detail, is_terminal)
+from robovast.common.host_display import require_host_display
 from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         CampaignRef,
                                         CampaignSummary, CreateCampaignRequest,
@@ -190,6 +191,31 @@ def _read_log_slice(path: Path, offset: int, eof: bool) -> LogChunk:
     data = path.read_bytes()
     return LogChunk(text=data[offset:].decode("utf-8", errors="replace"),
                     next_offset=len(data), eof=eof)
+
+
+def _show_gui_note(request, raw_config: dict) -> str:
+    """Warn when ``show_gui`` was accepted but the project will still run headless.
+
+    The X socket and ``DISPLAY`` are wired by the lane; what actually opens a window is
+    the *scenario*, and for the simulators here that means a parameter this project has
+    to flip via ``execution.local.gui.parameter_overrides``. A project without that block
+    runs exactly as it would headless, which — without this note — is indistinguishable
+    from a display that silently refused the connection.
+
+    Not an error: a scenario is free to open its window unconditionally, and refusing
+    would break that case.
+    """
+    if not getattr(request, "show_gui", False):
+        return ""
+    local = ((raw_config or {}).get("execution") or {}).get("local") or {}
+    gui_block = local.get("gui") if isinstance(local, dict) else None
+    if isinstance(gui_block, dict) and gui_block.get("parameter_overrides"):
+        return ""
+    return ("show_gui was accepted (the host display is wired into the container), but "
+            "this project declares no execution.local.gui.parameter_overrides — so its "
+            "scenario runs with whatever headless setting it defaults to and no window "
+            "may appear. Add the block if its scenario takes a headless parameter.")
+
 
 class _LocalCampaign:
     """Bookkeeping for one in-process campaign: its live state + worker thread."""
@@ -633,11 +659,37 @@ class LocalTransport(RobovastInterface):
         from robovast.execution.backends import DockerBackend
         return DockerBackend(state=state)
 
+    #: Whether this deployment can put a window on a screen. Only the local Docker lane
+    #: can — it is the one whose ``docker`` process sits at the serve host's display.
+    #: :class:`ClusterService` flips this; a multi-backend service keeps it, because its
+    #: cluster-routed requests reach the cluster lane's own copy of this check.
+    _SUPPORTS_SHOW_GUI = True
+
+    def _admit_show_gui(self, request) -> None:
+        """Refuse ``show_gui`` unless this deployment can actually show a window.
+
+        Called at request admission, before an image build or a campaign directory
+        exists, so a refusal leaves nothing behind. Accepting it and rendering nowhere is
+        the failure this prevents: the run looks fine and simply never draws.
+        """
+        if not getattr(request, "show_gui", False):
+            return
+        if not self._SUPPORTS_SHOW_GUI:
+            raise ValueError(
+                "show_gui is only available on a local `vast serve` running the local "
+                "Docker backend. This service executes on a cluster, where there is no "
+                "display to open a window on — re-run without it, or run the campaign "
+                "on a local service.")
+        require_host_display(what="show_gui")
+
     def _run_options(self, request) -> "RunOptions":  # noqa: F821
         from robovast.execution.backends import RunOptions
         # Local backend: upload_to_share just writes a tar.gz to _archives/ (no
         # external provider). Honour the toggle so it works for a local run too.
-        return RunOptions(gui=False,
+        # ``show_gui`` -> ``gui`` is the one place the request's outward name meets the
+        # run machinery's: the generated run.sh's flag is ``--no-gui`` and cannot be
+        # renamed with it, so the boundary is here rather than spread over both.
+        return RunOptions(gui=bool(getattr(request, "show_gui", False)),
                           upload_to_share=bool(getattr(request, "upload_to_share", False)))
 
     def _campaign_context(self, campaign_id: str, project):
@@ -670,8 +722,16 @@ class LocalTransport(RobovastInterface):
                                                    run_batch_campaign,
                                                    run_search_campaign)
 
+        # Before anything is resolved or created: a lane that cannot show a window, or a
+        # serve host with no display, must refuse rather than launch a windowless run.
+        self._admit_show_gui(request)
+
         target = self._resolve_project(request.workspace_id, request.config_path)
-        campaign_config = validate_config(load_config(target.config_path))
+        # The raw mapping as well as the validated model: ``execution.local`` is read
+        # from the mapping everywhere (``ExecutionConfig`` does not model it), so the
+        # show_gui note has to look there too rather than at the model.
+        raw_config = load_config(target.config_path)
+        campaign_config = validate_config(raw_config)
         # The shared root, asked for directly: it never varied per workspace.
         results_dir = str(self._campaigns_root())
         campaign_id = campaign_id_for(campaign_config, request.campaign_name or None)
@@ -796,7 +856,8 @@ class LocalTransport(RobovastInterface):
         entry.thread = thread
         thread.start()
         logger.info("Started campaign %s (search=%s)", campaign_id, is_search)
-        return CampaignRef(campaign_id=campaign_id)
+        return CampaignRef(campaign_id=campaign_id,
+                           note=_show_gui_note(request, raw_config))
 
     # -- image builds -------------------------------------------------------
 
@@ -1007,10 +1068,12 @@ class LocalTransport(RobovastInterface):
         from robovast.common.execution import is_build_image_ref
         from robovast.service.container_exec import result_from, stage, validate
         validate(request)
+        # Before staging: a refused request should not have created a temp tree.
+        self._admit_show_gui(request)
         vast_file = self._exec_vast_file(request)
         spec, _campaign_data, limit_s, limit_source = stage(
             vast_file, request.config_name, cluster=self._EXEC_CLUSTER_LANE,
-            command=request.command)
+            command=request.command, gui=bool(request.show_gui))
         # Ownership of spec's staging tree passes to the manager: a held container mounts
         # it as /config, so it must outlive this call. On the way *in*, though, a failure
         # before that handover is ours to clean up.
@@ -1028,8 +1091,13 @@ class LocalTransport(RobovastInterface):
         except Exception:
             spec.close()
             raise
+        # show_gui belongs in the identity, not just in the env: the X11 mount can only be
+        # established when the container is created, and a follow-up call only `docker
+        # exec`s into it. Without this, asking for a window after a plain call would reuse
+        # the mount-less container and silently draw nothing.
         identity = (request.workspace_id, request.campaign_id,
-                    request.config_path, request.config_name, spec.image)
+                    request.config_path, request.config_name, spec.image,
+                    bool(request.show_gui))
         started = time.monotonic()
         out = self._exec_manager.run(spec, limit_s,
                                     keep_alive=request.keep_alive,

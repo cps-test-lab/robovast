@@ -34,6 +34,7 @@ from typing import Optional, Protocol
 
 from robovast.common.execution import (prepare_campaign_configs,
                                        render_entrypoint, scenario_env)
+from robovast.common.host_display import host_display
 from robovast.service.interface import (ExecContainerState, ExecRequest,
                                         ExecResult, ExecStopResult)
 
@@ -105,7 +106,8 @@ class ExecSpec:
 
     def __init__(self, *, image: str, command: str, config_dir: str,
                  env: dict, workspace_dir: str = "", workspace_id: str = "",
-                 config_name: str = "", log_path: str = "", staging_dir: str = ""):
+                 config_name: str = "", log_path: str = "", staging_dir: str = "",
+                 gui: bool = False):
         self.image = image
         self.command = command
         #: Host directory mounted read-only at ``/config`` — already in final layout.
@@ -115,6 +117,10 @@ class ExecSpec:
         self.workspace_id = workspace_id
         self.config_name = config_name
         self.log_path = log_path
+        #: Mount the host's X socket so the container can draw on the serve host's
+        #: display. A lane property rather than an env one: the mount exists only from
+        #: container creation, which is why it is part of the held container's identity.
+        self.gui = gui
         #: The temp tree that owns ``config_dir``; removed by :meth:`close`.
         self._staging_dir = staging_dir or config_dir
 
@@ -233,7 +239,8 @@ def deadline_for(limit_s: int) -> int:
     return max(IDLE_WAIT_CAP_S, limit_s + DEADLINE_GRACE_S)
 
 
-def build_env(scenario_vars: dict, execution: dict, *, staged_config: bool) -> dict:
+def build_env(scenario_vars: dict, execution: dict, *, staged_config: bool,
+              gui: bool = False) -> dict:
     """The environment the command runs under.
 
     Reuses the run's own derivation (:func:`~robovast.common.scenario_env`) so the
@@ -246,9 +253,18 @@ def build_env(scenario_vars: dict, execution: dict, *, staged_config: bool) -> d
     # SCENARIO_PARAMETER_FILE is deliberately left alone: a campaign stages the single
     # config's parameters at ``<config>/_config/scenario.config``, and the assembled
     # mount puts them at ``/config/scenario.config`` — already the entrypoint's default.
-    # No display: a virtual framebuffer costs seconds we exist to save, and a command
-    # that needs one belongs in a campaign.
+    # No *virtual* framebuffer: Xvfb costs seconds we exist to save, and a command that
+    # needs one belongs in a campaign. This holds with `gui` too — there the container
+    # draws on the host's X server through a mounted socket, which costs nothing and is
+    # precisely what Xvfb would shadow.
     env["ENABLE_X11"] = "false"
+    if gui:
+        # The socket is mounted by the lane; this says which display to use. Read from
+        # the service process, defaulting like the generated compose does, so a daemon
+        # started without DISPLAY still reaches a running :0.
+        env["DISPLAY"] = host_display() or ":0"
+        env.setdefault("LIBGL_ALWAYS_SOFTWARE",
+                       os.environ.get("LIBGL_ALWAYS_SOFTWARE", "0"))
     if not staged_config:
         # Nothing is staged in the bare-image case, so /config/collect_sysinfo.py does
         # not exist — and under `set -e` the entrypoint would abort on it before ever
@@ -269,7 +285,8 @@ def build_env(scenario_vars: dict, execution: dict, *, staged_config: bool) -> d
 
 
 def stage(vast_file: str, config_name: str, *,
-          cluster: bool, command: str) -> tuple[ExecSpec, dict, int, str]:
+          cluster: bool, command: str,
+          gui: bool = False) -> tuple[ExecSpec, dict, int, str]:
     """Turn a resolved ``.vast`` into a runnable :class:`ExecSpec`.
 
     A campaign's ``_config/`` is itself a project, so both sources reach this with just
@@ -303,15 +320,19 @@ def stage(vast_file: str, config_name: str, *,
             campaign_data, _transient = build_campaign_data(vast_file, generated)
             campaign_data["configs"] = filter_configs_by_name(
                 campaign_data["configs"], config_name)
-            prepare_campaign_configs(generated, campaign_data, cluster=cluster)
+            # gui is forwarded so ``execution.local.gui.parameter_overrides`` reaches the
+            # staged scenario: without it a windowed exec would stage the headless
+            # defaults and draw nothing on the display it just mounted.
+            prepare_campaign_configs(generated, campaign_data, cluster=cluster, gui=gui)
             scenario_vars = scenario_env(campaign_data)
         execution = campaign_data.get("execution") or {}
         config_mount = _assemble_config_mount(staging, generated, campaign_data)
         limit_s, limit_source = derive_limit(campaign_data, command)
-        env = build_env(scenario_vars, execution, staged_config=bool(config_name))
+        env = build_env(scenario_vars, execution, staged_config=bool(config_name),
+                        gui=gui)
         spec = ExecSpec(
             image="", command=command, config_dir=config_mount, env=env,
-            staging_dir=staging, config_name=config_name,
+            staging_dir=staging, config_name=config_name, gui=gui,
             log_path=f"{OUTPUT_DIR}/logs/system.log" if not command.strip() else "")
         return spec, campaign_data, limit_s, limit_source
     except Exception:

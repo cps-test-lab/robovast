@@ -591,6 +591,42 @@ UPLOAD_EOF
     fi"""
 
 
+def local_parameter_overrides(campaign_data, *, gui: bool) -> list:
+    """The scenario-parameter overrides a **local** run applies, in precedence order.
+
+    Two blocks, because they answer different questions:
+
+    * ``execution.local.parameter_overrides`` — every local run, whatever it looks like.
+    * ``execution.local.gui.parameter_overrides`` — only a run with the host display
+      wired in, merged last so it wins.
+
+    Keeping them apart is what lets a project say ``headless: "False"`` without it firing
+    on a headless run, which would ask the scenario to open a window on a display that is
+    not there. The condition is in the config *path* rather than in the meaning of an
+    existing key, so ``execution.local.parameter_overrides`` still means exactly what it
+    always did.
+
+    Accepts either the raw mapping or a validated model at ``execution.local``, matching
+    the two shapes callers already pass around.
+    """
+    local = (campaign_data.get("execution") or {}).get("local")
+    if hasattr(local, "parameter_overrides"):
+        base = local.parameter_overrides or []
+        gui_block = getattr(local, "gui", None)
+    elif isinstance(local, dict):
+        base = local.get("parameter_overrides") or []
+        gui_block = local.get("gui")
+    else:
+        return []
+    overrides = list(base)
+    if gui and gui_block is not None:
+        if hasattr(gui_block, "parameter_overrides"):
+            overrides += list(gui_block.parameter_overrides or [])
+        elif isinstance(gui_block, dict):
+            overrides += list(gui_block.get("parameter_overrides") or [])
+    return overrides
+
+
 def _apply_local_parameter_overrides(config, parameter_overrides, valid_param_names,
                                      scenario_name, scenario_path):
     """Apply local parameter overrides to config, validating against scenario parameters.
@@ -678,8 +714,13 @@ def render_entrypoint(*, cluster=False, instance_type_command=None):
 
 
 def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
-                             instance_type_command=None):
+                             instance_type_command=None, gui=False):
     """Stage a campaign's config tree, including the generated entrypoint.
+
+    *gui* selects whether ``execution.local.gui.parameter_overrides`` is staged along with
+    ``execution.local.parameter_overrides`` (see :func:`local_parameter_overrides`). It
+    defaults to **off** so a caller that does not thread it through under-applies rather
+    than staging a scenario that expects a window nobody asked for.
 
     *instance_type_command* is a shell line that sets ``INSTANCE_TYPE``, obtained from the
     cluster provider's
@@ -815,15 +856,10 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
         if isinstance(p, dict) and 'name' in p
     ]
 
-    # Get local parameter overrides (only applied when not running on cluster)
-    parameter_overrides = []
-    if not cluster:
-        local_config = campaign_data.get("execution", {}).get("local")
-        if local_config is not None:
-            if hasattr(local_config, 'parameter_overrides'):
-                parameter_overrides = local_config.parameter_overrides or []
-            elif isinstance(local_config, dict):
-                parameter_overrides = local_config.get("parameter_overrides") or []
+    # Local-only scenario-parameter overrides; the gui half only when this run has a
+    # display (see local_parameter_overrides).
+    parameter_overrides = [] if cluster else local_parameter_overrides(
+        campaign_data, gui=gui)
 
     for config_data in campaign_data["configs"]:
         run_config_dir = os.path.join(out_dir, config_data.get("name"), "_config")

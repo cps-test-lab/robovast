@@ -60,7 +60,23 @@ Afterwards you can verify the scenario, the RoboVAST-configuration and the docke
     # enable extra scenario-execution output: live py-tree (-t) and debug log (-d)
     ./test_run/run.sh -t -d
 
-To enable GUI visualization (e.g. RViz) for local runs while keeping cluster runs headless, add ``execution.local.parameter_overrides`` in your ``.vast`` file (see :doc:`configuration`).
+To enable GUI visualization (RViz, a simulator window) for local runs while keeping cluster
+runs headless, add ``execution.local.gui.parameter_overrides`` to your ``.vast`` (see
+:doc:`configuration`). ``vast execution local run`` opts in by default; through a service
+the equivalent is ``start_campaign(show_gui=True)`` or ``exec_in_container(show_gui=True)``.
+
+Either way the window opens on the host running the **service** (or, for the CLI, on the
+host you ran it from), whose ``DISPLAY`` the containers inherit.
+
+The two entry points differ on purpose when there is no display:
+
+* ``show_gui=True`` is a **request**, so it is refused — a ``vast serve`` started outside a
+  desktop session or reached over an SSH tunnel has no screen to draw on, and a cluster
+  backend refuses it outright. Accepting it would produce a run that looks fine and shows
+  nothing.
+* ``vast execution local run`` has GUI as its **default**, so it prints a notice and
+  continues headless. A build machine must keep running it unattended without passing
+  ``--no-gui``.
 
 Next, it is important to verify that the output (e.g. ROS bag) is stored correctly. 
 
@@ -1753,16 +1769,26 @@ plugin (a ``robovast.postprocessing_commands`` entry point) reconstructs structu
 **XML** nav2 ran and joins it into a ``nav2_behaviors`` table.
 
 That table uses the **same schema as scenario_execution's** ``behaviors`` table, and that is the
-whole point: the built-in ``scenario_tree`` panel renders *any* tree expressible in it via
-``source: { table: nav2_behaviors }``, so nav2 needs no panel, no remote and no service endpoint —
-just a ``.vast`` entry naming the table. The package did ship a tree panel once, a port of the
-built-in one written in plain React to satisfy the remote's shared-dependency limits; it was
-deleted because a second renderer meant every improvement to the tree view had to be made twice,
-and the built-in already accepted the table.
+whole point: the built-in ``scenario_tree`` panel renders *any* tree expressible in it. So
+``robovast_nav`` ships the ``nav2_behavior_tree`` **type** but no renderer — its panel module is a
+handful of lines that render the built-in one with nav2's table, title and empty-state hint.
 
-The rule this illustrates: **reach for a remote only when the host genuinely cannot serve the
-panel.** ``costmap`` qualifies — binary grids need their own endpoint. A package that merely
-produces a table in an existing schema does not.
+**Deriving a panel** is what makes that possible. ``PanelProps.builtins`` carries the host's own
+panel components to a remote (``PanelHost``'s ``RemotePanel`` reads them from the registry at
+mount), because a Module-Federation remote shares only ``react``/``react-dom`` and cannot import
+the host's modules. A derived panel inherits every later improvement to the built-in — child
+ordering, node-kind glyphs, feedback, source lines, scrolling — instead of needing them
+implemented twice.
+
+The package did once ship a full port of the built-in panel in plain React; it was deleted for
+exactly that reason. Deleting the *type* along with it was a mistake worth recording: a type name
+is not a duplicate. Configs name it (frozen ``_config`` copies of past campaigns included), and
+``PanelConfig._known_type`` validates against installed entry points, so removing the entry point
+turned every one of those configs into a validation error and an "Unknown panel type" box.
+
+The rule, then: **a package needs a renderer only when the host cannot draw its data at all.**
+``costmap`` qualifies — binary grids need their own service endpoint. A package whose data is a
+table in an existing schema still gets a type of its own, but derives the panel.
 
 **Package-provided service data endpoints** (``robovast.service_endpoints``,
 :mod:`robovast.service.endpoint_plugin`) — an installed package contributes a run-scoped data

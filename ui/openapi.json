@@ -337,10 +337,16 @@
           "campaign_id": {
             "title": "Campaign Id",
             "type": "string"
+          },
+          "note": {
+            "default": "",
+            "title": "Note",
+            "type": "string"
           }
         },
         "required": [
-          "campaign_id"
+          "campaign_id",
+          "note"
         ],
         "title": "CampaignRef",
         "type": "object"
@@ -542,6 +548,11 @@
             "default": 1,
             "title": "Runs",
             "type": "integer"
+          },
+          "show_gui": {
+            "default": false,
+            "title": "Show Gui",
+            "type": "boolean"
           },
           "upload_to_share": {
             "default": false,
@@ -819,6 +830,11 @@
           "keep_alive": {
             "default": false,
             "title": "Keep Alive",
+            "type": "boolean"
+          },
+          "show_gui": {
+            "default": false,
+            "title": "Show Gui",
             "type": "boolean"
           },
           "workspace_id": {

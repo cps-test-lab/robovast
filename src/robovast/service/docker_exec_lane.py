@@ -11,6 +11,7 @@ import os
 import subprocess
 
 from robovast.service.container_exec import CONTAINER_NAME, ExecSpec
+from robovast.common.host_display import grant_local_access
 
 logger = logging.getLogger(__name__)
 
@@ -118,8 +119,21 @@ class DockerExecLane:
     # -- shared argv ------------------------------------------------------
 
     def _common_run_args(self, spec: ExecSpec) -> list:
-        """Mounts, user and env shared by the one-shot and held forms."""
+        """Mounts, user and env shared by the one-shot and held forms.
+
+        Only reachable from ``docker run``: a later ``docker exec`` can add env but not
+        mounts, which is why ``spec.gui`` is part of the held container's identity rather
+        than something a follow-up call can turn on.
+        """
         args = ["--user", f"{os.getuid()}:{os.getgid()}"]
+        if spec.gui:
+            # The socket lets the container talk to the host's X server; /dev/dri gives it
+            # the render node, so GL is hardware-accelerated where the host has a GPU. The
+            # grant is ours to make — there is no run.sh on this path to do it.
+            grant_local_access()
+            args += ["-v", "/tmp/.X11-unix:/tmp/.X11-unix:rw"]
+            if os.path.exists("/dev/dri"):
+                args += ["-v", "/dev/dri:/dev/dri"]
         # One mount, already in final layout (see _assemble_config_mount): the rendered
         # entrypoint, the monitor scripts, and — for a staged config — the scenario, its
         # run files and its parameter file. Read-only, like a campaign job's /config.

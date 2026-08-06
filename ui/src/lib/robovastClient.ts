@@ -292,6 +292,9 @@ export const robovast = {
       runs: 1,
       postprocess: true,
       upload_to_share: false,
+      // Never from the web UI: it cannot know whether the browser is on the serve host,
+      // and a window opening on someone else's screen is worse than no control at all.
+      show_gui: false,
       ...req,
     }),
 

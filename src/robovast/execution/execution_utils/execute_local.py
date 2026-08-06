@@ -32,6 +32,7 @@ from robovast.common.execution import (_apply_local_parameter_overrides,
                                        build_job_parameter_documents,
                                        dump_multi_document_yaml,
                                        job_artifact_rel,
+                                       local_parameter_overrides,
                                        resolve_robovast_image,
                                        write_job_links_manifest)
 from robovast.execution.packer import build_jobs
@@ -40,7 +41,8 @@ logger = logging.getLogger(__name__)
 
 
 def initialize_local_execution(config, output_dir, runs, feedback_callback=logging.debug,
-                               skip_resource_allocation=True, log_tree=False, debug=False):
+                               skip_resource_allocation=True, log_tree=False, debug=False,
+                               gui=False):
     """Initialize common setup for local execution commands.
 
     Performs all common setup steps including:
@@ -132,7 +134,7 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
 
     try:
         config_path_result = os.path.join(config_dir, "out_template")
-        prepare_campaign_configs(config_path_result, campaign_data)
+        prepare_campaign_configs(config_path_result, campaign_data, gui=gui)
         logger.debug(f"Config path: {config_path_result}")
     except Exception as e:  # pylint: disable=broad-except
         feedback_callback(f"Error preparing run configs: {e}", file=sys.stderr)
@@ -152,7 +154,7 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
     generate_compose_run_script(runs, campaign_data, config_path_result, pre_command, post_command,
                                 docker_image, results_dir, os.path.join(config_dir, "run.sh"),
                                 skip_resource_allocation=skip_resource_allocation,
-                                log_tree=log_tree, debug=debug)
+                                log_tree=log_tree, debug=debug, gui=gui)
     return os.path.join(config_dir, "run.sh")
 
 
@@ -319,16 +321,16 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# GUI setup
-GUI_DEVICES=""
-GUI_ENV=""
-HAS_DRI=false
+# GUI setup. The X socket, /dev/dri and DISPLAY are wired into the compose file itself;
+# what is left for the script is letting containers on this host talk to the X server, and
+# picking the GL path. A failed grant is reported rather than swallowed -- silencing it
+# turned "the X server refused the container" into a run that started fine and drew
+# nothing.
 if [ "$USE_GUI" = true ]; then
-    xhost +local: > /dev/null 2>&1
-    GUI_ENV="DISPLAY=${DISPLAY}"
-    GUI_DEVICES="/tmp/.X11-unix:/tmp/.X11-unix:rw"
+    if ! xhost +local: > /dev/null 2>&1; then
+        echo "WARNING: xhost +local: failed; the X server may refuse the container" >&2
+    fi
     if [ -e /dev/dri ]; then
-        HAS_DRI=true
         export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-0}"
     else
         export LIBGL_ALWAYS_SOFTWARE=1
@@ -749,7 +751,7 @@ def _emit_compose_step(compose_file, compose_yaml, idx, total, label, has_second
 def generate_compose_run_script(runs, campaign_data, config_path_result, pre_command, post_command,
                                 docker_image, results_dir, output_script_path,
                                 skip_resource_allocation=False, log_tree=False, debug=False,
-                                job_prefix=''):
+                                job_prefix='', gui=False):
     """Generate a shell script to run Docker Compose stacks sequentially.
 
     Args:
@@ -761,6 +763,9 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
         docker_image: Docker image to use
         results_dir: Directory where results are stored
         output_script_path: Path where the script should be written
+        gui: Whether this run has the host display wired in. Selects the
+            ``execution.local.gui`` parameter overrides; defaults to off so a caller that
+            does not thread it through stages the headless defaults.
     """
     run_files = campaign_data.get("_run_files", [])
 
@@ -872,13 +877,11 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
     scenario_params_by_name = get_scenario_parameters(scenario_path)
     scenario_name = next(iter(scenario_params_by_name.keys()))
 
-    # Local-only scenario-parameter overrides (execution.local.parameter_overrides): applied to every
-    # packed job document below so they reach the container (the packed params.yaml is what the local
-    # run mounts). ``scenario.config`` also carries them, but the local run uses the job documents.
-    local_cfg = campaign_data.get("execution", {}).get("local") or {}
-    local_param_overrides = (
-        local_cfg.get("parameter_overrides") if isinstance(local_cfg, dict) else None
-    ) or []
+    # Local-only scenario-parameter overrides (execution.local.parameter_overrides, plus the
+    # execution.local.gui block when this run has a display): applied to every packed job document
+    # below so they reach the container -- the packed params.yaml is what the local run mounts.
+    # ``scenario.config`` also carries them, but the local run uses the job documents.
+    local_param_overrides = local_parameter_overrides(campaign_data, gui=gui)
     valid_param_names = [
         p.get("name") for p in scenario_params_by_name.get(scenario_name, [])
         if isinstance(p, dict) and "name" in p

@@ -1189,6 +1189,11 @@ export interface components {
         CampaignRef: {
             /** Campaign Id */
             campaign_id: string;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
         };
         /**
          * CampaignSummary
@@ -1332,6 +1337,11 @@ export interface components {
              * @default 1
              */
             runs: number;
+            /**
+             * Show Gui
+             * @default false
+             */
+            show_gui: boolean;
             /**
              * Upload To Share
              * @default false
@@ -1509,6 +1519,11 @@ export interface components {
              * @default false
              */
             keep_alive: boolean;
+            /**
+             * Show Gui
+             * @default false
+             */
+            show_gui: boolean;
             /**
              * Workspace Id
              * @default

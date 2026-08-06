@@ -47,6 +47,7 @@ from robovast.execution.cluster_execution.cluster_setup import (
     get_kubernetes_node_labels_from_config, setup_server)
 from robovast.execution.cluster_execution.share_providers import \
     load_share_provider_plugins
+from robovast.common.host_display import gui_by_default
 
 from ..cluster_execution.kubernetes import (check_kubernetes_access,
                                             get_kubernetes_client)
@@ -138,6 +139,11 @@ def run(config, runs, output, start_only, no_gui, image, abort_on_failure,
         campaign_config = validate_config(load_config(project_config.config_path))
         results_dir = output or project_config.results_dir
 
+        # GUI is this command's *default*, so a host without a display degrades to headless
+        # rather than failing (see gui_by_default). An explicit show_gui through the
+        # service is refused instead — there the request was the caller's.
+        gui = gui_by_default(no_gui, notify=lambda msg: click.echo(msg, err=True))
+
         # --campaign-name overrides the name half of the auto id; an explicit
         # --campaign-id still wins (it sets the whole id, timestamp included).
         if campaign_id is None and campaign_name:
@@ -149,9 +155,9 @@ def run(config, runs, output, start_only, no_gui, image, abort_on_failure,
             run_script_path = initialize_local_execution(
                 config, None, runs, feedback_callback=click.echo,
                 skip_resource_allocation=not use_resource_allocation,
-                log_tree=log_tree, debug=debug)
+                log_tree=log_tree, debug=debug, gui=gui)
             cmd = [run_script_path, "--start-only"]
-            if no_gui:
+            if not gui:
                 cmd.append("--no-gui")
             # Only an explicit --image is forwarded; otherwise the generated
             # run.sh already bakes in the resolved image (config/ROBOVAST_IMAGE/default).
@@ -161,7 +167,7 @@ def run(config, runs, output, start_only, no_gui, image, abort_on_failure,
             return
 
         options = RunOptions(
-            gui=not no_gui, start_only=start_only,
+            gui=gui, start_only=start_only,
             abort_on_failure=abort_on_failure, image=image, log_tree=log_tree,
             debug=debug, skip_resource_allocation=not use_resource_allocation,
             upload_to_share=upload_to_share)
@@ -278,8 +284,14 @@ def prepare_run(output_dir, config, runs, use_resource_allocation, log_tree, deb
         vast = os.path.abspath(project_config.config_path)
         campaign_config = validate_config(load_config(vast))
         os.makedirs(output_dir, exist_ok=True)
-        options = RunOptions(gui=True, log_tree=log_tree, debug=debug,
-                             skip_resource_allocation=not use_resource_allocation)
+        # The staged run.sh defaults to windowed, so stage the matching scenario params —
+        # but only where this host could actually show one. On a headless machine the
+        # windowed variant would bake in a `headless: False` that its own run.sh cannot
+        # honour. `prepare-run` takes no --no-gui: the generated run.sh does.
+        options = RunOptions(
+            gui=gui_by_default(False, notify=lambda msg: click.echo(msg, err=True)),
+            log_tree=log_tree, debug=debug,
+            skip_resource_allocation=not use_resource_allocation)
         eff_runs = runs if runs is not None else campaign_config.execution.runs
 
         if campaign_config.search is not None:

@@ -118,7 +118,7 @@ def _status_to_dict(campaign_id: str, backend, st) -> dict:
 def start_campaign(config_filter: str = "", runs: int = 0, backend: str = "",
                    workspace_id: str = "", config_path: str = "",
                    campaign_name: str = "", upload_to_share: bool = False,
-                   description: str = "") -> dict:
+                   show_gui: bool = False, description: str = "") -> dict:
     """**Run the experiment.** Launches a campaign in containers and returns immediately.
 
     This is how a RoboVAST experiment is executed — not a local ``docker compose`` or a
@@ -139,6 +139,16 @@ def start_campaign(config_filter: str = "", runs: int = 0, backend: str = "",
             a service offering both. Empty uses its default lane.
         campaign_name: Override the name; the id becomes ``<name>-<timestamp>``.
         upload_to_share: Deliver a raw archive to the configured share when it finishes.
+        show_gui: Show the simulator's window, to watch one run. **Only a local ``vast
+            serve`` on its local Docker backend can do this** — a cluster backend, or a
+            service without a display, refuses the request instead of running windowless.
+            The window opens on the machine running ``vast serve``, which is not yours if
+            you reached it over a tunnel. Needs the project to declare
+            ``execution.local.gui.parameter_overrides`` (that is what un-headlesses its
+            scenario); without it the reply carries a ``note`` saying so. **Do not close
+            the window** — the simulator exits 0 while the rest of the stack keeps planning
+            against a dead sim, and the run never returns; end it with ``stop_campaign``.
+            Not for a sweep: every configuration would open one.
         description: **Set this every time.** One line (≤200 chars) saying what the run
             is *for* — it is what tells two same-day ``campaign-<timestamp>`` ids apart in
             ``list_campaigns`` and the web UI. Not the id, filter or run count, which are
@@ -146,8 +156,9 @@ def start_campaign(config_filter: str = "", runs: int = 0, backend: str = "",
             inflation radius". Bad: "campaign run".
 
     Returns:
-        ``{campaign_id, backend}``, or ``{error}`` — including when no service is
-        reachable, which means **stop and say so**, not run the experiment another way.
+        ``{campaign_id, backend}`` (plus ``note`` when the launch was accepted but will not
+        do what was asked — see ``show_gui``), or ``{error}`` — including when no service
+        is reachable, which means **stop and say so**, not run the experiment another way.
     """
     try:
         client = service_access.service_client()
@@ -173,8 +184,12 @@ def start_campaign(config_filter: str = "", runs: int = 0, backend: str = "",
             # campaign started without an explicit count to one run per configuration — a
             # 25-trial sweep finished "successfully" with 5 trials.
             runs=runs if runs and runs > 0 else 0,
-            upload_to_share=upload_to_share, backend=backend or None))
-        return {"campaign_id": ref.campaign_id, "backend": backend or "service-default"}
+            upload_to_share=upload_to_share, show_gui=show_gui,
+            backend=backend or None))
+        out = {"campaign_id": ref.campaign_id, "backend": backend or "service-default"}
+        if ref.note:
+            out["note"] = ref.note
+        return out
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 
@@ -647,20 +662,23 @@ def get_image_build_log(build_id: str, offset: int = 0, grep: str = "",
 
 def exec_in_container(command: str = "", workspace_id: str = "", config_path: str = "",
                       campaign_id: str = "", config_name: str = "",
-                      keep_alive: bool = False, tail: int = 200,
-                      backend: str = "") -> dict:
+                      keep_alive: bool = False, show_gui: bool = False,
+                      tail: int = 200, backend: str = "") -> dict:
     """**Test a container and its setup.** Runs a command in the experiment image.
 
     **Produces no campaign data** — nothing durable, no provenance, no repetitions, no
     entry in ``list_campaigns``, and no results to compare with anything. To run the
     experiment, use ``start_campaign``.
 
-    Two questions it answers:
+    Three questions it answers:
 
     - is the image set up correctly? Omit ``config_name`` — imports, ``ros2 pkg list``,
       file checks. Build the image first if the project declares one.
     - does one config run? Name a ``config_name``; an empty ``command`` starts that
       config's scenario, detached, so a follow-up call can inspect it.
+    - what does the bring-up look like? The same, plus ``keep_alive=True`` and
+      ``show_gui=True``: the scenario starts with the simulator's window on the serve
+      host, and later calls inspect it while it runs.
 
     ``keep_alive=True`` holds the container open for follow-up calls; ``stop_container``
     ends it. **At most one container exists at a time**, so ``reused: false`` means a
@@ -677,6 +695,12 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
             container is never touched; to inspect a live stack, start it here.
         config_name: Stage this config. Omitted always means the bare image.
         keep_alive: Leave the container running for follow-up calls.
+        show_gui: Show the simulator's window on the serve host's display. **Only a local
+            ``vast serve`` on its local Docker backend can do this**; see
+            ``start_campaign`` for whose screen that is. Changing it between calls
+            **replaces** the container — the X socket can only be mounted when a container
+            is created — so ``reused`` comes back false and anything running in the old one
+            is gone.
         tail: Lines kept per stream.
         backend: ``"local"`` or ``"cluster"`` on a service offering both.
 
@@ -697,7 +721,7 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
         result = client.exec_in_container(ExecRequest(
             command=command, workspace_id=workspace_id, config_path=config_path,
             campaign_id=campaign_id, config_name=config_name,
-            keep_alive=keep_alive, backend=backend or None))
+            keep_alive=keep_alive, show_gui=show_gui, backend=backend or None))
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
     out = result.model_dump()

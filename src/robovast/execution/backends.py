@@ -193,7 +193,9 @@ def stage_run_script(campaign_data: dict, work_dir: str, runs: int,
     image = resolve_robovast_image(required=True, explicit=options.image,
                                    config_image=execution.get("image"))
     config_path_result = os.path.join(work_dir, "out_template")
-    prepare_campaign_configs(config_path_result, campaign_data)
+    # gui selects the execution.local.gui parameter overrides, so it has to reach both the
+    # staged scenario.config and the packed job documents the local run actually mounts.
+    prepare_campaign_configs(config_path_result, campaign_data, gui=options.gui)
 
     run_script = os.path.join(work_dir, "run.sh")
     generate_compose_run_script(
@@ -201,7 +203,8 @@ def stage_run_script(campaign_data: dict, work_dir: str, runs: int,
         execution.get("pre_command"), execution.get("post_command"),
         image, results_dir, run_script,
         skip_resource_allocation=options.skip_resource_allocation,
-        log_tree=options.log_tree, debug=options.debug, job_prefix=job_prefix)
+        log_tree=options.log_tree, debug=options.debug, job_prefix=job_prefix,
+        gui=options.gui)
     return run_script
 
 

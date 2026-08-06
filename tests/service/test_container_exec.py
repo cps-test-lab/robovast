@@ -147,6 +147,21 @@ def test_no_virtual_display_is_started():
     assert ce.build_env({}, {}, staged_config=True)["ENABLE_X11"] == "false"
 
 
+def test_a_windowed_exec_uses_the_hosts_display_not_a_virtual_one(monkeypatch):
+    # Xvfb stays off with gui too, and that is the point rather than an oversight: the
+    # container draws on the host's X server through the socket the lane mounts, and a
+    # virtual framebuffer would shadow exactly that.
+    monkeypatch.setenv("DISPLAY", ":7")
+    env = ce.build_env({}, {}, staged_config=True, gui=True)
+    assert env["ENABLE_X11"] == "false"
+    assert env["DISPLAY"] == ":7"
+
+
+def test_without_gui_no_display_is_handed_to_the_container(monkeypatch):
+    monkeypatch.setenv("DISPLAY", ":7")
+    assert "DISPLAY" not in ce.build_env({}, {}, staged_config=True)
+
+
 # -- argv: the run's entrypoint, not a hand-rolled prelude -------------------
 
 

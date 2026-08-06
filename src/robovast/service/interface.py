@@ -84,6 +84,13 @@ class CreateCampaignRequest(BaseModel):
     runs: int = 1                    # runs per configuration
     postprocess: bool = True         # trigger analysis postprocessing once when done
     upload_to_share: bool = False    # stream a raw (pre-postprocess) archive to the share
+    #: Put the simulator's window on the serve host's X display. Honoured **only** by a
+    #: local ``vast serve`` on its Docker lane, which is the only deployment whose
+    #: ``docker`` process sits at a screen; every other lane refuses the request rather
+    #: than running windowless (see :mod:`robovast.service.host_display`). Named for the
+    #: effect rather than after the internal ``RunOptions.gui`` it sets, because a client
+    #: reads this field without the run machinery in front of it.
+    show_gui: bool = False
     backend: Optional[str] = None    # "local" | "cluster"; honoured only by a multi-backend service
 
 
@@ -91,6 +98,13 @@ class CampaignRef(BaseModel):
     """Identifies a launched campaign. Self-contained and workspace-independent."""
 
     campaign_id: str
+    #: Present when the launch was accepted but something about it will not do what the
+    #: caller probably meant — currently only ``show_gui`` on a project that declares no
+    #: ``execution.local.gui.parameter_overrides``, whose scenario then still runs
+    #: headless. Not an error: a scenario may open its window unconditionally, so
+    #: refusing would be wrong. But silence would leave "I asked for a window and got
+    #: none" indistinguishable from a broken display.
+    note: str = ""
 
 
 class BuildImageRequest(BaseModel):
@@ -172,6 +186,11 @@ class ExecRequest(BaseModel):
     #: the project has exactly one.
     config_name: str = ""
     keep_alive: bool = False         # hold the one container open for follow-up calls
+    #: Put the simulator's window on the serve host's X display — same restriction as
+    #: :attr:`CreateCampaignRequest.show_gui`. Part of the held container's *identity*:
+    #: the X11 mount can only be established when the container is created, so changing
+    #: this replaces the container rather than exec'ing into a mount-less one.
+    show_gui: bool = False
     #: No ``tail`` here: like the three log operations, this returns the captured text
     #: and the *reading* surface trims it (the MCP tool via ``log_view.view_log``), so a
     #: CLI caller still gets everything.

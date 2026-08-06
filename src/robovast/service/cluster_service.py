@@ -86,6 +86,12 @@ class ClusterService(LocalTransport):
     #: across lanes is what this flag exists to prevent.
     _EXEC_CLUSTER_LANE = True
 
+    #: No screen to draw on: the work runs in pods, and the X socket a window would need
+    #: belongs to whatever machine the service happens to sit on — never the caller's.
+    #: ``_admit_show_gui`` turns this into an explicit refusal rather than a silent
+    #: windowless run.
+    _SUPPORTS_SHOW_GUI = False
+
     def __init__(self, namespace=None, cluster_config_name=None,
                  cluster_config_kwargs=None, store=None,
                  reap_on_start=True, kube_context=None):
@@ -358,6 +364,8 @@ class ClusterService(LocalTransport):
         from robovast.execution.backends import RunOptions
         # postprocess travels in the options (not the process env): one process
         # drives many campaigns, and an env var could not tell them apart.
+        # gui stays False unconditionally — a show_gui request never reaches here,
+        # _admit_show_gui having refused it.
         return RunOptions(gui=False,
                           postprocess=bool(request.postprocess),
                           upload_to_share=bool(getattr(request, "upload_to_share", False)),

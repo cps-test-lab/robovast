@@ -871,12 +871,47 @@ Parameters are validated against the scenario file (``.osc``); only parameters d
      scenario_file: scenario.osc
      local:
        parameter_overrides:
-       - headless: "False"
        - use_rviz: "True"
 
 .. note::
 
    Parameter values must match the types expected by the scenario. If the scenario defines a parameter as a string (e.g. ``headless: string = "False"``), use quoted values.
+
+local.gui.parameter_overrides
+"""""""""""""""""""""""""""""
+
+**Type:** List of dictionaries (key-value pairs)
+
+**Required:** No
+
+The same thing, for local runs that have a **host display** wired in — merged *after*
+``local.parameter_overrides``, so it wins where both set a parameter. This is where a
+parameter that only makes sense with a window belongs, ``headless`` above all: a local run
+launched headless has no display for the scenario to draw on, and asking it to open a
+window there fails or renders nowhere.
+
+A run has a display when it was launched with one — ``vast execution local run`` (the
+default; ``--no-gui`` opts out) or ``start_campaign(show_gui=True)`` / ``exec_in_container(show_gui=True)``
+against a local ``vast serve``. Cluster runs never do, and never apply either block.
+
+.. code-block:: yaml
+
+   execution:
+     scenario_file: scenario.osc
+     env:
+     # No in-container Xvfb: with a window the container draws on the *host* X server
+     # through a mounted socket, which a virtual framebuffer would only shadow.
+     - ENABLE_X11: "false"
+     local:
+       gui:
+         parameter_overrides:
+         - headless: "False"
+
+.. note::
+
+   The condition is in the config path rather than in the meaning of
+   ``local.parameter_overrides``, which still applies to **every** local run. That way
+   adding a window to a project cannot change what its headless runs do.
 
 kubernetes
 ^^^^^^^^^^
