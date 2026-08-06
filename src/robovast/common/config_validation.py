@@ -329,7 +329,7 @@ def _scene_descriptor_problems(raw, vast_dir):
 def _env_names(raw):
     """Names declared in ``execution.env``, accepting both shapes it is written in.
 
-    The documented form is a list of single-key mappings (``- SIM_SUITE_WORLD: "..."``); a plain
+    The documented form is a list of single-key mappings (``- ROBOSITO_WORLD: "..."``); a plain
     mapping is accepted too.
     """
     env = (raw.get("execution") or {}).get("env")
@@ -392,15 +392,15 @@ def _run_capture_problems(raw):
         ptype, _props = _panel_entry(entry)
         if ptype != "scene3d":
             continue
-        missing = [v for v in ("SIM_SUITE_RECORD", "SIM_SUITE_CAPTURE_EXPORT_DIR") if v not in env]
+        missing = [v for v in ("ROBOSITO_RECORD", "ROBOSITO_CAPTURE_EXPORT_DIR") if v not in env]
         if not missing:
             continue
         problems.append(_problem(
             "panel",
             f"the scene3d panel replays a run capture, but this campaign never asks its runs to "
             f"write one: {', '.join(missing)} missing from execution.env. The campaign would run and "
-            f"pass, and the 3D view would show a world that never moves. Set SIM_SUITE_RECORD (the "
-            f".npz path) and SIM_SUITE_CAPTURE_EXPORT_DIR (the capture directory).",
+            f"pass, and the 3D view would show a world that never moves. Set ROBOSITO_RECORD (the "
+            f".npz path) and ROBOSITO_CAPTURE_EXPORT_DIR (the capture directory).",
             field=f"visualization.panels[{i}]"))
     return problems
 

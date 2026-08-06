@@ -2,7 +2,7 @@
 // can be extracted into a package other projects consume too (see README.md in this directory).
 //
 // Loads a scene descriptor (scene.json + scene.bin, produced by rst's `rst-export-web`
-// or the MujocoSim adapter's SIM_SUITE_SCENE_EXPORT_DIR hook) into a three.js Group, and returns a
+// or the MujocoSim adapter's ROBOSITO_SCENE_EXPORT_DIR hook) into a three.js Group, and returns a
 // jointMap that animates hinge/slide joints -- covering the whole scene (robot + environment), not
 // just the articulated robot.
 //

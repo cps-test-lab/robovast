@@ -1816,7 +1816,7 @@ dict the costmap panel decodes.
 
 **3D scene viewer core** (``ui/src/lib/scene3d/``) — renders rst's browser scene
 descriptor (``scene.json``/``scene.bin``; exporter: ``rst/export_web.py``, per-run
-export: the ``MujocoSim`` adapter's ``SIM_SUITE_SCENE_EXPORT_DIR`` hook). ``sceneLoader.ts``
+export: the ``MujocoSim`` adapter's ``ROBOSITO_SCENE_EXPORT_DIR`` hook). ``sceneLoader.ts``
 builds a three.js ``Group`` and returns an imperative animation API (``jointMap`` /
 ``basePose``); ``viewport.ts`` is a plain-three viewport (renderer/camera/lights/grid/orbit
 controls + the Z-up wrapper). **Extractability rule: files in this directory import only

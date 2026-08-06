@@ -156,22 +156,22 @@ def test_scene3d_without_recording_is_refused(tmp_path):
     raw = {
         "execution": {
             "simulation": "rst.scenario_adapter:MujocoSim",
-            "env": [{"SIM_SUITE_WORLD": "/config/files/depot.yaml"}],
+            "env": [{"ROBOSITO_WORLD": "/config/files/depot.yaml"}],
         },
         "visualization": {"panels": [{"scene3d": {"scene": {"path": "scene/scene.json"}}}]},
     }
     problems = _run_capture_problems(raw)
     assert len(problems) == 1
-    assert "SIM_SUITE_RECORD" in problems[0]["message"]
-    assert "SIM_SUITE_CAPTURE_EXPORT_DIR" in problems[0]["message"]
+    assert "ROBOSITO_RECORD" in problems[0]["message"]
+    assert "ROBOSITO_CAPTURE_EXPORT_DIR" in problems[0]["message"]
     assert problems[0]["field"] == "visualization.panels[0]"
 
     # With both set, it is clean -- and a plain mapping is accepted as well as the list form.
     raw["execution"]["env"].extend(
-        [{"SIM_SUITE_RECORD": "run.npz"}, {"SIM_SUITE_CAPTURE_EXPORT_DIR": "capture"}])
+        [{"ROBOSITO_RECORD": "run.npz"}, {"ROBOSITO_CAPTURE_EXPORT_DIR": "capture"}])
     assert _run_capture_problems(raw) == []
     raw["execution"]["env"] = {
-        "SIM_SUITE_RECORD": "run.npz", "SIM_SUITE_CAPTURE_EXPORT_DIR": "capture"}
+        "ROBOSITO_RECORD": "run.npz", "ROBOSITO_CAPTURE_EXPORT_DIR": "capture"}
     assert _run_capture_problems(raw) == []
 
 

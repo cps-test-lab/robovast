@@ -252,10 +252,10 @@ shutdown, against the still-live model — no world rebuild, and no GL backend i
    execution:
      simulation: rst.scenario_adapter:MujocoSim
      env:
-     - SIM_SUITE_WORLD: "/config/files/depot.yaml"
-     - SIM_SUITE_RECORD: "run.npz"              # the recording (the run's ground truth)
-     - SIM_SUITE_CAPTURE_EXPORT_DIR: "capture"  # -> <run dir>/capture/capture.json
-     # - SIM_SUITE_CAPTURE_FPS: "25"            # optional; samples per *simulated* second
+     - ROBOSITO_WORLD: "/config/files/depot.yaml"
+     - ROBOSITO_RECORD: "run.npz"              # the recording (the run's ground truth)
+     - ROBOSITO_CAPTURE_EXPORT_DIR: "capture"  # -> <run dir>/capture/capture.json
+     # - ROBOSITO_CAPTURE_FPS: "25"            # optional; samples per *simulated* second
 
    visualization:
      panels:
