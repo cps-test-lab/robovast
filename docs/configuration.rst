@@ -408,12 +408,16 @@ bt_log
 
 **Type:** Boolean
 
-**Required:** No (default: ``false``)
+**Required:** No (default: ``true``)
 
 Record how the scenario's behaviour tree progressed, as ``behaviors.jsonl`` in each run
 directory. ``scenario_execution`` writes the file itself (via ``--bt-log``), so unlike the
 rosbag route this replaced it also works for ``mode: base`` runs, and the snapshots topic
 no longer has to be recorded into the bag.
+
+**This happens on every run unless you turn it off.** A run whose tree state was not recorded
+cannot be explained after the fact, and the file is small — tens to a few hundred KB, beside a
+rosbag measured in MB. Set it ``false`` to opt a campaign out.
 
 The file is ingested into the ``behaviors`` table of ``data.db`` — one row per behaviour
 status change, plus a full snapshot of the tree at ``timestamp`` 0 so branches that never
@@ -425,7 +429,13 @@ reads this table. See the scenario-execution documentation for the file format.
 .. code-block:: yaml
 
    execution:
-     bt_log: true
+     bt_log: false     # only to opt out; recording is the default
+
+.. note::
+
+   An execution image whose ``scenario_execution`` predates ``--bt-log`` ignores the flag
+   rather than failing, so the run still succeeds — it simply produces no ``behaviors.jsonl``
+   and no ``behaviors`` table.
 
 runs_per_job
 ^^^^^^^^^^^^

@@ -425,11 +425,19 @@ def scenario_env(campaign_data):
     mode = execution.get("mode", "auto")
     if mode and mode != "auto":
         env['SCENARIO_MODE'] = str(mode)
-    # Not routed through SCENARIO_EXECUTION_PARAMETERS: the cluster lane overwrites
-    # that whole variable with '-t', which would drop the flag on exactly the runs
-    # whose tree state is hardest to inspect.
-    if execution.get("bt_log"):
-        env['BT_LOG'] = 'true'
+    # On by default: a run that did not record how its behaviour tree progressed cannot be
+    # explained after the fact, and the file costs ~100 KB beside a multi-MB rosbag. Stated
+    # either way rather than omitted when true, so the compose file / pod spec says outright
+    # what the run did instead of leaving it to the entrypoint's own default.
+    #
+    # Not routed through SCENARIO_EXECUTION_PARAMETERS: the cluster lane overwrites that
+    # whole variable with '-t', which would drop the flag on exactly the runs whose tree
+    # state is hardest to inspect.
+    #
+    # An execution image whose scenario_execution predates --bt-log ignores the flag rather
+    # than failing (both runners use parse_known_args), so the run still succeeds; it just
+    # produces no behaviors.jsonl.
+    env['BT_LOG'] = 'true' if execution.get("bt_log", True) else 'false'
     return env
 
 

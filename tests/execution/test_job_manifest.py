@@ -84,6 +84,18 @@ def test_create_job_manifest_shape(monkeypatch):
     assert main_env["SCENARIO_PARAMETER_FILE"] == f"/config/{r._job_tag(job.index)}.params.yaml"
     assert main_env["OUTPUT_DIR"] == f"/out/_jobs/{r._job_artifact_path(job.index)}"
     assert main_env["S3_PREFIX"] == ""  # embedded per-campaign bucket → empty prefix
+    # The behaviour tree is recorded unless a campaign opts out, so a cluster run is
+    # explainable afterwards without anyone having remembered to ask for it.
+    assert main_env["BT_LOG"] == "true"
+
+
+def test_bt_log_can_be_turned_off(monkeypatch):
+    """Stated as false rather than omitted: the pod spec says what the run did."""
+    r = _runner(monkeypatch, execution={"bt_log": False})
+    job = r._build_jobs()[0]
+    m = r.create_job_manifest(job, total_jobs=1)
+    main_env = _env_dict(m["spec"]["template"]["spec"]["containers"][0])
+    assert main_env["BT_LOG"] == "false"
 
 
 def test_secondary_container_is_appended(monkeypatch):

@@ -397,21 +397,23 @@ as plain ``- costmap:``.
 
 **Scenario tree** (``scenario_tree``) — an rviz-scenario-execution-style behaviour tree
 that colours each node by its status (running / success / failure) at the current time.
-It reads the ``behaviors`` table, which comes from the ``behaviors.jsonl`` that
-``scenario_execution`` writes when ``execution.bt_log`` is set in the ``.vast`` (no ROS
-required). If it was not set, the panel shows exactly that, with the fix. The panel renders
-*any* table in the ``behaviors`` schema — point it at a different one with
-``source: { table: <name> }`` (this is how the nav2 tree below is displayed).
+It reads the ``behaviors`` table, written by ``scenario_execution`` on every run (no ROS
+required) unless ``execution.bt_log`` turns it off. Where the data supports it, each node
+also shows its kind (sequence / selector / parallel / decorator), its feedback message at
+the current time, and — on hover — its class and the ``.osc`` file and line it came from;
+when a tree ends in failure the panel names the action responsible, via ``tip_id``.
 
-**Nav2 behavior tree** (``nav2_behavior_tree``) — the same live, node-coloured tree for
-**nav2's own** behavior tree. It reads the ``nav2_behaviors`` table produced by the
+The panel renders *any* table in the ``behaviors`` schema — point it at another with
+``source: { table: <name> }``. Columns a table does not have are simply not shown, so an
+older or differently-produced table still renders.
+
+**nav2's behavior tree** uses exactly that: the ``nav2_behaviors`` table produced by the
 :ref:`nav2 BT postprocessing <configuration>` (``rosbags_nav2bt_to_csv`` +
-``nav2_bt_tree``): node status over time comes from nav2's ``/behavior_tree_log`` topic,
-and the tree structure from the BT XML nav2 ran. *This panel ships with the*
-``robovast_nav`` *package* as a package-provided (Module-Federation) panel, so it is
-available whenever ``robovast_nav`` is installed; the ``.vast`` references it as
-``- nav2_behavior_tree:`` with ``source: { table: nav2_behaviors }``. See
-:repo_link:`configs/examples/basic_nav` for a complete campaign using it.
+``nav2_bt_tree``) — node status over time from nav2's ``/behavior_tree_log``, tree
+structure from the BT XML nav2 ran — displayed by this same panel with
+``- scenario_tree:`` and ``source: { table: nav2_behaviors }``. The ``robovast_nav``
+package ships no tree panel of its own. See :repo_link:`configs/examples/basic_nav` for a
+complete campaign.
 
 **3D scene** (``scene3d``) — the 3D world view, typically the run view's full-bleed **base layer**
 (``position: { anchor: fill }``): the simulated world's actual geometry rendered in the browser
@@ -511,12 +513,18 @@ knowledge. Build the component as a Module-Federation remote exposing that modul
 :repo_link:`src/robovast_nav/web` for the reference build (the costmap panel) to copy from,
 and the developer guide for the internals.
 
-**Several panels in one package.** A package that ships more than one panel (as
-``robovast_nav`` ships both ``costmap`` and ``nav2_behavior_tree``) builds them into a
-**single Module-Federation container** exposing one module per panel, and each panel's
-type class sets a shared ``REMOTE_NAME`` (the container name) so the service points every
-type at the one bundle. Adding a panel is then one more ``exposes`` entry plus one panel
-class — no new build, and React/vendor chunks stay shared.
+**Several panels in one package.** A package that ships more than one panel builds them into
+a **single Module-Federation container** exposing one module per panel, and each panel's type
+class sets a shared ``REMOTE_NAME`` (the container name) so the service points every type at
+the one bundle. Adding a panel is then one more ``exposes`` entry plus one panel class — no
+new build, and React/vendor chunks stay shared.
+
+**Before shipping a panel at all**, check whether a built-in one already renders your data.
+A package that merely produces a *table in an existing schema* needs no panel: it points a
+built-in one at its table with ``source: { table }``. That is what ``robovast_nav`` does for
+``nav2_behaviors`` — it ships the postprocessing that builds the table and no tree panel.
+A remote is for a panel the host genuinely cannot serve, like ``costmap`` with its own
+binary-grid endpoint.
 
 **Serving a panel's data.** A panel reads the run's postprocessed ``data.db`` through ``data``
 (``fetchRun`` for anything beyond plain table rows). When that data comes from a table your own

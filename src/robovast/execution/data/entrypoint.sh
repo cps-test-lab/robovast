@@ -176,8 +176,11 @@ else
     if [ -n "${SIMULATION}" ]; then
         SIMULATION_PARAM="--simulation ${SIMULATION}"
     fi
-    # Behaviour tree status log (execution.bt_log in the .vast): scenario_execution
-    # writes <output-dir>/behaviors.jsonl itself, with or without ROS.
+    # Behaviour tree status log (execution.bt_log in the .vast): scenario_execution writes
+    # <output-dir>/behaviors.jsonl itself, with or without ROS. On unless turned off, so a
+    # container started by hand records its tree too -- that is the run nobody can go back
+    # and re-instrument.
+    BT_LOG="${BT_LOG:-true}"
     BT_LOG_PARAM=""
     if [ "${BT_LOG}" = "true" ]; then
         BT_LOG_PARAM="--bt-log"

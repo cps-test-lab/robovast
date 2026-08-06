@@ -3,10 +3,15 @@
 // and served by the robovast service at /panel_types/<type>/assets/... . The host UI loads it at
 // runtime (see ui/src/lib/remote.ts) and renders it with the PanelProps contract.
 //
-// One shared container ('robovast_nav') hosts every panel this package ships (costmap,
-// behaviorTree, ...), so they share React/vendor chunks. Each panel type's Python class
-// (robovast_nav/panels.py) sets REMOTE_NAME to this container name; the service then points each
-// type's asset URL at this one bundle. Adding a panel = one more entry in `exposes` + one panel class.
+// One shared container ('robovast_nav') hosts every panel this package ships, so they share
+// React/vendor chunks. Each panel type's Python class (robovast_nav/panels.py) sets REMOTE_NAME to
+// this container name; the service then points each type's asset URL at this one bundle. Adding a
+// panel = one more entry in `exposes` + one panel class.
+//
+// A remote is for a panel that needs something the host cannot provide -- costmap has its own
+// service endpoint for binary grids. A package that merely produces a *table* in an existing schema
+// needs no panel: it points a built-in one at its table with `source: { table }`, which is how
+// nav2_behaviors is rendered by the core scenario_tree panel.
 //
 // `react`/`react-dom` are shared singletons pinned to the host's version (^18) so the remote reuses
 // the host's React rather than bundling its own -- a version mismatch here breaks loading.
@@ -24,10 +29,8 @@ export default defineConfig({
       filename: 'remoteEntry.js',
       exposes: {
         // Each key is a panel's PANEL_MODULE in robovast_nav/panels.py:
-        //   costmap      -> loadRemote('robovast_nav/costmap')
-        //   behaviorTree -> loadRemote('robovast_nav/behaviorTree')
+        //   costmap -> loadRemote('robovast_nav/costmap')
         './costmap': './src/costmap.tsx',
-        './behaviorTree': './src/behaviorTree.tsx',
       },
       shared: {
         react: { singleton: true, requiredVersion: '^18' },

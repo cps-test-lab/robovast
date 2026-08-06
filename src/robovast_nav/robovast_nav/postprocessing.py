@@ -24,10 +24,13 @@ and emits ``nav2_behaviors.csv`` in the **same schema as scenario_execution's**
 ``behaviors`` table (``timestamp, behavior_name, behavior_id, parent_id, status,
 status_name, class_name``).
 
-Emitting that shared schema is deliberate: the web run-view tree panel (robovast_nav's
-``nav2_behavior_tree``, a straight port of the built-in ``scenario_tree`` panel) renders
-any ``behaviors``-shaped table via ``source: { table }`` -- so no bespoke UI data path is
-needed, and any future tree source that targets this schema reuses the same panel.
+Emitting that shared schema is deliberate, and is why this package ships **no** tree panel:
+the built-in ``scenario_tree`` panel renders any ``behaviors``-shaped table via
+``source: { table: nav2_behaviors }``, so there is no bespoke UI data path here and no second
+copy of the renderer to keep in step. Any future tree source targeting this schema gets the
+same treatment. The columns ``--bt-log`` adds (``child_index``, ``tip_id``,
+``feedback_message``, ``osc_line``, …) are absent from this table; the panel probes for them
+and simply renders less.
 
 Config (``results_processing.postprocessing``)::
 

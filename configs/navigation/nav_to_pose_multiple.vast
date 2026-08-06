@@ -61,7 +61,6 @@ execution:
   scenario_file: scenario.osc
   run_files:
   - "**/files/*"
-  bt_log: true
 results_processing:
   postprocessing:
     - rosbags_to_csv

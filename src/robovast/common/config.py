@@ -211,7 +211,10 @@ class ExecutionConfig(BaseModel):
     # scenario_execution writes it directly, so unlike the rosbag route it replaced this
     # also works for ``mode: base`` runs. The ingest turns it into the ``behaviors``
     # table; the Run view's scenario-tree panel reads that table.
-    bt_log: bool = False
+    #
+    # On by default -- set it false only to opt a campaign *out*. A run whose tree state was
+    # not recorded cannot be explained afterwards, and the file is small next to the rosbag.
+    bt_log: bool = True
     # Job packing. ``runs_per_job`` is how many runs (a run = one configuration
     # at one run-number) are packed into a single job:
     #   1 (default): each job runs exactly one run. Right for simulators where

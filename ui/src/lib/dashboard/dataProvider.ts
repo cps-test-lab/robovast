@@ -102,7 +102,12 @@ export function dbDataProvider(
       const t = d.tables.find((x) => x.table === table)
       if (!t) return false
       if (!columns?.length) return true
-      return columns.every((c) => t.columns.includes(c))
+      // /describe lists a column as "name TYPE" (e.g. "parent_id TEXT"), so the name has
+      // to be split off first -- comparing against the whole entry never matches, which
+      // made every column look absent and only ever showed as a panel reporting missing
+      // data rather than as an error.
+      const names = new Set(t.columns.map((c) => c.split(/\s+/)[0]))
+      return columns.every((c) => names.has(c))
     },
 
     async timeRange(table, timeCol = 'timestamp') {

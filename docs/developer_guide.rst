@@ -1738,23 +1738,31 @@ A panel type may also declare an optional ``REMOTE_NAME`` — the Module-Federat
 name, defaulting to the entry-point name (one container per type). Panels that share a single
 built bundle set the same ``REMOTE_NAME`` so ``_plugin_remotes`` emits that shared name while each
 type keeps its own asset URL (``/panel_types/<name>/assets/...`` all resolve to the one bundle).
-``robovast_nav`` uses this to host ``costmap`` and ``nav2_behavior_tree`` in one ``robovast_nav``
-container (see ``robovast_nav/web/vite.config.ts``), sharing React/vendor chunks.
+``robovast_nav`` uses this to host its panels in one ``robovast_nav`` container (see
+``robovast_nav/web/vite.config.ts``), sharing React/vendor chunks.
 
-**Nav2 behavior tree (a second reference panel).** The ``nav2_behavior_tree`` panel shows nav2's
-*internal* behavior tree, live-coloured by node status. nav2's ``/behavior_tree_log`` is the only
-generic, always-on source of BT state, but it is **topology-free** — a flat stream of status
-transitions keyed by ``node_name``. So the feature splits across the two extension seams the same
-way costmap does: the core rosbag handler ``nav2_bt_to_csv`` (``rosbags_process.py``; core because
-``HANDLER_REGISTRY`` isn't plugin-extensible and it needs the in-container ``rosbags_process`` step)
-writes the raw ``nav2_behavior_tree`` transitions table, and ``robovast_nav``'s ``nav2_bt_tree``
-postprocessing plugin (a ``robovast.postprocessing_commands`` entry point) reconstructs structure
-from the BT **XML** nav2 ran and joins it into a ``nav2_behaviors`` table. That table uses the
-**same schema as scenario_execution's** ``behaviors`` table, which is the point: the panel is the
-built-in ``scenario_tree`` rendering re-implemented as a remote, and *any* tree expressible as
-``(behavior_id, parent_id, name, status, class)`` rows reuses it via ``source: { table }`` — no
-bespoke data path. Because the data is plain table rows, this panel needs **no** service endpoint
-(unlike costmap's binary grids); it reads ``nav2_behaviors`` through the generic ``data.series``.
+**Nav2 behavior tree (when a package should ship no panel at all).** nav2's *internal* behavior
+tree is shown in the run view, and ``robovast_nav`` contributes none of the rendering. nav2's
+``/behavior_tree_log`` is the only generic, always-on source of BT state, but it is
+**topology-free** — a flat stream of status transitions keyed by ``node_name``. The data half
+splits across the two extension seams the same way costmap's does: the core rosbag handler
+``nav2_bt_to_csv`` (``rosbags_process.py``; core because ``HANDLER_REGISTRY`` isn't
+plugin-extensible and it needs the in-container ``rosbags_process`` step) writes the raw
+``nav2_behavior_tree`` transitions table, and ``robovast_nav``'s ``nav2_bt_tree`` postprocessing
+plugin (a ``robovast.postprocessing_commands`` entry point) reconstructs structure from the BT
+**XML** nav2 ran and joins it into a ``nav2_behaviors`` table.
+
+That table uses the **same schema as scenario_execution's** ``behaviors`` table, and that is the
+whole point: the built-in ``scenario_tree`` panel renders *any* tree expressible in it via
+``source: { table: nav2_behaviors }``, so nav2 needs no panel, no remote and no service endpoint —
+just a ``.vast`` entry naming the table. The package did ship a tree panel once, a port of the
+built-in one written in plain React to satisfy the remote's shared-dependency limits; it was
+deleted because a second renderer meant every improvement to the tree view had to be made twice,
+and the built-in already accepted the table.
+
+The rule this illustrates: **reach for a remote only when the host genuinely cannot serve the
+panel.** ``costmap`` qualifies — binary grids need their own endpoint. A package that merely
+produces a table in an existing schema does not.
 
 **Package-provided service data endpoints** (``robovast.service_endpoints``,
 :mod:`robovast.service.endpoint_plugin`) — an installed package contributes a run-scoped data

@@ -17,7 +17,6 @@ execution:
   scenario_file: scenario.osc
   run_files:
   - "**/files/*"
-  bt_log: true
 search:
   strategy: random
   # The searched VARIABLES (not direct scenario params): they feed the template.

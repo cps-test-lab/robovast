@@ -33,7 +33,6 @@ opencv-python-headless = ">=4.8"
 
 [tool.poetry.plugins."robovast.panel_types"]
 costmap = "robovast_nav.panels:CostmapPanelType"
-nav2_behavior_tree = "robovast_nav.panels:Nav2BehaviorTreePanelType"
 
 [tool.poetry.plugins."robovast.service_endpoints"]
 costmap = "robovast_nav.service_endpoints:CostmapEndpoint"

@@ -43,7 +43,6 @@ execution:
   scenario_file: nav_through_poses.osc
   run_files:
   - "files/*"
-  bt_log: true
 results_processing:
   postprocessing:
     - rosbags_to_csv
