@@ -349,3 +349,49 @@ def test_a_terminating_pod_is_waited_out_rather_than_adopted(monkeypatch):
     session.__enter__()
 
     assert events == ["create", "delete", "wait_gone", "create", "wait_ready"]
+
+
+# -- which cluster this talks to ----------------------------------------------
+
+
+def test_the_session_honours_the_service_context(monkeypatch):
+    """Without it, an aux pod lands in whichever cluster the *host* kubeconfig points at.
+
+    That is not a small inconvenience: the campaign's helper containers would run
+    somewhere else entirely while looking perfectly valid. The container-exec lane has had
+    this test since a live cluster taught it the lesson; this path had the same fallback
+    and no test, and it sent a standalone driver to a different cloud.
+    """
+    seen = {}
+    monkeypatch.setattr("robovast.common.kube.load_kube_config",
+                        lambda context=None: seen.update(context=context))
+    monkeypatch.setattr("kubernetes.client.CoreV1Api", lambda: object())
+    AuxPodSession("c-1", [], "ns", kube_context="local")._client()
+    assert seen["context"] == "local"
+
+
+def test_the_runner_honours_the_service_context(monkeypatch):
+    seen = {}
+    monkeypatch.setattr("robovast.common.kube.load_kube_config",
+                        lambda context=None: seen.update(context=context))
+    monkeypatch.setattr("kubernetes.client.CoreV1Api", lambda: object())
+    spec = ContainerSpec(image="example/img:1")
+    ClusterContainerRunner(spec, "pod-x", "ns", kube_context="local")._client()
+    assert seen["context"] == "local"
+
+
+def test_the_session_hands_its_context_to_the_runners_it_makes(monkeypatch):
+    """The factory is where the two are joined; a runner that built its own client from
+    the default context would reintroduce the bug one layer down."""
+    session = AuxPodSession("c-1", [], "ns", core_v1=object(), kube_context="local")
+    runner = session.runner_factory()(ContainerSpec(image="example/img:1"))
+    assert runner._kube_context == "local"
+
+
+@pytest.mark.parametrize("method", ["_campaign_context", "_scene_runner_context"])
+def test_the_cluster_service_passes_its_own_context(method):
+    """Both AuxPodSession call sites, because only one of them having it is the bug."""
+    import inspect
+    from robovast.service.cluster_service import ClusterService
+    source = inspect.getsource(getattr(ClusterService, method))
+    assert "kube_context=self.kube_context" in source

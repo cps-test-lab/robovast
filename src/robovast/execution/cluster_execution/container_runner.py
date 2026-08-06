@@ -28,7 +28,7 @@ absolute path on both sides" was satisfied for free. The controller pod is gone:
 the driver now runs inside the long-lived ``robovast-service`` pod, and a pod's
 container set is immutable, so a *campaign-specific* sidecar of the service pod is
 impossible. Instead each campaign gets its own aux Pod, and this module **emulates
-the shared workspace** by tar-copying it into the pod before every ``run()`` and
+the shared workspace** by mirroring it into the pod before every ``run()`` and
 copying the results back afterwards, at the *same absolute path*.
 
 **How the workspace is mirrored.** Through the **object store**, the same transport a
@@ -428,13 +428,19 @@ class AuxPodSession:
 
     def __init__(self, campaign_id, specs, namespace, core_v1=None,
                  ready_timeout: float = 300.0, pull_secret: str = "",
-                 storage=None, bucket: str = "", s3: tuple | None = None):
+                 storage=None, bucket: str = "", s3: tuple | None = None,
+                 kube_context: str | None = None):
         self.campaign_id = campaign_id
         self.pull_secret = pull_secret
         self.specs = list(specs or [])
         self.namespace = namespace
         self.pod_name = aux_pod_name(campaign_id)
         self._core_v1 = core_v1
+        # Only consulted when no client was handed in. It must still be the *service's*
+        # context: falling back to the kubeconfig's current one puts this campaign's aux
+        # pod in whichever cluster the host happens to point at, while looking perfectly
+        # valid — the same failure the container-exec lane has a regression test for.
+        self._kube_context = kube_context
         self._ready_timeout = ready_timeout
         self._created = False
         # All three or none: a pod built with ``mc`` but no client to stage through (or
@@ -453,7 +459,7 @@ class AuxPodSession:
             from kubernetes import client
 
             from robovast.common.kube import load_kube_config
-            load_kube_config()
+            load_kube_config(context=self._kube_context)
             self._core_v1 = client.CoreV1Api()
         return self._core_v1
 
@@ -503,7 +509,7 @@ class AuxPodSession:
             return ClusterContainerRunner(
                 spec, self.pod_name, self.namespace, self._client(),
                 storage=self._storage, bucket=self._bucket,
-                owner_id=self.campaign_id)
+                owner_id=self.campaign_id, kube_context=self._kube_context)
         return factory
 
     def _sweep_workspaces(self) -> None:
@@ -550,11 +556,15 @@ class ClusterContainerRunner:
 
     def __init__(self, spec, pod_name, namespace, core_v1=None,
                  exec_limit_s: float = AUX_EXEC_LIMIT_S, storage=None,
-                 bucket: str = "", owner_id: str = ""):
+                 bucket: str = "", owner_id: str = "",
+                 kube_context: str | None = None):
         self._spec = spec
         self._pod = pod_name
         self._namespace = namespace
         self._core_v1 = core_v1
+        # See AuxPodSession: only used when no client was handed in, and it must be the
+        # service's context rather than whatever the host kubeconfig points at.
+        self._kube_context = kube_context
         self._container = spec.container_name()
         self._exec_limit_s = exec_limit_s
         self._storage = storage
@@ -568,7 +578,7 @@ class ClusterContainerRunner:
             from kubernetes import client
 
             from robovast.common.kube import load_kube_config
-            load_kube_config()
+            load_kube_config(context=self._kube_context)
             self._core_v1 = client.CoreV1Api()
         return self._core_v1
 

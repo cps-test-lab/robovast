@@ -389,6 +389,7 @@ class ClusterService(LocalTransport):
         specs = required_container_specs(project.config_path)
         with AuxPodSession(campaign_id, specs, self.namespace,
                            core_v1=self._k8s() if specs else None,
+                           kube_context=self.kube_context,
                            **(self._aux_store_kwargs() if specs else {})) as session:
             if specs:
                 set_container_runner_factory(session.runner_factory())
@@ -1567,6 +1568,7 @@ class ClusterService(LocalTransport):
         def context():
             with AuxPodSession(tag, [spec], self.namespace, core_v1=self._k8s(),
                                pull_secret=pull_secret,
+                               kube_context=self.kube_context,
                                **self._aux_store_kwargs()) as session:
                 yield session.runner_factory()
 
