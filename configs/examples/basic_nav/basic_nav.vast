@@ -28,12 +28,12 @@ execution:
   scenario_file: scenario.osc
   run_files:
   - "files/*"
+  bt_log: true
 results_processing:
   postprocessing:
     - rosbags_tf_to_csv:
         # base_link -> robot marker + driven path; odom -> places the local costmap in the map frame.
         frames: [base_link, odom, turtlebot4_base_link_gt]
-    - rosbags_bt_to_csv
     - rosbags_costmap_to_csv:
         topics: [/map, /global_costmap/costmap, /local_costmap/costmap]
 evaluation:

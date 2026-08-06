@@ -239,3 +239,94 @@ def test_runs_table_param_columns_are_typed_from_the_param_values(tmp_path):
     # The ordering that text columns got wrong: 10.0 must not sort before 0.5.
     assert [r[0] for r in db.execute(
         "SELECT param_speed FROM runs ORDER BY param_speed")] == [0.5, 10.0]
+
+
+# ---------------------------------------------------------------------------
+# JSONL ingest (scenario_execution --bt-log)
+# ---------------------------------------------------------------------------
+
+def _bt_record(**overrides) -> dict:
+    record = {
+        "timestamp": 0.0, "behavior_id": "id-root", "parent_id": None,
+        "child_index": None, "behavior_name": "root",
+        "class_name": "py_trees.composites.Sequence", "type": "SEQUENCE",
+        "additional_detail": "", "status": "INVALID", "feedback_message": "",
+        "is_active": False, "tip_id": None,
+        "osc_file": "/scenarios/demo.osc", "osc_line": 3, "osc_column": 0,
+    }
+    record.update(overrides)
+    return record
+
+
+def _write_bt_log(path: Path, records: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    meta = {"format": "behaviour_tree_log", "version": 1, "scenario": "demo",
+            "scenario_file": "/scenarios/demo.osc", "scenario_sha256": "abc",
+            "tick_period": 0.1, "clock": "SimulationClock", "py_trees": "2.4.0",
+            "started_at": "2026-08-06T09:14:22Z"}
+    path.write_text(
+        "\n".join(json.dumps(r) for r in [meta, *records]) + "\n", encoding="utf-8")
+
+
+def test_behaviour_tree_log_jsonl_becomes_the_behaviors_table(campaign):
+    """--bt-log writes JSONL directly, so non-ROS runs get a behaviors table too."""
+    _write_bt_log(campaign / "cfg-a" / "0" / "behaviors.jsonl", [
+        _bt_record(),
+        _bt_record(behavior_id="id-leaf", parent_id="id-root", child_index=0,
+                   behavior_name="drive", class_name="rst.actions.Drive",
+                   type="BEHAVIOUR", osc_line=7, osc_column=8),
+        _bt_record(timestamp=10.5, status="RUNNING", is_active=True, tip_id="id-leaf"),
+        _bt_record(timestamp=10.5, behavior_id="id-leaf", parent_id="id-root",
+                   child_index=0, behavior_name="drive", class_name="rst.actions.Drive",
+                   type="BEHAVIOUR", status="RUNNING", is_active=True,
+                   feedback_message="driving", osc_line=7, osc_column=8),
+        _bt_record(timestamp=9.5, behavior_id="id-leaf", parent_id="id-root",
+                   child_index=0, behavior_name="drive", class_name="rst.actions.Drive",
+                   type="BEHAVIOUR", status="SUCCESS", is_active=True, osc_line=7),
+    ])
+    _build(campaign)
+    conn = _connect(campaign)
+
+    types = _types(conn, "behaviors")
+    assert types["timestamp"] == "REAL"
+    assert types["status"] == "INTEGER"
+    assert types["child_index"] == "INTEGER"
+    assert types["osc_line"] == "INTEGER"
+
+    # The metadata record is not a row.
+    assert conn.execute("SELECT COUNT(*) FROM behaviors").fetchone()[0] == 5
+    # Numeric status codes are re-derived so behaviors and nav2_behaviors stay one schema.
+    assert sorted(tuple(r) for r in
+                  conn.execute("SELECT DISTINCT status, status_name FROM behaviors")) == \
+        [(1, "INVALID"), (2, "RUNNING"), (3, "SUCCESS")]
+    # The ordering a TEXT timestamp would get wrong.
+    assert [r[0] for r in conn.execute(
+        "SELECT DISTINCT timestamp FROM behaviors ORDER BY timestamp")] == [0.0, 9.5, 10.5]
+    # Structure survives: parent_id resolves and child_index orders siblings.
+    leaf = conn.execute("SELECT parent_id, child_index, osc_line FROM behaviors "
+                        "WHERE behavior_name='drive' LIMIT 1").fetchone()
+    assert (leaf["parent_id"], leaf["child_index"], leaf["osc_line"]) == ("id-root", 0, 7)
+
+
+def test_pruned_subtree_record_does_not_lose_its_column(campaign):
+    """A removal record carries only three keys; the column must still be created."""
+    _write_bt_log(campaign / "cfg-a" / "0" / "behaviors.jsonl", [
+        _bt_record(),
+        {"timestamp": 2.0, "behavior_id": "id-root", "removed": True},
+    ])
+    _build(campaign)
+    conn = _connect(campaign)
+    assert conn.execute(
+        "SELECT behavior_id FROM behaviors WHERE removed=1").fetchone()["behavior_id"] == "id-root"
+
+
+def test_unknown_jsonl_format_is_skipped(campaign):
+    """An unrecognised JSONL producer must not create a junk table or fail the build."""
+    path = campaign / "cfg-a" / "0" / "mystery.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"format": "something-else", "a": 1}) + "\n", encoding="utf-8")
+    _build(campaign)
+    conn = _connect(campaign)
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "mystery" not in tables
+    assert "poses" in tables

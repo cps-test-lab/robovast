@@ -206,6 +206,12 @@ class ExecutionConfig(BaseModel):
     # ticks the SimulationInterface in its spin loop). ``base`` forces the non-ROS CLI
     # (scenario_execution) even when ros2 is on PATH -- for pure non-ROS scenarios (e.g. growth_sim).
     mode: str = "auto"
+    # Record how the scenario's behaviour tree progressed, as ``behaviors.jsonl`` in the
+    # run directory (threaded to the entrypoint as BT_LOG, becoming ``--bt-log``).
+    # scenario_execution writes it directly, so unlike the rosbag route it replaced this
+    # also works for ``mode: base`` runs. The ingest turns it into the ``behaviors``
+    # table; the Run view's scenario-tree panel reads that table.
+    bt_log: bool = False
     # Job packing. ``runs_per_job`` is how many runs (a run = one configuration
     # at one run-number) are packed into a single job:
     #   1 (default): each job runs exactly one run. Right for simulators where

@@ -176,6 +176,12 @@ else
     if [ -n "${SIMULATION}" ]; then
         SIMULATION_PARAM="--simulation ${SIMULATION}"
     fi
+    # Behaviour tree status log (execution.bt_log in the .vast): scenario_execution
+    # writes <output-dir>/behaviors.jsonl itself, with or without ROS.
+    BT_LOG_PARAM=""
+    if [ "${BT_LOG}" = "true" ]; then
+        BT_LOG_PARAM="--bt-log"
+    fi
     # Runner selection (execution.mode in the .vast):
     #   ros2 -> ROS runner:      `ros2 run scenario_execution_ros scenario_execution_ros`
     #   base -> non-ROS runner:  `ros2 run scenario_execution scenario_execution`
@@ -195,10 +201,10 @@ else
     fi
     if [ -e "${SCENARIO_PARAMETER_FILE}" ]; then
         log "Starting scenario execution (mode=${SCENARIO_MODE}) with config file..."
-        log "Commandline: ${RUNNER_CMD} -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SIMULATION_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}"
-        exec ${RUNNER_CMD} -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SIMULATION_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
+        log "Commandline: ${RUNNER_CMD} -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SIMULATION_PARAM} ${BT_LOG_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}"
+        exec ${RUNNER_CMD} -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SIMULATION_PARAM} ${BT_LOG_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
     else
         log "Starting scenario execution (mode=${SCENARIO_MODE}) without config file..."
-        exec ${RUNNER_CMD} -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} ${SIMULATION_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
+        exec ${RUNNER_CMD} -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} ${SIMULATION_PARAM} ${BT_LOG_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
     fi
 fi

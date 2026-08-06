@@ -1804,6 +1804,28 @@ Analysis postprocessing: local vs cluster
 postprocessing. It splits along a natural seam: **only the batched ``rosbags_*`` → CSV step needs
 ROS2**; everything after it (``generate_data_db``, metadata) is plain Python.
 
+**What ``generate_data_db`` ingests.** One table per data file, discovered per run directory:
+``*.csv``, and ``*.jsonl`` for producers that need more than a flat table can express. A JSONL
+file declares its layout in the ``format`` key of its **first record**, and ``_JSONL_READERS``
+maps that to the function turning its records into rows — dispatch on the file's own declaration
+rather than on its name, so adding a producer does not mean hardcoding a filename in the ingest.
+Rows are then typed and inserted through exactly the same path as a CSV's, which is why column
+types are inferred per column and a JSONL file whose records have differing keys still gets a
+column for each (the column list is the union over rows, not the first row's keys).
+
+The one such producer today is ``behaviors.jsonl``, written by ``scenario_execution``'s
+``--bt-log`` (``execution.bt_log`` in the ``.vast``). It replaced a rosbag route — recording
+``/scenario_execution/snapshots`` and converting it with a ``bt_to_csv`` handler — which could
+only work for ROS runs, and so left ``mode: base`` campaigns with no behaviour-tree data at all.
+Since the runner writes the file itself, both kinds of run now produce the ``behaviors`` table by
+the same path, and the snapshots topic no longer needs to be in the bag. The table keeps the
+seven columns it always had (so ``nav2_behaviors``, see above, still shares its schema and the
+same panel renders both) and adds what the JSONL carries: ``child_index``, ``type``,
+``additional_detail``, ``feedback_message``, ``is_active``, ``tip_id``, ``osc_file``,
+``osc_line``, ``osc_column`` and ``removed``. The numeric ``status`` column is re-derived in the
+reader from the status name, because those 1–4 codes come from ``py_trees_ros_interfaces`` — plain
+py_trees ``Status`` values are strings.
+
 Both backends run the rosbag conversion **in the campaign's own execution image** — the
 system-under-test's image, recorded in ``<campaign>/_execution/execution.yaml`` — because rosbags
 carry the SUT's *custom ROS2 message types* and only deserialize there. On the cluster backend the

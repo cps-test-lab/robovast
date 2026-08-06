@@ -260,8 +260,8 @@ class RosbagsProcess(BasePostprocessingPlugin):
     batches all ``rosbags_*`` commands from the ``.vast`` config into a single
     call. It can also be used directly in ``.vast`` configs.
 
-    Available handler types: ``to_csv``, ``tf_to_csv``, ``bt_to_csv``,
-    ``action_to_csv``, ``rosout_to_csv``.
+    Available handler types: ``to_csv``, ``tf_to_csv``, ``nav2_bt_to_csv``,
+    ``action_to_csv``, ``rosout_to_csv``, ``costmap_to_csv``, ``to_webm``.
 
     Example direct usage in .vast config:
 
@@ -272,7 +272,6 @@ class RosbagsProcess(BasePostprocessingPlugin):
               plugins:
                 - type: tf_to_csv
                   frames: [base_link]
-                - type: bt_to_csv
                 - type: to_csv
                   topics: [/cmd_vel, /odom]
                 - type: rosout_to_csv
@@ -478,24 +477,78 @@ class Compress(BasePostprocessingPlugin):
 
 
 def _csv_to_table_name(filename: str) -> str:
-    """Convert a CSV filename to a valid SQLite table name.
+    """Convert a data filename to a valid SQLite table name.
 
-    Strips the .csv extension, replaces non-alphanumeric/underscore characters
+    Strips the .csv/.jsonl extension, replaces non-alphanumeric/underscore characters
     with underscores, lowercases, and prefixes with 't_' if it starts with a digit.
 
     Examples:
         ``behaviors.csv``              -> ``behaviors``
+        ``behaviors.jsonl``            -> ``behaviors``
         ``resource_usage_cpu.csv``     -> ``resource_usage_cpu``
         ``action-nav.csv``             -> ``action_nav``
         ``1_metric.csv``               -> ``t_1_metric``
     """
     stem = filename
-    if stem.lower().endswith(".csv"):
-        stem = stem[:-4]
+    for suffix in (".csv", ".jsonl"):
+        if stem.lower().endswith(suffix):
+            stem = stem[:-len(suffix)]
+            break
     sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", stem).lower()
     if sanitized and sanitized[0].isdigit():
         sanitized = "t_" + sanitized
     return sanitized or "t_unknown"
+
+
+#: py_trees' status names -> the numeric codes the ``behaviors`` table has always
+#: carried (they come from ``py_trees_ros_interfaces/Behaviour``, not from py_trees,
+#: whose ``Status`` values are strings). Kept so ``behaviors`` and ``nav2_behaviors``
+#: stay one schema.
+_BT_STATUS_CODES = {"INVALID": 1, "RUNNING": 2, "SUCCESS": 3, "FAILURE": 4}
+
+
+def _read_behaviour_tree_log(records: list) -> list:
+    """Rows for the ``behaviors`` table from a ``behaviour_tree_log`` JSONL file.
+
+    Written by scenario_execution's ``--bt-log``, which records the behaviour tree
+    without ROS in the loop. The first record is metadata and is dropped here; the
+    rest are already one-row-per-status-change, so this only adds the numeric
+    ``status`` alongside the name, keeping the seven columns the table has always had
+    (and that ``nav2_behaviors`` mirrors) plus the fields the JSONL adds.
+    """
+    rows = []
+    for record in records[1:]:
+        row = dict(record)
+        status_name = row.pop("status", None)
+        row["status"] = _BT_STATUS_CODES.get(status_name)
+        row["status_name"] = status_name
+        rows.append(row)
+    return rows
+
+
+#: JSONL ``format`` -> the function turning its records into table rows. Dispatching
+#: on the file's own declared format rather than its name keeps the ingest open to
+#: further producers without hardcoding filenames here.
+_JSONL_READERS = {"behaviour_tree_log": _read_behaviour_tree_log}
+
+
+def _read_table_rows(path: Path) -> list:
+    """Rows for one data file, or ``[]`` if it is unreadable or not a known format."""
+    if path.suffix.lower() == ".jsonl":
+        try:
+            with open(path, encoding="utf-8") as handle:
+                records = [json.loads(line) for line in handle if line.strip()]
+        except Exception:  # pylint: disable=broad-except
+            return []
+        if not records or not isinstance(records[0], dict):
+            return []
+        reader = _JSONL_READERS.get(records[0].get("format"))
+        return reader(records) if reader else []
+    try:
+        with open(path, encoding="utf-8", newline="") as handle:
+            return list(csv.DictReader(handle))
+    except Exception:  # pylint: disable=broad-except
+        return []
 
 
 def _build_runs_table(conn, campaign_path, config_dirs) -> None:
@@ -714,12 +767,18 @@ def _build_postprocessing_steps_table(conn, campaign_path, name_map: dict) -> No
 
 
 def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str]:
-    """Consolidate all per-run CSV files into a single SQLite database.
+    """Consolidate all per-run data files into a single SQLite database.
 
     Creates ``<campaign_dir>/_execution/data.db`` (replacing any existing file).
-    Each CSV filename (e.g. ``behaviors.csv``) becomes a separate table containing
+    Each data filename (e.g. ``behaviors.csv``) becomes a separate table containing
     data from all configs and all runs, with extra ``config_name`` and ``run_id``
     columns prepended.
+
+    Both ``*.csv`` and ``*.jsonl`` are picked up. A JSONL file declares its layout in
+    the ``format`` key of its first record and is expanded to rows by the matching
+    entry in :data:`_JSONL_READERS`; one a run produces today is ``behaviors.jsonl``,
+    written directly by scenario_execution's ``--bt-log`` and therefore present for
+    non-ROS runs too.
 
     Column types are inferred from the CSV values themselves
     (:mod:`robovast.results_processing.csv_types`): a column whose every non-empty
@@ -843,11 +902,15 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
                 # Track stems seen within this run to detect duplicate table names
                 run_stem_to_path: dict[str, Path] = {}
 
-                for csv_path in sorted(run_dir.rglob("*.csv")):
+                # JSONL sits alongside CSV: a run's behaviour tree log is written
+                # directly by scenario_execution (no rosbag, so it also exists for
+                # non-ROS runs) and lands in the same one-file-one-table scheme.
+                data_paths = sorted(list(run_dir.rglob("*.csv")) + list(run_dir.rglob("*.jsonl")))
+                for csv_path in data_paths:
                     display_name = csv_path.stem
                     sql_name = _csv_to_table_name(csv_path.name)
 
-                    # Raise an error if two CSV files in the same run would map to the same table
+                    # Raise an error if two data files in the same run would map to the same table
                     if display_name in run_stem_to_path:
                         raise ValueError(
                             f"Duplicate table name '{display_name}' in run {run_id} of config "
@@ -863,17 +926,16 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
                             (display_name, sql_name),
                         )
 
-                    try:
-                        with open(csv_path, encoding="utf-8", newline="") as f:
-                            reader = csv.DictReader(f)
-                            rows = list(reader)
-                    except Exception:
-                        continue
+                    rows = _read_table_rows(csv_path)
 
                     if not rows:
                         continue
 
-                    csv_cols = [c for c in rows[0].keys() if isinstance(c, str)]
+                    # Union rather than the first row's keys: a CSV is uniform, but a
+                    # JSONL file need not be (a pruned-subtree record carries only
+                    # `removed`), and a column seen late must still get one.
+                    csv_cols = list(dict.fromkeys(
+                        c for row in rows for c in row if isinstance(c, str)))
 
                     # Extract scenario timestamp from rosout rows
                     if csv_path.stem == "rosout" and scenario_ts is None:

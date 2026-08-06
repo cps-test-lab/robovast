@@ -388,7 +388,6 @@ def list_postprocessing_commands():
     click.echo("    postprocessing:")
     click.echo("    - rosbags_tf_to_csv:")
     click.echo("        frames: [base_link, map]")
-    click.echo("    - rosbags_bt_to_csv")
     click.echo("    - command:")
     click.echo("        script: ../../../tools/custom_script.sh")
     click.echo("        args: [--arg, value]")

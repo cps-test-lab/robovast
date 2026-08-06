@@ -1,11 +1,11 @@
 // ScenarioTreePanel: an rviz-scenario-execution-style view of the behaviour tree. It reads the
-// `behaviors` table (from rosbags_bt_to_csv on /scenario_execution/snapshots), rebuilds the tree from
-// each node's parent_id, and colours every node by its status at the current playback time. As the
-// clock moves, node colours update.
+// `behaviors` table (from the behaviors.jsonl scenario_execution writes under execution.bt_log),
+// rebuilds the tree from each node's parent_id, and colours every node by its status at the current
+// playback time. As the clock moves, node colours update.
 //
-// Report-if-missing (no fallback rendering): if the table is absent the scenario didn't record the
-// snapshots topic; if it lacks parent_id the campaign was postprocessed before tree structure was
-// captured. Each case shows the concrete fix.
+// Report-if-missing (no fallback rendering): if the table is absent the campaign didn't enable
+// bt_log; if it lacks parent_id the campaign was postprocessed before tree structure was captured.
+// Each case shows the concrete fix.
 
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
@@ -96,7 +96,7 @@ function ScenarioTreePanel({ spec, clock, data }: PanelProps) {
   const { t } = useClock(clock)
 
   const tree = useQuery({
-    queryKey: ['scenario-tree', table],
+    queryKey: ['scenario-tree', data.scope, table],
     queryFn: () => loadTree(data, table),
     retry: false,
   })
@@ -118,8 +118,8 @@ function ScenarioTreePanel({ spec, clock, data }: PanelProps) {
   if (d.kind === 'missing')
     return (
       <Alert severity="warning" sx={{ m: 1 }}>
-        No <code>{d.table}</code> data. Add <code>/scenario_execution/snapshots</code> to the scenario's{' '}
-        <code>bag_record(...)</code> action and <code>rosbags_bt_to_csv</code> to postprocessing.
+        No <code>{d.table}</code> data. Set <code>bt_log: true</code> under <code>execution:</code> in
+        the campaign's <code>.vast</code> to record the behaviour tree.
       </Alert>
     )
   if (d.kind === 'stale')

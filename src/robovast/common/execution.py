@@ -396,7 +396,8 @@ def scenario_env(campaign_data):
     """The scenario-shaping env vars a run's config implies, for ``entrypoint.sh``.
 
     Covers only what is derived from the ``.vast`` and is therefore identical on every
-    lane: which scenario file to run, the simulation backend, and the runner selection.
+    lane: which scenario file to run, the simulation backend, the runner selection, and
+    whether the behaviour tree status log is recorded.
     Both execution backends built these separately (compose YAML lines vs a Kubernetes
     ``env`` list) from the same config keys, so the two could drift while looking
     correct; container-exec would have been a third copy.
@@ -424,6 +425,11 @@ def scenario_env(campaign_data):
     mode = execution.get("mode", "auto")
     if mode and mode != "auto":
         env['SCENARIO_MODE'] = str(mode)
+    # Not routed through SCENARIO_EXECUTION_PARAMETERS: the cluster lane overwrites
+    # that whole variable with '-t', which would drop the flag on exactly the runs
+    # whose tree state is hardest to inspect.
+    if execution.get("bt_log"):
+        env['BT_LOG'] = 'true'
     return env
 
 

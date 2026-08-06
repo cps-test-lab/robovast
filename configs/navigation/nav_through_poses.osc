@@ -46,7 +46,6 @@ scenario test_scenario:
                     bag_record([
                             '/tf',
                             '/tf_static',
-                            '/scenario_execution/snapshots',
                             '/map',
                             '/global_costmap/costmap',
                             '/local_costmap/costmap',
