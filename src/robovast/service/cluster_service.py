@@ -1549,7 +1549,6 @@ class ClusterService(LocalTransport):
         context manager is what guarantees it is torn down rather than left to
         ``activeDeadlineSeconds``.
         """
-        import contextlib
         import hashlib
 
         from robovast.common.variation.container_runner import ContainerSpec
