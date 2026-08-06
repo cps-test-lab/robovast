@@ -45,7 +45,10 @@ import { openRunCapture } from '@/lib/scene3d/runCapture'
 import { loadScene, type SceneModel } from '@/lib/scene3d/sceneLoader'
 import { SceneViewport } from '@/lib/scene3d/viewport'
 
-const DEFAULT_CAPTURE_PATH = 'capture/capture.json'
+/** Where a run's capture manifest lives unless the panel says otherwise. Exported because RunView
+ *  needs the same answer to find the run's time base -- a `scene3d` panel implies a capture whether or
+ *  not it spells one out, and two copies of this string would drift. */
+export const DEFAULT_CAPTURE_PATH = 'capture/capture.json'
 
 /** How often to re-ask while geometry is being built. A warm cluster build is ~8 s and a cold one up
  *  to a couple of minutes (a 2 GB image pull), so a second is responsive without making the wait

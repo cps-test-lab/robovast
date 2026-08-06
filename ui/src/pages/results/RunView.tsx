@@ -28,21 +28,30 @@ import { dbDataProvider } from '@/lib/dashboard/dataProvider'
 import { parseVastPanels } from '@/lib/dashboard/parseVastPanels'
 import { PanelHost } from '@/lib/dashboard/PanelHost'
 import { ResultsTree } from './ResultsTree'
+import { DEFAULT_CAPTURE_PATH } from '@/panels/Scene3DPanel'
 import '@/panels' // registers the built-in panels
 
 // Tables whose timestamp column can define the run's timeline; the union of their ranges is used.
 // The fallback for a campaign whose timeline comes from postprocessed rosbag tables.
 const TIME_TABLES = ['poses', 'behaviors', 'scenario_timestamps']
 
-/** The `capture.path` a panel declares, if any -- the run's own time base, needing no `data.db`.
+/** The run capture a panel replays, if any -- the run's own time base, needing no `data.db`.
  *
  *  Read straight from the panel specs rather than plumbed up from the panel: the manifest is a small
  *  JSON at a URL the panel is about to fetch anyway, so the browser serves the second read from cache.
+ *
+ *  A `scene3d` panel counts even when it declares no `capture:` block, which is the documented complete
+ *  form of it -- geometry resolves from the world the capture names, so there is nothing to bind. Keying
+ *  this on a declared block alone meant the canonical `- scene3d:` fell through to the postprocessed
+ *  tables below, and a campaign with no `data.db` -- the case the capture time base exists for -- got no
+ *  range at all and never animated.
  */
 function capturePathOf(panels: { type: string; config: Record<string, unknown> }[]): string | null {
   for (const panel of panels) {
     const capture = panel.config?.capture as { path?: unknown } | undefined
-    if (capture) return String(capture.path ?? 'capture/capture.json')
+    if (capture || panel.type === 'scene3d') {
+      return String(capture?.path ?? DEFAULT_CAPTURE_PATH)
+    }
   }
   return null
 }
@@ -202,14 +211,27 @@ export function RunView({
     <Stack spacing={2} sx={{ height: 'calc(100vh - 72px)' }}>
       <Stack direction="row" spacing={2} alignItems="center">
         <Typography variant="h6">Run view</Typography>
+        {/* The label names all three levels the picker selects — campaign · config · run — so the
+            view says which campaign is on screen without opening the tree. Wide enough for a typical
+            campaign id, with the label itself ellipsized rather than wrapping the button. */}
         <Button
           variant="outlined"
           size="small"
           endIcon={<ArrowDropDownRoundedIcon />}
           onClick={(e) => setRunAnchor(e.currentTarget)}
-          sx={{ textTransform: 'none', minWidth: 260, justifyContent: 'space-between' }}
+          sx={{
+            textTransform: 'none',
+            minWidth: 440,
+            maxWidth: 'min(720px, 60vw)',
+            justifyContent: 'space-between',
+          }}
         >
-          {run ? `${run.config_name} · run ${run.run_id}` : 'Select run'}
+          <Box
+            component="span"
+            sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          >
+            {run ? `${campaignId} · ${run.config_name} · run ${run.run_id}` : 'Select run'}
+          </Box>
         </Button>
         <Button
           variant="text"
