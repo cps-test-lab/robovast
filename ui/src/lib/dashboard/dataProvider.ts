@@ -29,6 +29,19 @@ export interface SeriesOptions {
 }
 
 export interface DataProvider {
+  /** Stable identity of the run this provider is bound to (`<campaign>:<config>:<run>`).
+   *
+   *  **Include it in every cache key.** React Query's cache is global and outlives the panel remount
+   *  that a run switch causes, and campaigns reuse table names -- `poses` and `nav2_behaviors` mean a
+   *  different run in every campaign. Keying on the table name alone therefore served the *previous*
+   *  campaign's rows after a switch, which is a wrong answer rendered confidently. */
+  scope: string
+  /** The run this provider is bound to, as separate fields. Present as well as `scope` because a
+   *  consumer that needs to *call* something per run (the scene routes take config_name and run_id as
+   *  query params) must not have to split a string a config name could legally contain a colon in. */
+  campaignId: string
+  configName: string
+  runId: string
   /** True if `table` exists (and, when given, contains every one of `columns`). */
   has(table: string, columns?: string[]): Promise<boolean>
   /** [min, max] of `timeCol` across the run, or null if the table has no rows. */
@@ -79,6 +92,11 @@ export function dbDataProvider(
     columns && columns.length ? columns.map((c) => `"${c}"`).join(', ') : '*'
 
   return {
+    scope: `${campaignId}:${configName}:${runId}`,
+    campaignId,
+    configName,
+    runId: String(runId),
+
     async has(table, columns) {
       const d = await getDescribe()
       const t = d.tables.find((x) => x.table === table)

@@ -793,6 +793,46 @@ class CampaignDataStatus(BaseModel):
     note: str = ""
 
 
+class SceneStatus(BaseModel):
+    """Whether this run's 3D geometry is ready, and if not, what is happening about it.
+
+    The same job as :class:`CampaignDataStatus`, for the same reason — *say why you are about to wait,
+    before you wait* — so the fields deliberately reuse its names rather than inventing synonyms. A
+    scene descriptor is compiled on demand, in the campaign's own image, and cached by world identity;
+    the first viewer of a given world pays for it and everyone after reads it from disk.
+
+    Reading it never starts anything: that is ``POST .../scene/run``. A ``GET`` that launched a 2 GB
+    image pull would fire on a browser prefetch or a strict-mode double render.
+    """
+
+    campaign_id: str
+    config_name: str = ""
+    run_id: str = ""
+    #: Ready to fetch: the descriptor is in the cache and ``url`` points at it.
+    cached: bool = False
+    #: Nothing cached yet, so a viewer must POST to have it built. False when cached.
+    generation_required: bool = False
+    #: Someone is building this exact world right now; a second request joins rather than duplicating.
+    in_progress: bool = False
+    #: Which step the wait is on, so a panel can name it instead of spinning: ``queued`` /
+    #: ``pulling`` (a 2 GB image onto a fresh node — the dominant cold cost) / ``compiling`` /
+    #: ``transferring`` / ``""`` when nothing is running.
+    stage: str = ""
+    #: Size of the cached descriptor, 0 when there is none. A browser fetches this much.
+    bytes: int = 0
+    #: Where the descriptor's ``scene.json`` is served from, once cached.
+    url: str = ""
+    #: The world identity this run needs, for display and for diagnosis when geometry looks wrong.
+    world: str = ""
+    #: False when the run's capture predates override recording: geometry is compiled from the *bare*
+    #: world, which is wrong for a run that varied it. Surfaced rather than silently assumed.
+    overrides_known: bool = True
+    #: Set when geometry cannot be produced at all, naming the reason.
+    error: str = ""
+    #: One human sentence, for a client to show or an agent to repeat.
+    note: str = ""
+
+
 class PlotSpec(BaseModel):
     """One declared plot: a runnable query plus the Vega-Lite spec that charts it."""
 
@@ -1021,6 +1061,23 @@ class Routes:
     #: DELETE stops the held container. Produces no campaign, so it is not under
     #: ``/campaigns``.
     EXEC = "/exec"
+
+    @staticmethod
+    def campaign_scene(campaign_id: str) -> str:
+        # Control route: status only, and never starts work (see SceneStatus).
+        return f"/campaigns/{campaign_id}/scene"
+
+    @staticmethod
+    def campaign_scene_run(campaign_id: str) -> str:
+        # ``<noun>/run``, as postprocessing and share already are.
+        return f"/campaigns/{campaign_id}/scene/run"
+
+    @staticmethod
+    def campaign_scene_asset(campaign_id: str, path: str) -> str:
+        # The descriptor's bytes, served from the shared cache like a panel bundle. A separate first
+        # segment from ``scene`` on purpose: ``scene/run`` would otherwise collide with a cached file
+        # called ``run``.
+        return f"/campaigns/{campaign_id}/scene_assets/{path}"
 
     @staticmethod
     def campaign_postprocessing(campaign_id: str) -> str:
@@ -1439,6 +1496,36 @@ class RobovastInterface(ABC):
         :meth:`query_campaign_data_sql`: it answers before the wait rather than explaining
         after it, so a client can say *fetching this campaign's databases* instead of
         appearing to hang. Must not itself enumerate the campaign.
+        """
+
+    @abstractmethod
+    def campaign_scene_status(
+        self, campaign_id: str, config_name: str, run_id: str
+    ) -> SceneStatus:
+        """Is this run's 3D geometry ready, and if not, what is happening about it.
+
+        **Pure**: it reads the run's capture manifest and the campaign's image identity, and never
+        starts a build. That is :meth:`run_campaign_scene`, because a ``GET`` that launches a 2 GB
+        image pull would fire on a browser prefetch.
+        """
+
+    @abstractmethod
+    def run_campaign_scene(
+        self, campaign_id: str, config_name: str, run_id: str
+    ) -> ActionResult:
+        """Build this run's geometry if it is not cached, and return immediately.
+
+        Joins an in-flight build of the same world rather than starting a second one; a build serves
+        every campaign that used that world, so the work is shared even across campaigns. Poll
+        :meth:`campaign_scene_status` for progress.
+        """
+
+    @abstractmethod
+    def resolve_campaign_scene_asset(self, campaign_id: str, path: str) -> str:
+        """Absolute path of one file of this campaign's cached descriptor.
+
+        Raises ``KeyError`` when it is not cached or the path escapes the entry -- the same contract
+        :meth:`resolve_campaign_panel_asset` has, so the route serves both the same way.
         """
 
     @abstractmethod

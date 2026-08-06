@@ -464,6 +464,13 @@ def _build_packed_compose_yaml(
         f"      - OUTPUT_DIR={job_artifact_dir}",
         "      - SCENARIO_OUTPUT_DIR=/out",
     ]
+    # Where *this run's* results land, when the job is exactly one run. Neither variable above names
+    # it: /out is the campaign root and OUTPUT_DIR is per-job. A process the scenario only launched
+    # (a simulator started by a ROS launch file) otherwise has nowhere correct to write a per-run
+    # artifact. Omitted for a packed job, where one variable cannot serve several work items.
+    if len(getattr(job, "items", None) or []) == 1:
+        item = job.items[0]
+        packed_env_lines.append(f"      - RUN_OUTPUT_DIR=/out/{item.config_name}/{item.run_number}")
 
     lines = []
     lines.append("services:")

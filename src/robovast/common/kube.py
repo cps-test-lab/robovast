@@ -27,6 +27,16 @@ call gets a connect timeout (so an unreachable cluster fails in seconds, not min
 and :func:`api_transport_errors` turns a failed transport into one sentence naming the
 host instead of a urllib3 retry traceback.
 
+Finally it holds the **kept-alive pod** primitives — :func:`wait_pod_ready`,
+:func:`wait_pod_gone` and :func:`exec_stream`. Two subsystems run a pod and exec into it
+(the per-campaign aux pod for variation plugins, and the diagnostic container-exec lane),
+they had a copy each, and the copies were not equally correct: only one reported *why* a
+pod was not starting, only one waited for a delete to finish, and only one bounded an
+exec. Sharing them is what makes those three properties true in both places at once.
+They live here rather than beside either caller because
+``tests/execution/test_layering.py`` forbids the execution engine from importing
+``robovast.service``, and ``common`` is the only place both sides may depend on.
+
 It **fails loudly** when neither source is available, instead of letting a raw or
 partial ``kubernetes`` error leak differently out of each call site. It does not
 warn on the in-cluster→host step itself: off-cluster (a laptop, CI) that step is
@@ -130,6 +140,146 @@ def load_kube_config(context: str | None = None) -> str:
         loaded = f"host:{context or 'current-context'}"
         logger.debug("Loaded host Kubernetes config (%s)", loaded)
         return loaded
+
+
+def pod_pending_reason(pod) -> str:
+    """The most useful line from a pod that is not Running yet, or ``""``.
+
+    A pending pod's phase is just ``"Pending"``; the reason it is stuck — ``ImagePullBackOff``,
+    ``CreateContainerConfigError`` — lives on a container status. Reporting the phase alone
+    turns a bad image reference into a timeout with no cause, which is how it read for the
+    aux pod: five minutes of silence, then "was not Running within 300s".
+
+    Init containers are checked first: they run before the main one, so when both are
+    waiting the init container's reason is the one that explains the other.
+    """
+    for statuses in (pod.status.init_container_statuses, pod.status.container_statuses):
+        for status in statuses or []:
+            waiting = getattr(status.state, "waiting", None)
+            if waiting and waiting.reason:
+                return f"{waiting.reason}: {waiting.message or ''}".strip()
+    return ""
+
+
+def wait_pod_ready(core, namespace: str, name: str, timeout_s: float = 120.0) -> None:
+    """Block until *name* can be exec'd into, or fail saying why it cannot.
+
+    Raises:
+        RuntimeError: the pod reached a terminal phase before it could be used, or it was
+            still not Running at *timeout_s* — in which case the message carries
+            :func:`pod_pending_reason` rather than only the elapsed time.
+    """
+    import time
+
+    deadline = time.monotonic() + timeout_s
+    last = ""
+    while time.monotonic() < deadline:
+        pod = core.read_namespaced_pod(name, namespace)
+        phase = pod.status.phase
+        if phase == "Running":
+            return
+        if phase in ("Failed", "Succeeded"):
+            raise RuntimeError(f"pod {name} ended before it could be used ({phase})")
+        last = pod_pending_reason(pod) or phase or ""
+        time.sleep(2)
+    raise RuntimeError(f"pod {name} not ready after {int(timeout_s)}s: {last}")
+
+
+def wait_pod_gone(core, namespace: str, name: str, reads=None,
+                  timeout_s: float = 120.0) -> None:
+    """Block until *name* is really gone, for each API kind in *reads*.
+
+    The wait is the point. A Kubernetes delete returns while the object is still
+    ``Terminating``, so a caller that immediately re-creates gets ``AlreadyExists`` — or,
+    worse, treats the 409 as "it already exists, reuse it" and adopts a corpse that will
+    never become Running. ``docker rm -f`` is synchronous and both callers' contracts are
+    written against that behaviour.
+
+    Args:
+        reads: read functions taking ``(name, namespace)``. Defaults to just
+            ``core.read_namespaced_pod``; pass more when a delete spans several kinds.
+
+    Raises:
+        RuntimeError: something was still terminating at *timeout_s*.
+    """
+    import time
+
+    from kubernetes.client.rest import ApiException
+
+    deadline = time.monotonic() + timeout_s
+    for read in (reads if reads is not None else (core.read_namespaced_pod,)):
+        while time.monotonic() < deadline:
+            try:
+                read(name, namespace)
+            except ApiException as e:
+                if e.status == 404:
+                    break
+                raise
+            time.sleep(1)
+        else:
+            raise RuntimeError(
+                f"{name} did not finish terminating within {int(timeout_s)}s")
+
+
+def exec_stream(core, pod: str, namespace: str, container: str, command,
+                *, limit_s: float, stdin_data: str | None = None,
+                on_stdout_line=None, on_stderr_line=None):
+    """Exec *command* in a running pod. Returns ``(code, stdout, stderr, timed_out)``.
+
+    The in-cluster equivalent of ``docker exec``, and the one implementation of it. A
+    timed-out exec reports ``124`` with whatever was collected, mirroring the local lane's
+    ``subprocess`` timeout, rather than returning ``None`` for the exit code.
+
+    *limit_s* is a real bound, not a poll interval. Without one this loop spins for as long
+    as the command runs, which is fine until the command never finishes — a plugin's helper
+    hanging then hangs the campaign worker with it, silently and forever.
+
+    Note on *stdin_data*: the stream can be written to but **cannot be half-closed**, so a
+    receiver waiting for EOF never sees one. A sender must frame its payload by length (see
+    ``ClusterContainerRunner._copy_in``); this function cannot do it for the caller.
+    """
+    import time
+
+    from kubernetes.stream import stream
+
+    resp = stream(core.connect_get_namespaced_pod_exec, pod, namespace,
+                  container=container, command=list(command),
+                  stderr=True, stdin=stdin_data is not None, stdout=True,
+                  tty=False, _preload_content=False)
+    out, err = [], []
+    deadline = time.monotonic() + max(1.0, float(limit_s))
+    timed_out = False
+    try:
+        if stdin_data is not None:
+            resp.write_stdin(stdin_data)
+        while resp.is_open():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+            # Poll in short slices so the deadline is honoured to the second, rather than
+            # blocking for the whole remaining budget in one update() call.
+            resp.update(timeout=min(1.0, remaining))
+            if resp.peek_stdout():
+                chunk = resp.read_stdout()
+                out.append(chunk)
+                if on_stdout_line:
+                    for line in chunk.splitlines():
+                        on_stdout_line(line)
+            if resp.peek_stderr():
+                chunk = resp.read_stderr()
+                err.append(chunk)
+                if on_stderr_line:
+                    for line in chunk.splitlines():
+                        on_stderr_line(line)
+        code = None if timed_out else resp.returncode
+    finally:
+        resp.close()
+    if code is None:
+        # Either the deadline fired, or the channel closed without a status — neither is a
+        # success, and reporting 0 for the second would invent one.
+        timed_out, code = True, 124
+    return code, "".join(out), "".join(err), timed_out
 
 
 @contextlib.contextmanager

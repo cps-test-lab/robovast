@@ -82,6 +82,10 @@ export type CampaignRef = Schemas['CampaignRef']
 
 export type ActionResult = Schemas['ActionResult']
 
+// Whether a run's 3D geometry is ready, and what the wait is on if not. Mirrors CampaignDataStatus'
+// job: say why you are about to wait, before you wait.
+export type SceneStatus = Schemas['SceneStatus']
+
 // control_server.Status (reused verbatim by the interface) — the live monitor model.
 export type RunProgress = Schemas['RunProgress']
 
@@ -382,6 +386,27 @@ export const robovast = {
   listVariationTypes: () => request<VariationTypesResponse>('GET', '/variation_types'),
 
   // -- eval / results data query --------------------------------------------
+
+  // On-demand 3D geometry. `sceneStatus` is pure -- it never starts a build, because a GET that
+  // launched a 2 GB image pull would fire on a prefetch or a strict-mode double render. `runScene` is
+  // the explicit trigger, and returns as soon as the build is dispatched.
+  sceneStatus: (campaignId: string, configName: string, runId: number | string) =>
+    request<SceneStatus>(
+      'GET',
+      `/campaigns/${encodeURIComponent(campaignId)}/scene` +
+        `?config_name=${encodeURIComponent(configName)}&run_id=${encodeURIComponent(String(runId))}`,
+    ),
+
+  runScene: (campaignId: string, configName: string, runId: number | string) =>
+    request<ActionResult>(
+      'POST',
+      `/campaigns/${encodeURIComponent(campaignId)}/scene/run` +
+        `?config_name=${encodeURIComponent(configName)}&run_id=${encodeURIComponent(String(runId))}`,
+    ),
+
+  // A scene asset URL comes from SceneStatus.url and is used verbatim: it carries the cache key, so one
+  // prefix addresses the whole entry and the descriptor loader's sibling fetches resolve.
+  sceneAssetUrl: (url: string) => `${BASE}${url}`,
 
   describeCampaignData: (campaignId: string) =>
     request<DataDescribe>('GET', `/campaigns/${encodeURIComponent(campaignId)}/describe`),

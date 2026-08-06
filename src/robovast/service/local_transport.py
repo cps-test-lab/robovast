@@ -1798,6 +1798,154 @@ class LocalTransport(RobovastInterface):
             raise KeyError(f"panel asset not found: {rel_path}")
         return str(target)
 
+    # -- on-demand 3D geometry ---------------------------------------------
+
+    def _scene_capture(self, campaign_id: str, config_name: str, run_id: str) -> dict:
+        """The run's parsed ``capture/capture.json``, which names the world it needs.
+
+        Raises ``SceneUnavailable`` when the run has none -- a run recorded without a capture has no
+        motion to replay either, so there is nothing for geometry to serve.
+        """
+        import json
+
+        from robovast.service.scene_cache import SceneUnavailable
+        path = (Path(self._scene_source_dir(campaign_id)) / config_name / str(run_id)
+                / "capture" / "capture.json")
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                return json.load(handle)
+        except FileNotFoundError as err:
+            raise SceneUnavailable(
+                "this run has no capture, so there is nothing to replay and no world to build geometry "
+                "from. A run records one when SIM_SUITE_RECORD and SIM_SUITE_CAPTURE_EXPORT_DIR are "
+                "set, and only on a clean stop.") from err
+        except (OSError, ValueError) as err:
+            raise SceneUnavailable(f"this run's capture manifest could not be read: {err}") from err
+
+    def _scene_source_dir(self, campaign_id: str) -> str:
+        """Where this campaign's files are read from when resolving geometry.
+
+        Its own seam so the cluster lane can materialise just the two small objects it needs instead of
+        the whole campaign prefix (the same reason ``_query_dir`` exists beside ``_data_dir``).
+        """
+        return str(self._campaign_dir(campaign_id))
+
+    def _scene_runner_context(self, campaign_id: str, identity: dict):
+        """Context manager yielding the generator's container-runner factory, or None.
+
+        Locally there is nothing to arrange: an absent factory makes the generator fall back to an
+        ephemeral ``docker run`` on the campaign's image, which is exactly right. The cluster lane
+        overrides this with an aux pod whose lifetime is the build's.
+        """
+        del campaign_id, identity
+        return None
+
+    def _scene_identity(self, campaign_id, config_name, run_id):
+        from robovast.service import scene_cache
+        manifest = self._scene_capture(campaign_id, config_name, run_id)
+        identity = scene_cache.world_identity(self._scene_source_dir(campaign_id), manifest)
+        return identity, scene_cache.cache_key(identity)
+
+    def campaign_scene_status(self, campaign_id, config_name, run_id) -> "SceneStatus":
+        from robovast.service import scene_cache
+        from robovast.service.interface import SceneStatus
+        base = SceneStatus(campaign_id=campaign_id, config_name=config_name, run_id=str(run_id))
+        try:
+            identity, key = self._scene_identity(campaign_id, config_name, run_id)
+        except scene_cache.SceneUnavailable as err:
+            return base.model_copy(update={"error": str(err), "note": str(err)})
+        cached = scene_cache.is_cached(key)
+        if cached:
+            scene_cache.touch(key)
+        running = scene_cache.is_generating(key)
+        # A failed attempt is reported, not forgotten: "has not been built yet" is indistinguishable from
+        # never having asked, so a viewer would offer Retry forever while the reason sat in the log.
+        failure = "" if (cached or running) else scene_cache.last_failure(key)
+        note = ""
+        if cached:
+            note = "geometry is cached; nothing will be built"
+        elif running:
+            note = "building this world's geometry (it is shared by every run that used it)"
+        elif failure:
+            note = failure
+        else:
+            note = "geometry has not been built for this world yet"
+        if not identity["overrides_known"]:
+            note += ("; this run's capture predates override recording, so geometry is compiled from "
+                     "the bare world and may not reflect per-config world overrides")
+        return base.model_copy(update={
+            "cached": cached,
+            "generation_required": not cached,
+            "in_progress": running,
+            "stage": self._scene_stage(campaign_id, key) if running else "",
+            "bytes": scene_cache.entry_bytes(key) if cached else 0,
+            "url": (Routes.campaign_scene_asset(campaign_id, f"{key}/scene.json")
+                    if cached else ""),
+            "world": identity["world"],
+            "overrides_known": identity["overrides_known"],
+            "error": failure,
+            "note": note,
+        })
+
+    def _scene_stage(self, campaign_id: str, key: str) -> str:
+        """Which step an in-flight build is on. Locally there is no queue and no image pull to watch,
+        so the honest answer is the only one it can be."""
+        del campaign_id, key
+        return "compiling"
+
+    def run_campaign_scene(self, campaign_id, config_name, run_id) -> ActionResult:
+        from robovast.service import scene_cache
+        try:
+            identity, key = self._scene_identity(campaign_id, config_name, run_id)
+        except scene_cache.SceneUnavailable as err:
+            return ActionResult(ok=False, message=str(err))
+        if scene_cache.is_cached(key):
+            scene_cache.touch(key)
+            return ActionResult(ok=True, message="geometry is already cached")
+        if scene_cache.is_generating(key):
+            return ActionResult(ok=True, message="this world's geometry is already being built")
+
+        runner_context = self._scene_runner_context(campaign_id, identity)
+
+        # A retry starts clean, so a stale reason cannot outlive the attempt that is about to replace it.
+        scene_cache.clear_failure(key)
+
+        def work():
+            # The reason is recorded, not just logged: this runs after the POST has returned, so the
+            # status endpoint is the only way it can reach the panel that is polling for it.
+            try:
+                scene_cache.generate(identity, key, runner_context=runner_context)
+            except scene_cache.SceneUnavailable as err:
+                logger.warning("scene generation failed for %s: %s", campaign_id, err)
+                scene_cache.record_failure(key, str(err))
+            except Exception as err:  # pylint: disable=broad-except
+                logger.exception("scene generation crashed for %s", campaign_id)
+                scene_cache.record_failure(key, f"the scene build crashed: {err}")
+
+        # Deliberately not `_dispatch_background`: that sets a *campaign phase* and refuses while the
+        # campaign is busy, so building geometry would show up as the campaign working and would be
+        # blocked during a running sweep. This is a service-side cache fill, not a campaign lifecycle
+        # step -- the same footing as an image build.
+        threading.Thread(target=work, name=f"robovast-scene-{key[:8]}", daemon=True).start()
+        return ActionResult(ok=True, message="building this world's geometry; poll the scene status")
+
+    def resolve_campaign_scene_asset(self, campaign_id: str, path: str) -> str:
+        """Resolve ``<key>/<file>`` within the shared descriptor cache.
+
+        The **key is in the path** rather than re-derived from a run, for two reasons: the descriptor's
+        loader fetches ``scene.bin`` and every texture as *relative siblings* of ``scene.json``, so one
+        URL prefix has to address the whole entry; and an entry is shared by every campaign that used
+        that world, so there is no single run it belongs to. The client never builds this URL -- the
+        status response hands it over -- and ``asset_path`` refuses anything escaping the entry.
+        """
+        del campaign_id  # scopes the route, but a cache entry belongs to a world, not a campaign
+        from robovast.service import scene_cache
+        key, _, rel = str(path).partition("/")
+        if not key or not rel:
+            raise KeyError(f"scene asset path must be '<key>/<file>', got {path!r}")
+        scene_cache.touch(key)
+        return scene_cache.asset_path(key, rel)
+
     def get_panels_source(self, campaign_id: str) -> "PanelsSource":
         from robovast.service.interface import PanelsSource
         from robovast.service.postprocessing_edit import get_visualization

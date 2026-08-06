@@ -142,3 +142,88 @@ def test_valid_project_reports_counts(tmp_path):
     assert report["problems"] == []
     assert report["configs"] == 3
     assert report["total_trials"] == report["configs"] * report["runs_per_config"]
+
+
+def test_scene3d_without_recording_is_refused(tmp_path):
+    """A scene3d panel replays a run capture, so the runs must be asked to record one.
+
+    The same failure the campaign-scope descriptor check exists for, one artifact over: nothing
+    otherwise declares the dependency, so the campaign runs, passes, and shows a motionless world
+    whenever someone finally opens it.
+    """
+    from robovast.common.config_validation import _run_capture_problems
+
+    raw = {
+        "execution": {
+            "simulation": "rst.scenario_adapter:MujocoSim",
+            "env": [{"SIM_SUITE_WORLD": "/config/files/depot.yaml"}],
+        },
+        "visualization": {"panels": [{"scene3d": {"scene": {"path": "scene/scene.json"}}}]},
+    }
+    problems = _run_capture_problems(raw)
+    assert len(problems) == 1
+    assert "SIM_SUITE_RECORD" in problems[0]["message"]
+    assert "SIM_SUITE_CAPTURE_EXPORT_DIR" in problems[0]["message"]
+    assert problems[0]["field"] == "visualization.panels[0]"
+
+    # With both set, it is clean -- and a plain mapping is accepted as well as the list form.
+    raw["execution"]["env"].extend(
+        [{"SIM_SUITE_RECORD": "run.npz"}, {"SIM_SUITE_CAPTURE_EXPORT_DIR": "capture"}])
+    assert _run_capture_problems(raw) == []
+    raw["execution"]["env"] = {
+        "SIM_SUITE_RECORD": "run.npz", "SIM_SUITE_CAPTURE_EXPORT_DIR": "capture"}
+    assert _run_capture_problems(raw) == []
+
+
+def test_scene3d_recording_check_only_applies_to_rst():
+    """Another simulator producing the same format is not second-guessed by rst's variable names."""
+    from robovast.common.config_validation import _run_capture_problems
+
+    raw = {
+        "execution": {"simulation": "some_other.adapter:Sim", "env": []},
+        "visualization": {"panels": [{"scene3d": {}}]},
+    }
+    assert _run_capture_problems(raw) == []
+
+
+def test_panels_without_scene3d_need_no_recording():
+    """gazebo.vast's four panels declare no scene3d, so the check must leave it alone."""
+    from robovast.common.config_validation import _run_capture_problems
+
+    raw = {
+        "execution": {"simulation": "rst.scenario_adapter:MujocoSim", "env": []},
+        "visualization": {"panels": ["playback", {"costmap": {"layers": {}}}]},
+    }
+    assert _run_capture_problems(raw) == []
+
+
+def test_recording_check_fires_for_a_launch_driven_rst_campaign():
+    """rst_basic_nav declares no `simulation` -- it starts the simulator from a ROS launch file.
+
+    Keying only on `execution.simulation` would have left exactly the campaign this feature was built
+    for unprotected, so the wheels a campaign installs count as evidence too.
+    """
+    from robovast.common.config_validation import _run_capture_problems, _uses_rst
+
+    raw = {
+        "build": {"python_packages": [
+            "mujoco>=3.0",
+            ["wheels/rst-0.1.0-py3-none-any.whl", "wheels/rst_mobile-0.1.0-py3-none-any.whl"],
+        ]},
+        "execution": {"env": [{"PYTHONUNBUFFERED": "1"}]},
+        "visualization": {"panels": [{"scene3d": {}}]},
+    }
+    assert _uses_rst(raw)
+    assert len(_run_capture_problems(raw)) == 1
+
+    # A campaign with no rst anywhere is left alone -- its capture may come from somewhere else.
+    other = {
+        "build": {"python_packages": ["numpy", "some_other_sim"]},
+        "execution": {"env": []},
+        "visualization": {"panels": [{"scene3d": {}}]},
+    }
+    assert not _uses_rst(other)
+    assert _run_capture_problems(other) == []
+
+    # And the word boundary holds: "burst_sim" is not rst.
+    assert not _uses_rst({"build": {"python_packages": ["burst_sim", "worst-case-tools"]}})

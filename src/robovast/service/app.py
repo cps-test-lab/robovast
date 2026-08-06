@@ -58,7 +58,7 @@ from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         CampaignDataStatus,
                                         DataDescribe, DataQueryResult,
                                         CampaignPlotsResponse,
-                                        CampaignPanelsResponse,
+                                        CampaignPanelsResponse, SceneStatus,
                                         PanelsSource, UpdatePanelsSourceRequest,
                                         PostprocessingSource,
                                         UpdatePostprocessingSourceRequest,
@@ -316,6 +316,35 @@ def build_app(impl: RobovastInterface):
             FileResponse  # pylint: disable=import-outside-toplevel
         return FileResponse(str(_guard(
             lambda: _resolve_plugin_asset("robovast.panel_types", name, path, "WEB_PANEL"))))
+
+    @app.get(Routes.campaign_scene("{campaign_id}"), response_model=SceneStatus,
+             tags=["results"])
+    def campaign_scene_status(campaign_id: str, config_name: str = "", run_id: str = ""):
+        """Is this run's 3D geometry ready, and if not what is happening about it.
+
+        Pure by design: never starts a build (that is the POST below), because a GET that launched a
+        2 GB image pull would fire on a browser prefetch or a strict-mode double render."""
+        return _guard(lambda: impl.campaign_scene_status(campaign_id, config_name, run_id))
+
+    @app.post(Routes.campaign_scene_run("{campaign_id}"), response_model=ActionResult,
+              tags=["results"])
+    def run_campaign_scene(campaign_id: str, config_name: str = "", run_id: str = ""):
+        """Build this run's geometry unless it is cached, and return at once.
+
+        Joins an in-flight build of the same world instead of starting a second; one build serves every
+        campaign that used that world. Poll the GET above."""
+        return _guard(lambda: impl.run_campaign_scene(campaign_id, config_name, run_id))
+
+    @app.get(Routes.campaign_scene_asset("{campaign_id}", "{path:path}"), tags=["results"])
+    def campaign_scene_asset(campaign_id: str, path: str):
+        """Serve one file of a cached scene descriptor (``<key>/scene.json``, ``<key>/tex_0.png``, …).
+
+        Served like a panel bundle rather than from ``/results``: the descriptor is not in the campaign's
+        results at all, it is in the service's shared cache."""
+        from fastapi.responses import \
+            FileResponse  # pylint: disable=import-outside-toplevel
+        return FileResponse(str(_guard(
+            lambda: impl.resolve_campaign_scene_asset(campaign_id, path))))
 
     @app.get(Routes.campaign_panel_asset("{campaign_id}", "{path:path}"), tags=["authoring"])
     def campaign_panel_asset(campaign_id: str, path: str):

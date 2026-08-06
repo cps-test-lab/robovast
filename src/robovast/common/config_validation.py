@@ -41,6 +41,7 @@ and the ``vast configuration validate`` CLI command.
 import inspect
 import logging
 import os
+import re
 from contextlib import contextmanager
 
 import yaml
@@ -322,6 +323,85 @@ def _scene_descriptor_problems(raw, vast_dir):
             f"writes it. The panel would 404 at view time. Add a generator that builds "
             f"the descriptor, or a run_files pattern covering an existing one.",
             field=field))
+    return problems
+
+
+def _env_names(raw):
+    """Names declared in ``execution.env``, accepting both shapes it is written in.
+
+    The documented form is a list of single-key mappings (``- SIM_SUITE_WORLD: "..."``); a plain
+    mapping is accepted too.
+    """
+    env = (raw.get("execution") or {}).get("env")
+    names = set()
+    if isinstance(env, dict):
+        names.update(str(k) for k in env)
+    elif isinstance(env, list):
+        for item in env:
+            if isinstance(item, dict):
+                names.update(str(k) for k in item)
+            elif isinstance(item, str):
+                names.add(item.split("=", 1)[0])
+    return names
+
+
+#: An rst package, as a simulation ref, a wheel filename or a source dir. Anchored on a word boundary
+#: so it does not fire on an unrelated word that merely contains "rst".
+_RST_PACKAGE = re.compile(r"(^|[^A-Za-z0-9_])rst([._-]|$)")
+
+
+def _uses_rst(raw):
+    """Whether this campaign evidently runs rst, by simulation ref or by the packages it installs."""
+    execution = raw.get("execution") or {}
+    if _RST_PACKAGE.search(str(execution.get("simulation") or "")):
+        return True
+    # python_packages is a list of install *groups*, so entries may be nested one level.
+    packages = ((raw.get("build") or {}).get("python_packages")) or []
+    flat = []
+    for entry in packages:
+        flat.extend(entry if isinstance(entry, list) else [entry])
+    return any(_RST_PACKAGE.search(str(entry)) for entry in flat)
+
+
+def _run_capture_problems(raw):
+    """A ``scene3d`` panel replays a **run capture**, so the runs have to produce one.
+
+    The same failure the descriptor check exists for, one artifact over: nothing in the campaign
+    declares the dependency, so a campaign runs, passes, and shows a motionless world when someone
+    finally opens it. A capture is written per run at simulation time, so unlike a campaign-scope
+    descriptor it cannot be checked for on disk -- but what *can* be checked is whether the run was
+    ever asked to record, which is the mistake actually made.
+
+    Only the rst producer's variables are known here, so this fires only for a campaign that is
+    evidently running rst -- either through its scenario adapter or by shipping its packages. A
+    different simulator producing the same format is deliberately not second-guessed, since nothing
+    here could tell where *its* capture comes from.
+
+    Both signals are needed: a campaign may name ``rst.scenario_adapter:MujocoSim`` as its simulation,
+    or (as ``rst_basic_nav`` does) declare no ``simulation`` at all and start the simulator from a ROS
+    launch file, which is invisible here except through the wheels it installs.
+    """
+    problems = []
+    viz = raw.get("visualization") or {}
+    if not isinstance(viz, dict):
+        return problems
+    if not _uses_rst(raw):
+        return problems
+    env = _env_names(raw)
+    for i, entry in enumerate(viz.get("panels") or []):
+        ptype, _props = _panel_entry(entry)
+        if ptype != "scene3d":
+            continue
+        missing = [v for v in ("SIM_SUITE_RECORD", "SIM_SUITE_CAPTURE_EXPORT_DIR") if v not in env]
+        if not missing:
+            continue
+        problems.append(_problem(
+            "panel",
+            f"the scene3d panel replays a run capture, but this campaign never asks its runs to "
+            f"write one: {', '.join(missing)} missing from execution.env. The campaign would run and "
+            f"pass, and the 3D view would show a world that never moves. Set SIM_SUITE_RECORD (the "
+            f".npz path) and SIM_SUITE_CAPTURE_EXPORT_DIR (the capture directory).",
+            field=f"visualization.panels[{i}]"))
     return problems
 
 
@@ -632,6 +712,7 @@ def validate_project_file(config_path):
     # A campaign-scope 3D scene descriptor must be produced by a generator or matched by
     # a run_files pattern — otherwise the panel 404s only once someone opens the run.
     problems.extend(_scene_descriptor_problems(raw, vast_dir))
+    problems.extend(_run_capture_problems(raw))
 
     # A build: section's workspace-path python_packages must exist (fail-fast at
     # submit, before any image build runs). Schema-level checks (tag shape, the

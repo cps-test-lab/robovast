@@ -73,6 +73,9 @@ interface SceneGeom {
 interface SceneMesh {
   vert: BinRef
   index: BinRef
+  // Baked per-vertex texcoords, in MuJoCo's convention (v from the image's top row). Present only
+  // when the source mesh carried UVs; when it is, it wins over the material's texrepeat/texuniform,
+  // and buildGeometry's triplanar projection is not used.
   uv?: BinRef
 }
 
@@ -117,28 +120,75 @@ export interface SceneModel {
   root: Group
   jointMap: Record<string, (value: number) => void>
   initialJoints: Record<string, number>
-  /** Every body name in the descriptor, i.e. every name `basePose` accepts. A consumer matching an
-   *  external pose stream onto the scene needs this: the substrate names a dynamic body's TF frame
-   *  after its body, so the intersection of "frames recorded" and "bodies present" is the set of
-   *  things to animate — discovered rather than enumerated by hand. */
+  /** Every body name in the descriptor, i.e. every name `basePose` accepts. A consumer reports the
+   *  names it could not resolve against this, so a motion source aimed at the wrong world is visible
+   *  rather than rendering a plausible-looking lie. */
   bodies: string[]
+  /** Every joint name `jointMap` accepts. The other half of the same check. */
+  joints: string[]
   /** The descriptor's baked initial camera, passed through verbatim (absent when unauthored). */
   view?: SceneDescriptor['view']
   /**
-   * Drive a body's world pose from live data (e.g. a mobile robot base from /odom). The base body's
-   * parent is the world body, so its local matrix is its world pose -- set in the same descriptor
-   * frame as the rest transforms. No-op if the named body does not exist.
+   * Seat a body at a **world** pose, in the descriptor frame -- from a run capture's pose track or a
+   * /tf transform. Works for any body: the pose is composed with the inverse of the parent's
+   * root-relative transform, so a link deep in a kinematic chain lands where it belongs rather than at
+   * that offset from its parent. Apply parents before children within a frame (the capture format
+   * requires that ordering) so a child composes against its parent's new transform.
+   *
+   * No-op if the named body does not exist -- a consumer checks `bodies` and reports, rather than
+   * having every call throw.
    */
   basePose: (
     bodyName: string,
-    pos: readonly number[],
-    quat: [number, number, number, number],
+    pos: ArrayLike<number>,
+    quat: readonly [number, number, number, number],
   ) => void
+  /**
+   * Release this scene's GPU resources (geometries, materials, textures).
+   *
+   * Needed because switching campaign switches *world*: the viewport frees whatever it is showing when
+   * it is torn down, but replacing one scene with another inside a live viewport would otherwise leave
+   * the previous world's buffers resident for as long as the tab is open.
+   */
+  dispose: () => void
 }
 
 // The descriptor quaternion is (w, x, y, z); three's Quaternion constructor takes (x, y, z, w).
-function descQuat(q: [number, number, number, number]): Quaternion {
+function descQuat(q: readonly [number, number, number, number]): Quaternion {
   return new Quaternion(q[1], q[2], q[3], q[0])
+}
+
+/** Free every geometry, material and texture under `root`.
+ *
+ *  One implementation, used both when a viewport goes away and when a scene is replaced inside a live
+ *  one -- the second case is what switching campaign does, and it has no other disposal path.
+ */
+export function disposeSceneGraph(root: Object3D): void {
+  root.traverse((obj) => {
+    if (!(obj instanceof Mesh)) return
+    obj.geometry.dispose()
+    const materials = Array.isArray(obj.material) ? obj.material : [obj.material]
+    for (const m of materials) {
+      m.map?.dispose?.()
+      m.dispose()
+    }
+  })
+}
+
+/** Compose a descriptor-frame pose (wxyz quat) into `out`, allocating nothing.
+ *
+ *  The hot path: basePose runs for every driven body on every animation frame, so the convenient
+ *  `restMatrix` -- three fresh objects per call -- is the wrong tool there.
+ */
+const composeScratch = { pos: new Vector3(), quat: new Quaternion(), scale: new Vector3(1, 1, 1) }
+function composePose(
+  out: Matrix4,
+  pos: ArrayLike<number>,
+  quat: readonly [number, number, number, number],
+): Matrix4 {
+  composeScratch.pos.set(pos[0], pos[1], pos[2])
+  composeScratch.quat.set(quat[1], quat[2], quat[3], quat[0])
+  return out.compose(composeScratch.pos, composeScratch.quat, composeScratch.scale)
 }
 
 function restMatrix(pos: readonly number[], quat: [number, number, number, number]): Matrix4 {
@@ -161,11 +211,12 @@ function buildTexture(
   bin: ArrayBuffer,
   loader: TextureLoader,
   baseUrl: string,
+  onLoad: () => void,
 ): Texture | null {
   if (!tex) return null
   let texture: Texture
   if ('file' in tex) {
-    texture = loader.load(new URL(tex.file, baseUrl).href)
+    texture = loader.load(new URL(tex.file, baseUrl).href, onLoad)
   } else {
     // Raw procedural texture packed in scene.bin. Expand to RGBA (three DataTexture wants 4 channels).
     const src = new Uint8Array(bin, tex.raw.off, tex.raw.count)
@@ -185,13 +236,52 @@ function buildTexture(
   texture.colorSpace = SRGBColorSpace
   texture.wrapS = RepeatWrapping
   texture.wrapT = RepeatWrapping
+  // Descriptor UVs are in MuJoCo's convention: v is measured from the image's TOP row. three's
+  // default flipY=true would sample from the bottom. Setting it false also makes the two texture
+  // paths agree -- DataTexture above already defaults to flipY=false.
+  texture.flipY = false
   return texture
+}
+
+/** Resolve a descriptor texture at a given repeat, sharing one Texture per distinct repeat.
+ *
+ *  `texture.repeat` lives on the Texture, but the repeat a geom needs is a property of the *geom*,
+ *  so a material shared across geoms of different size (rst_assets de-duplicates materials across
+ *  prop copies, and a shelf puts one material on its boards and its legs) cannot share one Texture:
+ *  each geom would overwrite the last one's repeat. Clones share the underlying Source, so the image
+ *  is uploaded once regardless of how many variants exist.
+ */
+type TextureBank = (index: number, repeatU: number, repeatV: number) => Texture | null
+
+/** The extent, in metres, that a primitive's built-in three UVs span.
+ *
+ *  Under `texuniform` MuJoCo's texrepeat is a per-metre period; three's primitives carry 0..1 UVs
+ *  over the whole geom, so the repeat count is texrepeat x this span. Types whose tiling cannot be
+ *  expressed by a single repeat (box, mesh) bake it into their UVs in buildGeometry and return 1.
+ */
+function planarSpan(geom: SceneGeom): [number, number] {
+  const [sx, sy, sz] = geom.size
+  switch (geom.type) {
+    case 'plane':
+      // Mirrors buildGeometry's substitution for an unbounded (size 0) plane.
+      return [sx > 0 ? 2 * sx : 50, sy > 0 ? 2 * sy : 50]
+    case 'sphere':
+      // SphereGeometry is equirectangular: u wraps the circumference, v runs pole to pole.
+      return [2 * Math.PI * sx, Math.PI * sx]
+    case 'ellipsoid':
+      return [Math.PI * (sx + sy), Math.PI * sz]
+    case 'cylinder':
+    case 'capsule':
+      return [2 * Math.PI * sx, 2 * sy]
+    default:
+      return [1, 1]
+  }
 }
 
 function buildMaterial(
   geom: SceneGeom,
   scene: SceneDescriptor,
-  textures: (Texture | null)[],
+  textureFor: TextureBank,
 ): MeshStandardMaterial {
   const mat = geom.matid >= 0 ? scene.materials[geom.matid] : null
   const rgba = mat ? mat.rgba : geom.rgba
@@ -205,16 +295,18 @@ function buildMaterial(
   material.color.setRGB(rgba[0], rgba[1], rgba[2], SRGBColorSpace)
 
   if (mat && mat.texture >= 0) {
-    const texture = textures[mat.texture]
+    // MuJoCo's mapping rule (spelled out in rst's textures.py): a mesh with baked UVs is mapped by
+    // those UVs and *ignores* texrepeat/texuniform; anything else is projected, and texrepeat counts
+    // tiles across the object (texuniform=false) or metres per tile (texuniform=true).
+    //
+    // buildGeometry bakes the tiling into the UVs wherever one repeat cannot express it -- every
+    // mesh, and a texuniform box, whose six faces have different extents -- and those ask for 1 here.
+    const baked = geom.type === 'mesh' || (geom.type === 'box' && mat.texuniform)
+    const [spanU, spanV] = mat.texuniform ? planarSpan(geom) : [1, 1]
+    const texture = baked
+      ? textureFor(mat.texture, 1, 1)
+      : textureFor(mat.texture, mat.texrepeat[0] * spanU, mat.texrepeat[1] * spanV)
     if (texture) {
-      // Mesh geoms carry the tiling in their (triplanar) UVs, so leave texture.repeat at 1. For
-      // primitives (plane/box) three's built-in UVs run 0..1 over the geom, so scale the repeat by
-      // the geom's planar span (the descriptor size is a half-extent; texuniform => texrepeat is per-metre).
-      if (geom.type !== 'mesh') {
-        const spanU = mat.texuniform ? 2 * geom.size[0] : 1
-        const spanV = mat.texuniform ? 2 * geom.size[1] : 1
-        texture.repeat.set(mat.texrepeat[0] * spanU, mat.texrepeat[1] * spanV)
-      }
       material.map = texture
       material.color.setRGB(1, 1, 1) // don't tint the texture
     }
@@ -225,8 +317,33 @@ function buildMaterial(
 function buildGeometry(geom: SceneGeom, scene: SceneDescriptor, bin: ArrayBuffer): BufferGeometry {
   const [sx, sy, sz] = geom.size
   switch (geom.type) {
-    case 'box':
-      return new BoxGeometry(2 * sx, 2 * sy, 2 * sz)
+    case 'box': {
+      const geometry = new BoxGeometry(2 * sx, 2 * sy, 2 * sz)
+      const mat = geom.matid >= 0 ? scene.materials[geom.matid] : null
+      if (mat && mat.texture >= 0 && mat.texuniform) {
+        // texuniform means a per-metre period, but three gives all six faces the same 0..1 UV while
+        // their extents differ -- one texture.repeat would tile a 0.05 x 0.05 x 2 m shelf leg's tall
+        // sides like its tiny top. So scale each face's UVs by its own extent instead.
+        // BoxGeometry emits faces in a fixed order, 4 vertices each; u runs along the first axis of
+        // each pair below and v along the second.
+        const faceSpans: [number, number][] = [
+          [2 * sz, 2 * sy], [2 * sz, 2 * sy], // +x, -x
+          [2 * sx, 2 * sz], [2 * sx, 2 * sz], // +y, -y
+          [2 * sx, 2 * sy], [2 * sx, 2 * sy], // +z, -z
+        ]
+        const [ru, rv] = mat.texrepeat
+        const uv = geometry.getAttribute('uv')
+        for (let f = 0; f < 6; f++) {
+          const [su, sv] = faceSpans[f]
+          for (let k = 0; k < 4; k++) {
+            const i = f * 4 + k
+            uv.setXY(i, uv.getX(i) * su * ru, uv.getY(i) * sv * rv)
+          }
+        }
+        uv.needsUpdate = true
+      }
+      return geometry
+    }
     case 'plane': {
       // size 0 means an unbounded plane; give it a large finite quad.
       const w = sx > 0 ? 2 * sx : 50
@@ -252,12 +369,31 @@ function buildGeometry(geom: SceneGeom, scene: SceneDescriptor, bin: ArrayBuffer
       const geometry = new BufferGeometry()
 
       if (!m.uv && mat && mat.texture >= 0) {
-        // Textured mesh with no UVs (e.g. a floorplan mesh): synthesize texcoords by a per-face
-        // triplanar projection -- pick the axis the triangle faces most and project onto the other
-        // two -- so vertical walls tile correctly instead of smearing. Tiling is baked into the UVs
-        // (texrepeat is per-metre under texuniform), so buildMaterial leaves texture.repeat at 1.
-        // Needs a non-indexed geometry (UVs per face).
+        // Textured mesh with no baked UVs (e.g. a floorplan mesh): synthesize texcoords by a
+        // per-face triplanar projection -- pick the axis the triangle faces most and project onto
+        // the other two -- so vertical walls tile correctly instead of smearing. This reproduces
+        // MuJoCo's auto-projection, which is what it applies to a UV-less mesh. Tiling is baked into
+        // the UVs, so buildMaterial leaves texture.repeat at 1. Needs a non-indexed geometry.
+        //
+        // texuniform=true: texrepeat is metres per tile, so project the raw coordinate. Otherwise
+        // MuJoCo scales the projection to the object, so normalise to 0..1 across the mesh first and
+        // texrepeat counts tiles across it.
         const [ru, rv] = mat.texrepeat
+        const uniform = mat.texuniform
+        const lo = [Infinity, Infinity, Infinity]
+        const hi = [-Infinity, -Infinity, -Infinity]
+        if (!uniform) {
+          for (let i = 0; i < verts.length; i++) {
+            const axis = i % 3
+            if (verts[i] < lo[axis]) lo[axis] = verts[i]
+            if (verts[i] > hi[axis]) hi[axis] = verts[i]
+          }
+        }
+        // A flat mesh has zero extent along one axis; guard the divide rather than emit NaN UVs.
+        const span = [0, 1, 2].map((i) => Math.max(hi[i] - lo[i], 1e-9))
+        const norm = (value: number, axis: number) =>
+          uniform ? value : (value - lo[axis]) / span[axis]
+
         const nTri = index.length / 3
         const pos = new Float32Array(nTri * 9)
         const uv = new Float32Array(nTri * 6)
@@ -271,7 +407,11 @@ function buildGeometry(geom: SceneGeom, scene: SceneDescriptor, bin: ArrayBuffer
           const ax = Math.abs(n.x), ay = Math.abs(n.y), az = Math.abs(n.z)
           // Project onto the plane perpendicular to the dominant normal axis.
           const uvOf = (v: Vector3): [number, number] =>
-            az >= ax && az >= ay ? [v.x, v.y] : ax >= ay ? [v.y, v.z] : [v.x, v.z]
+            az >= ax && az >= ay
+              ? [norm(v.x, 0), norm(v.y, 1)]
+              : ax >= ay
+                ? [norm(v.y, 1), norm(v.z, 2)]
+                : [norm(v.x, 0), norm(v.z, 2)]
           const tri = [a, b, c]
           for (let k = 0; k < 3; k++) {
             pos[t * 9 + k * 3] = tri[k].x
@@ -372,7 +512,30 @@ export async function loadScene(sceneUrl: string): Promise<SceneModel> {
   ])
 
   const loader = new TextureLoader()
-  const textures = scene.textures.map((t) => buildTexture(t, bin, loader, baseUrl))
+  // Clones made before the image arrives share the Source but carry their own upload state, so the
+  // load callback has to re-mark them; a DataTexture has its pixels up front and needs none of this.
+  const variants: Texture[][] = scene.textures.map(() => [])
+  const baseTextures = scene.textures.map((t, i) =>
+    buildTexture(t, bin, loader, baseUrl, () => {
+      for (const v of variants[i]) v.needsUpdate = true
+    }),
+  )
+  const byRepeat = new Map<string, Texture>()
+  const textureFor: TextureBank = (index, repeatU, repeatV) => {
+    const base = baseTextures[index]
+    if (!base) return null
+    if (repeatU === 1 && repeatV === 1) return base
+    const key = `${index}:${repeatU}:${repeatV}`
+    let texture = byRepeat.get(key)
+    if (!texture) {
+      texture = base.clone()
+      texture.repeat.set(repeatU, repeatV)
+      if (base.image) texture.needsUpdate = true
+      variants[index].push(texture)
+      byRepeat.set(key, texture)
+    }
+    return texture
+  }
 
   // One Object3D per scene body, parented per body.parent (body 0 = world = root).
   const root = new Group()
@@ -414,7 +577,7 @@ export async function loadScene(sceneUrl: string): Promise<SceneModel> {
   // deformable SkinnedMesh bound to its bone body nodes; everything else is a static Mesh.
   for (const geom of scene.geoms) {
     if (geom.type === 'mesh' && geom.mesh == null) continue
-    const material = buildMaterial(geom, scene, textures)
+    const material = buildMaterial(geom, scene, textureFor)
     if (geom.skin != null) {
       const skinned = buildSkinnedMesh(geom, scene, bin, material, nodes, bodyIndexByName, upMatrix)
       if (skinned) nodes[geom.body].add(skinned)
@@ -475,17 +638,62 @@ export async function loadScene(sceneUrl: string): Promise<SceneModel> {
   // Seat the home pose so the arm shows its rest configuration before live data arrives.
   for (const bodyId of bodyJoints.keys()) recompute(bodyId)
 
-  // basePose: drive a body's world pose from live data (mobile robot base from /odom, or a walker's
-  // bones from /tf). Same matrix-direct pattern as the joints, in the descriptor frame.
+  // basePose: seat a body at a **world** pose (a run capture's pose track, a /tf transform), in the
+  // descriptor frame.
+  //
+  // A node's `matrix` is its transform relative to its parent, so a world pose has to be composed
+  // with the inverse of the parent's world transform. Writing it straight into `matrix` -- as this did
+  // -- is correct only while the parent *is* the world body, and silently wrong otherwise: a link fed
+  // its own world pose renders at that offset from its parent instead of at it. That limited the whole
+  // mechanism to world-parented bodies (a robot base, a free prop, a walker's mocap bones) without
+  // saying so anywhere, and it is why an articulated robot could not be driven this way at all.
+  //
+  // Composing the parent instead removes the restriction: any body can be driven, and a ball-jointed
+  // body is just another pose track rather than an unsupported case. The parent's world transform must
+  // be current, which is why callers apply pose tracks parents-first (the capture format requires that
+  // order, and MuJoCo's body order already satisfies it).
+  // Scratch matrices: basePose runs per driven body per frame, so it allocates nothing.
+  const relScratch = new Matrix4()
+  const mulScratch = new Matrix4()
+  const localScratch = new Matrix4()
+
+  /** Transform of `node` relative to the scene root, from local matrices only.
+   *
+   *  Deliberately not `node.matrixWorld`: the viewport mounts this scene under a group rotated -PI/2
+   *  about X to reach three's Y-up, so a world matrix carries that frame conversion and inverting it
+   *  would cancel it -- placing every driven body in the wrong frame. Poses arrive in the *descriptor*
+   *  frame, so the composition has to stay inside the descriptor's own subtree. Reading local matrices
+   *  also removes any ordering dependency on three's world-matrix bookkeeping: a child composed later
+   *  in the same frame sees its parent's freshly written `matrix`, not last frame's `matrixWorld`.
+   */
+  const relativeToRoot = (node: Object3D): Matrix4 => {
+    relScratch.identity()
+    for (let n: Object3D | null = node; n && n !== root; n = n.parent) {
+      mulScratch.multiplyMatrices(n.matrix, relScratch)
+      relScratch.copy(mulScratch)
+    }
+    return relScratch
+  }
+
   const basePose = (
     bodyName: string,
-    pos: readonly number[],
-    quat: [number, number, number, number],
+    pos: ArrayLike<number>,
+    quat: readonly [number, number, number, number],
   ) => {
     const i = bodyIndexByName.get(bodyName)
     if (i == null) return
-    nodes[i].matrix.copy(restMatrix(pos, quat))
-    nodes[i].matrixWorldNeedsUpdate = true
+    const node = nodes[i]
+    composePose(localScratch, pos, quat)
+    const parent = node.parent
+    if (parent && parent !== root) {
+      // local = (parent relative to root)^-1 * (desired, relative to root)
+      node.matrix.multiplyMatrices(relativeToRoot(parent).invert(), localScratch)
+    } else {
+      // Directly under the root: the local matrix *is* the pose. The common case, and the only one
+      // the previous implementation handled correctly.
+      node.matrix.copy(localScratch)
+    }
+    node.matrixWorldNeedsUpdate = true
   }
 
   return {
@@ -493,7 +701,14 @@ export async function loadScene(sceneUrl: string): Promise<SceneModel> {
     jointMap,
     initialJoints: scene.initialJoints,
     bodies: scene.bodies.map((b) => b.name),
+    joints: Object.keys(jointMap),
     basePose,
     view: scene.view,
+    dispose: () => {
+      disposeSceneGraph(root)
+      // A base texture only ever used through repeat-variant clones is on no material, so the graph
+      // walk never reaches it.
+      for (const t of baseTextures) t?.dispose()
+    },
   }
 }

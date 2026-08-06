@@ -1587,6 +1587,92 @@
         "title": "RunShareRequest",
         "type": "object"
       },
+      "SceneStatus": {
+        "description": "Whether this run's 3D geometry is ready, and if not, what is happening about it.\n\nThe same job as :class:`CampaignDataStatus`, for the same reason \u2014 *say why you are about to wait,\nbefore you wait* \u2014 so the fields deliberately reuse its names rather than inventing synonyms. A\nscene descriptor is compiled on demand, in the campaign's own image, and cached by world identity;\nthe first viewer of a given world pays for it and everyone after reads it from disk.\n\nReading it never starts anything: that is ``POST .../scene/run``. A ``GET`` that launched a 2 GB\nimage pull would fire on a browser prefetch or a strict-mode double render.",
+        "properties": {
+          "bytes": {
+            "default": 0,
+            "title": "Bytes",
+            "type": "integer"
+          },
+          "cached": {
+            "default": false,
+            "title": "Cached",
+            "type": "boolean"
+          },
+          "campaign_id": {
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "config_name": {
+            "default": "",
+            "title": "Config Name",
+            "type": "string"
+          },
+          "error": {
+            "default": "",
+            "title": "Error",
+            "type": "string"
+          },
+          "generation_required": {
+            "default": false,
+            "title": "Generation Required",
+            "type": "boolean"
+          },
+          "in_progress": {
+            "default": false,
+            "title": "In Progress",
+            "type": "boolean"
+          },
+          "note": {
+            "default": "",
+            "title": "Note",
+            "type": "string"
+          },
+          "overrides_known": {
+            "default": true,
+            "title": "Overrides Known",
+            "type": "boolean"
+          },
+          "run_id": {
+            "default": "",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "stage": {
+            "default": "",
+            "title": "Stage",
+            "type": "string"
+          },
+          "url": {
+            "default": "",
+            "title": "Url",
+            "type": "string"
+          },
+          "world": {
+            "default": "",
+            "title": "World",
+            "type": "string"
+          }
+        },
+        "required": [
+          "bytes",
+          "cached",
+          "campaign_id",
+          "config_name",
+          "error",
+          "generation_required",
+          "in_progress",
+          "note",
+          "overrides_known",
+          "run_id",
+          "stage",
+          "url",
+          "world"
+        ],
+        "title": "SceneStatus",
+        "type": "object"
+      },
       "Status": {
         "description": "The controller's live state, served by ``GET /campaigns/{id}/status``.\n\n``phase`` is an **open** string the controller advances through a documented\nvocabulary (``initializing`` \u2192 ``building`` \u2192 ``starting`` \u2192 ``variation`` \u2192\n``running`` \u2192 ``finishing`` \u2192 ``postprocessing`` \u2192 ``sharing`` \u2192 ``finished`` /\n``failed``); ``stage`` and ``extra`` exist so future markers (e.g.\n``\"upload-to-share-done\"``) slot in without a schema change. ``share_provider``\nnames the share type of the current upload attempt; it can change across\nretriggers (a failed upload may be retried to a different provider).",
         "properties": {
@@ -3608,6 +3694,182 @@
           }
         },
         "summary": "Query Campaign Data Csv",
+        "tags": [
+          "results"
+        ]
+      }
+    },
+    "/campaigns/{campaign_id}/scene": {
+      "get": {
+        "description": "Is this run's 3D geometry ready, and if not what is happening about it.\n\nPure by design: never starts a build (that is the POST below), because a GET that launched a\n2 GB image pull would fire on a browser prefetch or a strict-mode double render.",
+        "operationId": "campaign_scene_status_campaigns__campaign_id__scene_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "config_name",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Config Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "run_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SceneStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Campaign Scene Status",
+        "tags": [
+          "results"
+        ]
+      }
+    },
+    "/campaigns/{campaign_id}/scene/run": {
+      "post": {
+        "description": "Build this run's geometry unless it is cached, and return at once.\n\nJoins an in-flight build of the same world instead of starting a second; one build serves every\ncampaign that used that world. Poll the GET above.",
+        "operationId": "run_campaign_scene_campaigns__campaign_id__scene_run_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "config_name",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Config Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "run_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Campaign Scene",
+        "tags": [
+          "results"
+        ]
+      }
+    },
+    "/campaigns/{campaign_id}/scene_assets/{path}": {
+      "get": {
+        "description": "Serve one file of a cached scene descriptor (``<key>/scene.json``, ``<key>/tex_0.png``, \u2026).\n\nServed like a panel bundle rather than from ``/results``: the descriptor is not in the campaign's\nresults at all, it is in the service's shared cache.",
+        "operationId": "campaign_scene_asset_campaigns__campaign_id__scene_assets__path__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "title": "Path",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Campaign Scene Asset",
         "tags": [
           "results"
         ]

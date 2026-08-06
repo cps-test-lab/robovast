@@ -442,6 +442,75 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/campaigns/{campaign_id}/scene": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Campaign Scene Status
+         * @description Is this run's 3D geometry ready, and if not what is happening about it.
+         *
+         *     Pure by design: never starts a build (that is the POST below), because a GET that launched a
+         *     2 GB image pull would fire on a browser prefetch or a strict-mode double render.
+         */
+        get: operations["campaign_scene_status_campaigns__campaign_id__scene_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/campaigns/{campaign_id}/scene/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run Campaign Scene
+         * @description Build this run's geometry unless it is cached, and return at once.
+         *
+         *     Joins an in-flight build of the same world instead of starting a second; one build serves every
+         *     campaign that used that world. Poll the GET above.
+         */
+        post: operations["run_campaign_scene_campaigns__campaign_id__scene_run_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/campaigns/{campaign_id}/scene_assets/{path}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Campaign Scene Asset
+         * @description Serve one file of a cached scene descriptor (``<key>/scene.json``, ``<key>/tex_0.png``, …).
+         *
+         *     Served like a panel bundle rather than from ``/results``: the descriptor is not in the campaign's
+         *     results at all, it is in the service's shared cache.
+         */
+        get: operations["campaign_scene_asset_campaigns__campaign_id__scene_assets__path__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/campaigns/{campaign_id}/share/run": {
         parameters: {
             query?: never;
@@ -1975,6 +2044,82 @@ export interface components {
             campaign_id: string;
         };
         /**
+         * SceneStatus
+         * @description Whether this run's 3D geometry is ready, and if not, what is happening about it.
+         *
+         *     The same job as :class:`CampaignDataStatus`, for the same reason — *say why you are about to wait,
+         *     before you wait* — so the fields deliberately reuse its names rather than inventing synonyms. A
+         *     scene descriptor is compiled on demand, in the campaign's own image, and cached by world identity;
+         *     the first viewer of a given world pays for it and everyone after reads it from disk.
+         *
+         *     Reading it never starts anything: that is ``POST .../scene/run``. A ``GET`` that launched a 2 GB
+         *     image pull would fire on a browser prefetch or a strict-mode double render.
+         */
+        SceneStatus: {
+            /**
+             * Bytes
+             * @default 0
+             */
+            bytes: number;
+            /**
+             * Cached
+             * @default false
+             */
+            cached: boolean;
+            /** Campaign Id */
+            campaign_id: string;
+            /**
+             * Config Name
+             * @default
+             */
+            config_name: string;
+            /**
+             * Error
+             * @default
+             */
+            error: string;
+            /**
+             * Generation Required
+             * @default false
+             */
+            generation_required: boolean;
+            /**
+             * In Progress
+             * @default false
+             */
+            in_progress: boolean;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /**
+             * Overrides Known
+             * @default true
+             */
+            overrides_known: boolean;
+            /**
+             * Run Id
+             * @default
+             */
+            run_id: string;
+            /**
+             * Stage
+             * @default
+             */
+            stage: string;
+            /**
+             * Url
+             * @default
+             */
+            url: string;
+            /**
+             * World
+             * @default
+             */
+            world: string;
+        };
+        /**
          * Status
          * @description The controller's live state, served by ``GET /campaigns/{id}/status``.
          *
@@ -3142,6 +3287,106 @@ export interface operations {
             header?: never;
             path: {
                 campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    campaign_scene_status_campaigns__campaign_id__scene_get: {
+        parameters: {
+            query?: {
+                config_name?: string;
+                run_id?: string;
+            };
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SceneStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_campaign_scene_campaigns__campaign_id__scene_run_post: {
+        parameters: {
+            query?: {
+                config_name?: string;
+                run_id?: string;
+            };
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActionResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    campaign_scene_asset_campaigns__campaign_id__scene_assets__path__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+                path: string;
             };
             cookie?: never;
         };

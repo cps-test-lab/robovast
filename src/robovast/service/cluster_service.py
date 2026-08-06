@@ -1238,7 +1238,16 @@ class ClusterService(LocalTransport):
     # -- container exec -----------------------------------------------------
 
     def _exec_lane(self):
-        """The in-cluster exec lane: one aux pod, driven through ``pods/exec``."""
+        """The in-cluster exec lane: one aux pod, driven through ``pods/exec``.
+
+        Staging goes through the object store, exactly as an image build's context does
+        (see ``_start_cluster_build``) — the same bucket resolution, the same
+        service-side client, and the pod given the *cluster-internal* endpoint rather
+        than whatever this process is using to reach the store.
+        """
+        from robovast.execution.cluster_execution import in_pod_storage
+        from robovast.execution.cluster_execution.cluster_image_build import \
+            build_context_bucket
         from robovast.execution.cluster_execution.container_runner import \
             service_pod_owner_reference
         from robovast.service.kube_exec_lane import KubeExecLane
@@ -1247,11 +1256,22 @@ class ClusterService(LocalTransport):
             owner = service_pod_owner_reference(self._k8s(), self.namespace)
         except Exception as e:  # noqa: BLE001 - off-cluster there is no service pod
             logger.debug("no service-pod owner reference for the exec pod: %s", e)
+        cfg = self._cluster_config()
+        # A diagnostic exec belongs to no campaign, so it has no campaign bucket — the
+        # same position an image build is in, and the same answer.
+        bucket = build_context_bucket(cfg)
+        access_key, secret_key = cfg.get_s3_credentials()
         return KubeExecLane(self.namespace, owner_ref=owner,
-                            kube_context=self.kube_context)
+                            kube_context=self.kube_context,
+                            # Deferred: off-cluster, building this opens a port-forward,
+                            # and the stray-reap builds a lane it never stages into.
+                            storage_factory=lambda: in_pod_storage.storage_client_for(cfg),
+                            bucket=bucket,
+                            s3_endpoint=cfg.get_s3_endpoint(),
+                            s3_access_key=access_key, s3_secret_key=secret_key)
 
     def _reap_stray_exec_container(self) -> None:
-        """Delete an exec pod (and its ConfigMap) left by a previous service process."""
+        """Delete an exec pod and its staged tree, left by a previous service process."""
         try:
             self._exec_lane().stop_held()
         except Exception as e:  # noqa: BLE001 - a missing cluster must not break startup
@@ -1476,6 +1496,75 @@ class ClusterService(LocalTransport):
                         subject, campaign_id, fmt_size(fetched), fmt_size(total),
                         bucket, prefix, elapsed)
         return dest
+
+    # -- on-demand 3D geometry ---------------------------------------------
+
+    def _scene_source_dir(self, campaign_id: str) -> str:
+        """Materialise only what resolving geometry reads, then answer from that.
+
+        One small object -- ``execution.yaml`` -- against ``fetch_campaign``'s whole prefix, which for a
+        25-run campaign is rosbags. The run's capture manifest is fetched by ``_scene_capture`` below,
+        because its path depends on the run.
+        """
+        self._materialize(campaign_id, ("_execution/execution.yaml",), "execution metadata")
+        return str(self._cache_dir(campaign_id))
+
+    def _scene_capture(self, campaign_id: str, config_name: str, run_id: str) -> dict:
+        """Fetch this run's capture manifest, then read it the way the base class does.
+
+        Without this the cluster lane would look for a file on a disk that has none -- the gap that makes
+        ``exec_in_container(campaign_id=…)`` fail for a campaign this service did not drive.
+        """
+        rel = f"{config_name}/{run_id}/capture/capture.json"
+        self._materialize(campaign_id, (rel,), "run capture manifest")
+        return super()._scene_capture(campaign_id, config_name, run_id)
+
+    def _scene_runner_context(self, campaign_id: str, identity: dict):
+        """A context manager yielding an aux-pod runner factory on the campaign's own image.
+
+        Deliberately not ``AuxPodSession``'s campaign-scoped use: this build is not part of a campaign's
+        lifecycle. It is a cache fill that may happen long after the campaign finished, and its result
+        serves *every* campaign that used that world -- so the pod's lifetime is the build's, and the
+        context manager is what guarantees it is torn down rather than left to
+        ``activeDeadlineSeconds``.
+        """
+        import contextlib
+        import hashlib
+
+        from robovast.common.variation.container_runner import ContainerSpec
+        from robovast.execution.cluster_execution.container_runner import AuxPodSession
+
+        del campaign_id
+        image = identity["image"]
+        # A pod name has to be label-safe and stable for this world, and an image digest is neither
+        # short nor label-safe. `aux_pod_name` sanitises what it is given, so give it a digest of the
+        # digest: same world -> same name, which also makes a duplicate create a 409 the session reuses.
+        tag = f"scene-{hashlib.sha256(image.encode()).hexdigest()[:12]}"
+        spec = ContainerSpec(image=image)
+        pull_secret = self._scene_pull_secret()
+
+        @contextlib.contextmanager
+        def context():
+            with AuxPodSession(tag, [spec], self.namespace, core_v1=self._k8s(),
+                               pull_secret=pull_secret) as session:
+                yield session.runner_factory()
+
+        return context
+
+    def _scene_pull_secret(self) -> str:
+        """The registry pull secret, so an aux pod can pull the campaign's *private* image.
+
+        Aux images were public when that path was written, so it never needed one, and a node that has
+        already cached the campaign image hides the omission (``imagePullPolicy: IfNotPresent``) -- which
+        means it first fails on a fresh node, the worst place to discover it.
+        """
+        try:
+            from robovast.execution.cluster_execution.cluster_execution import \
+                REGISTRY_PUSH_SECRET_NAME
+            self._k8s().read_namespaced_secret(REGISTRY_PUSH_SECRET_NAME, self.namespace)
+            return REGISTRY_PUSH_SECRET_NAME
+        except Exception:  # noqa: BLE001 - an optional secret; a public image needs none
+            return ""
 
     def _query_dir(self, campaign_id: str):
         """Materialize just the query databases into the campaign's cache dir; return it."""

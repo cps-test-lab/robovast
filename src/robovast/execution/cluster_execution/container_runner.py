@@ -38,9 +38,15 @@ Consequences to know:
   the two sides no longer share a live filesystem, so a command that expects the
   caller to observe its writes *while it is still running* (or vice versa) will
   not see them — only the state at copy-in/copy-out boundaries.
-* The aux image must provide ``tar`` and ``base64`` (both are in any normal
-  userland image). Transfers are base64-framed because the exec channel is
+* The aux image must provide ``tar``, ``base64`` and ``head`` (all three are in any
+  normal userland image). Transfers are base64-framed because the exec channel is
   text-oriented and would corrupt raw binary.
+* **A copy-in is length-framed, not EOF-framed.** The Kubernetes stream client can
+  write to stdin but cannot half-close it, so a receiver waiting for EOF
+  (``base64 -d | tar xzf -``) never terminates and the exec hangs forever — which
+  is exactly what it did, on a workspace with nothing in it. ``head -c <n>``
+  bounds the read instead, so the pipeline finishes on the last byte the sender
+  announced. See :meth:`ClusterContainerRunner._copy_in`.
 * Aux compute is scheduled by Kubernetes as its own pod, so it never competes
   with the service (the control plane) for resources.
 
@@ -50,6 +56,7 @@ Kubernetes garbage-collects it if the service is replaced), carries an
 """
 
 import base64
+import contextlib
 import io
 import logging
 import os
@@ -62,6 +69,13 @@ logger = logging.getLogger(__name__)
 
 #: Default wall-clock cap for an aux pod, so a leaked one always dies by itself.
 DEFAULT_AUX_DEADLINE_SECONDS = 12 * 60 * 60
+
+#: Cap on a single command exec'd into an aux container. Deliberately generous — a
+#: floorplan turning into a mesh is legitimately slow, and a cap that fires on real work
+#: would be worse than none. The point is only that the wait *terminates*: without it a
+#: helper that hangs hangs the campaign's worker thread forever, and a campaign stuck in
+#: composition with no log line is indistinguishable from one that is merely slow.
+AUX_EXEC_LIMIT_S = 2 * 60 * 60
 
 #: Label selector identifying every aux pod (one per campaign that needs one).
 AUX_LABEL = "app=robovast-aux"
@@ -235,7 +249,8 @@ def cleanup_aux_pods(namespace="default", kube_context=None, campaign=None):
 
 
 def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None,
-                           deadline_seconds: int = DEFAULT_AUX_DEADLINE_SECONDS) -> dict:
+                           deadline_seconds: int = DEFAULT_AUX_DEADLINE_SECONDS,
+                           pull_secret: str = "") -> dict:
     """Manifest for a campaign's aux Pod: one kept-alive container per spec.
 
     Each container runs the aux image with its one-shot entrypoint overridden by
@@ -245,6 +260,11 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None,
     *owner_ref* should be the **service pod** so Kubernetes garbage-collects this
     pod when the service is replaced — the same "dies with its parent" guarantee
     the old controller-pod sidecar had.
+
+    *pull_secret* names an image-pull secret. Aux images were originally public
+    (``ghcr.io/secorolab/scenery_builder``), so none was needed; a spec naming the
+    *campaign's own* image points at a private registry, and ``imagePullPolicy:
+    IfNotPresent`` hides that until the first node that has not cached it.
     """
     from robovast.execution.cluster_execution.cluster_execution import \
         _label_safe_campaign
@@ -275,16 +295,19 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None,
     }
     if owner_ref:
         metadata["ownerReferences"] = [owner_ref]
+    spec = {
+        "restartPolicy": "Never",
+        # Backstop: even if teardown and the reaper both miss it, it dies.
+        "activeDeadlineSeconds": int(deadline_seconds),
+        "containers": containers,
+    }
+    if pull_secret:
+        spec["imagePullSecrets"] = [{"name": pull_secret}]
     return {
         "apiVersion": "v1",
         "kind": "Pod",
         "metadata": metadata,
-        "spec": {
-            "restartPolicy": "Never",
-            # Backstop: even if teardown and the reaper both miss it, it dies.
-            "activeDeadlineSeconds": int(deadline_seconds),
-            "containers": containers,
-        },
+        "spec": spec,
     }
 
 
@@ -324,8 +347,9 @@ class AuxPodSession:
     """
 
     def __init__(self, campaign_id, specs, namespace, core_v1=None,
-                 ready_timeout: float = 300.0):
+                 ready_timeout: float = 300.0, pull_secret: str = ""):
         self.campaign_id = campaign_id
+        self.pull_secret = pull_secret
         self.specs = list(specs or [])
         self.namespace = namespace
         self.pod_name = aux_pod_name(campaign_id)
@@ -346,36 +370,41 @@ class AuxPodSession:
         if not self.specs:
             return self
         from kubernetes.client.rest import ApiException
+
+        from robovast.common.kube import wait_pod_gone, wait_pod_ready
         core = self._client()
         manifest = build_aux_pod_manifest(
             self.campaign_id, self.specs, self.namespace,
-            owner_ref=service_pod_owner_reference(core, self.namespace))
+            owner_ref=service_pod_owner_reference(core, self.namespace),
+            pull_secret=self.pull_secret)
         try:
             core.create_namespaced_pod(self.namespace, manifest)
-            self._created = True
         except ApiException as e:
-            if e.status != 409:  # already exists → reuse it
+            if e.status != 409:
                 raise RuntimeError(
                     f"could not create aux pod {self.pod_name}: {e.reason}") from e
-            self._created = True
+            # A 409 used to be read as "already exists → reuse it". The name is derived
+            # from the campaign id, so the pod it collides with is this campaign's
+            # previous one — usually still Terminating, and a Terminating pod never
+            # becomes Running again. Adopting it meant waiting out the full ready
+            # timeout for a corpse. Wait for the delete to land, then create ours.
+            logger.info("Aux pod %s still exists; waiting for it to go before recreating",
+                        self.pod_name)
+            with contextlib.suppress(ApiException):
+                core.delete_namespaced_pod(self.pod_name, self.namespace,
+                                           grace_period_seconds=0)
+            wait_pod_gone(core, self.namespace, self.pod_name,
+                          timeout_s=self._ready_timeout)
+            core.create_namespaced_pod(self.namespace, manifest)
+        self._created = True
         logger.info("Aux pod %s created (%d container(s)) for campaign %s",
                     self.pod_name, len(self.specs), self.campaign_id)
-        self._wait_running(core)
+        # Shared with the container-exec lane so a stuck pod names its reason
+        # (ImagePullBackOff, say) instead of timing out with only an elapsed time —
+        # which matters now that a spec may name the campaign's own private image.
+        wait_pod_ready(core, self.namespace, self.pod_name,
+                       timeout_s=self._ready_timeout)
         return self
-
-    def _wait_running(self, core) -> None:
-        deadline = time.time() + self._ready_timeout
-        while time.time() < deadline:
-            pod = core.read_namespaced_pod(self.pod_name, self.namespace)
-            phase = pod.status.phase
-            if phase == "Running":
-                return
-            if phase in ("Failed", "Succeeded"):
-                raise RuntimeError(
-                    f"aux pod {self.pod_name} reached {phase} before it could be used")
-            time.sleep(2)
-        raise RuntimeError(
-            f"aux pod {self.pod_name} was not Running within {self._ready_timeout}s")
 
     def runner_factory(self):
         """A ``factory(spec) -> ClusterContainerRunner`` bound to this campaign's pod."""
@@ -404,12 +433,14 @@ class ClusterContainerRunner:
     the one way this differs from the old shared-volume behaviour).
     """
 
-    def __init__(self, spec, pod_name, namespace, core_v1=None):
+    def __init__(self, spec, pod_name, namespace, core_v1=None,
+                 exec_limit_s: float = AUX_EXEC_LIMIT_S):
         self._spec = spec
         self._pod = pod_name
         self._namespace = namespace
         self._core_v1 = core_v1
         self._container = spec.container_name()
+        self._exec_limit_s = exec_limit_s
         self.workspace = tempfile.mkdtemp(prefix="robovast_aux_")
 
     def _client(self):
@@ -427,41 +458,26 @@ class ClusterContainerRunner:
         """Exec *command* in the aux container; return collected stdout.
 
         Raises ``subprocess.CalledProcessError`` on a non-zero exit, so callers
-        (and plugins) see the same failure type as the local ``docker run`` path.
+        (and plugins) see the same failure type as the local ``docker run`` path. A
+        command that runs past :data:`AUX_EXEC_LIMIT_S` is one of those failures: this
+        loop used to have no overall bound, so a helper that hung took the campaign's
+        worker thread with it, with nothing in the log to say what it was waiting for.
         """
-        from kubernetes.stream import stream
+        from robovast.common.kube import exec_stream
 
-        resp = stream(
-            self._client().connect_get_namespaced_pod_exec,
-            self._pod, self._namespace,
-            container=self._container,
-            command=command,
-            stderr=True, stdin=stdin_data is not None, stdout=True, tty=False,
-            _preload_content=False,
-        )
-        out_chunks: list[str] = []
-        if stdin_data is not None:
-            resp.write_stdin(stdin_data)
-        while resp.is_open():
-            resp.update(timeout=1)
-            if resp.peek_stdout():
-                chunk = resp.read_stdout()
-                out_chunks.append(chunk)
-                if progress_update_callback:
-                    for line in chunk.splitlines():
-                        progress_update_callback(line)
-            if resp.peek_stderr():
-                chunk = resp.read_stderr()
-                if progress_update_callback:
-                    for line in chunk.splitlines():
-                        progress_update_callback(line)
-                else:
-                    logger.debug("aux stderr: %s", chunk.rstrip())
-        returncode = resp.returncode
-        resp.close()
-        if returncode != 0:
-            raise subprocess.CalledProcessError(returncode, command)
-        return "".join(out_chunks)
+        stderr_sink = progress_update_callback or (
+            lambda line: logger.debug("aux stderr: %s", line))
+        code, out, _err, timed_out = exec_stream(
+            self._client(), self._pod, self._namespace, self._container, command,
+            limit_s=self._exec_limit_s, stdin_data=stdin_data,
+            on_stdout_line=progress_update_callback, on_stderr_line=stderr_sink)
+        if timed_out:
+            raise subprocess.CalledProcessError(
+                code, command,
+                output=f"aux container command exceeded {self._exec_limit_s}s")
+        if code != 0:
+            raise subprocess.CalledProcessError(code, command)
+        return out
 
     def _retrying_exec(self, command, **kwargs):
         """Exec, retrying transient 'container not ready yet' failures."""
@@ -482,14 +498,31 @@ class ClusterContainerRunner:
     # -- workspace mirroring ------------------------------------------------
 
     def _copy_in(self) -> None:
-        """Mirror the local workspace into the container at the same path."""
+        """Mirror the local workspace into the container at the same path.
+
+        Two things here are load-bearing, and both exist because the exec channel is not a pipe:
+
+        **The read is length-framed.** ``kubernetes.stream`` can write stdin but offers no way to
+        half-close it, so a receiver that waits for EOF -- ``base64 -d | tar xzf -`` -- waits for
+        input that never ends: the command never exits, and ``_exec``'s ``while resp.is_open()``
+        loop spins until something kills it. ``head -c <n>`` ends the read at the byte count the
+        sender already knows, so the pipeline completes without an EOF ever arriving.
+
+        **An empty workspace copies nothing.** A generator whose inputs all live inside its image
+        (a world installed from a wheel, say) stages no files, and an exec that transfers zero
+        bytes is pure latency -- one round trip per ``run()``, for nothing.
+        """
+        if not any(os.scandir(self.workspace)):
+            self._retrying_exec(["sh", "-c", f"mkdir -p '{self.workspace}'"])
+            return
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w:gz") as tar:
             tar.add(self.workspace, arcname=".")
         payload = base64.b64encode(buf.getvalue()).decode("ascii")
         self._retrying_exec(
             ["sh", "-c",
-             f"mkdir -p '{self.workspace}' && base64 -d | tar xzf - -C '{self.workspace}'"],
+             f"mkdir -p '{self.workspace}' && head -c {len(payload)} "
+             f"| base64 -d | tar xzf - -C '{self.workspace}'"],
             stdin_data=payload)
 
     def _copy_out(self) -> None:

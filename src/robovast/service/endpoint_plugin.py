@@ -57,6 +57,7 @@ ENDPOINT_GROUP = "robovast.service_endpoints"
 RESERVED_CAMPAIGN_ENDPOINTS = frozenset({
     "status", "stop", "describe", "query", "data-status", "plots", "panels",
     "visualizations", "notebook", "archive", "postprocessing", "panel_assets",
+    "scene", "scene_assets",
 })
 
 

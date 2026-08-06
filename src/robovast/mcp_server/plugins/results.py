@@ -345,6 +345,41 @@ def list_campaign_plots(campaign_id: str) -> dict:
         return {"error": str(e)}
 
 
+def get_run_scene_status(campaign_id: str, config_name: str, run_id: int = 0) -> dict:
+    """Whether a run's 3D geometry is ready, being built, or **failed and why**.
+
+    The web run view needs two artifacts: the run's own ``capture/`` (motion, written by the run) and a
+    scene descriptor (geometry, built on demand from the world the capture names, cached per world). This
+    reports the second one, and exists for one reason — a build runs in a container on a background
+    thread, so when it fails the reason reaches the browser but nothing else. An agent asked to check why
+    a run will not display otherwise sees only that geometry is absent, which is what a run nobody has
+    opened yet looks like too.
+
+    Read-only: it never starts a build. Ask a human to open the run view, or use the scene-builder MCP's
+    ``render_scene`` to look at a world directly.
+
+    Args:
+        campaign_id: The id from ``start_campaign``.
+        config_name: Which configuration the run belongs to.
+        run_id: Which run of that configuration.
+
+    Returns:
+        ``{cached, in_progress, stage, error, note, world, overrides_known, bytes}``, or ``{error}``.
+
+        ``error`` is the build's own reason when one failed — that is the field to read when a run view
+        shows no world. ``overrides_known: false`` means the capture predates override recording, so the
+        geometry is compiled from the bare world and may not reflect per-config world overrides.
+    """
+    try:
+        client = service_access.service_client()
+        if client is None:
+            return {"error": service_access.NO_SERVICE}
+        st = client.campaign_scene_status(campaign_id, config_name, str(run_id))
+        return st.model_dump() if hasattr(st, "model_dump") else dict(st)
+    except Exception as e:  # noqa: BLE001 - surface resolution/transport errors to the client
+        return {"error": str(e)}
+
+
 # -- Plugin class ------------------------------------------------------------
 
 # Deliberately few. The questions the retired per-scope tools answered are single-table
@@ -365,6 +400,7 @@ _TOOLS = [
     describe_campaign_data,
     query_campaign_data_sql,
     list_campaign_plots,
+    get_run_scene_status,
 ]
 
 

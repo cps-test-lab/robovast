@@ -1,5 +1,5 @@
-// Shared-candidate code: this file imports only 'three' / 'three/addons' -- keep it free of
-// robovast imports (see README.md in this directory).
+// Shared-candidate code: this file imports only 'three' / 'three/addons' and its siblings in this
+// directory -- keep it free of robovast imports (see README.md here).
 //
 // A plain-three viewport for the scene descriptor: renderer + camera + lights + ground grid +
 // orbit controls + the Z-up wrapper group (the descriptor is Z-up like ROS; the wrapper rotates it
@@ -15,13 +15,13 @@ import {
   Group,
   MathUtils,
   Matrix4,
-  Mesh,
   PerspectiveCamera,
   Scene,
   Vector3,
   WebGLRenderer,
 } from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+import { disposeSceneGraph } from './sceneLoader'
 
 /** The descriptor's optional baked initial camera (a MuJoCo free camera, Z-up world frame). */
 export interface SceneViewSpec {
@@ -148,17 +148,8 @@ export class SceneViewport {
     this.renderer.setAnimationLoop(null)
     this.resizeObserver.disconnect()
     this.controls.dispose()
-    // Free the scene root's GPU resources (the loader builds plain Meshes).
-    this.root?.traverse((obj) => {
-      if (obj instanceof Mesh) {
-        obj.geometry.dispose()
-        const materials = Array.isArray(obj.material) ? obj.material : [obj.material]
-        for (const m of materials) {
-          m.map?.dispose?.()
-          m.dispose()
-        }
-      }
-    })
+    // Free the scene root's GPU resources, through the same helper a scene *swap* uses.
+    if (this.root) disposeSceneGraph(this.root)
     this.renderer.dispose()
     this.renderer.domElement.remove()
   }

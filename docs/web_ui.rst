@@ -379,8 +379,10 @@ The built-in panels:
 
 **Playback** (``playback``) — a transport bar spanning the bottom: a click-to-seek
 progress bar, an icon play/pause, a **2×** fast-forward toggle, and a ``current / total``
-time label. It owns the clock; every other panel follows it. The timeline range is taken
-from the run's recorded timestamps (``poses`` / ``behaviors`` / ``scenario_timestamps``).
+time label. It owns the clock; every other panel follows it. The timeline range comes from the run
+capture's own time base when a ``scene3d`` panel declares one (the run's ground truth, and available
+before any postprocessing), else from an explicit ``visualization.timeline``, else from the union of the
+postprocessed ``poses`` / ``behaviors`` / ``scenario_timestamps`` timestamps.
 
 **Costmaps** (``costmap``) — an rviz-style top-down view of what nav2 saw: the static
 map, the global and local costmaps, the **actual path the robot drove**, and the robot
@@ -395,9 +397,9 @@ as plain ``- costmap:``.
 
 **Scenario tree** (``scenario_tree``) — an rviz-scenario-execution-style behaviour tree
 that colours each node by its status (running / success / failure) at the current time.
-It reads the ``behaviors`` table, which comes from ``rosbags_bt_to_csv`` on the
-``/scenario_execution/snapshots`` topic. If that topic was not recorded in the scenario's
-``bag_record(...)`` action, the panel shows exactly that, with the fix. The panel renders
+It reads the ``behaviors`` table, which comes from the ``behaviors.jsonl`` that
+``scenario_execution`` writes when ``execution.bt_log`` is set in the ``.vast`` (no ROS
+required). If it was not set, the panel shows exactly that, with the fix. The panel renders
 *any* table in the ``behaviors`` schema — point it at a different one with
 ``source: { table: <name> }`` (this is how the nav2 tree below is displayed).
 
@@ -411,46 +413,50 @@ available whenever ``robovast_nav`` is installed; the ``.vast`` references it as
 ``- nav2_behavior_tree:`` with ``source: { table: nav2_behaviors }``. See
 :repo_link:`configs/examples/basic_nav` for a complete campaign using it.
 
-**3D scene** (``scene3d``) — the 3D world view, typically the run view's full-bleed
-**base layer** (``position: { anchor: fill }``): the simulated world's actual geometry
-(floor, walls, furniture, the robot's meshes) rendered in the browser (orbit/zoom with the
-mouse), with **everything that moved** replayed — at every clock instant each driven body is
-seated at the recorded pose nearest ``t``.
+**3D scene** (``scene3d``) — the 3D world view, typically the run view's full-bleed **base layer**
+(``position: { anchor: fill }``): the simulated world's actual geometry rendered in the browser
+(orbit/zoom with the mouse), with **everything that moved** replayed — including *articulation*, so an
+arm bends rather than swinging as one rigid piece.
 
-*Nothing has to be listed.* A dynamic body's pose reaches a viewer as a TF transform whose
-``child_frame_id`` **is** its exported scene body name, so the set of bodies to animate is the
-intersection of "frames this run recorded" and "bodies this scene has" — discovered, not
-enumerated. A world that gains a walker (one frame per skeleton bone) or a movable prop replays
-it with no config change, and frames that are not bodies (``map``, ``odom``) fall out for free.
-This is a contract on the *simulator*: emit a frame per moving body, named after the body.
-Bindings:
+It needs no bindings at all — ``- scene3d:`` on its own is a complete panel — because the run's
+**capture** names the world it used and the service builds the matching **geometry** on demand. Both
+artifacts are specified in :ref:`run-capture`.
 
-.. code-block:: yaml
+*Geometry is compiled when somebody looks, not when a campaign runs.* A descriptor is 13–31 MB and takes
+5–9 s to compile, for an artifact whose only consumer is this panel — so a campaign no longer ships one.
+On the first view the service compiles it **inside that campaign's own pinned image** (the world is
+generally installed there from a wheel, and a host that merely happens to have the tooling could be a
+different version, which renders plausible but wrong geometry) and caches it keyed by *world identity*:
+image digest + world reference + ``world_overrides``. Every later view is a read from disk — and so is
+the first view of **every other run, and every other campaign that used the same world**. A 25-run sweep
+compiles once, not 25 times.
 
-   - scene3d:
-       position: { anchor: fill }
-       scene:
-         path: scene/scene.json     # descriptor path (default)
-         scope: run                 # or `campaign` — see below
-       poses:
-         source: { table: poses, key: frame }   # the frame-keyed pose table (defaults)
-         decimate_hz: 20            # cap samples per body; a viewport needs no more
-         max_rows: 100000           # bound on the single grouped query
-         bind:                      # ONLY where a frame's name is not its body's
-         - { body: base_link, frame: turtlebot4_base_link_gt }
+Because a build is seconds (≈8 s on a warm cluster node) and can be a couple of minutes when the node
+must first pull the image, the panel **names what it is waiting for** rather than spinning: *Fetching the
+simulation image onto the node*, *Compiling the world geometry*, *Copying the scene back from the
+container*. The rest of the run view stays usable meanwhile — the capture, the timeline and the
+table-fed panels need no geometry, so playback and the costmap keep working — and a failure stops polling
+and shows its reason.
 
-``bind`` is for the exceptions. There is one in practice: a ground-truth pose plugin publishes
-``<model>_base_link_gt`` rather than the body name, deliberately, so a rosbag carries the same
-frame name under any simulator. When *no* recorded frame names a body, the panel says so and
-names how many frames it did find, rather than showing a silently static world.
+Nothing is listed under the panel. A capture's tracks name the joints and bodies they drive exactly as
+the descriptor spells them, so what gets animated is discovered from the artifact pair; a track matching
+nothing is reported, with the capture's own ``world`` and ``producer``, rather than leaving a silently
+static world.
 
-One query serves every body, decimated per frame, because the number of series is a property of
-the world — a robot is one, a walker is 17 bones, each prop one more — so per-body fetching would
-make the round-trip count scale with how much is moving.
+.. note::
 
-It requires the :ref:`scene descriptor <scene-descriptor-delivery>` artifact — when a run has
-none, the panel says which of the two delivery paths is missing. See
-:repo_link:`configs/examples/basic_nav` for a nav campaign with the other panels.
+   Two earlier shapes are gone. The panel used to animate from the postprocessed ``poses`` table
+   (``rosbags_tf_to_csv``): that needed a rosbag before anything moved, imposed a naming contract on the
+   simulator plus a ``bind`` list for its exceptions, and could only place bodies parented to the world —
+   so an articulated robot replayed rigid. ``scene.scope``/``capture.scope`` go with it: once geometry is
+   resolved by content key there is nothing to declare, and nothing to declare *wrongly* (a
+   campaign-scope descriptor aimed at a world that varied per configuration rendered confidently wrong
+   geometry, and no validation could catch it). The ``poses`` table is unaffected and still serves the
+   costmap panel and ``timeseries``.
+
+   ``execution.generate`` remains supported for a campaign that wants its descriptor *frozen into its
+   results* — an archive that must replay even without the image — but it is no longer how the run view
+   obtains geometry.
 
 **2D scene** (``scene``) — a top-down/side 2D plot of "where the thing is right now": one
 column against another (e.g. a quadrotor's ``x`` vs altitude ``z``) from any table with a
@@ -527,71 +533,36 @@ campaign shares, as the ``scene3d`` panel does.) See the developer guide for the
 
 .. _scene-descriptor-delivery:
 
-**3D scene data delivery.** The ``scene3d`` panel renders a **scene descriptor** —
-``scene.json`` + ``scene.bin`` + one PNG per texture, a compact browser-renderable export of
-the simulated world. It is a *directory*, not a file: the loader fetches ``scene.bin`` and the
-textures as **relative siblings** of ``scene.json``, which is why the file address space encodes
-path segments individually and preserves the ``/``.
+**3D scene data delivery.** The ``scene3d`` panel renders a **scene descriptor** — ``scene.json`` +
+``scene.bin`` + one PNG per texture, a compact browser-renderable export of the simulated world, defined
+in :ref:`run-capture` and produced for rst by ``rst/export_web.py``. It is a *directory*, not a file: the
+loader fetches ``scene.bin`` and the textures as **relative siblings** of ``scene.json``.
 
-There are two delivery paths, and which one fits is decided by whether the world *varies*.
+A campaign does not deliver it. The service resolves it per view:
 
-**Per run** (``scope: run``, the default) — the simulation writes a descriptor into each run
-directory. For rst (MuJoCo) campaigns driven through the ``MujocoSim`` adapter, set
-``SIM_SUITE_SCENE_EXPORT_DIR`` and every run exports its *exact* compiled world,
-per-configuration ``world_overrides`` included:
+.. code-block:: text
 
-.. code-block:: yaml
+   GET  /campaigns/{id}/scene?config_name=&run_id=   status only; never starts a build
+   POST /campaigns/{id}/scene/run                    the explicit trigger
+   GET  /campaigns/{id}/scene_assets/{key}/{file}    the bytes, from the shared cache
 
-   execution:
-     simulation: rst.scenario_adapter:MujocoSim
-     env:
-     - SIM_SUITE_WORLD: "/config/files/turtlebot_nav2.yaml"
-     - SIM_SUITE_SCENE_EXPORT_DIR: "scene"          # -> <run dir>/scene/scene.json
+The split matters: a ``GET`` that started a build would fire on a browser prefetch or a React
+strict-mode double render, and each of those would launch an image pull. Status is modelled on
+``data-status`` (*say why you are about to wait, before you wait*), starting work is a ``POST`` returning
+``ActionResult`` as ``postprocessing/run`` is, and the bytes are served like a panel bundle because they
+live in the service's cache rather than in the campaign's results. The cache key is in the asset path so
+one URL prefix addresses the whole entry, which is what makes the loader's sibling fetches resolve.
 
-   visualization:
-     panels:
-     - scene3d:
-         position: { anchor: fill }
-         scene: { path: scene/scene.json }
+The cache is **shared across campaigns** and durable (``~/.robovast/cache/scenes``, overridable with
+``ROBOVAST_SCENE_CACHE``; size-capped by ``ROBOVAST_SCENE_CACHE_BYTES``, evicted whole-entry
+least-recently-used). Two consequences worth knowing:
 
-**Per campaign** (``scope: campaign``) — when every run compiles the *same* world, a per-run
-export is N copies of one artifact, and a descriptor is megabytes. Ship it once instead: let the
-campaign compile it as a :ref:`derived input <execution-generate>` and address it
-campaign-relative:
-
-.. code-block:: yaml
-
-   execution:
-     generate:
-     - shell:
-         out: files/scene
-         inputs: ["../worlds/depot.yaml"]
-         command: >-
-           rst-export-web --world {inputs[0]} --out {out} --max-tex-dim 1024
-           --manifest {out}/.generated.json
-
-   visualization:
-     panels:
-     - scene3d:
-         scene: { path: _config/files/scene/scene.json, scope: campaign }
-
-``execution.generate`` compiles the descriptor at campaign preparation and freezes it into
-``<campaign>/_config/files/scene/``, so one copy serves every run and every lane. Crucially it
-is rebuilt whenever the world changes — including a world the named one *inherits from*, and
-the meshes that world references, which is what ``--manifest`` reports. Without that the panel
-has a failure mode with no symptom until someone opens the run: a descriptor built against last
-week's world renders the old geometry while the runs used the new one, and looks perfectly fine
-doing it.
-
-Do **not** also add a ``run_files`` pattern covering the generated directory — generated files
-join ``run_files`` automatically. A campaign-scope descriptor that *nothing* produces is a
-validation error (``vast config validate``), not a 404 discovered later.
-
-Any other simulator works the same way by emitting the same descriptor format (defined by rst's
-``rst/export_web.py``). Either way the browser fetches it from the file address space —
-``GET /results/<campaign>/<config>/<run>/<path>`` for a run artifact,
-``GET /results/<campaign>/<path>`` for a campaign one — by its real path, so the sibling fetches
-resolve alongside it.
+* A campaign whose image is gone — garbage-collected, or a mutable tag rebuilt under the same name —
+  cannot have its geometry rebuilt, and the panel says so rather than showing an empty world. A campaign
+  that records only a mutable tag refuses to cache at all, because an entry keyed on a tag may silently
+  describe different bytes later.
+* A downloaded or shared campaign has no descriptor in it. If a self-contained archive matters more than
+  laziness, keep an ``execution.generate`` entry for that campaign.
 
 .. _costmap-delivery:
 
@@ -608,7 +579,6 @@ costmap topics in the scenario and add the step to postprocessing:
    results_processing:
      postprocessing:
        - rosbags_tf_to_csv: { frames: [base_link, odom] }   # base_link=robot/path, odom=local costmap
-       - rosbags_bt_to_csv                                   # scenario tree
        - rosbags_costmap_to_csv:
            topics: [/map, /global_costmap/costmap, /local_costmap/costmap]
 

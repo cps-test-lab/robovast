@@ -199,6 +199,43 @@ class MultiBackendService(LocalTransport):
             return self._cluster.resource_usage()
         return LocalTransport.resource_usage(self)
 
+    # -- container exec -----------------------------------------------------
+
+    def exec_in_container(self, request):
+        """Run the check on the lane the caller named, or the default one.
+
+        ``LocalTransport`` drops ``backend`` (``del backend # a multi-backend one
+        overrides``) because it has one lane. Here it selects, and it must: without this
+        override ``backend="cluster"`` was accepted, validated and transported, then
+        silently answered by Docker on the serve host — the wrong image, the wrong
+        kernel, and no sign of it in the result.
+        """
+        lane = request.backend or self._default_backend()
+        if lane not in (_LOCAL, _CLUSTER):
+            raise ValueError(f"unknown backend {lane!r}; use 'local' or 'cluster'")
+        if lane == _CLUSTER:
+            return self._cluster.exec_in_container(request)
+        return LocalTransport.exec_in_container(self, request)
+
+    def stop_exec_container(self, backend: Optional[str] = None):
+        """Stop the held container on the named lane, or on **both** when none is named.
+
+        Both, rather than the default lane, because each lane holds its own container and
+        a caller saying "stop the container" wants the resource freed — one left running
+        on the other lane would sit there until its deadline with nothing pointing at it.
+        """
+        if backend and backend not in (_LOCAL, _CLUSTER):
+            raise ValueError(f"unknown backend {backend!r}; use 'local' or 'cluster'")
+        if backend == _CLUSTER:
+            return self._cluster.stop_exec_container()
+        if backend == _LOCAL:
+            return LocalTransport.stop_exec_container(self)
+        local = LocalTransport.stop_exec_container(self)
+        cluster = self._cluster.stop_exec_container()
+        if cluster.stopped and not local.stopped:
+            return cluster
+        return local
+
     # -- campaign lifecycle -------------------------------------------------
 
     def create_campaign(self, request: CreateCampaignRequest) -> CampaignRef:
@@ -344,6 +381,19 @@ class MultiBackendService(LocalTransport):
 
     def describe_campaign_data(self, campaign_id: str):
         return self._route(campaign_id, "describe_campaign_data", campaign_id)
+
+    def campaign_scene_status(self, campaign_id: str, config_name: str, run_id: str):
+        # Routed, like data-status: what geometry costs is the per-lane difference (a local docker run
+        # against an aux pod, an image id against a registry digest), and a request that landed on the
+        # wrong lane would not find the campaign at all. `exec_in_container` documents a `backend` field
+        # this class never routes -- this must not inherit that.
+        return self._route(campaign_id, "campaign_scene_status", campaign_id, config_name, run_id)
+
+    def run_campaign_scene(self, campaign_id: str, config_name: str, run_id: str):
+        return self._route(campaign_id, "run_campaign_scene", campaign_id, config_name, run_id)
+
+    def resolve_campaign_scene_asset(self, campaign_id: str, path: str):
+        return self._route(campaign_id, "resolve_campaign_scene_asset", campaign_id, path)
 
     def campaign_data_status(self, campaign_id: str):
         # Routed, not answered here: whether a query transfers anything is exactly the

@@ -140,6 +140,27 @@ def _instance_type_command(cluster_config) -> str | None:
         return None
 
 
+def _run_output_dir_env(job) -> tuple:
+    """``RUN_OUTPUT_DIR`` for a job that is exactly one run, else nothing.
+
+    ``/out`` is the pod's campaign root and ``OUTPUT_DIR`` is a per-*job* subdir, so neither names the
+    place this run's results land -- ``/out/<config>/<run>``, which scenario_execution derives per work
+    item from its parameter document. A process the scenario merely *launched* (a simulator brought up
+    by a ROS launch file, say) therefore has nowhere correct to drop a per-run artifact: writing to
+    ``/out`` collides across runs, since every pod mirrors its ``/out`` into the same campaign prefix.
+
+    So name it, for the case where it is unambiguous. With the default packing (``runs_per_job: 1``,
+    :class:`OnePerJob`) that is every job; a packed job runs several work items sequentially and one
+    variable cannot serve them all, so it is omitted rather than made wrong, and a consumer falls back
+    to ``OUTPUT_DIR``.
+    """
+    items = getattr(job, "items", None) or []
+    if len(items) != 1:
+        return ()
+    item = items[0]
+    return (('RUN_OUTPUT_DIR', f"/out/{item.config_name}/{item.run_number}"),)
+
+
 def _short_job_name(campaign: str, config_name: str, run_number: int) -> str:
     """Create a short Kubernetes job name (max 63 chars) for campaign-id-config-run.
 
@@ -568,7 +589,7 @@ class BatchJobRunner:
             # (slash-free, globally unique). See _job_artifact_path / _job_tag.
             ('OUTPUT_DIR', f"/out/_jobs/{self._job_artifact_path(job.index)}"),
             ('SCENARIO_OUTPUT_DIR', '/out'),
-        )
+        ) + _run_output_dir_env(job)
         return self._build_job_manifest(
             job_short_name=_short_job_name(self.campaign, job_tag, job.index),
             job_full_name=f"{self.campaign}-{job_tag}",

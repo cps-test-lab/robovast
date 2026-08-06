@@ -372,6 +372,29 @@ class HTTPTransport(RobovastInterface):
         return CampaignDataStatus.model_validate(
             self._get(Routes.campaign_data_status(campaign_id)))
 
+    def campaign_scene_status(self, campaign_id: str, config_name: str,
+                              run_id: str) -> "SceneStatus":
+        # The default timeout, as for data-status: this is the cheap probe, and it never builds.
+        from robovast.service.interface import SceneStatus
+        return SceneStatus.model_validate(self._get(
+            Routes.campaign_scene(campaign_id),
+            config_name=config_name, run_id=str(run_id)))
+
+    def run_campaign_scene(self, campaign_id: str, config_name: str,
+                           run_id: str) -> "ActionResult":
+        # Returns as soon as the build is dispatched, so the default timeout is right here too --
+        # progress is read from campaign_scene_status, not from this call.
+        from urllib.parse import urlencode
+        query = urlencode({"config_name": config_name, "run_id": str(run_id)})
+        return ActionResult.model_validate(self._post(
+            f"{Routes.campaign_scene_run(campaign_id)}?{query}"))
+
+    def resolve_campaign_scene_asset(self, campaign_id: str, path: str) -> str:
+        # A *path on the service's disk* has no meaning across HTTP; a remote caller fetches the bytes
+        # from the address the status reports. Refusing beats returning a path that is not there.
+        raise NotImplementedError(
+            "a scene asset is fetched over HTTP from SceneStatus.url, not resolved to a local path")
+
     def query_campaign_data_sql(
         self, campaign_id: str, sql: str, max_rows: int = 500,
         extra_campaign_ids=None,

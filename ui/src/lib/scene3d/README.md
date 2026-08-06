@@ -14,6 +14,26 @@ the format is owned by rst (`rst/export_web.py`), the reference loader is this o
 - `viewport.ts` — a plain-three viewport (renderer, camera, lights, grid, orbit controls, Z-up
   wrapper group, resize, dispose).
 
+## Texture mapping
+
+Two contract points a second implementation of this loader has to get right, both of them things
+the descriptor cannot express any other way:
+
+- **`meshes[].uv` is optional, and when present it wins.** This mirrors MuJoCo: a mesh with baked
+  UV coordinates is mapped by those coordinates and *ignores* the material's `texrepeat` /
+  `texuniform`; a mesh without them is auto-projected, and then `texrepeat` sets the tile scale
+  (metres per tile when `texuniform`, tiles across the object otherwise). Getting this backwards
+  projects a texture *atlas* by world position, which samples arbitrary regions of it — every
+  surface ends up wearing some other surface's texture.
+- **UVs are in MuJoCo's convention: `v` is measured from the image's top row.** three's
+  `TextureLoader` defaults to `flipY = true` and would sample from the bottom, so image textures
+  are loaded with `flipY = false`. `DataTexture` (the raw procedural textures packed into
+  `scene.bin`) already defaults to `flipY = false`, so both paths agree.
+
+`texture.repeat` is a property of the *Texture*, but the repeat a geom needs depends on the geom's
+size — so a material shared across geoms of different size needs one Texture clone per distinct
+repeat, not one mutated in place.
+
 **Extractability rule: files in this directory import only `three` (and `three/addons`) — never
 `@/…` or anything robovast-specific.** The directory is shared-candidate code for other projects
 rendering the same descriptor, so keeping this boundary makes extraction into a common package
