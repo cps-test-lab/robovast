@@ -237,8 +237,10 @@ function ScenarioTreePanel({ spec, clock, data }: PanelProps) {
       : ''
     const tip = [node.className, node.additionalDetail, where].filter(Boolean).join(' · ')
 
+    // Nothing wraps: a node stays one row tall however narrow the panel is, so the tree's
+    // depth stays readable and the overflow becomes horizontal scroll instead of reflow.
     const label = (
-      <Box sx={{ py: 0.25 }}>
+      <Box sx={{ py: 0.25, whiteSpace: 'nowrap' }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
           <Box
             sx={{
@@ -256,24 +258,25 @@ function ScenarioTreePanel({ spec, clock, data }: PanelProps) {
             {node.name}
           </Box>
           {node.className ? (
-            <Box
-              component="span"
-              sx={{
-                fontSize: 11,
-                color: 'text.secondary',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-            >
+            <Box component="span" sx={{ fontSize: 11, color: 'text.secondary' }}>
               {node.className.split('.').pop()}
             </Box>
           ) : null}
         </Box>
         {feedback ? (
+          // Capped: an action that reports a long message would otherwise make one node
+          // as tall as the panel. The full text is in the tooltip.
           <Box
             component="span"
-            sx={{ display: 'block', pl: 2.25, fontSize: 11, color: 'text.secondary' }}
+            sx={{
+              display: 'block',
+              pl: 2.25,
+              fontSize: 11,
+              color: 'text.secondary',
+              maxWidth: 280,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}
           >
             {feedback}
           </Box>
@@ -292,10 +295,14 @@ function ScenarioTreePanel({ spec, clock, data }: PanelProps) {
     )
   }
 
+  // A real scenario's tree is routinely taller and wider than the panel: every node is expanded
+  // by default, and depth costs horizontal indent. The column below is what makes that usable --
+  // the banner keeps its place while the tree scrolls under it, so the reason a run failed does
+  // not scroll away just as you go looking for the node that caused it.
   return (
-    <Box sx={{ height: '100%', overflow: 'auto', p: 0.5 }}>
+    <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       {culprit ? (
-        <Alert severity="error" sx={{ mb: 0.5, py: 0, fontSize: 12 }}>
+        <Alert severity="error" sx={{ m: 0.5, mb: 0, py: 0, fontSize: 12, flexShrink: 0 }}>
           Failed at <strong>{culprit.tip.name}</strong>
           {culprit.tip.oscLine
             ? ` (${culprit.tip.oscFile.split('/').pop()}:${culprit.tip.oscLine})`
@@ -303,9 +310,22 @@ function ScenarioTreePanel({ spec, clock, data }: PanelProps) {
           {culprit.message ? ` — ${culprit.message}` : ''}
         </Alert>
       ) : null}
-      <SimpleTreeView defaultExpandedItems={allIds} sx={{ '& .MuiTreeItem-content': { py: 0 } }}>
-        {d.roots.map(renderNode)}
-      </SimpleTreeView>
+      {/* minHeight/minWidth 0 let this shrink inside the flex column so `auto` actually
+          overflows; without them a flex child is floored at its content size and the tree is
+          clipped instead of scrolled. */}
+      <Box sx={{ flexGrow: 1, minHeight: 0, minWidth: 0, overflow: 'auto', p: 0.5 }}>
+        <SimpleTreeView
+          defaultExpandedItems={allIds}
+          sx={{
+            '& .MuiTreeItem-content': { py: 0 },
+            // Grow past the panel instead of compressing into it, so a deep tree scrolls
+            // sideways with its indentation intact.
+            minWidth: 'max-content',
+          }}
+        >
+          {d.roots.map(renderNode)}
+        </SimpleTreeView>
+      </Box>
     </Box>
   )
 }
@@ -313,7 +333,7 @@ function ScenarioTreePanel({ spec, clock, data }: PanelProps) {
 registerPanel({
   manifest: {
     type: 'scenario_tree',
-    label: 'Scenario tree',
+    label: 'Scenario',
     defaultPosition: { anchor: 'left', width: 320 },
     resizable: true,
     minimizable: true,
