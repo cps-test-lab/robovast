@@ -31,7 +31,21 @@ import { ResultsTree } from './ResultsTree'
 import '@/panels' // registers the built-in panels
 
 // Tables whose timestamp column can define the run's timeline; the union of their ranges is used.
+// The fallback for a campaign whose timeline comes from postprocessed rosbag tables.
 const TIME_TABLES = ['poses', 'behaviors', 'scenario_timestamps']
+
+/** The `capture.path` a panel declares, if any -- the run's own time base, needing no `data.db`.
+ *
+ *  Read straight from the panel specs rather than plumbed up from the panel: the manifest is a small
+ *  JSON at a URL the panel is about to fetch anyway, so the browser serves the second read from cache.
+ */
+function capturePathOf(panels: { type: string; config: Record<string, unknown> }[]): string | null {
+  for (const panel of panels) {
+    const capture = panel.config?.capture as { path?: unknown } | undefined
+    if (capture) return String(capture.path ?? 'capture/capture.json')
+  }
+  return null
+}
 
 interface RunKey {
   config_name: string
@@ -59,12 +73,16 @@ export function RunView({
     refetchOnWindowFocus: true,
   })
 
+  // `run_view`, not the postprocessed `runs` table: it is a temp view over the live `campaign.db`
+  // (written as the campaign runs), so a campaign that produced no rosbags -- and therefore has no
+  // `data.db` at all -- still lists its runs and can be replayed. `runs` carries the `param_*` columns
+  // and nothing here needs them.
   const runs = useQuery({
     queryKey: ['runs-list', campaignId],
     queryFn: () =>
       robovast.queryCampaignDataSql(
         campaignId,
-        'SELECT config_name, run_id, status, passed FROM runs ORDER BY config_name, run_id',
+        'SELECT config_name, run_id, status, passed FROM run_view ORDER BY config_name, run_id',
       ),
     enabled: !!campaignId,
     retry: false,
@@ -101,37 +119,59 @@ export function RunView({
   const clock = useMemo(() => new PlaybackClock(), [runKey])
   useEffect(() => () => clock.dispose(), [clock])
 
-  // Discover the timeline range and set it on the clock. Prefer the explicit
-  // `visualization.timeline` (for non-ROS runs, e.g. a sim's `trajectory` table with a `t`
-  // column); otherwise fall back to the union of the standard nav time tables.
-  // Depend on the timeline's fields (not the object identity, which churns on each panels refetch).
-  const tlTable = panels.data?.timeline?.table
-  const tlCol = panels.data?.timeline?.time_column
-  useEffect(() => {
-    if (!provider) return
-    let alive = true
-    const lookups: Promise<[number, number] | null>[] = tlTable
-      ? [provider.timeRange(tlTable, tlCol).catch(() => null)]
-      : TIME_TABLES.map((t) => provider.timeRange(t).catch(() => null))
-    Promise.all(lookups).then((ranges) => {
-      if (!alive) return
-      const valid = ranges.filter((r): r is [number, number] => !!r)
-      if (!valid.length) return
-      const lo = Math.min(...valid.map((r) => r[0]))
-      const hi = Math.max(...valid.map((r) => r[1]))
-      clock.setRange(lo, hi)
-    })
-    return () => {
-      alive = false
-    }
-  }, [provider, clock, tlTable, tlCol])
-
   const specs = useMemo(
     () => (panels.data ? parseVastPanels(panels.data.panels) : []),
     [panels.data],
   )
 
-  const noData = /data\.db/i.test((runs.error as Error | null)?.message ?? '')
+  // Discover the timeline range and set it on the clock, in order of authority:
+  //   1. a run capture's own time base -- the run's ground truth, and available with no data.db;
+  //   2. an explicit `visualization.timeline` (a sim's own table with a `t` column);
+  //   3. the union of the standard postprocessed nav time tables.
+  // Depend on scalars rather than object identity, which churns on every panels refetch.
+  const tlTable = panels.data?.timeline?.table
+  const tlCol = panels.data?.timeline?.time_column
+  const capturePath = useMemo(() => capturePathOf(specs), [specs])
+  useEffect(() => {
+    if (!provider || !run) return
+    let alive = true
+
+    const fromCapture = async (): Promise<[number, number] | null> => {
+      if (!capturePath) return null
+      const res = await fetch(
+        robovast.runFileUrl(campaignId, run.config_name, run.run_id, capturePath),
+      )
+      if (!res.ok) return null
+      const manifest = (await res.json()) as { time?: { t0?: number; t1?: number } }
+      const { t0, t1 } = manifest.time ?? {}
+      return typeof t0 === 'number' && typeof t1 === 'number' ? [t0, t1] : null
+    }
+
+    fromCapture()
+      .catch(() => null)
+      .then(async (captured) => {
+        if (captured) return [captured]
+        const lookups: Promise<[number, number] | null>[] = tlTable
+          ? [provider.timeRange(tlTable, tlCol).catch(() => null)]
+          : TIME_TABLES.map((t) => provider.timeRange(t).catch(() => null))
+        return Promise.all(lookups)
+      })
+      .then((ranges) => {
+        if (!alive) return
+        const valid = ranges.filter((r): r is [number, number] => !!r)
+        if (!valid.length) return
+        const lo = Math.min(...valid.map((r) => r[0]))
+        const hi = Math.max(...valid.map((r) => r[1]))
+        clock.setRange(lo, hi)
+      })
+    return () => {
+      alive = false
+    }
+  }, [provider, clock, tlTable, tlCol, capturePath, campaignId, run])
+
+  // `run_view` needs only campaign.db, so this now means the campaign has neither database -- it never
+  // started, or died before its store was written. Postprocessing is no longer the thing to suggest.
+  const noData = /campaign\.db/i.test((runs.error as Error | null)?.message ?? '')
 
   // The two dropdown dialogs are Popovers anchored to their trigger buttons.
   const [runAnchor, setRunAnchor] = useState<HTMLElement | null>(null)
@@ -190,7 +230,18 @@ export function RunView({
         onClose={() => setRunAnchor(null)}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
       >
-        <Box sx={{ width: 400, maxHeight: 460, overflow: 'auto', p: 1 }}>
+        {/* Sized to the longest campaign id rather than to a fixed 400px, which cut them off.
+            Bounded by the viewport, with the tree's own ellipsis as the last resort. */}
+        <Box
+          sx={{
+            width: 'max-content',
+            minWidth: 400,
+            maxWidth: 'min(900px, 90vw)',
+            maxHeight: 460,
+            overflow: 'auto',
+            p: 1,
+          }}
+        >
           <ResultsTree
             campaigns={campaigns}
             selectedId={selectedTreeId}
@@ -222,7 +273,8 @@ export function RunView({
         <CircularProgress size={24} />
       ) : noData ? (
         <Alert severity="info" variant="outlined">
-          This campaign has no queryable data yet — run analysis postprocessing (Data browser) first.
+          This campaign has no store to read: no <code>campaign.db</code> and no{' '}
+          <code>data.db</code>, so it either never started or ended before recording anything.
         </Alert>
       ) : !specs.length ? (
         <Alert severity="info" variant="outlined">

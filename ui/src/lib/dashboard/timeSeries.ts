@@ -104,11 +104,20 @@ export async function buildTimeSeriesSource(
 }
 
 /** React Query wrapper so panels get `{ data: source, isPending, error }` and share the cache by
- *  (table, time_column, columns). Panels index into the returned source with the clock's `t`. */
+ *  (run, table, time_column, columns) -- the run scope first, because table names repeat across
+ *  campaigns and a shared cache would otherwise hand one campaign's rows to another. Panels index into
+ *  the returned source with the clock's `t`. */
 export function useTimeSeries(binding: TimeSeriesBinding, data: DataProvider, columns?: string[]) {
   const timeCol = binding.time_column ?? DEFAULT_TIME_COLUMN
   return useQuery({
-    queryKey: ['time-series', binding.table, timeCol, binding.filter ?? null, columns ?? null],
+    queryKey: [
+      'time-series',
+      data.scope,
+      binding.table,
+      timeCol,
+      binding.filter ?? null,
+      columns ?? null,
+    ],
     queryFn: () => buildTimeSeriesSource(binding, data, columns),
     retry: false,
   })
@@ -170,6 +179,7 @@ export function useTimeSeriesGroups(
   return useQuery({
     queryKey: [
       'time-series-groups',
+      data.scope,
       binding.table,
       binding.key,
       timeCol,

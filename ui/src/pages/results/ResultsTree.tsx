@@ -1,9 +1,10 @@
-import { useMemo, useState, type SyntheticEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type SyntheticEvent } from 'react'
 import { useQueries } from '@tanstack/react-query'
 import { RichTreeView } from '@mui/x-tree-view/RichTreeView'
 import { robovast, type CampaignSummary } from '@/lib/robovastClient'
 import { formatDataFetchLabel } from '@/lib/format'
 import {
+  ancestorIds,
   buildCampaignChildren,
   campaignItem,
   indexById,
@@ -30,7 +31,16 @@ export function ResultsTree({
   // Rendered in the order received — the service lists campaigns newest-first.
   const byId = useMemo(() => new Map(campaigns.map((c) => [c.campaign_id, c])), [campaigns])
 
-  const [expandedItems, setExpandedItems] = useState<string[]>([])
+  // Open on the selection: the Run view's dropdown remounts this tree on every open, so a tree that
+  // started collapsed would hide the run it is showing. The ancestors are merged in rather than
+  // assigned, so a hand-expanded branch survives a selection change.
+  const [expandedItems, setExpandedItems] = useState<string[]>(() => ancestorIds(selectedId))
+  useEffect(() => {
+    const needed = ancestorIds(selectedId)
+    setExpandedItems((prev) =>
+      needed.every((id) => prev.includes(id)) ? prev : [...new Set([...prev, ...needed])],
+    )
+  }, [selectedId])
 
   // Lazy-load each expanded campaign's runs (config ids also land in expandedItems, so filter to
   // real campaigns — all are finished+postprocessed here). A single query per campaign feeds its
@@ -88,6 +98,17 @@ export function ResultsTree({
 
   const itemsById = useMemo(() => indexById(items), [items])
 
+  // Expanding is not enough when the selected run sits below the fold of a long campaign list.
+  // Its node only exists once the campaign's runs have loaded, hence the presence guard.
+  const rootRef = useRef<HTMLUListElement>(null)
+  const selectedPresent = itemsById.has(selectedId)
+  useEffect(() => {
+    if (!selectedPresent) return
+    // `aria-selected="true"` marks the node: the custom item slot styles selection through
+    // TreeItem2Content's `status`, so no `Mui-selected` class is emitted to key off.
+    rootRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' })
+  }, [selectedId, selectedPresent])
+
   const handleItemClick = (_e: SyntheticEvent, itemId: string) => {
     const item = itemsById.get(itemId)
     if (item && item.kind !== 'placeholder') onSelect(item)
@@ -95,6 +116,7 @@ export function ResultsTree({
 
   return (
     <RichTreeView
+      ref={rootRef}
       items={items}
       slots={{ item: StatusTreeItem }}
       expandedItems={expandedItems}

@@ -133,6 +133,14 @@ export function placeholderChild(campaignId: string, message: string): ResultsTr
   }
 }
 
+// The ancestor ids of a node id, outermost first — `c//cfg/x//run/3` → [`c`, `c//cfg/x`]. Node ids
+// are built as `//`-joined paths (see above), so the ancestors are its prefixes. Used to open the
+// tree on the current selection instead of showing it collapsed at campaign level.
+export function ancestorIds(id: string): string[] {
+  const parts = id.split('//')
+  return parts.slice(0, -1).map((_, i) => parts.slice(0, i + 1).join('//'))
+}
+
 // Flatten a tree into an id → item map so the click handler can resolve what was clicked without
 // re-parsing ids.
 export function indexById(items: ResultsTreeItem[]): Map<string, ResultsTreeItem> {
