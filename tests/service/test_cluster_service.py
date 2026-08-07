@@ -1192,3 +1192,41 @@ def test_an_unindexed_campaign_is_never_fetched(indexed):
     assert cs._record_dir("stranger-2026-07-17-120000") == \
         cs._campaign_dir("stranger-2026-07-17-120000")
     assert storage.reads == []
+
+
+def test_scene_geometry_is_keyed_on_the_simulators_image():
+    """The world lives in the SIMULATION image, so its digest is what identifies geometry.
+
+    Keying on `image_revision` -- the scenario container's -- sent the build into an image
+    with neither the world nor the exporter. It failed as an exec that could not start,
+    reported through the Kubernetes client's int() of the exec status as
+    "invalid literal for int()", which reads as a RoboVAST bug rather than a wrong image.
+    """
+    from unittest.mock import patch
+
+    from robovast.service import scene_cache
+
+    meta = {"image_revision": "reg/scenario@sha256:" + "a" * 64,
+            "image_revisions": {"simulation": "reg/sim@sha256:" + "b" * 64,
+                                "scenario": "reg/scenario@sha256:" + "a" * 64}}
+    # Patched at its source: world_identity imports it inside the function.
+    with patch("robovast.common.campaign_data.read_execution_metadata",
+               lambda _p: meta):
+        identity = scene_cache.world_identity("/campaign", {"world": "w.yaml",
+                                                            "overrides": {}})
+    assert identity["image"] == "reg/sim@sha256:" + "b" * 64
+
+
+def test_scene_geometry_falls_back_for_campaigns_without_per_role_digests():
+    """A campaign recorded before per-role digests still resolves -- and for a stepped
+    simulator the scenario container IS the simulator, so it is also the right answer."""
+    from unittest.mock import patch
+
+    from robovast.service import scene_cache
+
+    meta = {"image_revision": "reg/combined@sha256:" + "c" * 64}
+    with patch("robovast.common.campaign_data.read_execution_metadata",
+               lambda _p: meta):
+        identity = scene_cache.world_identity("/campaign", {"world": "w.yaml",
+                                                            "overrides": {}})
+    assert identity["image"] == "reg/combined@sha256:" + "c" * 64

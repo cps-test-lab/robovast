@@ -262,6 +262,7 @@ class BatchJobRunner:
     #: defaults so a runner built another way (offline manifest emit, tests) is safe.
     image = None
     _resolved_image_digest = None
+    _resolved_image_digests: dict = {}
 
     #: Effective per-Job ``activeDeadlineSeconds`` and the set of Jobs already logged
     #: as hard-killed on it. Class-level defaults for runners not built via
@@ -302,6 +303,7 @@ class BatchJobRunner:
         # exact image the runs recorded their bags with.
         self.image = image
         self._resolved_image_digest = None
+        self._resolved_image_digests = {}
         # ``None`` ⇒ classic single-batch layout (prepare-run); the controller sets
         # a tag per search batch so jobs/param files/storage prefix don't collide.
         self._batch_tag = batch_tag
@@ -847,13 +849,31 @@ class BatchJobRunner:
         try:
             pods = self.k8s_client.list_namespaced_pod(
                 self.namespace, label_selector=job_label).items
+            # Sidecars are NATIVE sidecars now, so they report under
+            # init_container_statuses; reading only container_statuses would see the
+            # scenario container alone and pin every role to its digest.
             statuses = [cs for pod in pods
-                        for cs in (pod.status.container_statuses or [])]
+                        for cs in ((pod.status.container_statuses or [])
+                                   + (pod.status.init_container_statuses or []))]
             digest = resolve_image_digest(statuses, self.image)
+            # One digest per container, so a consumer can ask for the image a PARTICULAR
+            # role ran. The single `image_revision` is the scenario container's, which is
+            # the wrong answer for anything the simulator produced: the run view compiles
+            # a run's geometry from the world the capture names, and that world and its
+            # exporter live in the simulation image. Keyed on the container's own digest,
+            # it was compiled -- or rather, failed to compile -- in the scenario image.
+            per_role = {}
+            for cs in statuses:
+                name = getattr(cs, "name", None)
+                pullable = pullable_digest(getattr(cs, "image_id", None))
+                if name and pullable and name not in per_role:
+                    per_role[name] = pullable
         except Exception as exc:  # noqa: BLE001 - never block the run on a status read
             logger.debug("Could not resolve SUT image digest for %s: %s",
                          self.campaign, exc)
             return
+        if per_role:
+            self._resolved_image_digests = per_role
         if digest:
             self._resolved_image_digest = digest
             logger.info("Pinned SUT image for %s to %s", self.campaign, digest)
@@ -1163,7 +1183,8 @@ class KubernetesBackend(ExecutionBackend):
         create_execution_yaml(runs, campaign_root,
                               execution_params=execution_params,
                               context=self.kube_context,
-                              image_digest=getattr(runner, "_resolved_image_digest", None))
+                              image_digest=getattr(runner, "_resolved_image_digest", None),
+                              image_digests=getattr(runner, "_resolved_image_digests", None))
 
     def finalize_campaign(self, campaign_root: str) -> None:
         """Publish the canonical campaign to storage so the bucket matches local.

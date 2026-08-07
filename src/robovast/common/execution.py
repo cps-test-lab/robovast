@@ -1265,7 +1265,7 @@ def _get_image_revision(image: str) -> str:
 
 
 def create_execution_yaml(runs, output_dir, execution_params=None, context=None,
-                          image_digest=None):
+                          image_digest=None, image_digests=None):
     """Create execution.yaml file with ISO formatted timestamp.
 
     Args:
@@ -1309,6 +1309,13 @@ def create_execution_yaml(runs, output_dir, execution_params=None, context=None,
         'images': images,
         'image_revision': image_digest or _get_image_revision(image),
     }
+    # One digest per container, because "the campaign's image" stopped being a single
+    # fact. `image_revision` is the scenario container's; anything asking which bytes
+    # produced a particular artifact has to name the role. The run view's geometry is the
+    # case in hand: it is compiled from the world the capture names, and that world and
+    # its exporter live in the SIMULATION image, not the scenario one.
+    if image_digests:
+        execution_data['image_revisions'] = dict(image_digests)
 
     # Add run_as_user if provided
     run_as_user = execution_params.get('run_as_user')

@@ -125,6 +125,8 @@ def world_identity(campaign_dir, capture_manifest) -> dict:
     """
     from robovast.common.campaign_data import \
         read_execution_metadata  # pylint: disable=import-outside-toplevel
+    from robovast.common.config import \
+        SIMULATION_CONTAINER  # pylint: disable=import-outside-toplevel
 
     world = (capture_manifest or {}).get("world")
     if not world:
@@ -144,7 +146,19 @@ def world_identity(campaign_dir, capture_manifest) -> dict:
         raise SceneUnavailable(
             f"this campaign's execution metadata could not be read ({err}), so geometry cannot be "
             "built from the same packages the run used.") from err
-    image = str(meta.get("image_revision") or "")
+    # The SIMULATION container's digest when the campaign had one, else the scenario's.
+    # Geometry is compiled from the world the capture names, and that world -- with the
+    # exporter that reads it -- lives in the simulator's image. Keying on the scenario
+    # container's digest sent the build into an image with neither: on the cluster the
+    # aux pod's exec failed to start, and because the Kubernetes client int()s an exec
+    # status that carries a message instead of an exit code, the run view reported
+    # "invalid literal for int()" rather than "executable not found".
+    #
+    # `image_revision` remains the fallback, so campaigns recorded before per-role
+    # digests existed still resolve -- and for a stepped simulator it is the right answer
+    # anyway, because there the simulator IS the scenario container.
+    revisions = meta.get("image_revisions") or {}
+    image = str(revisions.get(SIMULATION_CONTAINER) or meta.get("image_revision") or "")
     if not _is_immutable_image(image):
         recorded = image or meta.get("image") or "nothing"
         raise SceneUnavailable(

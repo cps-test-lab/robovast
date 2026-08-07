@@ -272,7 +272,20 @@ def exec_stream(core, pod: str, namespace: str, container: str, command,
                 if on_stderr_line:
                     for line in chunk.splitlines():
                         on_stderr_line(line)
-        code = None if timed_out else resp.returncode
+        # `resp.returncode` int()s the exec status the API server returns. When the exec
+        # never STARTS -- a missing executable, a bad working dir -- that status carries a
+        # message instead of an exit code, so the client raises
+        # `ValueError: invalid literal for int()` whose text is the real error, mangled.
+        # A caller then reports an int-parsing bug in RoboVAST for what is actually
+        # "executable file not found in $PATH". Keep the message, report a failure.
+        if timed_out:
+            code = None
+        else:
+            try:
+                code = resp.returncode
+            except (ValueError, TypeError) as exc:
+                err.append(f"exec did not start: {exc}")
+                code = 126  # the shell's "command found but not executable" convention
     finally:
         resp.close()
     if code is None:
