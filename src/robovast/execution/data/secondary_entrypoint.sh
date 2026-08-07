@@ -59,7 +59,64 @@ SOCKET="/ipc/${CONTAINER_NAME}"
 
 # Start resource monitor
 python3 /config/monitor_resources.py "${OUTPUT_DIR}/resource_usage_${CONTAINER_NAME}.csv" &
-log "Started resource monitor (PID=$!) -> ${OUTPUT_DIR}/resource_usage_${CONTAINER_NAME}.csv"
+_monitor_pid=$!
+log "Started resource monitor (PID=${_monitor_pid}) -> ${OUTPUT_DIR}/resource_usage_${CONTAINER_NAME}.csv"
+
+# Everything a sidecar produces is written into /out, and /out is an emptyDir that dies
+# with the pod. The only thing that copies it out is the main container's --post-run
+# upload -- which runs while the scenario is finishing, i.e. BEFORE kubelet stops a
+# sidecar. So anything a sidecar wrote after that moment was simply lost: the simulator's
+# run.npz and capture/ (an .npz writes its zip index at close, so it exists only at
+# shutdown) never reached the store, and every sidecar log was truncated to whatever it
+# had emitted by upload time -- the simulator's to nine lines of start-up for a 99-second
+# run. Locally none of this shows, because /out is a bind mount onto the host and a late
+# write just lands; on the cluster the artifact is silently absent.
+#
+# So a sidecar gets the same post-run treatment the main container has: run the workload
+# as a child rather than exec'ing over this shell, wait for it, and then upload. By then
+# the main container has exited, so the two uploaders never race. mc mirror is
+# incremental, so re-walking /out costs little and picks up exactly what is new.
+_post_run() {
+    # The monitor first, so its CSV is complete before anything copies it.
+    if [ -n "${_monitor_pid}" ] && kill -0 "${_monitor_pid}" 2>/dev/null; then
+        kill -TERM "${_monitor_pid}" 2>/dev/null || true
+        wait "${_monitor_pid}" 2>/dev/null || true
+    fi
+    # Written by the main container's entrypoint into the SHARED /tmp. Absent on the
+    # local lane, where /out is a bind mount and there is nothing to upload -- so its
+    # absence is the normal case there, not a failure.
+    if [ -x /tmp/s3_upload.sh ]; then
+        log "Uploading ${CONTAINER_NAME} artifacts left after the scenario finished..."
+        /tmp/s3_upload.sh || log "WARNING: ${CONTAINER_NAME} post-run upload failed"
+    fi
+}
+
+# Run the workload as a child and forward SIGTERM, so it shuts down the way it would have
+# as PID 1 -- `rst sim` traps it to flush its recording, and a hard kill would leave the
+# .npz without its index. `wait` returns >128 when a trapped signal interrupts it, hence
+# the loop: the second wait is the one that reaps.
+_child=""
+_forward() { [ -n "${_child}" ] && kill -TERM "${_child}" 2>/dev/null; return 0; }
+trap _forward TERM INT
+
+run_child() {
+    "$@" &
+    _child=$!
+    # `|| _rc=$?` and not a bare `wait`: this script runs under `set -e`, and a `wait`
+    # interrupted by a trapped signal returns 128+signo. A bare one therefore exits the
+    # shell the instant SIGTERM arrives -- skipping the flush AND the upload, which is
+    # precisely the failure this function exists to prevent, and it looks identical to
+    # having no trap at all.
+    _rc=0
+    wait "${_child}" || _rc=$?
+    # The first wait returns when the signal is handled, not when the child is gone; the
+    # loop is what reaps it, so the workload gets to finish writing before we upload.
+    while kill -0 "${_child}" 2>/dev/null; do
+        wait "${_child}" || _rc=$?
+    done
+    _post_run
+    exit "${_rc}"
+}
 
 # A container that declares its own command runs THAT, with everything above already
 # done for it: the ROS overlay sourced, stdout teed into the job's log directory, and
@@ -72,13 +129,14 @@ log "Started resource monitor (PID=$!) -> ${OUTPUT_DIR}/resource_usage_${CONTAIN
 # this belongs here and not in one backend's command string.
 if [ -n "${ROBOVAST_CONTAINER_COMMAND}" ]; then
     log "Starting container command: ${ROBOVAST_CONTAINER_COMMAND}"
-    exec ${ROBOVAST_CONTAINER_COMMAND}
+    # Unquoted on purpose: the command arrives as one string and has to word-split.
+    run_child ${ROBOVAST_CONTAINER_COMMAND}
 fi
 
 if command -v ros2 > /dev/null 2>&1; then
     log "Starting scenario-execution-server-ros on socket '${SOCKET}'..."
-    exec ros2 run scenario_execution_server_ros scenario_execution_server_ros --watchdog ${WATCHDOG_TIMEOUT} --connect-timeout ${CONNECT_TIMEOUT} --socket "${SOCKET}"
+    run_child ros2 run scenario_execution_server_ros scenario_execution_server_ros --watchdog ${WATCHDOG_TIMEOUT} --connect-timeout ${CONNECT_TIMEOUT} --socket "${SOCKET}"
 else
     log "Starting scenario-execution-server on socket '${SOCKET}'..."
-    exec scenario_execution_server --watchdog ${WATCHDOG_TIMEOUT} --connect-timeout ${CONNECT_TIMEOUT} --socket "${SOCKET}"
+    run_child scenario_execution_server --watchdog ${WATCHDOG_TIMEOUT} --connect-timeout ${CONNECT_TIMEOUT} --socket "${SOCKET}"
 fi

@@ -179,3 +179,27 @@ def test_job_tag_and_artifact_path_are_batch_namespaced(monkeypatch):
     r._batch_tag = None
     assert r._job_tag(3) == "job-3"
     assert r._job_artifact_path(3) == "job-3"
+
+
+def test_a_sidecar_can_upload_what_it_writes_after_the_scenario_ends(monkeypatch):
+    """A sidecar carries the S3 credentials, because it runs the upload script itself.
+
+    /out is an emptyDir that dies with the pod, and the only thing that copies it out is
+    the main container's --post-run upload -- which runs while the scenario finishes,
+    BEFORE kubelet stops a sidecar. So everything a sidecar wrote after that was lost:
+    the simulator's run.npz and capture/ (an .npz writes its index at close, so it exists
+    only at shutdown), and the tail of every sidecar log -- the simulator's was truncated
+    to nine lines of start-up for a 99-second run. secondary_entrypoint.sh now runs
+    /tmp/s3_upload.sh once its workload exits, which needs these.
+    """
+    r = _runner(monkeypatch, execution={"containers": {
+        "scenario": {"image": "img:test"},
+        "simulation": {"image": "rst-ros:jazzy", "command": ["rst", "sim", "w.yaml"]}}})
+    m = r.create_job_manifest(r._build_jobs()[0], total_jobs=1)
+    env = _env_dict(_sidecar(m, "simulation"))
+    assert env["S3_ENDPOINT"] == "http://s3:9000"
+    assert env["S3_ACCESS_KEY"] == "ak"
+    assert env["S3_SECRET_KEY"] == "sk"
+    # And the anchor a relative artifact path resolves against, so a per-run file lands
+    # in the run's own directory rather than at the campaign root.
+    assert env["RUN_OUTPUT_DIR"] == "/out/cfgA/0"

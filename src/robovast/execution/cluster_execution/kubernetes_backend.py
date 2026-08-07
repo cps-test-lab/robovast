@@ -141,6 +141,23 @@ def _instance_type_command(cluster_config) -> str | None:
         return None
 
 
+def _s3_env(endpoint, bucket, access_key, secret_key, prefix) -> tuple:
+    """The credentials ``/tmp/s3_upload.sh`` reads at run time.
+
+    Given to the sidecars as well as the main container. A sidecar runs the same script
+    when its workload exits, because whatever it wrote after the main container's upload
+    -- the simulator's recording, and the tail of every sidecar log -- would otherwise die
+    with the pod's emptyDir.
+    """
+    return (
+        ('S3_ENDPOINT', endpoint),
+        ('S3_BUCKET', bucket),
+        ('S3_ACCESS_KEY', access_key),
+        ('S3_SECRET_KEY', secret_key),
+        ('S3_PREFIX', prefix),
+    )
+
+
 def _run_output_dir_env(job) -> tuple:
     """``RUN_OUTPUT_DIR`` for a job that is exactly one run, else nothing.
 
@@ -491,13 +508,8 @@ class BatchJobRunner:
                 })
 
             # S3 env vars for entrypoint post-run upload
-            for k, v in [
-                ('S3_ENDPOINT', s3_endpoint),
-                ('S3_BUCKET', bucket_name),
-                ('S3_ACCESS_KEY', s3_access_key),
-                ('S3_SECRET_KEY', s3_secret_key),
-                ('S3_PREFIX', s3_prefix),
-            ]:
+            for k, v in _s3_env(s3_endpoint, bucket_name, s3_access_key,
+                                s3_secret_key, s3_prefix):
                 containers[0]['env'].append({'name': k, 'value': v})
 
             # Add PRE_COMMAND and POST_COMMAND if specified
@@ -546,6 +558,10 @@ class BatchJobRunner:
             for key, value in sidecar_backend_env(self.campaign_data.get('execution') or {},
                                                   sc_name).items():
                 secondary_env.append({'name': key, 'value': value})
+            # So this sidecar can run /tmp/s3_upload.sh once its workload has exited.
+            for k, v in _s3_env(s3_endpoint, bucket_name, s3_access_key,
+                                s3_secret_key, s3_prefix):
+                secondary_env.append({'name': k, 'value': v})
             if sc.command:
                 secondary_env.append({'name': 'ROBOVAST_CONTAINER_COMMAND',
                                       'value': shlex.join(list(sc.command))})
