@@ -227,3 +227,40 @@ def test_ros_build_spec_stays_on_the_simulation_container():
 
     assert list(specs) == ["simulation"]
     assert specs["simulation"].base_image == "vendor/sim:1"
+
+
+# -- the backend's env must reach the container the backend describes ----------------
+
+def test_backend_env_reaches_the_simulation_sidecar():
+    """In the ROS shape the simulator is a SIDECAR, so scenario_env cannot serve it.
+
+    scenario_env emits the backend's contribution into the main container, which is only
+    correct when the simulator IS the main container. In the ROS shape that sent
+    robosito's ROBOSITO_RECORD / ROBOSITO_CAPTURE_EXPORT_DIR to the scenario container and
+    nowhere else, so the run produced no capture at all -- while produces_run_capture()
+    still said True and validation accepted a scene3d panel with nothing to replay.
+    """
+    from robovast.common.execution import sidecar_backend_env
+
+    ex = apply_backend(_execution("ros2", stage="cell.usd"))
+    assert sidecar_backend_env(ex, "simulation") == {"STUB_STAGE": "cell.usd",
+                                                     "STUB_FIDELITY": "low"}
+
+
+def test_backend_env_does_not_leak_into_other_sidecars():
+    """A vanilla SUT gets none of it: a backend describes its own simulator."""
+    from robovast.common.execution import sidecar_backend_env
+
+    ex = apply_backend(_execution("ros2", stage="s"))
+    assert sidecar_backend_env(ex, "sut") == {}
+    assert sidecar_backend_env(ex, "scenario") == {}
+
+
+def test_a_campaigns_own_env_still_beats_the_backend_on_a_sidecar():
+    """Same precedence rule as the main container: a backend supplies defaults."""
+    from robovast.common.execution import sidecar_backend_env
+
+    ex = apply_backend(_execution("ros2", stage="s"))
+    ex["env"] = [{"STUB_FIDELITY": "high"}]
+    assert sidecar_backend_env(ex, "simulation")["STUB_STAGE"] == "s"
+    assert "STUB_FIDELITY" not in sidecar_backend_env(ex, "simulation")

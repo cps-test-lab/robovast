@@ -78,7 +78,7 @@ from robovast.common.execution import (build_job_links,
                                        dump_multi_document_yaml,
                                        job_artifact_rel,
                                        resolve_robovast_image,
-                                       write_job_links_manifest)
+                                       write_job_links_manifest, sidecar_backend_env)
 from robovast.common import prepare_campaign_configs
 from robovast.execution.backends import (CampaignConfigError, CampaignStopped,
                                           ExecutionBackend, RunOptions)
@@ -540,6 +540,12 @@ class BatchJobRunner:
             # job's log dir and starts the resource monitor, none of which a container
             # gets when its command is exec'd as the entrypoint. Passing the command by
             # env rather than as argv is what lets the same entrypoint serve both.
+            # The backend's own env, for the container the backend describes. scenario_env
+            # puts it on the main container, which is only right when the simulator IS the
+            # main container (the stepped shape); in the ROS shape it is this sidecar.
+            for key, value in sidecar_backend_env(self.campaign_data.get('execution') or {},
+                                                  sc_name).items():
+                secondary_env.append({'name': key, 'value': value})
             if sc.command:
                 secondary_env.append({'name': 'ROBOVAST_CONTAINER_COMMAND',
                                       'value': shlex.join(list(sc.command))})

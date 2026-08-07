@@ -37,7 +37,7 @@ from robovast.common.execution import (_apply_local_parameter_overrides,
                                        job_artifact_rel,
                                        local_parameter_overrides,
                                        resolve_robovast_image,
-                                       write_job_links_manifest)
+                                       write_job_links_manifest, sidecar_backend_env)
 from robovast.execution.packer import build_jobs
 
 logger = logging.getLogger(__name__)
@@ -410,6 +410,7 @@ def _build_packed_compose_yaml(
     skip_resource_allocation=True,
     scenario_execution_params='',
     scenario_env_vars=None,
+    execution=None,
     job_prefix='',
 ):
     """Build docker-compose YAML for one job.
@@ -563,6 +564,11 @@ def _build_packed_compose_yaml(
         lines.append("    environment:")
         lines.append(f"      - CONTAINER_NAME={sc_name}")
         lines.append(f"      - SCENARIO_FILE={scenario_file_name}")
+        # The backend's own env, for the container the backend describes. scenario_env
+        # puts it on the main container, which is only right when the simulator IS the
+        # main container (the stepped shape); in the ROS shape it is this sidecar.
+        for key, value in sidecar_backend_env(execution or {}, sc_name).items():
+            lines.append(f"      - {key}={value}")
         # The container's own command, for secondary_entrypoint.sh to exec once it has
         # set the environment up. Deliberately NOT named SECONDARY_COMMAND: that name is
         # already a host-shell variable compose substitutes into `command:` above, and
@@ -957,6 +963,7 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
             skip_resource_allocation=skip_resource_allocation,
             scenario_execution_params=scenario_execution_params,
             scenario_env_vars=scenario_env_vars,
+            execution=campaign_data.get('execution', {}),
             job_prefix=job_prefix,
         )
         # Create this job's artifact links right after it finishes (injected

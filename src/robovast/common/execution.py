@@ -32,6 +32,7 @@ import yaml
 from .common import convert_dataclasses_to_dict, get_scenario_parameters
 from .config_identifier import (compute_config_identifier, hash_file_content,
                                 hash_run_files)
+from .config import SIMULATION_CONTAINER
 from .errors import CampaignConfigError, missing_input_error
 
 # Compatibility version between host robovast code and the container image.
@@ -451,15 +452,44 @@ def scenario_env(campaign_data):
     # let the user win -- so a backend contribution would have meant something different
     # on each lane. One dict, one rule: the campaign's own execution.env wins, because a
     # backend supplies defaults it knows, not decisions it takes away.
-    backend_env = execution.get("_backend_env") or {}
-    if backend_env:
-        authored = set()
-        for entry in (execution.get("env") or []):
-            authored.update(entry.keys() if isinstance(entry, dict) else [entry])
-        for key, value in backend_env.items():
-            if key not in authored:
-                env[key] = str(value)
+    env.update(_backend_env_for(execution))
     return env
+
+
+def _backend_env_for(execution: dict) -> dict:
+    """The backend's contribution, with the campaign's own ``execution.env`` winning."""
+    backend_env = execution.get("_backend_env") or {}
+    if not backend_env:
+        return {}
+    authored = set()
+    for entry in (execution.get("env") or []):
+        authored.update(entry.keys() if isinstance(entry, dict) else [entry])
+    return {k: str(v) for k, v in backend_env.items() if k not in authored}
+
+
+def sidecar_backend_env(execution: dict, container_name: str) -> dict:
+    """The backend's environment for a SIDECAR, which :func:`scenario_env` cannot reach.
+
+    ``scenario_env`` emits the backend's contribution into the *main* container, which is
+    right in the stepped shape: there the simulator runs in the scenario's own process, so
+    the main container IS the simulator. In the ROS shape the simulator is a sidecar, and
+    the same variables have to arrive there instead -- otherwise the simulator never sees
+    them. That is not hypothetical: robosito's ``ROBOSITO_RECORD`` /
+    ``ROBOSITO_CAPTURE_EXPORT_DIR`` went only to the scenario container, so a ROS campaign
+    produced no ``run.npz`` and no ``capture/`` while ``produces_run_capture()`` still
+    reported True and validation happily accepted a ``scene3d`` panel with nothing to
+    replay. The stepped shape hid it, because there the two containers are one.
+
+    Only the ``simulation`` container: a backend describes its own simulator, and handing
+    ``ROBOSITO_*`` to a vanilla nav2 SUT would be noise that reads like configuration.
+
+    A relative path in those variables resolves against ``RUN_OUTPUT_DIR``, which both
+    lanes already give every sidecar -- so a per-run artifact lands in the run's own
+    directory rather than at the campaign root where each run would overwrite the last.
+    """
+    if container_name != SIMULATION_CONTAINER:
+        return {}
+    return _backend_env_for(execution)
 
 
 _LOCAL_INIT_BLOCK = "command -v fixuid > /dev/null 2>&1 || { echo 'ERROR: fixuid not found in container image. Please rebuild the image.' >&2; exit 1; }; eval $(fixuid -q)\nEXTRA_REQUIRED_TOOLS=\"fixuid\""
