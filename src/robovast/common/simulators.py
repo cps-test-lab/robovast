@@ -195,13 +195,13 @@ def apply_backend(execution: dict, base_dir: str = "") -> dict:
         sim_block = containers.get(SIMULATION_CONTAINER) or {}
         scenario_block = containers.setdefault(SCENARIO_CONTAINER, {})
         for key in _CONTAINER_KEYS:
-            if key in sim_block:
-                scenario_block.setdefault(key, sim_block.pop(key))
+            if sim_block.get(key) is not None:
+                _set_if_unset(scenario_block, key, sim_block.pop(key))
 
     for target, defaults in backend.containers(cfg, execution).items():
         block = containers.setdefault(target, {})
         for key, value in (defaults or {}).items():
-            block.setdefault(key, value)
+            _set_if_unset(block, key, value)
 
     result = dict(execution)
     result["containers"] = containers
@@ -213,6 +213,20 @@ def apply_backend(execution: dict, base_dir: str = "") -> dict:
     if contributed:
         result["_backend_env"] = contributed
     return result
+
+
+def _set_if_unset(block: dict, key: str, value) -> None:
+    """Fill ``key`` when the block does not really carry a value for it.
+
+    Not ``setdefault``: an unset optional field survives ``model_dump()`` as an explicit
+    ``None``, so the key is *present* and ``setdefault`` declines -- and every backend
+    default is silently dropped. Only callers holding a validated config hit that (the
+    run path passes the raw YAML, where an unset key is simply absent), which is how a
+    build could be planned against ``image: None`` while the run used the backend's
+    image. Treating ``None`` as "unset" makes both callers agree.
+    """
+    if block.get(key) is None:
+        block[key] = value
 
 
 def _validated_cfg(backend: SimulatorBackend, block: dict, name: str):
