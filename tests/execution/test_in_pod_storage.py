@@ -314,3 +314,53 @@ def test_index_bucket_on_gcs_without_a_bucket_is_reported_not_invented():
     import pytest
     with pytest.raises(ValueError, match="needs a bucket"):
         in_pod_storage.campaign_index_bucket(_GcsConfig())
+
+
+# -- upload_dir's retry description ------------------------------------------
+#
+# `_resilient` takes a description used only when an operation FAILS. In upload_dir that
+# description interpolated a name bound inside the nested `op()` closure, so it was not
+# in scope where the description is built -- and Python evaluates the f-string at the
+# call, not on failure. Every cluster campaign therefore died with a NameError on its
+# first upload, in the very line meant to report a problem. The tests here all drove
+# single-object calls, so none of them touched it.
+
+
+def test_upload_dir_succeeds_and_names_its_destination(monkeypatch, tmp_path):
+    (tmp_path / "a.txt").write_text("one")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "b.txt").write_text("two")
+
+    uploaded = []
+
+    class _Ok:
+        def head_bucket(self, **_kw):
+            return {}
+
+        def upload_file(self, _path, bucket, key, **_kw):
+            uploaded.append((bucket, key))
+
+    client = _interactive_client(monkeypatch, _Ok())
+    assert client.upload_dir(str(tmp_path), "results", "camp-1/") == 2
+    # The trailing slash is stripped once, not doubled into the key.
+    assert sorted(k for _b, k in uploaded) == ["camp-1/a.txt", "camp-1/sub/b.txt"]
+
+
+def test_upload_dir_reports_the_destination_when_the_store_is_unreachable(monkeypatch,
+                                                                         tmp_path):
+    """The regression: building this message must not itself raise."""
+    import pytest
+    from botocore.exceptions import ConnectionClosedError
+
+    from robovast.common.errors import ObjectStoreUnreachableError
+
+    (tmp_path / "a.txt").write_text("one")
+
+    class _Reset:
+        def head_bucket(self, **_kw):
+            raise ConnectionClosedError(endpoint_url="http://localhost:18080")
+
+    client = _interactive_client(monkeypatch, _Reset())
+    with pytest.raises(ObjectStoreUnreachableError) as excinfo:
+        client.upload_dir(str(tmp_path), "results", "camp-1/")
+    assert "s3://results/camp-1" in str(excinfo.value)

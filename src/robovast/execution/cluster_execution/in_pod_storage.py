@@ -442,9 +442,13 @@ class _S3StorageClient(StorageClient):
                 raise
 
     def upload_dir(self, local_dir: str, bucket: str, prefix: str = "") -> int:
+        # Outside op(): the retry description below names it too, and a local inside the
+        # closure is not in scope there -- which made every cluster campaign die with a
+        # NameError at its first upload, in the line meant to REPORT a failure.
+        clean = prefix.rstrip("/")
+
         def op():
             self._ensure_bucket(bucket)
-            clean = prefix.rstrip("/")
             count = 0
             for abs_path, rel in _iter_files(local_dir):
                 key = f"{clean}/{rel}" if clean else rel
