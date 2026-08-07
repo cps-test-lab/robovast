@@ -1289,3 +1289,38 @@ def test_a_missing_archived_world_says_so(tmp_path):
 
     with _pytest.raises(scene_cache.SceneUnavailable, match="not archived with the campaign"):
         _scene_identity_for(tmp_path, "/config/files/depot_nav2.yaml", archive=False)
+
+
+def test_the_cluster_lane_fetches_a_campaign_owned_world_before_resolving_identity():
+    """Nothing is on local disk here until it is asked for.
+
+    A world declared as a path in the .vast is archived under _config/, and its path is
+    only known once the capture has been read -- so it cannot join _scene_source_dir's
+    fetch and has to be materialised separately, exactly as the capture is. Without it the
+    build failed with "not archived with the campaign" for a world that was archived, just
+    not yet local.
+    """
+    from unittest.mock import MagicMock, patch
+
+    svc = ClusterService.__new__(ClusterService)
+    fetched = []
+    svc._materialize = lambda cid, rels, what, interactive=False: fetched.extend(rels)
+    svc._scene_capture = lambda cid, cn, rid: {"world": "/config/files/depot_nav2.yaml"}
+    with patch.object(type(svc).__mro__[1], "_scene_identity",
+                      lambda *a, **k: ("identity", "key")):
+        svc._scene_identity("camp", "goal-1", "0")
+    assert "_config/files/depot_nav2.yaml" in fetched
+
+
+def test_a_packaged_world_needs_no_extra_fetch():
+    """It lives in the image; there is nothing on this side to materialise."""
+    from unittest.mock import patch
+
+    svc = ClusterService.__new__(ClusterService)
+    fetched = []
+    svc._materialize = lambda cid, rels, what, interactive=False: fetched.extend(rels)
+    svc._scene_capture = lambda cid, cn, rid: {"world": "rst_scenes:depot"}
+    with patch.object(type(svc).__mro__[1], "_scene_identity",
+                      lambda *a, **k: ("identity", "key")):
+        svc._scene_identity("camp", "goal-1", "0")
+    assert fetched == []

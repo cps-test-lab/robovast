@@ -1735,6 +1735,23 @@ class ClusterService(LocalTransport):
         self._materialize(campaign_id, (rel,), "run capture manifest", interactive=True)
         return super()._scene_capture(campaign_id, config_name, run_id)
 
+    def _scene_identity(self, campaign_id, config_name, run_id):
+        """Materialise a campaign-owned world before resolving identity against it.
+
+        A world declared as a path in the ``.vast`` is archived under ``_config/``, and on
+        this lane nothing is on local disk until it is asked for. Its path is only known
+        once the capture has been read, so it cannot join ``_scene_source_dir``'s fetch --
+        it is one more small object, fetched here for the same reason the capture is.
+        """
+        from robovast.service import \
+            scene_cache  # pylint: disable=import-outside-toplevel
+
+        manifest = self._scene_capture(campaign_id, config_name, run_id)
+        rel = scene_cache.campaign_world_rel(str((manifest or {}).get("world") or ""))
+        if rel:
+            self._materialize(campaign_id, (rel,), "campaign world", interactive=True)
+        return super()._scene_identity(campaign_id, config_name, run_id)
+
     def _scene_runner_context(self, campaign_id: str, identity: dict):
         """A context manager yielding an aux-pod runner factory on the campaign's own image.
 

@@ -187,6 +187,18 @@ def world_identity(campaign_dir, capture_manifest) -> dict:
 _RUN_FILE_MOUNT = "/config/"
 
 
+def campaign_world_rel(world: str) -> str | None:
+    """The campaign-relative path of a world that is a ``run_file``, else ``None``.
+
+    One place knows that a recorded ``/config/...`` world is a campaign file archived
+    under ``_config/``: this. The cluster lane needs it to materialise that one object
+    before resolving identity, and :func:`_campaign_world` needs it to find the file.
+    """
+    if not world.startswith(_RUN_FILE_MOUNT):
+        return None
+    return f"_config/{world[len(_RUN_FILE_MOUNT):]}"
+
+
 def _campaign_world(campaign_dir, world: str) -> dict:
     """``{world_file, world_sha}`` when the world is a campaign file, else ``{}``.
 
@@ -204,9 +216,10 @@ def _campaign_world(campaign_dir, world: str) -> dict:
     covers the bytes; for a campaign file it covers nothing, so without this two campaigns
     whose worlds share a path would serve each other's geometry.
     """
-    if not world.startswith(_RUN_FILE_MOUNT):
+    rel = campaign_world_rel(world)
+    if rel is None:
         return {}
-    local = Path(campaign_dir) / "_config" / world[len(_RUN_FILE_MOUNT):]
+    local = Path(campaign_dir) / rel
     if not local.is_file():
         raise SceneUnavailable(
             f"this run's world {world!r} is a campaign file, but it is not archived with "
