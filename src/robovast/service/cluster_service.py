@@ -737,7 +737,8 @@ class ClusterService(LocalTransport):
                                                    validate_build_spec)
         project = self._resolve_project(request.workspace_id, request.config_path)
         campaign_config = validate_config(load_config(project.config_path))
-        specs = extract_build_specs(campaign_config)
+        specs = extract_build_specs(campaign_config,
+                                    Path(project.config_path).parent)
         if not specs:
             raise ValueError(
                 "nothing to build: no container adds system_packages or "

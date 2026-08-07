@@ -173,3 +173,57 @@ def test_no_backend_is_a_no_op():
 def test_shape_is_derived_from_mode_not_declared_twice():
     assert shape_for("ros2") == SHAPE_ROS
     assert shape_for("base") == SHAPE_STEPPED
+
+
+# -- the build plan and the run plan must agree on which container builds ------------
+
+def _campaign_config(execution: dict):
+    """A stand-in for the validated project config extract_build_specs reads."""
+    class _Block:
+        def __init__(self, data):
+            self._data = data
+
+        def model_dump(self):
+            return dict(self._data)
+
+    class _Execution:
+        def __init__(self, ex):
+            self.mode = ex.get("mode")
+            self.containers = {n: _Block(b) for n, b in ex["containers"].items()}
+
+    class _Config:
+        def __init__(self, ex):
+            self.execution = _Execution(ex)
+
+    return _Config(execution)
+
+
+def test_stepped_build_spec_is_keyed_to_the_container_that_runs():
+    """Packages under a folded ``simulation`` must build the ``scenario`` image.
+
+    The build path and the run path plan containers independently. When they disagreed,
+    a stepped campaign built an image tagged ``simulation`` while the container that
+    actually started was ``scenario`` -- so it ran the unbuilt base, without the
+    campaign's own code and without any error. Silence is the whole danger here, which
+    is why this asserts the key rather than merely that a spec exists.
+    """
+    from robovast.service.image_build import extract_build_specs
+
+    execution = _execution("base", stage="s", python_packages=["./mine"])
+    specs = extract_build_specs(_campaign_config(execution))
+
+    assert list(specs) == ["scenario"], \
+        f"stepped build must target the scenario container, got {list(specs)}"
+    assert specs["scenario"].python_packages == ["./mine"]
+    assert specs["scenario"].base_image == "combined/sim:1"
+
+
+def test_ros_build_spec_stays_on_the_simulation_container():
+    """The ROS shape does NOT fold, so packages there build the simulation image."""
+    from robovast.service.image_build import extract_build_specs
+
+    execution = _execution("ros2", stage="s", python_packages=["./mine"])
+    specs = extract_build_specs(_campaign_config(execution))
+
+    assert list(specs) == ["simulation"]
+    assert specs["simulation"].base_image == "vendor/sim:1"

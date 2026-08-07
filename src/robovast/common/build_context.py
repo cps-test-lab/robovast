@@ -29,9 +29,23 @@ lone engine-level ``execution → service`` dependency — which inverted the la
 """
 
 #: Directory/file names never hashed into or copied as part of a build context.
+#:
+#: The second line is Python build output, and it is excluded for correctness rather than
+#: for weight. A container block may now install a source directory
+#: (``python_packages: [./]``) instead of a prebuilt wheel, which means setuptools runs
+#: *inside* the image build -- and setuptools reuses an existing ``build/lib`` in
+#: preference to the sources beside it. A stale one left by an earlier local
+#: ``pip install`` therefore gets baked into the campaign image, silently, and the run
+#: executes code the working tree no longer contains. That is a wrong result reported as
+#: a passing run, which is the worst failure this pipeline can produce.
+#:
+#: ``.venv`` is here for both reasons: staging one costs hundreds of megabytes, and a
+#: virtualenv's absolute shebangs are meaningless in the image anyway.
 BUILD_CONTEXT_IGNORE: frozenset[str] = frozenset({
     ".git", "__pycache__", ".cache", ".preprocessed", "results",
     "_execution", "_transient", ".robovast_plugins", "resolved",
+    "build", "dist", ".eggs", ".venv", ".tox", ".pytest_cache",
+    ".mypy_cache", ".ruff_cache",
 })
 
 

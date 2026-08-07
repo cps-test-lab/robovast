@@ -147,7 +147,7 @@ class BuildSpec:
         return [spec for group in self.install_groups for spec in group]
 
 
-def extract_build_specs(campaign_config) -> dict:
+def extract_build_specs(campaign_config, base_dir=None) -> dict:
     """One :class:`BuildSpec` per container that adds packages, keyed by container name.
 
     A campaign may build several images -- a system under test, and a scenario or
@@ -164,13 +164,25 @@ def extract_build_specs(campaign_config) -> dict:
     if execution is None:
         return {}
     containers = getattr(execution, "containers", None) or {}
-    specs = {}
-    plan = plan_containers({
+    # Through the backend FIRST, exactly as the run path does (config_generation), or the
+    # two disagree about which container the packages belong to. A stepped simulator
+    # folds `simulation` into `scenario`, so a campaign that declares its packages under
+    # `simulation` -- the block where it named the backend, and the natural place --
+    # would otherwise be built as an image tagged `simulation` while the container that
+    # actually runs is `scenario`. Nothing errors: the run just starts from the unbuilt
+    # base image, and the campaign's own code is silently absent.
+    execution_dict = {
+        'mode': getattr(execution, 'mode', None) or 'auto',
         'containers': {
             name: (block if isinstance(block, dict) else block.model_dump())
             for name, block in containers.items()
-        }
-    })
+        },
+    }
+    from robovast.common.simulators import \
+        apply_backend  # pylint: disable=import-outside-toplevel
+    execution_dict = apply_backend(execution_dict, base_dir)
+    specs = {}
+    plan = plan_containers(execution_dict)
     for container in plan.containers:
         if not container.builds:
             continue
@@ -647,4 +659,5 @@ def project_build_spec(target) -> "Optional[BuildSpec]":
     from robovast.common.common import load_config
     from robovast.common.config import validate_config
     campaign_config = validate_config(load_config(target.config_path))
-    return extract_build_specs(campaign_config)
+    return extract_build_specs(campaign_config,
+                               Path(target.config_path).parent)
