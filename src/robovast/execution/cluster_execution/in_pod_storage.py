@@ -355,7 +355,7 @@ class _S3StorageClient(StorageClient):
         # header is removed regardless of when botocore added it.
         self._s3.meta.events.register("before-send.s3.*", self._strip_expect_header)
 
-    def _resilient(self, op):
+    def _resilient(self, op, what: str = "talking to the object store"):
         """Run ``op()``, reconnecting to a fresh port-forward on a network timeout.
 
         The whole operation is re-run after a reconnect, not the single failed
@@ -371,10 +371,21 @@ class _S3StorageClient(StorageClient):
         work in flight and no degraded answer — so it still asks for the repair itself, and
         the ``current``-coalescing in ``_minio_port_forward_endpoint`` keeps concurrent
         bulk clients from tearing down each other's fresh tunnel.
+
+        Once the attempts are spent the botocore transport error is translated into
+        :class:`~robovast.common.errors.ObjectStoreUnreachableError` — one sentence
+        naming the endpoint, what was being attempted (*what*, phrased to follow
+        "while") and the transport's own reason. This is the single place every S3
+        operation here funnels through, so no caller has to enumerate botocore's
+        transport exceptions to avoid a 90-line traceback; the one that did, for
+        ``EndpointConnectionError`` only, still 500'd on a connection reset.
         """
         from botocore.exceptions import (  # pylint: disable=import-outside-toplevel
             ConnectionClosedError, ConnectTimeoutError, EndpointConnectionError,
             ReadTimeoutError)
+
+        from robovast.common.errors import \
+            ObjectStoreUnreachableError  # pylint: disable=import-outside-toplevel
         from robovast.common.shutdown import \
             is_shutting_down  # pylint: disable=import-outside-toplevel
         transient = (ReadTimeoutError, ConnectTimeoutError,
@@ -401,7 +412,15 @@ class _S3StorageClient(StorageClient):
                     "retrying (attempt %d/%d)",
                     type(exc).__name__, attempt + 2, self._reconnect_attempts)
                 self._connect(force_reconnect=True)
-        raise last
+        # botocore's message already quotes the endpoint URL, but of the failed
+        # *request* — for a port-forward that rotates, the client's current endpoint is
+        # the one an operator can probe, so name it here.
+        raise ObjectStoreUnreachableError(
+            f"Object store at {self._endpoint} is unreachable while {what}: {last}. "
+            "Check that the object store (MinIO) is running; off-cluster it is reached "
+            "through a kubectl port-forward, which the service's keep-alive reopens "
+            "within ~10 s of a stall — so retrying shortly may be all that is needed."
+        ) from last
 
     @staticmethod
     def _strip_expect_header(request, **kwargs):
@@ -435,7 +454,7 @@ class _S3StorageClient(StorageClient):
                 count += 1
             logger.debug("Uploaded %d files to s3://%s/%s", count, bucket, clean)
             return count
-        return self._resilient(op)
+        return self._resilient(op, f"uploading {local_dir} to s3://{bucket}/{clean}")
 
     def upload_file(self, local_path: str, bucket: str, key: str) -> None:
         def op():
@@ -443,7 +462,7 @@ class _S3StorageClient(StorageClient):
             extra = ({"Metadata": dict(_EXECUTABLE_META)}
                      if _is_executable(local_path) else None)
             self._s3.upload_file(local_path, bucket, key, ExtraArgs=extra)
-        self._resilient(op)
+        self._resilient(op, f"uploading {local_path} to s3://{bucket}/{key}")
 
     def download_prefix(self, bucket: str, prefix: str, local_dir: str,
                         force: bool = False, on_file=None) -> int:
@@ -474,7 +493,7 @@ class _S3StorageClient(StorageClient):
                         on_file()
             logger.debug("Downloaded %d files from s3://%s/%s", count, bucket, clean)
             return count
-        return self._resilient(op)
+        return self._resilient(op, f"downloading s3://{bucket}/{clean}")
 
     def read_object(self, bucket: str, key: str) -> "bytes | None":
         from botocore.exceptions import ClientError  # pylint: disable=import-outside-toplevel
@@ -487,7 +506,7 @@ class _S3StorageClient(StorageClient):
                 if code in ("404", "NoSuchKey", "NoSuchBucket"):
                     return None
                 raise
-        return self._resilient(op)
+        return self._resilient(op, f"reading s3://{bucket}/{key}")
 
     def stat_object(self, bucket: str, key: str) -> "int | None":
         from botocore.exceptions import ClientError  # pylint: disable=import-outside-toplevel
@@ -500,7 +519,7 @@ class _S3StorageClient(StorageClient):
                 if code in ("404", "NoSuchKey", "NoSuchBucket"):
                     return None
                 raise
-        return self._resilient(op)
+        return self._resilient(op, f"checking s3://{bucket}/{key}")
 
     def download_object(self, bucket: str, key: str, dst: str) -> bool:
         from botocore.exceptions import ClientError  # pylint: disable=import-outside-toplevel
@@ -514,7 +533,7 @@ class _S3StorageClient(StorageClient):
                     return False
                 raise
             return True
-        return self._resilient(op)
+        return self._resilient(op, f"downloading s3://{bucket}/{key}")
 
     def list_entries(self, bucket: str, prefix: str = "", delimited: bool = False):
         from botocore.exceptions import ClientError  # pylint: disable=import-outside-toplevel
@@ -539,7 +558,7 @@ class _S3StorageClient(StorageClient):
                     return [], []
                 raise
             return objects, sub_prefixes
-        return self._resilient(op)
+        return self._resilient(op, f"listing s3://{bucket}/{key_prefix}")
 
     def delete_prefix(self, bucket: str, prefix: str) -> int:
         from botocore.exceptions import ClientError  # pylint: disable=import-outside-toplevel
@@ -565,7 +584,7 @@ class _S3StorageClient(StorageClient):
             logger.debug("Deleted %d objects under s3://%s/%s", deleted, bucket,
                          key_prefix)
             return deleted
-        return self._resilient(op)
+        return self._resilient(op, f"deleting s3://{bucket}/{key_prefix}")
 
 
 class _GcsStorageClient(StorageClient):

@@ -56,6 +56,27 @@ class ClusterUnreachableError(Exception):
     include_traceback = False
 
 
+class ObjectStoreUnreachableError(RuntimeError):
+    """Raised when the campaign object store did not answer at all.
+
+    A dropped or stalled ``kubectl port-forward``, a MinIO pod that went away, a
+    connection reset mid-response: botocore reports each of these as a different
+    transport exception, and every one of them means the same thing — no answer, so
+    there is nothing to interpret. Left raw they reach the caller as a ~90-line
+    traceback through urllib3, botocore's retry handler and the ASGI stack that names
+    no cause the one sentence here does not.
+
+    Distinct from a ``ClientError``: the store answered, and *what* it answered
+    (``NoSuchBucket``, ``NoSuchKey``) is the caller's question to interpret.
+
+    A ``RuntimeError`` so that the readers which already degrade on one
+    (``_campaign_records`` falling back to "unknown", the service's ``_guard``) keep
+    working unchanged; the service maps this subclass to 503 rather than 409.
+    """
+
+    include_traceback = False
+
+
 class ImageBuildFailed(RuntimeError):
     """Raised when a campaign's experiment image did not build.
 

@@ -1663,8 +1663,7 @@ class ClusterService(LocalTransport):
         is the caller's question, and each answers it differently (``_open_db`` raises its
         own clear message; a campaign with no ``outcome.json`` reconstructs to ``unknown``).
         """
-        from botocore.exceptions import (  # pylint: disable=import-outside-toplevel
-            ClientError, EndpointConnectionError)
+        from botocore.exceptions import ClientError  # pylint: disable=import-outside-toplevel
 
         from robovast.common.progress import fmt_size
         dest = self._cache_dir(campaign_id)
@@ -1691,10 +1690,9 @@ class ClusterService(LocalTransport):
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     storage.download_object(bucket, f"{prefix}{rel}", str(dst))
                     fetched += size
-            except EndpointConnectionError as exc:
-                # Object store unreachable (e.g. a dropped port-forward): a clean 4xx
-                # instead of botocore bubbling up as an ASGI 500 — as in fetch_campaign.
-                raise RuntimeError(f"Object store is unreachable: {exc}") from exc
+            # An unreachable store (dropped port-forward, connection reset) is translated
+            # by ``_S3StorageClient._resilient`` into ObjectStoreUnreachableError — a
+            # RuntimeError the service maps to 503, naming the endpoint and the object.
             except ClientError as exc:
                 # No bucket: never published (still running / never finalized) or cleaned
                 # up. A clean 404 rather than an ASGI 500.
@@ -2102,8 +2100,7 @@ class ClusterService(LocalTransport):
         notebook re-render — become near-noops. Pass ``force=True`` to overwrite
         the local cache unconditionally.
         """
-        from botocore.exceptions import (  # pylint: disable=import-outside-toplevel
-            ClientError, EndpointConnectionError)
+        from botocore.exceptions import ClientError  # pylint: disable=import-outside-toplevel
 
         from robovast.execution.cluster_execution import in_pod_storage
         cfg = self._cluster_config()
@@ -2126,11 +2123,7 @@ class ClusterService(LocalTransport):
                     bucket, prefix, str(dest), force=force,
                     on_file=in_pod_storage.download_progress_logger(
                         f"Campaign {campaign_id}"))
-            except EndpointConnectionError as exc:
-                # Object store unreachable (e.g. a dropped port-forward). Surface a
-                # clean 4xx instead of letting botocore bubble up as an ASGI 500.
-                raise RuntimeError(
-                    f"Object store is unreachable: {exc}") from exc
+            # An unreachable store is translated by ``_resilient`` (see _materialize).
             except ClientError as exc:
                 # No bucket for this campaign in the object store: it was never
                 # published (e.g. still running / never finalized) or has been

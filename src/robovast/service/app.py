@@ -176,6 +176,8 @@ def build_app(impl: RobovastInterface):
 
     def _guard(fn):
         """Map interface exceptions to clean HTTP errors instead of 500s."""
+        from robovast.common.errors import \
+            ObjectStoreUnreachableError  # pylint: disable=import-outside-toplevel
         try:
             return fn()
         except ValueError as e:            # bad input / not-initialized
@@ -185,6 +187,12 @@ def build_app(impl: RobovastInterface):
             # detail is not delivered wrapped in stray quotes.
             detail = e.args[0] if e.args else str(e)
             raise HTTPException(status_code=404, detail=str(detail)) from e
+        except ObjectStoreUnreachableError as e:
+            # Before the RuntimeError arm it subclasses: nothing about an unanswering
+            # store is a conflict, and a 503 tells a client the call is worth retrying.
+            # The message is already the whole diagnosis, so no traceback is logged.
+            logger.warning("%s", e)
+            raise HTTPException(status_code=503, detail=str(e)) from e
         except RuntimeError as e:          # conflict (e.g. single-flight)
             raise HTTPException(status_code=409, detail=str(e)) from e
 

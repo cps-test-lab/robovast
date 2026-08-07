@@ -101,6 +101,66 @@ def test_resolve_driver_endpoint_external_stays_direct():
     assert _External().resolve_driver_s3_endpoint(_boom) == "https://s3.example.com"
 
 
+# -- an unanswering store ----------------------------------------------------
+#
+# botocore reports "no answer" as a family of transport exceptions (read timeout,
+# connect timeout, endpoint connection, connection closed). ``_resilient`` is the one
+# place every S3 operation here passes through, so it is where they become a single
+# named error — otherwise each caller has to enumerate the family, and the caller that
+# did (``EndpointConnectionError`` only) still let a reset connection out as a 500.
+
+
+def _interactive_client(monkeypatch, boto_client):
+    """An interactive S3 client whose boto client is *boto_client*.
+
+    Interactive means ``reconnect_attempts == 1``: the client fails on the first
+    transport error instead of rebuilding itself (and with it the stub) first.
+    """
+    cfg = _S3Config()
+    cfg.set_driver_s3_endpoint_resolver(
+        lambda force_reconnect=False, current=None: "http://localhost:18080")
+    client = in_pod_storage.storage_client_for(cfg, interactive=True)
+    monkeypatch.setattr(client, "_s3", boto_client)
+    return client
+
+
+def test_a_reset_connection_names_the_endpoint_and_the_object(monkeypatch):
+    """The reported failure: a ``head_object`` behind ``campaign_data_status``."""
+    import pytest
+    from botocore.exceptions import ConnectionClosedError
+
+    from robovast.common.errors import ObjectStoreUnreachableError
+
+    class _Reset:
+        def head_object(self, **_kw):
+            raise ConnectionClosedError(
+                endpoint_url="http://localhost:18080/camp-1/_execution/data.db")
+
+    client = _interactive_client(monkeypatch, _Reset())
+    with pytest.raises(ObjectStoreUnreachableError) as excinfo:
+        client.stat_object("camp-1", "_execution/data.db")
+
+    message = str(excinfo.value)
+    # The endpoint the *client* holds, not only the one botocore quotes: a rotating
+    # port-forward means those differ, and only the former is worth probing.
+    assert "http://localhost:18080" in message
+    assert "s3://camp-1/_execution/data.db" in message
+    # A self-contained sentence, so nothing downstream prints a stack for it.
+    assert excinfo.value.include_traceback is False
+
+
+def test_a_missing_object_is_still_not_an_error(monkeypatch):
+    """The store *answered* — 404 stays the caller's `None`, not an unreachable store."""
+    from botocore.exceptions import ClientError
+
+    class _Missing:
+        def head_object(self, **_kw):
+            raise ClientError({"Error": {"Code": "404"}}, "HeadObject")
+
+    client = _interactive_client(monkeypatch, _Missing())
+    assert client.stat_object("camp-1", "_execution/data.db") is None
+
+
 # -- upload iteration robustness --------------------------------------------
 
 def test_iter_files_skips_broken_symlink(tmp_path):
