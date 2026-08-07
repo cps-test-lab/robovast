@@ -761,7 +761,12 @@ class LocalTransport(RobovastInterface):
             raise RuntimeError(
                 f"campaign {campaign_id} already exists at {campaign_root}")
 
-        state = ControllerState()
+        # Named from the instant the campaign is accepted, not from when the controller
+        # starts: readers key their log and job reads off this field, and a campaign that
+        # is still waiting for its image — or that failed in its build — never reaches a
+        # controller at all. Leaving it null until then hid the build's own log behind a
+        # status that did not admit which campaign it described.
+        state = ControllerState(campaign_id=campaign_id)
         entry = _LocalCampaign(campaign_id, results_dir, state,
                                description=request.description)
         runs = request.runs if request.runs and request.runs > 0 else None

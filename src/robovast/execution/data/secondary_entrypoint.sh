@@ -41,8 +41,13 @@ if [ -n "$ROS_DISTRO" ] && [ -f "/opt/ros/$ROS_DISTRO/setup.bash" ]; then
     fi
 fi
 
-# The scenario-execution server runner: ROS2's or the plain CLI.
-if ! command -v ros2 > /dev/null 2>&1 && ! command -v scenario_execution_server > /dev/null 2>&1; then
+# The scenario-execution server runner: ROS2's or the plain CLI. Only required when
+# this container IS the server; one running its own command (a simulator, a stack
+# RoboVAST does not drive) has no reason to carry scenario-execution at all, and
+# demanding it would contradict the promise that such an image can be vanilla.
+if [ -z "${ROBOVAST_CONTAINER_COMMAND}" ] \
+   && ! command -v ros2 > /dev/null 2>&1 \
+   && ! command -v scenario_execution_server > /dev/null 2>&1; then
     log "ERROR: No scenario-execution server found (need 'ros2' or 'scenario_execution_server'). Rebuild the image."
     exit 1
 fi
@@ -55,6 +60,20 @@ SOCKET="/ipc/${CONTAINER_NAME}"
 # Start resource monitor
 python3 /config/monitor_resources.py "${OUTPUT_DIR}/resource_usage_${CONTAINER_NAME}.csv" &
 log "Started resource monitor (PID=$!) -> ${OUTPUT_DIR}/resource_usage_${CONTAINER_NAME}.csv"
+
+# A container that declares its own command runs THAT, with everything above already
+# done for it: the ROS overlay sourced, stdout teed into the job's log directory, and
+# the resource monitor running. Exec'ing the command directly as the container's
+# entrypoint -- which is what used to happen -- skipped all three. The ROS one is not a
+# nicety: a colcon package like the MuJoCo bridge only reaches PYTHONPATH once
+# /opt/ros and /ws/install are sourced, so `rst sim --ros` died instantly with
+# "unknown plugin 'ros2_bridge'" while the scenario waited out its /scan timeout with
+# no log anywhere to say why. Any simulator backend would have hit the same wall, so
+# this belongs here and not in one backend's command string.
+if [ -n "${ROBOVAST_CONTAINER_COMMAND}" ]; then
+    log "Starting container command: ${ROBOVAST_CONTAINER_COMMAND}"
+    exec ${ROBOVAST_CONTAINER_COMMAND}
+fi
 
 if command -v ros2 > /dev/null 2>&1; then
     log "Starting scenario-execution-server-ros on socket '${SOCKET}'..."

@@ -59,6 +59,7 @@ import copy
 import hashlib
 import logging
 import os
+import shlex
 import re
 import tempfile
 import time
@@ -532,14 +533,21 @@ class BatchJobRunner:
                 if isinstance(env_var, dict):
                     for key, value in env_var.items():
                         secondary_env.append({'name': key, 'value': str(value)})
+            # A sidecar with no command runs the scenario-execution server, so the
+            # scenario can drive it with remote(). One that declares a command runs that
+            # instead -- a simulator, or a stack RoboVAST does not drive. BOTH go through
+            # secondary_entrypoint.sh: it sources the ROS overlay, tees stdout into the
+            # job's log dir and starts the resource monitor, none of which a container
+            # gets when its command is exec'd as the entrypoint. Passing the command by
+            # env rather than as argv is what lets the same entrypoint serve both.
+            if sc.command:
+                secondary_env.append({'name': 'ROBOVAST_CONTAINER_COMMAND',
+                                      'value': shlex.join(list(sc.command))})
             secondary_spec = {
                 'name': sc_name,
                 'image': sc.image,
-                # A sidecar with no command runs the scenario-execution server, so the
-                # scenario can drive it with remote(). One that declares a command runs
-                # that instead -- a simulator, or a stack RoboVAST does not drive.
-                'command': (list(sc.command) if sc.command else
-                            ['/usr/bin/tini', '--', '/bin/bash', '/config/secondary_entrypoint.sh']),
+                'command': ['/usr/bin/tini', '--', '/bin/bash',
+                            '/config/secondary_entrypoint.sh'],
                 'env': secondary_env,
                 'resources': {
                     'requests': {},

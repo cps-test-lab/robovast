@@ -43,12 +43,19 @@ function estimateEtaSeconds(
 
 export function StatusView({
   status,
+  campaignId,
   jobs,
   startedAt,
   hideLog = false,
   liveOnly = false,
 }: {
   status: Status
+  // The campaign this status belongs to. Passed in because the caller already knows it
+  // and `status.campaign_id` does not: the controller fills that field, and a campaign
+  // waiting for its image build has no controller yet — which used to leave the log
+  // button off exactly the card that had nothing else to show. Falls back to the status
+  // for any caller that only holds one.
+  campaignId?: string
   jobs?: ListJobsResponse
   // Campaign start time (CampaignSummary.started_at), used to estimate the ETA.
   // Optional — the ETA simply isn't shown when it's absent.
@@ -61,6 +68,7 @@ export function StatusView({
   liveOnly?: boolean
 }) {
   const { runs, budget } = status
+  const cid = campaignId ?? status.campaign_id
   const terminal = isTerminalPhase(status.phase)
   const counts = jobs?.counts
   const running = counts?.running ?? 0
@@ -182,12 +190,10 @@ export function StatusView({
         </Typography>
       ) : null}
       {status.error ? <FailureBox error={status.error} /> : null}
-      {status.campaign_id && shownJobs && shownJobs.length > 0 ? (
-        <JobsSection campaignId={status.campaign_id} jobs={shownJobs} />
+      {cid && shownJobs && shownJobs.length > 0 ? (
+        <JobsSection campaignId={cid} jobs={shownJobs} />
       ) : null}
-      {status.campaign_id && !hideLog ? (
-        <CampaignLog campaignId={status.campaign_id} />
-      ) : null}
+      {cid && !hideLog ? <CampaignLog campaignId={cid} /> : null}
     </Stack>
   )
 }

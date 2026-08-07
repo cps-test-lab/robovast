@@ -546,15 +546,16 @@ wedged one.
 Two things follow from that, both worth knowing before reaching for a build tool:
 
 * **The build's output is a** ``BUILD`` **section of the campaign's own log**, so
-  ``get_campaign_log(campaign_id, phase="build")`` reads it with the only id you were
-  given — no ``build_id`` to look up, and it stays readable after the build itself is gone
-  (a build Job is reaped an hour after it finishes, and with it
-  ``get_image_build_log``). For a build that is misbehaving, ``phase="build",
-  summarize=True`` is the read: a few hundred near-identical layer lines collapse to a
-  handful. It is **not** in a default read — it is a copy of shared, content-addressed work
-  rather than this campaign's narrative, and it is routinely the largest section, so leading
-  with it would spend a whole read on docker layers. ``phases`` always lists it with its
-  line count.
+  ``get_campaign_log(campaign_id)`` reads it with the only id you were given — no
+  ``build_id`` to look up, and it stays readable after the build itself is gone (a build Job
+  is reaped an hour after it finishes, and with it ``get_image_build_log``). It **is** part
+  of a default read: while the campaign is still building it is the only section there is,
+  and a default that held it back answered "what is this campaign doing?" with nothing.
+  Because it comes first and is routinely the largest section, narrow rather than page once
+  the campaign has run — ``phase="run"`` for the campaign's own narrative, and for a build
+  that is misbehaving ``phase="build", summarize=True``, which collapses a few hundred
+  near-identical layer lines to a handful. ``phases`` lists every section with its line
+  count and whether the read included it.
 * **A failed build is a failed campaign, not a failed request.** ``start_campaign``
   succeeds; ``get_campaign_status`` then reports ``failed`` with the reason in ``error``.
   Do not read that as "the start did not go through" and retry — that creates a second

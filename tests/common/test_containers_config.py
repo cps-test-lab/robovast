@@ -215,9 +215,19 @@ def test_a_sidecar_has_no_image_fallback():
 def test_run_image_required_fails_loud(monkeypatch):
     # The image a campaign RUNS must be pinned: nothing configured -> raise, not
     # silently use the mutable default tag.
+    #
+    # CampaignConfigError specifically, and asserted as such: the message is
+    # self-contained and actionable, so `failure_detail` must report it WITHOUT a
+    # traceback. As a plain ValueError it reached the worker's catch-all and printed a
+    # stack trace through kubernetes_backend and controller, which reads as a RoboVAST
+    # bug rather than as a .vast key the author has to set.
+    from robovast.common.errors import CampaignConfigError
+
     monkeypatch.delenv("ROBOVAST_IMAGE", raising=False)
-    with pytest.raises(ValueError, match="no container image configured for this run"):
+    with pytest.raises(CampaignConfigError,
+                       match="no container image configured for this run") as excinfo:
         resolve_robovast_image(required=True)
+    assert excinfo.value.include_traceback is False
     assert resolve_robovast_image(required=True, explicit="reg/x:1") == "reg/x:1"
     assert resolve_robovast_image(required=True, config_image="reg/y:2") == "reg/y:2"
 

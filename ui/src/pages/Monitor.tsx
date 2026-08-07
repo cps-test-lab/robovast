@@ -411,7 +411,13 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
           </Typography>
         </Stack>
       ) : status.data ? (
-        <StatusView status={status.data} jobs={jobs.data} startedAt={summary.started_at} liveOnly />
+        <StatusView
+          status={status.data}
+          campaignId={id}
+          jobs={jobs.data}
+          startedAt={summary.started_at}
+          liveOnly
+        />
       ) : (
         <Stack direction="row" spacing={1} alignItems="center">
           <PhaseChip phase={phase} issue={stepIssue} />

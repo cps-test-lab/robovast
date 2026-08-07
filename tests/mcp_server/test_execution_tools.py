@@ -562,8 +562,9 @@ def test_the_status_says_it_cannot_judge_rather_than_saying_healthy():
 #
 # A campaign that waits for an experiment image copies that build's output into its own
 # log, so it is reachable with the campaign id alone and survives the build Job's TTL.
-# Being a copy of shared, content-addressed work — and routinely by far the largest
-# section — it is announced rather than returned by default.
+# It is part of a default read like every other phase: it was once held back as a copy of
+# shared work, which left a still-building campaign answering "what are you doing?" with
+# an empty log. Narrowing (``phase=``) is the caller's move, not the default's.
 
 def _log_with_build(build_lines=400):
     from robovast.common.campaign_logs import phase_banner
@@ -577,36 +578,33 @@ def _log_with_build(build_lines=400):
             + phase_banner("RUN") + "batch 0 starting\nrun 0 finished\n")
 
 
-def test_the_build_section_is_announced_but_not_returned_by_default(monkeypatch):
-    """A default read must stay about the campaign. Leading with a BuildKit log would
-    spend the whole 200-line budget on docker layers before reaching the run."""
+def test_a_default_read_includes_the_build_section(monkeypatch):
+    """Every phase is in a default read, each announced with its size — so nothing is left
+    out silently and no caller has to know a selector exists to see the whole log."""
     from robovast.mcp_server.plugins import execution
 
     _service_with_log(monkeypatch, _log_with_build())
-    out = execution.get_campaign_log("camp-2026-01-01-000000")
+    out = execution.get_campaign_log("camp-2026-01-01-000000", limit=10_000)
 
-    assert "apt-get install" not in out["content"]
+    assert "waiting for image sim:v3 (build b-1)" in out["content"]
     assert "batch 0 starting" in out["content"]
-    # Announced, with its size — so a section left out is reported, never silently absent.
     build = next(p for p in out["phases"] if p["name"] == "BUILD")
-    assert build["included"] is False and build["lines"] == 401
+    assert build["included"] is True and build["lines"] == 401
     assert next(p for p in out["phases"] if p["name"] == "RUN")["included"] is True
 
 
-def test_a_default_read_is_unchanged_by_a_build_section_being_present(monkeypatch):
-    """The regression that matters: adding BUILD must not move a single line of what a
-    caller already got. Same campaign, with and without the build, byte for byte."""
+def test_a_campaign_that_is_still_building_reads_its_build(monkeypatch):
+    """The reason the aside was dropped: BUILD is the *only* section a campaign waiting
+    for its image has, so holding it back answered "what is this doing?" with nothing."""
     from robovast.common.campaign_logs import phase_banner
     from robovast.mcp_server.plugins import execution
 
-    own = phase_banner("RUN") + "batch 0 starting\nrun 0 finished\n"
-    _service_with_log(monkeypatch, own)
-    without = execution.get_campaign_log("camp-2026-01-01-000000")
-    _service_with_log(monkeypatch, _log_with_build() )
-    with_build = execution.get_campaign_log("camp-2026-01-01-000000")
+    only_build = phase_banner("BUILD") + "waiting for image sim:v3 (build b-1)\n"
+    _service_with_log(monkeypatch, only_build)
+    out = execution.get_campaign_log("camp-2026-01-01-000000")
 
-    assert with_build["content"] == without["content"]
-    assert with_build["total_lines"] == without["total_lines"]
+    assert "waiting for image sim:v3 (build b-1)" in out["content"]
+    assert next(p for p in out["phases"] if p["name"] == "BUILD")["included"] is True
 
 
 def test_the_build_section_is_readable_on_request(monkeypatch):

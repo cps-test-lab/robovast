@@ -106,7 +106,12 @@ def _resolve_image(default: str, env_var: str, *, explicit: str | None = None,
         if env_image:
             resolved = env_image
         elif required:
-            raise ValueError(
+            # CampaignConfigError, not ValueError: this is bad input with a
+            # self-contained, actionable message, and `failure_detail` drops the
+            # traceback for it. A stack trace here reads as a RoboVAST bug rather than
+            # as something the author has to go and configure -- the same reason
+            # cluster_service raises it for an unconfigured registry.
+            raise CampaignConfigError(
                 "no container image configured for this run: set execution.image "
                 f"in the .vast, pass --image, or set {env_var}. Refusing to fall "
                 "back to a mutable default tag — the image a reconstruction runs "
@@ -124,7 +129,7 @@ def _resolve_image(default: str, env_var: str, *, explicit: str | None = None,
                 "This is a mutable tag — pin it for a reproducible run.",
                 role, pin_hint, env_var, resolved)
     if is_build_image_ref(resolved):
-        raise ValueError(
+        raise CampaignConfigError(
             f"unresolved build image ref '{resolved}': the 'build:' image must be "
             "built (build_experiment_image / the start_campaign preflight) before "
             "it can be used as a container image")

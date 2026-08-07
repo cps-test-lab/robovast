@@ -159,3 +159,19 @@ def test_the_stage_says_waiting_for_rather_than_building():
     assert snap.stage.startswith("waiting for")
     # phase_since is what separates "slow" from "wedged" for a phase with no run counter.
     assert snap.phase_since <= time.time()
+
+
+def test_a_building_campaigns_status_already_names_its_campaign():
+    """``campaign_id`` used to be written by the *controller*, which a building campaign
+    has not reached — and a build that failed never reaches at all. Readers key their log
+    and job reads off that field, so a null left the build's own output unreachable from
+    the very status that was reporting the build. ``create_campaign`` therefore seeds it
+    at acceptance, which works because ``ControllerState(**initial)`` feeds ``Status``.
+
+    (The seam this pins is the constructor. That ``create_campaign`` passes the id is
+    covered end to end rather than here: no test in this suite drives it, since it needs
+    a resolved workspace, a validated config and a live worker thread.)
+    """
+    state = ControllerState(campaign_id="c-2026-07-28-120000")
+    state.set_phase(Phase.BUILDING, stage="waiting for image sim:v3")
+    assert state.snapshot().campaign_id == "c-2026-07-28-120000"

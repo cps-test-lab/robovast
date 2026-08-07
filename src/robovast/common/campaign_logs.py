@@ -48,15 +48,6 @@ INFRA_PHASES: list[tuple[str, str]] = [
     ("POSTPROCESSING", "postprocessing.log"),
 ]
 
-#: Phases that are **not** the campaign's own work, and so are not part of a default
-#: read of its log. ``BUILD`` is the output of a content-addressed image build that may
-#: be shared by several campaigns and is copied in for reachability and durability (the
-#: build outlives nothing — its Job is reaped at ``ttlSecondsAfterFinished``), not
-#: because it narrates this campaign. It is also, routinely, by far the largest section:
-#: a reader that led with it would spend its whole budget on docker layers before
-#: reaching the run. Readers present it, and fetch it on request.
-ASIDE_PHASES: frozenset[str] = frozenset({"BUILD"})
-
 #: Subdirectory under the campaign root holding the phase log files.
 EXECUTION_DIR = "_execution"
 

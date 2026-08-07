@@ -162,11 +162,9 @@ def test_content_before_the_first_divider_is_not_dropped():
     assert "".join(body for _, body in sections) == text
 
 
-def test_build_is_the_first_phase_and_an_aside():
+def test_build_is_the_first_phase():
     """First because it happens first — and because appending it last would insert bytes
     *ahead of* later phases as they appear, shifting every byte offset a poller holds.
-    An aside because it is shared, content-addressed work, not this campaign's narrative.
     """
-    from robovast.common.campaign_logs import ASIDE_PHASES, INFRA_PHASES
+    from robovast.common.campaign_logs import INFRA_PHASES
     assert INFRA_PHASES[0][0] == "BUILD"
-    assert "BUILD" in ASIDE_PHASES

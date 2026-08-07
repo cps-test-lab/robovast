@@ -254,12 +254,12 @@ def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
     severity filter 18226 times and the returned lines read as ordinary noise; summarized
     it is one pattern with its count.
 
-    Phases, concatenated under ``===== PHASE =====`` dividers: ``variation`` (config
+    Phases, concatenated under ``===== PHASE =====`` dividers and **all returned by
+    default**: ``build`` (the image this campaign waited for — where a campaign that failed
+    before it ever ran explains itself), ``plugin install``, ``variation`` (config
     generation), ``run`` (the controller, plus docker compose output locally),
-    ``postprocessing``, and ``build`` — the image this campaign waited for.
-    ``build`` is **excluded from a default read** (it is shared, content-addressed work
-    and usually the largest section) but always listed in ``phases``; it is where a
-    campaign that failed before it ever ran explains itself.
+    ``postprocessing``. A build is large and comes first, so on a campaign that has run,
+    narrow instead of paging: ``phase="run"``, or ``phase="build", summarize=True``.
 
     Args:
         campaign_id: The id from ``start_campaign``.
@@ -276,8 +276,8 @@ def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
             for a few dozen tokens.
         top: With ``summarize``, maximum patterns (``0`` = all).
         phase: One of ``build``/``variation``/``run``/``postprocessing``/``plugin
-            install``, or ``"all"``. Empty reads the campaign's own phases.
-            ``phase="build", summarize=True`` reads a noisy image build cheaply.
+            install`` to read only that one. Empty (the default) and ``"all"`` both read
+            every phase.
 
     Returns:
         Lines: ``{file_name, phases, total_lines, returned_lines, offset, content,
@@ -360,17 +360,20 @@ def _select_phases(text: str, phase: str) -> "tuple[str, list[dict]]":
     and whether this read includes it — so a section that was left out is *reported*,
     which is the same contract ``view_log`` keeps for the lines it filters.
 
-    ``phase=""`` reads the campaign's own phases: the asides
-    (:data:`~robovast.common.campaign_logs.ASIDE_PHASES` — today just ``BUILD``) are
-    excluded, because they are large and belong to shared work rather than to this
-    campaign. ``"all"`` includes everything; a phase name includes only that one.
+    ``phase=""`` reads **every** phase, ``"all"`` is its explicit synonym, and a phase
+    name includes only that one. ``BUILD`` used to be held back from a default read as
+    an aside — shared, content-addressed work rather than this campaign's narrative —
+    but a campaign still waiting for its image has no other section, so that default
+    answered "what is this campaign doing?" with nothing at all. Narrowing is the
+    caller's move (``phase="run"``), made with the same controls every other log tool
+    has, rather than a default that decides for them.
 
     Raises:
         ValueError: *phase* is not a known phase — a silently ignored selector would
             read as "that phase produced nothing".
     """
     from robovast.common.campaign_logs import (  # noqa: PLC0415
-        ASIDE_PHASES, INFRA_PHASES, phase_banner, split_phases)
+        INFRA_PHASES, phase_banner, split_phases)
 
     known = {name.lower(): name for name, _ in INFRA_PHASES}
     wanted = phase.strip().lower()
@@ -384,10 +387,8 @@ def _select_phases(text: str, phase: str) -> "tuple[str, list[dict]]":
         if not name:
             out.append(section)  # pre-divider remainder; never dropped
             continue
-        if wanted and wanted != "all":
-            included = name.lower() == wanted
-        else:
-            included = wanted == "all" or name not in ASIDE_PHASES
+        # Empty and "all" both mean every phase; only a named one narrows.
+        included = not wanted or wanted == "all" or name.lower() == wanted
         # Content lines only — the banner is a divider, not log output — so the count is
         # what a caller would actually receive for this phase.
         body = section.replace(phase_banner(name), "", 1)

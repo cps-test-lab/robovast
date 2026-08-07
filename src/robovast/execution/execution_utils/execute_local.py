@@ -16,6 +16,7 @@
 
 import fnmatch
 import json
+import shlex
 import logging
 import os
 import sys
@@ -562,6 +563,13 @@ def _build_packed_compose_yaml(
         lines.append("    environment:")
         lines.append(f"      - CONTAINER_NAME={sc_name}")
         lines.append(f"      - SCENARIO_FILE={scenario_file_name}")
+        # The container's own command, for secondary_entrypoint.sh to exec once it has
+        # set the environment up. Deliberately NOT named SECONDARY_COMMAND: that name is
+        # already a host-shell variable compose substitutes into `command:` above, and
+        # one name meaning two things across the substitution boundary is a trap.
+        if sc.command:
+            lines.append("      - ROBOVAST_CONTAINER_COMMAND="
+                         + shlex.join(list(sc.command)))
         lines.extend(packed_env_lines)
         for key, value in env_vars.items():
             lines.append(f"      - {key}={value}")
@@ -581,10 +589,14 @@ def _build_packed_compose_yaml(
         lines.append(f"    user: \"{uid}:{gid}\"")
         lines.append("    stop_signal: SIGINT")
         lines.append("    stop_grace_period: 5s")
-        if sc.command:
-            lines.append("    command: " + json.dumps(list(sc.command)))
-        else:
-            lines.append("    command: ${SECONDARY_COMMAND}")
+        # Always the entrypoint, never the bare command: it sources the ROS overlay,
+        # tees stdout into the job's log dir and starts the resource monitor. A
+        # container whose command was exec'd directly got none of those -- and a
+        # colcon-built plugin is only importable once /opt/ros and /ws/install are
+        # sourced, so a simulator started that way failed on an unregistered plugin
+        # with no log to say so. The command travels by env instead, which is what
+        # lets one entrypoint serve both kinds of sidecar.
+        lines.append("    command: ${SECONDARY_COMMAND}")
         lines.append("    tty: ${ROBOVAST_TTY}")
         lines.append("    stdin_open: ${ROBOVAST_STDIN_OPEN}")
 
