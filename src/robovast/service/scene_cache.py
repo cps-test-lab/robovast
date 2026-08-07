@@ -170,13 +170,49 @@ def world_identity(campaign_dir, capture_manifest) -> dict:
     # absent means "this producer did not record them". Compiling the bare world for a run that
     # *varied* it renders confidently wrong geometry, so absence is carried through and reported.
     overrides_known = "overrides" in (capture_manifest or {})
-    return {
+    identity = {
         "producer": str((capture_manifest or {}).get("producer") or "rst"),
         "world": str(world),
         "overrides": (capture_manifest or {}).get("overrides") or {},
         "overrides_known": overrides_known,
         "image": image,
     }
+    identity.update(_campaign_world(campaign_dir, str(world)))
+    return identity
+
+
+#: Where a campaign's ``run_files`` are mounted in a running job. A world declared as a
+#: path in the ``.vast`` is recorded by the capture under this prefix, because that is
+#: where the simulator read it from.
+_RUN_FILE_MOUNT = "/config/"
+
+
+def _campaign_world(campaign_dir, world: str) -> dict:
+    """``{world_file, world_sha}`` when the world is a campaign file, else ``{}``.
+
+    The scene cache was built for a world that lives *in the image*, installed from a
+    package -- then the recorded path is valid wherever that image runs, including the aux
+    container. A world declared as a path in the ``.vast`` is not that: it is a
+    ``run_file``, mounted at ``/config/...`` for the duration of the job only, so passing
+    the recorded path to a fresh container asks it to read something that was never there.
+    The build got far enough to start the exporter and then failed on a missing file.
+
+    The campaign archives its run files under ``_config/``, so the world still exists on
+    this side and can be staged into the container as a generator input.
+
+    Its content hash joins the cache key. For a packaged world the image digest already
+    covers the bytes; for a campaign file it covers nothing, so without this two campaigns
+    whose worlds share a path would serve each other's geometry.
+    """
+    if not world.startswith(_RUN_FILE_MOUNT):
+        return {}
+    local = Path(campaign_dir) / "_config" / world[len(_RUN_FILE_MOUNT):]
+    if not local.is_file():
+        raise SceneUnavailable(
+            f"this run's world {world!r} is a campaign file, but it is not archived with "
+            f"the campaign (looked in {local}), so its geometry cannot be rebuilt.")
+    digest = hashlib.sha256(local.read_bytes()).hexdigest()
+    return {"world_file": str(local), "world_sha": digest}
 
 
 def _is_immutable_image(image: str) -> bool:
@@ -202,6 +238,8 @@ def cache_key(identity: dict, max_tex_dim: int = DEFAULT_MAX_TEX_DIM) -> str:
         CacheKey  # pylint: disable=import-outside-toplevel
 
     key = CacheKey()
+    # For a campaign-file world the image digest says nothing about the world's bytes.
+    key.add("world_sha", identity.get("world_sha") or "")
     key.add("scene_cache_version", CACHE_FORMAT_VERSION)
     key.add("image", identity["image"])
     key.add("world", identity["world"])
@@ -274,7 +312,11 @@ def _command_for(identity: dict, max_tex_dim: int) -> str:
             "build geometry for 'rst' only.")
     # `--set k=v` per override leaf: the same dotlist form `rst sim --set` takes.
     sets = " ".join(f"--set {k}={json.dumps(v)}" for k, v in _flatten(identity["overrides"]))
-    return (f"rst-export-web --world {identity['world']} {sets} --out {{out}} "
+    # `{inputs[0]}` when the world is a campaign file: the generator stages it into the
+    # container and substitutes the path it landed at. A packaged world keeps its recorded
+    # path, which is valid in the image by construction.
+    world = "{inputs[0]}" if identity.get("world_file") else identity["world"]
+    return (f"rst-export-web --world {world} {sets} --out {{out}} "
             f"--max-tex-dim {int(max_tex_dim)} --manifest {{out}}/.generated.json")
 
 
@@ -294,9 +336,12 @@ def _generate_entry(identity: dict, key: str, max_tex_dim: int) -> dict:
     A plain ``shell`` entry with ``image`` set -- which is the documented aux-container path, so the
     container run, the input staging and the copy-back are the generator framework's, not ours.
     """
-    return {"shell": {"out": key,
-                      "image": identity["image"],
-                      "command": _command_for(identity, max_tex_dim)}}
+    entry = {"shell": {"out": key,
+                       "image": identity["image"],
+                       "command": _command_for(identity, max_tex_dim)}}
+    if identity.get("world_file"):
+        entry["shell"]["inputs"] = [identity["world_file"]]
+    return entry
 
 
 def generate(identity: dict, key: str, max_tex_dim: int = DEFAULT_MAX_TEX_DIM,

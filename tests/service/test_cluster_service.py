@@ -1230,3 +1230,62 @@ def test_scene_geometry_falls_back_for_campaigns_without_per_role_digests():
         identity = scene_cache.world_identity("/campaign", {"world": "w.yaml",
                                                             "overrides": {}})
     assert identity["image"] == "reg/combined@sha256:" + "c" * 64
+
+
+def _scene_identity_for(tmp_path, world, archive=True):
+    from unittest.mock import patch
+    from robovast.service import scene_cache
+    if archive:
+        f = tmp_path / "_config" / "files" / "depot_nav2.yaml"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("extends: rst_scenes:depot\n")
+    meta = {"image_revisions": {"simulation": "reg/sim@sha256:" + "b" * 64}}
+    with patch("robovast.common.campaign_data.read_execution_metadata", lambda _p: meta):
+        return scene_cache.world_identity(str(tmp_path), {"world": world, "overrides": {}})
+
+
+def test_a_campaign_owned_world_is_staged_into_the_build_container(tmp_path):
+    """A world declared as a path in the .vast is a run_file, mounted at /config only for
+    the job. Passing that recorded path to a fresh container asks it to read something
+    that was never there -- the exporter started and failed on a missing file."""
+    from robovast.service import scene_cache
+
+    ident = _scene_identity_for(tmp_path, "/config/files/depot_nav2.yaml")
+    assert ident["world_file"].endswith("_config/files/depot_nav2.yaml")
+    entry = scene_cache._generate_entry(ident, "k", 1024)
+    assert entry["shell"]["inputs"] == [ident["world_file"]]
+    assert "{inputs[0]}" in entry["shell"]["command"]
+
+
+def test_a_packaged_world_keeps_its_recorded_path(tmp_path):
+    """It lives in the image, so the path is valid there by construction -- nothing to stage."""
+    from robovast.service import scene_cache
+
+    ident = _scene_identity_for(tmp_path, "rst_scenes:depot", archive=False)
+    assert "world_file" not in ident
+    entry = scene_cache._generate_entry(ident, "k", 1024)
+    assert "inputs" not in entry["shell"]
+    assert "rst_scenes:depot" in entry["shell"]["command"]
+
+
+def test_the_cache_key_covers_a_campaign_worlds_contents(tmp_path):
+    """The image digest says nothing about a campaign file's bytes, so two campaigns whose
+    worlds share a path would otherwise serve each other's geometry."""
+    from robovast.service import scene_cache
+
+    a = _scene_identity_for(tmp_path / "a", "/config/files/depot_nav2.yaml")
+    b_dir = tmp_path / "b"
+    (b_dir / "_config" / "files").mkdir(parents=True)
+    (b_dir / "_config" / "files" / "depot_nav2.yaml").write_text("extends: rst_scenes:other\n")
+    b = _scene_identity_for(b_dir, "/config/files/depot_nav2.yaml", archive=False)
+    assert a["world"] == b["world"]
+    assert scene_cache.cache_key(a) != scene_cache.cache_key(b)
+
+
+def test_a_missing_archived_world_says_so(tmp_path):
+    """Rather than failing later inside the container with a path nobody can place."""
+    import pytest as _pytest
+    from robovast.service import scene_cache
+
+    with _pytest.raises(scene_cache.SceneUnavailable, match="not archived with the campaign"):
+        _scene_identity_for(tmp_path, "/config/files/depot_nav2.yaml", archive=False)
