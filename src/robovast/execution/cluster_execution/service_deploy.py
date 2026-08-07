@@ -83,12 +83,18 @@ def _service_rbac_manifests(namespace):
                 # the service creates and tears down.
                 {"apiGroups": [""], "resources": ["pods", "pods/log"],
                  "verbs": ["create", "get", "list", "watch", "delete", "deletecollection"]},
-                # The registry push Secret and CA ConfigMap: read to authenticate the
-                # "is this image already pushed?" probe, to trust a private-CA registry
-                # for it, and to detect that they exist at all (see
-                # ClusterService._resolve_registry_objects). Read-only, by name.
-                {"apiGroups": [""], "resources": ["secrets", "configmaps"],
-                 "verbs": ["get"]},
+                # The registry push Secret: read to authenticate the "is this image
+                # already pushed?" probe (see ClusterService._resolve_registry_objects).
+                # Read-only, by name -- nothing here ever writes a Secret.
+                {"apiGroups": [""], "resources": ["secrets"], "verbs": ["get"]},
+                # ConfigMaps are NOT read-only, unlike the Secret above: besides reading
+                # the private-CA ConfigMap, postprocessing ships its scripts into the
+                # postprocess Job as a ConfigMap it creates, replaces on a re-run and
+                # deletes afterwards (see postprocess_job.py). Granting only "get"
+                # alongside the Secret let every campaign RUN and then fail its
+                # postprocessing with a 403 -- after the compute was already spent.
+                {"apiGroups": [""], "resources": ["configmaps"],
+                 "verbs": ["create", "get", "list", "update", "patch", "delete"]},
                 # Variations that declare an auxiliary container run their commands
                 # in that campaign's aux pod via the pods/exec subresource (see
                 # cluster_execution.container_runner.ClusterContainerRunner).
@@ -145,7 +151,7 @@ def _service_rbac_manifests(namespace):
 
 
 def _deployment_manifest(namespace, image, env=None, git_secret=False,
-                         env_secret_names=()):
+                         env_secret_names=(), pull_secret=""):
     """The robovast-service Deployment (1 replica, stateless — no PVC).
 
     Binds ``0.0.0.0`` inside the pod (reachable only via the ClusterIP Service +
@@ -160,6 +166,14 @@ def _deployment_manifest(namespace, image, env=None, git_secret=False,
     vars, because the in-driver upload / notifier read them straight from
     ``os.environ`` (see ``in_pod_upload.load_provider_from_env`` and
     ``Notifier.from_env``).
+
+    *pull_secret* is the dockerconfigjson Secret authenticating the pull of this
+    service's OWN image. It is easy to forget because the service is the thing that
+    hands that same secret to every campaign pod it creates (see
+    ``KubernetesBackend`` and ``ROBOVAST_REGISTRY_PULL_SECRET``) — so a cluster whose
+    controller image sits in a private registry deployed a service that could pull
+    images for everyone except itself, and setup reported success while the pod sat in
+    ImagePullBackOff.
     """
     container = {
         "name": SERVICE_NAME,
@@ -182,6 +196,8 @@ def _deployment_manifest(namespace, image, env=None, git_secret=False,
         "serviceAccountName": SERVICE_ACCOUNT,
         "containers": [container],
     }
+    if pull_secret:
+        pod_spec["imagePullSecrets"] = [{"name": pull_secret}]
     if git_secret:
         container["volumeMounts"] = [{
             "name": "git-credentials", "mountPath": GIT_TOKEN_MOUNT_DIR,
@@ -488,8 +504,13 @@ def _cluster_env(namespace, config_name, config_kwargs, kube_context=None):
 
 def service_manifests(namespace="default", image=None, env=None,
                       config_name=None, config_kwargs=None, git_token=None,
-                      share_env=None, kube_context=None):
-    """Return all robovast-service manifests (RBAC [+ git/share Secrets] + Deployment + Service)."""
+                      share_env=None, kube_context=None, pull_secret=""):
+    """Return all robovast-service manifests (RBAC [+ git/share Secrets] + Deployment + Service).
+
+    *pull_secret* names the dockerconfigjson Secret for the service's own image; it is
+    resolved by :func:`deploy_service`, which can see whether that Secret already exists
+    in the namespace. Passing it in keeps this function pure.
+    """
     from robovast.common.execution import resolve_controller_image
     image = image or resolve_controller_image()
     if env is None:
@@ -531,6 +552,8 @@ def service_manifests(namespace="default", image=None, env=None,
     registry_secret = _registry_dockerconfig_manifest(namespace)
     if registry_secret:
         extra.append(registry_secret)
+        # Created right here, so the Deployment can reference it without a lookup.
+        pull_secret = pull_secret or REGISTRY_PUSH_SECRET_NAME
     registry_ca = _registry_ca_manifest(namespace)
     if registry_ca:
         extra.append(registry_ca)
@@ -539,7 +562,8 @@ def service_manifests(namespace="default", image=None, env=None,
         *_service_rbac_manifests(namespace),
         *extra,
         _deployment_manifest(namespace, image, env=env, git_secret=have_git_secret,
-                             env_secret_names=env_secret_names),
+                             env_secret_names=env_secret_names,
+                             pull_secret=pull_secret),
         _service_manifest(namespace),
     ]
 
@@ -565,10 +589,22 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
     apps = client.AppsV1Api()
     dr = "All" if dry_run else None
 
+    # The service's own image may need registry auth. The Secret is usually NOT created
+    # by this run: setup only writes it when ROBOVAST_REGISTRY_* are in the environment,
+    # so on a re-run -- the normal case -- it is simply already there. Looking it up is
+    # therefore the difference between a service that starts and one that sits in
+    # ImagePullBackOff while setup prints "completed successfully". Same lookup the
+    # campaign pods do (see KubernetesBackend.build_job_manifest).
+    try:
+        core.read_namespaced_secret(REGISTRY_PUSH_SECRET_NAME, namespace)
+        pull_secret = REGISTRY_PUSH_SECRET_NAME
+    except ApiException:
+        pull_secret = ""
+
     manifests = service_manifests(
         namespace=namespace, image=image, env=env,
         config_name=config_name, config_kwargs=config_kwargs,
-        kube_context=kube_context)
+        kube_context=kube_context, pull_secret=pull_secret)
     by_kind = {m["kind"]: m for m in manifests}
     sa = by_kind["ServiceAccount"]
     role = by_kind["Role"]

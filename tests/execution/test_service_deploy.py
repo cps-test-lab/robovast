@@ -223,3 +223,61 @@ def test_default_image_resolves_from_controller_image():
     dep = next(m for m in ms if m["kind"] == "Deployment")
     assert dep["spec"]["template"]["spec"]["containers"][0]["image"] == \
         resolve_controller_image()
+
+
+# -- the service's own image pull -------------------------------------------
+#
+# The service hands the registry pull Secret to every campaign pod it creates, which is
+# exactly why its OWN pod spec was easy to forget: a cluster whose controller image sits
+# in a private registry got a service that could pull images for everyone but itself.
+# Setup printed "completed successfully" and the pod sat in ImagePullBackOff.
+
+
+def _pod_spec(manifests):
+    dep = next(m for m in manifests if m["kind"] == "Deployment")
+    return dep["spec"]["template"]["spec"]
+
+
+def test_the_service_pod_references_the_registry_pull_secret():
+    ms = sd.service_manifests(namespace="ns1", image="private.example/robovast:dev",
+                              pull_secret=sd.REGISTRY_PUSH_SECRET_NAME)
+    assert _pod_spec(ms)["imagePullSecrets"] == [{"name": sd.REGISTRY_PUSH_SECRET_NAME}]
+
+
+def test_no_pull_secret_means_no_reference():
+    """A public image needs none, and referencing a Secret that does not exist would
+    make every deployment log a spurious pull warning."""
+    ms = sd.service_manifests(namespace="ns1", image="public.example/robovast:dev")
+    assert "imagePullSecrets" not in _pod_spec(ms)
+
+
+def test_creating_the_registry_secret_also_wires_it_into_the_deployment(monkeypatch):
+    """When setup creates the Secret in this same run, the Deployment must reference it
+    without needing a cluster lookup -- the two are built from one manifest list."""
+    monkeypatch.setenv("ROBOVAST_REGISTRY_SERVER", "private.example")
+    monkeypatch.setenv("ROBOVAST_REGISTRY_USERNAME", "robot")
+    monkeypatch.setenv("ROBOVAST_REGISTRY_PASSWORD", "secret")
+    ms = sd.service_manifests(namespace="ns1", image="private.example/robovast:dev")
+    assert any(m["kind"] == "Secret"
+               and m["metadata"]["name"] == sd.REGISTRY_PUSH_SECRET_NAME for m in ms)
+    assert _pod_spec(ms)["imagePullSecrets"] == [{"name": sd.REGISTRY_PUSH_SECRET_NAME}]
+
+
+def test_service_rbac_can_write_the_postprocessing_configmap():
+    """Postprocessing ships its scripts into the Job as a ConfigMap it creates.
+
+    The grant used to name secrets and configmaps in one read-only rule, which reads as
+    deliberate ("read-only, by name") and was right for the Secret. So every cluster
+    campaign RAN and then failed postprocessing with a 403 -- after the compute was
+    spent, which is the expensive place to discover a missing verb.
+    """
+    ms = sd.service_manifests(namespace="default", image="x")
+    role = next(m for m in ms if m["kind"] == "Role")
+    verbs = {v for rule in role["rules"] if "configmaps" in rule["resources"]
+             for v in rule["verbs"]}
+    # create + replace + delete are the three postprocess_job.py actually calls.
+    assert {"create", "get", "update", "delete"} <= verbs
+
+    secret_verbs = {v for rule in role["rules"] if "secrets" in rule["resources"]
+                    for v in rule["verbs"]}
+    assert secret_verbs == {"get"}, "widening configmaps must not widen secrets"
